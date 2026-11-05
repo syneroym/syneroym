@@ -1,5 +1,5 @@
 ---
-status: draft
+status: done
 living-docs-touched:
   - docs/TERMINOLOGY.md
   - docs/system-requirements-spec.md
@@ -12,6 +12,8 @@ demo:
   - crates/substrate/tests/e2e/demo/20-roym-chat.spec.ts
   - none: internal typed method contracts, proxy call-all batching, dual-build shim capability, and internal federated query fan-out; search has no demo story because its Hub path is covered by Hub cases 22 and 23, and the milestone demo is the chat story in A5
   - none: remote access needs a second machine and TLS; the Hub on another domain is covered by Hub case 42
+  - crates/substrate/tests/e2e/demo/30-roym-client.spec.ts
+  - crates/substrate/tests/e2e/demo/30-roym-client.sh
 ---
 # Roym open foundation
 
@@ -66,8 +68,8 @@ The integrated spec already says: "Every Roym capability the UI uses is a public
 | ID | Criterion | Test |
 | --- | --- | --- |
 | **Participant rename** | | |
-| OF-1 | No Roym wire field, enum value, method name or card label says "provider" or "consumer". A role in one deal is named by what the party does in it (for example `giver` and `receiver` of a commitment, or `quote_author`). | |
-| OF-2 | The Hub and the user docs say "participant", or a deal role, everywhere. | |
+| OF-1 | No Roym wire field, enum value, method name or card label says "provider" or "consumer". A role in one deal is named by what the party does in it (for example `giver` and `receiver` of a commitment, or `quote_author`). | `crates/roym_core/src/record/tests/wire_words.rs`: `the_deal_enums_say_no_old_word_in_any_variant`, `the_other_wire_enums_say_no_old_word_in_any_variant`, `a_request_and_a_quote_say_no_old_word`, `an_agreement_and_its_receipts_say_no_old_word`, `the_payment_records_say_no_old_word`, `a_booking_progress_snapshot_says_no_old_word_for_either_canceller`, `a_listing_says_no_old_word_for_any_place_or_audience`. The dual-build parity harness (24 modules, 222 scenarios) runs the renamed fields and methods in both builds. |
+| OF-2 | The Hub and the user docs say "participant", or a deal role, everywhere. | `crates/roym_web/ui/src/cards/wording.test.ts`: the six cases of "the words on deal cards" (for example "keeps the shared notices free of the old words" and "keeps a request card free of the old words"). The user docs are not covered by a test (see Deviations). |
 | **Batched call and federated query** | | |
 | OF-3 | A guest can send one call to many targets in a single host call. The host runs the calls at the same time, each with its own time limit, and returns one result per target in the input order. | `host_capabilities/tests/tests_call_all.rs`: `results_come_back_in_input_order_whatever_the_finish_order`, `a_call_gets_its_own_time_and_the_host_caps_a_larger_request`, `a_failed_call_does_not_change_the_other_entries`. `proxy_call_all.rs`: `batch_of_mixed_calls_through_proxy_matches_single_call_answers`, `local_wasm_callees_execute_in_parallel_via_joinset`. |
 | OF-4 | The time the guest waits inside the batched call does not count against its epoch deadline. The batched call has its own total limit, set by the host. If the spike shows this cannot be done, the fallback in [Batched outbound call](#batched-outbound-call) replaces this criterion and changes OF-6, and the change doc records both as deviations. | `dual_build_parity/call_all_deadline.rs`: `a_batch_that_waits_past_the_budget_does_not_stop_the_guest`, `credit_buys_back_the_wait_and_no_more`, `a_guest_that_spins_is_stopped_on_time_when_it_never_used_call_all`, `two_batches_in_one_wasm_guest_call_accumulate_credit`. `engine/epoch_budget/tests.rs`: `zero_credit_interrupts_at_the_deadline_even_when_own_time_is_below_budget`, `arm_resets_credit_and_start`. |
@@ -88,7 +90,7 @@ The integrated spec already says: "Every Roym capability the UI uses is a public
 | OF-15 | A test lists every Roym method and fails when one has no typed input or output. | `method_contract` `contract.rs`: one table test per service (24 + 24 + 17 + 41 + 35 rows) runs `assert_service_table` (`roym_core/src/method/check.rs`: unique names, routing, no `Value` as a top-level type, hand-written match arms and unlisted method names in the source); `every_listed_method_is_dispatched` runs each row in both builds. `web` has its own test, because its forwarder reads `req.method`. Not covered: a `Value` nested inside a struct. |
 | OF-18 | A local-only method refuses an unknown input field with `-32602`. A wire-reachable method ignores unknown input fields, so a node that has added a field can still call an older node. | Refusal: `assert_service_table` probes every row (137 local-only rows refuse, the 4 wire rows ignore); `contract.rs` `invalid_field_types_and_unknown_fields_are_rejected` and `contract_directory.rs` `directory_parameter_errors` check the error over `/rpc`. Ignoring: `directory_wire_unknown_fields_and_parameters` (search, standing, info, publish over the wire), `every_method_answers_off_the_node_as_its_wire_rule_says`, `dual_build_parity/directory_compat.rs` (a newer node's answer is read), `roym_core` `method/tests/directory.rs`. Not covered: a nested record type inside an input drops an unknown key and does not refuse it; a renamed or removed field still breaks the call (G5). |
 | **Client guide** | | |
-| OF-16 | The developer guide has a "Build a Roym client" section. A developer can log in, list conversations, send a message, run a search and follow the event feed with only that section. | |
+| OF-16 | The developer guide has a "Build a Roym client" section. A developer can log in, list conversations, send a message, run a search and follow the event feed with only that section. | `crates/substrate/tests/e2e/demo/30-roym-client.spec.ts` (`Roym client story: follow the client guide with curl`). Its script `30-roym-client.sh` runs the tagged code blocks of `docs/developer-guide.md` section 6 against the two demo nodes: sign in, call a method, list conversations, open one and send a message, follow the event feed and catch up with a cursor, search, read cards, refresh and log out. `xtask/src/verify.rs`: `a_guide_change_runs_only_the_e2e_gate`, `other_docs_changes_skip_all_three_gates`. |
 
 ## Design
 
@@ -205,7 +207,7 @@ Each method gets an input struct and an output struct in `roym_core` (or in the 
 ## Tasks
 
 - [x] M08A spike: the epoch-deadline callback for `call-all`, and the event feed's home. Write both results here.
-- [ ] Write the M08A slice plans.
+- [x] Write the M08A slice plans.
 - [x] Participant rename across Roym crates, the Hub, `roymctl`, docs.
 - [x] `call-all` with its limits, the deadline extension (or the fallback), and the native shim.
 - [x] The federated query library. Move merging and duplicate removal into it. One search method.
@@ -215,7 +217,7 @@ Each method gets an input struct and an output struct in `roym_core` (or in the 
   - [x] profile and conversation
   - [x] catalog and transaction
   - [x] directory and web
-- [ ] "Build a Roym client" in the developer guide.
+- [x] "Build a Roym client" in the developer guide.
 
 ## Decisions
 
@@ -366,6 +368,20 @@ Each method gets an input struct and an output struct in `roym_core` (or in the 
 - **D-A6-13. The ADR.** [ADR-0028](../../../decisions/0028-remote-client-access.md) records the setting, the `local` checks, `fixed` refused, the `open`-mode warning, HTTPS, and the CORS pattern.
 - **D-A6-14. The `open`-mode warning.** `init` logs one `warn!` when remote access is set with `open` mode, or `login` mode without `connection_auth_gate`. Startup still succeeds.
 - **D-A6-15. A shared helper for the auth tests.** `crates/auth/tests/common/mod.rs`: `MockAnchorResolver`, `service_with_identities`, `node_caller`, `login_request`.
+- **Q1–Q8 (A7): option (a), 2026-11-05.** Q7 is the per-gate form: only `e2e` also runs for a guide change.
+- **D-A7-1. The section.** `## 6. Build a Roym client` at the end of `docs/developer-guide.md`, with the reader line "a developer who writes a program that uses Roym for one person". Parts 6.1 What you need, 6.2 Sign in, 6.3 Call a method, 6.4 Conversations, 6.5 Follow the event feed, 6.6 Search, 6.7 Show cards, 6.8 Errors and unknown fields, 6.9 End the session, 6.10 A client on another machine. Each project term is defined at first use.
+- **D-A7-2. Tagged blocks.** A shell block has the info string `bash roym-client=<name>`, the script `js roym-client=sign-challenge.mjs`. Names, each once: `address`, `sign-challenge.mjs`, `login`, `rpc`, `list`, `open-send`, `feed`, `catch-up`, `search`, `cards`, `refresh-logout`. The variables block of 6.1 is not tagged; the story sets `SESSION_KEY`, `PEER_ADDR` and `DIRECTORY_DID` itself.
+- **D-A7-3. The variables.** `AUTH_URL`, `HUB_URL`, `SESSION_KEY`, `PEER_ADDR`, `DIRECTORY_DID`. The tagged `address` block finds the Hub host with `roymctl roym address`, so the story tests the way the guide tells a reader to find it. `GATEWAY_PORT` defaults to `7960` and keeps a value that is already set. Use `http://` only for `localhost`.
+- **D-A7-4. The blocks.** Every block checks its own result, so it behaves the same in a reader's shell and in the story's `set -euo pipefail` shell. A block that pipes starts with `set -o pipefail`. A block that sets a value ends with a check that fails with a message.
+- **D-A7-5. The signing script.** A 25-line Node.js script (`node:crypto` and `node:fs` only), printed in full in 6.2. It signs the `assertion` text with the temporary key and prints the signature in z-base-32, as the Hub does.
+- **D-A7-6. Errors and unknown fields (6.8).** A table of the JSON-RPC codes a client meets, the Q6 text on unknown fields (a local-only method refuses an unknown field with `-32602` and `data.field`; send only the listed fields; read `data.field`), and a row for a node restart.
+- **D-A7-7. A client on another machine (6.10).** Three sentences and links: the owner turns on remote access, the client uses `https://auth.<domain>` and `https://<hub host>`, `local` login is off. Not tested.
+- **D-A7-8. The story script.** `30-roym-client.sh` reads the guide's tagged blocks with `awk` and runs them with `eval`. Set-up that is not part of the guide: a directory on Bob's node. The `feed` and `catch-up` blocks run in the background with their output in a file. Checks use `jq -e` on the JSON.
+- **D-A7-9. The spec.** `30-roym-client.spec.ts` has one test, `Roym client story: follow the client guide with curl`, that runs the script.
+- **D-A7-10. `jq`.** `jq = "1.8"` in `mise.toml`.
+- **D-A7-11. Verify.** `Gate.docs_paths_that_run`: docs paths that still run a gate on a docs-only change. `e2e` names `docs/developer-guide.md`. `nextest` and `doctests` still skip. `skips_on_docs_only(gate, paths)` is unit tested.
+- **D-A7-12. What a reader needs (6.1).** Roym deployed and the gateway in `login` mode; record signing enrolled once; a session key file of the owner of the installation; a key file that has not expired; a key file kept secret; the address of the other person. Also `curl`, `jq` and Node.js 20.
+- **D-A7-13. Security text for a client author.** Use `http://` only for `localhost`. The token and the key file are secrets (do not log them, do not put them in a URL, use `curl -H @file` on a shared machine). A token cannot be limited to fewer methods.
 
 ## Deviations
 
@@ -429,6 +445,17 @@ Each method gets an input struct and an output struct in `roym_core` (or in the 
 - **A6: `node-boot.ts` `allowedOrigins` is a function of the gateway port.** The plan said `string[]`. The port is chosen inside `bootNode`, after `global-setup.ts` builds its options, so a list cannot name it.
 - **A6: Hub case 42 runs full Chromium (`channel: 'chromium'`).** The default headless shell ignores `--unsafely-treat-insecure-origin-as-secure`, so `crypto.subtle` is missing and the delegated login cannot sign. With the full Chromium channel the flag works and step 3 of the case passes. The new spec is added to `testMatch` in `playwright.config.ts`.
 - **A6: the Roym test node can boot with remote access.** `RoymNode::boot_with_remote_access` and a `remote_access` field; `RoymNode::login` signs in with `delegated-key` when it is set, because `full_bring_up` logs in and `local` is off.
+
+- **A7: `curl` cannot sign the login challenge (F1).** A `delegated-key` login needs an Ed25519 signature in z-base-32. The guide prints a 25-line Node.js script for this step (Q2).
+- **A7: a card from the other person is first a message event (F6).** It arrives as `conversation.message`. The `transaction.card` event comes after the client calls `transaction.sync`. The guide's table of event kinds says so.
+- **A7: the short Hub host needs a registry record with no nickname.** The plan took the host that `roymctl roym address` prints as working on its own. On the demo nodes it answered `502` ("Endpoint not found in registry or DHT"), because story 20 registers the Hub with a nickname and a service has one registry alias. The guide (6.1, item 1) tells the reader to run `roymctl registry register --identity member-roym#web-0 --substrate <node DID>` with no `--nickname`. The story does this in its set-up, which replaces story 20's alias. The story runs after story 20, so nothing else needs the nickname host.
+- **A7: `curl` does not resolve `*.localhost` itself.** The plan expected a first `curl` version that does. There is none (curl issue 9192 is open), so it depends on the system resolver. The guide says to add `--connect-to ::127.0.0.1:` or a `connect-to` line in `~/.curlrc` when `curl` cannot resolve the host. The one `curl` minimum is 7.76 (for `--fail-with-body`). The story keeps that `.curlrc` line in its own folder (`CURL_HOME`), so it does not depend on the resolver of the machine. macOS resolved `*.localhost` without it. The CI image was not checked by hand.
+- **A7: `roym enrol-signing` is not tested as optional.** Story 20 enrols both nodes before story 30 runs, so the story cannot show whether `conversation.send` works without it. The guide lists it as a one-time requirement (6.1, item 2).
+- **A7: the answer after a bare node restart.** I restarted Bob's demo node with its own config and no deploy. `POST /rpc` answered HTTP `500` with `{"error":{"code":-32603,"message":"Native service not found for did:key:…"},"id":null}` for every method, so the backlog row about route tables is still open. 6.8 has this row and tells the reader to ask the node owner to deploy the app again. The redeploy was not run by hand.
+- **A7: not every error is HTTP 200.** The plan's table assumed JSON-RPC errors come with HTTP 200. The restart answer above is HTTP 500. 6.8 says "most".
+- **A7: OF-2 is only partly covered by a test.** `wording.test.ts` covers the Hub's card text. No tool checks that the user docs say "participant"; that part is checked by review only.
+- **A7: the story names its last guide block on failure, and the captions have no part numbers.** An `ERR` trap prints "Last guide block: roym-client=<name>". Captions use the guide's part titles without numbers, so a renumbered guide does not make them wrong. A block broken on purpose (`conversation.lst`) failed the story with that message.
+- **A7: the optional check that the feed ends after logout is left out.** The guide's text says it; the story does not check it, to keep the story short.
 
 ### Planned wire changes (plan section 4)
 
