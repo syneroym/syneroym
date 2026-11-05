@@ -628,3 +628,50 @@ is where it is written.
   sandbox if needed). No repository change. Mark this item `Fixed (no
   commit)` when done.
 - *Status:* Open. Needs the owner: the delete command was denied in the sandbox in the implementation session, and the fix session did not retry it. Run `rm -rf /private/tmp/claude-501/m08b-s0` outside the sandbox. Then set this item to `Fixed (no commit)`.
+
+## Code review round 2 — Claude Opus 5.5, 2026-11-05
+
+Checked the round 1 fix commits `0fb74f5f`, `75502bd1`, `3fac0f9c` and
+`b1757a66` on `feat/m08b-s0-checks` at `b1757a66`, in the main checkout.
+`gh pr checks 348` passes on `b1757a66` (every job; Benchmarks and Code
+Coverage skip as usual). The fix commits change only `docs/`.
+
+**Summary:** 0 blocker, 0 major, 0 minor new. R1 to R4 confirmed fixed. R5
+is still Open. 1 open.
+
+### Round 1 items
+
+- **R1 — confirmed fixed (`75502bd1`).** task.md:79, task.md:91, change.md:316
+  and the PR text now all say that `lipilekhika` met all seven rules, with
+  rule 7 from a changelog summary only and the 1.1.0 API break. The reason for
+  own tables is now Q1's second condition, with the three places where its
+  output differs from ISO 15919. "No crate met", "plain letter-by-letter" and
+  "our own tables give the same" are gone from task.md and the change doc.
+- **R2 — confirmed fixed (`0fb74f5f`).** `git grep -F 2026-11-01` finds no
+  owner-answer date left in the plan, task.md, the change doc or the backlog
+  row. change.md:316 now puts the survey (2026-11-05) before the decision.
+  Leaving the example value in `prompt-templates.md` is right; it is not part
+  of this slice.
+- **R3 — confirmed fixed (`3fac0f9c`).** The `hi nai distinct nahi` row is
+  gone, and `pankha` now has `bankha` ("consonant p/b"). I re-ran my own two
+  scripts from round 1 on the new file. Format: 0 errors; Hindi `distinct`
+  43, Tamil 29, the other counts as before. Union-find: no `distinct` row is
+  joined to its own word any more. The `# conflicts:` block has 17 entries,
+  each "owner decision: pending"; the `→h` entry is gone and `hi/pankha` left
+  the "must not meet" side of `h→`. One `distinct` row still has two edits
+  (`chini` → `chana`), but both are the same rule (`i/a`), so it guards one
+  rule; not a finding. task.md and the PR text say 43 and 17.
+- **R4 — confirmed fixed (`75502bd1`).** task.md:76 explains the 32-byte path
+  difference between 92,962 and 92,994 and says to compare only numbers from
+  one build folder. task.md:155 and the change doc now give the case with a
+  public, uncalled `nfc()` (93,305 bytes both ways, +68,764 when called), which
+  agrees with my round 1 numbers from another folder.
+- **R5 — still Open.** `/tmp/claude-501/m08b-s0` still exists (checked
+  2026-11-05 after the fix commits). The owner must delete it; then set R5 to
+  `Fixed (no commit)`.
+
+### Other checks on the fix commits
+
+- The S0 row in status.md still said "18 conflicts" in its first part after
+  the fix (the later part said 17). I changed it to 17 while setting the row
+  for this round, so it is not a finding.
