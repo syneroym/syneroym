@@ -48,7 +48,10 @@ start_block() {
   CURRENT_BLOCK=$1
   body=$(guide_block "$1")
   printf '%s\n' "$body"
-  HUB_URL=$HUB_URL TOKEN=$TOKEN CURSOR=${CURSOR:-} bash -c "$body" > "$2" 2>&1 &
+  # An empty environment, with only the values the guide tells the reader to set, so a block
+  # that needs another variable fails here.
+  env -i PATH="$PATH" CURL_HOME="$CURL_HOME" HUB_URL="$HUB_URL" TOKEN="$TOKEN" CURSOR="${CURSOR:-}" \
+    bash -c "$body" > "$2" 2>&1 &
 }
 
 # Wait until the output file has a line with both texts. usage: wait_for <file> <text> [text]
@@ -69,7 +72,7 @@ fail() { echo "$*" >&2; return 1; }
 
 trap 'kill $(jobs -p) 2>/dev/null || true' EXIT
 
-caption "Set-up, not part of the guide: a directory on Bob's node, and a short host name for Alice's Hub"
+caption "Set-up, not part of the guide: a directory on Bob's node, and the nickname of Alice's Hub"
 mkdir -p "$WORK"
 printf 'Be kind. Keep your listings honest.\n' > "$WORK/rules.txt"
 BOB_HUB_HOST=${BOB_HUB_URL#http://}
@@ -78,14 +81,18 @@ run rc2 roym directory serve --name "Bob's guild" --rules-file "$WORK/rules.txt"
   --category gardening --support support@example.org --dispute "Write to support." \
   --gateway-url "http://127.0.0.1:$S2_GW" --host "$BOB_HUB_HOST"
 DIRECTORY_DID=$(did_of "$S2_DIR" "member-roym#directory-0")
-# The guide needs the Hub registered with no nickname. Story 20 gave it one, and a service
-# has one registry alias, so this replaces it.
-run roymctl --dir "$S1_DIR" --api-url "$REGISTRY" registry register \
-  --identity "member-roym#web-0" --substrate "$S1_DID"
+# Story 20 registered Alice's Hub with this nickname.
+HUB_NICKNAME=roym
 SESSION_KEY=$ALICE_KEY
 PEER_ADDR=$BOB_ADDR
 GATEWAY_PORT=$S1_GW
 cd "$WORK"
+# Report whether this machine sends *.localhost to 127.0.0.1 by itself. It never fails the story.
+if curl -sS -o /dev/null --max-time 5 "http://auth.localhost:$S1_GW/_syneroym/session/methods"; then
+  echo "This machine resolves *.localhost."
+else
+  echo "This machine needs connect-to for *.localhost."
+fi
 # Not every machine sends *.localhost to 127.0.0.1. The guide says what to do when it does not:
 # one line in ~/.curlrc. This story keeps that line in its own folder, so it runs on any machine.
 printf 'connect-to = "::127.0.0.1:"\n' > "$WORK/.curlrc"

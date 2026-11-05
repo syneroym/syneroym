@@ -1686,6 +1686,8 @@ roymctl --dir <DIR> roym address
 # Hub gateway host:        s<web-did-hash>.localhost
 ```
 
+A Hub that was registered with a nickname is at `<nickname>-s<web-did-hash>.localhost`.
+
 ##### The Directory: running a SynOrg and finding listing owners
 
 `directory` signs nothing (its settings and roster are unsigned app
@@ -2257,7 +2259,7 @@ Words used here:
 
 You need these things:
 
-1. **Roym deployed on the node, and the gateway in `identity_mode = "login"`.** See "The Roym Hub" above. Without login mode every call is anonymous and gets `-32010`. The Hub must also be in the registry, so that the gateway can find it by its short host name: `roymctl registry register --identity member-roym#web-0 --substrate <node DID>`, with no `--nickname`. A service has one registry alias, so this replaces a nickname you gave it earlier. With a nickname the Hub host has the form `<nickname>-s<hash>-i<interface hash>.<domain>`; take it from `roymctl alias` (see "The gateway hostname scheme") and set `HUB_URL` yourself.
+1. **Roym deployed on the node, and the gateway in `identity_mode = "login"`.** See "The Roym Hub" above. Without login mode every call is anonymous and gets `-32010`. If you gave the Hub a nickname when you registered it (`--nickname <name>`), set `HUB_NICKNAME=<name>` before the `address` block below.
 2. **Record signing enrolled once.** The owner runs `roymctl roym enrol-signing` (see "Enrolling record signing and finding your address" above). Without it, a service that must sign a record refuses.
 3. **A session key file for the owner of the installation.** Every Roym method needs the owner, except `profile.policy`. A session of any other person gets `-32011`. One installation has one person; there is no second user.
 4. **A key file that has not expired.** The file lasts `--expires-hours` (24 hours by default). After that, `login` answers `401` with "delegation certificate has expired". Make a new file with `roymctl session delegate`.
@@ -2271,6 +2273,7 @@ Set these variables once in your shell:
 ```bash
 AUTH_URL=http://auth.localhost:7960             # the node's auth service
 HUB_URL=http://s<web-did-hash>.localhost:7960   # the Hub host; the next block finds it
+HUB_NICKNAME=                                    # the nickname the Hub was registered with, if any
 SESSION_KEY=./session-key.json                  # from `roymctl session delegate`
 PEER_ADDR=did:key:z...                          # the other person's conversation service id
 DIRECTORY_DID=did:key:z...                      # a directory you trust (6.6)
@@ -2282,6 +2285,7 @@ The next block finds the Hub host. `roymctl roym address` runs as the node owner
 GATEWAY_PORT=${GATEWAY_PORT:-7960}       # the node's gateway port
 HUB_HOST=$(roymctl roym address | sed -n 's/^Hub gateway host: *//p')
 [ -n "$HUB_HOST" ] || { echo "roymctl roym address printed no Hub host" >&2; false; }
+HUB_HOST=${HUB_NICKNAME:+$HUB_NICKNAME-}$HUB_HOST   # a nickname goes in front of the host
 HUB_URL=http://$HUB_HOST:$GATEWAY_PORT
 AUTH_URL=http://auth.localhost:$GATEWAY_PORT
 ```
@@ -2407,7 +2411,7 @@ To read messages, call `conversation.history` (`{conversation, limit?, cursor?}`
 
 ### 6.5. Follow the event feed
 
-A client should not ask again and again whether something changed. The node tells it. `GET /_syneroym/events` on the Hub host is an SSE stream. It sends one small frame each time a message, a delivery state, a card or a booking changes. Open it in a second terminal, then send a message in the first one:
+A client should not ask again and again whether something changed. The node tells it. `GET /_syneroym/events` on the Hub host is an SSE stream. It sends one small frame each time a message, a delivery state, a card or a booking changes. Open it in a second terminal. In that terminal, first set `HUB_URL` and `TOKEN` to the same values (print them in the first terminal with `echo "$HUB_URL" "$TOKEN"`). Then send a message in the first terminal:
 
 ```bash roym-client=feed
 curl -sS --fail-with-body -N "$HUB_URL/_syneroym/events" \
@@ -2416,7 +2420,7 @@ curl -sS --fail-with-body -N "$HUB_URL/_syneroym/events" \
 
 The frames:
 
-- `ready`: the stream is open and has no earlier position. Load your state with the normal methods.
+- `ready`: the stream is open. Its `id:` is the current position; keep it like any other `id:`. Load your state with the normal methods.
 - `change`: one event. Its `data` is JSON: `cursor`, `kind`, `service`, `subject`, `item` and `at_ms`. The `id:` line has the same cursor.
 - `reload`: your cursor is too old, or from another run of the node. Load your state with the normal methods again.
 - `: keep-alive`: a comment every 25 seconds, so you can see that the stream is alive.
@@ -2432,7 +2436,7 @@ An event carries no content. It says what changed, and you fetch the content wit
 
 A card from the other person arrives first as a `conversation.message` event. The `transaction.card` event comes after your client calls `transaction.sync` (6.7).
 
-Keep the last `id:` you saw. If the stream ends, open it again with that value in the `Last-Event-ID` header (a browser `EventSource` does this by itself):
+Keep the last `id:` you saw. If the stream ends, set `CURSOR` to that value and open the feed again with it in the `Last-Event-ID` header (a browser `EventSource` does this by itself):
 
 ```bash roym-client=catch-up
 curl -sS --fail-with-body -N "$HUB_URL/_syneroym/events" \
@@ -2493,7 +2497,6 @@ roym transaction.thread "{\"conversation\":\"$CONV\"}" | jq .result.cards
 | `-32010` | Not signed in. | Sign in again (6.2). |
 | `-32011` | This installation belongs to another person. | Use the key file of the owner. |
 | `-32012` | This installation has no recorded owner. | The node owner must finish the set-up. |
-| `-32013` | This method is not open to calls from other nodes. | You called a method that works only on the person's own node. |
 | `-32001` | The service is not available. | Try again later. |
 | `-32002` | The service did not answer in time. | Try again later. |
 | `-32603` | Another error inside the service. | Read the message. |
