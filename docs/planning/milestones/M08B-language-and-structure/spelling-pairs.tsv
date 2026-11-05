@@ -10,7 +10,7 @@
 # Hindi and Tamil. A rule that makes a variant meet in one group can make
 # a distinct row meet in another. The check script lists these conflicts.
 # The owner decides each one below. B4b may not change a row without the owner.
-# conflicts: 18 found by the check script; the owner decides each one (keep the "must meet" side or the "must not meet" side)
+# conflicts: 17 found by the check script; the owner decides each one (keep the "must meet" side or the "must not meet" side)
 #   edit a→: must meet in hi/aaj, hi/aam, hi/haan, hi/nagar, ta/aamam, ta/aani, ta/naalai, ta/naan, ta/thaiyalkaarar, ta/theriyaadhu, ta/vaa, ta/vendaam; must not meet in ta/madurai; owner decision: pending
 #   edit a→e: must meet in hi/lahsun, hi/main, hi/nariyal, hi/teacher, ta/chennai, ta/ennai, ta/irumbu-kadai, ta/jannal, ta/jaya, ta/kudai, ta/malikai-kadai, ta/mesai, ta/muttai, ta/painter, ta/saravanan, ta/sari, ta/selai, ta/selvam, ta/shankar, ta/tea-kadai, ta/teacher, ta/vennai, ta/vilai; must not meet in hi/darwaza, ta/savi, ta/vali; owner decision: pending
 #   edit a→o: must meet in hi/bahut; must not meet in ta/paruppu; owner decision: pending
@@ -18,7 +18,7 @@
 #   edit e→: must meet in hi/ahmedabad, hi/indore, hi/meerut, hi/mobile, hi/pipe, ta/coimbatore, ta/cuddalore, ta/mobile, ta/pipe, ta/vellore; must not meet in ta/meen; owner decision: pending
 #   edit e→a: must meet in hi/ahmedabad, hi/carpenter, hi/computer, hi/driver, hi/gas-cylinder, hi/painter, hi/paise, hi/plumber, hi/pune, hi/teacher, hi/verma, ta/ange, ta/carpenter, ta/computer, ta/driver, ta/enge, ta/inge, ta/nagercoil, ta/painter, ta/plumber, ta/teacher; must not meet in hi/kapde, hi/kela, hi/seb, ta/salem, ta/selai, ta/thengai; owner decision: pending
 #   edit e→i: must meet in hi/delhi, hi/nai-delhi, ta/cement, ta/repair; must not meet in hi/tel, ta/seruppu, ta/vetti; owner decision: pending
-#   edit h→: must meet in hi/ahmedabad, hi/chhat, hi/khidki, hi/lahsun, hi/nahi, hi/pankha, hi/sharma, hi/shukriya, hi/shyam, hi/singh, ta/adhu, ta/ajith, ta/geetha, ta/idhu, ta/kadhavu, ta/kavitha, ta/latha, ta/nalladhu, ta/shankar, ta/sudha, ta/thachar, ta/thakkali, ta/thalaiyanai, ta/thanjavur, ta/thanneer, ta/thanneer-lorry, ta/thayir, ta/theneer, ta/theriyaadhu, ta/theriyum, ta/theru, ta/thuni-kadai; must not meet in hi/jharu, hi/pankha, hi/phal; owner decision: pending
+#   edit h→: must meet in hi/ahmedabad, hi/chhat, hi/khidki, hi/lahsun, hi/nahi, hi/pankha, hi/sharma, hi/shukriya, hi/shyam, hi/singh, ta/adhu, ta/ajith, ta/geetha, ta/idhu, ta/kadhavu, ta/kavitha, ta/latha, ta/nalladhu, ta/shankar, ta/sudha, ta/thachar, ta/thakkali, ta/thalaiyanai, ta/thanjavur, ta/thanneer, ta/thanneer-lorry, ta/thayir, ta/theneer, ta/theriyaadhu, ta/theriyum, ta/theru, ta/thuni-kadai; must not meet in hi/jharu, hi/phal; owner decision: pending
 #   edit i→: must meet in hi/varanasi, ta/illai, ta/muttai, ta/thalaiyanai; must not meet in ta/ennai; owner decision: pending
 #   edit i→u: must meet in ta/trichy; must not meet in ta/arisi, ta/mani, ta/nandri; owner decision: pending
 #   edit o→a: must meet in hi/doctor, ta/colony, ta/doctor; must not meet in hi/lohar, hi/mochi, hi/mohan; owner decision: pending
@@ -27,7 +27,6 @@
 #   edit u→a: must meet in hi/bulb, hi/meerut, hi/plumber, ta/bulb, ta/plumber; must not meet in hi/dudh, hi/dudh-wala, hi/jute, hi/kursi, hi/lahsun, ta/murugan, ta/uppu; owner decision: pending
 #   edit u→i: must meet in ta/puducherry; must not meet in ta/balu, ta/muttai; owner decision: pending
 #   edit u→o: must meet in hi/bahut; must not meet in hi/sunar; owner decision: pending
-#   edit →h: must meet in hi/jyoti, hi/lucknow, hi/meerut, hi/wo, hi/ye, ta/chitra, ta/dinesh, ta/madurai, ta/o, ta/puducherry, ta/rameswaram, ta/siva, ta/tirunelveli, ta/tiruppur; must not meet in hi/nai; owner decision: pending
 #   edit →i: must meet in hi/bhai, hi/flat, hi/mirch, hi/school, hi/tv, ta/madurai, ta/poo-vyabari, ta/sari, ta/trichy, ta/tv; must not meet in ta/kumar; owner decision: pending
 lang	group	kind	native	latin	note
 hi	nal-wala	pair	नल वाला	nal wala	plumber (spoken)
@@ -58,7 +57,6 @@ hi	dhobi	distinct		dhoba	keep apart: vowel i/a
 hi	nai	pair	नाई	nai	barber
 hi	nai	variant		naai	
 hi	nai	variant		nayee	
-hi	nai	distinct		nahi	keep apart: aspiration -/h
 hi	mali	pair	माली	mali	gardener
 hi	mali	variant		maali	
 hi	mali	variant		malee	
@@ -207,7 +205,7 @@ hi	bartan	variant		bartaan
 hi	pankha	pair	पंखा	pankha	fan
 hi	pankha	variant		pankhaa	
 hi	pankha	variant		panka	
-hi	pankha	distinct		banka	keep apart: consonant p/b, aspiration h/-
+hi	pankha	distinct		bankha	keep apart: consonant p/b
 hi	bistar	pair	बिस्तर	bistar	bed
 hi	bistar	variant		bistaar	
 hi	bistar	distinct		bastar	keep apart: vowel i/a
