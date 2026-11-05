@@ -3,8 +3,8 @@
 *Reader: the developer (or AI) who implements slice S0. You do not have the
 planning conversation. This plan is meant to stand alone.*
 
-**Status: plan written, 2026-11-05. Waiting for the owner's answers to
-section 2.1.**
+**Status: plan written, 2026-11-05. The owner accepted the
+recommendations for Q1 to Q7 (section 2.1) on 2026-11-05.**
 
 **Size and PR.** S. One PR on `feat/m08b-s0-checks-decisions`, three
 commits: this plan, the spelling test set, the results (written into the
@@ -99,7 +99,7 @@ How a developer can see it work:
 
 ## 2. Points for the owner
 
-### 2.1 Questions
+### 2.1 Questions (all recommendations accepted by the owner, 2026-11-05)
 
 task.md section 6 has the owner's questions 1 to 8 for the whole
 sub-milestone. The questions below are new, for S0 only. Each names the
@@ -120,6 +120,8 @@ Options:
   U+097F) and Tamil (U+0B80 to U+0BFF, fewer of them assigned).
 - (b) A crate for the script-to-Latin step, with our own folding rules on
   top.
+
+*Answered 2026-11-05: the owner accepted the recommendation below.*
 
 *Recommendation:* (a), unless the survey finds a crate that meets every
 rule in Step 3 **and** gives output that our folding cannot easily get
@@ -148,6 +150,8 @@ needs the `icu_locale` crate and its CLDR data, which is much larger.
 
 Options: (a) syntax form only; (b) CLDR form.
 
+*Answered 2026-11-05: the owner accepted the recommendation below.*
+
 *Recommendation:* (a). The Hub offers a fixed list of tags (from its
 catalogs and a language picker), so people do not type old codes. A
 record with `iw` stays readable; the Hub then shows the tag, not a
@@ -162,6 +166,8 @@ crates can do it. `icu_normalizer` 2.4.0 is already in `Cargo.lock`
 ([Cargo.lock:3171](../../../../Cargo.lock#L3171)), pulled in through
 `url` and `idna` in the host crates (for example `syneroym-data-db` and
 `syneroym-conversation`). `unicode-normalization` is not in `Cargo.lock`.
+
+*Answered 2026-11-05: the owner accepted the recommendation below.*
 
 *Recommendation:* yes. It costs one more build in the same scratch
 harness. Prefer `icu_normalizer`, because it is already in the host build
@@ -183,6 +189,8 @@ Two parts go beyond task.md and need a yes:
   `p`, `t` and `k`, every test would still pass). At least 20 per
   language, each one guarding one folding rule.
 
+*Answered 2026-11-05: the owner accepted the recommendation below.*
+
 *Recommendation:* yes to both. And the file starts with
 `# owner check: pending`. S0 merges with this line. The owner changes it
 to `# owner check: done <date>` when the check is done, before the B4b
@@ -197,6 +205,8 @@ away: an asset archive may be up to 2 MiB compressed
 [deploy_docs.rs:146](../../../../crates/core/src/deploy_docs.rs#L146)),
 and the packed Hub is 34,257 bytes today. The real cost is the first load
 on a slow phone.
+
+*Answered 2026-11-05: the owner accepted the recommendation below.*
 
 *Recommendation:* Fluent stays chosen if it adds at most 25 KB after
 `gzip -9`. If it adds more, S0 stops and asks the owner, with the number.
@@ -215,6 +225,8 @@ rule"). The rule is written down: no migrations before release
 record type is at version 1 today
 ([record.rs:18](../../../../crates/roym_core/src/record.rs#L18)).
 
+*Answered 2026-11-05: the owner accepted the recommendation below.*
+
 *Recommendation:* S0 removes the `unverified` note and cites ADR-0018 §5.
 No other change.
 
@@ -225,6 +237,8 @@ or counts that are now known to be wrong (section 2.2 lists them).
 
 Options: (a) fix them in place; (b) fix them and add a `## Deviations`
 entry for each.
+
+*Answered 2026-11-05: the owner accepted the recommendation below.*
 
 *Recommendation:* (a). `## Deviations` records where the code differs from
 the design. A wrong line number about today's code is not a design
@@ -344,8 +358,8 @@ refused, stop and tell the owner. Do not copy packages in by another way.
 
 - Commit this file and the S0 row in [status.md](status.md):
   `docs(planning): plan M08B slice S0`.
-- Wait for the owner's answers to section 2.1. Write the answers into
-  section 2.1 ("Answered <date>: ...") before Step 2.
+- The owner answered section 2.1 on 2026-11-05 (all recommendations
+  accepted). Step 2 can start.
 
 ### Step 2 — Language tags: `icu_locale_core` for `wasm32-wasip2`
 
