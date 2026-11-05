@@ -112,7 +112,7 @@ The Client Gateway MUST provide configurable identity operating modes and sessio
 - **Identity Operating Modes:** The client gateway MUST support three distinct operating modes (`crates/core/src/config/roles.rs:364`, `crates/client_gateway/src/gateway.rs:59`):
   - `Open`: Proxies client requests without authentication headers.
   - `Login`: Validates caller session tokens against an authentication service. The gateway optionally enforces an HTTP 401 connection gate (`connection_auth_gate`) when the caller presents no valid session (`crates/client_gateway/src/gateway.rs:115`).
-  - `Fixed`: Injects a preconfigured person master DID (`fixed_identity_did`) and delegation certificate (`fixed_delegation`) onto all proxied requests (`crates/client_gateway/src/gateway.rs:117`).
+  - `Fixed`: Injects a preconfigured person master DID (`fixed_identity_did`) and delegation certificate (`fixed_delegation`) onto all proxied requests (`crates/client_gateway/src/gateway.rs:117`). This mode cannot be used with remote access: startup fails. The `local` login method is refused in this mode.
 - **Node Authentication Service:** The substrate MUST provide an authentication service. This service issues short-lived, cryptographically signed session tokens via nonce challenge-response (`/challenge`, `/login`) for local and delegated keys (`crates/auth/src/service.rs:37`).
 - **Session Cookie Ingress:** The client gateway and router MUST extract sessions from `syneroym_session` HTTP cookies or `Authorization` headers. They MUST verify token validity and expiration, and MUST enforce revocation denylists (`crates/router/src/route_handler/http/auth.rs:55`, `crates/substrate/tests/gateway_session_e2e.rs:50`).
 
@@ -620,7 +620,7 @@ Substrate nodes boot in an unowned state. They fail closed on privileged operati
 
 The Client Gateway bridges HTTP and WebSocket traffic from web browsers and external clients to internal and remote substrate RPC handlers.
 
-- **Ingress Protocol Translation:** The gateway listens on port 7960 (configurable). It translates browser HTTP requests (`POST /rpc`, `GET /metrics`, `GET /blobs/*`, `GET /_syneroym/events`) and WebSocket connections (`/__syneroym/tunnel`, `/__syneroym/ws`) into substrate router calls.
+- **Ingress Protocol Translation:** The gateway listens on port 7960 (configurable), on `127.0.0.1`, or on the address that `[roles.client_gateway.remote_access]` names (ADR-0028). It translates browser HTTP requests (`POST /rpc`, `GET /metrics`, `GET /blobs/*`, `GET /_syneroym/events`) and WebSocket connections (`/__syneroym/tunnel`, `/__syneroym/ws`) into substrate router calls.
 - **Session Identity Propagation:** The gateway extracts caller credentials from session cookies (`syneroym_session`) or Authorization headers. It validates credentials against the Node Auth Service and injects verified caller DIDs into requests.
 - **Multi-Substrate Routing:** Inbound requests for foreign substrate services route across the Iroh network overlay using local static inventories or registry lookups. Web browsers do not need native QUIC connections.
 - **Static Asset Delivery:** Static user interface assets and application bundles stream directly from the filesystem or content-addressed blob storage. The gateway does not instantiate guest WebAssembly components for static assets.

@@ -42,6 +42,8 @@ fn port_literals_on_line(line: &str) -> Vec<u32> {
         let Some(sep_idx) = line.rfind(sep) else { continue };
         let (before, after) = line.split_at(sep_idx);
         let after = &after[1..];
+        // `const IROH_PORT: u16 = 7974;` -- the name sits before the type.
+        let before = if sep == '=' { strip_type_annotation(before) } else { before };
 
         let ident_is_port_like = before
             .trim_end()
@@ -65,6 +67,20 @@ fn port_literals_on_line(line: &str) -> Vec<u32> {
         }
     }
     found
+}
+
+/// Cuts a trailing `: Type` off the text before an `=`, so the last word is
+/// the bound name. A `::` path separator is not a type annotation.
+fn strip_type_annotation(before: &str) -> &str {
+    let bytes = before.as_bytes();
+    for (idx, byte) in bytes.iter().enumerate().rev() {
+        let is_path_colon =
+            idx > 0 && bytes[idx - 1] == b':' || bytes.get(idx + 1).is_some_and(|b| *b == b':');
+        if *byte == b':' && !is_path_colon {
+            return &before[..idx];
+        }
+    }
+    before
 }
 
 /// Numeric literal arguments passed to `SubstrateTestContext::setup(...)` or
@@ -181,6 +197,19 @@ fn no_test_hardcodes_a_port_literal() {
 }
 
 #[test]
+fn port_literal_detection_covers_typed_constants() {
+    assert_eq!(port_literals_on_line("const IROH_PORT: u16 = 7974;"), vec![7974]);
+    assert_eq!(port_literals_on_line("static GATEWAY_PORT: u16 = 7970;"), vec![7970]);
+    assert_eq!(port_literals_on_line("let relay_port: u16 = 7960;"), vec![7960]);
+    assert_eq!(port_literals_on_line("let backend_port = 7960;"), vec![7960]);
+    assert!(port_literals_on_line("const ALPN: &[u8] = b\"x\";").is_empty());
+    assert!(
+        port_literals_on_line("let [iroh_port, registry_port] = alloc_ports::<2>();").is_empty()
+    );
+    assert!(port_literals_on_line("const PORT_NAME: &str = \"http\";").is_empty());
+}
+
+#[test]
 fn setup_call_literals_detection() {
     let line1 = "let ctx = SubstrateTestContext::setup(7910, 7911, 7912).await;";
     let res1: Vec<u32> = setup_call_port_literals(line1).into_iter().map(|(_, p)| p).collect();
@@ -255,6 +284,8 @@ fn check_typescript_line(line: &str) -> Vec<String> {
         let Some(sep_idx) = line.rfind(sep) else { continue };
         let (before, after) = line.split_at(sep_idx);
         let after = &after[1..];
+        // `const IROH_PORT: u16 = 7974;` -- the name sits before the type.
+        let before = if sep == '=' { strip_type_annotation(before) } else { before };
 
         let ident_is_port_like = before
             .trim_end()

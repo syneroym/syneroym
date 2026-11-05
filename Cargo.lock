@@ -7805,6 +7805,7 @@ dependencies = [
  "syneroym-rpc",
  "syneroym-sdk",
  "syneroym-ucan",
+ "tempfile",
  "tokio",
  "tracing",
 ]

@@ -1,10 +1,6 @@
 #![allow(clippy::cognitive_complexity, clippy::unwrap_used, clippy::expect_used)]
 
-use std::{
-    fs,
-    sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::{fs, sync::Arc};
 
 use serde_json::json;
 use syneroym_app_host::types::http::HttpRequest;
@@ -12,10 +8,7 @@ use syneroym_auth::{
     AUTH_METHOD_DELEGATED_KEY, AUTH_METHOD_LOCAL, AuthService, DelegatedKeyLoginParams,
     SessionToken,
 };
-use syneroym_core::{
-    dht_registry::{MasterAnchorPayload, MasterAnchorResolver},
-    protocol_utils::gateway_session_assertion,
-};
+use syneroym_core::protocol_utils::gateway_session_assertion;
 use syneroym_identity::{
     DelegationCertificate, Identity,
     delegation::{SCOPE_ROUTING, SCOPE_SERVICE_INSTANCE, SCOPE_SESSION_AUTH},
@@ -24,30 +17,9 @@ use syneroym_identity::{
 use syneroym_rpc::NativeHttpService;
 use tempfile::tempdir;
 
-fn now_secs() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
-}
+mod common;
 
-#[derive(Debug)]
-struct MockAnchorResolver {
-    resolvable: bool,
-    revoked: Vec<String>,
-}
-
-#[async_trait::async_trait]
-impl MasterAnchorResolver for MockAnchorResolver {
-    async fn resolve_master_anchor(&self, master_id: &str) -> anyhow::Result<MasterAnchorPayload> {
-        if !self.resolvable {
-            return Err(anyhow::anyhow!("DHT anchor lookup failed for {master_id}"));
-        }
-        Ok(MasterAnchorPayload {
-            schema: "master_anchor_v1".to_string(),
-            revoked_keys: self.revoked.clone(),
-            revoke_list_registry: None,
-            timestamp: now_secs(),
-        })
-    }
-}
+use common::{MockAnchorResolver, now_secs};
 
 #[tokio::test]
 #[expect(clippy::too_many_lines, reason = "linear delegated key login and refusal scenarios")]
@@ -262,54 +234,30 @@ async fn challenge_returns_the_assertion_string_a_browser_signs_verbatim() {
 }
 
 #[tokio::test]
-async fn local_login_and_refusals() {
-    let auth_id_bytes = Identity::generate().unwrap().to_bytes();
-    let node_id = Identity::generate().unwrap();
-    let node_did = substrate::derive_did_key(&node_id.public_key());
-
+async fn methods_list_local_only_when_a_key_directory_is_set() {
+    let node_did = substrate::derive_did_key(&Identity::generate().unwrap().public_key());
     let resolver = Arc::new(MockAnchorResolver { resolvable: true, revoked: vec![] });
 
-    // 1. Without key directory, local login is disabled
     let service_no_local = AuthService::new(
-        Identity::from_bytes(&auth_id_bytes),
+        Identity::generate().unwrap(),
         node_did.clone(),
         3600,
         60,
         None,
         resolver.clone(),
     );
-    let methods = service_no_local.methods();
-    assert!(!methods.methods.contains(&AUTH_METHOD_LOCAL.to_string()));
-    assert_eq!(service_no_local.login_local("alice").unwrap_err().0, 400);
+    assert!(!service_no_local.methods().methods.contains(&AUTH_METHOD_LOCAL.to_string()));
 
-    // 2. With key directory, local login works
     let temp = tempdir().unwrap();
-    let alice_id = Identity::generate().unwrap();
-    let alice_did = substrate::derive_did_key(&alice_id.public_key());
-    fs::write(temp.path().join("alice.key"), alice_id.to_bytes()).unwrap();
-
     let service_with_local = AuthService::new(
-        Identity::from_bytes(&auth_id_bytes),
+        Identity::generate().unwrap(),
         node_did,
         3600,
         60,
         Some(temp.path().to_path_buf()),
         resolver,
     );
-    let methods = service_with_local.methods();
-    assert!(methods.methods.contains(&AUTH_METHOD_LOCAL.to_string()));
-
-    let grant = service_with_local.login_local("alice").unwrap();
-    assert_eq!(grant.person_did, alice_did);
-
-    // 3. Unknown identity fails
-    let err = service_with_local.login_local("bob").unwrap_err();
-    assert_eq!(err.0, 401);
-
-    // 4. Path traversal attempt refused with 400
-    assert_eq!(service_with_local.login_local("../alice").unwrap_err().0, 400);
-    assert_eq!(service_with_local.login_local("subdir/alice").unwrap_err().0, 400);
-    assert_eq!(service_with_local.login_local("").unwrap_err().0, 400);
+    assert!(service_with_local.methods().methods.contains(&AUTH_METHOD_LOCAL.to_string()));
 }
 
 #[tokio::test]
@@ -396,7 +344,8 @@ async fn http_interface_endpoints_and_unknown_method() {
         body: serde_json::to_vec(&json!({"method": "local", "identity": "alice"})).unwrap(),
         caller: None,
     };
-    let login_resp = service.handle_request(local_login_req, None).await.unwrap();
+    let node_caller = common::node_caller(&service);
+    let login_resp = service.handle_request(local_login_req, Some(node_caller)).await.unwrap();
     assert_eq!(login_resp.status, 200);
 
     let cookie_header = login_resp.headers.iter().find(|(k, _)| k == "set-cookie").unwrap();
@@ -558,7 +507,7 @@ async fn local_login_refused_when_origin_header_is_present() {
         .unwrap(),
         caller: None,
     };
-    let resp = service.handle_request(req, None).await.unwrap();
+    let resp = service.handle_request(req, Some(common::node_caller(&service))).await.unwrap();
     assert_eq!(resp.status, 403);
 
     // Same request without Origin header succeeds
@@ -576,7 +525,8 @@ async fn local_login_refused_when_origin_header_is_present() {
         .unwrap(),
         caller: None,
     };
-    let cli_resp = service.handle_request(cli_req, None).await.unwrap();
+    let cli_resp =
+        service.handle_request(cli_req, Some(common::node_caller(&service))).await.unwrap();
     assert_eq!(cli_resp.status, 200);
 }
 

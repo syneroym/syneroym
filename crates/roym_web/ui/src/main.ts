@@ -1,3 +1,4 @@
+import "./boot-csp";
 import { renderCard } from "./cards/render";
 import { renderRefusedCard } from "./cards/refused";
 import { errText, text } from "./dom";

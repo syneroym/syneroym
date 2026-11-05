@@ -23,16 +23,13 @@ use tokio::time;
 mod common;
 use common::SubstrateTestContext;
 
-const IROH_PORT: u16 = 7974;
-const REGISTRY_PORT: u16 = 7971;
-const GATEWAY_PORT: u16 = 7970;
-
 #[tokio::test]
 #[expect(clippy::too_many_lines, reason = "linear native subscriber push delivery scenario")]
 async fn test_native_subscriber_receives_push_delivery_and_close_unsubscribes() {
     let _ = ring::default_provider().install_default();
 
-    let ctx = SubstrateTestContext::setup(IROH_PORT, REGISTRY_PORT, GATEWAY_PORT).await;
+    let [iroh_port, registry_port, gateway_port] = common::alloc_ports::<3>();
+    let ctx = SubstrateTestContext::setup(iroh_port, registry_port, gateway_port).await;
 
     // A plain TCP-typed service is enough to get the "messaging" native
     // capability registered (every deployed service gets it regardless of

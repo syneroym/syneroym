@@ -64,7 +64,10 @@ use tokio::{
 };
 
 mod common;
-use common::SubstrateTestContext;
+use common::{
+    SubstrateTestContext,
+    session::{AUTH_HOST, delegated_login},
+};
 
 /// Serializes substrate boots within this test binary to avoid port, QUIC,
 /// and relay server bind collisions under concurrent test runners.
@@ -257,67 +260,6 @@ async fn setup_gateway_test_node_with_mode(
     (ctx, gateway_port, registry_url, service_did, host)
 }
 
-const AUTH_HOST: &str = "auth.localhost";
-
-async fn login_to_gateway(
-    gateway_url: &str,
-    person: &Identity,
-    registry_url: &str,
-    expires_hours: u64,
-) -> (String, String) {
-    let client = Client::new();
-    let person_did = substrate::derive_did_key(&person.public_key());
-
-    // 1. Challenge
-    let ch_resp: Value = client
-        .post(format!("{gateway_url}/_syneroym/session/challenge"))
-        .header("Host", AUTH_HOST)
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let nonce = ch_resp["nonce"].as_str().unwrap();
-    let node_did = ch_resp["node_did"].as_str().unwrap();
-
-    // 2. Delegation + Challenge Signature
-    let node_pubkey = substrate::resolve_did_key(node_did).unwrap();
-    let cert = DelegationCertificate::issue(
-        person,
-        node_pubkey,
-        expires_hours * 3600,
-        SCOPE_SESSION_AUTH.to_string(),
-    )
-    .unwrap();
-    let assertion = gateway_session_assertion(node_did, nonce, &person_did);
-    let sig = person.sign_json(&assertion).unwrap();
-
-    // 3. Publish Master Anchor
-    let reg_client = RegistryClient::new(false, Some(registry_url.to_string()));
-    reg_client.refresh_master_anchor(person).await.unwrap();
-
-    // 4. Login
-    let login_body = json!({
-        "method": "delegated-key",
-        "person_did": person_did,
-        "nonce": nonce,
-        "signature": sig,
-        "delegation": cert,
-    });
-    let login_resp = client
-        .post(format!("{gateway_url}/_syneroym/session/login"))
-        .header("Host", AUTH_HOST)
-        .json(&login_body)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(login_resp.status(), 200);
-    let resp_val: Value = login_resp.json().await.unwrap();
-    let token = resp_val["token"].as_str().unwrap().to_string();
-    (token, person_did)
-}
-
 fn test_client() -> Client {
     Client::builder().pool_max_idle_per_host(0).build().expect("failed to build test client")
 }
@@ -378,7 +320,7 @@ async fn test_17_logged_in_request_via_cookie_sees_delegated_person_did() {
     poll_until_guest_ready(&client, &gateway_url, &host).await;
 
     let person = Identity::generate().unwrap();
-    let (token, person_did) = login_to_gateway(&gateway_url, &person, &reg_url, 24).await;
+    let (token, person_did) = delegated_login(&gateway_url, &person, &reg_url, 24).await;
 
     let resp = client
         .get(format!("{gateway_url}/echo"))
@@ -408,10 +350,10 @@ async fn test_18_two_people_logged_in_each_whoami_and_echo_returns_own_did() {
     poll_until_guest_ready(&client, &gateway_url, &host).await;
 
     let person_a = Identity::generate().unwrap();
-    let (token_a, person_a_did) = login_to_gateway(&gateway_url, &person_a, &reg_url, 24).await;
+    let (token_a, person_a_did) = delegated_login(&gateway_url, &person_a, &reg_url, 24).await;
 
     let person_b = Identity::generate().unwrap();
-    let (token_b, person_b_did) = login_to_gateway(&gateway_url, &person_b, &reg_url, 24).await;
+    let (token_b, person_b_did) = delegated_login(&gateway_url, &person_b, &reg_url, 24).await;
     assert_ne!(person_a_did, person_b_did);
 
     // Whoami for Alice
@@ -495,7 +437,7 @@ async fn test_19_second_local_process_without_token_while_session_live_sees_self
     poll_until_guest_ready(&client, &gateway_url, &host).await;
 
     let person = Identity::generate().unwrap();
-    let (token, person_did) = login_to_gateway(&gateway_url, &person, &reg_url, 24).await;
+    let (token, person_did) = delegated_login(&gateway_url, &person, &reg_url, 24).await;
 
     // Process A: with token
     let resp_a = client
@@ -614,7 +556,7 @@ async fn test_21_gateway_session_token_is_forwarded_in_proxied_headers() {
     poll_until_guest_ready(&client, &gateway_url, &host).await;
 
     let person = Identity::generate().unwrap();
-    let (token, _person_did) = login_to_gateway(&gateway_url, &person, &reg_url, 24).await;
+    let (token, _person_did) = delegated_login(&gateway_url, &person, &reg_url, 24).await;
 
     // A: Cookie with multiple entries
     let expected_cookie = format!("other=1; {SESSION_COOKIE_NAME}={token}; third=2");
@@ -699,7 +641,7 @@ async fn test_22_cookie_takes_priority_over_bearer() {
     poll_until_guest_ready(&client, &gateway_url, &host).await;
 
     let person_a = Identity::generate().unwrap();
-    let (token_a, person_a_did) = login_to_gateway(&gateway_url, &person_a, &reg_url, 24).await;
+    let (token_a, person_a_did) = delegated_login(&gateway_url, &person_a, &reg_url, 24).await;
 
     let app_token = "app_bearer_secret_xyz123";
 
@@ -897,7 +839,7 @@ async fn test_25_expired_gateway_session_falls_back_to_self_asserted_node_did() 
     poll_until_guest_ready(&client, &gateway_url, &host).await;
 
     let person = Identity::generate().unwrap();
-    let (token, _person_did) = login_to_gateway(&gateway_url, &person, &reg_url, 24).await;
+    let (token, _person_did) = delegated_login(&gateway_url, &person, &reg_url, 24).await;
 
     // Wait for the 1-second session to expire
     time::sleep(Duration::from_secs(2)).await;
@@ -935,7 +877,7 @@ async fn test_26_restart_clears_all_sessions() {
     poll_until_guest_ready(&client, &gateway_url, &host).await;
 
     let person = Identity::generate().unwrap();
-    let (token, person_did) = login_to_gateway(&gateway_url, &person, &reg_url, 24).await;
+    let (token, person_did) = delegated_login(&gateway_url, &person, &reg_url, 24).await;
 
     let resp = client
         .get(format!("{gateway_url}/echo"))
@@ -1341,7 +1283,7 @@ async fn test_34_revoked_token_refused_at_guest_route() {
 
     // Log in
     let person = Identity::generate().unwrap();
-    let (token, person_did) = login_to_gateway(&gateway_url, &person, &reg_url, 24).await;
+    let (token, person_did) = delegated_login(&gateway_url, &person, &reg_url, 24).await;
 
     // Call guest route with token -> sees delegated person DID
     let resp = client
@@ -1436,7 +1378,7 @@ async fn test_35_gateway_identity_modes_open_login_fixed() {
 
     // Log in and verify access is admitted
     let person = Identity::generate().unwrap();
-    let (token, _) = login_to_gateway(&gw_login_url, &person, &reg_url, 24).await;
+    let (token, _) = delegated_login(&gw_login_url, &person, &reg_url, 24).await;
 
     let auth_resp = client
         .get(format!("{gw_login_url}/echo"))

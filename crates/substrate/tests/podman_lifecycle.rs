@@ -29,12 +29,9 @@ use tokio::{
 };
 use tracing::debug;
 
+mod common;
 #[path = "common/retry.rs"]
 mod retry;
-
-const IROH_PORT: u16 = 7984;
-const REGISTRY_PORT: u16 = 7981;
-const GATEWAY_PORT: u16 = 7980;
 
 struct SubstrateTestContext {
     #[allow(dead_code)]
@@ -172,7 +169,8 @@ async fn test_podman_lifecycle() {
         return;
     }
 
-    let mut ctx = SubstrateTestContext::setup(IROH_PORT, REGISTRY_PORT, GATEWAY_PORT).await;
+    let [iroh_port, registry_port, gateway_port] = common::alloc_ports::<3>();
+    let mut ctx = SubstrateTestContext::setup(iroh_port, registry_port, gateway_port).await;
 
     let app_identity = Identity::generate().unwrap();
     let app_service_id = substrate::derive_did_key(&app_identity.public_key());

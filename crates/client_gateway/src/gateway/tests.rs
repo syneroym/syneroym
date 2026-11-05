@@ -11,7 +11,7 @@ use p256::{
 };
 use syneroym_app_orchestration::{LogicalResolver, StaticInventory};
 use syneroym_core::{
-    config::IdentityMode,
+    config::{ClientGatewayRole, IdentityMode, RemoteAccess, RolesConfig, SubstrateConfig},
     dht_registry::{EndpointMechanism, SignedEndpointInfo},
     protocol_utils::{TargetHost, parse_target_host},
     util::short_hash,
@@ -408,4 +408,81 @@ fn forwarded_syneroym_paths_match_expected() {
     assert!(is_forwarded_syneroym_path("/_syneroym/session/login"));
     assert!(!is_forwarded_syneroym_path("/_syneroym/other"));
     assert!(!is_forwarded_syneroym_path("/_syneroym/eventsx"));
+}
+
+#[test]
+fn a_peer_is_admitted_only_from_loopback_when_remote_access_is_off() {
+    let admitted = ["127.0.0.1:4000", "127.0.0.2:4000", "[::1]:4000", "[::ffff:127.0.0.1]:4000"];
+    let refused =
+        ["192.168.1.5:4000", "10.0.0.1:4000", "[::ffff:192.168.1.5]:4000", "[2001:db8::1]:4000"];
+    for peer in admitted {
+        assert!(admit_peer(false, peer.parse().unwrap()), "{peer} must be admitted");
+    }
+    for peer in refused {
+        assert!(!admit_peer(false, peer.parse().unwrap()), "{peer} must be refused");
+        assert!(
+            admit_peer(true, peer.parse().unwrap()),
+            "{peer} must be admitted with remote access"
+        );
+    }
+}
+
+/// A node config whose key lives in `dir`, with the gateway on a free port.
+fn gateway_config(dir: &Path, role: ClientGatewayRole) -> SubstrateConfig {
+    SubstrateConfig {
+        app_data_dir: dir.to_path_buf(),
+        roles: RolesConfig {
+            client_gateway: Some(ClientGatewayRole { http_port: 0, ..role }),
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
+fn remote_access_on(bind_address: &str) -> Option<RemoteAccess> {
+    Some(RemoteAccess { bind_address: bind_address.parse().unwrap() })
+}
+
+#[tokio::test]
+async fn the_listener_binds_loopback_by_default_and_the_remote_access_address_when_set() {
+    let dir = tempfile::tempdir().unwrap();
+
+    let default = ClientGateway::init(&gateway_config(dir.path(), ClientGatewayRole::default()))
+        .await
+        .unwrap();
+    let listener = default.bind_listener().await.unwrap();
+    assert_eq!(listener.local_addr().unwrap().ip(), IpAddr::V4(Ipv4Addr::LOCALHOST));
+
+    let role =
+        ClientGatewayRole { remote_access: remote_access_on("0.0.0.0"), ..Default::default() };
+    let remote = ClientGateway::init(&gateway_config(dir.path(), role)).await.unwrap();
+    let listener = remote.bind_listener().await.unwrap();
+    assert_eq!(listener.local_addr().unwrap().ip(), IpAddr::V4(Ipv4Addr::UNSPECIFIED));
+}
+
+#[tokio::test]
+async fn init_refuses_remote_access_in_fixed_mode() {
+    let dir = tempfile::tempdir().unwrap();
+    let role = ClientGatewayRole {
+        identity_mode: IdentityMode::Fixed,
+        remote_access: remote_access_on("0.0.0.0"),
+        ..Default::default()
+    };
+
+    let err = ClientGateway::init(&gateway_config(dir.path(), role)).await.unwrap_err();
+
+    let text = format!("{err:#}");
+    assert!(text.contains("remote_access") && text.contains("fixed"), "unexpected error: {text}");
+}
+
+#[tokio::test]
+async fn init_accepts_remote_access_in_open_mode() {
+    let dir = tempfile::tempdir().unwrap();
+    let role = ClientGatewayRole {
+        identity_mode: IdentityMode::Open,
+        remote_access: remote_access_on("0.0.0.0"),
+        ..Default::default()
+    };
+
+    ClientGateway::init(&gateway_config(dir.path(), role)).await.unwrap();
 }

@@ -160,9 +160,7 @@ async fn test_run_finishes_on_ctrl_c() {
                 );
             }
             Ok(_) => {
-                if line.contains("running client gateway")
-                    || line.contains("client gateway listening on")
-                {
+                if line.contains("client gateway listening") {
                     break;
                 }
             }

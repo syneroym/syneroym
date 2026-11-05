@@ -27,9 +27,6 @@ use tokio::time;
 mod common;
 use common::SubstrateTestContext;
 
-const IROH_PORT: u16 = 7954;
-const REGISTRY_PORT: u16 = 7951;
-const GATEWAY_PORT: u16 = 7950;
 const PROTOCOL: &str = "file-transfer";
 const TEST_DRIVER_INTERFACE: &str = test_constants::STREAM_TEST_DRIVER_INTERFACE;
 
@@ -81,7 +78,8 @@ async fn test_real_client_opens_direct_stream_both_directions() {
         return;
     };
 
-    let ctx = SubstrateTestContext::setup(IROH_PORT, REGISTRY_PORT, GATEWAY_PORT).await;
+    let [iroh_port, registry_port, gateway_port] = common::alloc_ports::<3>();
+    let ctx = SubstrateTestContext::setup(iroh_port, registry_port, gateway_port).await;
 
     let app_identity = Identity::generate().unwrap();
     let app_service_id = substrate::derive_did_key(&app_identity.public_key());
@@ -173,7 +171,8 @@ async fn test_real_client_opens_direct_stream_both_directions() {
 async fn test_unregistered_stream_protocol_rejected_cleanly() {
     let _ = ring::default_provider().install_default();
 
-    let ctx = SubstrateTestContext::setup(IROH_PORT + 1, REGISTRY_PORT + 1, GATEWAY_PORT + 1).await;
+    let [iroh_port, registry_port, gateway_port] = common::alloc_ports::<3>();
+    let ctx = SubstrateTestContext::setup(iroh_port, registry_port, gateway_port).await;
 
     let app_identity = Identity::generate().unwrap();
     let app_service_id = substrate::derive_did_key(&app_identity.public_key());

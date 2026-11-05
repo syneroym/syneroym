@@ -1,0 +1,66 @@
+# Example config for the community node in docker-compose.community.yml.
+#
+# Reader: the person who runs the node.
+#
+# Copy this file to ./config/config.toml (next to the compose file). The
+# compose file mounts ./config at /etc/syneroym and ./data at /var/lib/syneroym.
+#
+# This node is public: the client gateway accepts clients from other machines
+# (see [roles.client_gateway.remote_access] below). If your node is private,
+# also change the compose port mapping to "127.0.0.1:7960:7960".
+
+config_version = 1
+
+# The node key, the stores and the logs live in the mounted ./data volume.
+# Without these keys the node writes them inside the container, and gets a
+# new node identity after every "docker compose down && up" or image update.
+app_config_dir = "/etc/syneroym"
+app_data_dir = "/var/lib/syneroym"
+app_local_data_dir = "/var/lib/syneroym"
+app_cache_dir = "/var/lib/syneroym/cache"
+app_log_dir = "/var/lib/syneroym/logs"
+
+[substrate]
+# This node's own registry (below). The gateway needs a registry to resolve
+# app host names. With none, every app host name answers 502 Bad Gateway.
+registry_url = "http://127.0.0.1:7961"
+
+[parent_coordinator.iroh]
+# The node is its own home relay.
+url = "http://127.0.0.1:7964"
+
+[roles.community_registry]
+http_bind_address = "0.0.0.0:7961"
+
+[roles.coordinator.iroh]
+enable_relay = true
+http_bind_address = "0.0.0.0:7964"
+# QUIC runs over UDP. The compose file publishes it as 7965:7965/udp.
+quic_bind_address = "0.0.0.0:7965"
+
+# QUIC address discovery runs only when the relay has TLS. Mount the
+# certificates (the compose file mounts /etc/letsencrypt) and uncomment:
+# [roles.coordinator.tls]
+# cert_path = "/etc/letsencrypt/live/<domain>/fullchain.pem"
+# key_path = "/etc/letsencrypt/live/<domain>/privkey.pem"
+
+[roles.client_gateway]
+http_port = 7960
+# "open": a client needs no login. This is a public community node.
+# A request with no session reaches its target with this node's DID as caller.
+# That DID has no owner or admin rights, and visitors can load the Hub without
+# a login. connection_auth_gate = true (with identity_mode = "login") would
+# refuse the Hub's page load, so use it only for a node that serves API
+# clients (roymctl, scripts).
+identity_mode = "open"
+
+# Clients on other machines may connect. Inside the container the gateway must
+# bind 0.0.0.0, or no port mapping can reach it. The gateway serves plain
+# HTTP: put a TLS proxy in front of it. The "local" login method is off.
+[roles.client_gateway.remote_access]
+bind_address = "0.0.0.0"
+
+# Login for remote clients and the Hub. Needs identity_mode = "login" above.
+# [roles.auth]
+# allowed_origins = ["https://*.example.com"]
+# secure_cookies = true

@@ -235,7 +235,8 @@ bootstrap_page_bind_address = "0.0.0.0:7962"
 
 # Client Gateway: Reverse proxy for external HTTP/JSON-RPC access to internal services
 [roles.client_gateway]
-# HTTP port for the gateway
+# HTTP port for the gateway. The gateway binds 127.0.0.1 unless remote access
+# is set below, so only programs on this machine can connect.
 http_port = 7960
 # How the gateway attributes a request: "open" (no person identity),
 # "login" (a signed session cookie, verified per service), or "fixed" (one
@@ -246,6 +247,24 @@ http_port = 7960
 # connection_auth_gate = false
 # In "fixed" mode only: the single person this node always acts as.
 # fixed_identity_did = "did:key:..."
+#
+# Remote access: lets clients on other machines reach the gateway. Absent
+# means the gateway binds 127.0.0.1 and drops any peer that is not loopback.
+# When set, the "local" login method is off; remote clients use
+# "delegated-key". The gateway serves plain HTTP, so put a TLS proxy in
+# front of it (a remote Hub needs HTTPS to sign in). Any program that
+# forwards connections to the gateway (a proxy, an SSH tunnel) needs this
+# table too, even with bind_address = "127.0.0.1". Cannot be used with
+# identity_mode = "fixed". A request with no session reaches its target with
+# this node's DID as caller. That DID has no owner or admin rights, but calls
+# to other nodes use this node's identity. A node that serves the Hub runs this
+# way. identity_mode = "login" with connection_auth_gate = true answers 401 to
+# every request with no session, including the Hub's page and files, so use it
+# only on a node that serves API clients (roymctl, scripts).
+# bind_address is an IP address only; the port is http_port. A misspelled
+# table name is ignored, which leaves remote access off.
+# [roles.client_gateway.remote_access]
+# bind_address = "0.0.0.0"
 
 # Auth service: the node's identity provider. Serves /_syneroym/session/*
 # (challenge, login, methods, whoami, logout, refresh) and mints the
@@ -257,13 +276,19 @@ http_port = 7960
 # Absent by default -- "local" is unavailable unless configured.
 #
 # WARNING: The "local" login method is intended solely for same-machine CLI/test
-# convenience and is strictly refused on requests carrying an `Origin` header.
+# convenience. It answers only on a connection from this node's own gateway, is
+# refused on requests carrying an `Origin` or a proxy header, and is off when
+# the gateway has remote access.
 # Do not point this at a directory a less-trusted local user on this machine
 # can read. Anyone who can read a key file here can log in as that person.
 # person_identities_dir = "/path/to/identities"
 #
 # Additional permitted CORS origins (localhost patterns are allowed by default).
-# allowed_origins = ["https://hub.example.com"]
+# An entry is an exact origin, or "<scheme>://*.<domain>[:<port>]", which allows
+# every host under that domain with the same scheme and port. Every Hub has its
+# own hostname, so a remote node usually lists one pattern. The pattern lets
+# any page served through this gateway under that domain call the auth service.
+# allowed_origins = ["https://*.example.com"]
 #
 # Mark session cookies with `; Secure` (recommended in production HTTPS deployments).
 # secure_cookies = false

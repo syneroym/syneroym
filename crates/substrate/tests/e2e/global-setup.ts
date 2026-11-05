@@ -35,7 +35,9 @@ export default async function globalSetup() {
     nickname: 'e2e-tester',
     registry: true,
     coordinator: {},
-    gateway: { login: true },
+    // The Hub-on-another-domain test opens the Hub on a `*.roym.test` host, so the auth service
+    // must allow that domain.
+    gateway: { login: true, allowedOrigins: (port) => [`http://*.roym.test:${port}`] },
     parent: 'self',
     interfaces: ['webrtc', 'iroh'],
     claim: true,

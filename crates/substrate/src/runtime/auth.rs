@@ -17,6 +17,8 @@ use syneroym_core::{
 use syneroym_identity::Identity;
 #[cfg(feature = "auth")]
 use syneroym_rpc::NativeHttpService;
+#[cfg(feature = "auth")]
+use tracing::warn;
 
 #[cfg(feature = "auth")]
 use super::handles::SharedNodeHandles;
@@ -43,6 +45,15 @@ pub(super) async fn init_auth_service(
         config.substrate.registry_url.clone(),
     ));
 
+    let remote_access =
+        config.roles.client_gateway.as_ref().is_some_and(|g| g.remote_access.is_some());
+    if remote_access && auth_cfg.person_identities_dir.is_some() {
+        warn!(
+            "remote access is on, so the `local` login method is off; remote clients use \
+             `delegated-key`"
+        );
+    }
+
     let auth_service = Arc::new(
         AuthService::new(
             auth_identity,
@@ -53,7 +64,8 @@ pub(super) async fn init_auth_service(
             anchor_resolver,
         )
         .with_allowed_origins(auth_cfg.allowed_origins.clone())
-        .with_secure_cookies(auth_cfg.secure_cookies),
+        .with_secure_cookies(auth_cfg.secure_cookies)
+        .with_remote_access(remote_access),
     );
 
     let auth_did = auth_service.auth_did().to_string();
