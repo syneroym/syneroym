@@ -1,3 +1,6 @@
+import { cached } from "./i18n/format";
+import { formatLocale, t } from "./i18n/i18n";
+
 /// Currencies with no minor unit at all.
 export const EXPONENT_0 = new Set([
   "BIF", "CLP", "DJF", "GNF", "ISK", "JPY", "KMF", "KRW", "PYG",
@@ -47,32 +50,44 @@ export function currencyMinorExponent(code: string): number | undefined {
 /// places than the currency has, so the result is always an integer
 /// number of minor units.
 export function toMinorUnits(input: string, exponent = 2): number | undefined {
-  const t = input.trim();
-  if (t === "") return undefined;
+  const text = input.trim();
+  if (text === "") return undefined;
   const frac = exponent > 0 ? `(?:\\.(\\d{1,${exponent}}))?` : "";
-  const m = new RegExp(`^(\\d+)${frac}$`).exec(t);
+  const m = new RegExp(`^(\\d+)${frac}$`).exec(text);
   if (!m) {
     const example = exponent > 0 ? `12 or 12.${"5".padEnd(exponent, "0")}` : "12";
-    throw new MoneyInputError(
-      `"${input}" is not an amount like ${example} for this currency`,
-    );
+    throw new MoneyInputError(t("money-input-invalid", { input, example }));
   }
   const minor = m[1] + (m[2] ?? "").padEnd(exponent, "0");
   return Number.parseInt(minor, 10);
 }
 
-/// Formats integer minor units for display, e.g. 3550 USD -> "35.50 USD",
-/// 1200 JPY -> "1200 JPY", 2500 KWD -> "2.500 KWD".
+/// Integer minor units as an exact decimal string, e.g. 3550, 2 -> "35.50".
+/// A string keeps every digit of a large amount, which a float would not.
+function minorToDecimal(minor: number, exp: number): `${number}` {
+  if (exp === 0) return `${minor}`;
+  const sign = minor < 0 ? "-" : "";
+  const abs = Math.abs(minor).toString().padStart(exp + 1, "0");
+  return `${sign}${abs.slice(0, -exp)}.${abs.slice(-exp)}` as `${number}`;
+}
+
+/// Formats integer minor units for display in the Hub language's money
+/// style, e.g. 3550 USD -> "$35.50" and 10000050 INR -> "₹1,00,000.50".
+/// The exponent is the Rust-pinned one, so the digits never change with
+/// the browser's currency data. A code `Intl` rejects (one from another
+/// node) is shown as `<amount> <code>`.
 export function formatMinor(minor: number, currency: string): string {
-  const c = currency.trim().toUpperCase();
-  const exp = currencyMinorExponent(c) ?? 2;
-  const rounded = Math.round(minor);
-  if (exp === 0) {
-    return `${rounded} ${c}`;
+  const code = currency.trim().toUpperCase();
+  const exp = currencyMinorExponent(code) ?? 2;
+  const decimal = minorToDecimal(Math.round(minor), exp);
+  const digits = { minimumFractionDigits: exp, maximumFractionDigits: exp };
+  try {
+    return cached(
+      `money|${code}|${exp}`,
+      (locale) => new Intl.NumberFormat(locale, { style: "currency", currency: code, ...digits }),
+    ).format(decimal);
+  } catch (error) {
+    if (!(error instanceof RangeError)) throw error;
+    return `${new Intl.NumberFormat(formatLocale(), digits).format(decimal)} ${code}`;
   }
-  const sign = rounded < 0 ? "-" : "";
-  const abs = Math.abs(rounded).toString().padStart(exp + 1, "0");
-  const whole = abs.slice(0, -exp);
-  const frac = abs.slice(-exp);
-  return `${sign}${whole}.${frac} ${c}`;
 }

@@ -3,7 +3,7 @@ import { formatLocale, t } from "./i18n";
 const cache = new Map<string, unknown>();
 
 /// One `Intl` object per kind and format locale.
-function cached<T>(kind: string, make: (locale: string) => T): T {
+export function cached<T>(kind: string, make: (locale: string) => T): T {
   const locale = formatLocale();
   const key = `${kind}|${locale}`;
   let value = cache.get(key) as T | undefined;

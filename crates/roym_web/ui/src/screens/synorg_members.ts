@@ -1,6 +1,6 @@
 import { NO_INSTANT_REMOVAL_NOTICE } from "../directory/membership";
-import { dateWords } from "../directory/words";
 import { errText, field, refiller, text } from "../dom";
+import { formatUtcDate } from "../i18n/format";
 import { call } from "../rpc";
 
 /// One row a SynOrg holds about a record it signed: `credential.list`,
@@ -251,7 +251,7 @@ function buildCredentialList(
     line.appendChild(text("span", row.member_did, "credential-member"));
     line.appendChild(text("span", `covers ${view.categories.join(", ")}`, "credential-covers"));
     line.appendChild(
-      text("span", `expires ${dateWords(view.expiresAtSecs)}`, "credential-expires"),
+      text("span", `expires ${formatUtcDate(view.expiresAtSecs)}`, "credential-expires"),
     );
     line.appendChild(text("span", status, "credential-status"));
     if (status === "current") line.appendChild(revokeControl(row, reload));
@@ -302,10 +302,10 @@ function buildDecisionList(decisions: IssuedRow[], reload: () => Promise<void>):
     line.appendChild(text("span", v.action === "lift" ? "lifted a suspension" : `suspended ${v.scopeWords}`, "decision-what"));
     if (v.action === "suspend") {
       line.appendChild(text("span", `rule: ${v.rule}`, "decision-rule"));
-      const until = v.untilSecs ? `until ${dateWords(v.untilSecs)}` : "until lifted";
+      const until = v.untilSecs ? `until ${formatUtcDate(v.untilSecs)}` : "until lifted";
       line.appendChild(text("span", until, "decision-until"));
     }
-    line.appendChild(text("span", dateWords(v.row.issued_at_secs), "decision-date"));
+    line.appendChild(text("span", formatUtcDate(v.row.issued_at_secs), "decision-date"));
     if (active) line.appendChild(liftControl(v.row, reload));
     wrap.appendChild(line);
   }

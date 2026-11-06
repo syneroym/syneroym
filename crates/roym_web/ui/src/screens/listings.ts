@@ -14,6 +14,7 @@ import {
 } from "../listings/labels";
 import { publishRefusalWords } from "../directory/membership";
 import { refiller } from "../dom";
+import { formatDateTime } from "../i18n/format";
 import { call, RpcError } from "../rpc";
 
 interface ListingListRow {
@@ -484,8 +485,8 @@ function availabilityEditor(listingId: string): HTMLElement {
       for (const s of res.slots) {
         const line = document.createElement("div");
         line.className = "slot-line";
-        const startStr = new Date(s.start_secs * 1000).toLocaleString();
-        const endStr = new Date(s.end_secs * 1000).toLocaleString();
+        const startStr = formatDateTime(s.start_secs);
+        const endStr = formatDateTime(s.end_secs);
         line.appendChild(text("span", `${startStr} - ${endStr} (x${s.capacity})`));
         const rm = text("button", "Remove", "button remove-slot") as HTMLButtonElement;
         rm.onclick = async () => {

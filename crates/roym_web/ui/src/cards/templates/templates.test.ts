@@ -75,9 +75,9 @@ describe("Card templates", () => {
 
       expect(el.classList.contains("card-quote")).toBe(true);
       expect(el.textContent).toContain("Install composite roofing tiles");
-      expect(el.textContent).toContain("4500.00 USD");
-      expect(el.textContent).toContain("360.00 USD");
-      expect(el.textContent).toContain("50.00 USD");
+      expect(el.textContent).toContain("$4,500.00");
+      expect(el.textContent).toContain("$360.00");
+      expect(el.textContent).toContain("$50.00");
       expect(el.textContent).toContain("Payment before the work");
       expect(el.textContent).toContain("123 Main Street, Town");
       expect(el.textContent).toContain("Full refund up to 24 hours prior");
@@ -146,7 +146,7 @@ describe("Card templates", () => {
       expect(el.textContent).toContain("did:key:zQuoteAuthor456");
       expect(el.textContent).toContain("rec-quote-789");
       expect(el.textContent).toContain("Plumbing repair");
-      expect(el.textContent).toContain("250.00 EUR");
+      expect(el.textContent).toContain("€250.00");
       expect(el.textContent).toContain("Payment after the work");
       expect(el.textContent).toContain("Non-refundable deposit");
       expect(el.textContent).toContain("No refunds on completed labor");
@@ -199,7 +199,7 @@ describe("Card templates", () => {
       const el = renderPaymentRequest(data);
 
       expect(el.classList.contains("card-payment-request")).toBe(true);
-      expect(el.textContent).toContain("50.00 USD");
+      expect(el.textContent).toContain("$50.00");
       expect(el.textContent).toContain("did:key:zQuoteAuthor123");
       expect(el.textContent).toContain("Initial deposit");
       expect(el.textContent?.toLowerCase()).not.toContain("verif");
@@ -245,7 +245,7 @@ describe("Card templates", () => {
       const el = renderPaymentAcknowledgement(data);
 
       expect(el.classList.contains("card-payment-acknowledgement")).toBe(true);
-      expect(el.textContent).toContain("125.00 EUR");
+      expect(el.textContent).toContain("€125.00");
       expect(el.textContent).toContain("bank-transfer");
       expect(el.textContent).toContain("TX-9988");
       expect(el.textContent).toContain(new Date(1700000000 * 1000).toISOString());
@@ -358,9 +358,9 @@ describe("Card templates", () => {
 
   describe("formatMinor", () => {
     it("formats exponent 0, 2, and 3 currencies", () => {
-      expect(formatMinor(1500, "JPY")).toBe("1500 JPY");
-      expect(formatMinor(1500, "USD")).toBe("15.00 USD");
-      expect(formatMinor(1500, "KWD")).toBe("1.500 KWD");
+      expect(formatMinor(1500, "JPY")).toBe("JP¥1,500");
+      expect(formatMinor(1500, "USD")).toBe("$15.00");
+      expect(formatMinor(1500, "KWD")).toBe("KWD\u00a01.500");
     });
   });
 

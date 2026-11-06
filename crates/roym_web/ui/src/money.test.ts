@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+import { activate, activateWith } from "./i18n/i18n.js";
 import {
   MoneyInputError,
   currencyMinorExponent,
@@ -65,31 +66,48 @@ describe("toMinorUnits", () => {
 });
 
 describe("formatMinor", () => {
-  it("formats exponent-0 currencies with no decimal separator", () => {
-    expect(formatMinor(1200, "JPY")).toBe("1200 JPY");
-    expect(formatMinor(0, "JPY")).toBe("0 JPY");
-    expect(formatMinor(-500, "JPY")).toBe("-500 JPY");
+  afterEach(async () => {
+    await activate("en");
+  });
+
+  it("formats exponent-0 currencies with no decimal part", () => {
+    expect(formatMinor(1200, "JPY")).toBe("JP¥1,200");
+    expect(formatMinor(0, "JPY")).toBe("JP¥0");
+    expect(formatMinor(-500, "JPY")).toBe("-JP¥500");
   });
 
   it("formats exponent-2 currencies with two decimal places", () => {
-    expect(formatMinor(3550, "USD")).toBe("35.50 USD");
-    expect(formatMinor(3500, "EUR")).toBe("35.00 EUR");
-    expect(formatMinor(5, "USD")).toBe("0.05 USD");
-    expect(formatMinor(0, "USD")).toBe("0.00 USD");
-    expect(formatMinor(-3550, "USD")).toBe("-35.50 USD");
+    expect(formatMinor(3550, "USD")).toBe("$35.50");
+    expect(formatMinor(3500, "EUR")).toBe("€35.00");
+    expect(formatMinor(5, "USD")).toBe("$0.05");
+    expect(formatMinor(0, "USD")).toBe("$0.00");
+    expect(formatMinor(-3550, "USD")).toBe("-$35.50");
   });
 
   it("formats exponent-3 currencies with three decimal places", () => {
-    expect(formatMinor(2500, "KWD")).toBe("2.500 KWD");
-    expect(formatMinor(123, "KWD")).toBe("0.123 KWD");
-    expect(formatMinor(5, "BHD")).toBe("0.005 BHD");
-    expect(formatMinor(0, "OMR")).toBe("0.000 OMR");
-    expect(formatMinor(-2500, "KWD")).toBe("-2.500 KWD");
+    expect(formatMinor(2500, "KWD")).toBe("KWD\u00a02.500");
+    expect(formatMinor(123, "KWD")).toBe("KWD\u00a00.123");
+    expect(formatMinor(5, "BHD")).toBe("BHD\u00a00.005");
+    expect(formatMinor(-2500, "KWD")).toBe("-KWD\u00a02.500");
   });
 
   it("rounds non-integer minor unit inputs rather than generating malformed decimals", () => {
-    expect(formatMinor(3550.7, "USD")).toBe("35.51 USD");
-    expect(formatMinor(3550.2, "USD")).toBe("35.50 USD");
-    expect(formatMinor(1200.4, "JPY")).toBe("1200 JPY");
+    expect(formatMinor(3550.7, "USD")).toBe("$35.51");
+    expect(formatMinor(3550.2, "USD")).toBe("$35.50");
+    expect(formatMinor(1200.4, "JPY")).toBe("JP¥1,200");
+  });
+
+  it("groups rupees the Indian way in English and in Hindi", async () => {
+    expect(formatMinor(10000050, "INR")).toBe("₹1,00,000.50");
+    await activateWith("hi", { hi: async () => "" });
+    expect(formatMinor(10000050, "INR")).toBe("₹1,00,000.50");
+  });
+
+  it("keeps every digit of a very large amount", () => {
+    expect(formatMinor(Number.MAX_SAFE_INTEGER, "INR")).toMatch(/\.91$/);
+  });
+
+  it("shows a malformed code from another node as amount and code", () => {
+    expect(formatMinor(3550, "E1")).toBe("35.50 E1");
   });
 });

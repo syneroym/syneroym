@@ -835,7 +835,7 @@ test.describe('Roym Hub', () => {
 
     const quoteCard = page.locator('.card-quote');
     await expect(quoteCard).toContainText('Scope: Replace brake cable and adjust pads');
-    await expect(quoteCard).toContainText('Total: 45.00 EUR');
+    await expect(quoteCard).toContainText('Total: €45.00');
     await expect(quoteCard).toContainText('Payee, as agreed in this quote: Y Repairs');
     await expect(quoteCard).toContainText('Expires:');
     await expect(quoteCard).toContainText('Cancellation terms: 24 hours notice required for full refund');
@@ -843,7 +843,7 @@ test.describe('Roym Hub', () => {
 
     const receiptCard = page.locator('.card-agreement-receipt');
     await expect(receiptCard).toContainText('Scope: Replace brake cable and adjust pads');
-    await expect(receiptCard).toContainText('Total: 45.00 EUR');
+    await expect(receiptCard).toContainText('Total: €45.00');
     await expect(receiptCard).toContainText('Payee, as agreed in this quote: Y Repairs');
     await expect(receiptCard).toContainText('Both parties have signed these terms.');
     await expect(receiptCard).toContainText('Cancellation terms: 24 hours notice required for full refund');
@@ -1088,7 +1088,7 @@ test.describe('Roym Hub', () => {
     await expect(quoteCard).toBeVisible();
 
     await expect(quoteCard).toContainText('Scope: Rebuild wooden front fence');
-    await expect(quoteCard).toContainText('Total: 1200.00 EUR');
+    await expect(quoteCard).toContainText('Total: €1,200.00');
     await expect(quoteCard).toContainText('Payee, as agreed in this quote: Timber Crafts Ltd');
     await expect(quoteCard).toContainText('Cancellation terms: Strict 48h cancellation');
 

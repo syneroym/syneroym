@@ -1,5 +1,6 @@
 import { errText, field, refiller, text } from "../dom";
 import { onFeed } from "../events";
+import { formatDateTime, formatTime } from "../i18n/format";
 import { renderRefusedCard } from "../cards/refused";
 import {
   CARDS_NOT_IN_GROUPS_MESSAGE,
@@ -123,7 +124,7 @@ export function renderMessageRow(
 
   const meta = document.createElement("div");
   meta.className = "message-meta";
-  const dateStr = new Date(msg.sender_timestamp_ms).toLocaleTimeString();
+  const dateStr = formatTime(msg.sender_timestamp_ms);
   meta.appendChild(text("span", dateStr, "message-time"));
 
   if (msg.direction === "outgoing") {
@@ -560,7 +561,7 @@ export async function renderGroups(container: HTMLElement) {
 
     // Key trust & boundaries
     if (!info.restored_only && info.key_stored_at_ms > 0) {
-      const dateStr = new Date(info.key_stored_at_ms).toLocaleString();
+      const dateStr = formatDateTime(info.key_stored_at_ms / 1000);
       infoPanel.appendChild(
         text("div", `Group key changed here: ${dateStr} (epoch ${info.key_epoch})`, "key-changed-date"),
       );
