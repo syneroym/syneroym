@@ -3,13 +3,16 @@
 *Reader: the developer (or AI) who implements slice B1b. You do not have the
 planning conversation. This plan is meant to stand alone.*
 
-**Status: plan written, 2026-11-06. Not reviewed yet. The owner questions
-Q1 to Q7 (section 2.1) are open.**
+**Status: plan written, 2026-11-06. Plan review round 1
+([slice-b1b-review.md](slice-b1b-review.md), P1 to P9) is folded in. The
+owner answered Q1 to Q7 on 2026-11-06, all (a); the answer is under each
+question.**
 
 **Size and PR.** M. One PR on `feat/m08b-b1b-localization-screens`, with
 the commits of section 6 in that order. The branch starts from `main` at
 `1a62c26a` (B1a is merged, [PR #349](https://github.com/syneroym/syneroym/pull/349))
-and already holds the plan commit. B1b moves every visible English string
+and already holds the plan commits. `main` at `8b39b525` (an auth fix)
+is merged in; it changes no file this plan names. B1b moves every visible English string
 that is left in the Hub into the string catalogs `en.ftl` and `hi.ftl`. It
 adds the check that fails the Hub build when a string literal is set as
 visible text outside the catalog (ML-1). English text stays the same, byte
@@ -154,6 +157,8 @@ catalog test.
   syntax tree (ESTree, not the TypeScript tree that `scan.ts` uses), and
   `--rulesdir` is deprecated in ESLint 8.
 
+*Owner answer:* (a), a vitest file that `npm run build` runs.
+
 **Q2. Which text does a Hindi user sign as the data-use notice? (blocks
 Step 7)**
 
@@ -179,6 +184,8 @@ Nothing compares it with the English constant.
   English sentence left on a Hindi screen, with a named exception in the
   check.
 
+*Owner answer:* (a), sign the text that was shown.
+
 **Q3. What are the default quote terms in Hindi? (blocks Step 7)**
 
 The quote form fills three fields with English defaults
@@ -192,6 +199,8 @@ person can edit them, and the result is signed into the quote's `terms`.
 - (b) **English defaults in every language.**
 - (c) **No defaults.** Empty fields with a placeholder only. This changes
   the English Hub too (a behaviour change for English users).
+
+*Owner answer:* (a), defaults from the string catalog.
 
 **Q4. How are codes from the system shown? (blocks Steps 6 to 10)**
 
@@ -223,6 +232,11 @@ and `roym-hub.spec.ts` picks options by value (`selectOption('draft')`,
   unknown category in ML-7. But a Hindi screen then has English words in
   its main controls.
 
+*Owner answer:* (a), a label per code. The list of tables is longer than
+the first plan said (review P3); D-B1b-6 now has the full list. The
+screen-level check was weak (review P2); D-B1b-12 now makes a raw code fail
+the Hindi sweep.
+
 **Q5. Is there a Hindi sweep test? (blocks Step 11)**
 
 The build check (Q1) reads source code. It cannot see a single word that
@@ -237,6 +251,9 @@ an English word is left.
   allowed. *Recommended.* It catches what the static check cannot, and it
   stays useful for B2 and later screens.
 - (b) **Only the static check.** Review must find the rest.
+
+*Owner answer:* (a), the Hindi sweep, with the review P2 changes
+(D-B1b-12).
 
 **Q6. How does the owner review the Hindi text? (blocks Step 13 and the
 merge)**
@@ -254,6 +271,10 @@ new).
 - (b) **The owner reads `hi.ftl` in the PR diff.**
 - (c) **The owner checks the screens in a running Hub.**
 
+*Owner answer:* (a), the side-by-side file, with one more column that marks
+the legal and safety notices, so the owner reads those rows first
+(D-B1b-13).
+
 **Q7. Does B1b extend demo story 40? (blocks Step 12)**
 
 task.md's demo plan builds story 40 in B1a, B2 and B4b. B1b adds something
@@ -265,6 +286,8 @@ Close-out").
   `hubMessage('hi', …)`, so an owner edit of the Hindi does not break the
   story). *Recommended.* Small, and it shows the slice.
 - (b) **No change.** The change doc's `demo:` already lists story 40.
+
+*Owner answer:* (a), one more step in story 40.
 
 ### 2.2 Points found while reading
 
@@ -370,8 +393,8 @@ Close-out").
     The Hindi messages `directory-search-failed` and
     `directory-search-not-started` tell the person to press `"Search"`
     ([hi.ftl:33](../../../../crates/roym_web/ui/src/i18n/hi.ftl#L33),
-    `:34`). B1b moves the button label and changes the two Hindi messages
-    to name the Hindi button, in the same commit.
+    `:34`). B1b moves the button label and gives the two messages a
+    `$button` variable that holds the button's own message (Step 9).
 11. **Labels with spaces at the ends.** `"Display Name: "` and
     `" Conversation Address: "`
     ([profile.ts:16](../../../../crates/roym_web/ui/src/screens/profile.ts#L16),
@@ -522,14 +545,23 @@ These are written into the change doc at close-out (section 3).
     them (`/\p{L}\s+\p{L}/u`), unless it is:
     - an argument of a `console.*` call;
     - the right side of an assignment to `className` or `rel`;
+    - the third argument of `text(tag, value, className)` (a class list,
+      review P1: 47 such strings today, for example
+      `"button bundle-export"` and `` `message-state state-${…}` ``);
     - an argument of `classList.add`, `.remove`, `.toggle`, `.replace`,
       `querySelector`, `querySelectorAll`, `closest` or `matches`.
+    The exemptions are by position, never by the shape of the text: a
+    rule such as "lower case words joined by spaces look like classes"
+    would also hide a label such as `"pack size"` (`listings.ts:289`).
     This catches text that a word function returns, text passed to a
     helper the check does not know, and text kept in a constant.
   - **Files.** Every `src/**/*.ts` file except `*.test.ts`, the shared
     test helpers in `src/testing/`, and the two mechanism files
     `src/i18n/i18n.ts` and `src/i18n/scan.ts` (their own texts go only to
     `console.error` or to tests).
+  - **`index.html`** is not read. Its only visible text is
+    `<title>Roym Hub</title>` (`index.html:17`), which `main.ts:79`
+    replaces with `t("hub-title")` at start-up (review P9).
   - **No exceptions in the code.** There is no comment or marker that turns
     the check off. Text that must not be translated (a command, a product
     name) is still a message, with the same text in each file (section 2.2
@@ -564,6 +596,13 @@ These are written into the change doc at close-out (section 3).
     `error-no-detail = RPC error`.
   - `login.ts` errors that show a status code pass it as a string
     (`{ status: String(res.status) }`), as B1a does for codes.
+  - **The login reply with a service text** (`login.ts:261` to `:268`,
+    review P6) has two branches. With no `body.error`, it throws
+    `HubError(t("login-error-http", { status }))`. With `body.error`, it
+    throws `HubError(String(body.error))`: the service text as it came, as
+    a `HubError`, so `errText` does not wrap it in `error-unexpected`, and
+    `login-failed` shows it as its one `$detail`. So a Hindi person reads
+    `विवरण:` once.
 - **D-B1b-5. One copy of each helper.** Delete the local `text()` in
   `listings.ts`, `backup.ts`, `messages.ts` and `textNode()` in `safety.ts`;
   import `text` from `dom.ts`. Replace the local `labelled(label, control)`
@@ -579,12 +618,33 @@ These are written into the change doc at close-out (section 3).
 - **D-B1b-6. Codes shown as words.** Q4 (a). Each set of codes is a
   `Map<string, string>` of `messageId(…)` values, read with
   `lookupText(table, code) ?? code` (D-B1a-15). The English text of each
-  message is the word the Hub shows today. Tables: message states
-  (`messages.ts` and `groups.ts`), listing status, booking mode, pricing
-  model, condition, address disclosure (listing editor), report categories
-  (`safety.ts`), and any other option list the inventory finds. The
-  existing `listings/labels.ts` tables (B1a) are reused, not copied. Each
-  new table gets the three `constructor`, `toString`, `__proto__` cases.
+  message is the word the Hub shows today. The tables (review P3):
+
+  | Table | Codes | Where the code is drawn |
+  | --- | --- | --- |
+  | message state | `delivered`, `deposited`, `failed`, … | `messages.ts:551`, and `groups.ts` if it shows states |
+  | listing status | `active`, `draft`, `withdrawn` | the editor select (`listings.ts:241`) and the listing row (`listings.ts:141`) |
+  | booking mode, pricing model, condition, address disclosure | the editor's select codes | `listings.ts:254`, `:269`, `:290`, `:318` |
+  | listing block | `booking`, `payment`, `product`, `service`, `location`, `relationship`, `service_record` | `block(kind, label)` (D-B1b-5) |
+  | report category | `impersonation`, `fraud`, … | `safety.ts:89` (select) and the report row (`safety.ts:135`) |
+  | report subject kind | `person`, `listing`, `message` | `safety.ts:104` (select) and the report row |
+  | report status | `open`, `withdrawn` | the report row (`safety.ts:135`) |
+  | credential status | `revoked`, `current`, `replaced` (made by the Hub) | `synorg_members.ts:257` |
+
+  The report row becomes one message with variables
+  (`safety-report-row = { $category } - { $kind } { $subject } [{ $status }]`),
+  where `category`, `kind` and `status` are table texts and `subject` is
+  the id as it came. The code stays wherever it is not shown text: option
+  `value`s, class names (`status-${…}`) and `dataset.status`
+  (`synorg_members.ts:250`, `:301`). Two things stay as they came: a category code
+  (`synorg_members.ts:121`, and the category list inside the
+  `covers …` row at `:253`, whose word "covers" does move), because
+  the taxonomy and its labels are B2's work and an unknown code is shown
+  raw (ML-7); and a verifier `reason` from this node
+  (`directory.ts:395`); only its fallback sentence
+  `"signature did not verify"` moves. The existing `listings/labels.ts`
+  tables (B1a) are reused, not copied. Each new table gets the three
+  `constructor`, `toString`, `__proto__` cases.
 - **D-B1b-7. Text the Hub writes into a signed record.** Q2 (a) and Q3 (a):
   the data-use notice and the three default quote terms come from `t()`,
   and the Hub signs the text that the person was shown or left in the
@@ -596,9 +656,14 @@ These are written into the change doc at close-out (section 3).
 - **D-B1b-8. Rust-pinned English.** The four notices that Rust holds
   (`DEFAULT_DATA_USE_NOTICE`, `ADDRESS_DISCLOSURE_NOTICE`,
   `NO_INSTANT_REMOVAL_NOTICE`, `WITHHELD_REVOCATION_NOTICE`) become one
-  `en.ftl` message each, on one line, with the exact Rust text. The two
-  tests of section 2.2 point 4 read `../roym_web/ui/src/i18n/en.ftl` and
-  use `content.contains(CONSTANT)`. The small TypeScript-string parser in
+  `en.ftl` message each, on one line, with the exact Rust text, under the
+  ids `request-data-use-notice`, `quote-address-disclosure-notice`,
+  `membership-no-instant-removal` and `membership-withheld-revocation`. The
+  two tests of section 2.2 point 4 read `../roym_web/ui/src/i18n/en.ftl`
+  and check for the whole line, not only the text (review P5):
+  `assert!(content.lines().any(|l| l == format!("{id} = {CONSTANT}")))`,
+  one per notice. A sentence left in a comment, or under another id, then
+  does not pass. The small TypeScript-string parser in
   `transaction/tests.rs` (`parse_ts_const_string`) is deleted. None of the
   four sentences holds `{`, `}` or a line that starts with `[`, `*` or `.`.
   The e2e checks of these texts (section 2.2 point 9) stay.
@@ -635,16 +700,31 @@ These are written into the change doc at close-out (section 3).
     the three files import it. The sweep gives each screen small fixtures
     with one row per list, so rows draw too.
   - Drawn: `renderProfile`, `renderContacts`, `renderMessages` (with a
-    conversation and a few message states), `renderGroups`,
-    `renderListings`, `renderDirectory`, `renderMemberships`,
-    `renderSynOrg` (with settings, so the members panel draws),
-    `renderSafety`, `renderBackup`, `renderSetup`, and the dialogs
+    conversation and messages in the states `delivered`, `deposited` and
+    `failed`), `renderGroups`,
+    `renderListings` (with an `active` and a `draft` listing),
+    `renderDirectory`, `renderMemberships`,
+    `renderSynOrg` (with settings, so the members panel draws, and a
+    revoked and a current credential),
+    `renderSafety` (with an `open` report), `renderBackup`, `renderSetup`, and the dialogs
     `openQuoteForm`, `openDeclineDialog` and the request form.
   - Collected: every text node, and the `placeholder`, `title` and
     `aria-label` attributes, and `<option>` text.
-  - Allowed: each fixture string is removed first. The Latin words that
-    `hi.ftl` itself contains are allowed (Roym, SynOrg, DID, the command
-    words): the test reads them from `hi.ftl`, so it needs no list.
+  - **Data and codes in the fixtures** (review P2). A value that a person
+    types or another node sends (a name, a title, a body, a DID, an id)
+    holds the marker `Zq` (for example `Zq-title`, `did:key:zZqAlice`).
+    The test removes each word that holds `Zq`. A code is never marked:
+    the fixtures use the real codes (`delivered`, `deposited`, `active`,
+    `draft`, `fraud`, `open`, `person`, and a revoked and a current
+    credential), so a screen that shows a code raw fails the sweep.
+  - **Allowed Latin words** are a fixed list in the test file, each with a
+    comment: `Roym`, `SynOrg`, `DID`, `roymctl` and the words of the
+    commands inside messages (`--master`, `--registry-url`, …), and, as
+    separate named items, the time zone name `UTC` (the tests run with
+    `TZ=UTC`), the currency codes of the fixtures and the `detail` text
+    of a fake `/rpc` error. The list is not read from `hi.ftl`: an English
+    word pasted into a Hindi message would then be allowed everywhere. A
+    new Latin word needs an edit of the list, which a reviewer sees.
   - Fails: a remaining word of two or more Latin letters
     (`/[A-Za-z]{2,}/`). The failure lists the screen and the text.
   - A catalog test makes sure the allowed words do not hide English: every
@@ -653,7 +733,15 @@ These are written into the change doc at close-out (section 3).
     messages; each with a comment).
 - **D-B1b-13. The Hindi text and its review.** An agent writes it (owner
   answer 3), under the rules of section 7.7. Q6 (a): `hi-review.md` in this
-  folder for the owner; the fix session applies the owner's changes, sets
+  folder for the owner, with the columns id, English, Hindi, screen and
+  **weight**. The weight column marks the messages with legal or safety
+  weight, and the table lists those rows first: the two delete notes, the
+  address-disclosure notice, the data-use notice, the decline note, the two
+  membership notices, the group delivery and join notices, the
+  quote-expiry and quote-accept texts, and the agreement and terms words
+  of the cards (`terms-*`, `receipt-*`). A wrong word there changes what a
+  person agrees to. The table covers all of `hi.ftl`, B1a's messages too
+  (they are still `owner review: pending`); the fix session applies the owner's changes, sets
   `# owner review: done <date>` at the top of `hi.ftl`, and deletes
   `hi-review.md`. The PR does not merge before that.
 - **D-B1b-14. Message ids** follow D-B1a-13: lower case, `-` between
@@ -712,6 +800,9 @@ Done in the planning session: this file and the B1b row of
 4. `rpc.ts:69`: `t("error-no-detail")`.
 5. `src/testing/stub-rpc.ts` (D-B1b-12); the three test files import it.
 6. `errors.test.ts`: the new cases of section 7.1.
+7. Remove `rpc.ts`, `dom.ts`, `money.ts` and `directory/search.ts` from
+   `NOT_MOVED_YET` if they are on it and now clean (review P4). The
+   "listed file is already clean" check tells you which.
 
 ### Step 4 — Sign-in, gallery data, shell leftovers
 
@@ -724,7 +815,10 @@ Done in the planning session: this file and the B1b row of
 2. `main.ts`: the samples → `src/cards/samples.json` (D-B1b-11);
    `tsconfig.json` `"resolveJsonModule": true`. Remove the three notice
    fields from `window.RoymMessages` and its type (section 2.2 point 8).
-3. `login.test.ts` keeps its English expectations.
+3. `login.test.ts` keeps its English expectations. Add the two branches
+   of D-B1b-4 ("The login reply with a service text") in Hindi: the text
+   shown by `login-failed` has `विवरण:` once (review P6).
+4. Remove `session/login.ts` and `main.ts` from `NOT_MOVED_YET`.
 
 ### Step 5 — The small screens
 
@@ -744,12 +838,18 @@ table, D-B1b-6). Remove these files from `NOT_MOVED_YET`. Update
    tables for status, booking mode, pricing model, condition and address
    disclosure (D-B1b-6). `serviceLocationEditorLabel` and `openToLabel`
    (B1a) are reused.
-2. `listings/editor.ts`: the 11 `ListingInputError` texts → `t()`. The
-   field names in `requireWhole(…, "lead time")` and the others become
-   `t("listing-field-lead-time")` and so on (D-B1b-9).
+2. `listings/editor.ts`: the 11 `ListingInputError` texts → `t()`. All
+   eight field names become `t("listing-field-…")` (D-B1b-9; review P7):
+   `lead time`, `cancellation window`, `max per booking` (`:158` to
+   `:160`), `pack size` (`:205`), `duration` (`:214`), `warranty`,
+   `retention` (`:246`, `:247`) and `capacity` (`:294`). The four
+   one-word names are not seen by the check (D-B1b-2, "What it cannot
+   see"), so this list is the rule.
 3. Tests: `listings.test.ts` and `editor.test.ts` keep their English
-   expectations. Add one case: `buildSetListingParams` with no title in
-   Hindi throws a `ListingInputError` whose message is the Hindi text.
+   expectations. Add one table test in Hindi over every `ListingInputError`
+   path (the 11 throws, and the "is required" and "whole number" errors
+   for each of the 8 field names): each message has a Devanagari letter
+   and no Latin word outside the sweep's allowed list (review P7).
 4. Remove the two files from `NOT_MOVED_YET`.
 
 ### Step 7 — Messages, requests, quotes
@@ -781,12 +881,19 @@ expectations. Remove the file from `NOT_MOVED_YET`.
 ### Step 9 — Directory and memberships
 
 1. `screens/directory.ts` (59 literals, 29 more): `checkOutcomeWords`,
-   `sourceErrorWords` and the help paragraphs. The Search button label and
-   the two Hindi search messages together (section 2.2 point 10).
+   `sourceErrorWords` and the help paragraphs. The Search button label
+   becomes `directory-search-button`. The two search messages get a
+   `$button` variable, and `directory/search.ts` passes
+   `{ button: t("directory-search-button") }` (review P8): English
+   `… Press { $button } to try again.` gives the same text as today, and
+   an owner edit of the button text changes all three at once.
 2. `directory/membership.ts` (25): the word functions return `t(…)`;
    `NO_INSTANT_REMOVAL_NOTICE`, `WITHHELD_REVOCATION_NOTICE` and
-   `ISSUER_CHANGED_CHECK_WORDS` become messages, and their users call
-   `t()`. A verdict reason that comes from another node stays a `$reason`
+   `ISSUER_CHANGED_CHECK_WORDS` become messages, and every user calls
+   `t()`: `directory.ts:68`, `memberships.ts:54`, `:55`, `:111`,
+   `memberships.test.ts:2`, and also `synorg_members.ts:74` (with its
+   import at `:1`), although the rest of that file moves in Step 10
+   (review P4). Otherwise `tsc` fails after this step. A verdict reason that comes from another node stays a `$reason`
    variable.
 3. `screens/memberships.ts` (14, 7 more).
 4. Rust: the membership notice test reads `en.ftl`; update the doc
@@ -829,8 +936,9 @@ files from `NOT_MOVED_YET`; the list is now empty.
 
 ### Step 13 — Hindi review file, docs, size report and close-out
 
-1. `hi-review.md` in this folder (Q6 (a)): a table of every message, in
-   file order: id, English, Hindi, the screen. Generate it with a
+1. `hi-review.md` in this folder (Q6 (a), D-B1b-13): a table of every
+   message: id, English, Hindi, screen, weight. The rows with legal or
+   safety weight come first; the rest follow in file order. Generate it with a
    throwaway script in `$TMPDIR` from the two `.ftl` files.
 2. Size (section 7.6): before (on `main`) and after, `npm run build`, then
    for each `dist/assets/*.js` the raw bytes and `gzip -9 -c | wc -c`.
@@ -864,6 +972,9 @@ files from `NOT_MOVED_YET`; the list is now empty.
   `name ?? "Unnamed"` is reported; `` `Saved ${id}` `` is reported;
   `"Total: " + x` is reported; `el.textContent = ""`, `= " · "`,
   `= t("x")`, `= name` and `` = `${a} ${b}` `` are not.
+- Class lists (review P1): `text("p", t("x"), "button bundle-export")`
+  and ``text("span", v, `state-${s} on`)`` are not reported;
+  `text("p", "two words")` is.
 - Not sinks: `el.value = "draft"`, `el.className = "card card-quote"`,
   `a.rel = "noopener noreferrer"`, `console.error("feed listener threw")`,
   `el.setAttribute("data-verified", "false")`, `querySelector(".a .b")`,
@@ -876,7 +987,10 @@ files from `NOT_MOVED_YET`; the list is now empty.
 `src/i18n/hindi-screens.test.ts` (D-B1b-12)
 
 - One test per screen and dialog: drawn in Hindi, no Latin word is left
-  after the fixtures and the words of `hi.ftl` are removed.
+  after the `Zq` data words and the allowed list are removed.
+- A raw code fails: a test-only row that draws `m.state` without the
+  table makes the sweep report `delivered`. This shows that codes are not
+  removed with the data (review P2).
 - A self-check: with `activate("en")`, the same sweep of one screen does
   find English words (so the sweep can fail).
 
@@ -920,8 +1034,9 @@ Existing tests
 
 `the_ui_notices_match_this_crate` and
 `no_instant_removal_and_withheld_revocation_notices_match_the_hub_verbatim`
-read `en.ftl` (Steps 7 and 9). Before each change, run the test once
-against an `en.ftl` with one sentence changed, to see it fail. No
+read `en.ftl` and look for the whole `<id> = <text>` line (Steps 7 and 9,
+D-B1b-8). Before each change, run the test once against an `en.ftl` with
+one sentence changed, and once with the id changed, to see it fail. No
 `roym_*` code changes (only tests and comments), so no WASM rebuild is
 needed for parity.
 
@@ -1074,20 +1189,22 @@ B1b is done when all of these are true:
 2. `findVisibleText` reports nothing for any source file, and
    `npm run build` runs it and fails on a planted literal (Step 11 output
    in the PR text) (ML-1).
-3. The Hindi sweep passes for every screen and dialog of D-B1b-12, and its
-   self-check shows it can fail.
+3. The Hindi sweep passes for every screen and dialog of D-B1b-12, with
+   real codes in its fixtures, and its two self-checks show it can fail
+   (English, and a raw code).
 4. English is unchanged: the Step 2 diff check finds every removed literal
    in `en.ftl`; every e2e spec and demo story passes with no change to a
    text it reads.
 5. Hub-made and browser errors follow D-B1b-4, with the
    `errors.test.ts` cases of section 7.1.
-6. The two Rust tests read `en.ftl` and pass, and fail when one sentence
-   differs.
+6. The two Rust tests read `en.ftl`, check the whole `<id> = <text>`
+   line, pass, and fail when one sentence or one id differs.
 7. Every new code table is a `Map` with the three inherited-name tests.
 8. The signed Hindi texts fit their byte limits (section 7.1).
 9. Story 40 passes with its new step in `mise run demo`.
 10. The bundle sizes are reported and within section 7.6.
-11. The owner reviewed `hi.ftl`; its first comment says
+11. The owner reviewed `hi.ftl` with `hi-review.md` (weighted rows
+    first); its first comment says
     `# owner review: done <date>`; `hi-review.md` is deleted.
 12. The change doc, the living docs, the backlog row, task.md and
     status.md are updated as in sections 8 and 9.

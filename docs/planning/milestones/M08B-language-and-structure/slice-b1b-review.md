@@ -26,7 +26,7 @@ B1b meets no criterion of that doc and records nothing there. ML-1 and ML-6
 belong to roym-multilingual, so every B1b decision and deviation belongs
 there too (plan section 3 says the same).
 
-**Summary:** 0 blocker, 2 major, 7 minor, 9 items. All 9 Open.
+**Summary:** 0 blocker, 2 major, 7 minor, 9 items. All 9 Fixed in the plan; 0 open.
 
 Limits of this review: I read the plan, the docs, the code and the e2e
 specs. To test the check's rules I wrote a throwaway parser script in
@@ -153,7 +153,7 @@ I do not answer for the owner.
   `text("p", t("x"), "button bundle-export")` and
   ``text("span", v, `state-${s} on`)`` are not reported, and
   `text("p", "two words")` is.
-- *Status:* Open
+- *Status:* Fixed (plan, see the commit of this change). Now in: D-B1b-2 rule 2 (third argument of `text()` exempt by position, not by shape); section 7.1 (class-list cases).
 
 #### P2 (major) — The Hindi sweep removes the fixtures first, so it cannot see a raw code, and it allows every Latin word in `hi.ftl`
 
@@ -200,7 +200,7 @@ I do not answer for the owner.
   (3) Add the code fixtures to the sweep of `renderMessages`, `renderListings`
   and `renderSafety`, and the credential-status line of `renderSynOrg`
   (P3).
-- *Status:* Open
+- *Status:* Fixed (plan, see the commit of this change). Now in: D-B1b-12 (`Zq` marker for data, real codes in fixtures, fixed allowed list in the test, `UTC`/currency/detail named); section 7.1 (raw-code self-check); exit criterion 3; Q4 and Q5 owner answers.
 
 #### P3 (minor) — The list of code tables in Q4 and D-B1b-6 is shorter than what the screens show
 
@@ -235,7 +235,7 @@ I do not answer for the owner.
   status) and the three inherited-name cases. State that the `dataset.status`
   and class names keep the code, and that a node-made `reason` and a category
   code stay as they came.
-- *Status:* Open
+- *Status:* Fixed (plan, see the commit of this change). Now in: D-B1b-6 (table of 8 code tables, report row as one message, what keeps the code, category codes and verifier `reason` stay as they came).
 
 #### P4 (minor) — Step 9 removes notices that `synorg_members.ts` (Step 10) still imports
 
@@ -258,7 +258,7 @@ I do not answer for the owner.
   `t("membership-no-instant-removal")` or the chosen id) as part of the change,
   and say that the rest of that file moves in Step 10. Add "remove the file
   from `NOT_MOVED_YET`" to Steps 3 and 4 for the files they finish.
-- *Status:* Open
+- *Status:* Fixed (plan, see the commit of this change). Now in: Step 9 item 2 (`synorg_members.ts:74` and its import); Step 3 item 7 and Step 4 item 4 (remove finished files from `NOT_MOVED_YET`).
 
 #### P5 (minor) — The two Rust tests should check the message line, not the whole file
 
@@ -279,7 +279,7 @@ I do not answer for the owner.
   three). One `assert!(content.lines().any(|l| l == format!("{id} = {text}")))`
   per notice. The "fails when one sentence differs" check of Steps 7 and 9 then
   also covers a changed id.
-- *Status:* Open
+- *Status:* Fixed (plan, see the commit of this change). Now in: D-B1b-8 (named ids, whole `<id> = <text>` line); section 7.2; exit criterion 6.
 
 #### P6 (minor) — `login.ts:268` mixes a Hub-made text and a service text, and Hindi shows `विवरण:` twice
 
@@ -300,7 +300,7 @@ I do not answer for the owner.
   `$detail` of `login-failed` directly, without going through
   `error-unexpected`. Add a `login.test.ts` case for the Hindi text of both
   branches and check that `विवरण:` appears once.
-- *Status:* Open
+- *Status:* Fixed (plan, see the commit of this change). Now in: D-B1b-4 ("The login reply with a service text", two branches); Step 4 item 3 (Hindi test, `विवरण:` once).
 
 #### P7 (minor) — Single-word field names in the editor errors are invisible to the check, and only one error has a Hindi test
 
@@ -320,7 +320,7 @@ I do not answer for the owner.
   test of item 3 by a table test over every `ListingInputError` path (the 11
   throws and the 8 field names): each, in Hindi, has a Devanagari letter and no
   Latin word except the allowed list.
-- *Status:* Open
+- *Status:* Fixed (plan, see the commit of this change). Now in: Step 6 item 2 (all eight field names, with lines); Step 6 item 3 (table test over every `ListingInputError` path).
 
 #### P8 (minor) — Two Hindi messages name the Search button by hand; nothing keeps them equal to the button
 
@@ -338,7 +338,7 @@ I do not answer for the owner.
   `t("directory-search-button")` at the call site. English keeps
   `Press { $button } to try again.` (the output is the same). A catalog test
   then needs no pairing rule.
-- *Status:* Open
+- *Status:* Fixed (plan, see the commit of this change). Now in: Section 2.2 point 10; Step 9 item 1 (`$button` variable from `directory-search-button`).
 
 #### P9 (minor) — `index.html` has the English `<title>Roym Hub</title>`, and the plan does not say it is out of scope
 
@@ -356,4 +356,4 @@ I do not answer for the owner.
   close-out: `index.html` holds only the page title, which `main.ts` replaces
   with `t("hub-title")` at start-up; no other file holds visible text, and the
   check does not read it. No backlog row is needed.
-- *Status:* Open
+- *Status:* Fixed (plan, see the commit of this change). Now in: D-B1b-2 (`index.html` sentence).
