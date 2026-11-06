@@ -675,3 +675,272 @@ changes only the plan, this review file and `status.md`.
   needs no exception.
 - **Whole plan again.** The round 3 edit touches only the helper's signature
   and its callers in the text, so nothing else in the plan depends on it.
+
+## Code review round 1 — Claude Opus 5.5, 2026-11-06
+
+Reviewed `git diff origin/main...HEAD` on
+`feat/m08b-b1a-localization-mechanism` at `92c7d11d` (PR #349), in the main
+checkout (not a worktree). The code was written by Claude Sonnet 5.5. The
+prompt lists one change doc,
+[roym-multilingual](../../changes/roym-multilingual/change.md). Every B1a
+decision and deviation belongs there, and that is where they are written.
+
+**Summary:** 0 blocker, 1 major, 6 minor. 7 items, all Open.
+
+### What was checked and found correct
+
+- **CI.** `gh pr checks 349`: every job passes on `92c7d11d` (Lints,
+  licenses & checks; Test 1/6 to 6/6; Playwright E2E; CI Pipeline; CLA).
+  Benchmarks and Code Coverage skip, as for every PR. I take this as proof
+  that the Rust suite, the Hub unit tests (CI runs `mise run test:roym-ui`),
+  the e2e specs and the demo stories pass.
+- **Hub unit tests, run here.** `npm test` in `crates/roym_web/ui`: 27 files,
+  226 tests passed. This matches the B1a row of status.md.
+- **Build split (Step 2 item 1, Step 8 item 1).** `npm run build` here gives
+  two scripts. Main `index-*.js`: 138,759 bytes raw, 39,687 after `gzip -9`,
+  0 lines with a Devanagari letter. `hi-*.js`: 17,859 raw, 4,674 after
+  `gzip -9`, 153 lines with Devanagari. The numbers in task.md and the change
+  doc are right, and the growth is inside the 25 KB limit of section 7.6.
+- **The i18n core (D-B1a-1 to D-B1a-4, D-B1a-7).** `i18n.ts` builds English
+  when the module loads, so `t()` works before `initLanguage()`. `activateWith`
+  changes the state and `<html lang>` only after the load and the parse.
+  `initLanguageWith` catches every failure and keeps the stored choice.
+  `localeFor` adds `IN` only when the tag has no region. `matches` compares
+  language and maximized script inside `try`/`catch`. `useIsolating: false`.
+  `t()` never throws and returns `String(id)` for a non-string id.
+- **A Fluent limit I checked in the source.** `@fluent/bundle` 0.19.1 has no
+  length limit on a placeable, only `MAX_PLACEABLES = 100` per message
+  (`esm/resolver.js:28`). So a long scope or terms text from another node is
+  not replaced by `{???}`.
+- **Errors (D-B1a-12, D-B1a-15).** `errText` reads a `Map` of `messageId`
+  values through `lookupText`; codes go in as strings. `call()` wraps a
+  rejected `fetch` and a bad `res.json()` as `RpcError(0, …)`, and keeps the
+  HTTP status as the code with an empty message. I checked every remaining
+  `.message` read and every `instanceof RpcError` check in `src/`: none
+  depends on the old `NOT_LOCAL_MESSAGE` text or on a `TypeError` from
+  `fetch`. No Roym service answers with a positive JSON-RPC code, so
+  "code > 0 is HTTP" holds today.
+- **Money (D-B1a-6).** `minorToDecimal` keeps every digit; a `RangeError`
+  from `Intl` gives `<amount> <code>`; the exponent still comes from the
+  Rust-pinned tables, and `EXPONENT_0`/`EXPONENT_3` are still the first uses
+  of those names in `money.ts`.
+- **Cards and word tables (D-B1a-5, D-B1a-10, D-B1a-11).** No visible
+  literal is left in `src/cards/` or in `main.ts` (the auth fallback
+  `"delegated"` is data). The kind 1 rows use `labelled` and `timeElement`;
+  the kind 2 rows pass `$date` as plain text. The local `t` names are
+  renamed (`terms`, `text`). Every id table keyed by data from another node
+  is a `Map`, with a `constructor`/`toString`/`__proto__` test.
+- **The source scan (section 7.1).** `scan.ts` parses with
+  `ts.createSourceFile`, refuses a renamed import and a non-literal id, and
+  the catalog tests check canonical file names, silent junk, trailing
+  spaces, equal id sets, variable subsets, formatting, and unused ids.
+- **Rust.** The two tests read `en.ftl`; the doc comment in `group.rs` is
+  updated. No other Rust code, WIT, method, record or config changes. The
+  `hub-ui` gate in `verify.rs` matches Q5 (a).
+- **e2e and story 40.** The money and expiry checks changed as Step 3 and
+  Step 5 say; the `hi-IN` describe opens the Hub with no click; story 40
+  checks the Hindi tab name through `hubMessage`, so an owner edit of
+  `hi.ftl` does not break it.
+- **Docs.** The living-docs edits (architecture, requirements, traceability,
+  developer guide, demo, TERMINOLOGY) say what the code does, with no
+  over-claim. The three backlog rows are in §10. No planning id in any `.ts`,
+  `.ftl` or `.rs` line the PR adds. The change doc's Test column names real
+  test names.
+
+### Findings
+
+#### R1 (major) — One group message with an out-of-range timestamp hides every later message in the group, for every member
+
+- **Where:** at `92c7d11d`:
+  [groups.ts:118](../../../../crates/roym_web/ui/src/screens/groups.ts#L118)
+  (`formatTime(msg.sender_timestamp_ms)`), called for each message by
+  `renderThreadMessages`; [format.ts:23](../../../../crates/roym_web/ui/src/i18n/format.ts#L23)
+  and [:38](../../../../crates/roym_web/ui/src/i18n/format.ts#L38). The same
+  change at [groups.ts:555](../../../../crates/roym_web/ui/src/screens/groups.ts#L555)
+  and [listings.ts:482](../../../../crates/roym_web/ui/src/screens/listings.ts#L482),
+  `:483` (local data there, so lower risk).
+- **Problem:** Before B1a these four places used `toLocaleTimeString()` and
+  `toLocaleString()`. They never throw: an invalid date prints
+  `Invalid Date`. `Intl.DateTimeFormat.format()` throws a `RangeError` for
+  an invalid date. Checked in Node 22: `new Date(-9223372036854775808)`
+  gives `Invalid Date` with `toLocaleTimeString()` and `RangeError: Invalid
+  time value` with `Intl.DateTimeFormat`. The node checks a group entry's
+  `sender_timestamp_ms` (`i64`) only against the future
+  ([group/entry.rs:398](../../../../crates/conversation/src/group/entry.rs#L398)),
+  so a member can sign an entry with a very negative timestamp, and every
+  other member stores it. In the Hub, `renderThreadMessages` empties the
+  list and then throws at that row. `reloadThread` catches the error and
+  shows nothing, because it is not `NotSignedIn`. The plan's rule "throws
+  as `toISOString()` does today" (D-B1a-5) is right for the cards, which
+  used `toISOString()`, but not for the four `toLocale*` places. The
+  behaviour-change audit (section 4) does not list this.
+- **Failure case:** A hostile member of a group sends one message with
+  `sender_timestamp_ms = -9223372036854775808`. In every other member's
+  Hub, the group thread shows only the messages before it. Every later
+  message is gone, with no error on the screen, until someone deletes the
+  bad entry. Before B1a, the row showed `Invalid Date` and every message
+  was shown. (I tried to show this with a temporary vitest file. A file
+  outside the repository cannot be loaded by Vite, and I was not allowed to
+  write one inside `src/`. The proof above is the Node check and the code
+  path.)
+- **Fix:** Make the formats that replace `toLocale*` never throw. In
+  `format.ts`, `formatDateTime` and `formatTime` check
+  `Number.isFinite(date.getTime())` first and return a new message
+  `t("date-invalid")` (`Invalid Date` in `en.ftl`, so English text does not
+  change; a Hindi line in `hi.ftl`) for an invalid date. `timeElement` keeps
+  its `toISOString()` call first, so a kind 1 card row throws as before. A
+  kind 2 card row (`quote-expires-expired`, `quote-expired-notice`) then
+  shows the invalid-date text instead of throwing; record that in the
+  change doc's Deviations, or keep those two rows throwing with an explicit
+  check. Do the same for `formatAge` with a non-finite age (today it throws
+  where `ageWords` printed `Infinity days ago`). Tests: `format.test.ts`,
+  `formatTime(-9223372036854775808)` and `formatDateTime(NaN)` return the
+  `date-invalid` text; `groups.test.ts`, `renderThreadMessages` with three
+  messages, the middle one with that timestamp, draws three
+  `.message-row` elements. Add a row to the change doc's Deviations.
+- *Status:* Open.
+
+#### R2 (minor) — The chunk-split probe from Step 2 item 1 is still in the source tree
+
+- **Where:** at `92c7d11d`:
+  [src/i18n/probe.ts](../../../../crates/roym_web/ui/src/i18n/probe.ts)
+  (6 lines, added in `80257dea`).
+- **Problem:** Step 2 item 1 asks for a smallest version to check the build
+  split, and item 5 says to replace the dummy parts. `probe.ts` is that
+  check. Nothing imports it, it has one-letter names and no comment, and no
+  test uses it. It is the same kind of left-over scratch work as S0's R5.
+- **Failure case:** A reader of `src/i18n/` thinks `probe()` is a supported
+  way to load catalogs and uses it; it returns English and one other
+  catalog joined into one string. `tsc` and `eslint` keep checking dead
+  code.
+- **Fix:** Delete `src/i18n/probe.ts`. Run `npm run build` and `npm test`.
+- *Status:* Open.
+
+#### R3 (minor) — The change doc and `en.ftl` count a Hub-only sentence as held by the Rust crate
+
+- **Where:** at `92c7d11d`:
+  [change.md:169](../../changes/roym-multilingual/change.md#L169) ("8
+  booking sentences and 11 group sentences that the Rust crate also
+  holds"); [en.ftl:47](../../../../crates/roym_web/ui/src/i18n/en.ftl#L47)
+  to `:69` and [hi.ftl:45](../../../../crates/roym_web/ui/src/i18n/hi.ftl#L45)
+  (the comment "Sentences that the Rust side also holds" covers the whole
+  group block).
+- **Problem:** `notice_constants_match_hub_ui_verbatim` checks 10 group
+  constants, as plan D-B1a-11 says. The block under the comment has 11
+  lines. The eleventh, `group-session-ended-notice`, is Hub text only:
+  `SESSION_ENDED_NOTICE` was never a Rust constant.
+- **Failure case:** A translator or a later slice treats
+  `group-session-ended-notice` as pinned and does not improve its English
+  ("Do not … change a word without changing the Rust side"), or looks for
+  an eleventh Rust constant that does not exist. A reader of the change doc
+  gets a wrong count.
+- **Fix:** change.md:169 says "10 group sentences". Move
+  `group-session-ended-notice` out of the pinned block in both `.ftl` files
+  (for example under "Group lines").
+- *Status:* Open.
+
+#### R4 (minor) — `errors.test.ts` cannot see a wrong code-to-message mapping
+
+- **Where:** at `92c7d11d`:
+  [errors.test.ts:21](../../../../crates/roym_web/ui/src/i18n/errors.test.ts#L21)
+  to `:72`.
+- **Problem:** Every English error message except `-32013`, `0` and HTTP is
+  `{ $detail }`, so the English cases give `raw text` whatever row is used.
+  The Hindi cases check only "starts with Devanagari" and "ends with
+  `विवरण: raw text`", which every Hindi error message does. So the test
+  passes if `ERROR_MESSAGES` maps every code to `error-service`, or if two
+  rows are swapped. Plan section 7.1 asks to show that `-32700` and
+  `-32600` go to `error-service` (review P6); this test cannot show it.
+- **Failure case:** A later edit swaps `-32003` and `-32011` in the `Map`.
+  A Hindi user who lacks a permission reads "only the owner can do this".
+  Every test passes.
+- **Fix:** In the Hindi block, for each code, compare with the message the
+  table should give: `expect(errText(rpc(code))).toBe(t(id, { detail:
+  "raw text", code: String(code) }))`, with the expected id written in the
+  test as a literal table (`-32001 → "error-service-unavailable"`, …,
+  `-32700 → "error-service"`). Keep the Devanagari and `विवरण:` checks.
+- *Status:* Open.
+
+#### R5 (minor) — The Hindi `group-add-unreachable` sentence is never shown, and the gap has no backlog row
+
+- **Where:** at `92c7d11d`:
+  [hi.ftl:62](../../../../crates/roym_web/ui/src/i18n/hi.ftl#L62);
+  [catalog.test.ts:108](../../../../crates/roym_web/ui/src/i18n/catalog.test.ts#L108)
+  (`KEPT_FOR_RUST`); change.md Deviations ("one message is exempt");
+  `roym_conversation/src/app/group.rs:169`
+  (`Response::invalid_params(GROUP_ADD_UNREACHABLE_MESSAGE)`).
+- **Problem:** The service sends this sentence as the text of a `-32602`
+  error. In Hindi, `errText` shows `error-invalid-input`, "दी गई जानकारी सही
+  नहीं है" ("the information given is not correct"), with the English
+  sentence after `विवरण:`. That main sentence names the wrong cause. The
+  Hub has the right Hindi sentence in `hi.ftl` but never shows it, and the
+  owner will review a translation that no one sees. The same holds for any
+  service-specific reason sent as `-32602` (for example
+  `CARDS_NOT_IN_GROUPS_MESSAGE` from `roym_transaction`). This follows from
+  Q6 (a), so it is not a plan error, but the deviation entry does not say
+  what a Hindi user sees, and no backlog row records the gap.
+- **Failure case:** A Hindi user adds a person who is offline. The Hub
+  says the input is wrong. The person checks and re-types the address,
+  while the real cause is in English after `विवरण:`.
+- **Fix:** Add a §10 backlog row: "Service-specific refusals show a generic
+  Hindi sentence", reason, target TBD (when services put a reason code in
+  `error.data`), link `crates/roym_web/ui/src/dom.ts` (`ERROR_MESSAGES`).
+  Extend the change doc deviation with one sentence on what a Hindi user
+  sees. Optional, inside B1a's scope: in the group add-member catch, show
+  `t("group-add-unreachable")` when the error is `-32602` and
+  `err.message` equals the English text (the Rust test pins it); then the
+  `KEPT_FOR_RUST` exemption can go.
+- *Status:* Open.
+
+#### R6 (minor) — Literals on screen lines that B1a edits stay English, and the Hindi search error names a button that still says "Search"
+
+- **Where:** at `92c7d11d`:
+  [directory.ts:319](../../../../crates/roym_web/ui/src/screens/directory.ts#L319)
+  (`Signed ${formatAge(…)}`),
+  [synorg_members.ts:254](../../../../crates/roym_web/ui/src/screens/synorg_members.ts#L254)
+  (`expires …`), [:305](../../../../crates/roym_web/ui/src/screens/synorg_members.ts#L305)
+  (`until …`, `until lifted`);
+  [hi.ftl:33](../../../../crates/roym_web/ui/src/i18n/hi.ftl#L33),
+  [:34](../../../../crates/roym_web/ui/src/i18n/hi.ftl#L34) against
+  [directory.ts:227](../../../../crates/roym_web/ui/src/screens/directory.ts#L227).
+- **Problem:** (1) D-B1a-10: "A literal on a line that B1a edits moves
+  too." These four lines were edited (the format call) and their literals
+  did not move. `directory/membership.ts` is excluded by name in D-B1a-10,
+  so its lines are right as they are. The change doc's Deviations do not
+  record the difference. (2) `directory-search-failed` and
+  `directory-search-not-started` in Hindi say to press "खोजें", but the
+  button is still drawn as `Search` until B1b.
+- **Failure case:** A Hindi user sees `Signed 5 मिनट पहले` and `expires 21
+  सित॰ 2026`: an English word glued to Hindi output on the same line. After
+  a failed search, the Hub tells them to press a button that is not on
+  the screen.
+- **Fix:** (1) Move the four literals into the string catalog with the
+  value as a variable (`directory-signed-age = Signed { $age }`,
+  `synorg-credential-expires = expires { $date }`, `synorg-until = until {
+  $date }`, `synorg-until-lifted = until lifted`), English unchanged, or
+  record "literals on these lines wait for B1b" in Deviations. (2) Until
+  B1b moves the button, the Hindi text names it as it is drawn: `"Search"
+  दबाएँ`. Or move the button label now (`directory-search-button`) and keep
+  the e2e text `Search` in English.
+- *Status:* Open.
+
+#### R7 (minor) — `mise run verify` was not run, so the new `hub-ui` gate has never run inside the runner
+
+- **Where:** status.md B1a row ("Full `mise run verify` not run by the
+  implementer; CI runs it"); plan exit criterion 12; AGENTS.md "Mandatory
+  Pre-Completion Verification";
+  [verify.rs:102](../../../../xtask/src/verify.rs#L102).
+- **Problem:** CI does not run `cargo xtask verify`. It runs the same
+  commands as separate jobs (`.github/workflows/ci.yml:78` runs
+  `mise run test:roym-ui`). So CI proves the commands, but no one has run
+  the runner with the new gate: its log file under `target/gates/`, its
+  place in the order, and `skip_on_docs_only`. The status line says "CI
+  runs it", which is not true for the runner.
+- **Failure case:** A broken gate entry (for example a `mise` task that
+  fails when called from the runner's working directory) is found by the
+  next person who runs `mise run verify`, on an unrelated change.
+- **Fix:** In the fix session, after the fixes, run `mise run verify` with
+  no `--skip` as a background job. Write the summary line, with the
+  `hub-ui` gate's time, in the B1a row of status.md, and change "CI runs
+  it" to the result.
+- *Status:* Open.
