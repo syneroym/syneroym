@@ -3,8 +3,8 @@
 *Reader: the developer (or AI) who implements slice B1a. You do not have the
 planning conversation. This plan is meant to stand alone.*
 
-**Status: plan written, 2026-11-06. Plan review rounds 1 and 2
-([slice-b1a-review.md](slice-b1a-review.md), P1 to P14) are folded in. The
+**Status: plan written, 2026-11-06. Plan review rounds 1 to 3
+([slice-b1a-review.md](slice-b1a-review.md), P1 to P15) are folded in. The
 owner answered Q1 to Q6 on 2026-11-06, all (a); the answer is under each
 question.**
 
@@ -473,10 +473,14 @@ These are written into the change doc at close-out (section 3).
     gives `"Schedule:"`; checked on 0.19.1). So a message never starts or
     ends with a space. Two rules keep today's spaces:
     1. A label is followed by its value through one helper,
-       `labelled(parent, labelId, ...nodes)` in `src/dom.ts`. It appends
-       `t(labelId)`, one `" "` text node, then the nodes. The label
-       message has no trailing space (`terms-payee-label = Payee, as
-       agreed in this quote:`).
+       `labelled(parent, label: string, ...nodes)` in `src/dom.ts`. It
+       takes the translated text, not an id, and appends `label`, one
+       `" "` text node, then the nodes. Callers write
+       `labelled(row, t("terms-payee-label"), …)`, so every `t()` call
+       keeps a literal id at the call site, the scan counts it, and
+       `dom.ts` needs no exception (review P15). The label message has no
+       trailing space (`terms-payee-label = Payee, as agreed in this
+       quote:`).
     2. A separator that a translator may change keeps its spaces with a
        string literal placeholder: `terms-range-separator = { " - " }`
        (checked: the spaces stay).
@@ -522,7 +526,7 @@ These are written into the change doc at close-out (section 3).
   - **Card rows with a time (Q3, review P1).** Two kinds:
     1. *The time ends the row or stands alone:* `Schedule: A - B`,
        `Window: A - B`, `Observed: A`, `Expires: A` (not expired) and
-       `Quote expiry: A`. `labelled(row, "terms-schedule-label", …)` with
+       `Quote expiry: A`. `labelled(row, t("terms-schedule-label"), …)` with
        the `timeElement` nodes, and `t("terms-range-separator")` as a text
        node between two times (D-B1a-3, spaces).
     2. *Text follows the time:* `Expires: A (expired)` and `This quote
@@ -810,7 +814,8 @@ Nothing calls the new modules yet, so the Hub does not change.
    with a space (D-B1a-3, spaces). The labels that today end with a space
    and are followed by another node (`quote.ts:140`, `:192`,
    `agreement_receipt.ts:166`, `:215`, `payment_request.ts:55`) use
-   `labelled()`.
+   `labelled(row, t("…-label"), …)`: the caller translates, so the id is a
+   literal that the catalog scan sees.
 2. `cards/wording.ts`: delete; uses → `t("payment-notice")` and so on.
    `groups/words.ts`: delete the notice constants; `deliveryWords` and
    `membershipEventWords` call `t()`; content types and `shortAddress`
