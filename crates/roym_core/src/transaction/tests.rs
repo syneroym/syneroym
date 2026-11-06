@@ -780,55 +780,18 @@ fn the_ui_notices_match_this_crate() {
     use std::{fs, path::PathBuf};
 
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let messages_path = manifest_dir.join("../roym_web/ui/src/screens/messages.ts");
-    assert!(messages_path.exists(), "missing ../roym_web/ui/src/screens/messages.ts");
+    let path = manifest_dir.join("../roym_web/ui/src/i18n/en.ftl");
+    assert!(path.exists(), "missing ../roym_web/ui/src/i18n/en.ftl");
+    let content = fs::read_to_string(&path).expect("Failed to read ../roym_web/ui/src/i18n/en.ftl");
 
-    let content = fs::read_to_string(&messages_path)
-        .expect("Failed to read ../roym_web/ui/src/screens/messages.ts");
-
-    fn parse_ts_const_string(content: &str, const_name: &str) -> String {
-        let start_idx = content
-            .find(const_name)
-            .and_then(|idx| content[idx..].find('='))
-            .map(|offset| content.find(const_name).unwrap() + offset)
-            .unwrap_or_else(|| panic!("{const_name} assignment not found"));
-        let slice = &content[start_idx + 1..];
-        let mut in_quote = false;
-        let mut quote_char = ' ';
-        let mut end_idx = slice.len();
-        for (i, c) in slice.char_indices() {
-            if in_quote && c == quote_char {
-                in_quote = false;
-            } else if !in_quote && (c == '"' || c == '\'') {
-                in_quote = true;
-                quote_char = c;
-            } else if !in_quote && c == ';' {
-                end_idx = i;
-                break;
-            }
-        }
-        let expr = &slice[..end_idx];
-        let mut result = String::new();
-        for part in expr.split('+') {
-            let trimmed = part.trim();
-            if (trimmed.starts_with('"') && trimmed.ends_with('"'))
-                || (trimmed.starts_with('\'') && trimmed.ends_with('\''))
-            {
-                result.push_str(&trimmed[1..trimmed.len() - 1]);
-            }
-        }
-        result
+    for (id, notice) in [
+        ("request-data-use-notice", DEFAULT_DATA_USE_NOTICE),
+        ("quote-address-disclosure-notice", ADDRESS_DISCLOSURE_NOTICE),
+    ] {
+        let line = format!("{id} = {notice}");
+        assert!(
+            content.lines().any(|l| l == line),
+            "en.ftl must hold the whole line `{id} = <the Rust notice>`"
+        );
     }
-
-    let ui_data_use = parse_ts_const_string(&content, "DEFAULT_DATA_USE_NOTICE");
-    assert_eq!(
-        ui_data_use, DEFAULT_DATA_USE_NOTICE,
-        "UI DEFAULT_DATA_USE_NOTICE must match Rust DEFAULT_DATA_USE_NOTICE"
-    );
-
-    let ui_address_disc = parse_ts_const_string(&content, "ADDRESS_DISCLOSURE_NOTICE");
-    assert_eq!(
-        ui_address_disc, ADDRESS_DISCLOSURE_NOTICE,
-        "UI ADDRESS_DISCLOSURE_NOTICE must match Rust ADDRESS_DISCLOSURE_NOTICE"
-    );
 }
