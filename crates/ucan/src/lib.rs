@@ -12,6 +12,6 @@ pub use capability::{Ability, Capability, ResourceUri};
 pub use session::SessionContext;
 pub use session_token::{
     AUTH_METHOD_DELEGATED_KEY, AUTH_METHOD_FIXED, AUTH_METHOD_LOCAL, CLAIM_AUTH_METHOD,
-    CLAIM_DELEGATION_EXPIRES_AT_SECS, SessionToken, SessionTokenClaims,
+    CLAIM_DELEGATION_EXPIRES_AT_SECS, CLAIM_SESSION_NONCE, SessionToken, SessionTokenClaims,
 };
 pub use token::{CapabilityToken, ChainVerifyOpts, verify_chain};
