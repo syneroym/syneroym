@@ -602,3 +602,59 @@ instead (see P10 below). I ran no plan step.
   spaces) or follows a space, and that string and template contents are
   skipped first.
 - *Status:* Fixed (96e0120e). Now in: section 7.1 ("How the source scan works": `ts.createSourceFile`, plain-identifier callee, renamed imports refused, `"http://"` helper test). Plan-author note: the parser also exposed local variables named `t` (`quote.ts:77`, `agreement_receipt.ts:108`, `render.ts:22`, `money.ts:50`, `listings/editor.ts:118`, `:131`) that would hide the imported `t()`; Step 5 item 2 renames them.
+
+## Plan review round 3 — Claude Sonnet 5.5 (Claude Code desktop), 2026-11-06
+
+Checked on `feat/m08b-b1a-localization-mechanism` at `c4f13195`, in the main
+checkout (not a worktree). The fix commit `96e0120e` changes only the plan,
+this review file and `status.md`, so no code changed.
+
+**Summary:** P13 and P14 are confirmed fixed. 1 new item, minor: 0 blocker,
+0 major, 1 minor. **1 open (P15).**
+
+### Round 2 items — confirmed
+
+- **P13 — confirmed fixed, with one new point (P15).** D-B1a-3 now has the
+  rule "a message never starts or ends with a space" and the two ways to keep
+  a space. I ran both again on `@fluent/bundle` 0.19.1: `label = Schedule: `
+  gives `"Schedule:"`, and `terms-range-separator = { " - " }` gives `" - "`.
+  The five labels in Step 5 item 1 are the right ones (`quote.ts:140`,
+  `:192`, `agreement_receipt.ts:166`, `:215`, `payment_request.ts:55`). No
+  selector in the unit tests or e2e specs reads the label `<span>` (they read
+  `.quote-payee a` and `.quote-payee` text), so `labelled()` may drop it.
+  The full-row `textContent` test (Step 5 item 6) and the `.ftl`
+  trailing-whitespace test (section 7.1) are the right checks.
+- **P14 — confirmed fixed.** The scan now parses with `ts.createSourceFile`
+  (`typescript` is a dev dependency, `package.json:19`), skips comments and
+  strings, and has the `"http://"` helper test. The shadowing list that the
+  plan author added is complete: a search of all non-test sources finds local
+  names `t` only at `quote.ts:77`, `agreement_receipt.ts:108`, `render.ts:22`,
+  `money.ts:50` and `listings/editor.ts:118`, `:131`. Local `t` in a file that
+  calls `t()` is a type error (`AgreedTermsData` and `string` are not
+  callable), so the build catches a missed one. `tsconfig.json` has
+  `include: ["src"]`, so `scan.ts` is type-checked by `tsc` and linted, and
+  `vite build` leaves it out of the bundle because `main.ts` never imports it.
+
+### New findings
+
+#### P15 (minor) — `labelled(parent, labelId, …)` calls `t()` with a variable, which the plan's own scan refuses
+
+- **Where:** D-B1a-3 "Spaces at the ends of a message", rule 1;
+  D-B1a-5 kind 1 rows (`labelled(row, "terms-schedule-label", …)`); section
+  7.1 "How the source scan works", step 2.
+- **Problem:** `labelled` lives in `src/dom.ts` and "appends `t(labelId)`".
+  That is a `t()` call with a non-literal first argument. The scan refuses
+  that everywhere except `src/i18n/i18n.ts`. Also, the callers pass the id as
+  a plain string (`"terms-schedule-label"`). The scan sees no `t("…")` or
+  `messageId("…")` at the call site, so the id is never counted as used.
+- **Failure case:** The catalog test fails on `dom.ts` the first time it runs
+  (so the implementer adds an exception for `dom.ts`, which weakens the rule),
+  or reports `terms-schedule-label` and the other label ids as unused. If the
+  exception is added, a typo in a label id passes the "every id is in
+  `en.ftl`" check and shows the raw id on a card.
+- **Fix:** Make `labelled` take the translated text:
+  `labelled(parent, label: string, ...nodes)`. Callers write
+  `labelled(row, t("terms-schedule-label"), …)`. Every `t()` call then has a
+  literal id at the call site, `dom.ts` needs no exception, and the scan counts
+  the id. Change rule 1, the kind 1 text and Step 5 item 1 to match.
+- *Status:* Open.
