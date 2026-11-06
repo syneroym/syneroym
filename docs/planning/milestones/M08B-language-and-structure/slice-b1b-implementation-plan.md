@@ -3,8 +3,8 @@
 *Reader: the developer (or AI) who implements slice B1b. You do not have the
 planning conversation. This plan is meant to stand alone.*
 
-**Status: plan written, 2026-11-06. Plan review round 1
-([slice-b1b-review.md](slice-b1b-review.md), P1 to P9) is folded in. The
+**Status: plan written, 2026-11-06. Plan review rounds 1 and 2
+([slice-b1b-review.md](slice-b1b-review.md), P1 to P12) are folded in. The
 owner answered Q1 to Q7 on 2026-11-06, all (a); the answer is under each
 question.**
 
@@ -12,7 +12,9 @@ question.**
 the commits of section 6 in that order. The branch starts from `main` at
 `1a62c26a` (B1a is merged, [PR #349](https://github.com/syneroym/syneroym/pull/349))
 and already holds the plan commits. `main` at `8b39b525` (an auth fix)
-is merged in; it changes no file this plan names. B1b moves every visible English string
+is merged in; it changes no line this plan names (it edits
+`docs/system-architecture.md` near line 711, one line for one line, so
+`:1414` does not move). B1b moves every visible English string
 that is left in the Hub into the string catalogs `en.ftl` and `hi.ftl`. It
 adds the check that fails the Hub build when a string literal is set as
 visible text outside the catalog (ML-1). English text stays the same, byte
@@ -578,7 +580,12 @@ These are written into the change doc at close-out (section 3).
   The `hub-ui` gate runs it with the other tests.
 - **D-B1b-4. Hub-made errors and browser errors.**
   - A new file `src/hub-error.ts`: `export class HubError extends Error {}`
-    with `name = "HubError"`. Its own file, so `money.ts`,
+    with `name = "HubError"`. A `HubError` is a failure whose message the
+    Hub shows as it is, with no wrapper: either Hub-made text in the UI
+    language, or a service text that the Hub shows as the detail of its
+    own message (the login case below). The class comment uses these words
+    (review P12), so no later change treats every `HubError` message as
+    translated. Its own file, so `money.ts`,
     `listings/editor.ts`, `session/login.ts` and `directory/search.ts` can
     import it without an import cycle through `dom.ts` and `rpc.ts`.
   - `MoneyInputError` and `ListingInputError` extend `HubError` (their
@@ -586,7 +593,7 @@ These are written into the change doc at close-out (section 3).
     `directory/search.ts` throw `HubError`. Every Hub-made error text comes
     from `t()` at the place it is thrown.
   - `errText(err)` in `dom.ts`: `RpcError` → as in B1a; `HubError` →
-    `err.message` (already in the UI language); any other `Error` →
+    `err.message` as it is (no wrapper); any other `Error` →
     `t("error-unexpected", { detail: err.message })`; anything else →
     `t("error-unexpected", { detail: String(err) })`.
     English `error-unexpected = { $detail }`, so English output does not
@@ -717,8 +724,12 @@ These are written into the change doc at close-out (section 3).
     the fixtures use the real codes (`delivered`, `deposited`, `active`,
     `draft`, `fraud`, `open`, `person`, and a revoked and a current
     credential), so a screen that shows a code raw fails the sweep.
-  - **Allowed Latin words** are a fixed list in the test file, each with a
-    comment: `Roym`, `SynOrg`, `DID`, `roymctl` and the words of the
+  - **Allowed Latin words** are a fixed list in a shared test helper,
+    `src/testing/latin-words.ts` (review P10), not in the test file. It
+    exports the list, each item with a comment, and
+    `leftoverLatin(text): string[]`, which removes the `Zq` words and the
+    allowed words and returns the Latin words that are left. Step 3
+    creates it, and Step 6 and the sweep import it. The list: `Roym`, `SynOrg`, `DID`, `roymctl` and the words of the
     commands inside messages (`--master`, `--registry-url`, …), and, as
     separate named items, the time zone name `UTC` (the tests run with
     `TZ=UTC`), the currency codes of the fixtures and the `detail` text
@@ -799,6 +810,8 @@ Done in the planning session: this file and the B1b row of
    `common-` messages of D-B1b-10.
 4. `rpc.ts:69`: `t("error-no-detail")`.
 5. `src/testing/stub-rpc.ts` (D-B1b-12); the three test files import it.
+   `src/testing/latin-words.ts` (D-B1b-12, review P10), with a small test
+   of `leftoverLatin` in `src/testing/latin-words.test.ts`.
 6. `errors.test.ts`: the new cases of section 7.1.
 7. Remove `rpc.ts`, `dom.ts`, `money.ts` and `directory/search.ts` from
    `NOT_MOVED_YET` if they are on it and now clean (review P4). The
@@ -847,9 +860,13 @@ table, D-B1b-6). Remove these files from `NOT_MOVED_YET`. Update
    see"), so this list is the rule.
 3. Tests: `listings.test.ts` and `editor.test.ts` keep their English
    expectations. Add one table test in Hindi over every `ListingInputError`
-   path (the 11 throws, and the "is required" and "whole number" errors
-   for each of the 8 field names): each message has a Devanagari letter
-   and no Latin word outside the sweep's allowed list (review P7).
+   path: the 11 throws, the "whole number" error for each of the 8 field
+   names, and the "is required" error for the 7 names that go through
+   `requireWhole` (`capacity` goes through `toWholeCount` only, and an
+   empty capacity gives the slot error at `editor.ts:296`, one of the 11;
+   review P11). Each message has a Devanagari letter, and
+   `leftoverLatin()` from `src/testing/latin-words.ts` returns nothing
+   (review P7, P10).
 4. Remove the two files from `NOT_MOVED_YET`.
 
 ### Step 7 — Messages, requests, quotes
@@ -1069,6 +1086,7 @@ needed for parity.
 | `src/i18n/visible-text.test.ts` | new | About 150 |
 | `src/i18n/hindi-screens.test.ts` | new | About 300 (mostly fixtures) |
 | `src/testing/stub-rpc.ts` | new | About 25 |
+| `src/testing/latin-words.ts` | new | About 40 (the list with comments, `leftoverLatin`) |
 | `crates/roym_core/src/transaction/tests.rs` | — | About −35 (the TS-string parser goes) |
 | `crates/roym_core/src/membership/tests.rs` | — | ±0 (a path string) |
 
