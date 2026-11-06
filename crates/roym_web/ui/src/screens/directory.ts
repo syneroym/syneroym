@@ -316,7 +316,7 @@ function renderHits(host: HTMLElement, hits: MergedHit[], truncated: boolean, ru
       card.appendChild(text("div", `Categories: ${hit.categories.join(", ")}`, "hit-categories"));
     }
     card.appendChild(text("div", `Offered by: ${hit.issuer}`, "hit-issuer"));
-    card.appendChild(text("div", `Signed ${formatAge(hit.age_secs)}`, "hit-age"));
+    card.appendChild(text("div", t("directory-signed-age", { age: formatAge(hit.age_secs) }), "hit-age"));
 
     const evidence = document.createElement("div");
     evidence.className = "hit-evidence";

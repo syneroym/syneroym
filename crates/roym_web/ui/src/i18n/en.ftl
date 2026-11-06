@@ -66,9 +66,9 @@ group-add-unreachable = Could not reach this person to add them. Someone you hav
 group-hidden-notice = A hidden group is not shown. New messages are held for up to 30 days, and you stay a member until the owner removes you.
 group-transcript-check-notice = Members who see the same code hold the same messages in the same order.
 group-cards-not-allowed = Cards are sent only in a 1:1 conversation.
-group-session-ended-notice = Your session ended, for example because this installation restarted. Log in again.
 
 # Group lines
+group-session-ended-notice = Your session ended, for example because this installation restarted. Log in again.
 group-delivery-pending = Not yet delivered to every member
 group-delivery-delivered = Delivered to every member
 group-delivery-failed = Not delivered to every member
@@ -192,3 +192,9 @@ gallery-heading = Card Gallery (Sample Cards)
 
 # Shown where a time from another node is not a date
 date-invalid = Invalid Date
+
+# Lines of the Directory and SynOrg screens that show a time
+directory-signed-age = Signed { $age }
+synorg-credential-expires = expires { $date }
+synorg-until = until { $date }
+synorg-until-lifted = until lifted

@@ -30,8 +30,8 @@ error-network = इस इंस्टॉलेशन तक नहीं पह
 error-http = सर्वर से त्रुटि मिली (HTTP { $code })
 
 login-failed = साइन इन नहीं हो सका: { $detail }
-directory-search-failed = खोज नहीं हो सकी: { $detail }। फिर कोशिश करने के लिए "खोजें" दबाएँ।
-directory-search-not-started = यह इंस्टॉलेशन खोज शुरू नहीं कर सका। फिर कोशिश करने के लिए "खोजें" दबाएँ।
+directory-search-failed = खोज नहीं हो सकी: { $detail }। फिर कोशिश करने के लिए "Search" दबाएँ।
+directory-search-not-started = यह इंस्टॉलेशन खोज शुरू नहीं कर सका। फिर कोशिश करने के लिए "Search" दबाएँ।
 messages-quote-expired = यह कोटेशन समाप्त हो गया है। नया कोटेशन माँगें।
 messages-accept-failed = स्वीकार नहीं हो सका: { $detail }
 contacts-upsert-failed = संपर्क सहेजा नहीं जा सका: { $detail }
@@ -63,8 +63,8 @@ group-add-unreachable = इस व्यक्ति तक पहुँच न�
 group-hidden-notice = छिपाया हुआ समूह दिखाया नहीं जाता। नए संदेश 30 दिन तक रखे जाते हैं, और जब तक मालिक आपको हटा न दे, आप सदस्य बने रहते हैं।
 group-transcript-check-notice = जिन सदस्यों को एक ही कोड दिखता है, उनके पास वही संदेश उसी क्रम में हैं।
 group-cards-not-allowed = कार्ड केवल आमने-सामने की (1:1) बातचीत में भेजे जाते हैं।
-group-session-ended-notice = आपका सत्र खत्म हो गया, जैसे कि इंस्टॉलेशन दोबारा चालू होने से। फिर से लॉग इन करें।
 
+group-session-ended-notice = आपका सत्र खत्म हो गया, जैसे कि इंस्टॉलेशन दोबारा चालू होने से। फिर से लॉग इन करें।
 group-delivery-pending = अभी हर सदस्य तक नहीं पहुँचा
 group-delivery-delivered = हर सदस्य तक पहुँच गया
 group-delivery-failed = हर सदस्य तक नहीं पहुँचा
@@ -182,3 +182,8 @@ gallery-ping-error = प्रोफ़ाइल पिंग में त्�
 gallery-heading = कार्ड गैलरी (नमूना कार्ड)
 
 date-invalid = अमान्य तारीख
+
+directory-signed-age = हस्ताक्षर: { $age }
+synorg-credential-expires = वैधता खत्म: { $date }
+synorg-until = { $date } तक
+synorg-until-lifted = जब तक हटाया न जाए
