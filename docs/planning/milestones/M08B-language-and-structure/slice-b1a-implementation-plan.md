@@ -3,8 +3,8 @@
 *Reader: the developer (or AI) who implements slice B1a. You do not have the
 planning conversation. This plan is meant to stand alone.*
 
-**Status: plan written, 2026-11-06. Plan review round 1
-([slice-b1a-review.md](slice-b1a-review.md), P1 to P12) is folded in. The
+**Status: plan written, 2026-11-06. Plan review rounds 1 and 2
+([slice-b1a-review.md](slice-b1a-review.md), P1 to P14) are folded in. The
 owner answered Q1 to Q6 on 2026-11-06, all (a); the answer is under each
 question.**
 
@@ -468,6 +468,20 @@ These are written into the change doc at close-out (section 3).
     way. Formatting errors also go to `console.error`.
   - Codes, ids and years are passed as strings, not numbers (section 2.2
     point 5).
+  - **Spaces at the ends of a message (review P13).** Fluent removes the
+    spaces at the start and end of a message value (`label = Schedule: `
+    gives `"Schedule:"`; checked on 0.19.1). So a message never starts or
+    ends with a space. Two rules keep today's spaces:
+    1. A label is followed by its value through one helper,
+       `labelled(parent, labelId, ...nodes)` in `src/dom.ts`. It appends
+       `t(labelId)`, one `" "` text node, then the nodes. The label
+       message has no trailing space (`terms-payee-label = Payee, as
+       agreed in this quote:`).
+    2. A separator that a translator may change keeps its spaces with a
+       string literal placeholder: `terms-range-separator = { " - " }`
+       (checked: the spaces stay).
+    A label and its value in one message (`terms-total = Total: { $amount }`)
+    needs neither rule.
   - `messageId(id: string): string` returns its argument. It marks ids
     that are kept in a table (a `Map`, D-B1a-15). Such a table is read
     only through
@@ -508,9 +522,9 @@ These are written into the change doc at close-out (section 3).
   - **Card rows with a time (Q3, review P1).** Two kinds:
     1. *The time ends the row or stands alone:* `Schedule: A - B`,
        `Window: A - B`, `Observed: A`, `Expires: A` (not expired) and
-       `Quote expiry: A`. A label message (`terms-schedule-label =
-       Schedule:`), then `timeElement` nodes, with
-       `t("terms-range-separator")` as a text node between two times.
+       `Quote expiry: A`. `labelled(row, "terms-schedule-label", …)` with
+       the `timeElement` nodes, and `t("terms-range-separator")` as a text
+       node between two times (D-B1a-3, spaces).
     2. *Text follows the time:* `Expires: A (expired)` and `This quote
        expired on A. Ask for a new one.` One whole message with a `$date`
        argument, `$date` = `formatDateTime(secs)` as plain text, no
@@ -792,7 +806,11 @@ Nothing calls the new modules yet, so the Hub does not change.
    visible string in `cards/refused.ts`, `cards/unknown.ts` and
    `cards/templates/*.ts`. About 110 messages. Use Fluent variables for
    the values (`terms-total = Total: { $amount }`, with `amount` already
-   formatted by `formatMinor`, so a string).
+   formatted by `formatMinor`, so a string). No message starts or ends
+   with a space (D-B1a-3, spaces). The labels that today end with a space
+   and are followed by another node (`quote.ts:140`, `:192`,
+   `agreement_receipt.ts:166`, `:215`, `payment_request.ts:55`) use
+   `labelled()`.
 2. `cards/wording.ts`: delete; uses → `t("payment-notice")` and so on.
    `groups/words.ts`: delete the notice constants; `deliveryWords` and
    `membershipEventWords` call `t()`; content types and `shortAddress`
@@ -803,6 +821,14 @@ Nothing calls the new modules yet, so the Hub does not change.
    value shown as it came" rule. Update the callers in
    `screens/groups.ts`, `screens/listings.ts`, `screens/messages.ts`,
    `listings/editor.ts` and the cards (the D-B1a-10 rule).
+   Some files already have a local named `t`, which would hide the
+   imported `t()`: `quote.ts:77` and `agreement_receipt.ts:108` (`const t:
+   AgreedTermsData`, rename to `terms`), `render.ts:22` (a callback
+   parameter, rename to `type`). `money.ts:50` and `listings/editor.ts:118`,
+   `:131` (`const t = input.trim()`, rename to `text`) are renamed in the
+   step that first imports `t` there (Step 3 for `money.ts`). TypeScript
+   reports a hidden `t` as "not callable", so the build catches a missed
+   one.
 3. `booking_progress.ts`: `STATE_WORDS` and `CONFLICT_SENTENCES` become
    `Map` id tables read with `lookupText` (D-B1a-15); an unknown value, including `constructor`
    or `__proto__`, is shown as it came (as today for real unknown values).
@@ -831,7 +857,12 @@ Nothing calls the new modules yet, so the Hub does not change.
    `screens/groups.test.ts` import `t()` or the new functions instead of
    the deleted constants. Date checks on kind 1 rows read
    `time[datetime]`; checks on kind 2 rows compare with
-   `formatDateTime(secs)` called in the test (same engine). Add the three
+   `formatDateTime(secs)` called in the test (same engine). In
+   `templates.test.ts`, compare the full `textContent` of the quote's
+   `Payee`, `Dispute path` and `Schedule` rows with today's English
+   (`Payee, as agreed in this quote: …`, `Dispute path: …`,
+   `Schedule: A - B`), so a lost space fails here and not only in e2e
+   (review P13). Add the three
    `constructor` / `toString` / `__proto__` cases per id table
    (D-B1a-15).
 7. e2e: `roym-hub.spec.ts:1095` to `:1098` test an expired quote, so both
@@ -968,20 +999,30 @@ skipping `*.test.ts`)
 - Every entry line (`^-?[A-Za-z][A-Za-z0-9_-]*\s*=`) of each `.ftl` file is
   a parsed entry (`resource.body.length` equals the count): no silent junk
   (section 2.2 point 4).
+- No line of a `.ftl` file ends with a space or a tab. Fluent would drop
+  such a space without an error (D-B1a-3, spaces; review P13).
 - **How the source scan works** (review P12). Write it as one helper,
   `findMessageIds(source)`, in `src/i18n/scan.ts`, because B1b's build
-  check reuses it:
-  1. Remove comments first (`//` to end of line, and `/* … */`), so an
-     example in a comment is not a use.
-  2. Find calls with a word boundary: `(?<![\w.$])t\(` and
-     `(?<![\w.$])messageId\(`. So `format(`, `list(` and `x.t(` do not
-     match.
-  3. The first argument must be one string literal (`"…"` or `'…'`). Any
-     other first argument of `t(` (a variable, a template string,
-     `` `error-${x}` ``) fails the test, except in `src/i18n/i18n.ts`
-     itself (inside `lookupText`). To pass an id through a variable, put
-     it in a `Map` with `messageId("…")` and read it with `lookupText`
-     (D-B1a-3).
+  check reuses it. It parses the source with the TypeScript compiler
+  (`ts.createSourceFile`; `typescript` is already a dev dependency,
+  `package.json:19`), not with regular expressions (review P14). A text
+  scan cannot tell a `//` in `"http://"` from a comment, and five card
+  lines have one (`quote.ts:142`, `:194`, `agreement_receipt.ts:168`,
+  `:217`, `payment_request.ts:57`). The parser skips comments, strings
+  and regular expressions by itself. Only tests (and later B1b's build
+  check) import `scan.ts`, so `typescript` does not enter the bundle.
+  1. Walk the call expressions. A call is a use when its callee is the
+     plain identifier `t` or `messageId`. So `format(`, `list(` and
+     `x.t(` are not uses.
+  2. The first argument must be a string literal or a template with no
+     `${}`. Any other first argument of `t(` (a variable, a template
+     string `` `error-${x}` ``) fails the test, except in
+     `src/i18n/i18n.ts` itself (inside `lookupText`). To pass an id
+     through a variable, put it in a `Map` with `messageId("…")` and read
+     it with `lookupText` (D-B1a-3).
+  3. An import of `t` or `messageId` under another name
+     (`import { t as tr }`) fails the test, because the scan would not
+     see its calls.
 - Every id found by the scan is in `en.ftl`.
 - `hi.ftl` has exactly the ids of `en.ftl` (the owner asked for Hindi for
   every string; a later partial language is allowed, this test names only
@@ -995,7 +1036,9 @@ skipping `*.test.ts`)
   slice needs ids used only from data.
 - The scan helper itself: a comment with `t("x")` finds nothing;
   `format("x")` finds nothing; `` t(`a-${b}`) `` is reported as
-  non-literal; `messageId('y')` finds `y`.
+  non-literal; `messageId('y')` finds `y`; a line
+  `u.startsWith("http://") ? t("a") : t("b")` finds `a` and `b`;
+  `import { t as tr }` is reported.
 
 `src/i18n/format.test.ts`
 
@@ -1105,7 +1148,9 @@ rule in this plan: a state that must exist before setup (P2, D-B1a-3), a
 failure path with no rule (P3, P6, P7: D-B1a-7, D-B1a-12, D-B1a-8), data
 from other nodes used as a key (P5, D-B1a-15), a test that cannot see the
 real build or browser (P8, P10: Step 7 item 3, Step 2 item 1), and a
-text scan that can be fooled (P12, section 7.1). The S0 kinds:
+text scan that can be fooled (P12, P14: the scan now parses the source,
+section 7.1). Round 2 added one Fluent trap: a space at the end of a
+message is removed (P13, D-B1a-3 and a `.ftl` whitespace test). The S0 kinds:
 
 - **A library claim not checked in its source** (S0 P1): the three Fluent
   behaviours this plan depends on (isolation, silent junk, number args)
