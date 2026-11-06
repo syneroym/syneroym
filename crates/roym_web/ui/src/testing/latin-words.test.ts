@@ -21,8 +21,10 @@ describe("leftoverLatin", () => {
   });
 
   it("does not let an allowed word hide a longer English word", () => {
-    expect(leftoverLatin("Roymcool")).toEqual(["cool"]);
+    expect(leftoverLatin("Roymcool")).toEqual(["Roymcool"]);
     expect(leftoverLatin("name")).toEqual(["name"]);
+    expect(leftoverLatin("ample pmx")).toEqual(["ample", "pmx"]);
+    expect(leftoverLatin("1:30 pm")).toEqual([]);
   });
 
   it("gives each allowed item a reason", () => {

@@ -86,6 +86,44 @@ describe("the string catalog files", () => {
   });
 });
 
+/// Messages that hold no word by design: they are a separator, a name or a
+/// shape that reads the same in every language. Any other Hindi message that
+/// has no Devanagari letter is an English sentence that was left in.
+const NO_WORDS = [
+  // A dash between two values.
+  "terms-range-separator",
+  // The product name, written the same in every language.
+  "tab-synorg",
+  // `v` and a version number.
+  "listing-version",
+  // Two times, a dash and a count.
+  "listing-slot-line",
+  // Four values joined by punctuation.
+  "safety-report-row",
+];
+
+describe("the Hindi file", () => {
+  it("has a Devanagari letter in every message, except the ones that hold no word", () => {
+    const bodies = new Map<string, string>();
+    let current: string | undefined;
+    for (const line of hindi.split("\n")) {
+      if (line.startsWith("#")) continue;
+      const id = ID.exec(line)?.[1];
+      if (id !== undefined) current = id;
+      if (current !== undefined) bodies.set(current, `${bodies.get(current) ?? ""}${line}\n`);
+    }
+    const bare = [...bodies.entries()]
+      .filter(([id, body]) => !NO_WORDS.includes(id) && !/[ऀ-ॿ]/.test(body))
+      .map(([id]) => id);
+    expect(bare).toEqual([]);
+  });
+
+  it("lists in NO_WORDS only messages that exist", () => {
+    const ids = new Set(variablesById(hindi).keys());
+    expect(NO_WORDS.filter((id) => !ids.has(id))).toEqual([]);
+  });
+});
+
 describe("the ids the source uses", () => {
   const used = Object.entries(sources)
     .filter(([path]) => !path.endsWith(".test.ts") && path !== "./i18n.ts")

@@ -14,11 +14,6 @@ const sources = Object.fromEntries(
   ]),
 );
 
-/// Files that set visible text from literals. They are not read by the
-/// check yet.
-const NOT_MOVED_YET: string[] = [
-];
-
 /// Files the check does not read: tests, the shared test helpers, and the
 /// two files of the string catalog mechanism, whose own texts go only to
 /// the console or to tests.
@@ -36,19 +31,16 @@ const reported = (code: string): number => findVisibleText(code, "x.ts").length;
 describe("the Hub source", () => {
   const checked = Object.entries(sources).filter(([path]) => isChecked(path));
 
-  it("sets no visible text outside the string catalog", () => {
-    const problems = checked
-      .filter(([path]) => !NOT_MOVED_YET.includes(path))
-      .flatMap(([path, source]) => findVisibleText(source, path.replace("../", "src/")));
-    expect(problems).toEqual([]);
+  it("reads the screens, and not only a few files", () => {
+    expect(checked.length).toBeGreaterThan(20);
+    expect(checked.map(([path]) => path)).toContain("../screens/messages.ts");
   });
 
-  it("lists in NOT_MOVED_YET only files that still have visible text", () => {
-    for (const path of NOT_MOVED_YET) {
-      const source = sources[path];
-      expect(source, `${path} exists`).toBeDefined();
-      expect(findVisibleText(source, path), `${path} is already clean`).not.toEqual([]);
-    }
+  it("sets no visible text outside the string catalog", () => {
+    const problems = checked.flatMap(([path, source]) =>
+      findVisibleText(source, path.replace("../", "src/")),
+    );
+    expect(problems).toEqual([]);
   });
 });
 
