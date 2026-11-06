@@ -1,6 +1,5 @@
 import {
   buildSetListingParams,
-  ListingInputError,
   slotFromLocalDatetimes,
   type ListingForm,
   type OpenTo,
@@ -13,9 +12,9 @@ import {
   SERVICE_LOCATION_KINDS,
 } from "../listings/labels";
 import { publishRefusalWords } from "../directory/membership";
-import { refiller } from "../dom";
+import { errText, refiller } from "../dom";
 import { formatDateTime } from "../i18n/format";
-import { call, RpcError } from "../rpc";
+import { call } from "../rpc";
 
 interface ListingListRow {
   listing_id: string;
@@ -25,11 +24,6 @@ interface ListingListRow {
   record_id: string;
   updated_at_secs: number;
   version_count: number;
-}
-
-function errText(err: unknown): string {
-  if (err instanceof RpcError || err instanceof ListingInputError) return err.message;
-  return err instanceof Error ? err.message : String(err);
 }
 
 /// A stranger's listing text is only ever a text node.

@@ -1,3 +1,5 @@
+import { errText } from "../dom";
+import { t } from "../i18n/i18n";
 import { call } from "../rpc";
 
 /// The five app-data bundles Roym can export today. Each service owns its
@@ -90,7 +92,7 @@ function bundleRow(b: (typeof BUNDLES)[number]): HTMLElement {
       a.click();
       URL.revokeObjectURL(url);
     } catch (err) {
-      status.textContent = `Export failed: ${err instanceof Error ? err.message : String(err)}`;
+      status.textContent = t("backup-export-failed", { detail: errText(err) });
     }
   };
 
@@ -113,7 +115,7 @@ function bundleRow(b: (typeof BUNDLES)[number]): HTMLElement {
       const count = res?.imported_records ?? res?.imported ?? "bundle";
       status.textContent = `Imported: ${count} record(s).`;
     } catch (err) {
-      status.textContent = `Import failed: ${err instanceof Error ? err.message : String(err)}`;
+      status.textContent = t("backup-import-failed", { detail: errText(err) });
     }
     fileInput.value = "";
   };

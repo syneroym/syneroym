@@ -2,6 +2,7 @@ import "./boot-csp";
 import { renderCard } from "./cards/render";
 import { renderRefusedCard } from "./cards/refused";
 import { errText, text } from "./dom";
+import { t } from "./i18n/i18n";
 import { startFeed } from "./events";
 import { renderBackup } from "./screens/backup";
 import { renderContacts } from "./screens/contacts";
@@ -230,7 +231,7 @@ async function renderLogin(container: HTMLElement) {
         }
         setStatus("The stored key is gone; load a session key file.");
       } catch (e) {
-        setStatus(`Sign-in failed: ${e instanceof Error ? e.message : String(e)}`);
+        setStatus(t("login-failed", { detail: errText(e) }));
       }
       reuseBtn.disabled = false;
     };
@@ -253,7 +254,7 @@ async function renderLogin(container: HTMLElement) {
       await loginWithBundle(bundle);
       window.location.reload();
     } catch (e) {
-      setStatus(`Sign-in failed: ${e instanceof Error ? e.message : String(e)}`);
+      setStatus(t("login-failed", { detail: errText(e) }));
       fileInput.value = "";
     }
   };

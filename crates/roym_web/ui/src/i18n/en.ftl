@@ -29,3 +29,17 @@ error-internal = { $detail }
 error-service = { $detail }
 error-network = Could not reach this installation: { $detail }
 error-http = HTTP error { $code }
+
+# Failures shown beside an action. `$detail` is already worded by the Hub.
+login-failed = Sign-in failed: { $detail }
+directory-search-failed = The search failed: { $detail }. Press Search to try again.
+directory-search-not-started = This installation could not start the search. Press Search to try again.
+messages-quote-expired = This quote has expired. Ask for a new one.
+messages-accept-failed = Could not accept: { $detail }
+contacts-upsert-failed = Upsert failed: { $detail }
+safety-block-failed = Block failed: { $detail }
+safety-report-failed = Report failed: { $detail }
+safety-save-failed = Save failed: { $detail }
+backup-export-failed = Export failed: { $detail }
+backup-import-failed = Import failed: { $detail }
+profile-error = Error: { $detail }

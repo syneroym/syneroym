@@ -6,6 +6,7 @@ import {
   type SourceOutcome,
 } from "../directory/search";
 import { errText, refiller, text } from "../dom";
+import { t } from "../i18n/i18n";
 import {
   checkedWords,
   ISSUER_CHANGED_CHECK_WORDS,
@@ -269,8 +270,8 @@ function buildSearch(): HTMLElement {
     } catch (err) {
       progress.textContent =
         err instanceof Error
-          ? err.message
-          : `The search failed: ${String(err)}. Press Search to try again.`;
+          ? errText(err)
+          : t("directory-search-failed", { detail: String(err) });
     } finally {
       goBtn.disabled = false;
     }

@@ -1,4 +1,5 @@
-import { refiller } from "../dom";
+import { errText, refiller } from "../dom";
+import { t } from "../i18n/i18n";
 import { onFeed } from "../events";
 import { call, RpcError } from "../rpc";
 import { whoami } from "../session/login";
@@ -91,11 +92,6 @@ export interface CardRow {
   version_count?: number;
   agreement_payee?: string;
   agreement_payment_methods?: string[];
-}
-
-function errText(err: unknown): string {
-  if (err instanceof RpcError) return err.message;
-  return err instanceof Error ? err.message : String(err);
 }
 
 /// Every text node here may carry a stranger's bytes -- an address, a
@@ -636,9 +632,9 @@ export function renderCardActions(
           acceptBtn.disabled = false;
           const msg = err instanceof RpcError ? err.message : String(err);
           if (msg.includes("quote-expired") || msg.includes("expired")) {
-            acceptErr.textContent = "This quote has expired. Ask for a new one.";
+            acceptErr.textContent = t("messages-quote-expired");
           } else {
-            acceptErr.textContent = `Could not accept: ${msg}`;
+            acceptErr.textContent = t("messages-accept-failed", { detail: errText(err) });
           }
         }
       };

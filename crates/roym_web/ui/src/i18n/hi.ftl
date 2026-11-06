@@ -28,3 +28,16 @@ error-internal = सेवा में गड़बड़ी हुई। व�
 error-service = अनुरोध पूरा नहीं हो सका। विवरण: { $detail }
 error-network = इस इंस्टॉलेशन तक नहीं पहुँच सके। विवरण: { $detail }
 error-http = सर्वर से त्रुटि मिली (HTTP { $code })
+
+login-failed = साइन इन नहीं हो सका: { $detail }
+directory-search-failed = खोज नहीं हो सकी: { $detail }। फिर कोशिश करने के लिए "खोजें" दबाएँ।
+directory-search-not-started = यह इंस्टॉलेशन खोज शुरू नहीं कर सका। फिर कोशिश करने के लिए "खोजें" दबाएँ।
+messages-quote-expired = यह कोटेशन समाप्त हो गया है। नया कोटेशन माँगें।
+messages-accept-failed = स्वीकार नहीं हो सका: { $detail }
+contacts-upsert-failed = संपर्क सहेजा नहीं जा सका: { $detail }
+safety-block-failed = ब्लॉक नहीं हो सका: { $detail }
+safety-report-failed = रिपोर्ट नहीं भेजी जा सकी: { $detail }
+safety-save-failed = सहेजा नहीं जा सका: { $detail }
+backup-export-failed = एक्सपोर्ट नहीं हो सका: { $detail }
+backup-import-failed = इम्पोर्ट नहीं हो सका: { $detail }
+profile-error = त्रुटि: { $detail }
