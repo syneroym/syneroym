@@ -1,5 +1,5 @@
-import { errText, refiller } from "../dom";
-import { t } from "../i18n/i18n";
+import { errText, refiller, text } from "../dom";
+import { lookupText, messageId, t } from "../i18n/i18n";
 import { onFeed } from "../events";
 import { call, RpcError } from "../rpc";
 import { whoami } from "../session/login";
@@ -10,31 +10,20 @@ import type { ServiceLocationKind } from "../listings/editor";
 import { serviceLocationEditorLabel } from "../listings/labels";
 import { type SearchMatch, searchHits } from "./message_search";
 
-// These two strings are shown to the person *before* a delete runs, and are
-// pinned character-for-character against the `note` the conversation
-// service returns (`conversation.delete-message`). The product must not
-// claim the other side's copy is gone.
-const DELETE_NOTE_SENT =
-  "The local copy is removed and a deletion record kept. A request to " +
-  "delete it was sent to the other side; whether their client honours it " +
-  "is theirs to decide, and this cannot check. This installation's own " +
-  "message store still holds what it received.";
-const DELETE_NOTE_RECEIVED =
-  "The local copy is removed and a deletion record kept. This is a " +
-  "message you received; the other side's copy is theirs.";
+/// Message id for each message state, shown as a word. A `Map`, so a state
+/// from another node can never hit an inherited property.
+const STATE_LABELS = new Map<string, string>([
+  ["pending", messageId("messages-state-pending")],
+  ["deposited", messageId("messages-state-deposited")],
+  ["delivered", messageId("messages-state-delivered")],
+  ["failed", messageId("messages-state-failed")],
+]);
 
-export const DEFAULT_DATA_USE_NOTICE =
-  "This request is signed by you and sent to the person or business you chose. They " +
-  "keep a copy. It carries the area you gave, not your exact address; an " +
-  "address is disclosed only inside a quote you accept.";
-
-export const ADDRESS_DISCLOSURE_NOTICE =
-  "This address becomes part of a signed record that both parties keep " +
-  "and can export. It cannot be removed from a record already signed.";
-
-export const DECLINE_NOTE =
-  "This only changes what you see. The other side is not told, and no " +
-  "record is signed. Send them a message if you want them to know.";
+/// The word for a message state; a state this table does not know is shown
+/// as it came, never inferred.
+export function messageStateWord(state: string): string {
+  return lookupText(STATE_LABELS, state) ?? state;
+}
 
 interface ConversationRow {
   id: string;
@@ -94,21 +83,12 @@ export interface CardRow {
   agreement_payment_methods?: string[];
 }
 
-/// Every text node here may carry a stranger's bytes -- an address, a
-/// display name, a message body. `textContent` only, never markup.
-function text(tag: string, value: string, className?: string): HTMLElement {
-  const el = document.createElement(tag);
-  el.textContent = value;
-  if (className) el.className = className;
-  return el;
-}
-
 export async function renderMessages(container: HTMLElement, currentDid?: string) {
   container.replaceChildren();
   const box = document.createElement("div");
   box.className = "messages-screen";
 
-  box.appendChild(text("h2", "Messages"));
+  box.appendChild(text("h2", t("messages-title")));
 
   const myDid = currentDid || (await whoami())?.person_did || "";
 
@@ -125,9 +105,9 @@ export async function renderMessages(container: HTMLElement, currentDid?: string
   const openRow = document.createElement("div");
   openRow.className = "open-conversation";
   const openInput = document.createElement("input");
-  openInput.placeholder = "A conversation address (from a listing or a contact)";
+  openInput.placeholder = t("messages-open-placeholder");
   openInput.className = "open-conversation-input";
-  const openBtn = text("button", "Open conversation", "button") as HTMLButtonElement;
+  const openBtn = text("button", t("messages-open-button"), "button") as HTMLButtonElement;
   const openErr = text("p", "", "open-error");
   openBtn.onclick = async () => {
     openErr.textContent = "";
@@ -139,7 +119,7 @@ export async function renderMessages(container: HTMLElement, currentDid?: string
       openInput.value = "";
       await reloadList(res.conversation_id);
     } catch (err) {
-      openErr.textContent = `Could not open: ${errText(err)}`;
+      openErr.textContent = t("messages-open-failed", { detail: errText(err) });
     }
     openBtn.disabled = false;
   };
@@ -150,9 +130,9 @@ export async function renderMessages(container: HTMLElement, currentDid?: string
   const searchRow = document.createElement("div");
   searchRow.className = "message-search";
   const searchInput = document.createElement("input");
-  searchInput.placeholder = "Search your messages";
+  searchInput.placeholder = t("messages-search-placeholder");
   searchInput.className = "message-search-input";
-  const searchBtn = text("button", "Search", "button") as HTMLButtonElement;
+  const searchBtn = text("button", t("messages-search-button"), "button") as HTMLButtonElement;
   const searchResults = document.createElement("div");
   searchResults.className = "search-results";
   const fillSearch = refiller(searchResults, async (into: DocumentFragment, q: string) => {
@@ -161,7 +141,7 @@ export async function renderMessages(container: HTMLElement, currentDid?: string
       const res = await call<{ matches: SearchMatch[] }>("conversation.search", { query: q, kind: "direct" });
       const hits = searchHits(res.matches, q);
       if (hits.length === 0) {
-        into.appendChild(text("p", "No messages found.", "search-empty"));
+        into.appendChild(text("p", t("messages-search-empty"), "search-empty"));
         return;
       }
       for (const h of hits) {
@@ -172,7 +152,7 @@ export async function renderMessages(container: HTMLElement, currentDid?: string
         into.appendChild(item);
       }
     } catch (err) {
-      into.appendChild(text("p", `Search failed: ${errText(err)}`));
+      into.appendChild(text("p", t("messages-search-failed", { detail: errText(err) })));
     }
   });
   searchBtn.onclick = () => void fillSearch(searchInput.value.trim());
@@ -200,11 +180,11 @@ export async function renderMessages(container: HTMLElement, currentDid?: string
       const res = await call<{ conversations: ConversationRow[] }>("conversation.list", { kind: "direct" });
       rows = res.conversations;
     } catch (err) {
-      into.appendChild(text("p", `Could not load: ${errText(err)}`));
+      into.appendChild(text("p", t("common-load-failed", { detail: errText(err) })));
       return undefined;
     }
     if (rows.length === 0) {
-      into.appendChild(text("p", "No conversations yet.", "conversations-empty"));
+      into.appendChild(text("p", t("messages-conversations-empty"), "conversations-empty"));
       return rows;
     }
     const currentSelect = select ?? activeConvId ?? undefined;
@@ -213,7 +193,9 @@ export async function renderMessages(container: HTMLElement, currentDid?: string
       row.className = "conversation-item";
       if (r.id === currentSelect) row.classList.add("selected");
       row.appendChild(text("div", r.peer_person_did || r.peer_address, "peer-label"));
-      row.appendChild(text("div", `${r.message_count} messages`, "count-label"));
+      row.appendChild(
+        text("div", t("messages-count", { count: r.message_count }), "count-label"),
+      );
       row.onclick = () => {
         listItems.querySelectorAll(".conversation-item").forEach((el) => el.classList.remove("selected"));
         row.classList.add("selected");
@@ -296,9 +278,9 @@ async function renderThread(
   const composeRow = document.createElement("div");
   composeRow.className = "compose-row";
   const composeInput = document.createElement("input");
-  composeInput.placeholder = "Write a message";
+  composeInput.placeholder = t("messages-compose-placeholder");
   composeInput.className = "compose-input";
-  const sendBtn = text("button", "Send", "button") as HTMLButtonElement;
+  const sendBtn = text("button", t("messages-send-button"), "button") as HTMLButtonElement;
   const composeErr = text("p", "", "compose-error");
   sendBtn.onclick = async () => {
     composeErr.textContent = "";
@@ -310,7 +292,7 @@ async function renderThread(
       composeInput.value = "";
       await fillHistory();
     } catch (err) {
-      composeErr.textContent = `Send failed: ${errText(err)}`;
+      composeErr.textContent = t("messages-send-failed", { detail: errText(err) });
     }
     sendBtn.disabled = false;
   };
@@ -321,7 +303,7 @@ async function renderThread(
   const requestSection = document.createElement("div");
   requestSection.className = "send-request-section";
 
-  const toggleReqBtn = text("button", "Send a request", "button toggle-request-form") as HTMLButtonElement;
+  const toggleReqBtn = text("button", t("request-toggle-button"), "button toggle-request-form") as HTMLButtonElement;
   requestSection.appendChild(toggleReqBtn);
 
   const reqForm = document.createElement("div");
@@ -329,20 +311,23 @@ async function renderThread(
   reqForm.style.display = "none";
 
   const descInput = document.createElement("textarea");
-  descInput.placeholder = "Describe what you need";
+  descInput.placeholder = t("request-description-placeholder");
   descInput.className = "request-desc-input";
 
   const catsInput = document.createElement("input");
-  catsInput.placeholder = "Categories (comma-separated, e.g. cycling, repair)";
+  catsInput.placeholder = t("request-categories-placeholder");
   catsInput.className = "request-cats-input";
 
   const listingInput = document.createElement("input");
-  listingInput.placeholder = "Listing ID (optional)";
+  listingInput.placeholder = t("request-listing-placeholder");
   listingInput.className = "request-listing-input";
 
-  const noticeP = text("p", DEFAULT_DATA_USE_NOTICE, "data-use-notice");
+  // The person signs the text they read: the same string is drawn here and
+  // sent with the request.
+  const dataUseNotice = t("request-data-use-notice");
+  const noticeP = text("p", dataUseNotice, "data-use-notice");
 
-  const submitReqBtn = text("button", "Submit request", "button send-request-button") as HTMLButtonElement;
+  const submitReqBtn = text("button", t("request-submit-button"), "button send-request-button") as HTMLButtonElement;
   const reqErr = text("p", "", "request-form-error");
 
   toggleReqBtn.onclick = () => {
@@ -352,7 +337,7 @@ async function renderThread(
   submitReqBtn.onclick = async () => {
     const desc = descInput.value.trim();
     if (!desc) {
-      reqErr.textContent = "Description is required";
+      reqErr.textContent = t("request-description-required");
       return;
     }
     submitReqBtn.disabled = true;
@@ -367,7 +352,7 @@ async function renderThread(
         description: desc,
         categories,
         listing_id: listingInput.value.trim() || undefined,
-        data_use_notice: DEFAULT_DATA_USE_NOTICE,
+        data_use_notice: dataUseNotice,
       });
       descInput.value = "";
       catsInput.value = "";
@@ -375,7 +360,7 @@ async function renderThread(
       reqForm.style.display = "none";
       await fillHistory();
     } catch (err) {
-      reqErr.textContent = `Could not send request: ${errText(err)}`;
+      reqErr.textContent = t("request-send-failed", { detail: errText(err) });
     } finally {
       submitReqBtn.disabled = false;
     }
@@ -412,7 +397,7 @@ async function renderThread(
       });
       messages = res.messages;
     } catch (err) {
-      into.appendChild(text("p", `Could not load messages: ${errText(err)}`));
+      into.appendChild(text("p", t("messages-load-failed", { detail: errText(err) })));
       return;
     }
 
@@ -477,7 +462,7 @@ export function isQuoteSuperseded(
 /** A short explanation for a state word that needs one, else null. */
 export function stateHint(state: MessageState): string | null {
   return state === "deposited"
-    ? "The other side is offline. The message waits in their mailbox."
+    ? t("messages-state-hint-deposited")
     : null;
 }
 
@@ -488,9 +473,9 @@ export function canRetry(m: { state: MessageState; deleted_at_secs?: number; res
 
 export function refusalText(reason: string): string {
   if (reason === "rate-limited") {
-    return "Not accepted: this person limits messages from new contacts. Try again later.";
+    return t("messages-refused-rate-limited");
   }
-  return `Not accepted: ${reason}.`;
+  return t("messages-refused-other", { reason });
 }
 
 function messageElement(
@@ -529,26 +514,26 @@ function messageElement(
       if (isQuoteSuperseded(cardRow, allCards, newestRequestMap)) {
         const supP = document.createElement("p");
         supP.className = "quote-superseded-notice";
-        supP.textContent = "This quote answers an earlier version of your request.";
+        supP.textContent = t("quote-superseded-notice");
         wrap.appendChild(supP);
       }
 
       // Render contextual card action buttons
       renderCardActions(wrap, cardRow, convId, myDid, refresh);
     } else {
-      wrap.appendChild(renderRefusedCard("card", 1, "Unfiled card"));
+      wrap.appendChild(renderRefusedCard("card", 1, t("messages-unfiled-card")));
     }
   } else {
     if (m.deleted_at_secs != null) {
-      wrap.appendChild(text("span", "(message deleted)", "message-body deleted"));
+      wrap.appendChild(text("span", t("messages-message-deleted"), "message-body deleted"));
     } else {
-      wrap.appendChild(text("span", m.body ?? "(no body)", "message-body"));
+      wrap.appendChild(text("span", m.body ?? t("messages-no-body"), "message-body"));
     }
   }
 
   // The state word is exactly what the API returned -- never inferred, and
   // "delivered" is never shown until the service says so.
-  const stateSpan = text("span", m.state, `message-state state-${m.state}`);
+  const stateSpan = text("span", messageStateWord(m.state), `message-state state-${m.state}`);
   const hint = stateHint(m.state);
   if (hint) {
     stateSpan.title = hint;
@@ -567,7 +552,7 @@ function messageElement(
   // A deleted or restored message is never offered for sending again; the
   // service refuses both.
   if (canRetry(m)) {
-    const retryBtn = text("button", "Retry", "button retry-message") as HTMLButtonElement;
+    const retryBtn = text("button", t("messages-retry-button"), "button retry-message") as HTMLButtonElement;
     retryBtn.onclick = async () => {
       retryBtn.disabled = true;
       try {
@@ -581,7 +566,7 @@ function messageElement(
   }
 
   if (m.deleted_at_secs == null) {
-    const deleteBtn = text("button", "Delete", "button delete-message") as HTMLButtonElement;
+    const deleteBtn = text("button", t("messages-delete-button"), "button delete-message") as HTMLButtonElement;
     deleteBtn.onclick = () => openDeleteDialog(wrap, m, refresh);
     actions.appendChild(deleteBtn);
   }
@@ -601,7 +586,7 @@ export function renderCardActions(
   if (card.card_type === "request" && card.verified) {
     const notIssuedByMe = card.direction === "incoming" || (myDid && card.issuer !== myDid);
     if (notIssuedByMe) {
-      const quoteBtn = text("button", "Quote this request", "button quote-request-button") as HTMLButtonElement;
+      const quoteBtn = text("button", t("quote-request-button"), "button quote-request-button") as HTMLButtonElement;
       quoteBtn.onclick = () => openQuoteForm(wrap, card, convId, refresh);
       wrap.appendChild(quoteBtn);
     }
@@ -619,7 +604,7 @@ export function renderCardActions(
       const actionsDiv = document.createElement("div");
       actionsDiv.className = "quote-actions";
 
-      const acceptBtn = text("button", "Accept these terms", "button accept-quote-button") as HTMLButtonElement;
+      const acceptBtn = text("button", t("messages-accept-button"), "button accept-quote-button") as HTMLButtonElement;
       const acceptErr = text("p", "", "accept-quote-error");
 
       acceptBtn.onclick = async () => {
@@ -639,7 +624,7 @@ export function renderCardActions(
         }
       };
 
-      const declineBtn = text("button", "Decline", "button decline-quote-button") as HTMLButtonElement;
+      const declineBtn = text("button", t("messages-decline-button"), "button decline-quote-button") as HTMLButtonElement;
       declineBtn.onclick = () => openDeclineDialog(wrap, card, refresh);
 
       actionsDiv.append(acceptBtn, declineBtn, acceptErr);
@@ -654,14 +639,14 @@ export function openDeclineDialog(anchor: HTMLElement, card: CardRow, refresh: (
 
   const dialog = document.createElement("div");
   dialog.className = "decline-dialog";
-  dialog.appendChild(text("p", DECLINE_NOTE, "decline-note"));
+  dialog.appendChild(text("p", t("messages-decline-note"), "decline-note"));
 
   const noteInput = document.createElement("input");
-  noteInput.placeholder = "Optional note (for yourself only)";
+  noteInput.placeholder = t("messages-decline-note-placeholder");
   noteInput.className = "decline-note-input";
 
-  const confirmBtn = text("button", "Confirm Decline", "button confirm-decline") as HTMLButtonElement;
-  const cancelBtn = text("button", "Cancel", "button cancel-decline") as HTMLButtonElement;
+  const confirmBtn = text("button", t("messages-decline-confirm"), "button confirm-decline") as HTMLButtonElement;
+  const cancelBtn = text("button", t("common-cancel"), "button cancel-decline") as HTMLButtonElement;
   const err = text("p", "", "decline-error");
 
   cancelBtn.onclick = () => dialog.remove();
@@ -674,7 +659,7 @@ export function openDeclineDialog(anchor: HTMLElement, card: CardRow, refresh: (
       });
       await refresh();
     } catch (e) {
-      err.textContent = `Decline failed: ${errText(e)}`;
+      err.textContent = t("messages-decline-failed", { detail: errText(e) });
       confirmBtn.disabled = false;
     }
   };
@@ -699,38 +684,38 @@ export function openQuoteForm(
   form.className = "quote-form";
 
   const scopeInput = document.createElement("input");
-  scopeInput.placeholder = "Scope of work";
+  scopeInput.placeholder = t("quote-scope-placeholder");
   scopeInput.className = "quote-scope-input";
 
   const currencyInput = document.createElement("input");
-  currencyInput.placeholder = "Currency (e.g. EUR, USD)";
+  currencyInput.placeholder = t("quote-currency-placeholder");
   currencyInput.defaultValue = "EUR";
   currencyInput.className = "quote-currency-input";
 
   const amountInput = document.createElement("input");
-  amountInput.placeholder = "Total amount (e.g. 45.00)";
+  amountInput.placeholder = t("quote-amount-placeholder");
   amountInput.className = "quote-amount-input";
 
   const taxInput = document.createElement("input");
-  taxInput.placeholder = "Tax included (optional, e.g. 5.00)";
+  taxInput.placeholder = t("quote-tax-placeholder");
   taxInput.className = "quote-tax-input";
 
   const feesInput = document.createElement("input");
-  feesInput.placeholder = "Fees included (optional, e.g. 0.00)";
+  feesInput.placeholder = t("quote-fees-placeholder");
   feesInput.className = "quote-fees-input";
 
   const payeeInput = document.createElement("input");
-  payeeInput.placeholder = "Payee name or company";
+  payeeInput.placeholder = t("quote-payee-placeholder");
   payeeInput.className = "quote-payee-input";
 
   const timingSelect = document.createElement("select");
   timingSelect.className = "quote-timing-select";
   const optAfter = document.createElement("option");
   optAfter.value = "after-work";
-  optAfter.textContent = "Payment after work";
+  optAfter.textContent = t("quote-timing-after");
   const optBefore = document.createElement("option");
   optBefore.value = "before-work";
-  optBefore.textContent = "Payment before work";
+  optBefore.textContent = t("quote-timing-before");
   timingSelect.append(optAfter, optBefore);
 
   const whereSelect = document.createElement("select");
@@ -748,9 +733,9 @@ export function openQuoteForm(
 
   const addressWrap = document.createElement("div");
   addressWrap.className = "quote-address-wrap";
-  const addressNotice = text("p", ADDRESS_DISCLOSURE_NOTICE, "address-disclosure-notice");
+  const addressNotice = text("p", t("quote-address-disclosure-notice"), "address-disclosure-notice");
   const addressInput = document.createElement("input");
-  addressInput.placeholder = "Service address";
+  addressInput.placeholder = t("quote-address-placeholder");
   addressInput.className = "quote-address-input";
   addressWrap.append(addressNotice, addressInput);
 
@@ -759,28 +744,28 @@ export function openQuoteForm(
   };
 
   const cancInput = document.createElement("input");
-  cancInput.placeholder = "Cancellation terms";
-  cancInput.defaultValue = "24 hours notice required for full refund";
+  cancInput.placeholder = t("quote-cancellation-placeholder");
+  cancInput.defaultValue = t("quote-default-cancellation");
   cancInput.className = "quote-canc-input";
 
   const refInput = document.createElement("input");
-  refInput.placeholder = "Refund terms";
-  refInput.defaultValue = "Full refund if work not completed";
+  refInput.placeholder = t("quote-refund-placeholder");
+  refInput.defaultValue = t("quote-default-refund");
   refInput.className = "quote-ref-input";
 
   const dispInput = document.createElement("input");
-  dispInput.placeholder = "Dispute path";
-  dispInput.defaultValue = "Small claims court or informal mediation";
+  dispInput.placeholder = t("quote-dispute-placeholder");
+  dispInput.defaultValue = t("quote-default-dispute");
   dispInput.className = "quote-disp-input";
 
   const hoursInput = document.createElement("input");
-  hoursInput.placeholder = "Expires in hours";
+  hoursInput.placeholder = t("quote-hours-placeholder");
   hoursInput.defaultValue = "24";
   hoursInput.type = "number";
   hoursInput.className = "quote-hours-input";
 
-  const submitBtn = text("button", "Send quote", "button submit-quote-button") as HTMLButtonElement;
-  const cancelBtn = text("button", "Cancel", "button cancel-quote-button") as HTMLButtonElement;
+  const submitBtn = text("button", t("quote-send-button"), "button submit-quote-button") as HTMLButtonElement;
+  const cancelBtn = text("button", t("common-cancel"), "button cancel-quote-button") as HTMLButtonElement;
   const errP = text("p", "", "quote-form-error");
 
   cancelBtn.onclick = () => form.remove();
@@ -789,17 +774,17 @@ export function openQuoteForm(
     errP.textContent = "";
     const scope = scopeInput.value.trim();
     if (!scope) {
-      errP.textContent = "Scope is required";
+      errP.textContent = t("quote-scope-required");
       return;
     }
     const currency = currencyInput.value.trim().toUpperCase();
     if (!currency) {
-      errP.textContent = "Currency is required";
+      errP.textContent = t("quote-currency-required");
       return;
     }
     const exp = currencyMinorExponent(currency);
     if (exp === undefined) {
-      errP.textContent = `Unknown currency code "${currency}"`;
+      errP.textContent = t("quote-currency-unknown", { currency });
       return;
     }
     let amountMinor: number | undefined;
@@ -810,7 +795,7 @@ export function openQuoteForm(
       return;
     }
     if (amountMinor === undefined) {
-      errP.textContent = "Amount is required";
+      errP.textContent = t("quote-amount-required");
       return;
     }
 
@@ -836,7 +821,7 @@ export function openQuoteForm(
 
     const payee = payeeInput.value.trim();
     if (!payee) {
-      errP.textContent = "Payee is required";
+      errP.textContent = t("quote-payee-required");
       return;
     }
 
@@ -871,7 +856,7 @@ export function openQuoteForm(
       form.remove();
       await refresh();
     } catch (err) {
-      errP.textContent = `Quote failed: ${errText(err)}`;
+      errP.textContent = t("quote-failed", { detail: errText(err) });
       submitBtn.disabled = false;
     }
   };
@@ -904,7 +889,7 @@ function openDeleteDialog(anchor: HTMLElement, m: MessageRow, refresh: () => Pro
   const dialog = document.createElement("div");
   dialog.className = "delete-dialog";
   const isSent = m.direction === "outgoing";
-  dialog.appendChild(text("p", isSent ? DELETE_NOTE_SENT : DELETE_NOTE_RECEIVED, "delete-note"));
+  dialog.appendChild(text("p", isSent ? t("messages-delete-note-sent") : t("messages-delete-note-received"), "delete-note"));
 
   let askPeer = isSent;
   if (isSent) {
@@ -916,12 +901,12 @@ function openDeleteDialog(anchor: HTMLElement, m: MessageRow, refresh: () => Pro
     cb.onchange = () => {
       askPeer = cb.checked;
     };
-    label.append(cb, text("span", "Also ask them to delete their copy"));
+    label.append(cb, text("span", t("messages-delete-ask-peer")));
     dialog.appendChild(label);
   }
 
-  const confirmBtn = text("button", "Delete this copy", "button confirm-delete") as HTMLButtonElement;
-  const cancelBtn = text("button", "Cancel", "button cancel-delete") as HTMLButtonElement;
+  const confirmBtn = text("button", t("messages-delete-confirm"), "button confirm-delete") as HTMLButtonElement;
+  const cancelBtn = text("button", t("common-cancel"), "button cancel-delete") as HTMLButtonElement;
   const err = text("p", "", "delete-error");
   cancelBtn.onclick = () => dialog.remove();
   confirmBtn.onclick = async () => {
@@ -930,7 +915,7 @@ function openDeleteDialog(anchor: HTMLElement, m: MessageRow, refresh: () => Pro
       await call("conversation.delete-message", { message_id: m.id, ask_peer: askPeer });
       await refresh();
     } catch (e) {
-      err.textContent = `Delete failed: ${errText(e)}`;
+      err.textContent = t("messages-delete-failed", { detail: errText(e) });
       confirmBtn.disabled = false;
     }
   };

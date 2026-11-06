@@ -1,9 +1,13 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import HINDI from "../i18n/hi.ftl?raw";
+import { activate, activateWith, t } from "../i18n/i18n";
 import {
   type CardRow,
   canRetry,
   computeNewestRequestMap,
   isQuoteSuperseded,
+  messageStateWord,
+  openQuoteForm,
   refusalText,
   renderMessages,
   stateHint,
@@ -265,3 +269,60 @@ describe("Event feed integration in messages screen", () => {
   });
 });
 
+
+describe("text that the person signs", () => {
+  afterEach(async () => {
+    await activate("en");
+  });
+
+  const MAX_BYTES = 2048;
+  const SIGNED = [
+    "request-data-use-notice",
+    "quote-default-cancellation",
+    "quote-default-refund",
+    "quote-default-dispute",
+  ];
+
+  it("fits the limit the service checks, in both languages", async () => {
+    for (const language of ["en", "hi"]) {
+      if (language === "hi") await activateWith("hi", { hi: async () => HINDI });
+      for (const id of SIGNED) {
+        const bytes = new TextEncoder().encode(t(id)).length;
+        expect(bytes, `${language}/${id}`).toBeGreaterThan(0);
+        expect(bytes, `${language}/${id}`).toBeLessThanOrEqual(MAX_BYTES);
+      }
+    }
+  });
+
+  it("fills the quote terms in the language of the Hub", async () => {
+    await activateWith("hi", { hi: async () => HINDI });
+    const anchor = document.createElement("div");
+    const request = { record_id: "rec_req" } as CardRow;
+    openQuoteForm(anchor, request, "conv1", async () => {});
+    const value = (cls: string) => anchor.querySelector<HTMLInputElement>(cls)?.value;
+    expect(value(".quote-canc-input")).toBe(t("quote-default-cancellation"));
+    expect(value(".quote-ref-input")).toBe(t("quote-default-refund"));
+    expect(value(".quote-disp-input")).toBe(t("quote-default-dispute"));
+    expect(value(".quote-canc-input")).toMatch(/[ऀ-ॿ]/);
+  });
+});
+
+describe("the message state word", () => {
+  afterEach(async () => {
+    await activate("en");
+  });
+
+  it("is the state itself in English", () => {
+    for (const state of ["pending", "deposited", "delivered", "failed"]) {
+      expect(messageStateWord(state)).toBe(state);
+    }
+  });
+
+  it("is a Hindi word in Hindi, and an unknown state is shown as it came", async () => {
+    await activateWith("hi", { hi: async () => HINDI });
+    expect(messageStateWord("delivered")).toMatch(/[ऀ-ॿ]/);
+    for (const state of ["constructor", "toString", "__proto__", "new-state"]) {
+      expect(messageStateWord(state)).toBe(state);
+    }
+  });
+});

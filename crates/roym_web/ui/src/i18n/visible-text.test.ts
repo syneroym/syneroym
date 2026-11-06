@@ -21,7 +21,6 @@ const NOT_MOVED_YET: string[] = [
   "../screens/directory.ts",
   "../screens/groups.ts",
   "../screens/memberships.ts",
-  "../screens/messages.ts",
   "../screens/synorg.ts",
   "../screens/synorg_members.ts",
 ];
