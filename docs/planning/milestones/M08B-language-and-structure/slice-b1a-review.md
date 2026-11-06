@@ -424,3 +424,181 @@ I do not answer for the owner.
   and keep the `messageId` rule as the only way to pass an id by variable.
   This is also the first half of the B1b build check, so write it once.
 - *Status:* Fixed (f10a0b15). Now in: section 7.1 ("How the source scan works", `src/i18n/scan.ts`); D-B1a-3 (`lookupText`, literal ids only).
+
+## Plan review round 2 — Claude Sonnet 5.5 (Claude Code desktop), 2026-11-06
+
+Checked on `feat/m08b-b1a-localization-mechanism` at `85ce9a85`, in the main
+checkout (not a worktree). `git diff 6e842834..HEAD` shows only three docs
+files: the plan, this review file and `status.md`. No code changed, so the
+code facts of round 1 still hold.
+
+**Summary:** P1 to P12 are all confirmed fixed. 2 new items, both minor:
+0 blocker, 0 major, 2 minor. **2 open (P13, P14).**
+
+Limits: I read the whole new plan text (1,235 lines) and checked it against
+the code. I ran the `Intl` and Fluent claims again, now on Node 20.20.2 (the
+version `mise.toml:26` pins; round 1 used 22.11). I did not run a Vite build
+of the Hub (the sandbox refused it in round 1), so I read Vite's source
+instead (see P10 below). I ran no plan step.
+
+### Round 1 items — confirmed
+
+- **P1 — confirmed fixed.** D-B1a-5 splits the rows in two kinds. The kind 2
+  rows are the ones I named: `quote.ts:210` (`Expires: … (expired)`) and
+  `quote.ts:219` (the expired sentence). `agreement_receipt.ts:226` has no
+  expired variant, so it is kind 1 (`Quote expiry:`), as the plan says. The e2e
+  check at Step 5 item 7 no longer needs a `<time>` in a sentence. The e2e
+  expiry in `roym-hub.spec.ts:1095` is `1600000000`, which is 13 September 2020
+  in every zone, so the year check `2020` holds. The unexpired quote at
+  `:840` has `Expires:`, so the added `time[datetime]` check applies. The
+  `RangeError` claim holds: `new Date(NaN).toISOString()` and
+  `Intl.DateTimeFormat(…).format(new Date(NaN))` both throw `RangeError`
+  (run on Node 20).
+- **P2 — confirmed fixed.** D-B1a-3 now starts with English at module load,
+  Step 2 item 4 says the same, and section 7.1 has the fresh-module test.
+  The 8 test files and `window.RoymRegistry` (`main.ts:62`) need no setup.
+- **P3 — confirmed fixed.** `initLanguage()` never rejects, `activate()` sets
+  the state and `lang` only after load and parse, the stored choice stays,
+  Step 6 item 1 repeats it, and section 7.1 has the rejecting-loader test.
+- **P4 — confirmed fixed.** Step 3 item 5 lists exactly the money lines of
+  `templates.test.ts`: `:78` to `:80`, `:149`, `:202`, `:248` and
+  `:361` to `:363` are all right. No other unit test asserts a money string (a
+  search for amounts with USD, EUR, INR, GBP, JPY or KWD finds only this file
+  and `money.test.ts`).
+- **P5 — confirmed fixed.** `STATE_WORDS` and `CONFLICT_SENTENCES`
+  (`booking_progress.ts:34`, `:43`) are the only tables read with a card
+  value; the label records in `labels.ts` are read with a Hub value, except
+  `serviceLocationCardLabel`, which Step 5 item 2 keeps with its rule. All
+  become `Map`s read with `lookupText`. The users of the old records are
+  `wording.test.ts:49` and `:50` and `labels.test.ts`, which Step 5 item 6
+  already lists.
+- **P6 — confirmed fixed.** Code `0` and `error-network` are in D-B1a-12,
+  section 4 row 6b, Step 4 item 1 and section 7.1. The seven catch-all callers
+  that section 2.2 point 13 names exist (`memberships.ts:32`, `safety.ts:23`,
+  `:69`, `:148`, `:206`, `synorg_members.ts:36`, `messages.ts:406`; each is a
+  bare `catch {`). No source or test checks for `TypeError` or `SyntaxError`.
+  The one place that reads the text of a thrown error, `messages.ts:637`, gets
+  the same words from `RpcError(0, …)` as from the old `String(err)` for a
+  failed fetch. `search.test.ts:85` and `:104` assert English sentences that
+  stay the same.
+- **P7 — confirmed fixed.** D-B1a-8, Step 6 item 5, the end-user bullet and a
+  third backlog row all cover blocked storage. The backlog row is right: Q4 (a)
+  is a deliberate shortcut.
+- **P8 — confirmed fixed.** The nested `hi-IN` describe is safe: the outer
+  `beforeEach` of `Roym Hub` (`roym-hub.spec.ts:47`) only asserts an
+  environment variable, `playwright.config.ts` sets no `locale`, and
+  `.login-picker h2` exists (`main.ts:183` to `:185`). `pickLanguage(null,
+  ["hi-IN"], ["en","hi"])` matches (`language` `hi`, script `Deva` on both).
+- **P9 — confirmed fixed.** The rule in D-B1a-4 is right: `pt-BR` gives
+  `pt-BR-u-nu-latn` with the plan's code, and `pt-IN-u-nu-latn` without it (run
+  on Node 20). `new Intl.Locale("Hi_IN")` and `("hi.FTL")` throw, `("hi")` and
+  `("ta-IN")` give themselves, so the `catalog.test.ts` rule works (a throw
+  also fails the test).
+- **P10 — confirmed fixed.** Step 2 item 1, Step 8 item 1 and exit criterion 2
+  carry the check. I read Vite 5.4.21: its minifier is set to `charset:
+  "utf8"` (`node_modules/vite/dist/node/chunks/dep-BK3b2jBa.js:19270`), so
+  Devanagari letters stay as letters in the bundle and the `grep -c
+  '[ऀ-ॿ]'` check is meaningful. The grep works in the default (empty) locale and
+  does not match `₹`, `…` or `é` (negative control run).
+- **P11 — confirmed fixed.** The four sentences are right. `mise run
+  test:roym-ui` is a complete task (`mise.toml:96`), `nextest` reaches `npm
+  ci` through `build:roym` → `build:roym-ui`, and the Hindi date example
+  `15 जन॰ 2027, 8:00 am UTC` matches the engine's output (the plan shows
+  `1:30 pm IST`; same form).
+- **P12 — confirmed fixed, with one more point (P14).** The helper, word
+  boundary, comment stripping and non-literal rule are in section 7.1. The
+  comment stripper itself needs one more rule, below.
+
+**Other things I checked again.**
+
+- **Owner answers.** All six are (a), as I recommended. Each answer is written
+  under its question, and sections 4 to 9 match (for example: Q3 → D-B1a-5,
+  Q4 → D-B1a-8 and the third backlog row, Q5 → Step 2 item 9, Q6 → D-B1a-12).
+- **The `hub-ui` gate.** The `Gate` fields in `verify.rs:18` to `:29` are the
+  ones the plan uses, `planning-refs` (`:97`) comes before `nextest` (`:103`),
+  and CI already runs the same task (`ci.yml:78`).
+- **Node 20.** The repo pins Node 20, and the plan's numbers were run on 22.
+  I ran them again on 20.20.2: `₹1,00,000.50` and `₹9,00,71,99,25,47,409.91`
+  (en and hi), `$35.50`, `JP¥1,200`, `KWD 2.500`, `-€45.00`, `1,00,000.5`,
+  `21 Sept 2026`, `5 minutes ago`, `1 hour ago`, `3 days ago`, the Hindi
+  relative forms, the RangeError for a bad currency code, `हिन्दी` and
+  `English` from `DisplayNames`. All equal the plan, so the hard-coded
+  `21 Sept 2026` in `format.test.ts` also holds on Node 20.
+- **Fluent behaviours (0.19.1, run).** A missing variable gives
+  `{$detail}` in the text plus one error, so `t()` must log and the
+  `errors.test.ts` and `catalog.test.ts` sample args matter, as planned. An
+  argument value such as `constructor` is printed as text. A trailing space in
+  a message is removed (P13).
+- **Demo contexts.** Each demo story gets a fresh browser context
+  (`demo/steps.ts:80` and the Playwright default), so a stored `hi` does not
+  reach other stories, as the plan says.
+
+### New findings
+
+#### P13 (minor) — Fluent removes the space at the end of a message, so labels and the range separator lose their spaces
+
+- **Where:** D-B1a-5 "Card rows with a time" (a label message
+  `terms-schedule-label = Schedule:`, a `t("terms-range-separator")` text node
+  between two times); Step 5 items 1 and 4; D-B1a-3. The five existing labels
+  that end with a space and are followed by another node:
+  `quote.ts:140` and `:192`, `agreement_receipt.ts:166` and `:215`,
+  `payment_request.ts:55` (`"Payee, as agreed in this quote: "`,
+  `"Dispute path: "`).
+- **Problem:** Fluent removes spaces at the start and end of a message value.
+  I ran `@fluent/bundle` 0.19.1: `label = Schedule: ` (with a trailing space)
+  gives `"Schedule:"`, and with two trailing spaces too. So a separator
+  message written as ` - ` cannot keep its spaces. Today's code has the space inside the string (`"Dispute path: "`,
+  `` `Schedule: ${start} - ${end}` ``). The plan moves these into messages and
+  appends the next node, but names no rule for the space. The plan also says
+  English output does not change.
+- **Failure case:** The implementer writes `terms-dispute-label = Dispute path:`
+  and appends the link. The card shows `Dispute path:https://…`. The kind 1 rows
+  show `Schedule:15 Jan 2027, 1:30 pm IST-16 Jan 2027, …`. No Hub unit test
+  checks this text (a search for `Payee, as agreed` and `Dispute path` in
+  `*.test.ts` finds nothing). Only the e2e checks on `Payee, as agreed in this quote: …`
+  (`roym-hub.spec.ts:839`, `:847`, `:1092`) would fail, late, at the end of
+  Step 5. Hindi has the same trap.
+- **Fix:** Add one rule to D-B1a-3 and Step 5 item 1: a message never starts or
+  ends with a space, because Fluent removes it. Two ways to keep a space, pick
+  one and write it down: (1) the template adds it (a small helper
+  `labelled(labelId, ...nodes)` that appends the label, one `" "` text node,
+  then the nodes); (2) the message keeps it with a string-literal placeholder
+  (`terms-range-separator = { " - " }`, `label = Payee:{ " " }`; I ran both and
+  the spaces stay). Recommended: (1) for labels, (2) for the range separator,
+  because a translator may want a different separator. Add two checks: a test
+  in `catalog.test.ts` that no entry line of a `.ftl` file ends with
+  whitespace (the parser would silently drop it, like junk), and a unit test
+  that compares the full `textContent` of the quote's `Payee`, `Dispute path`
+  and `Schedule` rows with the old English output.
+- *Status:* Open.
+
+#### P14 (minor) — The comment stripper of the catalog test is not string-aware
+
+- **Where:** section 7.1 "How the source scan works", step 1 ("Remove comments
+  first (`//` to end of line, and `/* … */`)"); `src/i18n/scan.ts`.
+- **Problem:** Cutting everything after `//` also cuts text after a `//` that
+  sits inside a string. Five lines in the cards that B1a edits have one:
+  `if (t.payee.startsWith("http://") || t.payee.startsWith("https://"))`
+  (`quote.ts:142`, `:194`, `agreement_receipt.ts:168`, `:217`,
+  `payment_request.ts:57`). Today no `t(` follows on those lines, so nothing
+  breaks. A line such as `x.startsWith("http://") ? t("a") : t("b")` would hide
+  both ids: the test then reports `a` and `b` as unused, or (worse) a typo in
+  one of them passes the "every id is in `en.ftl`" check. A regex literal
+  or a template string with `//` has the same effect.
+- **Failure case:** A later slice (B1b moves hundreds of lines) writes a
+  condition with a URL scheme before a `t()` call on one line. The "no id is
+  unused" test fails for a good reason nobody can see, or the missing-id check
+  misses a typo.
+- **Fix:** Do not use a regular expression to find comments. `typescript` is
+  already a dev dependency (`package.json:19`): in `scan.ts` parse each file
+  with `ts.createSourceFile` and walk the call expressions. A call whose callee
+  is the identifier `t` or `messageId` (not `x.t`) is a use; its first
+  argument must be a string literal (or a no-substitution template). This
+  ignores comments, strings and `format(` for free, and the "word boundary" and
+  "non-literal" rules become simple tests of the syntax tree. Keep the four
+  helper tests of section 7.1, and add one with `"http://"` before a `t("x")`
+  on the same line. If the plan keeps a text scan instead, write that a
+  `//` counts as a comment only when it is at the start of the line (after
+  spaces) or follows a space, and that string and template contents are
+  skipped first.
+- *Status:* Open.
