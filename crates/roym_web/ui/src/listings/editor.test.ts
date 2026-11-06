@@ -1,4 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+import HINDI from "../i18n/hi.ftl?raw";
+import { activate, activateWith } from "../i18n/i18n";
+import { leftoverLatin } from "../testing/latin-words";
 import {
   buildSetListingParams,
   currencyMinorExponent,
@@ -217,5 +220,80 @@ describe("slotFromLocalDatetimes", () => {
     expect(() => slotFromLocalDatetimes("2026-09-10T10:00", "2026-09-10T10:00", "1")).toThrow(
       ListingInputError,
     );
+  });
+});
+
+describe("every editor error, in Hindi", () => {
+  afterEach(async () => {
+    await activate("en");
+  });
+
+  type Block = "booking" | "payment" | "product" | "service" | "location" | "relationship" | "service_record";
+
+  /// A form with one block on and one field changed.
+  function withBlock(block: Block, change: Record<string, string>): () => unknown {
+    return () => {
+      const form = emptyForm();
+      form.title = "Zq-title";
+      form[block].enabled = true;
+      Object.assign(form[block].value, change);
+      return buildSetListingParams(form);
+    };
+  }
+
+  /// The 11 places the editor throws, and the 8 names that go into a
+  /// "whole number" message. Seven of those names also have an "is
+  /// required" message; a slot capacity has the slot message instead.
+  const THROWS: Array<[string, () => unknown]> = [
+    ["coordinate", () => toMicroDegrees("Zq-north")],
+    ["whole number: lead time", withBlock("booking", { lead_time_secs: "1.5" })],
+    ["whole number: cancellation window", withBlock("booking", { cancellation_window_secs: "-1" })],
+    ["whole number: max per booking", withBlock("booking", { max_per_booking: "x" })],
+    ["whole number: pack size", withBlock("product", { pack_size: "1.5" })],
+    ["whole number: duration", withBlock("service", { duration_secs: "1.5" })],
+    ["whole number: warranty", withBlock("service_record", { warranty_secs: "1.5" })],
+    ["whole number: retention", withBlock("service_record", { retention_secs: "1.5" })],
+    ["whole number: capacity", () => slotFromLocalDatetimes("2030-01-01T10:00", "2030-01-01T11:00", "1.5")],
+    ["required: lead time", withBlock("booking", { lead_time_secs: "" })],
+    ["required: cancellation window", withBlock("booking", { cancellation_window_secs: "" })],
+    ["required: max per booking", withBlock("booking", { max_per_booking: "" })],
+    ["required: pack size", withBlock("product", { pack_size: "" })],
+    ["required: duration", withBlock("service", { duration_secs: "" })],
+    ["required: warranty", withBlock("service_record", { warranty_secs: "" })],
+    ["required: retention", withBlock("service_record", { retention_secs: "" })],
+    ["unknown currency", withBlock("payment", { currency: "zzz", amount: "1" })],
+    ["amount required", withBlock("payment", { amount: "" })],
+    ["quote-only with an amount", withBlock("payment", { model: "quote-only", amount: "5" })],
+    ["members need a group", withBlock("relationship", { open_to: "members", member_of: "" })],
+    ["title required", () => buildSetListingParams(emptyForm())],
+    ["slot times", () => slotFromLocalDatetimes("", "", "1")],
+    ["slot order", () => slotFromLocalDatetimes("2030-01-01T11:00", "2030-01-01T10:00", "1")],
+    ["slot capacity", () => slotFromLocalDatetimes("2030-01-01T10:00", "2030-01-01T11:00", "")],
+  ];
+
+  it.each(THROWS)("words %s in Hindi with no English left", async (_name, run) => {
+    await activateWith("hi", { hi: async () => HINDI });
+    let message = "";
+    try {
+      run();
+    } catch (err) {
+      expect(err).toBeInstanceOf(ListingInputError);
+      message = (err as Error).message;
+    }
+    expect(message).toMatch(/[ऀ-ॿ]/);
+    // The currency code is what the person typed, so it is data.
+    expect(leftoverLatin(message.replace("ZZZ", ""))).toEqual([]);
+  });
+
+  it("words the same case differently in English", async () => {
+    const english = () => {
+      try {
+        withBlock("booking", { lead_time_secs: "" })();
+      } catch (err) {
+        return (err as Error).message;
+      }
+      return "";
+    };
+    expect(english()).toBe("lead time is required");
   });
 });

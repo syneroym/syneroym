@@ -14,6 +14,8 @@ export const ALLOWED_LATIN: ReadonlyArray<{ text: string; why: string }> = [
     text: "roymctl roym enrol-signing --master <identity> --registry-url <registry>",
     why: "a command that the set-up help shows",
   },
+  { text: "ISO-4217", why: "the name of the currency code standard" },
+  { text: "EUR", why: "the example currency code in the amount placeholder and the fixtures" },
   { text: "roymctl roym backup create", why: "a command that the backup help shows" },
   { text: "JSON", why: "the name of a data format that a person pastes" },
   { text: "HTTP", why: "the protocol name in a line about a failed request" },

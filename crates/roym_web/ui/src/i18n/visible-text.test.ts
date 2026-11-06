@@ -18,10 +18,8 @@ const sources = Object.fromEntries(
 /// check yet.
 const NOT_MOVED_YET: string[] = [
   "../directory/membership.ts",
-  "../listings/editor.ts",
   "../screens/directory.ts",
   "../screens/groups.ts",
-  "../screens/listings.ts",
   "../screens/memberships.ts",
   "../screens/messages.ts",
   "../screens/synorg.ts",

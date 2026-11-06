@@ -12,8 +12,9 @@ import {
   SERVICE_LOCATION_KINDS,
 } from "../listings/labels";
 import { publishRefusalWords } from "../directory/membership";
-import { errText, refiller } from "../dom";
+import { checkbox, errText, field, input, refiller, text } from "../dom";
 import { formatDateTime } from "../i18n/format";
+import { lookupText, messageId, t } from "../i18n/i18n";
 import { call } from "../rpc";
 
 interface ListingListRow {
@@ -26,34 +27,44 @@ interface ListingListRow {
   version_count: number;
 }
 
-/// A stranger's listing text is only ever a text node.
-function text(tag: string, value: string, className?: string): HTMLElement {
-  const el = document.createElement(tag);
-  el.textContent = value;
-  if (className) el.className = className;
-  return el;
+/// Message id for each code shown as a word. A `Map`, so a code from
+/// another node can never hit an inherited property; a code not in a table
+/// is shown as it came.
+const STATUS_LABELS = new Map<string, string>([
+  ["active", messageId("listing-status-active")],
+  ["draft", messageId("listing-status-draft")],
+  ["withdrawn", messageId("listing-status-withdrawn")],
+]);
+const BOOKING_MODE_LABELS = new Map<string, string>([
+  ["enquiry", messageId("listing-mode-enquiry")],
+  ["slots", messageId("listing-mode-slots")],
+  ["order", messageId("listing-mode-order")],
+]);
+const PRICING_MODEL_LABELS = new Map<string, string>([
+  ["per-hour", messageId("listing-model-per-hour")],
+  ["fixed", messageId("listing-model-fixed")],
+  ["per-unit", messageId("listing-model-per-unit")],
+  ["quote-only", messageId("listing-model-quote-only")],
+]);
+const CONDITION_LABELS = new Map<string, string>([
+  ["new", messageId("listing-condition-new")],
+  ["used", messageId("listing-condition-used")],
+  ["refurbished", messageId("listing-condition-refurbished")],
+]);
+const DISCLOSURE_LABELS = new Map<string, string>([
+  ["on-agreement", messageId("listing-disclosure-on-agreement")],
+  ["public", messageId("listing-disclosure-public")],
+]);
+
+function codeWord(table: Map<string, string>, code: string): string {
+  return lookupText(table, code) ?? code;
 }
 
-function labelled(labelText: string, control: HTMLElement): HTMLElement {
-  const label = document.createElement("label");
-  label.className = "field";
-  label.appendChild(text("span", labelText));
-  label.appendChild(control);
-  return label;
-}
-
-function input(placeholder: string, value = ""): HTMLInputElement {
-  const el = document.createElement("input");
-  el.placeholder = placeholder;
-  el.value = value;
-  return el;
-}
-
-/// An option is a plain value, which is also its label, or a `[value, label]` pair.
-function select(options: Array<string | [string, string]>, value?: string): HTMLSelectElement {
+/// A `<select>` of `[value, label]` pairs. The value is the code; the label
+/// is the text the person reads.
+function select(options: Array<[string, string]>, value?: string): HTMLSelectElement {
   const el = document.createElement("select");
-  for (const opt of options) {
-    const [optValue, optLabel] = typeof opt === "string" ? [opt, opt] : opt;
+  for (const [optValue, optLabel] of options) {
     const o = document.createElement("option");
     o.value = optValue;
     o.textContent = optLabel;
@@ -63,20 +74,16 @@ function select(options: Array<string | [string, string]>, value?: string): HTML
   return el;
 }
 
-function checkbox(labelText: string, checked = false): { wrap: HTMLElement; box: HTMLInputElement } {
-  const wrap = document.createElement("label");
-  wrap.className = "checkbox-field";
-  const box = document.createElement("input");
-  box.type = "checkbox";
-  box.checked = checked;
-  wrap.append(box, text("span", labelText));
-  return { wrap, box };
+/// The options for the codes of `table`, in the order of `codes`.
+function codeOptions(table: Map<string, string>, codes: string[]): Array<[string, string]> {
+  return codes.map((code): [string, string] => [code, codeWord(table, code)]);
 }
 
 /// A collapsed `<details>` block with an "included" checkbox in the summary.
-function block(name: string): { details: HTMLDetailsElement; enabled: HTMLInputElement; body: HTMLElement } {
+/// `kind` keeps the CSS class; `label` is the text shown.
+function block(kind: string, label: string): { details: HTMLDetailsElement; enabled: HTMLInputElement; body: HTMLElement } {
   const details = document.createElement("details");
-  details.className = `listing-block block-${name}`;
+  details.className = `listing-block block-${kind}`;
   const summary = document.createElement("summary");
   const enabled = document.createElement("input");
   enabled.type = "checkbox";
@@ -86,7 +93,7 @@ function block(name: string): { details: HTMLDetailsElement; enabled: HTMLInputE
   enabled.onchange = () => {
     details.open = enabled.checked;
   };
-  summary.append(enabled, text("span", name));
+  summary.append(enabled, text("span", label));
   details.appendChild(summary);
   const body = document.createElement("div");
   body.className = "block-body";
@@ -98,7 +105,7 @@ export async function renderListings(container: HTMLElement) {
   container.replaceChildren();
   const box = document.createElement("div");
   box.className = "listings-screen";
-  box.appendChild(text("h2", "Listings"));
+  box.appendChild(text("h2", t("listing-screen-title")));
 
   const listHost = document.createElement("div");
   listHost.className = "listing-list";
@@ -110,17 +117,17 @@ export async function renderListings(container: HTMLElement) {
   box.appendChild(buildVerifyBox());
 
   const reload = refiller(listHost, async (into) => {
-    into.appendChild(text("h3", "Your listings"));
+    into.appendChild(text("h3", t("listing-your-heading")));
     let rows: ListingListRow[] = [];
     try {
       const res = await call<{ listings: ListingListRow[] }>("listing.list");
       rows = res.listings;
     } catch (err) {
-      into.appendChild(text("p", `Could not load listings: ${errText(err)}`));
+      into.appendChild(text("p", t("listing-load-failed", { detail: errText(err) })));
       return;
     }
     if (rows.length === 0) {
-      into.appendChild(text("p", "No listings yet."));
+      into.appendChild(text("p", t("listing-empty")));
     }
     for (const row of rows) {
       into.appendChild(listingRow(row, reload));
@@ -138,10 +145,14 @@ function listingRow(row: ListingListRow, reload: () => Promise<void>): HTMLEleme
 
   wrap.appendChild(text("span", row.title || row.slug, "listing-title"));
   wrap.appendChild(text("span", row.slug, "listing-slug"));
-  wrap.appendChild(text("span", row.status, `listing-status status-${row.status}`));
-  wrap.appendChild(text("span", `v${row.version_count}`, "listing-version"));
+  wrap.appendChild(
+    text("span", codeWord(STATUS_LABELS, row.status), `listing-status status-${row.status}`),
+  );
+  wrap.appendChild(
+    text("span", t("listing-version", { count: String(row.version_count) }), "listing-version"),
+  );
 
-  const historyBtn = text("button", "History", "button listing-history-btn") as HTMLButtonElement;
+  const historyBtn = text("button", t("listing-history-button"), "button listing-history-btn") as HTMLButtonElement;
   const historyHost = document.createElement("div");
   historyHost.className = "listing-history";
   const fillHistory = refiller(historyHost, async (into: DocumentFragment, show: boolean) => {
@@ -156,13 +167,15 @@ function listingRow(row: ListingListRow, reload: () => Promise<void>): HTMLEleme
           supersedes?: string | null;
           payload?: { title?: string };
         };
-        const line =
-          `#${i + 1} ${env.record_id ?? ""}` +
-          (env.supersedes ? ` (supersedes ${env.supersedes})` : " (first version)");
+        const n = String(i + 1);
+        const id = env.record_id ?? "";
+        const line = env.supersedes
+          ? t("listing-history-line", { n, id, previous: env.supersedes })
+          : t("listing-history-first", { n, id });
         into.appendChild(text("div", line, "history-line"));
       });
     } catch (err) {
-      into.appendChild(text("div", `History failed: ${errText(err)}`));
+      into.appendChild(text("div", t("listing-history-failed", { detail: errText(err) })));
     }
   });
   // The button toggles. Two quick clicks are "open" then "close", and the
@@ -173,7 +186,7 @@ function listingRow(row: ListingListRow, reload: () => Promise<void>): HTMLEleme
     void fillHistory(historyShown);
   };
 
-  const withdrawBtn = text("button", "Withdraw", "button withdraw-listing") as HTMLButtonElement;
+  const withdrawBtn = text("button", t("listing-withdraw"), "button withdraw-listing") as HTMLButtonElement;
   withdrawBtn.disabled = row.status === "withdrawn";
   withdrawBtn.onclick = async () => {
     withdrawBtn.disabled = true;
@@ -182,7 +195,9 @@ function listingRow(row: ListingListRow, reload: () => Promise<void>): HTMLEleme
       await reload();
     } catch (err) {
       withdrawBtn.disabled = false;
-      wrap.appendChild(text("p", `Withdraw failed: ${errText(err)}`, "row-error"));
+      wrap.appendChild(
+        text("p", t("listing-withdraw-failed", { detail: errText(err) }), "row-error"),
+      );
     }
   };
 
@@ -199,11 +214,11 @@ function listingRow(row: ListingListRow, reload: () => Promise<void>): HTMLEleme
 function publishToDirectory(listingId: string): HTMLElement {
   const wrap = document.createElement("div");
   wrap.className = "publish-to-directory";
-  wrap.appendChild(text("h4", "Publish to a directory"));
+  wrap.appendChild(text("h4", t("listing-publish-heading")));
 
-  const didInput = input("Roym Directory service DID");
+  const didInput = input(t("listing-placeholder-directory-did"));
   didInput.className = "publish-directory-did";
-  const btn = text("button", "Publish here", "button publish-listing") as HTMLButtonElement;
+  const btn = text("button", t("listing-publish-button"), "button publish-listing") as HTMLButtonElement;
   const status = text("p", "", "publish-status");
 
   btn.onclick = async () => {
@@ -213,9 +228,11 @@ function publishToDirectory(listingId: string): HTMLElement {
     btn.disabled = true;
     try {
       await call("directory.publish-to-source", { source, listing_id: listingId });
-      status.textContent = "Published.";
+      status.textContent = t("listing-published");
     } catch (err) {
-      status.textContent = `Not published: ${publishRefusalWords(err, errText(err))}`;
+      status.textContent = t("listing-not-published", {
+        reason: publishRefusalWords(err, errText(err)),
+      });
     }
     btn.disabled = false;
   };
@@ -227,120 +244,120 @@ function publishToDirectory(listingId: string): HTMLElement {
 function buildEditor(onSaved: () => Promise<void>): { root: HTMLElement } {
   const root = document.createElement("div");
   root.className = "listing-editor";
-  root.appendChild(text("h3", "New / edit a listing"));
+  root.appendChild(text("h3", t("listing-editor-heading")));
 
-  const slug = input("slug (optional; derived from the title)");
-  const title = input("title");
+  const slug = input(t("listing-placeholder-slug"));
+  const title = input(t("listing-placeholder-title"));
   title.className = "listing-title-input";
-  const summary = input("summary");
+  const summary = input(t("listing-placeholder-summary"));
   summary.className = "listing-summary-input";
-  const categories = input("categories, comma separated");
+  const categories = input(t("listing-placeholder-categories"));
   categories.className = "listing-categories-input";
-  const address = input("conversation address (optional; taken from your profile)");
+  const address = input(t("listing-placeholder-address"));
   address.className = "listing-address-input";
-  const status = select(["active", "draft", "withdrawn"], "active");
+  const status = select(codeOptions(STATUS_LABELS, ["active", "draft", "withdrawn"]), "active");
 
   root.append(
-    labelled("Title", title),
-    labelled("Slug", slug),
-    labelled("Summary", summary),
-    labelled("Categories", categories),
-    labelled("Conversation address", address),
-    labelled("Status", status),
+    field(t("listing-label-title"), title),
+    field(t("listing-label-slug"), slug),
+    field(t("listing-label-summary"), summary),
+    field(t("listing-label-categories"), categories),
+    field(t("listing-label-address"), address),
+    field(t("listing-label-status"), status),
   );
 
   // --- booking ---
-  const booking = block("booking");
-  const bookingMode = select(["enquiry", "slots", "order"], "enquiry");
-  const bookingLead = input("lead time (seconds)", "0");
-  const bookingCancel = input("cancellation window (seconds)", "0");
-  const bookingMax = input("max per booking", "1");
+  const booking = block("booking", t("listing-block-booking"));
+  const bookingMode = select(codeOptions(BOOKING_MODE_LABELS, ["enquiry", "slots", "order"]), "enquiry");
+  const bookingLead = input(t("listing-placeholder-lead-time"), "0");
+  const bookingCancel = input(t("listing-placeholder-cancellation-window"), "0");
+  const bookingMax = input(t("listing-placeholder-max-per-booking"), "1");
   booking.body.append(
-    labelled("Mode", bookingMode),
-    labelled("Lead time (s)", bookingLead),
-    labelled("Cancellation window (s)", bookingCancel),
-    labelled("Max per booking", bookingMax),
+    field(t("listing-label-mode"), bookingMode),
+    field(t("listing-label-lead-time"), bookingLead),
+    field(t("listing-label-cancellation-window"), bookingCancel),
+    field(t("listing-label-max-per-booking"), bookingMax),
   );
 
   // --- payment ---
-  const payment = block("payment");
-  const payCurrency = input("currency (ISO-4217, e.g. EUR)", "EUR");
+  const payment = block("payment", t("listing-block-payment"));
+  const payCurrency = input(t("listing-placeholder-currency"), "EUR");
   payCurrency.className = "payment-currency-input";
-  const payModel = select(["per-hour", "fixed", "per-unit", "quote-only"], "per-hour");
-  const payAmount = input("amount, e.g. 35.50");
+  const payModel = select(codeOptions(PRICING_MODEL_LABELS, ["per-hour", "fixed", "per-unit", "quote-only"]), "per-hour");
+  const payAmount = input(t("listing-placeholder-amount"));
   payAmount.className = "payment-amount-input";
-  const payFees = input("fees, e.g. 2.50 (optional)");
-  const payTax = checkbox("tax included", false);
-  const payMethods = input("methods, comma separated");
-  const payPayee = input("payee (informational only)");
+  const payFees = input(t("listing-placeholder-fees"));
+  const payTax = checkbox(t("listing-label-tax-included"), false);
+  const payMethods = input(t("listing-placeholder-methods"));
+  const payPayee = input(t("listing-placeholder-payee"));
   payment.body.append(
-    labelled("Currency", payCurrency),
-    labelled("Model", payModel),
-    labelled("Amount", payAmount),
-    labelled("Fees", payFees),
+    field(t("listing-label-currency"), payCurrency),
+    field(t("listing-label-model"), payModel),
+    field(t("listing-label-amount"), payAmount),
+    field(t("listing-label-fees"), payFees),
     payTax.wrap,
-    labelled("Methods", payMethods),
-    labelled("Payee", payPayee),
+    field(t("listing-label-methods"), payMethods),
+    field(t("listing-label-payee"), payPayee),
   );
 
   // --- product ---
-  const product = block("product");
-  const prodUnit = input("unit, e.g. item", "item");
-  const prodPack = input("pack size", "1");
-  const prodCondition = select(["new", "used", "refurbished"], "new");
-  const prodSku = input("SKU (optional)");
+  const product = block("product", t("listing-block-product"));
+  const prodUnit = input(t("listing-placeholder-unit"), "item");
+  const prodPack = input(t("listing-placeholder-pack-size"), "1");
+  const prodCondition = select(codeOptions(CONDITION_LABELS, ["new", "used", "refurbished"]), "new");
+  const prodSku = input(t("listing-placeholder-sku"));
   product.body.append(
-    labelled("Unit", prodUnit),
-    labelled("Pack size", prodPack),
-    labelled("Condition", prodCondition),
-    labelled("SKU", prodSku),
+    field(t("listing-label-unit"), prodUnit),
+    field(t("listing-label-pack-size"), prodPack),
+    field(t("listing-label-condition"), prodCondition),
+    field(t("listing-label-sku"), prodSku),
   );
 
   // --- service ---
-  const service = block("service");
-  const svcDuration = input("duration (seconds)", "3600");
-  const svcIncludes = input("includes, comma separated");
-  const svcExcludes = input("excludes, comma separated");
-  const svcPrereq = input("prerequisites, comma separated");
+  const service = block("service", t("listing-block-service"));
+  const svcDuration = input(t("listing-placeholder-duration"), "3600");
+  const svcIncludes = input(t("listing-placeholder-includes"));
+  const svcExcludes = input(t("listing-placeholder-excludes"));
+  const svcPrereq = input(t("listing-placeholder-prerequisites"));
   service.body.append(
-    labelled("Duration (s)", svcDuration),
-    labelled("Includes", svcIncludes),
-    labelled("Excludes", svcExcludes),
-    labelled("Prerequisites", svcPrereq),
+    field(t("listing-label-duration"), svcDuration),
+    field(t("listing-label-includes"), svcIncludes),
+    field(t("listing-label-excludes"), svcExcludes),
+    field(t("listing-label-prerequisites"), svcPrereq),
   );
 
   // --- location ---
-  const location = block("location");
+  const location = block("location", t("listing-block-location"));
   const locWhere = select(
     SERVICE_LOCATION_KINDS.map((kind): [string, string] => [kind, serviceLocationEditorLabel(kind)]),
     "remote",
   );
-  const locDisclosure = select(["on-agreement", "public"], "on-agreement");
-  const locArea = input("service area label (optional)");
+  const locDisclosure = select(codeOptions(DISCLOSURE_LABELS, ["on-agreement", "public"]), "on-agreement");
+  const locArea = input(t("listing-placeholder-area"));
   location.body.append(
-    labelled("Where", locWhere),
-    labelled("Address disclosure", locDisclosure),
-    labelled("Service area", locArea),
+    field(t("listing-label-where"), locWhere),
+    field(t("listing-label-disclosure"), locDisclosure),
+    field(t("listing-label-service-area"), locArea),
   );
 
   // --- relationship ---
-  const relationship = block("relationship");
+  const relationship = block("relationship", t("listing-block-relationship"));
   const relOpen = select(
     OPEN_TO_KINDS.map((kind): [string, string] => [kind, openToLabel(kind)]),
     "anyone",
   );
-  const relMember = input("group DID (required for members)");
-  relationship.body.append(labelled("Open to", relOpen), labelled("Group DID", relMember));
+  const relMember = input(t("listing-placeholder-group-did"));
+  relationship.body.append(field(t("listing-label-open-to"), relOpen), field(t("listing-label-group-did"), relMember));
 
   // --- service_record ---
-  const serviceRecord = block("service_record");
-  const srReceipt = checkbox("issues a fulfilment receipt", false);
-  const srWarranty = input("warranty (seconds)", "0");
-  const srRetention = input("retention (seconds)", "0");
+  const serviceRecord = block("service_record", t("listing-block-service-record"));
+  const srReceipt = checkbox(t("listing-label-fulfilment-receipt"), false);
+  const srWarranty = input(t("listing-placeholder-warranty"), "0");
+  const srRetention = input(t("listing-placeholder-retention"), "0");
   serviceRecord.body.append(
     srReceipt.wrap,
-    labelled("Warranty (s)", srWarranty),
-    labelled("Retention (s)", srRetention),
+    field(t("listing-label-warranty"), srWarranty),
+    field(t("listing-label-retention"), srRetention),
   );
 
   root.append(
@@ -353,7 +370,7 @@ function buildEditor(onSaved: () => Promise<void>): { root: HTMLElement } {
     serviceRecord.details,
   );
 
-  const saveBtn = text("button", "Save listing", "button save-listing") as HTMLButtonElement;
+  const saveBtn = text("button", t("listing-save-button"), "button save-listing") as HTMLButtonElement;
   const result = text("p", "", "listing-save-result");
   root.append(saveBtn, result);
 
@@ -443,10 +460,14 @@ function buildEditor(onSaved: () => Promise<void>): { root: HTMLElement } {
         "listing.set",
         params,
       );
-      result.textContent = `Saved ${res.listing_id} as version ${res.version_count} (${res.record_id})`;
+      result.textContent = t("listing-saved", {
+        id: res.listing_id,
+        version: String(res.version_count),
+        record: res.record_id,
+      });
       await onSaved();
     } catch (err) {
-      result.textContent = `Save failed: ${errText(err)}`;
+      result.textContent = t("common-save-failed", { detail: errText(err) });
     }
     saveBtn.disabled = false;
   };
@@ -457,7 +478,7 @@ function buildEditor(onSaved: () => Promise<void>): { root: HTMLElement } {
 function availabilityEditor(listingId: string): HTMLElement {
   const wrap = document.createElement("div");
   wrap.className = "availability-editor";
-  wrap.appendChild(text("h4", "Availability (for slot bookings)"));
+  wrap.appendChild(text("h4", t("listing-availability-heading")));
 
   const slotsHost = document.createElement("div");
   slotsHost.className = "slot-list";
@@ -467,8 +488,8 @@ function availabilityEditor(listingId: string): HTMLElement {
   start.type = "datetime-local";
   const end = document.createElement("input");
   end.type = "datetime-local";
-  const capacity = input("capacity", "1");
-  const addBtn = text("button", "Add slot", "button add-slot") as HTMLButtonElement;
+  const capacity = input(t("listing-placeholder-capacity"), "1");
+  const addBtn = text("button", t("listing-add-slot"), "button add-slot") as HTMLButtonElement;
   const err = text("p", "", "slot-error");
 
   const reloadSlots = refiller(slotsHost, async (into) => {
@@ -481,8 +502,10 @@ function availabilityEditor(listingId: string): HTMLElement {
         line.className = "slot-line";
         const startStr = formatDateTime(s.start_secs);
         const endStr = formatDateTime(s.end_secs);
-        line.appendChild(text("span", `${startStr} - ${endStr} (x${s.capacity})`));
-        const rm = text("button", "Remove", "button remove-slot") as HTMLButtonElement;
+        line.appendChild(
+          text("span", t("listing-slot-line", { start: startStr, end: endStr, capacity: s.capacity })),
+        );
+        const rm = text("button", t("common-remove"), "button remove-slot") as HTMLButtonElement;
         rm.onclick = async () => {
           await call("availability.remove", { slot_id: s.slot_id });
           await reloadSlots();
@@ -491,7 +514,7 @@ function availabilityEditor(listingId: string): HTMLElement {
         into.appendChild(line);
       }
     } catch (e) {
-      into.appendChild(text("p", `Could not load slots: ${errText(e)}`));
+      into.appendChild(text("p", t("listing-slots-load-failed", { detail: errText(e) })));
     }
   });
 
@@ -507,9 +530,9 @@ function availabilityEditor(listingId: string): HTMLElement {
   };
 
   wrap.append(
-    labelled("Start", start),
-    labelled("End", end),
-    labelled("Capacity", capacity),
+    field(t("listing-label-start"), start),
+    field(t("listing-label-end"), end),
+    field(t("listing-label-capacity"), capacity),
     addBtn,
     err,
   );
@@ -524,12 +547,12 @@ export function verifyParams(pasted: string): { envelope: string } {
 function buildVerifyBox(): HTMLElement {
   const wrap = document.createElement("div");
   wrap.className = "listing-verify";
-  wrap.appendChild(text("h3", "Check a listing someone sent me"));
+  wrap.appendChild(text("h3", t("listing-verify-heading")));
 
   const area = document.createElement("textarea");
-  area.placeholder = "Paste a listing envelope JSON";
+  area.placeholder = t("listing-verify-placeholder");
   area.className = "verify-input";
-  const btn = text("button", "Check", "button verify-listing") as HTMLButtonElement;
+  const btn = text("button", t("listing-verify-button"), "button verify-listing") as HTMLButtonElement;
   const out = document.createElement("div");
   out.className = "verify-result";
 
@@ -538,7 +561,7 @@ function buildVerifyBox(): HTMLElement {
     try {
       JSON.parse(area.value);
     } catch {
-      out.appendChild(text("p", "That is not valid JSON."));
+      out.appendChild(text("p", t("listing-verify-bad-json")));
       return;
     }
     try {
@@ -550,16 +573,20 @@ function buildVerifyBox(): HTMLElement {
         status?: string;
       }>("listing.verify", verifyParams(area.value));
       if (res.verified) {
-        out.appendChild(text("p", "Verified.", "verify-ok"));
-        out.appendChild(text("div", `Issuer: ${res.issuer ?? ""}`));
-        out.appendChild(text("div", `Conversation address: ${res.conversation_address ?? ""}`));
-        out.appendChild(text("div", `Status: ${res.status ?? ""}`));
+        out.appendChild(text("p", t("listing-verified"), "verify-ok"));
+        out.appendChild(text("div", t("listing-verify-issuer", { issuer: res.issuer ?? "" })));
+        out.appendChild(
+          text("div", t("listing-verify-address", { address: res.conversation_address ?? "" })),
+        );
+        out.appendChild(
+          text("div", t("listing-verify-status", { status: codeWord(STATUS_LABELS, res.status ?? "") })),
+        );
       } else {
-        out.appendChild(text("p", "Not verified -- treat as unknown.", "verify-bad"));
+        out.appendChild(text("p", t("listing-not-verified"), "verify-bad"));
         out.appendChild(text("div", res.reason ?? ""));
       }
     } catch (err) {
-      out.appendChild(text("p", `Check failed: ${errText(err)}`));
+      out.appendChild(text("p", t("listing-check-failed", { detail: errText(err) })));
     }
   };
 
