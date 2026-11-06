@@ -295,11 +295,11 @@ fn verify_booking_progress_envelope() {
 #[test]
 fn the_ui_wording_matches_this_crate() {
     let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let wording_path = manifest_dir.join("../roym_web/ui/src/cards/wording.ts");
-    assert!(wording_path.exists(), "missing ../roym_web/ui/src/cards/wording.ts");
+    let wording_path = manifest_dir.join("../roym_web/ui/src/i18n/en.ftl");
+    assert!(wording_path.exists(), "missing ../roym_web/ui/src/i18n/en.ftl");
 
     let content = std::fs::read_to_string(&wording_path)
-        .expect("Failed to read ../roym_web/ui/src/cards/wording.ts");
+        .expect("Failed to read ../roym_web/ui/src/i18n/en.ftl");
 
     let pinned: &[(&str, &str)] = &[
         ("PAYMENT_NOTICE", PAYMENT_NOTICE),
@@ -314,7 +314,7 @@ fn the_ui_wording_matches_this_crate() {
     for (name, value) in pinned {
         assert!(
             content.contains(value),
-            "wording.ts is missing the {name} sentence verbatim: {value:?}"
+            "en.ftl is missing the {name} sentence verbatim: {value:?}"
         );
     }
 }

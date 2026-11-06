@@ -1,51 +1,21 @@
-// Notice strings mirrored between roym_core::conversation::group and the Hub UI
-// (Rust is the source of truth; a Rust-side test reads this file and compares
-// the notice strings verbatim).
+// Group content types, and the words the Hub builds from a delivery state or a
+// membership event. The notice sentences are in the string catalog; the ones
+// that `roym_core::conversation::group` also holds are checked against
+// `i18n/en.ftl` by a Rust test.
+
+import { t } from "../i18n/i18n";
 
 export const GROUP_PROFILE_CONTENT_TYPE = "application/vnd.roym.group-profile+json";
 export const MEMBERSHIP_EVENT_CONTENT_TYPE = "application/vnd.roym.membership-event+json";
 
-export const OWNER_CAN_READ_NOTICE =
-  "The owner of this group makes and shares the group's key, so the owner can read every message sent while they own it. Adding or removing a member is shown to everyone in the group.";
-
-export const GROUP_KEY_TRUST_NOTICE =
-  "Each member's messages are signed with a key this installation first saw when they joined. That is a weaker check than a signed record, so messages here are never marked as verified.";
-
-export const GROUP_DELIVERY_NOTICE =
-  '"Not yet delivered to every member" means at least one member has not received it directly. Members also pass messages to each other, so a member may still receive it later.';
-
-export const GROUP_JOIN_BOUNDARY_NOTICE =
-  "You can read messages sent after you joined. Messages from before you joined are not shared with you.";
-
-export const GROUP_REMOVED_NOTICE =
-  "You were removed from this group. You can still read what you received before. You cannot read or send new messages.";
-
-export const GROUP_RESTORED_NOTICE =
-  "This group's history was restored from a backup. This installation is not a member, so it cannot send or receive new messages here. Ask the owner to add your new address.";
-
-export const GROUP_ADD_UNREACHABLE_MESSAGE =
-  "Could not reach this person to add them. Someone you have not talked to before must be online when you add them.";
-
-export const GROUP_HIDDEN_NOTICE =
-  "A hidden group is not shown. New messages are held for up to 30 days, and you stay a member until the owner removes you.";
-
-export const TRANSCRIPT_CHECK_NOTICE =
-  "Members who see the same code hold the same messages in the same order.";
-
-export const CARDS_NOT_IN_GROUPS_MESSAGE =
-  "Cards are sent only in a 1:1 conversation.";
-
-export const SESSION_ENDED_NOTICE =
-  "Your session ended, for example because this installation restarted. Log in again.";
-
 export function deliveryWords(state: "pending" | "delivered" | "failed"): string {
   switch (state) {
     case "pending":
-      return "Not yet delivered to every member";
+      return t("group-delivery-pending");
     case "delivered":
-      return "Delivered to every member";
+      return t("group-delivery-delivered");
     case "failed":
-      return "Not delivered to every member";
+      return t("group-delivery-failed");
   }
 }
 
@@ -71,15 +41,15 @@ export function membershipEventWords(
   const authorName = nameOf(authorAddr);
   const subjectName = nameOf(event.subject);
   if (event.action === "create" || (event.action === "add" && authorAddr && event.subject === authorAddr)) {
-    return `${authorName} created the group`;
+    return t("group-event-created", { author: authorName });
   }
   switch (event.action) {
     case "add":
-      return `${authorName} added ${subjectName}`;
+      return t("group-event-added", { author: authorName, subject: subjectName });
     case "remove":
-      return `${authorName} removed ${subjectName}`;
+      return t("group-event-removed", { author: authorName, subject: subjectName });
     default:
-      return `${authorName} updated the group`;
+      return t("group-event-updated", { author: authorName });
   }
 }
 

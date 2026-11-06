@@ -1,20 +1,6 @@
 import { describe, expect, it } from "vitest";
-import {
-  CARDS_NOT_IN_GROUPS_MESSAGE,
-  GROUP_ADD_UNREACHABLE_MESSAGE,
-  GROUP_DELIVERY_NOTICE,
-  GROUP_HIDDEN_NOTICE,
-  GROUP_JOIN_BOUNDARY_NOTICE,
-  GROUP_KEY_TRUST_NOTICE,
-  GROUP_REMOVED_NOTICE,
-  GROUP_RESTORED_NOTICE,
-  OWNER_CAN_READ_NOTICE,
-  SESSION_ENDED_NOTICE,
-  TRANSCRIPT_CHECK_NOTICE,
-  deliveryWords,
-  membershipEventWords,
-  shortAddress,
-} from "./words";
+import { t } from "../i18n/i18n";
+import { deliveryWords, membershipEventWords, shortAddress } from "./words";
 
 describe("deliveryWords", () => {
   it("maps pending, delivered, and failed states to exact words", () => {
@@ -85,24 +71,24 @@ describe("membershipEventWords", () => {
   });
 });
 
-describe("notice constants", () => {
-  it("all nine notice strings are non-empty", () => {
+describe("group notices", () => {
+  it("all eleven notice sentences are in the string catalog", () => {
     const notices = [
-      OWNER_CAN_READ_NOTICE,
-      GROUP_KEY_TRUST_NOTICE,
-      GROUP_DELIVERY_NOTICE,
-      GROUP_JOIN_BOUNDARY_NOTICE,
-      GROUP_REMOVED_NOTICE,
-      GROUP_RESTORED_NOTICE,
-      GROUP_ADD_UNREACHABLE_MESSAGE,
-      GROUP_HIDDEN_NOTICE,
-      TRANSCRIPT_CHECK_NOTICE,
-      CARDS_NOT_IN_GROUPS_MESSAGE,
-      SESSION_ENDED_NOTICE,
+      t("group-owner-can-read-notice"),
+      t("group-key-trust-notice"),
+      t("group-delivery-notice"),
+      t("group-join-boundary-notice"),
+      t("group-removed-notice"),
+      t("group-restored-notice"),
+      t("group-add-unreachable"),
+      t("group-hidden-notice"),
+      t("group-transcript-check-notice"),
+      t("group-cards-not-allowed"),
+      t("group-session-ended-notice"),
     ];
     for (const n of notices) {
-      expect(typeof n).toBe("string");
       expect(n.length).toBeGreaterThan(10);
+      expect(n).not.toMatch(/^group-/);
     }
   });
 });

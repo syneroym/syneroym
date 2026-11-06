@@ -1,19 +1,10 @@
 import { errText, field, refiller, text } from "../dom";
 import { onFeed } from "../events";
 import { formatDateTime, formatTime } from "../i18n/format";
+import { t } from "../i18n/i18n";
 import { renderRefusedCard } from "../cards/refused";
 import {
-  CARDS_NOT_IN_GROUPS_MESSAGE,
-  GROUP_DELIVERY_NOTICE,
-  GROUP_HIDDEN_NOTICE,
-  GROUP_JOIN_BOUNDARY_NOTICE,
-  GROUP_KEY_TRUST_NOTICE,
-  GROUP_REMOVED_NOTICE,
-  GROUP_RESTORED_NOTICE,
   MEMBERSHIP_EVENT_CONTENT_TYPE,
-  OWNER_CAN_READ_NOTICE,
-  SESSION_ENDED_NOTICE,
-  TRANSCRIPT_CHECK_NOTICE,
   deliveryWords,
   membershipEventWords,
   shortAddress,
@@ -98,7 +89,7 @@ export function renderSessionEnded(container: HTMLElement) {
   container.replaceChildren();
   const box = document.createElement("div");
   box.className = "session-ended-box";
-  box.appendChild(text("p", SESSION_ENDED_NOTICE, "session-ended-notice"));
+  box.appendChild(text("p", t("group-session-ended-notice"), "session-ended-notice"));
   const btn = text("button", "Log in again", "button tab-button") as HTMLButtonElement;
   btn.onclick = () => window.location.reload();
   box.appendChild(btn);
@@ -182,7 +173,7 @@ export function renderThreadMessages(
     }
 
     if (m.content_type === "application/vnd.roym.card+json") {
-      threadList.appendChild(renderRefusedCard("card", 1, CARDS_NOT_IN_GROUPS_MESSAGE));
+      threadList.appendChild(renderRefusedCard("card", 1, t("group-cards-not-allowed")));
       continue;
     }
 
@@ -190,7 +181,7 @@ export function renderThreadMessages(
   }
 
   if (hasPendingOrFailedOwn) {
-    threadList.appendChild(text("p", GROUP_DELIVERY_NOTICE, "group-delivery-notice"));
+    threadList.appendChild(text("p", t("group-delivery-notice"), "group-delivery-notice"));
   }
 }
 
@@ -411,9 +402,9 @@ export async function renderGroups(container: HTMLElement) {
     composerBox.className = "composer-box";
 
     if (info.restored_only) {
-      composerBox.appendChild(text("p", GROUP_RESTORED_NOTICE, "notice-box"));
+      composerBox.appendChild(text("p", t("group-restored-notice"), "notice-box"));
     } else if (!info.is_member) {
-      composerBox.appendChild(text("p", GROUP_REMOVED_NOTICE, "notice-box"));
+      composerBox.appendChild(text("p", t("group-removed-notice"), "notice-box"));
     } else {
       const sendInput = document.createElement("input");
       sendInput.type = "text";
@@ -487,7 +478,7 @@ export async function renderGroups(container: HTMLElement) {
     infoPanel.appendChild(
       text("div", `Owner: ${ownerDisplay}${info.is_owner ? " (you)" : ""}`, "group-owner"),
     );
-    infoPanel.appendChild(text("p", OWNER_CAN_READ_NOTICE, "owner-can-read-notice"));
+    infoPanel.appendChild(text("p", t("group-owner-can-read-notice"), "owner-can-read-notice"));
 
     // Members list
     const membersBox = document.createElement("div");
@@ -566,13 +557,13 @@ export async function renderGroups(container: HTMLElement) {
         text("div", `Group key changed here: ${dateStr} (epoch ${info.key_epoch})`, "key-changed-date"),
       );
     }
-    infoPanel.appendChild(text("p", GROUP_KEY_TRUST_NOTICE, "group-key-trust-notice"));
-    infoPanel.appendChild(text("p", GROUP_JOIN_BOUNDARY_NOTICE, "group-join-boundary-notice"));
+    infoPanel.appendChild(text("p", t("group-key-trust-notice"), "group-key-trust-notice"));
+    infoPanel.appendChild(text("p", t("group-join-boundary-notice"), "group-join-boundary-notice"));
 
     // Transcript check
     const shortDigest = digestStr.length >= 12 ? digestStr.slice(0, 12) : digestStr;
     infoPanel.appendChild(text("div", `Transcript check: ${shortDigest}`, "transcript-check-code"));
-    infoPanel.appendChild(text("p", TRANSCRIPT_CHECK_NOTICE, "transcript-check-notice"));
+    infoPanel.appendChild(text("p", t("group-transcript-check-notice"), "transcript-check-notice"));
 
     // Actions
     const actionBox = document.createElement("div");
@@ -593,7 +584,7 @@ export async function renderGroups(container: HTMLElement) {
 
     const hideBtn = text("button", "Hide this group", "button-small") as HTMLButtonElement;
     hideBtn.onclick = async () => {
-      if (window.confirm(GROUP_HIDDEN_NOTICE)) {
+      if (window.confirm(t("group-hidden-notice"))) {
         try {
           await call("group.hide", { conversation: gid });
           await reloadGroupList();

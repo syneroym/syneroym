@@ -7,8 +7,8 @@ import {
 } from "../listings/editor";
 import {
   OPEN_TO_KINDS,
-  OPEN_TO_LABELS,
-  SERVICE_LOCATION_EDITOR_LABELS,
+  openToLabel,
+  serviceLocationEditorLabel,
   SERVICE_LOCATION_KINDS,
 } from "../listings/labels";
 import { publishRefusalWords } from "../directory/membership";
@@ -312,7 +312,7 @@ function buildEditor(onSaved: () => Promise<void>): { root: HTMLElement } {
   // --- location ---
   const location = block("location");
   const locWhere = select(
-    SERVICE_LOCATION_KINDS.map((kind): [string, string] => [kind, SERVICE_LOCATION_EDITOR_LABELS[kind]]),
+    SERVICE_LOCATION_KINDS.map((kind): [string, string] => [kind, serviceLocationEditorLabel(kind)]),
     "remote",
   );
   const locDisclosure = select(["on-agreement", "public"], "on-agreement");
@@ -326,7 +326,7 @@ function buildEditor(onSaved: () => Promise<void>): { root: HTMLElement } {
   // --- relationship ---
   const relationship = block("relationship");
   const relOpen = select(
-    OPEN_TO_KINDS.map((kind): [string, string] => [kind, OPEN_TO_LABELS[kind]]),
+    OPEN_TO_KINDS.map((kind): [string, string] => [kind, openToLabel(kind)]),
     "anyone",
   );
   const relMember = input("group DID (required for members)");

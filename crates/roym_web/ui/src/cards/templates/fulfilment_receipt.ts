@@ -7,7 +7,7 @@
 /// - A missing optional field renders as an omitted row, never as undefined
 ///   and never as a guess.
 
-import { FULFILMENT_ACKNOWLEDGED, FULFILMENT_CLAIMED } from "../wording";
+import { t } from "../../i18n/i18n";
 import { type AgreedTermsData } from "./quote";
 
 export interface FulfilmentReceiptData {
@@ -24,20 +24,20 @@ export function renderFulfilmentReceipt(data?: FulfilmentReceiptData): HTMLEleme
   card.className = "card card-fulfilment-receipt";
 
   const title = document.createElement("h3");
-  title.textContent = "Fulfilment Receipt";
+  title.textContent = t("fulfilment-title");
   card.appendChild(title);
 
   if (data?.role) {
     const roleP = document.createElement("p");
     roleP.className = "fulfilment-role";
-    roleP.textContent = data.role === "quote-author" ? FULFILMENT_CLAIMED : FULFILMENT_ACKNOWLEDGED;
+    roleP.textContent = data.role === "quote-author" ? t("fulfilment-claimed") : t("fulfilment-acknowledged");
     card.appendChild(roleP);
   }
 
   if (data?.terms?.scope) {
     const scopeP = document.createElement("p");
     scopeP.className = "fulfilment-scope";
-    scopeP.textContent = `Scope: ${data.terms.scope}`;
+    scopeP.textContent = t("terms-scope", { value: data.terms.scope });
     card.appendChild(scopeP);
   }
 

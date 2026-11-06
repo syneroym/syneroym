@@ -7,7 +7,7 @@ import { renderCard } from "../cards/render";
 import { renderRefusedCard } from "../cards/refused";
 import { toMinorUnits, currencyMinorExponent } from "../money";
 import type { ServiceLocationKind } from "../listings/editor";
-import { SERVICE_LOCATION_EDITOR_LABELS } from "../listings/labels";
+import { serviceLocationEditorLabel } from "../listings/labels";
 import { type SearchMatch, searchHits } from "./message_search";
 
 // These two strings are shown to the person *before* a delete runs, and are
@@ -737,13 +737,13 @@ export function openQuoteForm(
   whereSelect.className = "quote-where-select";
   const optReceiver = document.createElement("option");
   optReceiver.value = "at-receiver";
-  optReceiver.textContent = SERVICE_LOCATION_EDITOR_LABELS["at-receiver"];
+  optReceiver.textContent = serviceLocationEditorLabel("at-receiver");
   const optGiver = document.createElement("option");
   optGiver.value = "at-giver";
-  optGiver.textContent = SERVICE_LOCATION_EDITOR_LABELS["at-giver"];
+  optGiver.textContent = serviceLocationEditorLabel("at-giver");
   const optRem = document.createElement("option");
   optRem.value = "remote";
-  optRem.textContent = SERVICE_LOCATION_EDITOR_LABELS.remote;
+  optRem.textContent = serviceLocationEditorLabel("remote");
   whereSelect.append(optReceiver, optGiver, optRem);
 
   const addressWrap = document.createElement("div");

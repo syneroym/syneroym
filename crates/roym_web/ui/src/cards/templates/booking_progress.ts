@@ -7,14 +7,7 @@
 /// - A missing optional field renders as an omitted row, never as undefined
 ///   and never as a guess.
 
-import {
-  FULFILMENT_ACKNOWLEDGED,
-  FULFILMENT_CLAIMED,
-  PAYMENT_ACKNOWLEDGED,
-  PAYMENT_CLAIMED,
-  PROGRESS_NOTICE,
-  TRACK_UNCONFIRMED,
-} from "../wording";
+import { lookupText, messageId, t } from "../../i18n/i18n";
 
 export interface BookingProgressData {
   agreement?: string;
@@ -31,19 +24,21 @@ export interface BookingProgressData {
   cancel_reason?: string;
 }
 
-const STATE_WORDS: Record<string, string> = {
-  scheduled: "Scheduled",
-  "in-progress": "In progress",
-  completed: "Completed",
-  cancelled: "Cancelled",
-  conflict: "Conflict",
-  "ended-unconfirmed": "Ended, unconfirmed",
-};
+/// A `Map`, because a state comes from another node: `constructor` or
+/// `__proto__` must be an unknown value, not an inherited property.
+const STATE_WORDS = new Map<string, string>([
+  ["scheduled", messageId("progress-state-scheduled")],
+  ["in-progress", messageId("progress-state-in-progress")],
+  ["completed", messageId("progress-state-completed")],
+  ["cancelled", messageId("progress-state-cancelled")],
+  ["conflict", messageId("progress-state-conflict")],
+  ["ended-unconfirmed", messageId("progress-state-ended-unconfirmed")],
+]);
 
-const CONFLICT_SENTENCES: Record<string, string> = {
-  "slot-taken": "Another booking took this slot first.",
-  "slot-unavailable": "The listing owner removed this slot.",
-};
+const CONFLICT_SENTENCES = new Map<string, string>([
+  ["slot-taken", messageId("progress-conflict-slot-taken")],
+  ["slot-unavailable", messageId("progress-conflict-slot-unavailable")],
+]);
 
 function trackSentence(track: string | undefined, claimed: string, acknowledged: string): string | undefined {
   switch (track) {
@@ -52,7 +47,7 @@ function trackSentence(track: string | undefined, claimed: string, acknowledged:
     case "acknowledged":
       return acknowledged;
     case "unconfirmed":
-      return TRACK_UNCONFIRMED;
+      return t("track-unconfirmed");
     default:
       return undefined;
   }
@@ -63,17 +58,17 @@ export function renderBookingProgress(data?: BookingProgressData): HTMLElement {
   card.className = "card card-booking-progress";
 
   const title = document.createElement("h3");
-  title.textContent = "Booking Progress";
+  title.textContent = t("progress-title");
   card.appendChild(title);
 
   if (data?.state) {
     const stateP = document.createElement("p");
     stateP.className = "progress-state";
-    stateP.textContent = `Status: ${STATE_WORDS[data.state] ?? data.state}`;
+    stateP.textContent = t("progress-status", { state: lookupText(STATE_WORDS, data.state) ?? data.state });
     card.appendChild(stateP);
   }
 
-  const paymentSentence = trackSentence(data?.payment, PAYMENT_CLAIMED, PAYMENT_ACKNOWLEDGED);
+  const paymentSentence = trackSentence(data?.payment, t("payment-claimed"), t("payment-acknowledged"));
   if (paymentSentence) {
     const paymentP = document.createElement("p");
     paymentP.className = "progress-payment";
@@ -81,7 +76,7 @@ export function renderBookingProgress(data?: BookingProgressData): HTMLElement {
     card.appendChild(paymentP);
   }
 
-  const fulfilmentSentence = trackSentence(data?.fulfilment, FULFILMENT_CLAIMED, FULFILMENT_ACKNOWLEDGED);
+  const fulfilmentSentence = trackSentence(data?.fulfilment, t("fulfilment-claimed"), t("fulfilment-acknowledged"));
   if (fulfilmentSentence) {
     const fulfilmentP = document.createElement("p");
     fulfilmentP.className = "progress-fulfilment";
@@ -92,20 +87,20 @@ export function renderBookingProgress(data?: BookingProgressData): HTMLElement {
   if (data?.conflict) {
     const conflictP = document.createElement("p");
     conflictP.className = "progress-conflict";
-    conflictP.textContent = CONFLICT_SENTENCES[data.conflict] ?? data.conflict;
+    conflictP.textContent = lookupText(CONFLICT_SENTENCES, data.conflict) ?? data.conflict;
     card.appendChild(conflictP);
   }
 
   if (data?.cancel_reason) {
     const cancelP = document.createElement("p");
     cancelP.className = "progress-cancel-reason";
-    cancelP.textContent = `Cancellation reason: ${data.cancel_reason}`;
+    cancelP.textContent = t("progress-cancel-reason", { reason: data.cancel_reason });
     card.appendChild(cancelP);
   }
 
   const noticeP = document.createElement("p");
   noticeP.className = "progress-notice";
-  noticeP.textContent = PROGRESS_NOTICE;
+  noticeP.textContent = t("progress-notice");
   card.appendChild(noticeP);
 
   return card;

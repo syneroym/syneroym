@@ -42,6 +42,16 @@ export function errText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+/// A label, one space, then the value nodes. Fluent removes a space at the
+/// end of a message, so the space between a label and its value is added
+/// here and not in the string catalog. `label` is the translated text, so
+/// each `t()` call keeps a literal id at the call site.
+export function labelled(parent: HTMLElement, label: string, ...nodes: (Node | string)[]): void {
+  const span = document.createElement("span");
+  span.textContent = label;
+  parent.append(span, " ", ...nodes);
+}
+
 export function field(labelText: string, control: HTMLElement): HTMLElement {
   const label = document.createElement("label");
   label.className = "field";

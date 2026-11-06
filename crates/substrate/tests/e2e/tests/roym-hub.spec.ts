@@ -838,6 +838,7 @@ test.describe('Roym Hub', () => {
     await expect(quoteCard).toContainText('Total: €45.00');
     await expect(quoteCard).toContainText('Payee, as agreed in this quote: Y Repairs');
     await expect(quoteCard).toContainText('Expires:');
+    await expect(quoteCard.locator('.quote-expiry time')).toHaveAttribute('datetime', /^\d{4}-\d{2}-\d{2}T/);
     await expect(quoteCard).toContainText('Cancellation terms: 24 hours notice required for full refund');
     await expect(quoteCard).toContainText('Dispute path: Small claims court or informal mediation');
 
@@ -1092,11 +1093,15 @@ test.describe('Roym Hub', () => {
     await expect(quoteCard).toContainText('Payee, as agreed in this quote: Timber Crafts Ltd');
     await expect(quoteCard).toContainText('Cancellation terms: Strict 48h cancellation');
 
-    const expDate = new Date(1600000000 * 1000).toISOString();
-    await expect(quoteCard.locator('.quote-expiry')).toContainText(`Expires: ${expDate} (expired)`);
-    await expect(quoteCard.locator('.quote-expired-notice')).toContainText(
-      `This quote expired on ${expDate}. Ask for a new one.`,
-    );
+    // The date is in the Hub language's own format, which Node and Chromium
+    // may write a little differently, so check its parts. 1600000000 is
+    // September 2020 in every time zone.
+    await expect(quoteCard.locator('.quote-expiry')).toContainText('Expires: ');
+    await expect(quoteCard.locator('.quote-expiry')).toContainText('2020');
+    await expect(quoteCard.locator('.quote-expiry')).toContainText('(expired)');
+    await expect(quoteCard.locator('.quote-expired-notice')).toContainText('This quote expired on ');
+    await expect(quoteCard.locator('.quote-expired-notice')).toContainText('2020');
+    await expect(quoteCard.locator('.quote-expired-notice')).toContainText('Ask for a new one.');
 
     await expect(quoteCard.locator('.accept-quote-button')).toHaveCount(0);
     await expect(quoteCard.locator('.decline-quote-button')).toHaveCount(0);
