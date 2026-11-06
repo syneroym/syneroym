@@ -771,3 +771,93 @@ decision and deviation belongs there, and that is where they are written.
   three messages that are only values and punctuation, and no command
   message, because every command sits inside a Hindi sentence.
 - *Status:* Fixed (5fe574ef). Now in: change doc "Shared messages" bullet (the rule and the five `common-` ids), a "Code words" bullet, and Deviations entries for `NO_WORDS` (no command message; `listing-version`, `listing-slot-line`, `safety-report-row`, `login-error-http`), the backup import line and the Hindi sign-in messages.
+
+## Code review round 2 — Claude Opus 5.5, 2026-11-06
+
+Checked the round 1 fix commits `5fe574ef` (code) and `12e13f47` (docs) on
+`feat/m08b-b1b-localization-screens` at `12e13f47`, in the main checkout.
+The fix commits change the Hub UI (`crates/roym_web/ui/src`), the change
+doc, the developer guide, `hi-review.md`, task.md, status.md and this file.
+No Rust code changes.
+
+**Summary:** R1 to R6 confirmed fixed. 1 new item: 0 blocker, 0 major,
+1 minor (R7). **1 open.**
+
+**Evidence.** `gh pr checks 351`: every job passes on `12e13f47` (run
+42241961224: Lints, licenses & checks, Test 1/6 to 6/6, Playwright E2E,
+CI Pipeline; CLA passes; Benchmarks and Code Coverage skip). Here:
+`npm test` 32 files, 337 tests passed; `npm run build` passes (the
+visible-text test runs inside it); main script 45,160 bytes and Hindi chunk
+13,980 bytes after `gzip -9`, main script with no Devanagari letter. These
+match status.md and task.md. I repeated the English comparison with `main`
+of round 1 on a copy of `12e13f47` (same fixtures; `hindi-screens.test.ts`
+did not change): 534 screen texts and 39 sentences, 0 differences.
+
+### Round 1 items
+
+- **R1 — confirmed fixed (`5fe574ef`).** `importedCount()` returns a
+  number as it is, the sum of the number values of a map, and `undefined`
+  for `true`, `{}`, a missing field or `null`. That covers every reply
+  shape of the five Rust `*ImportOutput` structs. `backup.test.ts` drives
+  the five bundle rows through `stubRpc` with those shapes and checks the
+  exact English line, so a `{$count}` line now fails a test. The change of
+  English text is in Deviations.
+- **R2 — confirmed fixed (`5fe574ef`).** The Hindi `login-error-http`,
+  `-challenge`, `-service` and `-methods` name only the cause, and `hi.ftl`
+  has one spelling (`साइन इन`; no `साइन-इन` is left). `login.test.ts` now
+  checks the line that `main.ts` draws: `साइन इन नहीं हो सका: HTTP 500`
+  exactly, `साइन` once, and `विवरण:` once for the service case.
+  `login-error-http` is in `NO_WORDS` with a reason, and the change doc
+  records both points.
+- **R3 — confirmed fixed (`5fe574ef`, `12e13f47`).** Each of the four
+  Rust-pinned lines has a comment in the words of the B1a block. The delete
+  notes have a standalone comment with the old reason. The "Pinned
+  English" bullet names the four new sentences and the four Rust tests.
+- **R4 — confirmed fixed (`5fe574ef`).** `codeWord` has its own test for
+  a known code, an unknown code and four inherited names. The revocation
+  line is tested in `en` and `hi` and with the three inherited names; the
+  credential status words are tested in `en` and `hi` with the code kept in
+  `dataset.status`. The listings test checks one option of each of the four
+  editor tables (and the status). Its name says "every option", but it
+  checks five; every other option is in Hindi too (I compared the 15
+  `listing-*` code messages, and the sweep draws the editor), so this is a
+  note, not a finding.
+- **R5 — confirmed fixed (`5fe574ef`).** One `codeWord` in `i18n.ts`, used
+  by `listings.ts`, `safety.ts`, `messages.ts`, `directory.ts` and
+  `synorg_members.ts`; `select` and `codeOptions` are in `dom.ts`; the
+  local copies and `codeSelect` are gone. The two report selects keep the
+  table order and set no value, as `codeSelect` did. But see R7.
+- **R6 — confirmed fixed (`12e13f47`).** The change doc has the "Shared
+  messages" bullet with the rule and the five ids, and Deviations entries
+  for `NO_WORDS` (now with `login-error-http`), the backup line and the
+  Hindi sign-in messages.
+
+### New findings
+
+#### R7 (minor) — The new `codeWord` comment and the change doc say it is the only reader of code tables, but five B1a reads do not use it
+
+- **Where:** at `12e13f47`:
+  [i18n.ts:182](../../../../crates/roym_web/ui/src/i18n/i18n.ts#L182)
+  ("Every screen that shows a code as a word reads its table through this
+  function"); [change.md:184](../../changes/roym-multilingual/change.md#L184)
+  ("the one place that reads a table of code words"); against
+  [listings/labels.ts:32](../../../../crates/roym_web/ui/src/listings/labels.ts#L32),
+  `:38`, `:48` and
+  [booking_progress.ts:67](../../../../crates/roym_web/ui/src/cards/templates/booking_progress.ts#L67),
+  `:90`, which still write `lookupText(TABLE, code) ?? code`.
+- **Problem:** The fix of R5 moved every B1b read to `codeWord`, as R5
+  asked. R5 listed only the B1b places, but the new comment and the change
+  doc say more: that every read goes through `codeWord`. Five B1a reads
+  (the service location and audience words, the booking state and conflict
+  words of the card) still use the old form. A doc comment that is not
+  true is what AGENTS.md calls an over-claim.
+- **Failure case:** B2 changes the rule in `codeWord` (for example, an
+  English label for a code with no Hindi label), trusting the comment that
+  every screen reads through it. The listing editor's location words and
+  the booking card keep the old rule, and no test shows the difference.
+- **Fix:** Use `codeWord` in the five places (each is one line; the
+  functions in `labels.ts` then call it, and `booking_progress.ts` imports
+  it). Their existing tests stay as they are. The other choice is to make
+  the comment and the change doc say "the B1b screens", but one rule in
+  one place is the point of R5.
+- *Status:* Open
