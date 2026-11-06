@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { errText } from "../dom";
 import { RpcError } from "../rpc";
-import { activate, activateWith } from "./i18n";
+import { activate, activateWith, t } from "./i18n";
 import HINDI from "./hi.ftl?raw";
 
 afterEach(async () => {
@@ -48,6 +48,26 @@ describe("errText in English", () => {
   });
 });
 
+/// The message each code must give. Written out here on purpose, so a swapped
+/// or missing row in the table is seen.
+const EXPECTED: Array<[number, string]> = [
+  [-32001, "error-service-unavailable"],
+  [-32002, "error-service-timeout"],
+  [-32003, "error-permission"],
+  [-32004, "error-quota"],
+  [-32010, "error-not-signed-in"],
+  [-32011, "error-not-owner"],
+  [-32012, "error-no-owner"],
+  [-32013, "error-not-local"],
+  [-32601, "error-method-not-found"],
+  [-32602, "error-invalid-input"],
+  [-32603, "error-internal"],
+  [-32700, "error-service"],
+  [-32600, "error-service"],
+  [-32099, "error-service"],
+  [-12345, "error-service"],
+];
+
 describe("errText in Hindi", () => {
   async function hindi(): Promise<void> {
     await activateWith("hi", { hi: async () => HINDI });
@@ -61,6 +81,15 @@ describe("errText in Hindi", () => {
       expect(text.replace(/विवरण: .*$/, ""), String(code)).not.toContain("raw text");
       expect(text, String(code)).toContain("विवरण: raw text");
     }
+  });
+
+  it("gives each code its own message", async () => {
+    await hindi();
+    for (const [code, id] of EXPECTED) {
+      expect(errText(rpc(code)), String(code)).toBe(t(id, { detail: "raw text", code: String(code) }));
+    }
+    const distinct = new Set(EXPECTED.slice(0, 11).map(([code]) => errText(rpc(code))));
+    expect(distinct.size).toBe(11);
   });
 
   it("has no detail for the -32013 refusal and for an HTTP failure", async () => {
