@@ -3,17 +3,20 @@
 *Reader: the developer (or AI) who implements slice B1a. You do not have the
 planning conversation. This plan is meant to stand alone.*
 
-**Status: plan written, 2026-11-06. The owner questions Q1 to Q6
-(section 2.1) are open.**
+**Status: plan written, 2026-11-06. Plan review round 1
+([slice-b1a-review.md](slice-b1a-review.md), P1 to P12) is folded in. The
+owner answered Q1 to Q6 on 2026-11-06, all (a); the answer is under each
+question.**
 
 **Size and PR.** M. One PR on `feat/m08b-b1a-localization-mechanism`, with
 the commits of section 6 in that order. The branch starts from `main` at
-`9e19b888` (S0 is merged). B1a adds the Hub's string catalog and its
-lookup, a language setting, local formats for money, dates and times, and
-error messages by error code. It moves the four word tables, the card text
-and the Hub shell (`main.ts`) into the catalog. It changes no JSON-RPC
-method, no WIT file, no signed record and no Rust code outside two tests
-and one doc comment.
+`9e19b888` (S0 is merged) and already holds the plan commits. B1a adds the
+Hub's string catalog and its lookup, a language setting, local formats for
+money, dates and times, and error messages by error code. It moves the
+four word tables, the card text and the Hub shell (`main.ts`) into the
+catalog. It changes no JSON-RPC method, no WIT file and no signed record.
+Its only Rust changes are two tests and one doc comment in `roym_core`,
+and one new gate in `xtask/src/verify.rs` (Q5).
 
 **Base.** Every file path and line number below was checked on `main` at
 `9e19b888`. The task.md facts were checked on `76b52fe6`; the commits
@@ -28,13 +31,14 @@ file that B1a touches ([task.md](task.md) section 4).
 - `AGENTS.md`. The rules this slice touches most:
   - `mise run verify` before you finish (background job, about 20 minutes,
     no `--skip`). Today it does not run the Hub's vitest suite (section
-    2.2, point 2). Q5 asks to add it.
+    2.2, point 2). B1a adds it (Q5).
   - No planning ids in code or comments: no "M08B", "B1a", "ML-4" or
     "D-B1a-3" in `.ts`, `.ftl`, `.rs` files or test names. The gate
     `planning-refs` scans `.ts` comments. It does not scan `.ftl` files,
     but the rule still holds there.
   - Comments never cite size rules.
-  - The import clean-up pass (Rust files only change in two tests here),
+  - The import clean-up pass (Rust changes here: two tests and
+    `xtask/src/verify.rs`),
     the deferred backlog, the living-docs close-out and the demo close-out.
   - The communication style: the Hindi text is user text, so it must be
     plain, common Hindi, not formal or Sanskrit-heavy words.
@@ -49,9 +53,11 @@ file that B1a touches ([task.md](task.md) section 4).
   paragraph. B1a adds story 40 under its rules ("Two kinds of story, one
   runner", "Link between slice plans, the demo and AGENTS.md"). B1a meets
   no criterion of that doc and records nothing there.
-- [slice-s0-implementation-plan.md](slice-s0-implementation-plan.md) and
-  [slice-s0-review.md](slice-s0-review.md). Section 7.8 lists how B1a
-  avoids the kinds of findings S0 had.
+- [slice-s0-implementation-plan.md](slice-s0-implementation-plan.md),
+  [slice-s0-review.md](slice-s0-review.md) and
+  [slice-b1a-review.md](slice-b1a-review.md). Section 7.8 lists how B1a
+  avoids the kinds of findings S0 had; each B1a plan finding names the
+  section that now holds its fix.
 
 ### Terms used in this plan
 
@@ -97,32 +103,38 @@ each message. Every other screen keeps its English text until B1b.
   the sign-in box and every card in her chats are now in Hindi. The other
   screens still show English text; slice B1b changes them.
 - Money shows like `₹1,00,000.50`, with Indian digit grouping. Dates and
-  times show in her language's style, for example `15 Jan 2027, 1:30 pm IST`.
+  times show in her language's style: `15 जन॰ 2027, 1:30 pm IST` in Hindi,
+  `15 Jan 2027, 1:30 pm IST` in English.
 - She reloads the page, or opens the Hub again later in the same browser.
   It is still in Hindi.
 - When the node refuses an action, the Hub says so in Hindi. The service's
   own English words show only after a "विवरण:" ("details:") label.
 - Someone whose browser asks for Hindi first sees the Hub in Hindi from the
   start, with no choice to make.
+- If the browser does not let the Hub save settings, the Hub says so next
+  to the list and stays in its current language.
 
 How a developer can see it work:
 
 - `mise run demo` (or `npm run test:demo` in `crates/substrate/tests/e2e`)
   runs story `demo/40-roym-languages.spec.ts`. It prints the captions "sign
   in", "switch the Hub to Hindi" and "reload: still Hindi", and passes.
-- `mise run test:roym-ui` runs the Hub unit tests. The new files
-  `i18n.test.ts`, `format.test.ts`, `catalog.test.ts` and `errors.test.ts`
-  show the language choice, the formats (`₹1,00,000.50` in both
-  languages) and the error messages.
+- `mise run test:roym-ui` (and now `mise run verify`, gate `hub-ui`) runs
+  the Hub unit tests. The new files `i18n.test.ts`, `format.test.ts`,
+  `catalog.test.ts`, `errors.test.ts` and `picker.test.ts` show the
+  language choice, the formats (`₹1,00,000.50` in both languages) and the
+  error messages.
+- `mise run test:e2e` runs a new test in `roym-hub.spec.ts` with the
+  browser set to `hi-IN`: the Hub opens in Hindi with no click.
 - In a running Hub, `document.documentElement.lang` is `hi` after the
   switch, and `localStorage.getItem("roym-hub-language")` is `"hi"`.
 
 ## 2. Points for the owner
 
-### 2.1 Questions
+### 2.1 Questions (answered; see "Owner answer" under each)
 
 Each question names what it blocks. The recommendation is the first
-option.
+option. The owner answered all six on 2026-11-06.
 
 **Q1. Which region do the formats use? (blocks Step 3)**
 
@@ -146,6 +158,10 @@ gives `₹100,000.50`. Many people in India use a browser set to `en-US`
 - (c) **No region.** `Intl` picks: `en` gives Western grouping. Fails ML-4
   for English.
 
+*Owner answer:* (a), always India. It is the only option that always
+meets ML-4. Set a rule for a tag that already has a region (P9). The rule
+is in D-B1a-4: `IN` is added only when the catalog tag has no region.
+
 **Q2. Does B1a move the shell (`main.ts`) too? (blocks Step 6)**
 
 task.md says "Move the four word tables and the card text into the
@@ -162,11 +178,13 @@ the cards stays English.
 - (b) **No.** The shell waits for B1b. Story 40 checks only the language
   list and `html[lang]`.
 
+*Owner answer:* (a), move the shell.
+
 **Q3. How do cards show times? (blocks Step 5)**
 
 Cards show schedule, window, expiry and payment times as UTC ISO strings
-today (`new Date(...).toISOString()`, 6 call sites, section 2.2 point 6).
-ML-4 asks for the Hub language's format.
+today (`new Date(...).toISOString()`, 9 calls in 4 files, section 2.2
+point 6). ML-4 asks for the Hub language's format.
 
 - (a) **Local time with the zone name, inside a `<time>` element.** The
   text is `formatDateTime(secs)`, for example `15 Jan 2027, 1:30 pm IST`;
@@ -178,6 +196,11 @@ ML-4 asks for the Hub language's format.
   Node and Chromium. *Recommended.*
 - (b) **Keep UTC ISO strings.** Simple, but cards break ML-4.
 
+*Owner answer:* (a), but only for rows where the date ends the row. Use
+plain text for the sentence rows (P1). Fluent returns a string, so a
+`<time>` element cannot sit inside a translated sentence without cutting
+the sentence in two. D-B1a-5 has the two kinds of row.
+
 **Q4. What happens when the person picks a language? (blocks Step 6)**
 
 - (a) **Save the choice and reload the page.** The session token is in
@@ -187,22 +210,29 @@ ML-4 asks for the Hub language's format.
 - (b) **Redraw without a reload.** Every screen would need a redraw hook.
   Much more code for a rare action.
 
+*Owner answer:* (a), save and reload. It needs a rule for blocked storage
+(P7). The rule is in D-B1a-8: when the choice cannot be saved, the Hub does
+not reload and shows a one-line note.
+
 **Q5. Does `mise run verify` run the Hub unit tests? (blocks Step 2)**
 
 The Hub's vitest suite runs in CI (`.github/workflows/ci.yml:78`, `mise
 run test:roym-ui`) but not in `mise run verify`
 ([verify.rs](../../../../xtask/src/verify.rs) `GATES`). B1a adds most of
-its tests there (the string catalog checks, the formats, ML-2 to ML-6). The
-nextest gate already builds the Hub (`mise run build:roym` depends on
-`build:roym-ui`, which runs `eslint`, `tsc` and `vite build`), so `npm ci`
-has run by then.
+its tests there (the string catalog checks, the formats, ML-2 to ML-6).
 
 - (a) **Add a gate `hub-ui` in B1a**, running `mise run test:roym-ui`,
   after `planning-refs` and before `nextest`, `skip_on_docs_only: true`.
-  The suite has about 20 test files; its run time is not measured here.
-  *Recommended:* a local verify then fails on the same Hub test that CI
-  fails on.
+  The gate needs nothing from another gate: `test:roym-ui` runs its own
+  `npm ci || npm install`, so `npm ci` runs once more in `nextest`
+  (through `build:roym-ui`). It sits before `nextest` so that a fast
+  failure comes first. The suite has about 20 test files; Step 2 measures
+  its run time. *Recommended:* a local verify then fails on the same Hub
+  test that CI fails on.
 - (b) **Leave it to CI.**
+
+*Owner answer:* (a), add the `hub-ui` gate. The plan's first reason for
+its order was wrong (P11); the text above is the corrected one.
 
 **Q6. Where does the service's English text go in a Hindi error? (blocks
 Step 4)**
@@ -222,6 +252,10 @@ line". `errText()` returns one string to 54 callers that put it into
   screens that B1b moves anyway.
 - (c) **No English at all** in Hindi. Loses the only clue for a support
   question.
+
+*Owner answer:* (a), the catalog decides. Network errors never reach the
+table (P6). D-B1a-12 now catches them in `call()` and gives them their own
+message, `error-network`.
 
 ### 2.2 Points found while reading
 
@@ -260,7 +294,7 @@ line". `errText()` returns one string to 54 callers that put it into
    `-32,602`. Rule: pass codes, ids and years as strings; pass numbers only
    for counts and amounts that should be formatted (D-B1a-3).
 6. **More date call sites than task.md counts.** task.md lists the 4
-   `toLocale*` calls. Cards also format 6 times with `toISOString()`:
+   `toLocale*` calls. Cards also format times with `toISOString()`:
    [quote.ts:154](../../../../crates/roym_web/ui/src/cards/templates/quote.ts#L154),
    `:155`, `:206`;
    [agreement_receipt.ts:179](../../../../crates/roym_web/ui/src/cards/templates/agreement_receipt.ts#L179),
@@ -310,13 +344,43 @@ line". `errText()` returns one string to 54 callers that put it into
     chunk, D-B1a-1) is served the same way as `assets/index-*.js`, and the
     CSP `script-src 'self'` ([index.html:16](../../../../crates/roym_web/ui/index.html#L16))
     allows it.
+13. **Some failures never reach the error-code table** (review P6).
+    `web` also answers `-32700` (parse error) and `-32600` (invalid
+    request) ([roym_web/src/app.rs:154](../../../../crates/roym_web/src/app.rs#L154),
+    `:163`); they go to the `error-service` row. And `call()` can throw
+    errors that are not `RpcError`: `fetch` throws a `TypeError` when the
+    node cannot be reached ("Failed to fetch" in Chrome, other words in
+    Firefox), and `res.json()` throws a `SyntaxError` for a reply that is
+    not JSON. That is browser-made English, on the most common failure.
+    B1a wraps both in `call()` (D-B1a-12). Checked: no caller of `call()`
+    tests for `TypeError` or `SyntaxError`; the callers that catch
+    everything (`catch {}` in `memberships.ts:32`, `safety.ts:23`, `:69`,
+    `:148`, `:206`, `synorg_members.ts:36`, `messages.ts:406`) still catch
+    the new `RpcError`. `session/login.ts` uses its own `fetch`, not
+    `call()`, so it does not change.
+14. **The English text must exist before `initLanguage()` runs** (review
+    P2). About 8 existing test files render cards or word tables with no
+    language set up, and `main.ts:62` sets `window.RoymRegistry` at module
+    load, which e2e tests call directly. So the English bundle is built
+    when `i18n.ts` loads, not in `activate()` (D-B1a-3).
+15. **Word tables are looked up with values from other nodes** (review
+    P5). `STATE_WORDS[data.state] ?? data.state`
+    ([booking_progress.ts:72](../../../../crates/roym_web/ui/src/cards/templates/booking_progress.ts#L72))
+    finds an inherited property for `constructor` or `toString`. Every id
+    table lookup checks for an own property first (D-B1a-15).
+16. **The unit tests and the build use different Vite versions** (review
+    P10). `npm run build` uses Vite 5.4.21; `vitest` 4.1.11 brings its own
+    Vite 6.4.3 (`node_modules/vitest/node_modules/vite`). Both support
+    `import.meta.glob` with `query` and `import`, but a unit test cannot
+    show how the build splits the scripts. Step 2 checks the real split
+    first (item 1).
 
 ## 3. What B1a meets
 
 | Criterion | What B1a does | Test |
 | --- | --- | --- |
-| ML-2 | A new `src/i18n/<tag>.ftl` file is found by `import.meta.glob`; no code change. A message missing in that file falls back to English, never to an id. | `i18n.test.ts` "a third catalog with a missing message falls back to English"; `catalog.test.ts` (every id used in code is in `en.ftl`) |
-| ML-3 | The language list in the session bar; the choice in `localStorage`; the first choice from `navigator.languages`. | `i18n.test.ts` (`pickLanguage` cases); story 40 |
+| ML-2 | A new `src/i18n/<tag>.ftl` file is found by `import.meta.glob`; no code change. A message missing in that file falls back to English, never to an id. | `i18n.test.ts` "a third catalog with a missing message falls back to English"; `catalog.test.ts` (every id used in code is in `en.ftl`; every file name is a canonical tag); the chunk check of Step 2 item 1 and Step 8 item 1 |
+| ML-3 | The language list in the session bar; the choice in `localStorage`; the first choice from `navigator.languages`. | `i18n.test.ts` (`pickLanguage` and `initLanguage` cases); `picker.test.ts`; `roym-hub.spec.ts` (browser set to `hi-IN`); story 40 |
 | ML-4 | `format.ts`: money, numbers, dates, times, ages with the format locale and Latin digits. `formatMinor` stays the one place for minor units. | `format.test.ts`, `money.test.ts` (`₹1,00,000.50` in `en` and `hi`) |
 | ML-5 (page `lang` only) | `document.documentElement.lang` is the UI language. | `i18n.test.ts`; story 40 |
 | ML-6 | `errText()` maps error codes to string catalog messages; the service text is only `$detail`. | `errors.test.ts` |
@@ -336,19 +400,22 @@ from the design text or task.md go under `## Deviations`.
 
 None. No JSON-RPC method, error code, WIT, signed record, config or CLI
 change. `RpcError.message` now holds the raw service text for `-32013`,
-but that is a Hub-internal object, not a wire value.
+and `call()` now throws `RpcError` with code `0` when the node cannot be
+reached or the reply is not JSON. Both are Hub-internal objects, not wire
+values.
 
 ### Behaviour changes (Hub only)
 
 | # | Before | After |
 | --- | --- | --- |
 | 1 | Money: `35.50 USD`, `1200 JPY`, `2.500 KWD` | `$35.50`, `JP¥1,200`, `KWD 2.500` (en-IN); `₹1,00,000.50` for INR. An unknown or malformed code from another node falls back to `<amount> <code>`. |
-| 2 | Card times: UTC ISO, `2027-01-15T08:00:00.000Z` | Local time with zone name in a `<time datetime>` element (Q3) |
+| 2 | Card times: UTC ISO, `2027-01-15T08:00:00.000Z` | Local time with zone name. In a `<time datetime>` element where the date ends the row; plain text inside a sentence (Q3, D-B1a-5) |
 | 3 | Slot times, message times, group key date: browser default locale | The format locale (`listings.ts:487`, `:488`, `groups.ts:126`, `:563`) |
 | 4 | Membership and SynOrg dates: `2026-09-29` (UTC) | `29 Sept 2026` (still UTC, D-B1a-5) |
 | 5 | Ages: `1 hours ago`, `1 days ago` | `1 hour ago`, `1 day ago` (`Intl.RelativeTimeFormat`); `moments ago` stays |
 | 6 | Errors | English text stays the same (Q6 (a)); Hindi users see Hindi |
-| 7 | — | A language list in the session bar, on the sign-in page too |
+| 6b | Node not reachable: the browser's own text (`Failed to fetch`) | `Could not reach this installation: Failed to fetch` in English, Hindi text in Hindi (`error-network`, D-B1a-12) |
+| 7 | — | A language list in the session bar, on the sign-in page too. If the browser blocks storage, a one-line note instead of a reload |
 | 8 | Page `lang="en"` always | `lang` is the UI language; `document.title` from the string catalog (same English text) |
 | 9 | — | New `localStorage` key `roym-hub-language` |
 | 10 | — | Hindi text for the shell, the cards and the word tables |
@@ -356,7 +423,7 @@ but that is a Hub-internal object, not a wire value.
 ### Stays the same
 
 - Every English string that B1a moves keeps its exact text, except rows 1
-  to 5 above. The e2e steps that find buttons by English text keep
+  to 6b above. The e2e steps that find buttons by English text keep
   working.
 - The Rust constants and their values. The two Rust tests read a
   different file (section 2.2 point 1).
@@ -375,25 +442,50 @@ These are written into the change doc at close-out (section 3).
   `import.meta.glob(["./*.ftl", "!./en.ftl"], { query: "?raw", import: "default" })`
   and loaded on demand, so each extra language is its own small script
   file. A new file in `src/i18n/` is a new language with no code change
-  (ML-2). The file name (without `.ftl`) is the language tag; it must
-  parse with `new Intl.Locale`.
+  (ML-2). The file name (without `.ftl`) is the language tag. It must be
+  the tag's canonical form: `new Intl.Locale(name).toString()` equals the
+  name (so `hi`, `ta-IN`; not `Hi_IN` or `hi.FTL`), and it is not `und`.
+  `catalog.test.ts` checks this for every file.
 - **D-B1a-2. The bundles.** One `FluentBundle` for English and one for the
   active language, each built with
   `new FluentBundle([formatLocale], { useIsolating: false })`. A backlog
   row records that isolation must come back with right-to-left scripts.
 - **D-B1a-3. `t()`.** `t(id: string, args?: Record<string, string | number>): string`.
-  It formats the active bundle's message; if the active bundle lacks it, the
-  English one; if English lacks it too, it returns the id and calls
-  `console.error` (a bug; the catalog test makes it impossible for a
-  literal id). Formatting errors also go to `console.error`. Codes, ids and
-  years are passed as strings, not numbers (section 2.2 point 5).
-  `messageId(id: string): string` returns its argument; it marks ids that
-  are kept in a table and passed to `t()` later, so the catalog test can
-  find them (section 7.1). `t()` is never called when a module loads, only
-  when the Hub draws; otherwise the text would stay English after a switch.
-- **D-B1a-4. Format locale.** Q1 (a): `new Intl.Locale(uiLanguage, { region: "IN", numberingSystem: "latn" }).toString()`,
-  for example `hi-IN-u-nu-latn`. `FORMAT_REGION = "IN"` is one constant in
-  `i18n.ts`. Latin digits follow owner answer 4 in task.md.
+  - **English is always there.** `i18n.ts` parses `EN_SOURCE` once when the
+    module loads and starts with the state
+    `{ language: "en", locale: "en-IN-u-nu-latn", active: english, english }`.
+    So `t()` works in English at any time: in unit tests with no setup
+    file, and for `window.RoymRegistry.renderCard` before `main()` has
+    awaited `initLanguage()` (section 2.2 point 14). `activate()` only
+    replaces `language`, `locale` and `active` (and rebuilds the English
+    bundle with the new locale, D-B1a-2).
+  - It formats the active bundle's message; if the active bundle lacks it,
+    the English one. It never throws, and it never returns an id that
+    `en.ftl` has. If English lacks the id too, it returns the id and calls
+    `console.error` (a bug; the catalog test makes it impossible for a
+    literal id). A non-string `id` (for example an inherited function from
+    a table lookup, section 2.2 point 15) returns `String(id)` the same
+    way. Formatting errors also go to `console.error`.
+  - Codes, ids and years are passed as strings, not numbers (section 2.2
+    point 5).
+  - `messageId(id: string): string` returns its argument. It marks ids
+    that are kept in a table (a `Map`, D-B1a-15). Such a table is read
+    only through
+    `lookupText<K>(table: Map<K, string>, key: K, args?): string | undefined`
+    in `i18n.ts`, which returns `t(id, args)` for a known key and
+    `undefined` otherwise. So every `t()` call outside `i18n.ts` has a
+    string literal as its first argument, and the catalog test (section
+    7.1) refuses any other.
+  - `t()` is never called when a module loads, only when the Hub draws;
+    otherwise the text would stay English after a switch.
+- **D-B1a-4. Format locale.** Q1 (a): the catalog tag with region `IN`
+  and Latin digits, for example `hi-IN-u-nu-latn`. Rule for a tag that
+  already has a region (review P9; `new Intl.Locale("pt-BR", { region: "IN" })`
+  gives `pt-IN`, checked): `IN` is added only when the tag has no region,
+  so a later `pt-BR.ftl` formats with `pt-BR-u-nu-latn`. Code:
+  `const loc = new Intl.Locale(tag); new Intl.Locale(tag, { region: loc.region ?? FORMAT_REGION, numberingSystem: "latn" }).toString()`.
+  `FORMAT_REGION = "IN"` is one constant in `i18n.ts`. Latin digits follow
+  owner answer 4 in task.md.
 - **D-B1a-5. The formats** (`src/i18n/format.ts`):
   - `formatNumber(n: number): string` — `Intl.NumberFormat(formatLocale())`.
   - `formatDateTime(secs: number): string` — local zone,
@@ -409,8 +501,22 @@ These are written into the change doc at close-out (section 3).
     `Intl.RelativeTimeFormat(formatLocale(), { numeric: "always" })`.
   - `timeElement(secs: number): HTMLTimeElement` — a `<time>` with
     `datetime` set to `new Date(secs * 1000).toISOString()` and text
-    `formatDateTime(secs)`.
+    `formatDateTime(secs)`. For a value that is not a valid date it throws
+    a `RangeError`, as `toISOString()` does today, so a card behaves as
+    before (`formatDateTime` throws the same way).
   - Each `Intl` object is created once per format locale and kept.
+  - **Card rows with a time (Q3, review P1).** Two kinds:
+    1. *The time ends the row or stands alone:* `Schedule: A - B`,
+       `Window: A - B`, `Observed: A`, `Expires: A` (not expired) and
+       `Quote expiry: A`. A label message (`terms-schedule-label =
+       Schedule:`), then `timeElement` nodes, with
+       `t("terms-range-separator")` as a text node between two times.
+    2. *Text follows the time:* `Expires: A (expired)` and `This quote
+       expired on A. Ask for a new one.` One whole message with a `$date`
+       argument, `$date` = `formatDateTime(secs)` as plain text, no
+       `<time>`. The translator then writes a whole sentence and can put
+       the date where Hindi needs it.
+    The template comment names the rows of kind 1.
   `directory/words.ts` is deleted; its callers use `formatAge` and
   `formatUtcDate`.
 - **D-B1a-6. Money.** `formatMinor(minor, currency)` stays in `money.ts`
@@ -433,14 +539,29 @@ These are written into the change doc at close-out (section 3).
   Every `new Intl.Locale` is in `try`/`catch` (D-S0-1). The stored key is
   `roym-hub-language`; reads and writes are in `try`/`catch`, like the
   `sessionStorage` code in `session/login.ts:39`.
+
+  **A failed load (review P3).** `initLanguage()` never rejects. If the
+  loader of the chosen catalog fails (a weak connection, a blocked
+  request, a redeploy that removed the old chunk file), it calls
+  `console.error`, keeps English active, and returns, so `main()` still
+  draws the Hub and the language list. `activate()` changes the state and
+  `<html lang>` only after the load and the parse succeed, so `lang`
+  never says `hi` while the text is English. A failure does not delete the
+  stored choice; the next page load tries again.
 - **D-B1a-8. The language list.** `languagePicker(): HTMLSelectElement` in
   `src/i18n/picker.ts`: class `language-picker`, `aria-label` from
   `t("language-picker-label")`, one `<option value="<tag>">` per available
   language. Each option shows the language's own name,
   `new Intl.DisplayNames([tag], { type: "language" }).of(tag)` (checked:
-  `हिन्दी`, `English`), or the tag if that throws. On change: save, then
-  `location.reload()` (Q4 (a)). `main.ts` puts it in the session bar in
-  both branches (signed in and not).
+  `हिन्दी`, `English`), or the tag if that throws. On change:
+  `saveLanguage(tag)`, which returns `true` when the value was written
+  and read back. If `true`: `location.reload()` (Q4 (a)). If `false`
+  (storage blocked, review P7): no reload; the list goes back to the
+  current language, and a `<span class="language-note">` next to it shows
+  `t("language-not-saved")` ("This browser does not let the Hub save the
+  language, so it stays as it is."). A reload in that case would pick the
+  browser's language again and look like nothing happened. `main.ts`
+  puts the list in the session bar in both branches (signed in and not).
 - **D-B1a-9. Tests run in UTC.** `package.json` `"test": "TZ=UTC vitest run"`.
 - **D-B1a-10. What moves in B1a.** Every visible string in `src/cards/`,
   `cards/wording.ts`, `groups/words.ts` (the notices and the two word
@@ -463,6 +584,9 @@ These are written into the change doc at close-out (section 3).
   - `RpcError` with a known JSON-RPC code: the table below, with
     `{ detail: err.message, code: String(err.code) }`.
   - Any other `RpcError`: `t("error-service", { detail, code })`.
+  - `RpcError` with code `0`: `t("error-network", { detail: err.message })`.
+    `call()` makes it (section 2.2 point 13): it wraps a thrown `fetch`
+    error or `res.json()` error as `new RpcError(0, String(error), "Other")`.
   - Another `Error`: `err.message` (Hub-made text; B1b localises it at the
     source). Anything else: `String(err)`.
 
@@ -479,16 +603,20 @@ These are written into the change doc at close-out (section 3).
   | `-32601` | `error-method-not-found` | `{ $detail }` |
   | `-32602` | `error-invalid-input` | `{ $detail }` |
   | `-32603` | `error-internal` | `{ $detail }` |
-  | other | `error-service` | `{ $detail }` |
-  | HTTP | `error-http` | `HTTP error { $code }` |
+  | other (`-32700`, `-32600`, …) | `error-service` | `{ $detail }` |
+  | `0` (network, bad reply) | `error-network` | `Could not reach this installation: { $detail }` |
+  | HTTP (`> 0`) | `error-http` | `HTTP error { $code }` |
 
-  The codes are every code that the Roym services and the `web` proxy
-  return today: [roym_web/src/app.rs:288](../../../../crates/roym_web/src/app.rs#L288)
+  The named rows are the codes that the Roym services and the `web` proxy
+  return for a method today: [roym_web/src/app.rs:288](../../../../crates/roym_web/src/app.rs#L288)
   to `:324`, [roym_conversation/src/app.rs:135](../../../../crates/roym_conversation/src/app.rs#L135)
   and `:137`, and the envelope helpers
   ([envelope.rs:59](../../../../crates/roym_core/src/envelope.rs#L59) to `:67`).
-  English output is unchanged for every row (Q6 (a)). Hindi messages
-  follow Q6 (a).
+  Every other code, including `-32700` and `-32600` from
+  [app.rs:154](../../../../crates/roym_web/src/app.rs#L154) and `:163`,
+  goes to `error-service`, so its Hindi text must read well for any
+  refusal. English output is unchanged for every row except `error-network`
+  (row 6b of section 4). Hindi messages follow Q6 (a).
 - **D-B1a-13. Message ids.** Lower case, words joined by `-`, starting
   with the area: `hub-`, `tab-`, `session-`, `login-`, `language-`,
   `gallery-`, `card-`, `quote-`, `receipt-`, `request-`, `progress-`,
@@ -502,6 +630,14 @@ These are written into the change doc at close-out (section 3).
   owner reviews `hi.ftl` before B1b merges, so B1a merges a draft. A
   comment at the top of `hi.ftl` says `# owner review: pending`; B1b's
   close-out changes it.
+- **D-B1a-15. Id tables keyed by data from other nodes** (review P5).
+  `STATE_WORDS`, `CONFLICT_SENTENCES` and the place and audience tables
+  become `Map<string, string>` of `messageId(...)` values, and so does the
+  error-code table of D-B1a-12 (`Map<number, string>`). A lookup is
+  `lookupText(TABLE, value)` (D-B1a-3); when it is `undefined`, the value
+  is shown as it came (today's rule). A `Map` has no inherited keys, so `constructor`,
+  `toString` and `__proto__` are ordinary unknown values. One test per
+  table checks these three values.
 
 ## 6. Step-by-step changes
 
@@ -512,18 +648,28 @@ with `crates/` or `docs/`.
 
 ### Step 1 — Commit this plan
 
-Done in the planning session: this file and the B1a row of
-[status.md](status.md).
+Done in the planning sessions: this file, the plan review and its fixes,
+and the B1a row of [status.md](status.md).
 
 ### Step 2 — The i18n core
 
-1. `npm install @fluent/bundle@0.19` → `package.json` gets
+1. **First, check the chunk split** (review P10). Before the rest of this
+   step, make the smallest version: `en.ftl` and `hi.ftl` with two dummy
+   messages each (the Hindi ones in Devanagari), and the `?raw` import and
+   `import.meta.glob` lines of item 4, called once from `main.ts`. Run
+   `npm run build`. Check: `dist/assets` has two scripts; the main script
+   has no Devanagari letter from `hi.ftl`
+   (`grep -c '[ऀ-ॿ]'` gives 0); the other script has them; and after
+   `mise run build:roym-ui`, `tar -tzf bundle.tar.gz` lists both. If the
+   Hindi text lands in the main script, stop and fix the loading before
+   anything else is built on it. Keep the output for the PR text.
+2. `npm install @fluent/bundle@0.19` → `package.json` gets
    `"dependencies": { "@fluent/bundle": "^0.19.1" }`. Check that
    `package-lock.json` adds only `@fluent/bundle` (`npm ls vite rollup`
    unchanged, as in S0 Step 4).
-2. `src/vite-env.d.ts`: `/// <reference types="vite/client" />` (types for
+3. `src/vite-env.d.ts`: `/// <reference types="vite/client" />` (types for
    `?raw` and `import.meta.glob`).
-3. `src/i18n/i18n.ts` (about 150 lines):
+4. `src/i18n/i18n.ts` (about 170 lines):
 
    ```ts
    import { FluentBundle, FluentResource } from "@fluent/bundle";
@@ -539,35 +685,40 @@ Done in the planning session: this file and the B1a row of
 
    export function availableLanguages(): string[]  // "en" first, then sorted tags from LOADERS
    export function pickLanguage(stored: string | null, preferred: readonly string[], available: readonly string[]): string
-   export async function activate(tag: string): Promise<void>  // load, build bundle, set state, set <html lang>
-   export async function initLanguage(): Promise<void>         // pickLanguage(readStored(), navigator.languages, available) then activate
+   export async function activate(tag: string): Promise<void>  // load and parse; only then set state and <html lang>; rejects on a load error
+   export async function initLanguage(): Promise<void>         // never rejects: pickLanguage(readStored(), navigator.languages, available), activate, on error console.error and keep English
    export function currentLanguage(): string
    export function formatLocale(): string
    export function t(id: string, args?: Record<string, string | number>): string
    export function hasMessage(id: string): boolean              // in the English bundle
    export function messageId(id: string): string
-   export function saveLanguage(tag: string): void
+   export function lookupText<K>(table: Map<K, string>, key: K, args?: Record<string, string | number>): string | undefined
+   export function saveLanguage(tag: string): boolean           // true when written and read back
    ```
 
-   Keep the module state in one object (`{ language, locale, active, english }`).
-   `activate` builds a new English bundle too, because the bundle's locale
-   (D-B1a-2) follows the format locale. Export a test-only
-   `createCatalogs(sources: Record<string, string>)` or take the loaders
-   as a parameter of an internal function, so `i18n.test.ts` can add a
-   third language without a file (ML-2 test).
-4. `src/i18n/en.ftl` and `src/i18n/hi.ftl`: the `language-picker-label`
-   message, `age-moments`, `money-input-invalid` and the error messages
-   (D-B1a-12). Header comment of each file: what it is, how to add a
-   message, and (in `hi.ftl`) `# owner review: pending`.
-5. `src/i18n/format.ts` (D-B1a-5), about 90 lines.
-6. Tests (section 7.1): `src/i18n/i18n.test.ts`, `src/i18n/format.test.ts`,
+   Keep the module state in one object (`{ language, locale, active, english }`),
+   set to English when the module loads (D-B1a-3). `activate` builds a new
+   English bundle too, because the bundle's locale (D-B1a-2) follows the
+   format locale. Take the loaders as a parameter of an internal function
+   (`activateWith(tag, loaders)`), so `i18n.test.ts` can add a third
+   language, and a loader that rejects, without a file. Tests that switch
+   language call `await activate("en")` in `afterEach`.
+5. `src/i18n/en.ftl` and `src/i18n/hi.ftl`: the `language-picker-label`,
+   `language-not-saved`, `age-moments` and `money-input-invalid` messages
+   and the error messages (D-B1a-12). Header comment of each file: what it
+   is, how to add a message, and (in `hi.ftl`) `# owner review: pending`.
+   Replace the dummy messages of item 1.
+6. `src/i18n/format.ts` (D-B1a-5), about 90 lines.
+7. Tests (section 7.1): `src/i18n/i18n.test.ts`, `src/i18n/format.test.ts`,
    `src/i18n/catalog.test.ts`.
-7. `package.json`: `"test": "TZ=UTC vitest run"`.
-8. If Q5 (a): add the `hub-ui` gate to `GATES` in
-   [verify.rs](../../../../xtask/src/verify.rs) after `planning-refs`:
+8. `package.json`: `"test": "TZ=UTC vitest run"`.
+9. The `hub-ui` gate (Q5 (a)) in `GATES` in
+   [verify.rs](../../../../xtask/src/verify.rs), after `planning-refs`:
    `name: "hub-ui", skip_on_docs_only: true, docs_paths_that_run: &[], commands: &[&["mise", "run", "test:roym-ui"]]`.
-   If `xtask/src/verify/tests.rs` (or the tests in `verify.rs`) list the
-   gate names or count, update them.
+   The tests of `verify.rs` check only that names are unique and the
+   docs-only rules, so no test changes (checked in review). Measure the
+   gate's run time once (`target/gates/` log, or `time mise run
+   test:roym-ui`) and write it in the PR text and the task.md result line.
 
 Nothing calls the new modules yet, so the Hub does not change.
 
@@ -590,7 +741,12 @@ Nothing calls the new modules yet, so the Hub does not change.
    `formatMinor(Number.MAX_SAFE_INTEGER, "INR")` ends in `.91`
    (`9007199254740991` minor units; a float division would lose the last
    digit).
-5. e2e: `roym-hub.spec.ts:838`, `:846` → `Total: €45.00`; `:1091` →
+5. `cards/templates/templates.test.ts`, the money lines only (review P4):
+   `:78` to `:80` (`4500.00 USD`, `360.00 USD`, `50.00 USD`), `:149`
+   (`250.00 EUR`), `:202` (`50.00 USD`), `:248` (`125.00 EUR`) and the
+   direct `formatMinor` checks at `:361` to `:363`. Its date lines change
+   in Step 5. Without this, the Step 3 commit fails `mise run test:roym-ui`.
+6. e2e: `roym-hub.spec.ts:838`, `:846` → `Total: €45.00`; `:1091` →
    `Total: €1,200.00`. These are en-IN outputs; Node and Chromium give the
    same text here (checked in Node 22; re-check in the Playwright run).
 
@@ -598,9 +754,13 @@ Nothing calls the new modules yet, so the Hub does not change.
 
 1. `rpc.ts`: remove `NOT_LOCAL_MESSAGE`; `RpcError.message` is the raw
    service text, or `""` for an HTTP failure (the code holds the status).
-   Update `rpc.test.ts:53` to check `errText(caught)` instead.
+   Wrap the `fetch` call and `res.json()` in `try`/`catch`; a thrown error
+   becomes `new RpcError(0, String(error), "Other")` (D-B1a-12). Update
+   `rpc.test.ts:53` to check `errText(caught)` instead, and add a case
+   where `fetch` rejects and one where the body is not JSON.
 2. `dom.ts`: `errText` as in D-B1a-12, with the code table as a
-   `Record<number, string>` of `messageId(...)` values.
+   `Map<number, string>` of `messageId(...)` values, read with
+   `lookupText` (D-B1a-15).
 3. Delete the copies in `screens/messages.ts:96` and
    `screens/listings.ts:29`; import `errText` from `dom.ts`.
 4. The 22 `.message` reads:
@@ -637,22 +797,29 @@ Nothing calls the new modules yet, so the Hub does not change.
    `groups/words.ts`: delete the notice constants; `deliveryWords` and
    `membershipEventWords` call `t()`; content types and `shortAddress`
    stay. `listings/labels.ts`: the three label records become id tables
-   (`Record<ServiceLocationKind, string>` of `messageId(...)`) and two
+   (`Map<string, string>` of `messageId(...)`, D-B1a-15) and two
    functions, `serviceLocationEditorLabel(kind)` and
    `openToLabel(kind)`; `serviceLocationCardLabel` keeps its "unknown
    value shown as it came" rule. Update the callers in
    `screens/groups.ts`, `screens/listings.ts`, `screens/messages.ts`,
    `listings/editor.ts` and the cards (the D-B1a-10 rule).
 3. `booking_progress.ts`: `STATE_WORDS` and `CONFLICT_SENTENCES` become
-   id tables; an unknown value is shown as it came (as today).
-4. Card times (Q3 (a)): the 9 calls of section 2.2 point 6 use
-   `timeElement(secs)`; a row like `Schedule: <start> - <end>` becomes a
-   message with two placeables, built as text + `<time>` + text + `<time>`.
-   To keep this simple, `t()` builds the label (`terms-schedule-label =
-   Schedule:`) and the template appends the two `<time>` elements with a
-   `t("terms-range-separator")` text node between them. Keep the card rule
-   comment and add one line: "A `<time>` element's `datetime` is computed
-   by the Hub from a number."
+   `Map` id tables read with `lookupText` (D-B1a-15); an unknown value, including `constructor`
+   or `__proto__`, is shown as it came (as today for real unknown values).
+4. Card times (Q3 (a), D-B1a-5): the 9 calls of section 2.2 point 6.
+   - Kind 1 rows (`quote.ts:154`, `:155`, `:206` when not expired;
+     `agreement_receipt.ts:179`, `:180`, `:226`; `request.ts:62`, `:63`;
+     `payment_acknowledgement.ts:55`): `t()` builds the label
+     (`terms-schedule-label = Schedule:`), and the template appends
+     `timeElement(secs)`; a range adds a `t("terms-range-separator")` text
+     node and a second `timeElement`.
+   - Kind 2 rows (`quote.ts:210` and `:219`, the two `expired` texts):
+     `t("quote-expires-expired", { date: formatDateTime(secs) })` and
+     `t("quote-expired-notice", { date: formatDateTime(secs) })`, plain
+     text.
+   Keep the card rule comment and add two lines: "A `<time>` element's
+   `datetime` is computed by the Hub from a number." and "A time that ends
+   a row is a `<time>` element; a time inside a sentence is plain text."
 5. Rust: the two tests of section 2.2 point 1 read
    `../roym_web/ui/src/i18n/en.ftl`; fix the doc comment at
    `group.rs:17`, and any comment in `booking.rs` or `booking/tests.rs`
@@ -662,28 +829,43 @@ Nothing calls the new modules yet, so the Hub does not change.
 6. Hub tests: `cards/wording.test.ts`, `groups/words.test.ts`,
    `listings/labels.test.ts`, `cards/templates/templates.test.ts`,
    `screens/groups.test.ts` import `t()` or the new functions instead of
-   the deleted constants. Date checks read `time[datetime]`.
-7. e2e: `roym-hub.spec.ts:1095` to `:1098`: check
-   `.quote-expiry time` has `datetime` equal to the ISO string, and the
-   row contains `(expired)`; check `.quote-expired-notice time` the same
-   way.
+   the deleted constants. Date checks on kind 1 rows read
+   `time[datetime]`; checks on kind 2 rows compare with
+   `formatDateTime(secs)` called in the test (same engine). Add the three
+   `constructor` / `toString` / `__proto__` cases per id table
+   (D-B1a-15).
+7. e2e: `roym-hub.spec.ts:1095` to `:1098` test an expired quote, so both
+   rows are kind 2 (plain text). Do not compare with an `Intl` output
+   computed in Node: Node and Chromium may differ in small ways (for
+   example the space before `pm`). Check that `.quote-expiry` contains
+   `Expires: `, the year `2020` (`1600000000` is September 2020 in every
+   zone) and `(expired)`; and that `.quote-expired-notice` contains
+   `This quote expired on `, `2020` and `Ask for a new one.`. The not
+   expired quote at `:840` keeps its `Expires:` check; add a check that
+   its `.quote-expiry time` has a `datetime` attribute.
 
 ### Step 6 — The shell, the language list and the page `lang`
 
 1. `main.ts`: `await initLanguage()` as the first line of `main()`, before
-   anything is drawn. `document.title = t("hub-title")`. Every visible
+   anything is drawn. It never rejects (D-B1a-7), so a failed Hindi load
+   still draws the Hub in English. `document.title = t("hub-title")`. Every visible
    string → `t()`: title, `Logged in: …`, `Log out`, `Not logged in`,
    the 11 tab names (`tab-profile` … `tab-components`), the sign-in box
-   (`Sign in`, the four status lines, the intro, the two buttons), the
+   (`Sign in` as `login-title`, the four status lines, the intro, the two
+   buttons), the
    tab error line, and `renderHome`'s headings and ping lines. The sample
    card data stays as it is.
 2. `src/i18n/picker.ts` (D-B1a-8), and append `languagePicker()` to the
    session bar in both branches.
-3. `style.css`: a small rule for `.language-picker` (margin only).
+3. `style.css`: a small rule for `.language-picker` and `.language-note`
+   (margin only).
 4. `index.html` keeps `lang="en"` (the right value before the script
    runs).
-5. A test `src/i18n/picker.test.ts`: options, selected value, and that a
-   change saves the tag and calls `location.reload` (stub it).
+5. A test `src/i18n/picker.test.ts`: options, selected value; a change
+   saves the tag and calls `location.reload` (stub it); with a storage
+   stub that throws, a change does not reload, the list shows the current
+   language again, and `.language-note` has the `language-not-saved`
+   text (D-B1a-8).
 
 ### Step 7 — Demo story 40 and the e2e helper
 
@@ -706,7 +888,17 @@ Nothing calls the new modules yet, so the Hub does not change.
    No shell script: story 20 already deployed Roym. A new browser context
    starts in English, so stories 20 and 30 are not affected, and a second
    run in attach mode works.
-3. Run `mise run demo` (or `npm run test:demo`) and keep the output for the
+3. The first choice from the browser (ML-3, review P8): in
+   `crates/substrate/tests/e2e/tests/roym-hub.spec.ts`, inside the
+   `Roym Hub` describe, a nested
+   `test.describe('in a browser that asks for Hindi', () => { test.use({ locale: 'hi-IN' }); … })`
+   with one test: open `HUB_URL` with no login and no click; `html[lang]`
+   is `hi`, and `.login-picker h2` has `hubMessage('hi', 'login-title')`.
+   A nested describe needs no change to `playwright.config.ts`
+   (`testMatch` lists files). This test catches a wrong read such as
+   `navigator.language` (one value) for `navigator.languages`, which no
+   unit test sees. The story does not repeat it.
+4. Run `mise run demo` (or `npm run test:demo`) and keep the output for the
    PR text.
 
 ### Step 8 — Docs, size report and close-out
@@ -715,20 +907,25 @@ Nothing calls the new modules yet, so the Hub does not change.
    build`, then for each `dist/assets/*.js`: raw bytes and `gzip -9 -c |
    wc -c`. Report the main script and the Hindi chunk separately and
    together, against S0's numbers (114,463 raw / 31,769 gzip on `main`
-   then; +4,205 gzip for the library alone). Write the result into task.md
-   (B1a result line) and the change doc ("Which catalog format", the size
-   line).
-2. Change doc: decisions D-B1a-1 to D-B1a-14 into "A. UI localisation"
+   then; +4,205 gzip for the library alone). Repeat the split check of
+   Step 2 item 1 on the final build (review P10): the main script has no
+   Devanagari letter from `hi.ftl`, the Hindi chunk has them, and
+   `tar -tzf bundle.tar.gz` lists both scripts. Paste the output in the PR
+   text. Write the result into task.md (B1a result line) and the change
+   doc ("Which catalog format", the size line).
+2. Change doc: decisions D-B1a-1 to D-B1a-15 into "A. UI localisation"
    (section 3 rule); `## Deviations`: (a) the shell moves in B1a (Q2), (b)
-   card times also change (section 2.2 point 6), (c) the two Rust tests
-   read `en.ftl`, (d) Fluent isolation is off; the Test column for ML-2 to
+   card times also change (section 2.2 point 6), and only rows that end
+   with a time get a `<time>` element (Q3), (c) the two Rust tests read
+   `en.ftl`, (d) Fluent isolation is off, (e) network and bad-reply
+   errors become `RpcError` code `0` (Q6, P6); the Test column for ML-2 to
    ML-6 with real test names from the run; `demo:` becomes
    `- crates/substrate/tests/e2e/demo/40-roym-languages.spec.ts`;
    `living-docs-touched` lists the files of section 9. `status` stays
    `draft` (B6 sets `done`).
 3. Living docs (section 9), deferred backlog (section 8),
    [task.md](task.md) B1a result line, [status.md](status.md).
-4. The import clean-up pass over the two Rust test files.
+4. The import clean-up pass over the two Rust test files and `xtask/src/verify.rs`.
 5. `mise run verify` with no `--skip`, as a background job.
 
 ## 7. Tests
@@ -745,19 +942,47 @@ Nothing calls the new modules yet, so the Hub does not change.
   `formatLocale()` to `hi-IN-u-nu-latn` (ML-5, D-B1a-4).
 - ML-2: with a third catalog `xx` that has only `tab-profile`,
   `t("tab-logout")` returns the English text, never the id.
-- `t()` with a missing id returns the id and calls `console.error` (spy).
-- `saveLanguage` then `initLanguage` picks the saved tag; `localStorage`
-  that throws does not break `initLanguage`.
+- `t()` with a missing id returns the id and calls `console.error` (spy);
+  `t()` with a non-string id (a function) returns its `String` form and
+  does not throw (D-B1a-3).
+- English with no setup: in a fresh module (`vi.resetModules()`, then
+  import), `t("tab-profile")` is `Profile` before any `activate` or
+  `initLanguage` call (review P2).
+- A loader that rejects (review P3): `initLanguage()` with the stored
+  choice `hi` resolves (does not reject); `t()` gives English;
+  `document.documentElement.lang` is `en`; `console.error` was called; the
+  stored choice is still `hi`.
+- `saveLanguage` then `initLanguage` picks the saved tag; `saveLanguage`
+  returns `false` with a `localStorage` that throws, and `initLanguage`
+  still works with it.
+- D-B1a-4: a catalog tag with a region keeps it (`pt-BR` →
+  `pt-BR-u-nu-latn`); a tag without one gets `IN`.
 
 `src/i18n/catalog.test.ts` (reads the `.ftl` files with `?raw` and the
 source files with `import.meta.glob("../**/*.ts", { query: "?raw", import: "default", eager: true })`,
 skipping `*.test.ts`)
 
+- Every file name in `src/i18n/*.ftl`, without `.ftl`, equals
+  `new Intl.Locale(name).toString()` and is not `und` (D-B1a-1, review
+  P9).
 - Every entry line (`^-?[A-Za-z][A-Za-z0-9_-]*\s*=`) of each `.ftl` file is
   a parsed entry (`resource.body.length` equals the count): no silent junk
   (section 2.2 point 4).
-- Every id in a `t("…")` or `messageId("…")` call in the source is in
-  `en.ftl`.
+- **How the source scan works** (review P12). Write it as one helper,
+  `findMessageIds(source)`, in `src/i18n/scan.ts`, because B1b's build
+  check reuses it:
+  1. Remove comments first (`//` to end of line, and `/* … */`), so an
+     example in a comment is not a use.
+  2. Find calls with a word boundary: `(?<![\w.$])t\(` and
+     `(?<![\w.$])messageId\(`. So `format(`, `list(` and `x.t(` do not
+     match.
+  3. The first argument must be one string literal (`"…"` or `'…'`). Any
+     other first argument of `t(` (a variable, a template string,
+     `` `error-${x}` ``) fails the test, except in `src/i18n/i18n.ts`
+     itself (inside `lookupText`). To pass an id through a variable, put
+     it in a `Map` with `messageId("…")` and read it with `lookupText`
+     (D-B1a-3).
+- Every id found by the scan is in `en.ftl`.
 - `hi.ftl` has exactly the ids of `en.ftl` (the owner asked for Hindi for
   every string; a later partial language is allowed, this test names only
   `hi`).
@@ -765,9 +990,12 @@ skipping `*.test.ts`)
   those in `en.ftl`.
 - Each message formats with no error in both languages, with sample args
   built from its variable names.
-- No id is unused (each `en.ftl` id appears in the source). This keeps
-  dead text out; drop the test if a later slice needs ids used only from
-  data.
+- No id is unused (each `en.ftl` id is found by the scan, so a comment
+  does not count). This keeps dead text out; drop the test if a later
+  slice needs ids used only from data.
+- The scan helper itself: a comment with `t("x")` finds nothing;
+  `format("x")` finds nothing; `` t(`a-${b}`) `` is reported as
+  non-literal; `messageId('y')` finds `y`.
 
 `src/i18n/format.test.ts`
 
@@ -780,7 +1008,9 @@ skipping `*.test.ts`)
 - `formatUtcDate(1790000000)` is `21 Sept 2026` in `en` (checked in Node 22).
 - `formatAge`: 30 s → `moments ago`; 300 s → `5 minutes ago`; 3600 s →
   `1 hour ago`; 3 days → `3 days ago`; the same in `hi` is not English.
-- `timeElement(secs)` has `datetime` = the ISO string.
+- `timeElement(secs)` has `datetime` = the ISO string; `timeElement(NaN)`
+  and `formatDateTime(NaN)` throw a `RangeError`, as `toISOString()` does
+  today (review P1).
 
 `src/i18n/errors.test.ts`
 
@@ -791,15 +1021,21 @@ skipping `*.test.ts`)
 - An HTTP failure `RpcError(503, "", "Other")` → `HTTP error 503`.
   Codes are not grouped: in a message that shows `{ $code }`, `-32602`
   never prints as `-32,602`.
+- `-32700` and `-32600` go to `error-service` (review P6).
+- Network (review P6): `RpcError(0, "TypeError: Failed to fetch", "Other")`
+  → `Could not reach this installation: TypeError: Failed to fetch` in
+  `en`; in `hi` it starts with Devanagari and has the detail only after
+  `विवरण:`.
 - A plain `Error("x")` → `x`; a string → the string.
 
 `src/i18n/picker.test.ts` — Step 6.
 
 Existing tests changed in Steps 3 to 5: `money.test.ts`, `rpc.test.ts`,
 `cards/wording.test.ts`, `groups/words.test.ts`, `listings/labels.test.ts`,
-`cards/templates/templates.test.ts`, `screens/groups.test.ts`,
-`dom.test.ts`. Each keeps its English expectations; only imports and
-date or money expectations change.
+`cards/templates/templates.test.ts`, `screens/groups.test.ts`. Each keeps
+its English expectations; only imports and date or money expectations
+change. `dom.test.ts` has no `errText` test today; B1a adds none there,
+because `errors.test.ts` covers it (review P11).
 
 ### 7.2 Rust
 
@@ -812,7 +1048,9 @@ to see that they fail.
 
 - `roym-hub.spec.ts`: the four money and date checks of section 2.2
   point 10 (Steps 3 and 5).
-- Story 40 (Step 7): ML-3 and ML-5 end to end.
+- `roym-hub.spec.ts`, new nested describe with `locale: 'hi-IN'` (Step 7
+  item 3): the first choice comes from the browser (ML-3).
+- Story 40 (Step 7): the switch and the reload (ML-3, ML-5) end to end.
 - Every other spec runs unchanged in English; that checks that the moved
   English text did not change.
 
@@ -831,14 +1069,17 @@ to see that they fail.
 | `src/screens/messages.ts` | 943 | About −5. Already over 800; TypeScript files have no length gate, but do not let it grow. B1b may split it. |
 | `src/screens/groups.ts` | 685 | About ±0 |
 | `src/cards/templates/agreement_receipt.ts` | 234 | About +5 (the `<time>` rows) |
-| `src/i18n/i18n.ts` | new | About 150 |
+| `src/i18n/i18n.ts` | new | About 170 |
 | `src/i18n/format.ts` | new | About 90 |
+| `src/i18n/scan.ts` | new | About 50 (the source scan, reused by B1b) |
+| `crates/substrate/tests/e2e/tests/roym-hub.spec.ts` | 1,295 | About +20 (the `hi-IN` describe); TypeScript has no length gate |
+| `xtask/src/verify.rs` | — | About +6 (one gate) |
 | `src/i18n/en.ftl`, `hi.ftl` | new | About 200 lines each |
 | `crates/roym_core/src/booking/tests.rs` | 342 | ±0 (a path string) |
 | `crates/roym_core/src/conversation/group/tests.rs` | 217 | ±0 |
 
-No Rust file grows. The duplication and suppression ratchets are Rust-only
-and do not move.
+No Rust file grows except `verify.rs` by one gate. The duplication and
+suppression ratchets do not move.
 
 ### 7.6 Bundle size
 
@@ -857,7 +1098,14 @@ common words that a Hindi speaker reads on a phone (`संदेश`, `सं�
 keep each Hindi message about as short as the English one, so buttons do
 not grow much.
 
-### 7.8 How B1a avoids the kinds of findings S0 had
+### 7.8 How B1a avoids the kinds of findings S0 and this plan's review had
+
+The B1a plan review (P1 to P12) found five kinds of gap. Each now has a
+rule in this plan: a state that must exist before setup (P2, D-B1a-3), a
+failure path with no rule (P3, P6, P7: D-B1a-7, D-B1a-12, D-B1a-8), data
+from other nodes used as a key (P5, D-B1a-15), a test that cannot see the
+real build or browser (P8, P10: Step 7 item 3, Step 2 item 1), and a
+text scan that can be fooled (P12, section 7.1). The S0 kinds:
 
 - **A library claim not checked in its source** (S0 P1): the three Fluent
   behaviours this plan depends on (isolation, silent junk, number args)
@@ -879,13 +1127,20 @@ not grow much.
 
 Add (in [deferred-backlog.md](../../deferred-backlog.md)):
 
-- §10 "Hub formats use the India region for every language" (if Q1 (a)):
-  a person outside India sees Indian digit grouping. A later Hub setting
-  can choose the region. Target `TBD`. Link `crates/roym_web/ui/src/i18n/i18n.ts`
+- §10 "Hub formats use the India region for every language" (Q1 (a)):
+  a person outside India sees Indian digit grouping, unless the catalog
+  tag names its own region (D-B1a-4). A later Hub setting can choose the
+  region. Target `TBD`. Link `crates/roym_web/ui/src/i18n/i18n.ts`
   (`FORMAT_REGION`).
 - §10 "Fluent bidi isolation is off in the Hub": needed again when the Hub
   gets a right-to-left language (Urdu). Target `TBD`. Link
   `crates/roym_web/ui/src/i18n/i18n.ts` (`useIsolating`).
+- §10 "Changing the Hub language reloads the page" (Q4 (a), review P7): a
+  half-typed form is lost, and in a browser that blocks storage the
+  language cannot be changed at all (the Hub says so). A later change can
+  redraw the screens in place. Target `TBD`. Link
+  `crates/roym_web/ui/src/i18n/picker.ts`.
+
 The owner review of `hi.ftl` is planned work (owner answer 3, before B1b
 merges), not a deferral, so it gets no backlog row; the `# owner review:
 pending` line in `hi.ftl` tracks it (D-B1a-14).
@@ -911,10 +1166,13 @@ stays: B6 moves its localisation part. No new `TODO` or `FIXME` marker.
 - **`docs/developer-guide.md`**, under "The Roym Hub" (`:1620`), a new
   `##### Hub text and languages` before "Add a Roym method" (`:1745`):
   where the string catalogs are; add a message to `en.ftl` and `hi.ftl`
-  and call `t("id")` (never at module load); `messageId()` for id tables;
-  pass codes as strings; error messages and `$detail`; add a language by
-  adding `src/i18n/<tag>.ftl`; `mise run test:roym-ui` runs the catalog
-  checks.
+  and call `t("id")` with a literal id (never at module load); a `Map` of
+  `messageId()` values read with `lookupText()` for ids chosen by data;
+  pass codes as strings; error messages and `$detail`; a time that ends a
+  card row is a `<time>` element, a time inside a sentence is a `$date`
+  argument; add a language by adding `src/i18n/<tag>.ftl` (canonical tag
+  name; India region unless the tag names one); `mise run test:roym-ui`
+  (also the `hub-ui` gate of `mise run verify`) runs the catalog checks.
 - **`docs/demo/demo.md`**: one short step after R3 (chat), "The Hub in
   Hindi": pick हिन्दी in the session bar, reload. It names story 40 as the
   reference for the clicks, like the R3 text names story 20.
@@ -926,30 +1184,38 @@ stays: B6 moves its localisation part. No new `TODO` or `FIXME` marker.
 
 B1a is done when all of these are true:
 
-1. The owner has answered Q1 to Q6, and sections 4 to 9 match the answers.
+1. The owner answered Q1 to Q6 (all (a), 2026-11-06), and sections 4 to
+   9 match the answers.
 2. `t()`, the two string catalogs and the language choice work as in
-   D-B1a-1 to D-B1a-8; `i18n.test.ts` and `catalog.test.ts` pass (ML-2,
-   ML-3).
+   D-B1a-1 to D-B1a-8; `i18n.test.ts`, `catalog.test.ts` and
+   `picker.test.ts` pass (ML-2, ML-3). `t()` gives English with no setup;
+   a failed Hindi load still draws the Hub in English; blocked storage
+   shows the note and does not reload. The build split is checked (Step 2
+   item 1, Step 8 item 1): the main script has no Hindi text, the Hindi
+   chunk does, and `bundle.tar.gz` holds both.
 3. `formatMinor(10000050, "INR")` is `₹1,00,000.50` in English and Hindi;
    the 4 `toLocale*` calls, the 9 card `toISOString` calls and
    `ageWords`/`dateWords` use `format.ts` (ML-4).
 4. `document.documentElement.lang` is the UI language (ML-5, page only).
 5. Every `RpcError` shown by the Hub goes through `errText`, and the
-   Hindi error messages pass the `विवरण:` test (ML-6). The 22 `.message`
-   reads are handled as in the Step 4 table.
+   Hindi error messages pass the `विवरण:` test (ML-6). A network or
+   bad-reply failure in `call()` is an `RpcError` with code `0`. The 22
+   `.message` reads are handled as in the Step 4 table. Every id table is
+   a `Map` read with `lookupText`.
 6. No string literal is visible text in `src/cards/`, the four word
    tables or `main.ts` (review; the build check is B1b).
 7. The two Rust tests read `en.ftl` and pass; they fail when one sentence
    differs.
 8. Story 40 passes in `mise run demo`; `roym-hub.spec.ts` passes with the
-   new money and date checks; every other e2e spec passes unchanged.
+   new money and date checks and the `hi-IN` describe; every other e2e
+   spec passes unchanged.
 9. The bundle sizes are reported (Step 8) and within section 7.6.
-10. The change doc, the living docs, the backlog, task.md and status.md
-    are updated as in sections 8 and 9.
+10. The change doc, the living docs, the three backlog rows, task.md and
+    status.md are updated as in sections 8 and 9.
 11. Changed paths: `crates/roym_web/ui/` (not `dist/`), two Rust test
     files and one Rust doc comment in `crates/roym_core`,
     `crates/substrate/tests/e2e/` (one spec, one helper file, one story),
-    `xtask/src/verify.rs` (if Q5 (a)), and docs.
+    `xtask/src/verify.rs` (the `hub-ui` gate), and docs.
 12. `mise run verify` passes with no `--skip`.
 13. One PR.
 
