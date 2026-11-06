@@ -203,3 +203,13 @@ synorg-until-lifted = until lifted
 
 error-unexpected = { $detail }
 error-no-detail = RPC error
+
+## Sign-in
+
+login-error-odd-hex = odd-length hex string
+login-error-key-length = temporary secret key must be 32 bytes
+login-error-challenge = challenge failed: HTTP { $status }
+login-error-no-assertion = auth service did not return an assertion to sign
+login-error-http = HTTP { $status }
+login-error-service = { $detail }
+login-error-methods = methods failed: HTTP { $status }

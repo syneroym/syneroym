@@ -19,7 +19,6 @@ const sources = Object.fromEntries(
 const NOT_MOVED_YET: string[] = [
   "../directory/membership.ts",
   "../listings/editor.ts",
-  "../main.ts",
   "../screens/backup.ts",
   "../screens/contacts.ts",
   "../screens/directory.ts",
@@ -32,7 +31,6 @@ const NOT_MOVED_YET: string[] = [
   "../screens/setup.ts",
   "../screens/synorg.ts",
   "../screens/synorg_members.ts",
-  "../session/login.ts",
 ];
 
 /// Files the check does not read: tests, the shared test helpers, and the

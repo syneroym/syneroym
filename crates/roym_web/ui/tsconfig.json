@@ -4,6 +4,7 @@
     "module": "ESNext",
     "moduleResolution": "bundler",
     "strict": true,
+    "resolveJsonModule": true,
     "noEmit": true,
     "lib": ["DOM", "DOM.Iterable", "ESNext"]
   },

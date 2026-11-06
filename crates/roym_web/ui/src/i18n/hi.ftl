@@ -192,3 +192,13 @@ synorg-until-lifted = जब तक हटाया न जाए
 
 error-unexpected = कुछ गड़बड़ हो गई। विवरण: { $detail }
 error-no-detail = सेवा से त्रुटि मिली
+
+## Sign-in
+
+login-error-odd-hex = हेक्स पाठ में अंकों की संख्या सम नहीं है
+login-error-key-length = अस्थायी गुप्त कुंजी 32 बाइट की होनी चाहिए
+login-error-challenge = साइन-इन की जाँच शुरू नहीं हो सकी: HTTP { $status }
+login-error-no-assertion = प्रमाणीकरण सेवा ने हस्ताक्षर के लिए कुछ नहीं भेजा
+login-error-http = साइन-इन नहीं हो सका: HTTP { $status }
+login-error-service = साइन-इन को सेवा ने मना कर दिया। विवरण: { $detail }
+login-error-methods = साइन-इन के तरीके नहीं मिले: HTTP { $status }

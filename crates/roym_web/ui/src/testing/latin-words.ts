@@ -14,6 +14,7 @@ export const ALLOWED_LATIN: ReadonlyArray<{ text: string; why: string }> = [
     text: "roymctl roym enrol-signing --master <identity> --registry-url <registry>",
     why: "a command that the set-up help shows",
   },
+  { text: "HTTP", why: "the protocol name in a line about a failed request" },
   { text: "UTC", why: "the time zone name that `Intl` writes when the tests run with TZ=UTC" },
   { text: "Fake service error", why: "the detail text of an error from the fake `/rpc`" },
 ];
