@@ -496,3 +496,278 @@ open items of round 2.
   is, with no wrapper, and the `errText` branch uses the same words.
 
 No new findings. The plan is ready for implementation.
+
+## Code review round 1 — Claude Opus 5.5, 2026-11-06
+
+Reviewed `git diff origin/main...HEAD` on
+`feat/m08b-b1b-localization-screens` at `67ccd288` (PR #351), in the main
+checkout (not a worktree). The code was written by Claude Sonnet 5.5. The
+prompt lists one change doc,
+[roym-multilingual](../../changes/roym-multilingual/change.md). Every B1b
+decision and deviation belongs there, and that is where they are written.
+
+**Summary:** 0 blocker, 0 major, 6 minor (R1 to R6). **6 open.**
+
+### What was checked and found correct
+
+- **CI.** `gh pr checks 351` on `67ccd288` (run 42232623857), when this
+  round was written: Lints, licenses & checks, Playwright E2E and CLA pass;
+  Test 1/6 to 6/6 still running; Benchmarks and Code Coverage skip. The
+  only Rust change is in `roym_core` (two tests, three doc comments), and
+  `cargo nextest run -p syneroym-roym-core` here gives 233 passed. Check
+  that the six shards pass before the merge.
+- **Hub tests and build, run here.** `npm test`: 31 files, 328 tests
+  passed. `npm run build`: the visible-text test runs inside the build (28
+  passed), then `vite build`. Main script 167,109 bytes raw, 44,965 after
+  `gzip -9`, no Devanagari letter; Hindi chunk 14,000 after `gzip -9`.
+  `en.ftl` and `hi.ftl` have 644 messages each. These match status.md,
+  task.md, the change doc and the PR text, and are inside the limits of
+  plan section 7.6.
+- **English is unchanged (D-B1b-1), checked against `main`.** I took the
+  fixtures of `hindi-screens.test.ts`, drew the same 15 screens and dialogs
+  in English on a copy of `main` and on a copy of `67ccd288` (both in
+  `$TMPDIR`, with a fixed clock), and collected every visible text the
+  sweep collects. 534 texts on each side, 0 differences. I did the same
+  for the word functions that became Fluent selectors (`membershipWords`
+  for 15 verdicts, including `suspended` with and without a reason and an
+  end date, `refusalWords`, `pinnedIssuerWords`, `checkedWords`,
+  `publishRefusalWords`, `refusalText`, `stateHint`): 39 texts, 0
+  differences. `src/cards/samples.json` is equal to the old `samples`
+  array. The only English change I found is R1.
+- **The check (D-B1b-2, D-B1b-3).** `findVisibleText` follows the parts
+  of `?:`, `+`, `??`, `||`, `&&`, `as`, `satisfies`, `!` and templates;
+  rule 1 has every sink of the plan; rule 2 exempts by position only (the
+  `console.*` arguments, `className`/`rel`, the third argument of
+  `text()`, `classList.*` and the selector calls); type nodes and comments
+  are skipped; a literal seen by both rules is reported once. The file
+  list is every `src/**/*.ts` except the tests, `src/testing/`, `i18n.ts`
+  and `scan.ts`. `package.json` runs it in `npm run build`. I listed every
+  string literal with a letter that is left in the checked files (480):
+  they are codes, ids, method names, MIME types and CSS values. No English
+  word that a person reads is left in a table or a variable.
+- **Hub-made and browser errors (D-B1b-4).** `HubError` has the class
+  comment of review P12. `MoneyInputError` and `ListingInputError` extend
+  it; every `throw` in the checked files is a `HubError`, an `RpcError`,
+  or the one `Error` in `i18n.ts` (console only). `errText` has the four
+  branches; `rpc.ts` uses `error-no-detail`. The `login-error-service`
+  deviation is right: the plan's `HubError(String(body.error))` would have
+  shown the service text with no `विवरण:` at all.
+- **Text that is signed (D-B1b-7, D-B1b-8).** The request form draws and
+  sends the same `dataUseNotice` string; the three quote defaults come from
+  `t()`. The byte-length test covers both languages. The two Rust tests
+  look for the whole `id = text` line; the TypeScript-string parser is
+  gone, and `transaction/tests.rs` (797 lines) left the oversized list.
+  The three doc comments say what the code does. No WIT, method or record
+  change; no `roym_*` code change, so the WASM build is not affected.
+- **Codes shown as words (D-B1b-6).** Every new table is a `Map` of
+  `messageId` values read with `lookupText`; the option `value`, the class
+  name and `dataset.status` keep the code. `revocation_status` can only be
+  `good` or `unknown` (`listing::revocation_status_word`), so the two-row
+  revocation table is complete.
+- **Helpers (D-B1b-5).** One `text`, `field`, `input` and `checkbox`, all
+  in `dom.ts`; `stubRpc` is in `src/testing/stub-rpc.ts`, and every test
+  that uses it imports it.
+- **The Hindi sweep (D-B1b-12).** It draws the screens and dialogs of the
+  plan with real codes in the fixtures, collects text nodes, attributes and
+  field values, and has the two self-checks. The allowed list is a fixed
+  list with a reason per item and whole-word matching.
+- **No `t()` when a module loads.** `BUNDLES` labels are functions; no
+  module-level constant calls `t()`.
+- **Docs.** The requirements, architecture, traceability, developer guide
+  and demo edits say what the code does. Two backlog rows (the literal-only
+  check, Latin `am`/`pm`) have reason, target and link. `hi-review.md` has
+  644 rows, and the 57 weighted rows include every message D-B1b-13 names.
+  Story 40 reads the Hindi texts through `hubMessage`. No planning id in
+  any added `.ts`, `.ftl`, `.json` or `.rs` line. status.md counts match
+  what the tests print here.
+
+### Findings
+
+#### R1 (minor) — The backup import line shows `{$count}` for four of the five bundles
+
+- **Where:** at `67ccd288`:
+  [backup.ts:96](../../../../crates/roym_web/ui/src/screens/backup.ts#L96)
+  to `:99`; [en.ftl:262](../../../../crates/roym_web/ui/src/i18n/en.ftl#L262).
+- **Problem:** The code reads `res?.imported_records ?? res?.imported` and
+  passes it as the Fluent number `$count`. No service returns a number
+  there. `conversation.import` returns `imported: { messages, admissions }`,
+  `catalog.import` and `directory.import` return `imported` as a map of
+  counts, `transaction.import` returns `imported: true`, and
+  `profile.import` returns neither field (Rust `*ImportOutput` structs in
+  `crates/roym_{conversation,catalog,directory,transaction,profile}/src/app/backup.rs`).
+  Fluent refuses an object or a boolean argument ("Variable type not
+  supported") and prints `{$count}`. I checked this with the real `t()`:
+  an object and `true` both give `Imported: {$count} record(s).`, and a
+  number gives `Imported: 2 record(s).`. On `main` the line was
+  `Imported: [object Object] record(s).` or `Imported: true record(s).`.
+  That was already wrong, but B1b changes the English text, which D-B1b-1
+  says must not change, and the type `imported?: number` hides the real
+  shapes. No test imports a bundle, so nothing saw it.
+- **Failure case:** A person imports their conversation bundle, in
+  English or Hindi. The success line says `Imported: {$count}
+  record(s).`, which looks like a broken page, and `console.error` logs a
+  format error each time.
+- **Fix:** Type the reply as the services send it, and pass a number only:
+  a number as it is, a map of counts as the sum of its number values,
+  anything else (`true`, absent) as `backup-imported-unknown`. Add a test
+  in a new `backup.test.ts` with the five reply shapes (`stubRpc`), which
+  checks the English line for each. Record under Deviations that the
+  English line changes from `[object Object]`/`true` to a real count or
+  the `bundle` text.
+- *Status:* Open
+
+#### R2 (minor) — A failed sign-in in Hindi says "sign-in failed" twice
+
+- **Where:** at `67ccd288`:
+  [hi.ftl:32](../../../../crates/roym_web/ui/src/i18n/hi.ftl#L32)
+  (`login-failed`), [:200](../../../../crates/roym_web/ui/src/i18n/hi.ftl#L200),
+  [:202](../../../../crates/roym_web/ui/src/i18n/hi.ftl#L202),
+  [:203](../../../../crates/roym_web/ui/src/i18n/hi.ftl#L203);
+  [main.ts:231](../../../../crates/roym_web/ui/src/main.ts#L231) and
+  `:254`; [login.test.ts](../../../../crates/roym_web/ui/src/session/login.test.ts)
+  ("a failed login, as the person reads it").
+- **Problem:** The person reads `t("login-failed", { detail: errText(e) })`.
+  In English the inner messages are only the cause (`HTTP { $status }`,
+  `{ $detail }`), so the line is `Sign-in failed: HTTP 500`. In Hindi the
+  inner messages repeat the outer sentence: `login-error-http` is
+  `साइन-इन नहीं हो सका: HTTP { $status }`, so the line is
+  `साइन इन नहीं हो सका: साइन-इन नहीं हो सका: HTTP 500`.
+  `login-error-challenge` and `login-error-service` also start with
+  "sign-in" again. The two spellings `साइन इन` and `साइन-इन` sit side by
+  side. The new tests check `errText(err)` only, not the line that
+  `main.ts` draws, so they cannot see this. The owner review cannot see it
+  either: `hi-review.md` shows each message alone, and each one alone
+  reads well.
+- **Failure case:** A Hindi user's sign-in is refused with HTTP 500. The
+  Hub shows the same sentence twice in a row, with two spellings.
+- **Fix:** Make the Hindi inner messages name only the cause, like the
+  English ones: `login-error-http = HTTP { $status }`, and
+  `login-error-challenge` and `login-error-service` without the leading
+  "sign-in" words (for example `सेवा ने मना कर दिया। विवरण: { $detail }`).
+  Use one spelling of "sign-in" in `hi.ftl`. In the Hindi cases of
+  `login.test.ts`, check the composed line
+  `t("login-failed", { detail: errText(err) })`: it holds the
+  `login-failed` sentence once and `विवरण:` at most once.
+- *Status:* Open
+
+#### R3 (minor) — Pinned sentences in `en.ftl` lost their warning, and the change doc's pinned count is old
+
+- **Where:** at `67ccd288`:
+  [en.ftl:508](../../../../crates/roym_web/ui/src/i18n/en.ftl#L508),
+  `:509` (the delete notes); `:458` (`request-data-use-notice`), `:492`
+  (`quote-address-disclosure-notice`), `:547`, `:548` (the membership
+  notices); against [en.ftl:47](../../../../crates/roym_web/ui/src/i18n/en.ftl#L47)
+  to `:49`; [change.md:169](../../changes/roym-multilingual/change.md#L169).
+- **Problem:** (1) On `main`, `messages.ts` had a "why" comment above the
+  two delete notes: they are shown before a delete runs, they match the
+  `note` that `conversation.delete-message` returns, and the product must
+  not claim the other side's copy is gone. B1b deleted the constants and
+  the comment, and `en.ftl` has no comment there. (2) B1a put the
+  Rust-pinned sentences under the comment "Sentences that the Rust side
+  also holds … Do not wrap them or change a word without changing the
+  Rust side". The four sentences B1b pins sit in their screen sections
+  with no such comment. (3) The change doc bullet "Pinned English" still
+  says 8 booking and 10 group sentences and "the two Rust tests"; there
+  are now 22 sentences and four tests. (The new "Text that is signed"
+  bullet names the four, but the "Pinned English" bullet is now
+  incomplete.)
+- **Failure case:** The owner review, or a later slice, improves the
+  English of `messages-delete-note-received` in `en.ftl`. No test reads
+  that line (the e2e check at `roym-hub.spec.ts:395` is for the sent
+  note), so the Hub now says something different from what the service
+  says the delete did. For the four Rust-pinned lines the Rust test fails,
+  but only after the edit, with no warning in the file.
+- **Fix:** Add a `#` comment above the two delete notes with the reason of
+  the old comment. Add a `#` comment above each of the four Rust-pinned
+  lines (or one per screen section), in the words of the B1a block
+  comment. Update the "Pinned English" bullet of the change doc: 8
+  booking, 10 group, the data-use and address-disclosure notices and the
+  two membership notices, read by four Rust tests.
+- *Status:* Open
+
+#### R4 (minor) — Six of the new code tables have no inherited-name test
+
+- **Where:** at `67ccd288`:
+  [listings.ts:38](../../../../crates/roym_web/ui/src/screens/listings.ts#L38)
+  to `:57` (`BOOKING_MODE_LABELS`, `PRICING_MODEL_LABELS`,
+  `CONDITION_LABELS`, `DISCLOSURE_LABELS`);
+  [directory.ts:21](../../../../crates/roym_web/ui/src/screens/directory.ts#L21)
+  (`REVOCATION_LABELS`);
+  [synorg_members.ts:63](../../../../crates/roym_web/ui/src/screens/synorg_members.ts#L63)
+  (`CREDENTIAL_STATUS_LABELS`).
+- **Problem:** Plan D-B1b-6, section 7.1 ("Code tables") and exit
+  criterion 7 ask, for each new table, that a known code gives its English
+  word in `en` and a different text in `hi`, and that `constructor`,
+  `toString` and `__proto__` are shown as they came. The tests do this for
+  the listing status, the message state and the three report tables
+  only. `REVOCATION_LABELS` is read with `hit.revocation_status`, a value
+  that comes from the node's answer; the others are read with fixed codes
+  today. The code is right (every table is a `Map` read with
+  `lookupText`), so this is a missing test, not a bug.
+- **Failure case:** A later change turns one of these tables into an
+  object literal or reads it with `table[code]`. A directory answer with
+  `revocation_status: "constructor"` then shows `function Object() …` on
+  the screen, and no test fails.
+- **Fix:** Add the cases: one for `REVOCATION_LABELS` in
+  `directory.test.ts` (render a hit with `good` in `en` and `hi`, and with
+  the three inherited names), one for `CREDENTIAL_STATUS_LABELS` in
+  `synorg_members.test.ts`, and one for the four editor tables in
+  `listings.test.ts` (every option label differs between `en` and `hi`).
+  If R5 moves the read into one shared `codeWord`, the inherited-name part
+  can be one test of that function, and each table test only needs the
+  `en`/`hi` part.
+- *Status:* Open
+
+#### R5 (minor) — The same code-word helper is written twice, and the same read is written nine times
+
+- **Where:** at `67ccd288`:
+  [listings.ts:59](../../../../crates/roym_web/ui/src/screens/listings.ts#L59)
+  and [safety.ts:102](../../../../crates/roym_web/ui/src/screens/safety.ts#L102)
+  (two equal `codeWord(table, code)` functions);
+  `messageStateWord` at [messages.ts:24](../../../../crates/roym_web/ui/src/screens/messages.ts#L24),
+  and `lookupText(TABLE, code) ?? code` written out at
+  [directory.ts:337](../../../../crates/roym_web/ui/src/screens/directory.ts#L337)
+  and [synorg_members.ts:261](../../../../crates/roym_web/ui/src/screens/synorg_members.ts#L261);
+  two ways to build a select of codes: `codeSelect` in `safety.ts` and
+  `select(codeOptions(…))` in `listings.ts`.
+- **Problem:** D-B1b-5 is "one copy of each helper", and AGENTS.md says to
+  look for an existing helper before writing a new one. The rule "a code
+  the table lacks is shown as it came" (D-B1b-6, ML-7) is now written in
+  five places, so a later change of that rule (for example, when B2 shows
+  an English label for a code with no Hindi label) must find all of them.
+- **Failure case:** B2 changes the fallback in `listings.ts`'s
+  `codeWord` and misses `safety.ts` and `directory.ts`; two screens then
+  follow different rules for an unknown code.
+- **Fix:** One exported `codeWord(table, code)` next to `lookupText` in
+  `src/i18n/i18n.ts` (it is the same layer), used by every place above;
+  `messageStateWord` can call it. Use one select builder for code
+  options (move `select` and `codeOptions` to `dom.ts`, or make `safety.ts`
+  use them). Remove the two local copies.
+- *Status:* Open
+
+#### R6 (minor) — The change doc misses decision D-B1b-10 and the `NO_WORDS` change
+
+- **Where:** at `67ccd288`:
+  [change.md:166](../../changes/roym-multilingual/change.md#L166) to `:179`
+  (the B1b decisions) and `:441` (`## Deviations`);
+  [catalog.test.ts:92](../../../../crates/roym_web/ui/src/i18n/catalog.test.ts#L92).
+- **Problem:** (1) The plan's Step 13 item 3 moves D-B1b-1 to D-B1b-15
+  into the change doc. Every decision is there except D-B1b-10: a message
+  is shared only when the English text and the meaning are the same and
+  the sentence is generic (`common-load-failed`, `common-save-failed`,
+  `common-saved`, `common-cancel`, `common-remove`); every other message
+  has its own id. The "Message ids" bullet names the `common-` prefix
+  only. (2) D-B1b-12 lists `NO_WORDS` as `terms-range-separator`,
+  `tab-synorg` and the command messages. The code has no command message
+  (every command sits inside a Hindi sentence) and adds
+  `listing-version`, `listing-slot-line` and `safety-report-row`. This
+  is a difference from the plan with no Deviations entry.
+- **Failure case:** A later slice adds a new "Could not load …" text. It
+  reads the change doc, finds no sharing rule, and reuses
+  `common-load-failed` for a sentence with a different meaning in Hindi,
+  or adds a fourth copy of it.
+- **Fix:** Add a bullet "Shared messages" to the B1b decisions with the
+  rule and the five ids. Add a Deviations entry: `NO_WORDS` holds the
+  three messages that are only values and punctuation, and no command
+  message, because every command sits inside a Hindi sentence.
+- *Status:* Open
