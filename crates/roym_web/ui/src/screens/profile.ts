@@ -1,3 +1,5 @@
+import { errText } from "../dom";
+import { t } from "../i18n/i18n";
 import { call } from "../rpc";
 
 export async function renderProfile(container: HTMLElement) {
@@ -44,7 +46,7 @@ export async function renderProfile(container: HTMLElement) {
       const env = typeof res.envelope === "string" ? JSON.parse(res.envelope) : res.envelope;
       status.textContent = `Saved record ${res.record_id || ""} (issuer: ${env.issuer || ""})`;
     } catch (err) {
-      status.textContent = `Error: ${err instanceof Error ? err.message : String(err)}`;
+      status.textContent = t("profile-error", { detail: errText(err) });
     }
   };
 

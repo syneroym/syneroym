@@ -1,4 +1,5 @@
-import { refiller } from "../dom";
+import { errText, refiller } from "../dom";
+import { t } from "../i18n/i18n";
 import { call } from "../rpc";
 
 export function upsertParams(
@@ -88,7 +89,7 @@ export async function renderContacts(container: HTMLElement) {
       envInput.value = "";
       await reload();
     } catch (err) {
-      errorP.textContent = `Upsert failed: ${err instanceof Error ? err.message : String(err)}`;
+      errorP.textContent = t("contacts-upsert-failed", { detail: errText(err) });
     }
   };
   box.appendChild(addBtn);

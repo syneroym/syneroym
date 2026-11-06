@@ -1,11 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  CARDS_NOT_IN_GROUPS_MESSAGE,
-  GROUP_REMOVED_NOTICE,
-  GROUP_RESTORED_NOTICE,
-  MEMBERSHIP_EVENT_CONTENT_TYPE,
-  SESSION_ENDED_NOTICE,
-} from "../groups/words";
+import { MEMBERSHIP_EVENT_CONTENT_TYPE } from "../groups/words";
+import { t } from "../i18n/i18n";
 import { RpcError } from "../rpc";
 import {
   renderGroups,
@@ -69,6 +64,30 @@ describe("Groups screen rendering", () => {
     expect(bodyEl).not.toBeNull();
     expect(bodyEl?.textContent).toBe("<img src=x onerror=alert(1)>");
     expect(bodyEl?.querySelector("img")).toBeNull();
+  });
+
+  it("draws every message when one has a timestamp that is not a date", () => {
+    const threadList = document.createElement("div");
+    const msg = (id: string, sender_timestamp_ms: number): GroupMessageRow => ({
+      id,
+      conversation: "grp-1",
+      author: "did:key:zAlice",
+      direction: "incoming",
+      sender_timestamp_ms,
+      content_type: "text/plain",
+      body_encoding: "utf8",
+      body: id,
+      state: "delivered",
+    });
+    renderThreadMessages(
+      threadList,
+      [msg("a", 1000), msg("b", -9223372036854775808), msg("c", 3000)],
+      nameOf,
+      () => {},
+      () => {},
+    );
+    expect(threadList.querySelectorAll(".message-row")).toHaveLength(3);
+    expect(threadList.querySelectorAll(".message-time")[1].textContent).toBe("Invalid Date");
   });
 
   it("renders membership rows as event lines", () => {
@@ -186,7 +205,7 @@ describe("Groups screen rendering", () => {
     );
     const cards = threadList.querySelectorAll(".card.card-refused");
     expect(cards.length).toBe(1);
-    expect(cards[0].textContent).toContain(CARDS_NOT_IN_GROUPS_MESSAGE);
+    expect(cards[0].textContent).toContain(t("group-cards-not-allowed"));
 
     const normalBodies = threadList.querySelectorAll(".message-body");
     expect(normalBodies.length).toBe(1);
@@ -203,7 +222,7 @@ describe("Groups screen rendering", () => {
     const host = document.createElement("div");
     await renderGroups(host);
 
-    expect(host.textContent).toContain(SESSION_ENDED_NOTICE);
+    expect(host.textContent).toContain(t("group-session-ended-notice"));
     const reloadBtn = host.querySelector("button");
     expect(reloadBtn?.textContent).toBe("Log in again");
   });
@@ -239,8 +258,8 @@ describe("Groups screen rendering", () => {
     const host = document.createElement("div");
     await renderGroups(host);
 
-    expect(host.textContent).toContain(GROUP_RESTORED_NOTICE);
-    expect(host.textContent).not.toContain(GROUP_REMOVED_NOTICE);
+    expect(host.textContent).toContain(t("group-restored-notice"));
+    expect(host.textContent).not.toContain(t("group-removed-notice"));
     expect(host.querySelector(".key-changed-date")).toBeNull();
   });
 

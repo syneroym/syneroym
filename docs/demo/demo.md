@@ -1257,6 +1257,23 @@ After that:
 The script is `crates/substrate/tests/e2e/demo/20-roym-chat.spec.ts`. It is the
 reference for the clicks.
 
+### R3b The Hub in Hindi
+
+Automated: `mise run demo`. The script is the source of truth. This text may lag.
+
+In alice's Hub, in the bar at the top (next to **Log out**), open the language list
+and pick **हिन्दी**. The page loads again.
+
+**Expect:** the title, the tab names, the sign-in box and every card are in Hindi.
+Money shows with Indian digit grouping (for example `₹1,00,000.50`), and dates show in
+the Hindi style. Reload the page: it stays in Hindi. The other screens still show
+English text for now.
+
+**Say:** "Every person reads Roym in their own language. The choice stays on this device."
+
+The script is `crates/substrate/tests/e2e/demo/40-roym-languages.spec.ts`. It is the
+reference for the clicks.
+
 ### R4 Request → quote → agreement
 
 Bob asks for work. Alice answers with a price. Bob accepts. Both hold a signed receipt.

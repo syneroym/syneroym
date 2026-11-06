@@ -1742,6 +1742,28 @@ drive the same JSON-RPC API. This command group and the browser Hub are
 two clients of one service; both call `directory.find` to perform federated
 fan-out across sources in parallel.
 
+##### Hub text and languages
+
+*Reader: a developer who changes the Hub UI (`crates/roym_web/ui`).*
+
+All visible Hub text lives in **string catalogs**: one file per language in `crates/roym_web/ui/src/i18n/`, named by the language tag (`en.ftl`, `hi.ftl`). (This is not the `catalog` Roym service.) The files use [Fluent](https://projectfluent.org/): a line `tab-profile = Profile` is a message with the id `tab-profile`. English is the fallback. A message that another language does not have is shown in English, never as an id.
+
+To add a message:
+
+1. Add `id = text` to `en.ftl`, and the same id to `hi.ftl`. Use lower case words joined by `-`, starting with the area (`tab-`, `error-`, `terms-`).
+2. Call `t("id")` where the Hub draws the text. The id must be a string literal, so the catalog test can find it. Never call `t()` when a module loads, only when the Hub draws. Otherwise the text stays in English after a language switch.
+3. Pass values as variables: `t("terms-total", { amount })` with `terms-total = Total: { $amount }`. Pass error codes, ids and years as strings. A number argument is shown with digit grouping (`-32,602`).
+4. Fluent removes spaces at the start and end of a message. For a label that is followed by another element, use `labelled(parent, t("…-label"), …nodes)` from `dom.ts`, which adds the space. For a separator that keeps its spaces, write `{ " - " }`.
+5. An id that is chosen by data (for example a state that comes from another node) goes in a `Map` of `messageId("…")` values. Read it with `lookupText(table, key)`, which returns `undefined` for an unknown key. Use a `Map`, not an object, so a value such as `constructor` is not found as an inherited property.
+
+Errors: `errText(err)` in `dom.ts` picks the message by error code. The service's own English text is the `$detail` variable. In a Hindi message it comes last, after `विवरण:`.
+
+Times and numbers: use `i18n/format.ts` (`formatDateTime`, `formatAge`, `formatNumber`, …) and `formatMinor` in `money.ts`. They use the Hub language with region India (unless the catalog tag names a region) and Latin digits. On a card, a time that ends a row is a `<time>` element (`timeElement`). A time inside a sentence is a `$date` variable of the message, so a translator can move it.
+
+To add a language, add `src/i18n/<tag>.ftl`. The file name must be the canonical language tag (`ta`, `pt-BR`). No code change is needed: the language list and the loading find the file. Each language is its own script file that loads only when chosen.
+
+The Hub picks its language from the saved choice (`localStorage` key `roym-hub-language`), then from `navigator.languages`, then English. `mise run test:roym-ui` runs the checks on the catalogs: every id the code uses is in `en.ftl`, `hi.ftl` has the same ids, and no message is unused. `mise run verify` runs it as the `hub-ui` gate.
+
 ##### Add a Roym method
 
 Every Roym service has a method table in its `api.rs`. `web` lists only its own `session.whoami` and forwards every other method, with its `params` unchanged, to the service that owns it. Methods use typed input and output structs in Rust:

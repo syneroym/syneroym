@@ -1,11 +1,22 @@
 import { describe, expect, it } from "vitest";
-import { OPEN_TO_LABELS, SERVICE_LOCATION_EDITOR_LABELS } from "../listings/labels";
+import { t } from "../i18n/i18n";
+import { OPEN_TO_KINDS, SERVICE_LOCATION_KINDS, openToLabel, serviceLocationEditorLabel } from "../listings/labels";
 import { renderCard } from "./render";
-import * as wording from "./wording";
 
 // A deal has a quote author and a counterparty. Nothing a person reads on a
 // card may say "provider", "consumer" or "customer" instead.
 const OLD_WORDS = /provider|consumer|customer/i;
+
+const NOTICE_IDS = [
+  "payment-notice",
+  "progress-notice",
+  "payment-claimed",
+  "payment-acknowledged",
+  "fulfilment-claimed",
+  "fulfilment-acknowledged",
+  "track-unconfirmed",
+  "one-payment-notice",
+];
 
 const ROLES = ["counterparty", "quote-author"] as const;
 const PLACES = ["at-giver", "at-receiver", "remote"] as const;
@@ -37,17 +48,15 @@ function textOf(card: { type: string; data?: unknown }): string {
 
 describe("the words on deal cards", () => {
   it("keeps the shared notices free of the old words", () => {
-    for (const [name, value] of Object.entries(wording)) {
-      if (typeof value === "string") {
-        expect(value, `wording.${name}`).not.toMatch(OLD_WORDS);
-      }
+    for (const id of NOTICE_IDS) {
+      expect(t(id), id).not.toMatch(OLD_WORDS);
     }
   });
 
   it("keeps the labels for places and audiences free of the old words", () => {
     for (const label of [
-      ...Object.values(SERVICE_LOCATION_EDITOR_LABELS),
-      ...Object.values(OPEN_TO_LABELS),
+      ...SERVICE_LOCATION_KINDS.map(serviceLocationEditorLabel),
+      ...OPEN_TO_KINDS.map(openToLabel),
     ]) {
       expect(label).not.toMatch(OLD_WORDS);
     }
@@ -123,7 +132,7 @@ describe("the words on deal cards", () => {
   it("keeps a request card free of the old words", () => {
     const text = textOf({
       type: "request",
-      data: { description: "Trim the hedge", data_use_notice: wording.PAYMENT_NOTICE, categories: ["gardening"] },
+      data: { description: "Trim the hedge", data_use_notice: t("payment-notice"), categories: ["gardening"] },
     });
     expect(text).not.toMatch(OLD_WORDS);
   });

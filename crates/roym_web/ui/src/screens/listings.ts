@@ -1,6 +1,5 @@
 import {
   buildSetListingParams,
-  ListingInputError,
   slotFromLocalDatetimes,
   type ListingForm,
   type OpenTo,
@@ -8,13 +7,14 @@ import {
 } from "../listings/editor";
 import {
   OPEN_TO_KINDS,
-  OPEN_TO_LABELS,
-  SERVICE_LOCATION_EDITOR_LABELS,
+  openToLabel,
+  serviceLocationEditorLabel,
   SERVICE_LOCATION_KINDS,
 } from "../listings/labels";
 import { publishRefusalWords } from "../directory/membership";
-import { refiller } from "../dom";
-import { call, RpcError } from "../rpc";
+import { errText, refiller } from "../dom";
+import { formatDateTime } from "../i18n/format";
+import { call } from "../rpc";
 
 interface ListingListRow {
   listing_id: string;
@@ -24,11 +24,6 @@ interface ListingListRow {
   record_id: string;
   updated_at_secs: number;
   version_count: number;
-}
-
-function errText(err: unknown): string {
-  if (err instanceof RpcError || err instanceof ListingInputError) return err.message;
-  return err instanceof Error ? err.message : String(err);
 }
 
 /// A stranger's listing text is only ever a text node.
@@ -317,7 +312,7 @@ function buildEditor(onSaved: () => Promise<void>): { root: HTMLElement } {
   // --- location ---
   const location = block("location");
   const locWhere = select(
-    SERVICE_LOCATION_KINDS.map((kind): [string, string] => [kind, SERVICE_LOCATION_EDITOR_LABELS[kind]]),
+    SERVICE_LOCATION_KINDS.map((kind): [string, string] => [kind, serviceLocationEditorLabel(kind)]),
     "remote",
   );
   const locDisclosure = select(["on-agreement", "public"], "on-agreement");
@@ -331,7 +326,7 @@ function buildEditor(onSaved: () => Promise<void>): { root: HTMLElement } {
   // --- relationship ---
   const relationship = block("relationship");
   const relOpen = select(
-    OPEN_TO_KINDS.map((kind): [string, string] => [kind, OPEN_TO_LABELS[kind]]),
+    OPEN_TO_KINDS.map((kind): [string, string] => [kind, openToLabel(kind)]),
     "anyone",
   );
   const relMember = input("group DID (required for members)");
@@ -484,8 +479,8 @@ function availabilityEditor(listingId: string): HTMLElement {
       for (const s of res.slots) {
         const line = document.createElement("div");
         line.className = "slot-line";
-        const startStr = new Date(s.start_secs * 1000).toLocaleString();
-        const endStr = new Date(s.end_secs * 1000).toLocaleString();
+        const startStr = formatDateTime(s.start_secs);
+        const endStr = formatDateTime(s.end_secs);
         line.appendChild(text("span", `${startStr} - ${endStr} (x${s.capacity})`));
         const rm = text("button", "Remove", "button remove-slot") as HTMLButtonElement;
         rm.onclick = async () => {

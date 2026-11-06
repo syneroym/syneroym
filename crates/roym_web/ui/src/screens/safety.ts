@@ -1,4 +1,5 @@
-import { refiller } from "../dom";
+import { errText, refiller } from "../dom";
+import { t } from "../i18n/i18n";
 import { call } from "../rpc";
 
 export async function renderSafety(container: HTMLElement) {
@@ -51,7 +52,7 @@ export async function renderSafety(container: HTMLElement) {
       blockInput.value = "";
       await loadBlocks();
     } catch (err) {
-      blockError.textContent = `Block failed: ${err instanceof Error ? err.message : String(err)}`;
+      blockError.textContent = t("safety-block-failed", { detail: errText(err) });
     }
   };
 
@@ -169,7 +170,7 @@ function buildReportForm(): HTMLElement {
       details.value = "";
       await reload();
     } catch (err) {
-      status.textContent = `Report failed: ${err instanceof Error ? err.message : String(err)}`;
+      status.textContent = t("safety-report-failed", { detail: errText(err) });
     }
   };
 
@@ -219,7 +220,7 @@ async function buildContactLimitEditor(): Promise<HTMLElement> {
       await call("contacts.set-limits", { window_secs: w, max_per_window: m });
       status.textContent = "Saved.";
     } catch (err) {
-      status.textContent = `Save failed: ${err instanceof Error ? err.message : String(err)}`;
+      status.textContent = t("safety-save-failed", { detail: errText(err) });
     }
   };
 

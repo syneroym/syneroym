@@ -1,3 +1,4 @@
+import { lookupText, messageId, t } from "./i18n/i18n";
 import { RpcError } from "./rpc";
 
 /// A stranger's directory label, listing text or error string is only ever
@@ -9,9 +10,46 @@ export function text(tag: string, value: string, className?: string): HTMLElemen
   return el;
 }
 
+/// Message id for each JSON-RPC code a Roym service or the `web` proxy
+/// answers with. Any other code uses `error-service`. A `Map`, so a code
+/// from another node can never hit an inherited property.
+const ERROR_MESSAGES = new Map<number, string>([
+  [-32001, messageId("error-service-unavailable")],
+  [-32002, messageId("error-service-timeout")],
+  [-32003, messageId("error-permission")],
+  [-32004, messageId("error-quota")],
+  [-32010, messageId("error-not-signed-in")],
+  [-32011, messageId("error-not-owner")],
+  [-32012, messageId("error-no-owner")],
+  [-32013, messageId("error-not-local")],
+  [-32601, messageId("error-method-not-found")],
+  [-32602, messageId("error-invalid-input")],
+  [-32603, messageId("error-internal")],
+]);
+
+function rpcErrorText(err: RpcError): string {
+  // Codes go in as strings: a number argument would print as `-32,602`.
+  const args = { detail: err.message, code: String(err.code) };
+  if (err.code > 0) return t("error-http", args);
+  if (err.code === 0) return t("error-network", args);
+  return lookupText(ERROR_MESSAGES, err.code, args) ?? t("error-service", args);
+}
+
+/// The text to show for a failure, in the Hub language. The service's own
+/// English text is only a `$detail` inside the Hub's message.
 export function errText(err: unknown): string {
-  if (err instanceof RpcError) return err.message;
+  if (err instanceof RpcError) return rpcErrorText(err);
   return err instanceof Error ? err.message : String(err);
+}
+
+/// A label, one space, then the value nodes. Fluent removes a space at the
+/// end of a message, so the space between a label and its value is added
+/// here and not in the string catalog. `label` is the translated text, so
+/// each `t()` call keeps a literal id at the call site.
+export function labelled(parent: HTMLElement, label: string, ...nodes: (Node | string)[]): void {
+  const span = document.createElement("span");
+  span.textContent = label;
+  parent.append(span, " ", ...nodes);
 }
 
 export function field(labelText: string, control: HTMLElement): HTMLElement {

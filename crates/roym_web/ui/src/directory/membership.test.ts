@@ -96,7 +96,7 @@ describe("membershipWords", () => {
   });
 
   it("gives the date an expired membership ended and the categories one did not cover", () => {
-    expect(membershipWords(VERDICTS.expired, "src", NOW)).toBe("Membership expired on 2027-01-14");
+    expect(membershipWords(VERDICTS.expired, "src", NOW)).toBe("Membership expired on 14 Jan 2027");
     expect(membershipWords(VERDICTS.outOfScope, "src", NOW)).toBe(
       "Membership does not cover this listing: plumbing, area",
     );
@@ -104,7 +104,7 @@ describe("membershipWords", () => {
 
   it("names the date and reason for a revocation, and omits an empty reason", () => {
     expect(membershipWords(VERDICTS.revoked, "src", NOW)).toBe(
-      "Membership revoked: the group withdrew it on 2027-01-14. Reason given: left the guild",
+      "Membership revoked: the group withdrew it on 14 Jan 2027. Reason given: left the guild",
     );
     const noReason = { ...VERDICTS.revoked, reason: "" } as MembershipVerdict;
     expect(membershipWords(noReason, "src", NOW)).not.toContain("Reason given");
@@ -112,11 +112,11 @@ describe("membershipWords", () => {
 
   it("names the rule, the start, and the end -- or that only the group can lift it", () => {
     expect(membershipWords(VERDICTS.suspendedTimed, "src", NOW)).toBe(
-      'Membership suspended by the group under its rule "r1", since 2027-01-13, until 2027-01-20. ' +
+      'Membership suspended by the group under its rule "r1", since 13 Jan 2027, until 20 Jan 2027. ' +
         "Reason given: late twice",
     );
     expect(membershipWords(VERDICTS.suspendedListing, "src", NOW)).toBe(
-      'This listing is suspended by the group under its rule "r2", since 2027-01-14, until the group lifts it.',
+      'This listing is suspended by the group under its rule "r2", since 14 Jan 2027, until the group lifts it.',
     );
   });
 });

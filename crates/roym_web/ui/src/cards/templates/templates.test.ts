@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { formatDateTime } from "../../i18n/format.js";
 import { formatMinor } from "../../money.js";
 import { renderRefusedCard } from "../refused.js";
 import { renderAgreementReceipt } from "./agreement_receipt.js";
@@ -8,6 +9,11 @@ import { renderPaymentAcknowledgement } from "./payment_acknowledgement.js";
 import { renderPaymentRequest } from "./payment_request.js";
 import { renderQuote } from "./quote.js";
 import { renderRequest } from "./request.js";
+
+/// The `datetime` of every `<time>` element under `selector`.
+function datetimes(el: HTMLElement, selector: string): (string | null)[] {
+  return Array.from(el.querySelectorAll(`${selector} time`)).map((t) => t.getAttribute("datetime"));
+}
 
 describe("Card templates", () => {
   describe("renderRequest", () => {
@@ -28,8 +34,10 @@ describe("Card templates", () => {
       expect(el.textContent).toContain("Need roof repair after storm");
       expect(el.textContent).toContain("roofing, repair");
       expect(el.textContent).toContain("list-123");
-      expect(el.textContent).toContain(new Date(1700000000 * 1000).toISOString());
-      expect(el.textContent).toContain(new Date(1700086400 * 1000).toISOString());
+      expect(datetimes(el, ".request-window")).toEqual([
+        new Date(1700000000 * 1000).toISOString(),
+        new Date(1700086400 * 1000).toISOString(),
+      ]);
       expect(el.textContent).toContain("Standard data use notice text");
     });
 
@@ -75,14 +83,53 @@ describe("Card templates", () => {
 
       expect(el.classList.contains("card-quote")).toBe(true);
       expect(el.textContent).toContain("Install composite roofing tiles");
-      expect(el.textContent).toContain("4500.00 USD");
-      expect(el.textContent).toContain("360.00 USD");
-      expect(el.textContent).toContain("50.00 USD");
+      expect(el.textContent).toContain("$4,500.00");
+      expect(el.textContent).toContain("$360.00");
+      expect(el.textContent).toContain("$50.00");
       expect(el.textContent).toContain("Payment before the work");
       expect(el.textContent).toContain("123 Main Street, Town");
       expect(el.textContent).toContain("Full refund up to 24 hours prior");
       expect(el.textContent).toContain("Pro-rated refund for uncompleted work");
-      expect(el.textContent).toContain(new Date(1700100000 * 1000).toISOString());
+      expect(el.textContent).toContain(formatDateTime(1700100000));
+      expect(datetimes(el, ".quote-schedule")).toEqual([
+        new Date(1700000000 * 1000).toISOString(),
+        new Date(1700086400 * 1000).toISOString(),
+      ]);
+    });
+
+    it("keeps the space between a label and its value", () => {
+      const el = renderQuote({
+        payee: "A. Gardener",
+        dispute_path: "Write to the quote author",
+        schedule: { earliest_secs: 1700000000, latest_secs: 1700086400 },
+      });
+      expect(el.querySelector(".quote-payee")?.textContent).toBe(
+        "Payee, as agreed in this quote: A. Gardener",
+      );
+      expect(el.querySelector(".quote-dispute")?.textContent).toBe(
+        "Dispute path: Write to the quote author",
+      );
+      expect(el.querySelector(".quote-schedule")?.textContent).toBe(
+        `Schedule: ${formatDateTime(1700000000)} - ${formatDateTime(1700086400)}`,
+      );
+    });
+
+    it("draws a time that ends the expiry row as a time element, and one in a sentence as text", () => {
+      const future = Math.floor(Date.now() / 1000) + 1_000_000;
+      const open = renderQuote({ quote_expires_at_secs: future });
+      expect(open.querySelector(".quote-expiry time")?.getAttribute("datetime")).toBe(
+        new Date(future * 1000).toISOString(),
+      );
+      expect(open.querySelector(".quote-expired-notice")).toBeNull();
+
+      const past = renderQuote({ quote_expires_at_secs: 1700100000 });
+      expect(past.querySelector(".quote-expiry time")).toBeNull();
+      expect(past.querySelector(".quote-expiry")?.textContent).toBe(
+        `Expires: ${formatDateTime(1700100000)} (expired)`,
+      );
+      expect(past.querySelector(".quote-expired-notice")?.textContent).toBe(
+        `This quote expired on ${formatDateTime(1700100000)}. Ask for a new one.`,
+      );
     });
 
     it("renders malicious payload as plain text with no img elements", () => {
@@ -146,7 +193,7 @@ describe("Card templates", () => {
       expect(el.textContent).toContain("did:key:zQuoteAuthor456");
       expect(el.textContent).toContain("rec-quote-789");
       expect(el.textContent).toContain("Plumbing repair");
-      expect(el.textContent).toContain("250.00 EUR");
+      expect(el.textContent).toContain("€250.00");
       expect(el.textContent).toContain("Payment after the work");
       expect(el.textContent).toContain("Non-refundable deposit");
       expect(el.textContent).toContain("No refunds on completed labor");
@@ -199,7 +246,7 @@ describe("Card templates", () => {
       const el = renderPaymentRequest(data);
 
       expect(el.classList.contains("card-payment-request")).toBe(true);
-      expect(el.textContent).toContain("50.00 USD");
+      expect(el.textContent).toContain("$50.00");
       expect(el.textContent).toContain("did:key:zQuoteAuthor123");
       expect(el.textContent).toContain("Initial deposit");
       expect(el.textContent?.toLowerCase()).not.toContain("verif");
@@ -245,10 +292,10 @@ describe("Card templates", () => {
       const el = renderPaymentAcknowledgement(data);
 
       expect(el.classList.contains("card-payment-acknowledgement")).toBe(true);
-      expect(el.textContent).toContain("125.00 EUR");
+      expect(el.textContent).toContain("€125.00");
       expect(el.textContent).toContain("bank-transfer");
       expect(el.textContent).toContain("TX-9988");
-      expect(el.textContent).toContain(new Date(1700000000 * 1000).toISOString());
+      expect(datetimes(el, ".payment-ack-observed")).toEqual([new Date(1700000000 * 1000).toISOString()]);
       expect(el.textContent?.toLowerCase()).not.toContain("verif");
     });
 
@@ -346,6 +393,17 @@ describe("Card templates", () => {
       expect(el.textContent).toContain(xss);
     });
 
+    it("shows a state or conflict that is no known value as it came", () => {
+      for (const value of ["constructor", "toString", "__proto__"]) {
+        const el = renderBookingProgress({
+          state: value as "scheduled",
+          conflict: value as "slot-taken",
+        });
+        expect(el.querySelector(".progress-state")?.textContent).toBe(`Status: ${value}`);
+        expect(el.querySelector(".progress-conflict")?.textContent).toBe(value);
+      }
+    });
+
     it("renders javascript: cancel reason without anchor", () => {
       const el = renderBookingProgress({
         cancel_reason: "javascript:alert(1)",
@@ -358,9 +416,9 @@ describe("Card templates", () => {
 
   describe("formatMinor", () => {
     it("formats exponent 0, 2, and 3 currencies", () => {
-      expect(formatMinor(1500, "JPY")).toBe("1500 JPY");
-      expect(formatMinor(1500, "USD")).toBe("15.00 USD");
-      expect(formatMinor(1500, "KWD")).toBe("1.500 KWD");
+      expect(formatMinor(1500, "JPY")).toBe("JP¥1,500");
+      expect(formatMinor(1500, "USD")).toBe("$15.00");
+      expect(formatMinor(1500, "KWD")).toBe("KWD\u00a01.500");
     });
   });
 

@@ -189,8 +189,8 @@ fn transcript_digest_properties() {
 #[test]
 fn notice_constants_match_hub_ui_verbatim() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let path = manifest_dir.join("../roym_web/ui/src/groups/words.ts");
-    assert!(path.exists(), "missing ../roym_web/ui/src/groups/words.ts");
+    let path = manifest_dir.join("../roym_web/ui/src/i18n/en.ftl");
+    assert!(path.exists(), "missing ../roym_web/ui/src/i18n/en.ftl");
     let content = fs::read_to_string(&path).unwrap();
 
     assert!(content.contains(OWNER_CAN_READ_NOTICE), "OWNER_CAN_READ_NOTICE missing");

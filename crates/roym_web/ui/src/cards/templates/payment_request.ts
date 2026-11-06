@@ -11,9 +11,10 @@
 ///   never from this card's own signed `data` -- nothing else may claim to
 ///   be the payee.
 
+import { labelled } from "../../dom";
+import { t } from "../../i18n/i18n";
 import { formatMinor } from "../../money";
 import { renderLink } from "../link";
-import { ONE_PAYMENT_NOTICE, PAYMENT_NOTICE } from "../wording";
 
 export interface PaymentRequestData {
   agreement?: string;
@@ -33,45 +34,44 @@ export function renderPaymentRequest(data?: PaymentRequestData): HTMLElement {
   card.className = "card card-payment-request";
 
   const title = document.createElement("h3");
-  title.textContent = "Payment Request";
+  title.textContent = t("payment-request-title");
   card.appendChild(title);
 
   if (data?.amount_minor !== undefined && data?.currency) {
     const amountP = document.createElement("p");
     amountP.className = "payment-request-amount";
-    amountP.textContent = `Amount: ${formatMinor(data.amount_minor, data.currency)}`;
+    amountP.textContent = t("payment-amount", { amount: formatMinor(data.amount_minor, data.currency) });
     card.appendChild(amountP);
   }
 
   const oneNoticeP = document.createElement("p");
   oneNoticeP.className = "payment-request-one-notice";
-  oneNoticeP.textContent = ONE_PAYMENT_NOTICE;
+  oneNoticeP.textContent = t("one-payment-notice");
   card.appendChild(oneNoticeP);
 
   if (data?.agreement_payee) {
     const payeeP = document.createElement("p");
     payeeP.className = "payment-request-payee";
-    const label = document.createElement("span");
-    label.textContent = "Payee, as agreed in this quote: ";
-    payeeP.appendChild(label);
-    if (data.agreement_payee.startsWith("http://") || data.agreement_payee.startsWith("https://")) {
-      payeeP.appendChild(renderLink(data.agreement_payee));
-    } else {
-      payeeP.appendChild(document.createTextNode(data.agreement_payee));
-    }
+    const isLink =
+      data.agreement_payee.startsWith("http://") || data.agreement_payee.startsWith("https://");
+    labelled(
+      payeeP,
+      t("terms-payee-label"),
+      isLink ? renderLink(data.agreement_payee) : document.createTextNode(data.agreement_payee),
+    );
     card.appendChild(payeeP);
   }
 
   if (data?.note) {
     const noteP = document.createElement("p");
     noteP.className = "payment-request-note";
-    noteP.textContent = `Note: ${data.note}`;
+    noteP.textContent = t("payment-note", { note: data.note });
     card.appendChild(noteP);
   }
 
   const noticeP = document.createElement("p");
   noticeP.className = "payment-request-notice";
-  noticeP.textContent = PAYMENT_NOTICE;
+  noticeP.textContent = t("payment-notice");
   card.appendChild(noticeP);
 
   return card;

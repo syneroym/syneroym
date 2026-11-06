@@ -3,7 +3,7 @@
 // compares the two notice strings verbatim).
 
 import { RpcError } from "../rpc";
-import { ageWords, dateWords } from "./words";
+import { formatAge, formatUtcDate } from "../i18n/format";
 
 export const NO_INSTANT_REMOVAL_NOTICE =
   "A group's decision reaches copies other people already hold only when they next check. Nobody can promise it is removed everywhere at once.";
@@ -82,7 +82,7 @@ export function membershipWords(
     case "valid":
       return (
         `Member of ${v.synorg_name}, checked on your node. ` +
-        `Group withdrawals checked ${ageWords(Math.max(0, nowSecs - v.revocations_checked_as_of_secs))}.`
+        `Group withdrawals checked ${formatAge(Math.max(0, nowSecs - v.revocations_checked_as_of_secs))}.`
       );
     case "none":
       return `No membership shown by ${sourceLabel}`;
@@ -91,19 +91,19 @@ export function membershipWords(
     case "refused":
       return "Membership evidence did NOT check out -- treat as unknown";
     case "expired":
-      return `Membership expired on ${dateWords(v.expires_at_secs)}`;
+      return `Membership expired on ${formatUtcDate(v.expires_at_secs)}`;
     case "out-of-scope":
       return `Membership does not cover this listing: ${v.outside.join(", ")}`;
     case "revoked":
       return withReason(
-        `Membership revoked: the group withdrew it on ${dateWords(v.revoked_at_secs)}.`,
+        `Membership revoked: the group withdrew it on ${formatUtcDate(v.revoked_at_secs)}.`,
         v.reason,
       );
     case "suspended": {
       const what = v.scope.kind === "listing" ? "This listing is suspended" : "Membership suspended";
-      const until = v.until_secs ? `until ${dateWords(v.until_secs)}` : "until the group lifts it";
+      const until = v.until_secs ? `until ${formatUtcDate(v.until_secs)}` : "until the group lifts it";
       return withReason(
-        `${what} by the group under its rule "${v.rule}", since ${dateWords(v.since_secs)}, ${until}.`,
+        `${what} by the group under its rule "${v.rule}", since ${formatUtcDate(v.since_secs)}, ${until}.`,
         v.reason,
       );
     }
@@ -144,7 +144,7 @@ export function pinnedIssuerWords(issuer: string | null | undefined): string {
 /// How old a held check is, from the time this node fetched it.
 export function checkedWords(asOfSecs: number, nowSecs: number = Math.floor(Date.now() / 1000)): string {
   if (!asOfSecs) return "never checked";
-  return `checked ${ageWords(Math.max(0, nowSecs - asOfSecs))}`;
+  return `checked ${formatAge(Math.max(0, nowSecs - asOfSecs))}`;
 }
 
 /// What `directory.check-standing` answers. `refreshed: false` means the

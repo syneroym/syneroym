@@ -67,6 +67,7 @@ neighbourhood.
 | **Giver / receiver (of a resource)** | Said about one resource in a deal, not about a person. Today the quote author gives the work and receives the money. The counterparty gives the money and receives the work. Docs and UI text use these words. The code names the two parties of a deal, not the giver and receiver. | The receiver of a mailbox message (see **Mailbox** and **Queue lifetime**), which is a service member, not a participant. |
 | **Listing owner** | The participant who publishes a listing. A listing exists before any deal, so this is not a deal role. | Quote author (usually the same person, but a different idea). |
 | **Searcher** | The participant who searches directories and reads the results. Not a deal role. | Counterparty. |
+| **String catalog (Hub)** | The file of all Hub text for one language, in `crates/roym_web/ui/src/i18n/` (`en.ftl`, `hi.ftl`). A message in it has an id, and the Hub looks up its text by that id. | The `catalog` Roym service (listings). |
 
 ## Key phrasings
 

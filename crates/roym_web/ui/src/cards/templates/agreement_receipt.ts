@@ -4,12 +4,19 @@
 /// - Every value is textContent. No innerHTML, no insertAdjacentHTML,
 ///   no style from data, no attributes from data other than classes.
 /// - No URL is fetched, prefetched, or navigated to.
+/// - A `<time>` element's `datetime` is computed by the Hub from a number,
+///   never copied from a string of the card.
+/// - A time that ends a row is a `<time>` element. A time inside a sentence
+///   is plain text in the string catalog message.
 /// - A missing optional field renders as an omitted row, never as undefined
 ///   and never as a guess.
 /// - Never says "verified".
 
 import type { ServiceLocationKind } from "../../listings/editor";
 import { serviceLocationCardLabel } from "../../listings/labels";
+import { labelled } from "../../dom";
+import { timeElement } from "../../i18n/format";
+import { t } from "../../i18n/i18n";
 import { formatMinor } from "../../money";
 import { renderLink } from "../link";
 import { type AgreedTermsData } from "./quote";
@@ -49,7 +56,7 @@ export function renderAgreementReceipt(data?: AgreementReceiptData): HTMLElement
   card.className = "card card-agreement-receipt";
 
   const title = document.createElement("h3");
-  title.textContent = "Agreement Receipt";
+  title.textContent = t("receipt-title");
   card.appendChild(title);
 
   // Pair state in words:
@@ -58,15 +65,15 @@ export function renderAgreementReceipt(data?: AgreementReceiptData): HTMLElement
   const pairState = typeof rawPair === "object" && rawPair !== null ? rawPair.state : rawPair;
   const pairRole = typeof rawPair === "object" && rawPair !== null ? rawPair.role : data?.role;
 
-  let pairText = "Only the person the quote was sent to has signed so far.";
+  let pairText = t("receipt-pair-half-recipient");
   if (pairState === "complete") {
-    pairText = "Both parties have signed these terms.";
+    pairText = t("receipt-pair-complete");
   } else if (pairState === "half" && pairRole === "quote-author") {
-    pairText = "Only the person who wrote the quote has signed so far.";
+    pairText = t("receipt-pair-half-author");
   } else if (pairRole === "quote-author") {
-    pairText = "Only the person who wrote the quote has signed so far.";
+    pairText = t("receipt-pair-half-author");
   } else {
-    pairText = "Only the person the quote was sent to has signed so far.";
+    pairText = t("receipt-pair-half-recipient");
   }
 
   const pairP = document.createElement("p");
@@ -78,34 +85,32 @@ export function renderAgreementReceipt(data?: AgreementReceiptData): HTMLElement
     const roleP = document.createElement("p");
     roleP.className = "receipt-role";
     roleP.textContent =
-      data.role === "quote-author"
-        ? "Signed by: the person who wrote the quote"
-        : "Signed by: the person the quote was sent to";
+      data.role === "quote-author" ? t("receipt-role-author") : t("receipt-role-recipient");
     card.appendChild(roleP);
   }
 
   if (data?.counterparty_did) {
     const conP = document.createElement("p");
     conP.className = "receipt-counterparty";
-    conP.textContent = `Quote to: ${data.counterparty_did}`;
+    conP.textContent = t("receipt-quote-to", { did: data.counterparty_did });
     card.appendChild(conP);
   }
 
   if (data?.quote_author_did) {
     const proP = document.createElement("p");
     proP.className = "receipt-author";
-    proP.textContent = `Quote by: ${data.quote_author_did}`;
+    proP.textContent = t("receipt-quote-by", { did: data.quote_author_did });
     card.appendChild(proP);
   }
 
   if (data?.quote_record_id) {
     const qidP = document.createElement("p");
     qidP.className = "receipt-quote-record";
-    qidP.textContent = `Quote record: ${data.quote_record_id}`;
+    qidP.textContent = t("receipt-quote-record", { id: data.quote_record_id });
     card.appendChild(qidP);
   }
 
-  const t: AgreedTermsData = {
+  const terms: AgreedTermsData = {
     ...data?.terms,
     ...(data?.scope !== undefined ? { scope: data.scope } : {}),
     ...(data?.currency !== undefined ? { currency: data.currency } : {}),
@@ -122,111 +127,108 @@ export function renderAgreementReceipt(data?: AgreementReceiptData): HTMLElement
     ...(data?.quote_expires_at_secs !== undefined ? { quote_expires_at_secs: data.quote_expires_at_secs } : {}),
   };
 
-  if (t.scope) {
+  if (terms.scope) {
     const scopeP = document.createElement("p");
     scopeP.className = "receipt-scope";
-    scopeP.textContent = `Scope: ${t.scope}`;
+    scopeP.textContent = t("terms-scope", { value: terms.scope });
     card.appendChild(scopeP);
   }
 
-  if (t.amount_minor !== undefined && t.currency) {
+  if (terms.amount_minor !== undefined && terms.currency) {
     const totalP = document.createElement("p");
     totalP.className = "receipt-total";
-    totalP.textContent = `Total: ${formatMinor(t.amount_minor, t.currency)}`;
+    totalP.textContent = t("terms-total", { amount: formatMinor(terms.amount_minor, terms.currency) });
     card.appendChild(totalP);
   }
 
-  if (t.tax_minor !== undefined && t.tax_minor !== 0 && t.currency) {
+  if (terms.tax_minor !== undefined && terms.tax_minor !== 0 && terms.currency) {
     const taxP = document.createElement("p");
     taxP.className = "receipt-tax";
-    taxP.textContent = `Tax: ${formatMinor(t.tax_minor, t.currency)}`;
+    taxP.textContent = t("terms-tax", { amount: formatMinor(terms.tax_minor, terms.currency) });
     card.appendChild(taxP);
   }
-  if (t.fees_minor !== undefined && t.fees_minor !== 0 && t.currency) {
+  if (terms.fees_minor !== undefined && terms.fees_minor !== 0 && terms.currency) {
     const feesP = document.createElement("p");
     feesP.className = "receipt-fees";
-    feesP.textContent = `Fees: ${formatMinor(t.fees_minor, t.currency)}`;
+    feesP.textContent = t("terms-fees", { amount: formatMinor(terms.fees_minor, terms.currency) });
     card.appendChild(feesP);
   }
 
-  if (t.payment_timing) {
+  if (terms.payment_timing) {
     const timingP = document.createElement("p");
     timingP.className = "receipt-timing";
     timingP.textContent =
-      t.payment_timing === "before-work"
-        ? "Payment before the work"
-        : "Payment after the work";
+      terms.payment_timing === "before-work" ? t("terms-timing-before") : t("terms-timing-after");
     card.appendChild(timingP);
   }
 
-  if (t.payee) {
+  if (terms.payee) {
     const payeeP = document.createElement("p");
     payeeP.className = "receipt-payee";
-    const label = document.createElement("span");
-    label.textContent = "Payee, as agreed in this quote: ";
-    payeeP.appendChild(label);
-    if (t.payee.startsWith("http://") || t.payee.startsWith("https://")) {
-      payeeP.appendChild(renderLink(t.payee));
-    } else {
-      payeeP.appendChild(document.createTextNode(t.payee));
-    }
+    const isLink = terms.payee.startsWith("http://") || terms.payee.startsWith("https://");
+    labelled(
+      payeeP,
+      t("terms-payee-label"),
+      isLink ? renderLink(terms.payee) : document.createTextNode(terms.payee),
+    );
     card.appendChild(payeeP);
   }
 
-  if (t.schedule) {
+  if (terms.schedule) {
     const schedP = document.createElement("p");
     schedP.className = "receipt-schedule";
-    const start = new Date(t.schedule.earliest_secs * 1000).toISOString();
-    const end = new Date(t.schedule.latest_secs * 1000).toISOString();
-    schedP.textContent = `Schedule: ${start} - ${end}`;
+    labelled(
+      schedP,
+      t("terms-schedule-label"),
+      timeElement(terms.schedule.earliest_secs),
+      t("terms-range-separator"),
+      timeElement(terms.schedule.latest_secs),
+    );
     card.appendChild(schedP);
   }
 
-  if (t.location) {
+  if (terms.location) {
     const locP = document.createElement("p");
     locP.className = "receipt-location";
-    locP.textContent = `Location: ${serviceLocationCardLabel(t.location.where)}`;
+    locP.textContent = t("terms-location", { where: serviceLocationCardLabel(terms.location.where) });
     card.appendChild(locP);
 
-    if (t.location.address) {
+    if (terms.location.address) {
       const addrP = document.createElement("p");
       addrP.className = "receipt-address";
-      addrP.textContent = `Address given in this quote: ${t.location.address}`;
+      addrP.textContent = t("terms-address", { address: terms.location.address });
       card.appendChild(addrP);
     }
   }
 
-  if (t.cancellation_terms) {
+  if (terms.cancellation_terms) {
     const cancP = document.createElement("p");
     cancP.className = "receipt-cancellation";
-    cancP.textContent = `Cancellation terms: ${t.cancellation_terms}`;
+    cancP.textContent = t("terms-cancellation", { value: terms.cancellation_terms });
     card.appendChild(cancP);
   }
-  if (t.refund_terms) {
+  if (terms.refund_terms) {
     const refP = document.createElement("p");
     refP.className = "receipt-refund";
-    refP.textContent = `Refund terms: ${t.refund_terms}`;
+    refP.textContent = t("terms-refund", { value: terms.refund_terms });
     card.appendChild(refP);
   }
-  if (t.dispute_path) {
+  if (terms.dispute_path) {
     const dispP = document.createElement("p");
     dispP.className = "receipt-dispute";
-    const label = document.createElement("span");
-    label.textContent = "Dispute path: ";
-    dispP.appendChild(label);
-    if (t.dispute_path.startsWith("http://") || t.dispute_path.startsWith("https://")) {
-      dispP.appendChild(renderLink(t.dispute_path));
-    } else {
-      dispP.appendChild(document.createTextNode(t.dispute_path));
-    }
+    const isLink = terms.dispute_path.startsWith("http://") || terms.dispute_path.startsWith("https://");
+    labelled(
+      dispP,
+      t("terms-dispute-label"),
+      isLink ? renderLink(terms.dispute_path) : document.createTextNode(terms.dispute_path),
+    );
     card.appendChild(dispP);
   }
 
-  if (t.quote_expires_at_secs) {
-    const expDate = new Date(t.quote_expires_at_secs * 1000).toISOString();
+  if (terms.quote_expires_at_secs) {
     const expP = document.createElement("p");
     expP.className = "receipt-expiry";
-    expP.textContent = `Quote expiry: ${expDate}`;
+    labelled(expP, t("receipt-expiry-label"), timeElement(terms.quote_expires_at_secs));
     card.appendChild(expP);
   }
 

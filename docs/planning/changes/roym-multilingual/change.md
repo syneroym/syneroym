@@ -2,8 +2,14 @@
 status: draft
 living-docs-touched:
   - docs/planning/deferred-backlog.md
+  - docs/system-architecture.md
+  - docs/system-requirements-spec.md
+  - docs/planning/traceability-matrix.md
+  - docs/developer-guide.md
+  - docs/demo/demo.md
+  - docs/TERMINOLOGY.md
 demo:
-  - none: library checks, recorded decisions and spelling test data only; nothing a viewer can see yet
+  - crates/substrate/tests/e2e/demo/40-roym-languages.spec.ts
 ---
 # Roym multilingual foundation
 
@@ -87,11 +93,11 @@ Most cross-language trade needs only layers A and B. The buyer searches by categ
 | --- | --- | --- |
 | **UI localisation** | | |
 | ML-1 | Every user-visible string in the Hub comes from the string catalog. A check fails the UI build when a string literal is set as visible text outside the catalog. | |
-| ML-2 | Adding a new language needs only a new catalog file and taxonomy labels. No code change. A missing message in that language falls back to English, never to a raw message id. | |
-| ML-3 | A user switches the Hub language between English and Hindi. The choice survives a reload. The first choice comes from the browser's preferred languages. | |
-| ML-4 | Dates, times and numbers use the Hub language's format. ₹1,00,000.50 shows with Indian digit grouping and the `₹` sign in both English and Hindi. | |
-| ML-5 | The Hub sets `lang` on the page, and on each block of user text to that text's language tag, so the browser picks a correct font and screen readers read it in the right language. | |
-| ML-6 | The Hub shows service errors by error code from the catalog. It does not show English error text from a service to a Hindi user, except as an extra detail line. | |
+| ML-2 | Adding a new language needs only a new catalog file and taxonomy labels. No code change. A missing message in that language falls back to English, never to a raw message id. | `crates/roym_web/ui/src/i18n/i18n.test.ts` ("falls back to English for a message the language lacks"); `catalog.test.ts` (file names are canonical tags; every used id is in `en.ftl`; `hi.ftl` has the ids of `en.ftl`) |
+| ML-3 | A user switches the Hub language between English and Hindi. The choice survives a reload. The first choice comes from the browser's preferred languages. | `i18n.test.ts` (`pickLanguage`, the stored choice); `picker.test.ts`; `roym-hub.spec.ts` ("the Hub opens in Hindi with no choice made", browser set to `hi-IN`); story 40 |
+| ML-4 | Dates, times and numbers use the Hub language's format. ₹1,00,000.50 shows with Indian digit grouping and the `₹` sign in both English and Hindi. | `format.test.ts`; `money.test.ts` ("groups rupees the Indian way in English and in Hindi") |
+| ML-5 | The Hub sets `lang` on the page, and on each block of user text to that text's language tag, so the browser picks a correct font and screen readers read it in the right language. | Page `lang` only so far: `i18n.test.ts` ("sets the page language and the format locale"); story 40. Record text follows with the language-tagged records. |
+| ML-6 | The Hub shows service errors by error code from the catalog. It does not show English error text from a service to a Hindi user, except as an extra detail line. | `errors.test.ts`; `rpc.test.ts` |
 | **Language-neutral structure** | | |
 | ML-7 | A listing's categories are codes from the taxonomy. The Hub shows each code's label in the reader's language. A code with no label in that language shows its English label. A code not in the taxonomy shows as the code itself. | |
 | ML-8 | A Hindi-language Hub user and an English-language Hub user search with the same category code and get the same results. | |
@@ -149,6 +155,18 @@ Most cross-language trade needs only layers A and B. The buyer searches by categ
 **Fonts.** Today the Hub uses `font-family: system-ui, -apple-system, sans-serif` (`style.css:2`). Android, iOS, macOS and Windows ship fonts for the major Indic scripts (`unverified` for older Android versions). The first step uses system fonts and the correct `lang` attribute (ML-5). A bundled web font is added only if a test device shows broken shaping. See [Open questions](#open-questions).
 
 **Errors.** Services return English error text. The Hub maps known error codes to catalog messages (ML-6). 22 places in the Hub read `.message` from an error today. Each one is checked.
+
+**Decided 2026-11-06, how the Hub does it** (the mechanism):
+
+- **Files and loading.** `src/i18n/en.ftl` is imported with `?raw` into the main script and is always there, as the fallback. Every other `src/i18n/<tag>.ftl` is found with `import.meta.glob` and is its own script file, loaded only when that language is chosen. A new file is a new language, with no code change (ML-2). The file name is the language tag in canonical form (`new Intl.Locale(name).toString()` equals the name, not `und`). A catalog test checks this.
+- **Bundles.** One `FluentBundle` for English and one for the active language, both made with `useIsolating: false`. The Hub has no right-to-left language yet, and the isolation marks would sit in every copied amount. The backlog records that they must come back with Urdu.
+- **`t(id, args)`.** The English bundle is built when the module loads, so `t()` works in unit tests and before `initLanguage()` ends. It reads the active bundle, then English. It never throws. For an id that English lacks, it returns the id and calls `console.error`. Codes, ids and years are passed as strings, because Fluent groups the digits of a number argument. Fluent removes a space at the start or end of a message, so a label is followed by its value through `labelled()` in `dom.ts`, and a separator that keeps its spaces is written `{ " - " }`. An id kept in a table is a `messageId("…")` in a `Map` and is read with `lookupText()`; every other `t()` call has a literal id, and a catalog test checks that by parsing the source.
+- **Format locale.** The catalog tag with region `IN` added when the tag has no region, and Latin digits (`hi-IN-u-nu-latn`). A tag that names a region keeps it (`pt-BR-u-nu-latn`). This meets ML-4 in every browser, for example an `en-US` one.
+- **Formats** (`src/i18n/format.ts`). `formatNumber`, `formatDateTime` (local time with the zone name), `formatTime`, `formatUtcDate`, `formatAge` (`Intl.RelativeTimeFormat`), and `timeElement`. `formatMinor` stays the one place for money: it builds the exact decimal string from the minor units and gives it to `Intl.NumberFormat` with `style: "currency"`. A code that `Intl` rejects is shown as `<amount> <code>`. On a card, a time that ends a row is a `<time datetime>` element, whose `datetime` the Hub computes from a number. A time inside a sentence is a `$date` variable of one whole message, so a translator can move it.
+- **Language choice.** `pickLanguage(stored, preferred, available)`: the stored choice, else the first `navigator.languages` entry whose language and script match a catalog, else English. A failed catalog load keeps English and draws the Hub; `lang` changes only after the load works. The choice is the `localStorage` key `roym-hub-language`. The language list is in the session bar. A choice is saved and the page reloads. When the browser does not keep the choice, the Hub does not reload and shows a one-line note beside the list.
+- **Errors.** `errText()` picks the catalog message by JSON-RPC code (a `Map` of ids). The service's own English text is the `$detail` variable: an English message is often just `{ $detail }`, and a Hindi message is a Hindi sentence that ends with `विवरण: { $detail }`. An HTTP failure keeps its status as the code. A `fetch` that fails, or a reply that is not JSON, becomes an `RpcError` with code `0` and its own message.
+- **Hindi text.** An agent writes it. The owner reviews `hi.ftl` before the Hub screens slice merges; a comment at the top of the file says so.
+- **Pinned English.** The 8 booking sentences and 10 group sentences that the Rust crate also holds are one line each in `en.ftl`. The two Rust tests that compared them with the old TypeScript files read `en.ftl` now.
 
 ### B. Language-neutral structure
 
@@ -357,7 +375,7 @@ Considered:
 - **Unicode MessageFormat 2**: the new standard, and partly based on Fluent's ideas. Browser support (`Intl.MessageFormat`) is still a proposal (`unverified` as of this writing). A later move from Fluent to MF2 is a file conversion.
 - **A plain JSON map of id to string**: simplest, but it has no plurals or gender. Every such case would become code in the Hub.
 
-Checked: `@fluent/bundle` 0.19.1 (Apache-2.0, no runtime dependencies) adds 4,205 bytes after `gzip -9` to the Hub JavaScript (31,769 to 35,974 bytes; 11,443 bytes more before `gzip`). The limit was 25 KB after `gzip -9`, so Fluent stays. The built code has no `eval`, `Function(...)` or `new Function`, so it works with the Hub's Content Security Policy (`script-src 'self'`). The 25 KB limit covers the library only. The slice that adds the catalogs reports the total, library and catalogs together, because Hindi text is 3 bytes per character before `gzip`.
+Checked: `@fluent/bundle` 0.19.1 (Apache-2.0, no runtime dependencies) adds 4,205 bytes after `gzip -9` to the Hub JavaScript (31,769 to 35,974 bytes; 11,443 bytes more before `gzip`). The limit was 25 KB after `gzip -9`, so Fluent stays. The built code has no `eval`, `Function(...)` or `new Function`, so it works with the Hub's Content Security Policy (`script-src 'self'`). The 25 KB limit covers the library only. The slice that adds the catalogs reports the total, library and catalogs together, because Hindi text is 3 bytes per character before `gzip`. With the English catalog in the main script and Hindi as its own script file, measured with `gzip -9`: the main script is 31,769 bytes before and 39,819 after (+8,050); the Hindi file is 4,763; together +12,813. The main script has no Hindi letter, and `bundle.tar.gz` holds both script files.
 
 ## Rejected options
 
@@ -408,6 +426,16 @@ Checked: `@fluent/bundle` 0.19.1 (Apache-2.0, no runtime dependencies) adds 4,20
 ## Deviations
 
 - **The language tag type and the search keys live in a new substrate crate, not in `roym_core`.** The chat store and chat search run in the host crate `crates/conversation`, which cannot depend on `roym_core`. Both chat tags and chat search need these parts in the host. So they go into `crates/text_lang` (package `syneroym-text-lang`), which `roym_core`, `data_db` and `crates/conversation` use. `data_db` computes the search key for each declared text field, so a guest sends raw text when it writes and when it queries. Owner decision, 2026-11-05.
+- **The Hub shell moves with the cards.** The first plan moved only the word tables and the cards. The shell (`main.ts`: title, session bar, tab names, sign-in box and card gallery) moves too, so a Hindi Hub shows Hindi above the cards. Owner decision, 2026-11-06.
+- **Card times change too, not only the four `toLocale*` calls.** Nine `toISOString()` calls in four card templates also follow the Hub format. A time that ends a row is a `<time>` element. A time inside a sentence is plain text in one whole message, because a translated sentence cannot hold an element. Owner decision, 2026-11-06.
+- **Fluent isolation is off** (`useIsolating: false`). See the decisions in section A.
+- **A network failure or a reply that is not JSON becomes an `RpcError` with code `0`**, so it has a catalog message. Before, the browser's own English text reached the person.
+- **Different from the plan: `formatAge`.** The first plan gave `1 hour ago` for 3600 seconds. The thresholds are kept from the old `ageWords` (minutes until 90 minutes, hours until 48 hours), so 3600 seconds is `60 minutes ago`. The test uses 7200 seconds.
+- **Different from the plan: dates in `membership.test.ts`.** Four expectations of this test also change, from `2027-01-14` to `14 Jan 2027`, because the membership dates use `formatUtcDate`.
+- **Different from the plan: typing of `Intl.NumberFormat.format`.** TypeScript accepts a `string` only as a `` `${number}` `` template type, so `minorToDecimal` returns that type.
+- **Different from the plan: more exports in `i18n.ts`.** `activateWith` and `initLanguageWith` take the loaders as a parameter, so the tests can add a language and a failing loader without a file. `cached` in `format.ts` is exported for `formatMinor`. `languagePicker` takes the reload function as a parameter, because jsdom cannot replace `location.reload`.
+- **Different from the plan: one message is exempt from the "no unused message" check.** `group-add-unreachable` is a sentence the Rust crate holds. The service sends it as the error text of a `-32602` refusal, so no Hub screen shows it from the catalog. A Hindi user who adds a person who is offline reads the generic `error-invalid-input` sentence, with the English sentence after `विवरण:`. The backlog records this.
+- **Different from the plan: a time that is not a date does not stop a screen.** `formatDateTime`, `formatTime` and `formatAge` give the text `Invalid Date` (`date-invalid`) for a value that is not a date, as `toLocaleString()` printed before, because one such time in a group message must not hide the rest of the thread. This also applies to the two card rows that put a date inside a sentence. `timeElement` and `formatUtcDate` still throw a `RangeError`, as `toISOString()` did.
 
 ## Close-out
 

@@ -14,7 +14,7 @@ pub const GROUP_PROFILE_VERSION: u32 = 1;
 pub const MAX_GROUP_NAME_CHARS: usize = 80;
 pub const TRANSCRIPT_DIGEST_PREFIX: &str = "roym-transcript:";
 
-/// Verbatim copies live in `crates/roym_web/ui/src/groups/words.ts`; a test
+/// Verbatim copies live in `crates/roym_web/ui/src/i18n/en.ftl`; a test
 /// in `group/tests.rs` compares them character for character.
 pub const OWNER_CAN_READ_NOTICE: &str = "The owner of this group makes and shares the group's \
                                          key, so the owner can read every message sent while they \

@@ -1,3 +1,5 @@
+import { t } from "../i18n/i18n";
+
 /// A card whose signature or envelope could not be verified by this node.
 /// Shown so the person knows a card was received, but never rendered as
 /// a valid card or treated as an offer.
@@ -7,20 +9,18 @@ export function renderRefusedCard(type: string, version: number, reason?: string
   card.setAttribute("data-verified", "false");
 
   const title = document.createElement("h3");
-  title.textContent = `Unverified ${type} card (v${version})`;
+  title.textContent = t("card-refused-title", { type, version: String(version) });
   card.appendChild(title);
 
   const desc = document.createElement("p");
   desc.className = "refused-notice";
-  desc.textContent =
-    "This node received a card of this type, but could not verify it. " +
-    "It is shown so you know it was sent, but cannot be accepted or acted upon.";
+  desc.textContent = t("card-refused-notice");
   card.appendChild(desc);
 
   if (reason) {
     const reasonEl = document.createElement("p");
     reasonEl.className = "refused-reason";
-    reasonEl.textContent = `Reason: ${reason}`;
+    reasonEl.textContent = t("card-refused-reason", { reason });
     card.appendChild(reasonEl);
   }
 

@@ -6,6 +6,7 @@ import {
   type SourceOutcome,
 } from "../directory/search";
 import { errText, refiller, text } from "../dom";
+import { t } from "../i18n/i18n";
 import {
   checkedWords,
   ISSUER_CHANGED_CHECK_WORDS,
@@ -13,7 +14,7 @@ import {
   membershipWords,
   type CheckStandingReply,
 } from "../directory/membership";
-import { ageWords } from "../directory/words";
+import { formatAge } from "../i18n/format";
 import { call } from "../rpc";
 
 interface SourceRow {
@@ -269,8 +270,8 @@ function buildSearch(): HTMLElement {
     } catch (err) {
       progress.textContent =
         err instanceof Error
-          ? err.message
-          : `The search failed: ${String(err)}. Press Search to try again.`;
+          ? errText(err)
+          : t("directory-search-failed", { detail: String(err) });
     } finally {
       goBtn.disabled = false;
     }
@@ -315,7 +316,7 @@ function renderHits(host: HTMLElement, hits: MergedHit[], truncated: boolean, ru
       card.appendChild(text("div", `Categories: ${hit.categories.join(", ")}`, "hit-categories"));
     }
     card.appendChild(text("div", `Offered by: ${hit.issuer}`, "hit-issuer"));
-    card.appendChild(text("div", `Signed ${ageWords(hit.age_secs)}`, "hit-age"));
+    card.appendChild(text("div", t("directory-signed-age", { age: formatAge(hit.age_secs) }), "hit-age"));
 
     const evidence = document.createElement("div");
     evidence.className = "hit-evidence";

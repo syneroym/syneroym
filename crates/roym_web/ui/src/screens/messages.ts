@@ -1,4 +1,5 @@
-import { refiller } from "../dom";
+import { errText, refiller } from "../dom";
+import { t } from "../i18n/i18n";
 import { onFeed } from "../events";
 import { call, RpcError } from "../rpc";
 import { whoami } from "../session/login";
@@ -6,7 +7,7 @@ import { renderCard } from "../cards/render";
 import { renderRefusedCard } from "../cards/refused";
 import { toMinorUnits, currencyMinorExponent } from "../money";
 import type { ServiceLocationKind } from "../listings/editor";
-import { SERVICE_LOCATION_EDITOR_LABELS } from "../listings/labels";
+import { serviceLocationEditorLabel } from "../listings/labels";
 import { type SearchMatch, searchHits } from "./message_search";
 
 // These two strings are shown to the person *before* a delete runs, and are
@@ -91,11 +92,6 @@ export interface CardRow {
   version_count?: number;
   agreement_payee?: string;
   agreement_payment_methods?: string[];
-}
-
-function errText(err: unknown): string {
-  if (err instanceof RpcError) return err.message;
-  return err instanceof Error ? err.message : String(err);
 }
 
 /// Every text node here may carry a stranger's bytes -- an address, a
@@ -636,9 +632,9 @@ export function renderCardActions(
           acceptBtn.disabled = false;
           const msg = err instanceof RpcError ? err.message : String(err);
           if (msg.includes("quote-expired") || msg.includes("expired")) {
-            acceptErr.textContent = "This quote has expired. Ask for a new one.";
+            acceptErr.textContent = t("messages-quote-expired");
           } else {
-            acceptErr.textContent = `Could not accept: ${msg}`;
+            acceptErr.textContent = t("messages-accept-failed", { detail: errText(err) });
           }
         }
       };
@@ -741,13 +737,13 @@ export function openQuoteForm(
   whereSelect.className = "quote-where-select";
   const optReceiver = document.createElement("option");
   optReceiver.value = "at-receiver";
-  optReceiver.textContent = SERVICE_LOCATION_EDITOR_LABELS["at-receiver"];
+  optReceiver.textContent = serviceLocationEditorLabel("at-receiver");
   const optGiver = document.createElement("option");
   optGiver.value = "at-giver";
-  optGiver.textContent = SERVICE_LOCATION_EDITOR_LABELS["at-giver"];
+  optGiver.textContent = serviceLocationEditorLabel("at-giver");
   const optRem = document.createElement("option");
   optRem.value = "remote";
-  optRem.textContent = SERVICE_LOCATION_EDITOR_LABELS.remote;
+  optRem.textContent = serviceLocationEditorLabel("remote");
   whereSelect.append(optReceiver, optGiver, optRem);
 
   const addressWrap = document.createElement("div");
