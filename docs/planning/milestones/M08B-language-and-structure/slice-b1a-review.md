@@ -685,7 +685,7 @@ prompt lists one change doc,
 [roym-multilingual](../../changes/roym-multilingual/change.md). Every B1a
 decision and deviation belongs there, and that is where they are written.
 
-**Summary:** 0 blocker, 1 major, 6 minor. 7 items: 6 Fixed, 1 Fixed in part (R7).
+**Summary:** 0 blocker, 1 major, 6 minor. 7 items: 6 Fixed, 1 Fixed in part (R7). Code review round 2: all 7 confirmed fixed (R7 status set to Fixed there); 0 open.
 
 ### What was checked and found correct
 
@@ -943,4 +943,82 @@ decision and deviation belongs there, and that is where they are written.
   no `--skip` as a background job. Write the summary line, with the
   `hub-ui` gate's time, in the B1a row of status.md, and change "CI runs
   it" to the result.
-- *Status:* Fixed in part (96cd887b is the last commit before the run). The `hub-ui` gate ran inside the runner: `cargo xtask verify` with every other gate skipped gave `✓ hub-ui (5s)` and "All 1 gates passed" (log `target/gates/hub-ui.log`: 27 files, 230 tests). The quick gates fmt, file-lengths, change-docs, duplication and planning-refs also passed through the runner. The full `mise run verify` was not run, because this fix session's rules forbid it; status.md says so.
+- *Status:* Fixed (96cd887b). Code review round 2 changed "Fixed in part" to Fixed: see round 2 below. Fix session note: (96cd887b is the last commit before the run). The `hub-ui` gate ran inside the runner: `cargo xtask verify` with every other gate skipped gave `✓ hub-ui (5s)` and "All 1 gates passed" (log `target/gates/hub-ui.log`: 27 files, 230 tests). The quick gates fmt, file-lengths, change-docs, duplication and planning-refs also passed through the runner. The full `mise run verify` was not run, because this fix session's rules forbid it; status.md says so.
+
+## Code review round 2 — Claude Opus 5.5, 2026-11-06
+
+Checked the round 1 fix commits `2befd1b8`, `97e04d14`, `0614ab55`,
+`485d19e7`, `96cd887b` and `ebd1ece8` on
+`feat/m08b-b1a-localization-mechanism` at `ebd1ece8`, in the main checkout.
+The fix commits change only the Hub UI (`crates/roym_web/ui/src`), the
+change doc, the backlog and this file. No Rust code changes.
+
+**Summary:** R1 to R7 confirmed fixed. No new items: 0 blocker, 0 major,
+0 minor. **0 open.**
+
+**Evidence.** `npm test` here: 27 files, 230 tests passed. `eslint` on the
+three changed source files and `tsc --noEmit` are clean.
+`cargo nextest run -p syneroym-roym-core the_ui_wording notice_constants`:
+2 passed (the fix moved a line in `en.ftl`, which these tests read).
+`gh pr checks 349` on `ebd1ece8` (run 42182543320) when this round was
+written: Lints, licenses & checks, Playwright E2E, Test 1/6, 2/6, 5/6, 6/6
+and CLA pass; Test 3/6 and 4/6 still running; Benchmarks and Code Coverage
+skip. The fix commits touch no Rust code, so the two running shards test
+the same Rust code that passed on `92c7d11d`. Check that they pass before
+the merge.
+
+### Round 1 items
+
+- **R1 — confirmed fixed (`97e04d14`, `96cd887b`).** `validDate` in
+  `format.ts` checks `Number.isFinite(date.getTime())`; `formatDateTime`
+  and `formatTime` return `t("date-invalid")` (`Invalid Date`, the old
+  `toLocale*` text) for an invalid date, and `formatAge` does the same for
+  a non-finite age, before any `Intl` call. `timeElement` still calls
+  `toISOString()` first, so a kind 1 card row throws as before;
+  `formatUtcDate` still throws, as `dateWords` did. The new `groups.test.ts`
+  case draws three rows with `-9223372036854775808` in the middle, which is
+  the failure case of R1. The two kind 2 card rows now show the
+  invalid-date text instead of throwing; this is recorded in the change
+  doc's Deviations, as the fix asked.
+- **R2 — confirmed fixed (`2befd1b8`).** `src/i18n/probe.ts` is gone;
+  nothing referred to it.
+- **R3 — confirmed fixed (`485d19e7`, `96cd887b`).**
+  `group-session-ended-notice` is under "Group lines" in `en.ftl` and after
+  the pinned block in `hi.ftl`. The change doc says "10 group sentences",
+  which matches the 10 `assert!` lines of
+  `notice_constants_match_hub_ui_verbatim`.
+- **R4 — confirmed fixed (`0614ab55`).** The Hindi block compares each of
+  15 codes with `t(<expected id>, …)` from a table written in the test, so
+  a swapped row or a row that falls to `error-service` fails. The check
+  that the 11 named codes give 11 different texts covers the case where
+  two Hindi messages are equal by mistake. The `t(id, …)` call with a
+  variable is in a test file, which the source scan skips.
+- **R5 — confirmed fixed (`96cd887b`).** The §10 backlog row has the four
+  columns, a target (TBD) and a link to `ERROR_MESSAGES`. The deviation now
+  says what a Hindi user sees. Leaving the optional code change out is
+  right: it was optional.
+- **R6 — confirmed fixed (`485d19e7`).** The four literals are catalog
+  messages with the value as a variable; the English output is
+  byte-for-byte the same (`Signed …`, `expires …`, `until …`, `until
+  lifted`). Both Hindi search messages now name the button `"Search"`, as
+  it is drawn.
+- **R7 — confirmed fixed (`96cd887b`).** R7's failure case was a gate entry
+  that had never run inside the runner. It has now run there (`✓ hub-ui
+  (5s)`, 230 tests). The fix session did not run the full `mise run
+  verify`, because the code fix template tells it not to
+  ([prompt-templates.md:500](../../prompt-templates.md#L500), template T6); the slice
+  close step runs it ([:574](../../prompt-templates.md#L574), template T7). So the rest is
+  planned work, not an open defect, and I set the status to Fixed. One
+  note, not a finding: the fix note says "status.md says so", but the fix
+  commits did not change status.md, and the B1a row still said "CI runs
+  it". I changed that phrase while setting the row for this round.
+
+### Other checks on the fix commits
+
+- The new messages (`date-invalid`, `directory-signed-age`,
+  `synorg-credential-expires`, `synorg-until`, `synorg-until-lifted`) are
+  in both `.ftl` files with the same variables, and each `t()` call has a
+  literal id (the catalog tests pass).
+- `directory.ts` and `synorg_members.ts` change only the lines named in R6.
+- No planning id in an added `.ts` or `.ftl` line. The new comments say why
+  (`validDate`: a time from another node must not stop a screen).
