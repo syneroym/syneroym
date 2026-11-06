@@ -2,7 +2,8 @@ import "./boot-csp";
 import { renderCard } from "./cards/render";
 import { renderRefusedCard } from "./cards/refused";
 import { errText, text } from "./dom";
-import { t } from "./i18n/i18n";
+import { initLanguage, t } from "./i18n/i18n";
+import { languagePicker } from "./i18n/picker";
 import { startFeed } from "./events";
 import { renderBackup } from "./screens/backup";
 import { renderContacts } from "./screens/contacts";
@@ -72,11 +73,16 @@ window.RoymMessages = {
 };
 
 async function main() {
+  // First, so everything below is drawn in the Hub language. It never
+  // rejects: a catalog that cannot load leaves the Hub in English.
+  await initLanguage();
+  document.title = t("hub-title");
+
   const app = document.getElementById("app");
   if (!app) return;
 
   const title = document.createElement("h1");
-  title.textContent = "Roym Hub";
+  title.textContent = t("hub-title");
   app.appendChild(title);
 
   const sessionBar = document.createElement("div");
@@ -94,17 +100,18 @@ async function main() {
   const did = whoamiData?.person_did;
   if (did) {
     const didSpan = document.createElement("span");
-    didSpan.textContent = `Logged in: ${did} (${whoamiData?.auth || "delegated"})`;
+    didSpan.textContent = t("session-logged-in", { did, auth: whoamiData?.auth || "delegated" });
     sessionBar.appendChild(didSpan);
 
     const logoutBtn = document.createElement("button");
     logoutBtn.className = "button";
-    logoutBtn.textContent = "Log out";
+    logoutBtn.textContent = t("session-logout");
     logoutBtn.onclick = async () => {
       await logout();
       window.location.reload();
     };
     sessionBar.appendChild(logoutBtn);
+    sessionBar.appendChild(languagePicker());
 
     const pending = await pendingEnrolment();
     if (pending.length === 0) {
@@ -114,8 +121,9 @@ async function main() {
     }
   } else {
     const anonSpan = document.createElement("span");
-    anonSpan.textContent = "Not logged in";
+    anonSpan.textContent = t("session-anonymous");
     sessionBar.appendChild(anonSpan);
+    sessionBar.appendChild(languagePicker());
     await renderLogin(contentArea);
   }
 }
@@ -147,22 +155,22 @@ async function renderTabs(container: HTMLElement, did: string) {
     try {
       await render(host);
     } catch (err) {
-      host.appendChild(text("p", `Could not load this tab: ${errText(err)}`, "tab-error"));
+      host.appendChild(text("p", t("tab-error", { detail: errText(err) }), "tab-error"));
     }
   };
 
   const tabs: Array<[name: string, render: (host: HTMLElement) => Promise<void>]> = [
-    ["Profile", renderProfile],
-    ["Contacts", renderContacts],
-    ["Messages", renderMessages],
-    ["Groups", renderGroups],
-    ["Listings", renderListings],
-    ["Directory", renderDirectory],
-    ["Memberships", renderMemberships],
-    ["SynOrg", renderSynOrg],
-    ["Safety", renderSafety],
-    ["Backup", renderBackup],
-    ["Components", (host) => renderHome(host, did)],
+    [t("tab-profile"), renderProfile],
+    [t("tab-contacts"), renderContacts],
+    [t("tab-messages"), renderMessages],
+    [t("tab-groups"), renderGroups],
+    [t("tab-listings"), renderListings],
+    [t("tab-directory"), renderDirectory],
+    [t("tab-memberships"), renderMemberships],
+    [t("tab-synorg"), renderSynOrg],
+    [t("tab-safety"), renderSafety],
+    [t("tab-backup"), renderBackup],
+    [t("tab-components"), (host) => renderHome(host, did)],
   ];
 
   for (const [name, render] of tabs) {
@@ -183,7 +191,7 @@ async function renderLogin(container: HTMLElement) {
   const box = document.createElement("div");
   box.className = "login-picker";
   const heading = document.createElement("h2");
-  heading.textContent = "Sign in";
+  heading.textContent = t("login-title");
   box.appendChild(heading);
 
   const status = document.createElement("p");
@@ -196,40 +204,37 @@ async function renderLogin(container: HTMLElement) {
   try {
     methods = (await fetchMethods()).methods;
   } catch {
-    setStatus("Could not reach the auth service on this node.");
+    setStatus(t("login-auth-unreachable"));
     box.appendChild(status);
     container.appendChild(box);
     return;
   }
 
   if (!methods.includes("delegated-key")) {
-    setStatus("This node has no browser login method enabled.");
+    setStatus(t("login-no-method"));
     box.appendChild(status);
     container.appendChild(box);
     return;
   }
 
   const intro = document.createElement("p");
-  intro.textContent =
-    "Load a session key file produced by " +
-    "`roymctl session delegate --as <name> --registry-url <registry>`. " +
-    "The key stays in this browser and cannot be read back by page code.";
+  intro.textContent = t("login-intro");
   box.appendChild(intro);
 
   // Re-use a delegated key already held in this browser, if any.
   if (await hasStoredKey()) {
     const reuseBtn = document.createElement("button");
     reuseBtn.className = "button";
-    reuseBtn.textContent = "Sign in with this browser's key";
+    reuseBtn.textContent = t("login-with-stored");
     reuseBtn.onclick = async () => {
       reuseBtn.disabled = true;
-      setStatus("Signing in...");
+      setStatus(t("login-signing-in"));
       try {
         if (await loginWithStoredKey()) {
           window.location.reload();
           return;
         }
-        setStatus("The stored key is gone; load a session key file.");
+        setStatus(t("login-stored-gone"));
       } catch (e) {
         setStatus(t("login-failed", { detail: errText(e) }));
       }
@@ -240,7 +245,7 @@ async function renderLogin(container: HTMLElement) {
 
   const fileLabel = document.createElement("label");
   fileLabel.className = "button file-button";
-  fileLabel.textContent = "Load session key file";
+  fileLabel.textContent = t("login-load-file");
   const fileInput = document.createElement("input");
   fileInput.type = "file";
   fileInput.accept = "application/json,.json";
@@ -248,7 +253,7 @@ async function renderLogin(container: HTMLElement) {
   fileInput.onchange = async () => {
     const file = fileInput.files?.[0];
     if (!file) return;
-    setStatus("Signing in...");
+    setStatus(t("login-signing-in"));
     try {
       const bundle = JSON.parse(await file.text()) as SessionKeyBundle;
       await loginWithBundle(bundle);
@@ -270,16 +275,16 @@ async function renderHome(container: HTMLElement, did: string) {
 
   const homeSection = document.createElement("div");
   const h2 = document.createElement("h2");
-  h2.textContent = "Roym Hub Home";
+  h2.textContent = t("gallery-home-title");
   homeSection.appendChild(h2);
 
   const didP = document.createElement("p");
-  didP.textContent = `Authenticated DID: ${did}`;
+  didP.textContent = t("gallery-did", { did });
   homeSection.appendChild(didP);
 
   // Ping profile service via POST /rpc
   const rpcP = document.createElement("p");
-  rpcP.textContent = "Contacting profile service...";
+  rpcP.textContent = t("gallery-contacting");
   homeSection.appendChild(rpcP);
 
   try {
@@ -295,19 +300,19 @@ async function renderHome(container: HTMLElement, did: string) {
     });
     if (rpcRes.ok) {
       const rpcJson = await rpcRes.json();
-      rpcP.textContent = `Profile ping response: ${JSON.stringify(rpcJson)}`;
+      rpcP.textContent = t("gallery-ping-response", { response: JSON.stringify(rpcJson) });
     } else {
-      rpcP.textContent = `Profile ping failed: HTTP ${rpcRes.status}`;
+      rpcP.textContent = t("gallery-ping-failed", { status: String(rpcRes.status) });
     }
   } catch (e) {
-    rpcP.textContent = `Profile ping error: ${e}`;
+    rpcP.textContent = t("gallery-ping-error", { error: String(e) });
   }
 
   // Card gallery section
   const gallerySection = document.createElement("div");
   gallerySection.style.marginTop = "24px";
   const galleryH3 = document.createElement("h3");
-  galleryH3.textContent = "Card Gallery (Sample Cards)";
+  galleryH3.textContent = t("gallery-heading");
   gallerySection.appendChild(galleryH3);
 
   const samples = [

@@ -14,6 +14,12 @@ body {
   justify-content: space-between;
   align-items: center;
 }
+.language-picker {
+  margin-left: 12px;
+}
+.language-note {
+  margin-left: 8px;
+}
 .card {
   background: white;
   border: 1px solid #cbd5e1;

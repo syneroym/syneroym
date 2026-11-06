@@ -102,6 +102,24 @@ describe("the ids the source uses", () => {
   });
 });
 
+describe("the English file", () => {
+  /// Held in the Rust crate too and checked against this file there, but
+  /// no Hub screen shows it: the service sends it as the error text.
+  const KEPT_FOR_RUST = ["group-add-unreachable"];
+
+  it("has no message that nothing uses", () => {
+    const used = new Set(
+      Object.entries(sources)
+        .filter(([path]) => !path.endsWith(".test.ts"))
+        .flatMap(([path, source]) => findMessageIds(source, path).ids),
+    );
+    const unused = [...variablesById(english).keys()].filter(
+      (id) => !used.has(id) && !KEPT_FOR_RUST.includes(id),
+    );
+    expect(unused).toEqual([]);
+  });
+});
+
 describe("findMessageIds", () => {
   it("ignores a call inside a comment", () => {
     expect(findMessageIds('// t("x")\n/* t("y") */').ids).toEqual([]);
