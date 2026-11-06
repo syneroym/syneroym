@@ -90,7 +90,7 @@ export function renderSessionEnded(container: HTMLElement) {
   const box = document.createElement("div");
   box.className = "session-ended-box";
   box.appendChild(text("p", t("group-session-ended-notice"), "session-ended-notice"));
-  const btn = text("button", "Log in again", "button tab-button") as HTMLButtonElement;
+  const btn = text("button", t("group-login-again"), "button tab-button") as HTMLButtonElement;
   btn.onclick = () => window.location.reload();
   box.appendChild(btn);
   container.appendChild(box);
@@ -106,7 +106,7 @@ export function renderMessageRow(
   row.className = `message-row message-${msg.direction}`;
   if (msg.deleted_at_secs) {
     row.classList.add("message-deleted");
-    row.appendChild(text("span", "This message was deleted.", "deleted-notice"));
+    row.appendChild(text("span", t("group-message-deleted"), "deleted-notice"));
     return row;
   }
   const authorName = nameOf(msg.author);
@@ -121,14 +121,14 @@ export function renderMessageRow(
   if (msg.direction === "outgoing") {
     meta.appendChild(text("span", deliveryWords(msg.state), `message-status status-${msg.state}`));
     if (msg.state === "failed" && onRetry) {
-      const retryBtn = text("button", "Retry", "button-small retry-button") as HTMLButtonElement;
+      const retryBtn = text("button", t("group-retry-button"), "button-small retry-button") as HTMLButtonElement;
       retryBtn.onclick = () => onRetry(msg);
       meta.appendChild(retryBtn);
     }
   }
 
   if (onDelete) {
-    const delBtn = text("button", "Delete", "button-small delete-button") as HTMLButtonElement;
+    const delBtn = text("button", t("group-delete-button"), "button-small delete-button") as HTMLButtonElement;
     delBtn.onclick = () => onDelete(msg.id);
     meta.appendChild(delBtn);
   }
@@ -167,7 +167,9 @@ export function renderThreadMessages(
       if (name && name !== lastProfileName) {
         lastProfileName = name;
         const authorName = nameOf(m.author);
-        threadList.appendChild(text("div", `${authorName} named the group “${name}”`, "group-event-line"));
+        threadList.appendChild(
+          text("div", t("group-profile-named", { author: authorName, name }), "group-event-line"),
+        );
       }
       continue;
     }
@@ -204,9 +206,9 @@ export async function renderGroups(container: HTMLElement) {
   newGroupBox.className = "new-group-box";
   const nameInput = document.createElement("input");
   nameInput.type = "text";
-  nameInput.placeholder = "Group name";
+  nameInput.placeholder = t("group-name-placeholder");
   nameInput.className = "input";
-  const createBtn = text("button", "New group", "button") as HTMLButtonElement;
+  const createBtn = text("button", t("group-new-button"), "button") as HTMLButtonElement;
   const createErr = document.createElement("div");
   createErr.className = "error-text";
 
@@ -226,7 +228,7 @@ export async function renderGroups(container: HTMLElement) {
     }
   };
 
-  newGroupBox.append(field("Group Name", nameInput), createBtn, createErr);
+  newGroupBox.append(field(t("group-name-label"), nameInput), createBtn, createErr);
   leftPane.appendChild(newGroupBox);
 
   const groupItems = document.createElement("div");
@@ -237,7 +239,7 @@ export async function renderGroups(container: HTMLElement) {
   const hiddenBox = document.createElement("details");
   hiddenBox.className = "hidden-groups-box";
   const hiddenSummary = document.createElement("summary");
-  hiddenSummary.textContent = "Hidden groups (0)";
+  hiddenSummary.textContent = t("group-hidden-summary", { count: 0 });
   const hiddenItems = document.createElement("div");
   hiddenItems.className = "hidden-items";
   hiddenBox.append(hiddenSummary, hiddenItems);
@@ -261,19 +263,21 @@ export async function renderGroups(container: HTMLElement) {
         allRows = hiddenRes.conversations || [];
       } catch (err) {
         if (err instanceof RpcError && err.type === "NotSignedIn") return "signed-out";
-        into.appendChild(text("p", `Could not load: ${errText(err)}`));
+        into.appendChild(text("p", t("common-load-failed", { detail: errText(err) })));
         return "failed";
       }
       if (rows.length === 0) {
-        into.appendChild(text("p", "No groups yet.", "conversations-empty"));
+        into.appendChild(text("p", t("group-list-empty"), "conversations-empty"));
       }
       for (const r of rows) {
         const row = document.createElement("div");
         row.className = "conversation-item";
         if (r.id === selectedId) row.classList.add("selected");
-        const label = r.group?.name || "Unnamed group";
+        const label = r.group?.name || t("group-unnamed");
         row.appendChild(text("div", label, "peer-label"));
-        row.appendChild(text("div", `${r.message_count} messages`, "count-label"));
+        row.appendChild(
+          text("div", t("group-message-count", { count: r.message_count }), "count-label"),
+        );
         row.onclick = () => {
           groupItems.querySelectorAll(".conversation-item").forEach((el) => el.classList.remove("selected"));
           row.classList.add("selected");
@@ -299,13 +303,13 @@ export async function renderGroups(container: HTMLElement) {
     const hiddenList = allRows.filter(
       (r) => r.group?.admission?.state === "hidden" || r.group?.admission?.state === "refused",
     );
-    hiddenSummary.textContent = `Hidden groups (${hiddenList.length})`;
+    hiddenSummary.textContent = t("group-hidden-summary", { count: hiddenList.length });
     for (const h of hiddenList) {
       const hRow = document.createElement("div");
       hRow.className = "hidden-item";
-      const hLabel = h.group?.name || "Unnamed group";
+      const hLabel = h.group?.name || t("group-unnamed");
       hRow.appendChild(text("span", hLabel, "peer-label"));
-      const unhideBtn = text("button", "Unhide", "button-small") as HTMLButtonElement;
+      const unhideBtn = text("button", t("group-unhide-button"), "button-small") as HTMLButtonElement;
       unhideBtn.onclick = async () => {
         try {
           await call("group.unhide", { conversation: h.id });
@@ -350,7 +354,7 @@ export async function renderGroups(container: HTMLElement) {
         renderSessionEnded(container);
         return;
       }
-      rightPane.appendChild(text("p", `Could not load group: ${errText(err)}`));
+      rightPane.appendChild(text("p", t("group-load-failed", { detail: errText(err) })));
       return;
     }
 
@@ -408,9 +412,9 @@ export async function renderGroups(container: HTMLElement) {
     } else {
       const sendInput = document.createElement("input");
       sendInput.type = "text";
-      sendInput.placeholder = "Write a message...";
+      sendInput.placeholder = t("group-compose-placeholder");
       sendInput.className = "input";
-      const sendBtn = text("button", "Send", "button") as HTMLButtonElement;
+      const sendBtn = text("button", t("group-send-button"), "button") as HTMLButtonElement;
       const sendErr = document.createElement("div");
       sendErr.className = "error-text composer-error";
 
@@ -443,7 +447,7 @@ export async function renderGroups(container: HTMLElement) {
     const infoPanel = document.createElement("div");
     infoPanel.className = "group-info-panel";
 
-    const titleText = info.name || "Unnamed group";
+    const titleText = info.name || t("group-unnamed");
     infoPanel.appendChild(text("h3", titleText, "group-title"));
 
     if (info.is_owner) {
@@ -451,10 +455,10 @@ export async function renderGroups(container: HTMLElement) {
       renameBox.className = "rename-box";
       const rInput = document.createElement("input");
       rInput.type = "text";
-      rInput.placeholder = "New name";
+      rInput.placeholder = t("group-rename-placeholder");
       rInput.value = info.name || "";
       rInput.className = "input";
-      const rBtn = text("button", "Rename", "button-small") as HTMLButtonElement;
+      const rBtn = text("button", t("group-rename-button"), "button-small") as HTMLButtonElement;
       const rErr = document.createElement("div");
       rErr.className = "error-text";
       rBtn.onclick = async () => {
@@ -476,14 +480,20 @@ export async function renderGroups(container: HTMLElement) {
 
     const ownerDisplay = nameOf(info.owner_address);
     infoPanel.appendChild(
-      text("div", `Owner: ${ownerDisplay}${info.is_owner ? " (you)" : ""}`, "group-owner"),
+      text(
+        "div",
+        info.is_owner
+          ? t("group-owner-line-you", { owner: ownerDisplay })
+          : t("group-owner-line", { owner: ownerDisplay }),
+        "group-owner",
+      ),
     );
     infoPanel.appendChild(text("p", t("group-owner-can-read-notice"), "owner-can-read-notice"));
 
     // Members list
     const membersBox = document.createElement("div");
     membersBox.className = "members-box";
-    membersBox.appendChild(text("h4", `Members (${info.members.length})`));
+    membersBox.appendChild(text("h4", t("group-members-heading", { count: info.members.length })));
     const membersList = document.createElement("ul");
     membersList.className = "members-list";
 
@@ -493,10 +503,13 @@ export async function renderGroups(container: HTMLElement) {
         (m.person_did && contactMap.get(m.person_did)) || m.person_did || shortAddress(m.address);
       li.appendChild(text("span", mLabel, "member-name"));
       if (m.is_owner) {
-        li.appendChild(text("span", " (owner)", "member-badge"));
+        const badge = text("span", "", "member-badge");
+        // Fluent drops a space at the start of a message, so it is added here.
+        badge.append(" ", t("group-owner-badge"));
+        li.appendChild(badge);
       }
       if (info.is_owner && !m.is_owner) {
-        const remBtn = text("button", "Remove", "button-small") as HTMLButtonElement;
+        const remBtn = text("button", t("common-remove"), "button-small") as HTMLButtonElement;
         remBtn.onclick = async () => {
           try {
             await call("group.remove-member", { conversation: gid, address: m.address });
@@ -520,9 +533,9 @@ export async function renderGroups(container: HTMLElement) {
       addBox.className = "add-member-box";
       const addInput = document.createElement("input");
       addInput.type = "text";
-      addInput.placeholder = "Address or Person DID";
+      addInput.placeholder = t("group-address-placeholder");
       addInput.className = "input";
-      const addBtn = text("button", "Add member", "button-small") as HTMLButtonElement;
+      const addBtn = text("button", t("group-add-member-button"), "button-small") as HTMLButtonElement;
       const addErr = document.createElement("div");
       addErr.className = "error-text";
       addBtn.onclick = async () => {
@@ -554,7 +567,11 @@ export async function renderGroups(container: HTMLElement) {
     if (!info.restored_only && info.key_stored_at_ms > 0) {
       const dateStr = formatDateTime(info.key_stored_at_ms / 1000);
       infoPanel.appendChild(
-        text("div", `Group key changed here: ${dateStr} (epoch ${info.key_epoch})`, "key-changed-date"),
+        text(
+          "div",
+          t("group-key-changed", { date: dateStr, epoch: String(info.key_epoch) }),
+          "key-changed-date",
+        ),
       );
     }
     infoPanel.appendChild(text("p", t("group-key-trust-notice"), "group-key-trust-notice"));
@@ -562,13 +579,13 @@ export async function renderGroups(container: HTMLElement) {
 
     // Transcript check
     const shortDigest = digestStr.length >= 12 ? digestStr.slice(0, 12) : digestStr;
-    infoPanel.appendChild(text("div", `Transcript check: ${shortDigest}`, "transcript-check-code"));
+    infoPanel.appendChild(text("div", t("group-transcript-check", { digest: shortDigest }), "transcript-check-code"));
     infoPanel.appendChild(text("p", t("group-transcript-check-notice"), "transcript-check-notice"));
 
     // Actions
     const actionBox = document.createElement("div");
     actionBox.className = "group-actions";
-    const syncBtn = text("button", "Sync now", "button-small") as HTMLButtonElement;
+    const syncBtn = text("button", t("group-sync-button"), "button-small") as HTMLButtonElement;
     syncBtn.onclick = async () => {
       try {
         await call("group.sync", { conversation: gid });
@@ -582,7 +599,7 @@ export async function renderGroups(container: HTMLElement) {
       }
     };
 
-    const hideBtn = text("button", "Hide this group", "button-small") as HTMLButtonElement;
+    const hideBtn = text("button", t("group-hide-button"), "button-small") as HTMLButtonElement;
     hideBtn.onclick = async () => {
       if (window.confirm(t("group-hidden-notice"))) {
         try {

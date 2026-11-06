@@ -19,7 +19,6 @@ const sources = Object.fromEntries(
 const NOT_MOVED_YET: string[] = [
   "../directory/membership.ts",
   "../screens/directory.ts",
-  "../screens/groups.ts",
   "../screens/memberships.ts",
   "../screens/synorg.ts",
   "../screens/synorg_members.ts",

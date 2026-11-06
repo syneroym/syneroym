@@ -499,3 +499,34 @@ messages-delete-note-received = स्थानीय प्रति हटा 
 messages-delete-ask-peer = उनसे भी अपनी प्रति हटाने को कहें
 messages-delete-confirm = यह प्रति हटाएँ
 messages-delete-failed = हटाया नहीं जा सका: { $detail }
+
+## Groups
+
+group-login-again = फिर से लॉग इन करें
+group-message-deleted = यह संदेश हटा दिया गया था।
+group-retry-button = फिर भेजें
+group-delete-button = हटाएँ
+group-profile-named = { $author } ने समूह का नाम “{ $name }” रखा
+group-name-placeholder = समूह का नाम
+group-new-button = नया समूह
+group-name-label = समूह का नाम
+group-hidden-summary = छिपाए हुए समूह ({ $count })
+group-list-empty = अभी कोई समूह नहीं है।
+group-unnamed = बिना नाम का समूह
+group-message-count = { $count } संदेश
+group-unhide-button = फिर दिखाएँ
+group-load-failed = समूह लोड नहीं हो सका: { $detail }
+group-compose-placeholder = संदेश लिखें...
+group-send-button = भेजें
+group-rename-placeholder = नया नाम
+group-rename-button = नाम बदलें
+group-owner-line = मालिक: { $owner }
+group-owner-line-you = मालिक: { $owner } (आप)
+group-members-heading = सदस्य ({ $count })
+group-owner-badge = (मालिक)
+group-address-placeholder = पता या व्यक्ति का DID
+group-add-member-button = सदस्य जोड़ें
+group-key-changed = समूह की कुंजी यहाँ बदली: { $date } (चरण { $epoch })
+group-transcript-check = संदेश-सूची जाँच: { $digest }
+group-sync-button = अभी सिंक करें
+group-hide-button = इस समूह को छिपाएँ

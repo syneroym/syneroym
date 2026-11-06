@@ -510,3 +510,34 @@ messages-delete-note-received = The local copy is removed and a deletion record 
 messages-delete-ask-peer = Also ask them to delete their copy
 messages-delete-confirm = Delete this copy
 messages-delete-failed = Delete failed: { $detail }
+
+## Groups
+
+group-login-again = Log in again
+group-message-deleted = This message was deleted.
+group-retry-button = Retry
+group-delete-button = Delete
+group-profile-named = { $author } named the group “{ $name }”
+group-name-placeholder = Group name
+group-new-button = New group
+group-name-label = Group Name
+group-hidden-summary = Hidden groups ({ $count })
+group-list-empty = No groups yet.
+group-unnamed = Unnamed group
+group-message-count = { $count } messages
+group-unhide-button = Unhide
+group-load-failed = Could not load group: { $detail }
+group-compose-placeholder = Write a message...
+group-send-button = Send
+group-rename-placeholder = New name
+group-rename-button = Rename
+group-owner-line = Owner: { $owner }
+group-owner-line-you = Owner: { $owner } (you)
+group-members-heading = Members ({ $count })
+group-owner-badge = (owner)
+group-address-placeholder = Address or Person DID
+group-add-member-button = Add member
+group-key-changed = Group key changed here: { $date } (epoch { $epoch })
+group-transcript-check = Transcript check: { $digest }
+group-sync-button = Sync now
+group-hide-button = Hide this group
