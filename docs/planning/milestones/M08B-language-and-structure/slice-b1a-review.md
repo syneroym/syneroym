@@ -658,3 +658,20 @@ this review file and `status.md`, so no code changed.
   literal id at the call site, `dom.ts` needs no exception, and the scan counts
   the id. Change rule 1, the kind 1 text and Step 5 item 1 to match.
 - *Status:* Fixed (78069aca). Now in: D-B1a-3 rule 1 (`labelled(parent, label: string, …)`, caller writes `t("…-label")`); D-B1a-5 kind 1 rows; Step 5 item 1.
+
+## Plan review round 4 — Claude Sonnet 5.5 (Claude Code desktop), 2026-11-06
+
+Checked at `f9b5549a`, in the main checkout. The fix commit `78069aca`
+changes only the plan, this review file and `status.md`.
+
+**Summary:** P15 is confirmed fixed. No new items: 0 blocker, 0 major,
+0 minor. **0 open.**
+
+- **P15 — confirmed fixed (`78069aca`).** `labelled(parent, label: string,
+  ...nodes)` now takes the translated text. All four places agree: D-B1a-3
+  rule 1, the kind 1 text in D-B1a-5, Step 5 item 1, and the status line. A
+  search for `labelId` finds nothing. Every `t()` call in the plan has a
+  literal id at the call site, so the scan counts the label ids and `dom.ts`
+  needs no exception.
+- **Whole plan again.** The round 3 edit touches only the helper's signature
+  and its callers in the text, so nothing else in the plan depends on it.
