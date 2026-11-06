@@ -610,7 +610,7 @@ checkout (not a worktree). The fix commit `96e0120e` changes only the plan,
 this review file and `status.md`, so no code changed.
 
 **Summary:** P13 and P14 are confirmed fixed. 1 new item, minor: 0 blocker,
-0 major, 1 minor. **1 open (P15).**
+0 major, 1 minor. **1 open (P15).** Fixed in `78069aca`; 0 open.
 
 ### Round 2 items — confirmed
 
@@ -657,4 +657,4 @@ this review file and `status.md`, so no code changed.
   `labelled(row, t("terms-schedule-label"), …)`. Every `t()` call then has a
   literal id at the call site, `dom.ts` needs no exception, and the scan counts
   the id. Change rule 1, the kind 1 text and Step 5 item 1 to match.
-- *Status:* Open.
+- *Status:* Fixed (78069aca). Now in: D-B1a-3 rule 1 (`labelled(parent, label: string, …)`, caller writes `t("…-label")`); D-B1a-5 kind 1 rows; Step 5 item 1.
