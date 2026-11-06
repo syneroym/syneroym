@@ -130,6 +130,8 @@ Change doc: roym-multilingual.
 
 Change doc: roym-multilingual.
 
+**B1a result:** done on the branch `feat/m08b-b1a-localization-mechanism`. Size with `gzip -9`: the main Hub script grew from 31,769 to 39,687 bytes (+7,918, library and English catalog), and the Hindi catalog is its own script file of 4,674 bytes (+12,592 in all). The new `hub-ui` gate of `mise run verify` (`mise run test:roym-ui`) took about 26 seconds with a warm npm cache (`npm ci` and 226 tests in 27 files).
+
 ### B1b — Hub localisation: every screen string and the build check (M)
 
 - Move every remaining visible string (section 2: about 420 places in all) into the `en` and `hi` catalogs. English text stays the same, so the e2e steps that find buttons by text keep working.

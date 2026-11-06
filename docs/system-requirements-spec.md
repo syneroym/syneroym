@@ -1459,8 +1459,9 @@ This appendix defines envisioned extensions to substrate and application contrac
 ### [APP-A11Y] Accessibility and Localisation
 
 - **Localisation:** `ProfilePayload` supports an optional `locale` field (`Option<String>`). The default value is None.
+- **Hub localisation (built):** The Roym Hub has a string catalog for English and Hindi, a language setting in the session bar that is kept in the browser, and local formats for money, numbers, dates and times. Error messages come from the string catalog by error code. Most Hub screens still have English text in the code.
 
-> **Envisioned.** Not built yet. Complete internationalisation (i18n) translation frameworks, resource bundles, and non-English UI translations. Today the Roym Hub UI contains hardcoded English text.
+> **Envisioned.** Not built yet. Hub screens other than the shell and the cards in the string catalog, non-English text for them, and translated record text.
 >
 > The architecture must support internationalisation (i18n). This allows local community clusters to use translated interfaces.
 
