@@ -1,4 +1,5 @@
-import { errText, field, refiller, text } from "../dom";
+import { errText, field, input, refiller, text } from "../dom";
+import { t } from "../i18n/i18n";
 import { call } from "../rpc";
 import { buildMembersPanel } from "./synorg_members";
 
@@ -17,28 +18,20 @@ export async function renderSynOrg(container: HTMLElement) {
   container.replaceChildren();
   const box = document.createElement("div");
   box.className = "synorg-screen";
-  box.appendChild(text("h2", "Your SynOrg"));
-  box.appendChild(
-    text(
-      "p",
-      "A SynOrg is a directory you run: listing owners publish their own listings " +
-        "to it, and anyone can search it. Creating settings is what turns this " +
-        "installation into one.",
-      "synorg-intro",
-    ),
-  );
+  box.appendChild(text("h2", t("synorg-title")));
+  box.appendChild(text("p", t("synorg-intro"), "synorg-intro"));
 
   let current: SynOrgSettings | null = null;
   try {
     current = await call<SynOrgSettings | null>("directory.settings");
   } catch (err) {
-    box.appendChild(text("p", `Could not load settings: ${errText(err)}`));
+    box.appendChild(text("p", t("synorg-settings-load-failed", { detail: errText(err) })));
   }
 
   box.appendChild(
     text(
       "p",
-      current ? `This installation runs the SynOrg "${current.name}".` : "This installation runs no SynOrg yet.",
+      current ? t("synorg-status-running", { name: current.name }) : t("synorg-status-none"),
       "synorg-status",
     ),
   );
@@ -58,41 +51,41 @@ export async function renderSynOrg(container: HTMLElement) {
 function buildSettingsForm(current: SynOrgSettings | null): HTMLElement {
   const wrap = document.createElement("div");
   wrap.className = "synorg-settings-form";
-  wrap.appendChild(text("h3", current ? "Edit settings" : "Create your SynOrg"));
+  wrap.appendChild(text("h3", current ? t("synorg-settings-edit") : t("synorg-settings-create")));
 
   const name = document.createElement("input");
   name.className = "synorg-name";
-  name.placeholder = "name";
+  name.placeholder = t("synorg-name-placeholder");
   name.value = current?.name ?? "";
   const rules = document.createElement("textarea");
   rules.className = "synorg-rules";
-  rules.placeholder = "the rules a person reads before deciding to trust this group";
+  rules.placeholder = t("synorg-rules-placeholder");
   rules.value = current?.rules ?? "";
   const categories = document.createElement("input");
   categories.className = "synorg-categories";
-  categories.placeholder = "categories, comma separated";
+  categories.placeholder = t("synorg-categories-placeholder");
   categories.value = (current?.categories ?? []).join(", ");
   const support = document.createElement("input");
   support.className = "synorg-support";
-  support.placeholder = "support contact";
+  support.placeholder = t("synorg-support-placeholder");
   support.value = current?.support_contact ?? "";
   const dispute = document.createElement("textarea");
   dispute.className = "synorg-dispute";
-  dispute.placeholder = "how a dispute is handled";
+  dispute.placeholder = t("synorg-dispute-placeholder");
   dispute.value = current?.dispute_path ?? "";
   const retentionDays = document.createElement("input");
   retentionDays.className = "synorg-retention-days";
-  retentionDays.placeholder = "how many days a publication is kept";
+  retentionDays.placeholder = t("synorg-retention-placeholder");
   retentionDays.value = String(Math.round((current?.retention_secs ?? 30 * 24 * 3600) / 86400));
 
-  const saveBtn = text("button", "Save settings", "button save-synorg") as HTMLButtonElement;
+  const saveBtn = text("button", t("synorg-save-button"), "button save-synorg") as HTMLButtonElement;
   const status = text("p", "", "synorg-save-status");
 
   saveBtn.onclick = async () => {
     status.textContent = "";
     const days = Number.parseInt(retentionDays.value, 10);
     if (!Number.isInteger(days) || days < 1) {
-      status.textContent = "Retention must be a whole number of days.";
+      status.textContent = t("synorg-retention-invalid");
       return;
     }
     const limits = current?.publication_limits ?? { window_secs: 24 * 3600, max_per_window: 20 };
@@ -111,22 +104,24 @@ function buildSettingsForm(current: SynOrgSettings | null): HTMLElement {
         retention_secs: days * 86400,
         publication_limits: limits,
       });
-      status.textContent = "Saved.";
+      status.textContent = t("common-saved");
       const statusLine = document.querySelector(".synorg-status");
-      if (statusLine) statusLine.textContent = `This installation runs the SynOrg "${name.value.trim()}".`;
+      if (statusLine) {
+        statusLine.textContent = t("synorg-status-running", { name: name.value.trim() });
+      }
     } catch (err) {
-      status.textContent = `Save failed: ${errText(err)}`;
+      status.textContent = t("common-save-failed", { detail: errText(err) });
     }
     saveBtn.disabled = false;
   };
 
   wrap.append(
-    field("Name", name),
-    field("Rules", rules),
-    field("Categories", categories),
-    field("Support contact", support),
-    field("Dispute path", dispute),
-    field("Retention (days)", retentionDays),
+    field(t("synorg-label-name"), name),
+    field(t("synorg-label-rules"), rules),
+    field(t("synorg-label-categories"), categories),
+    field(t("synorg-label-support"), support),
+    field(t("synorg-label-dispute"), dispute),
+    field(t("synorg-label-retention"), retentionDays),
     saveBtn,
     status,
   );
@@ -140,23 +135,15 @@ function buildSettingsForm(current: SynOrgSettings | null): HTMLElement {
 function buildLimitEditor(limits: { window_secs: number; max_per_window: number }): HTMLElement {
   const wrap = document.createElement("div");
   wrap.className = "synorg-limit-editor";
-  wrap.appendChild(text("h3", "Publication limit"));
-  wrap.appendChild(
-    text(
-      "p",
-      "How many listings one listing owner may publish here inside one window. " +
-        "Taking a listing down never counts against this.",
-    ),
-  );
-  const windowInput = document.createElement("input");
+  wrap.appendChild(text("h3", t("synorg-limit-heading")));
+  wrap.appendChild(text("p", t("synorg-limit-intro")));
+  const windowInput = input(t("synorg-limit-window-placeholder"));
   windowInput.className = "limit-window";
-  windowInput.placeholder = "window (seconds)";
   windowInput.value = String(limits.window_secs);
-  const maxInput = document.createElement("input");
+  const maxInput = input(t("synorg-limit-max-placeholder"));
   maxInput.className = "limit-max";
-  maxInput.placeholder = "max publications per window";
   maxInput.value = String(limits.max_per_window);
-  const saveBtn = text("button", "Save limit", "button save-limit") as HTMLButtonElement;
+  const saveBtn = text("button", t("synorg-limit-save"), "button save-limit") as HTMLButtonElement;
   const status = text("p", "", "limit-status");
 
   saveBtn.onclick = async () => {
@@ -164,15 +151,15 @@ function buildLimitEditor(limits: { window_secs: number; max_per_window: number 
     const w = Number.parseInt(windowInput.value, 10);
     const m = Number.parseInt(maxInput.value, 10);
     if (!Number.isInteger(w) || !Number.isInteger(m)) {
-      status.textContent = "Both values must be whole numbers.";
+      status.textContent = t("synorg-limit-whole");
       return;
     }
     saveBtn.disabled = true;
     try {
       await call("directory.set-limits", { window_secs: w, max_per_window: m });
-      status.textContent = "Saved.";
+      status.textContent = t("common-saved");
     } catch (err) {
-      status.textContent = `Save failed: ${errText(err)}`;
+      status.textContent = t("common-save-failed", { detail: errText(err) });
     }
     saveBtn.disabled = false;
   };
@@ -184,20 +171,16 @@ function buildLimitEditor(limits: { window_secs: number; max_per_window: number 
 async function buildRoster(): Promise<HTMLElement> {
   const wrap = document.createElement("div");
   wrap.className = "synorg-roster";
-  wrap.appendChild(text("h3", "Members"));
-  wrap.appendChild(
-    text("p", "The roster is local. It is never served over the wire.", "roster-note"),
-  );
+  wrap.appendChild(text("h3", t("synorg-roster-heading")));
+  wrap.appendChild(text("p", t("synorg-roster-note"), "roster-note"));
 
   const list = document.createElement("div");
   list.className = "roster-list";
-  const didInput = document.createElement("input");
+  const didInput = input(t("synorg-member-did-placeholder"));
   didInput.className = "roster-did";
-  didInput.placeholder = "member DID";
-  const noteInput = document.createElement("input");
+  const noteInput = input(t("synorg-roster-note-placeholder"));
   noteInput.className = "roster-note-input";
-  noteInput.placeholder = "note (optional)";
-  const addBtn = text("button", "Add member", "button add-member") as HTMLButtonElement;
+  const addBtn = text("button", t("synorg-roster-add"), "button add-member") as HTMLButtonElement;
   const status = text("p", "", "roster-status");
 
   const reload = refiller(list, async (into) => {
@@ -208,7 +191,7 @@ async function buildRoster(): Promise<HTMLElement> {
         line.className = "roster-row";
         line.appendChild(text("span", m.did, "member-did"));
         if (m.note) line.appendChild(text("span", m.note, "member-note"));
-        const rm = text("button", "Remove", "button remove-member") as HTMLButtonElement;
+        const rm = text("button", t("common-remove"), "button remove-member") as HTMLButtonElement;
         const refusal = text("span", "", "member-remove-error");
         rm.onclick = async () => {
           refusal.textContent = "";
@@ -217,7 +200,7 @@ async function buildRoster(): Promise<HTMLElement> {
           } catch (err) {
             // Refused while the member's credential still stands: say why on
             // this row, and leave the roster as it is.
-            refusal.textContent = `Not removed: ${errText(err)}`;
+            refusal.textContent = t("synorg-roster-not-removed", { detail: errText(err) });
             return;
           }
           await reload();
@@ -226,7 +209,7 @@ async function buildRoster(): Promise<HTMLElement> {
         into.appendChild(line);
       }
     } catch (err) {
-      into.appendChild(text("p", `Could not load members: ${errText(err)}`));
+      into.appendChild(text("p", t("synorg-roster-load-failed", { detail: errText(err) })));
     }
   });
 
@@ -240,7 +223,7 @@ async function buildRoster(): Promise<HTMLElement> {
       noteInput.value = "";
       await reload();
     } catch (err) {
-      status.textContent = `Add failed: ${errText(err)}`;
+      status.textContent = t("synorg-roster-add-failed", { detail: errText(err) });
     }
   };
 
@@ -252,30 +235,30 @@ async function buildRoster(): Promise<HTMLElement> {
 async function buildPublications(): Promise<HTMLElement> {
   const wrap = document.createElement("div");
   wrap.className = "synorg-publications";
-  wrap.appendChild(text("h3", "Published here"));
+  wrap.appendChild(text("h3", t("synorg-published-heading")));
   try {
     const res = await call<{ publications: Array<{ listing_id: string; issuer: string; published_by: string }> }>(
       "directory.publications",
     );
     if (res.publications.length === 0) {
-      wrap.appendChild(text("p", "Nothing published here yet."));
+      wrap.appendChild(text("p", t("synorg-published-empty")));
     }
     for (const p of res.publications) {
       const line = document.createElement("div");
       line.className = "publication-row";
       line.appendChild(text("span", p.listing_id, "publication-listing"));
-      line.appendChild(text("span", `by ${p.issuer}`, "publication-issuer"));
-      const rm = text("button", "Remove", "button unpublish") as HTMLButtonElement;
+      line.appendChild(text("span", t("synorg-published-by", { issuer: p.issuer }), "publication-issuer"));
+      const rm = text("button", t("common-remove"), "button unpublish") as HTMLButtonElement;
       rm.onclick = async () => {
         await call("directory.unpublish", { listing_id: p.listing_id });
         rm.disabled = true;
-        line.appendChild(text("span", "removed from future search", "publication-removed"));
+        line.appendChild(text("span", t("synorg-unpublished"), "publication-removed"));
       };
       line.appendChild(rm);
       wrap.appendChild(line);
     }
   } catch (err) {
-    wrap.appendChild(text("p", `Could not load publications: ${errText(err)}`));
+    wrap.appendChild(text("p", t("synorg-publications-load-failed", { detail: errText(err) })));
   }
   return wrap;
 }

@@ -17,8 +17,6 @@ const sources = Object.fromEntries(
 /// Files that set visible text from literals. They are not read by the
 /// check yet.
 const NOT_MOVED_YET: string[] = [
-  "../screens/synorg.ts",
-  "../screens/synorg_members.ts",
 ];
 
 /// Files the check does not read: tests, the shared test helpers, and the
