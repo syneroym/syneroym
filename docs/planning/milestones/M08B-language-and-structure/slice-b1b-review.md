@@ -369,7 +369,7 @@ round 1. The change docs are the same as in round 1: roym-multilingual, with
 the `demo-stories` note unchanged.
 
 **Summary:** round 1: 9 items, all confirmed Fixed. Round 2: 0 blocker,
-0 major, 3 minor new items (P10 to P12). **3 open.** Fixed in SHA; 0 open.
+0 major, 3 minor new items (P10 to P12). **3 open.** Fixed in ae8f0f54; 0 open.
 
 ### Round 1 items — confirmed
 
@@ -434,7 +434,7 @@ weight list in D-B1b-13 uses real ids: `terms-*`, `receipt-*`, `quote-*`,
   words and the allowed words from a text), and create it in Step 3 next to
   `stub-rpc.ts`. Step 6 and Step 11 import it. Say in D-B1b-12 that the list
   is in this helper, not in the test file.
-- *Status:* Fixed (SHA). Now in: D-B1b-12 ("Allowed Latin words": the list and `leftoverLatin()` live in `src/testing/latin-words.ts`); Step 3 item 5 (created there, with its own test); Step 6 item 3 (imports it); section 7.5.
+- *Status:* Fixed (ae8f0f54). Now in: D-B1b-12 ("Allowed Latin words": the list and `leftoverLatin()` live in `src/testing/latin-words.ts`); Step 3 item 5 (created there, with its own test); Step 6 item 3 (imports it); section 7.5.
 
 #### P11 (minor) — Step 6's table test names a path that `capacity` does not have
 
@@ -450,7 +450,7 @@ weight list in D-B1b-13 uses real ids: `terms-*`, `receipt-*`, `quote-*`,
   and the `capacity` × "is required" case fails or is skipped without a note.
 - **Fix:** Write the test list as: the 11 throws, plus "whole number" for each
   of the 8 names, plus "is required" for the 7 names that use `requireWhole`.
-- *Status:* Fixed (SHA). Now in: Step 6 item 3 (11 throws, "whole number" for 8 names, "is required" for the 7 `requireWhole` names; `capacity` explained).
+- *Status:* Fixed (ae8f0f54). Now in: Step 6 item 3 (11 throws, "whole number" for 8 names, "is required" for the 7 `requireWhole` names; `capacity` explained).
 
 #### P12 (minor) — Two statements in the plan are slightly wrong
 
@@ -473,4 +473,4 @@ weight list in D-B1b-13 uses real ids: `terms-*`, `receipt-*`, `quote-*`,
   wrapper: Hub-made text in the UI language, or a service text that the Hub
   shows as the detail of its own message", and use the same words in the class
   comment.
-- *Status:* Fixed (SHA). Now in: (1) plan header ("changes no line this plan names", with the architecture line); (2) D-B1b-4 (`HubError` defined as a message shown as it is with no wrapper, the same words in the class comment; `errText` branch reworded).
+- *Status:* Fixed (ae8f0f54). Now in: (1) plan header ("changes no line this plan names", with the architecture line); (2) D-B1b-4 (`HubError` defined as a message shown as it is with no wrapper, the same words in the class comment; `errText` branch reworded).
