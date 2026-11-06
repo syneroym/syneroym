@@ -685,7 +685,7 @@ prompt lists one change doc,
 [roym-multilingual](../../changes/roym-multilingual/change.md). Every B1a
 decision and deviation belongs there, and that is where they are written.
 
-**Summary:** 0 blocker, 1 major, 6 minor. 7 items, all Open.
+**Summary:** 0 blocker, 1 major, 6 minor. 7 items: 6 Fixed, 1 Fixed in part (R7).
 
 ### What was checked and found correct
 
@@ -798,7 +798,7 @@ decision and deviation belongs there, and that is where they are written.
   `date-invalid` text; `groups.test.ts`, `renderThreadMessages` with three
   messages, the middle one with that timestamp, draws three
   `.message-row` elements. Add a row to the change doc's Deviations.
-- *Status:* Open.
+- *Status:* Fixed (97e04d14). `formatDateTime`, `formatTime` and `formatAge` give `date-invalid` ("Invalid Date" in English, a Hindi line in `hi.ftl`) for a value that is not a date; `timeElement` and `formatUtcDate` still throw. Proof: with the old `format.ts` back, 5 tests fail (the new `format.test.ts` cases for `formatDateTime`, `formatTime` and `formatAge`, the new `groups.test.ts` case with three messages and a middle timestamp of `-9223372036854775808`, and the unused-message check for `date-invalid`); with the fix, 230 pass. The two card rows that put a date inside a sentence now show the invalid-date text too; recorded under Deviations in the change doc (96cd887b).
 
 #### R2 (minor) — The chunk-split probe from Step 2 item 1 is still in the source tree
 
@@ -814,7 +814,7 @@ decision and deviation belongs there, and that is where they are written.
   catalog joined into one string. `tsc` and `eslint` keep checking dead
   code.
 - **Fix:** Delete `src/i18n/probe.ts`. Run `npm run build` and `npm test`.
-- *Status:* Open.
+- *Status:* Fixed (2befd1b8). `probe.ts` deleted; `npm run build` and `npm test` pass.
 
 #### R3 (minor) — The change doc and `en.ftl` count a Hub-only sentence as held by the Rust crate
 
@@ -837,7 +837,7 @@ decision and deviation belongs there, and that is where they are written.
 - **Fix:** change.md:169 says "10 group sentences". Move
   `group-session-ended-notice` out of the pinned block in both `.ftl` files
   (for example under "Group lines").
-- *Status:* Open.
+- *Status:* Fixed (485d19e7, 96cd887b). `group-session-ended-notice` moved under "Group lines" in both `.ftl` files; the change doc says "10 group sentences".
 
 #### R4 (minor) — `errors.test.ts` cannot see a wrong code-to-message mapping
 
@@ -859,7 +859,7 @@ decision and deviation belongs there, and that is where they are written.
   "raw text", code: String(code) }))`, with the expected id written in the
   test as a literal table (`-32001 → "error-service-unavailable"`, …,
   `-32700 → "error-service"`). Keep the Devanagari and `विवरण:` checks.
-- *Status:* Open.
+- *Status:* Fixed (0614ab55). The Hindi block compares each code with a written-out table of expected ids (including `-32700`, `-32600`, `-32099`, `-12345` to `error-service`) and checks the 11 named codes give 11 different texts. Proof: swapping the rows of `-32003` and `-32011` in `ERROR_MESSAGES` fails "gives each code its own message"; undone, 230 pass.
 
 #### R5 (minor) — The Hindi `group-add-unreachable` sentence is never shown, and the gap has no backlog row
 
@@ -890,7 +890,7 @@ decision and deviation belongs there, and that is where they are written.
   `t("group-add-unreachable")` when the error is `-32602` and
   `err.message` equals the English text (the Rust test pins it); then the
   `KEPT_FOR_RUST` exemption can go.
-- *Status:* Open.
+- *Status:* Fixed (96cd887b), without the optional code change. Backlog row "Service-specific refusals show a generic Hindi sentence" added in §10; the change doc deviation now says what a Hindi user sees. The `KEPT_FOR_RUST` exemption stays.
 
 #### R6 (minor) — Literals on screen lines that B1a edits stay English, and the Hindi search error names a button that still says "Search"
 
@@ -922,7 +922,7 @@ decision and deviation belongs there, and that is where they are written.
   B1b moves the button, the Hindi text names it as it is drawn: `"Search"
   दबाएँ`. Or move the button label now (`directory-search-button`) and keep
   the e2e text `Search` in English.
-- *Status:* Open.
+- *Status:* Fixed (485d19e7). (1) The four literals moved into the catalog (`directory-signed-age`, `synorg-credential-expires`, `synorg-until`, `synorg-until-lifted`), English text unchanged, Hindi added. (2) The two Hindi search messages now name the button as it is drawn: `"Search"`. B1b changes the button label and these two lines together.
 
 #### R7 (minor) — `mise run verify` was not run, so the new `hub-ui` gate has never run inside the runner
 
@@ -943,4 +943,4 @@ decision and deviation belongs there, and that is where they are written.
   no `--skip` as a background job. Write the summary line, with the
   `hub-ui` gate's time, in the B1a row of status.md, and change "CI runs
   it" to the result.
-- *Status:* Open.
+- *Status:* Fixed in part (96cd887b is the last commit before the run). The `hub-ui` gate ran inside the runner: `cargo xtask verify` with every other gate skipped gave `✓ hub-ui (5s)` and "All 1 gates passed" (log `target/gates/hub-ui.log`: 27 files, 230 tests). The quick gates fmt, file-lengths, change-docs, duplication and planning-refs also passed through the runner. The full `mise run verify` was not run, because this fix session's rules forbid it; status.md says so.
