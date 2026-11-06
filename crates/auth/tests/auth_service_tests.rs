@@ -576,3 +576,43 @@ async fn configured_allowed_origins_are_reflected_in_cors() {
         resp_disallowed.headers.iter().find(|(k, _)| k == "access-control-allow-origin").is_none()
     );
 }
+
+#[tokio::test]
+async fn login_after_logout_gets_a_token_that_is_not_logged_out() {
+    let auth_id = Identity::generate().unwrap();
+    let node_did = substrate::derive_did_key(&Identity::generate().unwrap().public_key());
+    let master_id = Identity::generate().unwrap();
+    let master_did = substrate::derive_did_key(&master_id.public_key());
+    let temp_id = Identity::generate().unwrap();
+    let temp_did = substrate::derive_did_key(&temp_id.public_key());
+    let resolver = Arc::new(MockAnchorResolver { resolvable: true, revoked: vec![] });
+    let service = AuthService::new(auth_id, node_did.clone(), 3600, 60, None, resolver);
+    let delegation = DelegationCertificate::issue(
+        &master_id,
+        temp_id.public_key(),
+        7200,
+        SCOPE_SESSION_AUTH.to_string(),
+    )
+    .unwrap();
+
+    let login = || async {
+        let nonce = service.issue_challenge(None).nonce;
+        let signature =
+            temp_id.sign_json(&gateway_session_assertion(&node_did, &nonce, &master_did)).unwrap();
+        let params = DelegatedKeyLoginParams {
+            temp_did: temp_did.clone(),
+            delegation: delegation.clone(),
+            nonce,
+            signature,
+        };
+        service.login_delegated_key(&params).await.unwrap().token
+    };
+
+    let first = login().await;
+    service.record_logout(&first);
+    let second = login().await;
+
+    assert_ne!(first, second);
+    assert!(service.whoami(&first).is_err());
+    assert_eq!(service.whoami(&second).unwrap().person_did, master_did);
+}

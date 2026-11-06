@@ -8675,6 +8675,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "criterion",
+ "getrandom 0.4.3",
+ "hex",
  "serde",
  "serde_json",
  "sha2 0.10.9",

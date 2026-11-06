@@ -17,6 +17,8 @@ use crate::token::{CLOCK_SKEW_SECS, CapabilityToken};
 pub const CLAIM_AUTH_METHOD: &str = "auth_method";
 /// Standard claim name for the original delegation certificate expiration.
 pub const CLAIM_DELEGATION_EXPIRES_AT_SECS: &str = "delegation_expires_at_secs";
+/// Claim name for the random value that makes every minted token unique.
+pub const CLAIM_SESSION_NONCE: &str = "session_nonce";
 
 pub const AUTH_METHOD_DELEGATED_KEY: &str = "delegated-key";
 pub const AUTH_METHOD_LOCAL: &str = "local";
@@ -24,6 +26,13 @@ pub const AUTH_METHOD_FIXED: &str = "fixed";
 
 fn now_secs() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
+
+/// A random 128-bit value, hex encoded.
+fn random_nonce() -> Result<String> {
+    let mut bytes = [0u8; 16];
+    getrandom::fill(&mut bytes).context("failed to generate random session token nonce")?;
+    Ok(hex::encode(bytes))
 }
 
 /// Parsed and verified session token claims.
@@ -70,6 +79,11 @@ impl SessionToken {
                 facts.insert(k, v);
             }
         }
+        // Set last, so a refresh (which passes the old facts back in) gets a new
+        // nonce. Ed25519 signing is deterministic and `not_before_secs` has
+        // one-second resolution, so without it two tokens for the same person
+        // minted in the same second are the same string. Logout then ends both.
+        facts.insert(CLAIM_SESSION_NONCE.to_string(), Value::String(random_nonce()?));
 
         // Session tokens have empty capabilities and empty proofs (they attest to who,
         // not what).
@@ -247,5 +261,26 @@ mod tests {
 
         let err = SessionToken::verify(&encoded, &auth_did).unwrap_err();
         assert!(err.to_string().contains("empty capabilities"));
+    }
+
+    #[test]
+    fn same_inputs_in_the_same_second_mint_different_tokens() {
+        let auth_id = Identity::generate().unwrap();
+        let auth_did = substrate::derive_did_key(&auth_id.public_key());
+        let person_id = Identity::generate().unwrap();
+        let person_did = substrate::derive_did_key(&person_id.public_key());
+
+        let mint = || {
+            SessionToken::mint(&auth_id, &person_did, AUTH_METHOD_DELEGATED_KEY, None, 3600)
+                .unwrap()
+                .to_token_string()
+                .unwrap()
+        };
+        let first = mint();
+        let second = mint();
+
+        assert_ne!(first, second);
+        SessionToken::verify(&first, &auth_did).unwrap();
+        SessionToken::verify(&second, &auth_did).unwrap();
     }
 }
