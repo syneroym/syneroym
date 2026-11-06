@@ -166,7 +166,7 @@ Most cross-language trade needs only layers A and B. The buyer searches by categ
 - **Language choice.** `pickLanguage(stored, preferred, available)`: the stored choice, else the first `navigator.languages` entry whose language and script match a catalog, else English. A failed catalog load keeps English and draws the Hub; `lang` changes only after the load works. The choice is the `localStorage` key `roym-hub-language`. The language list is in the session bar. A choice is saved and the page reloads. When the browser does not keep the choice, the Hub does not reload and shows a one-line note beside the list.
 - **Errors.** `errText()` picks the catalog message by JSON-RPC code (a `Map` of ids). The service's own English text is the `$detail` variable: an English message is often just `{ $detail }`, and a Hindi message is a Hindi sentence that ends with `विवरण: { $detail }`. An HTTP failure keeps its status as the code. A `fetch` that fails, or a reply that is not JSON, becomes an `RpcError` with code `0` and its own message.
 - **Hindi text.** An agent writes it. The owner reviews `hi.ftl` before the Hub screens slice merges; a comment at the top of the file says so.
-- **Pinned English.** The 8 booking sentences and 11 group sentences that the Rust crate also holds are one line each in `en.ftl`. The two Rust tests that compared them with the old TypeScript files read `en.ftl` now.
+- **Pinned English.** The 8 booking sentences and 10 group sentences that the Rust crate also holds are one line each in `en.ftl`. The two Rust tests that compared them with the old TypeScript files read `en.ftl` now.
 
 ### B. Language-neutral structure
 
@@ -434,7 +434,8 @@ Checked: `@fluent/bundle` 0.19.1 (Apache-2.0, no runtime dependencies) adds 4,20
 - **Different from the plan: dates in `membership.test.ts`.** Four expectations of this test also change, from `2027-01-14` to `14 Jan 2027`, because the membership dates use `formatUtcDate`.
 - **Different from the plan: typing of `Intl.NumberFormat.format`.** TypeScript accepts a `string` only as a `` `${number}` `` template type, so `minorToDecimal` returns that type.
 - **Different from the plan: more exports in `i18n.ts`.** `activateWith` and `initLanguageWith` take the loaders as a parameter, so the tests can add a language and a failing loader without a file. `cached` in `format.ts` is exported for `formatMinor`. `languagePicker` takes the reload function as a parameter, because jsdom cannot replace `location.reload`.
-- **Different from the plan: one message is exempt from the "no unused message" check.** `group-add-unreachable` is a sentence the Rust crate holds. The service sends it as the error text, so no Hub screen shows it from the catalog.
+- **Different from the plan: one message is exempt from the "no unused message" check.** `group-add-unreachable` is a sentence the Rust crate holds. The service sends it as the error text of a `-32602` refusal, so no Hub screen shows it from the catalog. A Hindi user who adds a person who is offline reads the generic `error-invalid-input` sentence, with the English sentence after `विवरण:`. The backlog records this.
+- **Different from the plan: a time that is not a date does not stop a screen.** `formatDateTime`, `formatTime` and `formatAge` give the text `Invalid Date` (`date-invalid`) for a value that is not a date, as `toLocaleString()` printed before, because one such time in a group message must not hide the rest of the thread. This also applies to the two card rows that put a date inside a sentence. `timeElement` and `formatUtcDate` still throw a `RangeError`, as `toISOString()` did.
 
 ## Close-out
 
