@@ -9,7 +9,7 @@ The plan and the slice order are in [task.md](task.md). This file records what i
 | Slice | Step | Plan by | Plan review by | Implemented by | Code review by | Evidence |
 | --- | --- | --- | --- | --- | --- | --- |
 | S0 | Merged | Claude Opus 5.5 | Claude Sonnet 5.5 | Claude Sonnet 5.5 | Claude Opus 5.5 | [PR #348](https://github.com/syneroym/syneroym/pull/348); full CI green on `b1757a66` ([run 42060861373](https://github.com/syneroym/syneroym/actions/runs/42060861373)), later commits docs only. Docs only, no automated tests; `spelling-pairs.tsv` check: 200 pairs per language, 0 errors, 17 conflicts for the owner. Reviews: plan 12 items, code 5 items, all closed ([review](slice-s0-review.md)) |
-| B1a | Plan reviewed | Claude Opus 5.5 | Claude Sonnet 5.5 | — | — | [Plan](slice-b1a-implementation-plan.md); owner answered Q1 to Q6 (all (a), 2026-11-06). Plan review round 1: 12 items (0 blocker, 3 major, 9 minor), all fixed in `f10a0b15`. Plan review round 2: all 12 confirmed fixed; 2 new items open (0 blocker, 0 major, 2 minor) ([review](slice-b1a-review.md)) |
+| B1a | Plan reviewed | Claude Opus 5.5 | Claude Sonnet 5.5 | — | — | [Plan](slice-b1a-implementation-plan.md); owner answered Q1 to Q6 (all (a), 2026-11-06). Plan review round 1: 12 items (0 blocker, 3 major, 9 minor), all fixed in `f10a0b15`. Plan review round 2: all 12 confirmed fixed; 2 new items (0 blocker, 0 major, 2 minor), both fixed in `96e0120e` ([review](slice-b1a-review.md)) |
 | B1b | Not started | — | — | — | — | — |
 | B2 | Not started | — | — | — | — | — |
 | B3a | Not started | — | — | — | — | — |

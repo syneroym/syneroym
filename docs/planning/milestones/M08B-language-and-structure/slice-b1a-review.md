@@ -433,7 +433,7 @@ files: the plan, this review file and `status.md`. No code changed, so the
 code facts of round 1 still hold.
 
 **Summary:** P1 to P12 are all confirmed fixed. 2 new items, both minor:
-0 blocker, 0 major, 2 minor. **2 open (P13, P14).**
+0 blocker, 0 major, 2 minor. **2 open (P13, P14).** Both fixed in `96e0120e`; 0 open.
 
 Limits: I read the whole new plan text (1,235 lines) and checked it against
 the code. I ran the `Intl` and Fluent claims again, now on Node 20.20.2 (the
@@ -570,7 +570,7 @@ instead (see P10 below). I ran no plan step.
   whitespace (the parser would silently drop it, like junk), and a unit test
   that compares the full `textContent` of the quote's `Payee`, `Dispute path`
   and `Schedule` rows with the old English output.
-- *Status:* Open.
+- *Status:* Fixed (96e0120e). Now in: D-B1a-3 ("Spaces at the ends of a message": `labelled()` for labels, `{ " - " }` for the separator); D-B1a-5 kind 1 rows; Step 5 items 1, 4 and 6 (full-row `textContent` test); section 7.1 (`.ftl` trailing-whitespace test).
 
 #### P14 (minor) — The comment stripper of the catalog test is not string-aware
 
@@ -601,4 +601,4 @@ instead (see P10 below). I ran no plan step.
   `//` counts as a comment only when it is at the start of the line (after
   spaces) or follows a space, and that string and template contents are
   skipped first.
-- *Status:* Open.
+- *Status:* Fixed (96e0120e). Now in: section 7.1 ("How the source scan works": `ts.createSourceFile`, plain-identifier callee, renamed imports refused, `"http://"` helper test). Plan-author note: the parser also exposed local variables named `t` (`quote.ts:77`, `agreement_receipt.ts:108`, `render.ts:22`, `money.ts:50`, `listings/editor.ts:118`, `:131`) that would hide the imported `t()`; Step 5 item 2 renames them.
