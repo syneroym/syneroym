@@ -506,7 +506,7 @@ prompt lists one change doc,
 [roym-multilingual](../../changes/roym-multilingual/change.md). Every B1b
 decision and deviation belongs there, and that is where they are written.
 
-**Summary:** 0 blocker, 0 major, 6 minor (R1 to R6). **6 open.**
+**Summary:** 0 blocker, 0 major, 6 minor (R1 to R6). All 6 Fixed in `5fe574ef`; 0 open. No pushback.
 
 ### What was checked and found correct
 
@@ -614,7 +614,7 @@ decision and deviation belongs there, and that is where they are written.
   checks the English line for each. Record under Deviations that the
   English line changes from `[object Object]`/`true` to a real count or
   the `bundle` text.
-- *Status:* Open
+- *Status:* Fixed (5fe574ef). Now in: `importedCount()` in `backup.ts` (a number as it is, a map of counts added up, anything else as `backup-imported-unknown`); new `backup.test.ts` (the five reply shapes through `stubRpc`, and the helper); change doc Deviations (the English line changes from `[object Object]`/`true` to a count or `bundle`).
 
 #### R2 (minor) — A failed sign-in in Hindi says "sign-in failed" twice
 
@@ -648,7 +648,7 @@ decision and deviation belongs there, and that is where they are written.
   `login.test.ts`, check the composed line
   `t("login-failed", { detail: errText(err) })`: it holds the
   `login-failed` sentence once and `विवरण:` at most once.
-- *Status:* Open
+- *Status:* Fixed (5fe574ef). Now in: `hi.ftl` (`login-error-http` is `HTTP { $status }`; `login-error-challenge`, `login-error-service`, `login-error-methods` name only the cause; one spelling `साइन इन`, also in `login-auth-unreachable`); `login.test.ts` (the Hindi cases check the composed `login-failed` line: the sentence once, `विवरण:` at most once); `catalog.test.ts` (`login-error-http` in `NO_WORDS`, with a reason); change doc Deviations.
 
 #### R3 (minor) — Pinned sentences in `en.ftl` lost their warning, and the change doc's pinned count is old
 
@@ -683,7 +683,7 @@ decision and deviation belongs there, and that is where they are written.
   comment. Update the "Pinned English" bullet of the change doc: 8
   booking, 10 group, the data-use and address-disclosure notices and the
   two membership notices, read by four Rust tests.
-- *Status:* Open
+- *Status:* Fixed (5fe574ef). Now in: `en.ftl` (a comment above the two delete notes with the reason of the old comment, and above each of the four Rust-pinned lines); change doc "Pinned English" bullet (22 sentences, four Rust tests, the delete notes).
 
 #### R4 (minor) — Six of the new code tables have no inherited-name test
 
@@ -716,7 +716,7 @@ decision and deviation belongs there, and that is where they are written.
   If R5 moves the read into one shared `codeWord`, the inherited-name part
   can be one test of that function, and each table test only needs the
   `en`/`hi` part.
-- *Status:* Open
+- *Status:* Fixed (5fe574ef). Now in: `i18n.test.ts` (`codeWord`: known code, unknown code and the inherited names `constructor`, `toString`, `__proto__`, `hasOwnProperty`); `directory.test.ts` (revocation line in `en` and `hi`, and the three inherited names); `synorg_members.test.ts` (credential status words in `en` and `hi`, code kept in `dataset.status`); `listings.test.ts` (an option of each of the four editor tables differs between `en` and `hi`).
 
 #### R5 (minor) — The same code-word helper is written twice, and the same read is written nine times
 
@@ -743,7 +743,7 @@ decision and deviation belongs there, and that is where they are written.
   `messageStateWord` can call it. Use one select builder for code
   options (move `select` and `codeOptions` to `dom.ts`, or make `safety.ts`
   use them). Remove the two local copies.
-- *Status:* Open
+- *Status:* Fixed (5fe574ef). Now in: one `codeWord(table, code)` in `i18n.ts` used by `listings.ts`, `safety.ts`, `messages.ts` (`messageStateWord`), `directory.ts` and `synorg_members.ts`; `select` and `codeOptions` moved to `dom.ts` and used by `listings.ts` and `safety.ts`; the local copies and `codeSelect` are gone; developer guide and change doc name `codeWord`.
 
 #### R6 (minor) — The change doc misses decision D-B1b-10 and the `NO_WORDS` change
 
@@ -770,4 +770,4 @@ decision and deviation belongs there, and that is where they are written.
   rule and the five ids. Add a Deviations entry: `NO_WORDS` holds the
   three messages that are only values and punctuation, and no command
   message, because every command sits inside a Hindi sentence.
-- *Status:* Open
+- *Status:* Fixed (5fe574ef). Now in: change doc "Shared messages" bullet (the rule and the five `common-` ids), a "Code words" bullet, and Deviations entries for `NO_WORDS` (no command message; `listing-version`, `listing-slot-line`, `safety-report-row`, `login-error-http`), the backup import line and the Hindi sign-in messages.
