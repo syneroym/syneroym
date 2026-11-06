@@ -213,3 +213,84 @@ login-error-no-assertion = auth service did not return an assertion to sign
 login-error-http = HTTP { $status }
 login-error-service = { $detail }
 login-error-methods = methods failed: HTTP { $status }
+
+common-saved = Saved.
+
+## Profile
+
+profile-title = Profile
+profile-display-name = Display Name:
+profile-conversation-address = Conversation Address:
+profile-save = Save Profile
+profile-saving = Saving...
+profile-saved = Saved record { $record } (issuer: { $issuer })
+
+## Contacts
+
+contacts-title = Contacts
+contacts-load-failed = Could not load contacts.
+contacts-add-heading = Add / Import Contact
+contacts-did-placeholder = Person DID
+contacts-address-placeholder = Conversation Address (required if no profile envelope)
+contacts-envelope-placeholder = Paste Profile Envelope JSON (optional)
+contacts-upsert-button = Upsert Contact
+contacts-envelope-invalid = Profile envelope is not valid JSON
+
+## Set-up
+
+setup-title = Signing Certificate Required
+setup-intro = This installation has no active record-signing certificate enrolled. To enrol, run `roymctl roym enrol-signing --master <identity> --registry-url <registry>` from your terminal. The browser cannot do this because it holds no master key.
+setup-missing = Missing signing certificates for: { $services }
+setup-check-again = Check again
+
+## Backup
+
+backup-title = App Data Backup & Restore
+backup-intro = This exports and imports application data. It never exports or touches your identity secret key.
+backup-separate-note = Each bundle below is signed by you when it is exported, and is refused on import if it was changed. An encrypted backup of everything, including your identity, is made with `roymctl roym backup create`.
+backup-bundle-profile = Profile, contacts, and safety records
+backup-bundle-conversation = Conversations and messages
+backup-bundle-catalog = Listings and availability
+backup-bundle-transaction = Requests, quotes, and agreements
+backup-bundle-directory = This installation's SynOrg directory, if it runs one
+backup-export = Export
+backup-import = Import
+backup-reading = Reading file...
+backup-importing = Importing...
+backup-imported = Imported: { $count } record(s).
+backup-imported-unknown = Imported: bundle record(s).
+
+## Safety
+
+safety-title = Safety & Blocklist
+safety-policy-unavailable = Could not load this node's safety policy.
+safety-block-placeholder = Person DID or Address to block
+safety-block-button = Block
+safety-blocked-line = Blocked: { $who }
+safety-block-list-failed = Could not load block list.
+safety-report-heading = Report a person, listing, or message
+safety-kind-person = person
+safety-kind-listing = listing
+safety-kind-message = message
+safety-subject-placeholder = Subject DID or id
+safety-category-impersonation = impersonation
+safety-category-fraud = fraud
+safety-category-harassment = harassment
+safety-category-unsafe-service = unsafe-service
+safety-category-illegal-content = illegal-content
+safety-details-placeholder = What happened (optional)
+safety-file-report = File report
+safety-report-row = { $category } - { $kind } { $subject } [{ $status }]
+safety-status-open = open
+safety-status-withdrawn = withdrawn
+safety-withdraw = Withdraw
+safety-reports-load-failed = Could not load reports.
+safety-subject-required = A subject is required.
+safety-recorded = Recorded { $id } ({ $status })
+safety-limit-heading = First-contact rate limit
+safety-limit-intro = How many strangers may start a conversation with you inside one window. An ongoing conversation is never limited.
+safety-window-placeholder = window (seconds)
+safety-max-placeholder = max new contacts per window
+safety-save-limit = Save limit
+safety-limit-load-failed = Could not load the current limit.
+safety-whole-numbers = Both values must be whole numbers.

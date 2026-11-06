@@ -202,3 +202,84 @@ login-error-no-assertion = प्रमाणीकरण सेवा ने �
 login-error-http = साइन-इन नहीं हो सका: HTTP { $status }
 login-error-service = साइन-इन को सेवा ने मना कर दिया। विवरण: { $detail }
 login-error-methods = साइन-इन के तरीके नहीं मिले: HTTP { $status }
+
+common-saved = सहेज लिया गया।
+
+## Profile
+
+profile-title = प्रोफ़ाइल
+profile-display-name = दिखने वाला नाम:
+profile-conversation-address = बातचीत का पता:
+profile-save = प्रोफ़ाइल सहेजें
+profile-saving = सहेजा जा रहा है...
+profile-saved = रिकॉर्ड { $record } सहेजा गया (जारी करने वाला: { $issuer })
+
+## Contacts
+
+contacts-title = संपर्क
+contacts-load-failed = संपर्क लोड नहीं हो सके।
+contacts-add-heading = संपर्क जोड़ें / इम्पोर्ट करें
+contacts-did-placeholder = व्यक्ति का DID
+contacts-address-placeholder = बातचीत का पता (प्रोफ़ाइल लिफ़ाफ़ा न हो तो ज़रूरी)
+contacts-envelope-placeholder = प्रोफ़ाइल लिफ़ाफ़े का JSON यहाँ चिपकाएँ (ज़रूरी नहीं)
+contacts-upsert-button = संपर्क जोड़ें या बदलें
+contacts-envelope-invalid = प्रोफ़ाइल लिफ़ाफ़ा सही JSON नहीं है
+
+## Set-up
+
+setup-title = हस्ताक्षर प्रमाणपत्र ज़रूरी है
+setup-intro = इस इंस्टॉलेशन में रिकॉर्ड पर हस्ताक्षर करने का कोई चालू प्रमाणपत्र दर्ज नहीं है। दर्ज करने के लिए अपने टर्मिनल से `roymctl roym enrol-signing --master <identity> --registry-url <registry>` चलाएँ। ब्राउज़र यह नहीं कर सकता, क्योंकि उसके पास मुख्य कुंजी नहीं होती।
+setup-missing = इनके हस्ताक्षर प्रमाणपत्र नहीं मिले: { $services }
+setup-check-again = फिर जाँचें
+
+## Backup
+
+backup-title = ऐप डेटा का बैकअप और बहाली
+backup-intro = यह ऐप का डेटा एक्सपोर्ट और इम्पोर्ट करता है। यह आपकी पहचान की गुप्त कुंजी को कभी एक्सपोर्ट नहीं करता और न छूता है।
+backup-separate-note = नीचे हर बंडल एक्सपोर्ट के समय आपके हस्ताक्षर से बंद होता है, और बदला गया हो तो इम्पोर्ट पर मना कर दिया जाता है। आपकी पहचान समेत सब कुछ का एन्क्रिप्टेड बैकअप `roymctl roym backup create` से बनता है।
+backup-bundle-profile = प्रोफ़ाइल, संपर्क और सुरक्षा के रिकॉर्ड
+backup-bundle-conversation = बातचीत और संदेश
+backup-bundle-catalog = लिस्टिंग और उपलब्ध समय
+backup-bundle-transaction = अनुरोध, कोटेशन और समझौते
+backup-bundle-directory = इस इंस्टॉलेशन की SynOrg डायरेक्टरी, अगर वह चलाता हो
+backup-export = एक्सपोर्ट
+backup-import = इम्पोर्ट
+backup-reading = फ़ाइल पढ़ी जा रही है...
+backup-importing = इम्पोर्ट हो रहा है...
+backup-imported = इम्पोर्ट हुए: { $count } रिकॉर्ड।
+backup-imported-unknown = बंडल के रिकॉर्ड इम्पोर्ट हुए।
+
+## Safety
+
+safety-title = सुरक्षा और ब्लॉक सूची
+safety-policy-unavailable = इस नोड की सुरक्षा नीति लोड नहीं हो सकी।
+safety-block-placeholder = ब्लॉक करने के लिए व्यक्ति का DID या पता
+safety-block-button = ब्लॉक करें
+safety-blocked-line = ब्लॉक किया गया: { $who }
+safety-block-list-failed = ब्लॉक सूची लोड नहीं हो सकी।
+safety-report-heading = किसी व्यक्ति, लिस्टिंग या संदेश की रिपोर्ट करें
+safety-kind-person = व्यक्ति
+safety-kind-listing = लिस्टिंग
+safety-kind-message = संदेश
+safety-subject-placeholder = जिसकी रिपोर्ट है उसका DID या आईडी
+safety-category-impersonation = किसी और बनकर पेश आना
+safety-category-fraud = धोखाधड़ी
+safety-category-harassment = परेशान करना
+safety-category-unsafe-service = असुरक्षित सेवा
+safety-category-illegal-content = गैरकानूनी सामग्री
+safety-details-placeholder = क्या हुआ (ज़रूरी नहीं)
+safety-file-report = रिपोर्ट दर्ज करें
+safety-report-row = { $category } - { $kind } { $subject } [{ $status }]
+safety-status-open = खुली
+safety-status-withdrawn = वापस ली गई
+safety-withdraw = वापस लें
+safety-reports-load-failed = रिपोर्टें लोड नहीं हो सकीं।
+safety-subject-required = जिसकी रिपोर्ट है उसे बताना ज़रूरी है।
+safety-recorded = दर्ज हुई { $id } ({ $status })
+safety-limit-heading = पहली बार संपर्क की सीमा
+safety-limit-intro = एक समय-सीमा के अंदर कितने अनजान लोग आपसे बातचीत शुरू कर सकते हैं। चल रही बातचीत पर कभी कोई सीमा नहीं लगती।
+safety-window-placeholder = समय-सीमा (सेकंड में)
+safety-max-placeholder = हर समय-सीमा में नए संपर्कों की अधिकतम संख्या
+safety-save-limit = सीमा सहेजें
+safety-limit-load-failed = मौजूदा सीमा लोड नहीं हो सकी।
+safety-whole-numbers = दोनों मान पूर्ण संख्याएँ होने चाहिए।

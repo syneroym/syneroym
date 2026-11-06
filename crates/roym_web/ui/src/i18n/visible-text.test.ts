@@ -19,16 +19,11 @@ const sources = Object.fromEntries(
 const NOT_MOVED_YET: string[] = [
   "../directory/membership.ts",
   "../listings/editor.ts",
-  "../screens/backup.ts",
-  "../screens/contacts.ts",
   "../screens/directory.ts",
   "../screens/groups.ts",
   "../screens/listings.ts",
   "../screens/memberships.ts",
   "../screens/messages.ts",
-  "../screens/profile.ts",
-  "../screens/safety.ts",
-  "../screens/setup.ts",
   "../screens/synorg.ts",
   "../screens/synorg_members.ts",
 ];

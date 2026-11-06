@@ -27,7 +27,7 @@ export async function renderContacts(container: HTMLElement) {
   box.className = "contacts-screen";
 
   const h2 = document.createElement("h2");
-  h2.textContent = "Contacts";
+  h2.textContent = t("contacts-title");
   box.appendChild(h2);
 
   const listDiv = document.createElement("div");
@@ -42,25 +42,25 @@ export async function renderContacts(container: HTMLElement) {
         into.appendChild(item);
       }
     } catch {
-      into.textContent = "Could not load contacts.";
+      into.textContent = t("contacts-load-failed");
     }
   });
   await reload();
 
   const addHeading = document.createElement("h3");
-  addHeading.textContent = "Add / Import Contact";
+  addHeading.textContent = t("contacts-add-heading");
   box.appendChild(addHeading);
 
   const didInput = document.createElement("input");
-  didInput.placeholder = "Person DID";
+  didInput.placeholder = t("contacts-did-placeholder");
   box.appendChild(didInput);
 
   const addrInput = document.createElement("input");
-  addrInput.placeholder = "Conversation Address (required if no profile envelope)";
+  addrInput.placeholder = t("contacts-address-placeholder");
   box.appendChild(addrInput);
 
   const envInput = document.createElement("textarea");
-  envInput.placeholder = "Paste Profile Envelope JSON (optional)";
+  envInput.placeholder = t("contacts-envelope-placeholder");
   box.appendChild(envInput);
 
   const errorP = document.createElement("p");
@@ -69,7 +69,7 @@ export async function renderContacts(container: HTMLElement) {
 
   const addBtn = document.createElement("button");
   addBtn.className = "button";
-  addBtn.textContent = "Upsert Contact";
+  addBtn.textContent = t("contacts-upsert-button");
   addBtn.onclick = async () => {
     errorP.textContent = "";
     try {
@@ -78,7 +78,7 @@ export async function renderContacts(container: HTMLElement) {
         try {
           JSON.parse(trimmedEnv);
         } catch {
-          errorP.textContent = "Profile envelope is not valid JSON";
+          errorP.textContent = t("contacts-envelope-invalid");
           return;
         }
       }
