@@ -357,3 +357,120 @@ I do not answer for the owner.
   with `t("hub-title")` at start-up; no other file holds visible text, and the
   check does not read it. No backlog row is needed.
 - *Status:* Fixed (db01fa46). Now in: D-B1b-2 (`index.html` sentence).
+
+## Plan review round 2 — Claude Sonnet 5.5 (Claude Code desktop), 2026-11-06
+
+Checked on `feat/m08b-b1b-localization-screens` at `4917db83`, in the main
+checkout (not a worktree). `git pull` said "Already up to date". Since round
+1 the branch has the fix commit `db01fa46`, a merge of `main` (`8b39b525`, an
+auth fix for unique session tokens) and the status commit. I read the whole
+plan diff (`f9420b45..HEAD`), then checked each fix against the code, as in
+round 1. The change docs are the same as in round 1: roym-multilingual, with
+the `demo-stories` note unchanged.
+
+**Summary:** round 1: 9 items, all confirmed Fixed. Round 2: 0 blocker,
+0 major, 3 minor new items (P10 to P12). **3 open.**
+
+### Round 1 items — confirmed
+
+- **P1 — confirmed.** D-B1b-2 now exempts the third argument of `text()` by
+  position and says why a shape rule is wrong. I re-ran my parser: of the
+  47 class strings, 42 are the third argument of `text()`, 3 are the third
+  argument of `textNode()` (which Step 5 turns into `text()`) and 18 more
+  class lists are `className` assignments, which were already exempt. The other
+  three hits of my filter are error sentences (`editor.ts:191`, `:195`,
+  `login.ts:147`) that must be reported. Section 7.1 has the cases.
+- **P2 — confirmed.** D-B1b-12 uses the `Zq` marker for data and real codes in
+  the fixtures, a fixed allowed list that is not read from `hi.ftl`, and
+  names `UTC`, the currency codes and the fake `/rpc` detail. Section 7.1 and
+  exit criterion 3 have the raw-code self-check. The fixtures name the states
+  and statuses that the screens show (`delivered`, `deposited`, `failed`,
+  `active`, `draft`, `fraud`, `open`, `person`, a revoked and a current
+  credential). One gap is in P10 (where the list lives).
+- **P3 — confirmed.** The table in D-B1b-6 matches the code: the select lines
+  `listings.ts:241`, `:254`, `:269`, `:290`, `:318`, the seven block names
+  (`booking`, `payment`, `product`, `service`, `location`, `relationship`,
+  `service_record`), `safety.ts:104`, `:135`, `synorg_members.ts:250`, `:257`,
+  `:301`. The `safety-report-row` message gives today's English text exactly.
+- **P4 — confirmed.** Step 9 item 2 now lists `synorg_members.ts:74` and its
+  import. Step 3 item 7 and Step 4 item 4 remove the finished files from
+  `NOT_MOVED_YET`.
+- **P5 — confirmed.** D-B1b-8 names the four ids and checks the whole
+  `<id> = <text>` line. The `format!("{id} = {CONSTANT}")` form compiles (an
+  inline argument may name a constant). Section 7.2 also runs the test with a
+  changed id.
+- **P6 — confirmed.** D-B1b-4 and Step 4 item 3 describe both branches, and the
+  service text is a `HubError`, so `विवरण:` appears once. One wording point is
+  in P12.
+- **P7 — confirmed.** Step 6 lists all eight field names with their lines and
+  adds the table test. A small point about `capacity` is in P11.
+- **P8 — confirmed.** Both search messages take `$button`; `directory/search.ts`
+  passes `directory-search-button`; the English output is unchanged.
+- **P9 — confirmed.** D-B1b-2 has the `index.html` sentence, with the right line
+  (`index.html:17`; my round 1 text said `:16`, which was wrong).
+
+The owner answers (all (a), with the weight column for Q6) match my views. The
+weight list in D-B1b-13 uses real ids: `terms-*`, `receipt-*`, `quote-*`,
+`group-delivery-*` and `group-join-*` exist in `en.ftl`.
+
+### New findings
+
+#### P10 (minor) — The allowed Latin word list is made in Step 11, but Step 6 already needs it
+
+- **Where:** D-B1b-12 ("Allowed Latin words … a fixed list in the test file");
+  Step 6 item 3 ("no Latin word outside the sweep's allowed list"); Step 11
+  item 4 (`hindi-screens.test.ts` is created there); Step 3 item 5
+  (`src/testing/stub-rpc.ts`).
+- **Problem:** The Hindi table test of the listing editor errors (Step 6) must
+  use the same allowed list as the sweep. The list is defined in
+  `hindi-screens.test.ts`, which does not exist until Step 11. A test in
+  `editor.test.ts` that imports from another test file is also a bad shape
+  (importing a `*.test.ts` file runs its tests again).
+- **Failure case:** The implementer copies the list into `editor.test.ts` in
+  Step 6. Then there are two lists, and a word added to one is missing in the
+  other. Or the Step 6 test uses its own looser regex.
+- **Fix:** Put the list in a small helper, `src/testing/latin-words.ts`
+  (an exported array with the comments, and a function that removes the `Zq`
+  words and the allowed words from a text), and create it in Step 3 next to
+  `stub-rpc.ts`. Step 6 and Step 11 import it. Say in D-B1b-12 that the list
+  is in this helper, not in the test file.
+- *Status:* Open
+
+#### P11 (minor) — Step 6's table test names a path that `capacity` does not have
+
+- **Where:** Step 6 item 3 ("the 'is required' and 'whole number' errors for
+  each of the 8 field names"); `editor.ts:139-141`, `:293-296`.
+- **Problem:** Seven of the eight names go through `requireWhole`, which can
+  throw "is required" and "must be a whole number". `capacity` goes through
+  `toWholeCount` (`editor.ts:294`), which can throw only "must be a whole number";
+  an empty value gives the separate slot error "a slot needs a capacity of at
+  least 1" (`:296`), which is one of the 11 throws. A test written as
+  "required × 8" has one case that cannot happen.
+- **Failure case:** The implementer writes a loop over 8 names × 2 errors,
+  and the `capacity` × "is required" case fails or is skipped without a note.
+- **Fix:** Write the test list as: the 11 throws, plus "whole number" for each
+  of the 8 names, plus "is required" for the 7 names that use `requireWhole`.
+- *Status:* Open
+
+#### P12 (minor) — Two statements in the plan are slightly wrong
+
+- **Where:** Plan header ("`main` at `8b39b525` … changes no file this plan
+  names"); D-B1b-4 ("The login reply with a service text") and the `HubError`
+  description.
+- **Problem:** (1) The merge of `main` changes `docs/system-architecture.md`
+  (the auth paragraph near line 711), and the plan names that file (section 9,
+  `:1414`). The line the plan edits does not move (one line was replaced by one
+  line), so the plan is right in effect but not in words. (2) D-B1b-4 says a
+  `HubError` message "is already in the UI language", and then throws a service
+  text as a `HubError`. The service text is English. The behaviour is right (it
+  is shown once, as the detail), but the class comment and `errText` branch will
+  say "Hub text", and a later reader will rely on that.
+- **Failure case:** (1) A reader who checks the claim finds the file changed.
+  (2) A later change treats every `HubError` message as translated, for example
+  to skip a `$detail` wrapper, and shows English where the person reads Hindi.
+- **Fix:** (1) Say "changes no line this plan names". (2) In D-B1b-4, define
+  `HubError` as "a failure whose message the Hub shows as it is, with no
+  wrapper: Hub-made text in the UI language, or a service text that the Hub
+  shows as the detail of its own message", and use the same words in the class
+  comment.
+- *Status:* Open
