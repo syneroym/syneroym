@@ -198,3 +198,8 @@ directory-signed-age = Signed { $age }
 synorg-credential-expires = expires { $date }
 synorg-until = until { $date }
 synorg-until-lifted = until lifted
+
+## Shared
+
+error-unexpected = { $detail }
+error-no-detail = RPC error

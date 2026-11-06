@@ -20,7 +20,6 @@ const NOT_MOVED_YET: string[] = [
   "../directory/membership.ts",
   "../listings/editor.ts",
   "../main.ts",
-  "../rpc.ts",
   "../screens/backup.ts",
   "../screens/contacts.ts",
   "../screens/directory.ts",

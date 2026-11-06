@@ -1,4 +1,5 @@
 import { errText } from "../dom";
+import { HubError } from "../hub-error";
 import { t } from "../i18n/i18n";
 import { call, RpcError } from "../rpc";
 import type { MembershipVerdict } from "./membership";
@@ -91,9 +92,9 @@ export async function findListings(
     reply = await call<FindReply>("directory.find", { query });
   } catch (err) {
     if (err instanceof RpcError && err.code === 503) {
-      throw new Error(t("directory-search-not-started"));
+      throw new HubError(t("directory-search-not-started"));
     }
-    throw new Error(t("directory-search-failed", { detail: errText(err) }));
+    throw new HubError(t("directory-search-failed", { detail: errText(err) }));
   }
 
   const outcomes: SourceOutcome[] = (reply.outcomes ?? []).map((o) => {

@@ -187,3 +187,8 @@ directory-signed-age = हस्ताक्षर: { $age }
 synorg-credential-expires = वैधता खत्म: { $date }
 synorg-until = { $date } तक
 synorg-until-lifted = जब तक हटाया न जाए
+
+## Shared
+
+error-unexpected = कुछ गड़बड़ हो गई। विवरण: { $detail }
+error-no-detail = सेवा से त्रुटि मिली

@@ -94,8 +94,9 @@ import {
   formatMinor,
   toMinorUnits,
 } from "../money.js";
+import { HubError } from "../hub-error";
 
-export class ListingInputError extends Error {
+export class ListingInputError extends HubError {
   constructor(message: string) {
     super(message);
     this.name = "ListingInputError";

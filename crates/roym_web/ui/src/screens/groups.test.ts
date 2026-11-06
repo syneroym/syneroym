@@ -8,32 +8,7 @@ import {
   renderThreadMessages,
   type GroupMessageRow,
 } from "./groups";
-
-type Handler = (params: Record<string, unknown>) => unknown;
-
-function stubRpc(handlers: Record<string, Handler>) {
-  vi.stubGlobal(
-    "fetch",
-    vi.fn(async (_url: string, init: RequestInit) => {
-      const body = JSON.parse(String(init.body)) as {
-        method: string;
-        params: Record<string, unknown>;
-      };
-      const handler = handlers[body.method];
-      if (!handler) throw new Error(`unexpected method ${body.method}`);
-      const res = handler(body.params);
-      if (res instanceof RpcError) {
-        return {
-          ok: true,
-          json: async () => ({
-            error: { code: res.code, message: res.message, data: res.data },
-          }),
-        };
-      }
-      return { ok: true, json: async () => ({ result: res }) };
-    }),
-  );
-}
+import { stubRpc } from "../testing/stub-rpc";
 
 afterEach(() => {
   vi.unstubAllGlobals();

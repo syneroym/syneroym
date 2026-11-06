@@ -1,30 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { NO_INSTANT_REMOVAL_NOTICE } from "../directory/membership";
 import { buildMembersPanel } from "./synorg_members";
-
-type Handler = (params: Record<string, unknown>) => unknown;
-
-function stubRpc(handlers: Record<string, Handler>) {
-  const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
-  vi.stubGlobal(
-    "fetch",
-    vi.fn(async (_url: string, init: RequestInit) => {
-      const body = JSON.parse(String(init.body)) as {
-        method: string;
-        params: Record<string, unknown>;
-      };
-      calls.push(body);
-      const handler = handlers[body.method];
-      if (!handler) throw new Error(`unexpected method ${body.method}`);
-      const out = handler(body.params);
-      if (out instanceof Error) {
-        return { ok: true, json: async () => ({ error: { code: -32602, message: out.message } }) };
-      }
-      return { ok: true, json: async () => ({ result: out }) };
-    }),
-  );
-  return calls;
-}
+import { stubRpc } from "../testing/stub-rpc";
 
 const MEMBER = "did:key:zMember";
 const NOW = Math.floor(Date.now() / 1000);

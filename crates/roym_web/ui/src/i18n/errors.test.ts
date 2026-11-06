@@ -1,10 +1,13 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { errText } from "../dom";
-import { RpcError } from "../rpc";
+import { HubError } from "../hub-error";
+import { call, RpcError } from "../rpc";
+import { stubRpc } from "../testing/stub-rpc";
 import { activate, activateWith, t } from "./i18n";
 import HINDI from "./hi.ftl?raw";
 
 afterEach(async () => {
+  vi.unstubAllGlobals();
   await activate("en");
 });
 
@@ -98,5 +101,42 @@ describe("errText in Hindi", () => {
     expect(errText(rpc(-32013))).not.toContain("raw text");
     expect(errText(new RpcError(503, "", "Other"))).toContain("HTTP 503");
     expect(errText(new RpcError(503, "", "Other"))).toMatch(DEVANAGARI);
+  });
+});
+
+describe("errText for failures the Hub makes or the browser throws", () => {
+  async function hindi(): Promise<void> {
+    await activateWith("hi", { hi: async () => HINDI });
+  }
+
+  it("shows a HubError as it is, in both languages", async () => {
+    expect(errText(new HubError("x"))).toBe("x");
+    await hindi();
+    expect(errText(new HubError("x"))).toBe("x");
+  });
+
+  it("puts a browser error only after the detail label in Hindi", async () => {
+    expect(errText(new SyntaxError("Unexpected token"))).toBe("Unexpected token");
+    await hindi();
+    const text = errText(new SyntaxError("Unexpected token"));
+    expect(text).toMatch(DEVANAGARI);
+    expect(text.replace(/विवरण: .*$/, "")).not.toContain("Unexpected");
+    expect(text).toContain("विवरण: Unexpected token");
+  });
+
+  it("words a thrown string like a browser error", async () => {
+    expect(errText("oops")).toBe("oops");
+    await hindi();
+    const text = errText("oops");
+    expect(text).toMatch(DEVANAGARI);
+    expect(text).toContain("विवरण: oops");
+  });
+
+  it("gives an RpcError with no message a detail from the string catalog", async () => {
+    stubRpc({ "x.y": () => new RpcError(-32602, "", "Other") });
+    const err = await call("x.y").catch((e: unknown) => e);
+    expect(errText(err)).toBe("RPC error");
+    await hindi();
+    expect(errText(err)).toContain("विवरण: RPC error");
   });
 });

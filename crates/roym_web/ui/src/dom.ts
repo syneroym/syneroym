@@ -1,3 +1,4 @@
+import { HubError } from "./hub-error";
 import { lookupText, messageId, t } from "./i18n/i18n";
 import { RpcError } from "./rpc";
 
@@ -36,10 +37,14 @@ function rpcErrorText(err: RpcError): string {
 }
 
 /// The text to show for a failure, in the Hub language. The service's own
-/// English text is only a `$detail` inside the Hub's message.
+/// English text is only a `$detail` inside the Hub's message. A `HubError`
+/// is shown as it is; any other failure (a browser error, a thrown string)
+/// is a `$detail` inside the Hub's own sentence.
 export function errText(err: unknown): string {
   if (err instanceof RpcError) return rpcErrorText(err);
-  return err instanceof Error ? err.message : String(err);
+  if (err instanceof HubError) return err.message;
+  const detail = err instanceof Error ? err.message : String(err);
+  return t("error-unexpected", { detail });
 }
 
 /// A label, one space, then the value nodes. Fluent removes a space at the
@@ -58,6 +63,23 @@ export function field(labelText: string, control: HTMLElement): HTMLElement {
   label.appendChild(text("span", labelText));
   label.appendChild(control);
   return label;
+}
+
+export function input(placeholder: string, value = ""): HTMLInputElement {
+  const el = document.createElement("input");
+  el.placeholder = placeholder;
+  el.value = value;
+  return el;
+}
+
+export function checkbox(labelText: string, checked = false): { wrap: HTMLElement; box: HTMLInputElement } {
+  const wrap = document.createElement("label");
+  wrap.className = "checkbox-field";
+  const box = document.createElement("input");
+  box.type = "checkbox";
+  box.checked = checked;
+  wrap.append(box, text("span", labelText));
+  return { wrap, box };
 }
 
 /// Returns a function that refills `host` from the node. The content is
