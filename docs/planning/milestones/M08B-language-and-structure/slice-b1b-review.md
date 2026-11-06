@@ -474,3 +474,25 @@ weight list in D-B1b-13 uses real ids: `terms-*`, `receipt-*`, `quote-*`,
   shows as the detail of its own message", and use the same words in the class
   comment.
 - *Status:* Fixed (ae8f0f54). Now in: (1) plan header ("changes no line this plan names", with the architecture line); (2) D-B1b-4 (`HubError` defined as a message shown as it is with no wrapper, the same words in the class comment; `errText` branch reworded).
+
+## Plan review round 3 — Claude Sonnet 5.5 (Claude Code desktop), 2026-11-06
+
+Checked on `feat/m08b-b1b-localization-screens` at `08bd75d8`, in the main
+checkout. I read the plan diff `f28ac494..HEAD` and checked only the three
+open items of round 2.
+
+**Summary:** 0 blocker, 0 major, 0 minor new. **0 open.**
+
+- **P10 — confirmed.** D-B1b-12 puts the list and `leftoverLatin()` in
+  `src/testing/latin-words.ts`. Step 3 item 5 creates it with a small test
+  (`latin-words.test.ts`), and Step 6 item 3 and the sweep import it. The
+  check skips `src/testing/` and `*.test.ts`, so the helper's English words do
+  not trip it. Section 7.5 lists the new file.
+- **P11 — confirmed.** Step 6 item 3 now lists the 11 throws, "whole number"
+  for the 8 names, and "is required" for the 7 `requireWhole` names, with the
+  `capacity` reason (`editor.ts:296`).
+- **P12 — confirmed.** The header says "changes no line this plan names" and
+  gives the architecture line. `HubError` is defined as a message shown as it
+  is, with no wrapper, and the `errText` branch uses the same words.
+
+No new findings. The plan is ready for implementation.
