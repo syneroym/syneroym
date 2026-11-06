@@ -1,7 +1,7 @@
 import { test, expect, type Page } from '../fixtures';
 import {
-  addContact, loginWithDelegatedKey, openConversation, openMessages, rpcCall, saveProfile, sendMessage,
-  threadMessage,
+  addContact, hubMessage, loginWithDelegatedKey, openConversation, openMessages, rpcCall, saveProfile,
+  sendMessage, threadMessage,
 } from '../hub-helpers';
 import { readE2EPorts } from '../ports';
 
@@ -46,6 +46,18 @@ test.describe('Roym Hub', () => {
 
   test.beforeEach(async ({ page }) => {
     expect(process.env.ROYM_WEB_ALIAS).toBeDefined();
+  });
+
+  test.describe('in a browser that asks for Hindi', () => {
+    test.use({ locale: 'hi-IN' });
+
+    test('the Hub opens in Hindi with no choice made', async ({ page }) => {
+      await page.goto(HUB_URL);
+      await page.waitForLoadState('networkidle');
+
+      await expect(page.locator('html')).toHaveAttribute('lang', 'hi');
+      await expect(page.locator('.login-picker h2')).toHaveText(hubMessage('hi', 'login-title'));
+    });
   });
 
   test('1. delegated-key login: import a session key, session bar shows the person DID', async ({ page }) => {

@@ -1,3 +1,5 @@
+import * as fs from 'fs';
+import * as path from 'path';
 import { expect, type Page } from './fixtures';
 
 // Drive the real delegated-key login: hand the Hub the session-key.json that
@@ -87,4 +89,25 @@ export async function sendMessage(page: Page, body: string) {
 /** The message in the open thread that holds this text. */
 export function threadMessage(page: Page, text: string) {
   return page.locator('.thread-messages .message', { hasText: text });
+}
+
+/**
+ * The text of one message in the Hub's string catalog for a language, read from the catalog
+ * file itself. A check that uses it still passes when the wording of a message is edited.
+ * Only for messages on one line.
+ */
+export function hubMessage(tag: string, id: string): string {
+  const file = path.join(__dirname, '../../../roym_web/ui/src/i18n', `${tag}.ftl`);
+  const line = fs
+    .readFileSync(file, 'utf8')
+    .split('\n')
+    .find((candidate) => candidate.startsWith(`${id} = `));
+  if (line === undefined) throw new Error(`message ${id} is not in ${file}`);
+  return line.slice(`${id} = `.length).trim();
+}
+
+/** Pick a language in the Hub's language list. The page loads again in that language. */
+export async function chooseHubLanguage(page: Page, tag: string) {
+  await page.locator('.language-picker').selectOption(tag);
+  await expect(page.locator('html')).toHaveAttribute('lang', tag, { timeout: 15_000 });
 }
