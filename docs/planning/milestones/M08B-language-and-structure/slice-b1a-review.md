@@ -21,6 +21,10 @@ model that really ran this review (Sonnet 5.5) here and in `status.md`. If the
 prompt values are right and the row is wrong, the owner should correct the
 "Plan by" column.
 
+*Plan author's note (fix round):* the row is right. The plan was written by
+Claude Opus 5.5, and this review by Claude Sonnet 5.5, so the two are
+different models.
+
 **Change docs.** The prompt lists one change doc,
 [roym-multilingual](../../changes/roym-multilingual/change.md). `task.md` also
 names [demo-stories](../../changes/demo-stories/change.md), in its "Demo"
@@ -30,7 +34,7 @@ records nothing there. I agree: the story follows its rules (a story file in
 roym-multilingual change doc). Every criterion (`ML-2` to `ML-6`) and every
 decision belongs to roym-multilingual.
 
-**Summary:** 0 blocker, 3 major, 9 minor, 12 items. All 12 Open.
+**Summary:** 0 blocker, 3 major, 9 minor, 12 items. All 12 Fixed (f10a0b15), with the owner's answers to Q1 to Q6 (all (a), 2026-11-06).
 
 Limits of this review: I read the plan, the docs and the code. I ran `Intl`
 checks in Node 22.11 and read the Rust tests, `verify.rs`, `assets.rs` and the
@@ -174,7 +178,7 @@ I do not answer for the owner.
   in the template comment which rows have `<time>`. Add a test that
   `timeElement` throws or refuses in the same way as today for a value that
   cannot be a date (today `toISOString()` throws a `RangeError` for it).
-- *Status:* Open.
+- *Status:* Fixed (f10a0b15). Now in: Q3 owner answer; D-B1a-5 (two kinds of card row); Step 5 items 4, 6, 7; section 7.1 (`RangeError` test).
 
 #### P2 (major) — `t()` has no English state before `initLanguage()`, and the existing tests and test hook need one
 
@@ -203,7 +207,7 @@ I do not answer for the owner.
   any time, never throws, and never returns an id for an id that `en.ftl` has.
   Keep a test-only reset (`activate("en")`) for tests that switched language.
   The unit tests then need no setup file, and `RoymRegistry` is safe.
-- *Status:* Open.
+- *Status:* Fixed (f10a0b15). Now in: section 2.2 point 14; D-B1a-3 (English state at module load); Step 2 item 4; section 7.1.
 
 #### P3 (major) — A failed catalog load leaves the Hub blank
 
@@ -229,7 +233,7 @@ I do not answer for the owner.
   English. Do not delete the stored choice on a failure (the next load may
   work). Add a test in `i18n.test.ts` with a loader that rejects: `t()` returns
   English and `lang` is `en`.
-- *Status:* Open.
+- *Status:* Fixed (f10a0b15). Now in: D-B1a-7 ("A failed load"); Step 2 item 4; Step 6 item 1; section 7.1.
 
 #### P4 (minor) — Step 3 changes `formatMinor`, but the tests that read its output change in Step 5
 
@@ -245,7 +249,7 @@ I do not answer for the owner.
   step passes.
 - **Fix:** Add `cards/templates/templates.test.ts` (the money lines) to Step 3
   item 4. Keep its date lines (`toISOString`) for Step 5.
-- *Status:* Open.
+- *Status:* Fixed (f10a0b15). Now in: Step 3 item 5.
 
 #### P5 (minor) — Word tables keyed by a stranger's value return inherited properties
 
@@ -266,7 +270,7 @@ I do not answer for the owner.
   came" rule otherwise. Add one test per table with `constructor` and
   `__proto__`. Make `t()` return the id for a non-string argument and not
   throw.
-- *Status:* Open.
+- *Status:* Fixed (f10a0b15). Now in: section 2.2 point 15; D-B1a-15 (`Map` tables, `lookupText`); D-B1a-3 (non-string id); Step 5 items 2, 3, 6.
 
 #### P6 (minor) — Some errors never reach the table, and the plan says "every code"
 
@@ -293,7 +297,7 @@ I do not answer for the owner.
   the table with `$detail`. Check the callers that catch a non-`RpcError` from
   `call()` first (for example `whoami` and `login`). If one needs the old
   type, handle it there. Add the case to `errors.test.ts`.
-- *Status:* Open.
+- *Status:* Fixed (f10a0b15). Now in: Q6 owner answer; section 2.2 point 13; D-B1a-12 (code `0`, `error-network`, corrected sentence); section 4 row 6b; Step 4 item 1; section 7.1.
 
 #### P7 (minor) — Blocked `localStorage` makes the picker do nothing
 
@@ -311,7 +315,7 @@ I do not answer for the owner.
   test with a storage stub that throws. Optionally add the backlog row "the
   language switch reloads the page" (Q4 (a) is a deliberate shortcut, and the
   rule in AGENTS.md asks to record shortcuts).
-- *Status:* Open.
+- *Status:* Fixed (f10a0b15). Now in: Q4 owner answer; D-B1a-8 (`saveLanguage` returns a boolean, note, no reload); Step 6 item 5; section 8 (new backlog row).
 
 #### P8 (minor) — The first-choice-from-browser path (ML-3) is tested only by a unit test
 
@@ -328,7 +332,7 @@ I do not answer for the owner.
 - **Fix:** In Step 7 or in `roym-hub.spec.ts`, add one test with
   `test.use({ locale: 'hi-IN' })` that opens the Hub and checks
   `html[lang]` is `hi` before any click. Add it to the list in section 7.3.
-- *Status:* Open.
+- *Status:* Fixed (f10a0b15). Now in: Step 7 item 3 (`hi-IN` describe in `roym-hub.spec.ts`); sections 3 and 7.3.
 
 #### P9 (minor) — The format locale and the catalog file name have no rule for a region or a bad name
 
@@ -350,7 +354,7 @@ I do not answer for the owner.
   without the extension, equals `new Intl.Locale(name).toString()` (the
   canonical form) and is not `und`. This keeps the "no code change" promise
   honest.
-- *Status:* Open.
+- *Status:* Fixed (f10a0b15). Now in: Q1 owner answer; D-B1a-1 (canonical file name); D-B1a-4 (region kept when the tag has one); section 7.1.
 
 #### P10 (minor) — Nothing checks the real chunk split, and the test runner and the build use different Vite versions
 
@@ -373,7 +377,7 @@ I do not answer for the owner.
   check at the start of Step 2 with two dummy messages, before the rest is
   built on it. Note in the plan that the unit tests and the build use
   different Vite versions.
-- *Status:* Open.
+- *Status:* Fixed (f10a0b15). Now in: section 2.2 point 16; Step 2 item 1 (split check first); Step 8 item 1; exit criterion 2.
 
 #### P11 (minor) — Small facts in the plan text that are wrong or unclear
 
@@ -397,7 +401,7 @@ I do not answer for the owner.
   spends time on a wrong premise.
 - **Fix:** Fix the four sentences. In (b) say the gate needs only
   `mise run test:roym-ui`.
-- *Status:* Open.
+- *Status:* Fixed (f10a0b15). Now in: (a) "Size and PR" paragraph; (b) Q5 text and owner answer; (c) end-user bullet with the Hindi date; (d) section 7.1, `dom.test.ts` sentence.
 
 #### P12 (minor) — The catalog test scans source text and can be fooled
 
@@ -419,4 +423,4 @@ I do not answer for the owner.
   `t(` call outside `i18n.ts` and the `messageId` tables (the test lists them),
   and keep the `messageId` rule as the only way to pass an id by variable.
   This is also the first half of the B1b build check, so write it once.
-- *Status:* Open.
+- *Status:* Fixed (f10a0b15). Now in: section 7.1 ("How the source scan works", `src/i18n/scan.ts`); D-B1a-3 (`lookupText`, literal ids only).
