@@ -180,3 +180,5 @@ gallery-ping-response = प्रोफ़ाइल पिंग का जव�
 gallery-ping-failed = प्रोफ़ाइल पिंग विफल: HTTP { $status }
 gallery-ping-error = प्रोफ़ाइल पिंग में त्रुटि: { $error }
 gallery-heading = कार्ड गैलरी (नमूना कार्ड)
+
+date-invalid = अमान्य तारीख

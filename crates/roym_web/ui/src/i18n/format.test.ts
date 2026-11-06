@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { formatAge, formatDateTime, formatNumber, formatUtcDate, timeElement } from "./format";
+import { formatAge, formatDateTime, formatNumber, formatTime, formatUtcDate, timeElement } from "./format";
 import { activateWith, activate } from "./i18n";
 
 afterEach(async () => {
@@ -40,8 +40,16 @@ describe("formatDateTime", () => {
     expect(formatDateTime(secs)).not.toBe(english);
   });
 
-  it("throws a RangeError for a value that is not a date", () => {
-    expect(() => formatDateTime(Number.NaN)).toThrow(RangeError);
+  it("gives the invalid-date text for a value that is not a date, and does not throw", () => {
+    expect(formatDateTime(Number.NaN)).toBe("Invalid Date");
+    expect(formatDateTime(Number.MAX_SAFE_INTEGER)).toBe("Invalid Date");
+  });
+});
+
+describe("formatTime", () => {
+  it("gives the invalid-date text for the lowest signed 64-bit time", () => {
+    expect(formatTime(-9223372036854775808)).toBe("Invalid Date");
+    expect(formatTime(Number.NaN)).toBe("Invalid Date");
   });
 });
 
@@ -57,6 +65,11 @@ describe("formatAge", () => {
     expect(formatAge(300)).toBe("5 minutes ago");
     expect(formatAge(7200)).toBe("2 hours ago");
     expect(formatAge(3 * 86400)).toBe("3 days ago");
+  });
+
+  it("gives the invalid-date text for an age that is not finite", () => {
+    expect(formatAge(Number.NaN)).toBe("Invalid Date");
+    expect(formatAge(Number.POSITIVE_INFINITY)).toBe("Invalid Date");
   });
 
   it("is not English in Hindi", async () => {

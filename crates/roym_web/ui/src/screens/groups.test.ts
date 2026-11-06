@@ -66,6 +66,30 @@ describe("Groups screen rendering", () => {
     expect(bodyEl?.querySelector("img")).toBeNull();
   });
 
+  it("draws every message when one has a timestamp that is not a date", () => {
+    const threadList = document.createElement("div");
+    const msg = (id: string, sender_timestamp_ms: number): GroupMessageRow => ({
+      id,
+      conversation: "grp-1",
+      author: "did:key:zAlice",
+      direction: "incoming",
+      sender_timestamp_ms,
+      content_type: "text/plain",
+      body_encoding: "utf8",
+      body: id,
+      state: "delivered",
+    });
+    renderThreadMessages(
+      threadList,
+      [msg("a", 1000), msg("b", -9223372036854775808), msg("c", 3000)],
+      nameOf,
+      () => {},
+      () => {},
+    );
+    expect(threadList.querySelectorAll(".message-row")).toHaveLength(3);
+    expect(threadList.querySelectorAll(".message-time")[1].textContent).toBe("Invalid Date");
+  });
+
   it("renders membership rows as event lines", () => {
     const threadList = document.createElement("div");
     const msgs: GroupMessageRow[] = [

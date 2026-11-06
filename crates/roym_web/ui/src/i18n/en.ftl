@@ -189,3 +189,6 @@ gallery-ping-response = Profile ping response: { $response }
 gallery-ping-failed = Profile ping failed: HTTP { $status }
 gallery-ping-error = Profile ping error: { $error }
 gallery-heading = Card Gallery (Sample Cards)
+
+# Shown where a time from another node is not a date
+date-invalid = Invalid Date
