@@ -100,6 +100,14 @@ const GATES: &[Gate] = &[
         commands: &[&["python3", ".github/scripts/check-planning-refs.py"]],
     },
     Gate {
+        name: "hub-ui",
+        skip_on_docs_only: true,
+        docs_paths_that_run: &[],
+        // Runs its own `npm ci`, so it needs no other gate first. It sits
+        // before `nextest` so a failing Hub test is reported early.
+        commands: &[&["mise", "run", "test:roym-ui"]],
+    },
+    Gate {
         name: "nextest",
         skip_on_docs_only: true,
         docs_paths_that_run: &[],
