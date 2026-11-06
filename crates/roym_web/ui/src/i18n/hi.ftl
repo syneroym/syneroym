@@ -30,8 +30,8 @@ error-network = इस इंस्टॉलेशन तक नहीं पह
 error-http = सर्वर से त्रुटि मिली (HTTP { $code })
 
 login-failed = साइन इन नहीं हो सका: { $detail }
-directory-search-failed = खोज नहीं हो सकी: { $detail }। फिर कोशिश करने के लिए "Search" दबाएँ।
-directory-search-not-started = यह इंस्टॉलेशन खोज शुरू नहीं कर सका। फिर कोशिश करने के लिए "Search" दबाएँ।
+directory-search-failed = खोज नहीं हो सकी: { $detail }। फिर कोशिश करने के लिए "{ $button }" दबाएँ।
+directory-search-not-started = यह इंस्टॉलेशन खोज शुरू नहीं कर सका। फिर कोशिश करने के लिए "{ $button }" दबाएँ।
 messages-quote-expired = यह कोटेशन समाप्त हो गया है। नया कोटेशन माँगें।
 messages-accept-failed = स्वीकार नहीं हो सका: { $detail }
 contacts-upsert-failed = संपर्क सहेजा नहीं जा सका: { $detail }
@@ -530,3 +530,116 @@ group-key-changed = समूह की कुंजी यहाँ बदल�
 group-transcript-check = संदेश-सूची जाँच: { $digest }
 group-sync-button = अभी सिंक करें
 group-hide-button = इस समूह को छिपाएँ
+
+## Membership words
+
+membership-no-instant-removal = किसी समूह का फ़ैसला उन प्रतियों तक, जो दूसरे लोगों के पास पहले से हैं, तभी पहुँचता है जब वे अगली बार जाँच करें। कोई यह वादा नहीं कर सकता कि वह हर जगह एक साथ हट जाएगा।
+membership-withheld-revocation = यह समूह की प्रकाशित की हुई हर वापसी दिखाता है। जो वापसी समूह ने प्रकाशित नहीं करने का फ़ैसला किया, वह यह नहीं दिखा सकता।
+membership-issuer-changed-check = यह डायरेक्टरी अब कहती है कि वह उस समूह से अलग समूह की ओर से बोलती है जो आपने पहले देखा था। उसका जवाब इस्तेमाल नहीं किया गया।
+membership-reason-issuer-changed = यह डायरेक्टरी जिस समूह की ओर से बोलती है वह वह नहीं है जो आपने इसे जोड़ते समय पहली बार देखा था
+membership-reason-issuer-not-pinned = इस नोड ने अभी दर्ज नहीं किया कि यह डायरेक्टरी किस समूह की ओर से बोलती है
+membership-unknown-no-answer = सदस्यता: अज्ञात ({ $source } ने ऐसा कोई जवाब नहीं दिया जिसे यह नोड इस्तेमाल कर सके)
+membership-valid = { $name } का सदस्य, आपके नोड पर जाँचा गया। समूह की वापसियाँ जाँची गईं: { $age }।
+membership-none = { $source } ने कोई सदस्यता नहीं दिखाई
+membership-unknown = सदस्यता: अज्ञात ({ $reason })
+membership-refused = सदस्यता का सबूत जाँच में सही नहीं निकला -- इसे अज्ञात मानें
+membership-expired = सदस्यता { $date } को खत्म हो गई
+membership-out-of-scope = सदस्यता इस लिस्टिंग को शामिल नहीं करती: { $outside }
+membership-refusal-none = इस समूह के पास आपकी कोई सदस्यता दर्ज नहीं है।
+membership-this-group = इस समूह
+membership-publish-not-admitted = इस समूह ने यह लिस्टिंग स्वीकार नहीं की। { $why }
+membership-issuer-unrecorded = इस नोड ने दर्ज नहीं किया कि यह डायरेक्टरी किस समूह की ओर से बोलती है।
+membership-issuer-pinned = जब आपने इस डायरेक्टरी को जोड़ा, तब इसने जिस समूह की होने की बात कही: { $issuer }
+membership-never-checked = कभी जाँची नहीं गई
+membership-checked = जाँची गई: { $age }
+
+membership-revoked = सदस्यता रद्द: समूह ने इसे { $date } को वापस ले लिया।{ $has_reason ->
+        [yes] { " " }बताया गया कारण: { $reason }
+       *[no] { "" }
+    }
+membership-suspended =
+    { $scope ->
+        [listing] यह लिस्टिंग
+       *[membership] सदस्यता
+    } समूह ने अपने नियम "{ $rule }" के तहत { $since } से रोकी है, { $until ->
+        [date] { $date } तक
+       *[lifted] जब तक समूह इसे हटा न दे
+    }।{ $has_reason ->
+        [yes] { " " }बताया गया कारण: { $reason }
+       *[no] { "" }
+    }
+
+## Memberships
+
+memberships-title = सदस्यताएँ
+memberships-intro = हर पंक्ति किसी लिस्टिंग के मालिक की किसी समूह में सदस्यता है, जैसा इस नोड ने समूह के अपने हस्ताक्षरित बयानों से निकाला। यह आपके पास रखी प्रति है, ताज़ा जवाब नहीं।
+memberships-load-failed = सदस्यताएँ लोड नहीं हो सकीं: { $detail }
+memberships-empty = अभी कोई सदस्यता जाँची नहीं गई। जब खोज में किसी ऐसे समूह का नतीजा आएगा जिसका लिस्टिंग का मालिक सदस्य है, तब एक यहाँ दिखेगी।
+membership-row-source = समूह की डायरेक्टरी: { $label }
+membership-row-member = लिस्टिंग का मालिक: { $did }
+membership-last-error = पिछली जाँच नहीं हो सकी: { $error }
+membership-check-again = फिर जाँचें
+membership-checked-now = अभी जाँचा गया।
+membership-unreachable = इस डायरेक्टरी तक नहीं पहुँच सके; यह वही प्रति है जो आपके पास पहले से थी।
+membership-check-failed = जाँच नहीं हो सकी: { $detail }
+
+## Directory
+
+directory-check-again = सदस्यता फिर जाँचें
+directory-membership-alone = सदस्यता अपने आप में, इस लिस्टिंग से जुड़े बिना: { $words }
+directory-check-failed = जाँच नहीं हो सकी: { $detail }
+directory-checked-now = अभी जाँचा गया।
+directory-unreachable = इस डायरेक्टरी तक नहीं पहुँच सके। जो पहले से रखा है वह दिखा रहे हैं: { $checked }।
+directory-source-error-not-started = यह इंस्टॉलेशन व्यस्त था और उसने कॉल शुरू नहीं की
+directory-source-error-timed-out = डायरेक्टरी ने समय पर जवाब नहीं दिया
+directory-source-error-not-found = उस पते पर कोई डायरेक्टरी जवाब नहीं देती
+directory-source-error-refused = डायरेक्टरी ने अनुरोध मना कर दिया
+directory-source-error-unreadable = डायरेक्टरी का जवाब पढ़ा नहीं जा सका
+directory-title = डायरेक्टरी
+directory-intro = डायरेक्टरी वह जगह है जहाँ आप खोजना चुनते हैं। यह ज़रूरी नहीं है: लिस्टिंग के मालिक का भेजा लिंक हो तो आप सीधे उन तक पहुँच सकते हैं। आपका नोड हर नतीजा खुद जाँचता है -- डायरेक्टरी पर कभी भरोसा नहीं किया जाता।
+directory-yours-heading = आपकी डायरेक्टरी
+directory-load-failed = आपकी डायरेक्टरी लोड नहीं हो सकीं: { $detail }
+directory-empty = अभी कोई डायरेक्टरी नहीं जोड़ी गई।
+directory-last-error = पिछली गड़बड़ी: { $reason }
+directory-answered-recently = हाल में जवाब दिया
+directory-remove-failed = हटाया नहीं जा सका: { $detail }
+directory-add-heading = डायरेक्टरी जोड़ें
+directory-add-help = किसी दोस्त, सिफ़ारिश या जानी-मानी सूची से मिला Roym डायरेक्टरी सेवा का DID यहाँ चिपकाएँ। डायरेक्टरियों की कोई डायरेक्टरी नहीं है।
+directory-add-did-placeholder = did:key:... (Roym डायरेक्टरी सेवा का DID)
+directory-add-label-placeholder = इसके लिए आपका नाम (ज़रूरी नहीं)
+directory-add-button = डायरेक्टरी जोड़ें
+directory-added-note = जोड़ दी गई। ध्यान दें: { $probe }।
+directory-added-silent = जोड़ दी गई, पर डायरेक्टरी ने अभी की जाँच का जवाब नहीं दिया।
+directory-added = जोड़ दी गई।
+directory-add-failed = जोड़ी नहीं जा सकी: { $detail }
+directory-search-heading = अपनी डायरेक्टरी में खोजें
+directory-search-text-placeholder = खोजने के शब्द (ज़रूरी नहीं)
+directory-search-categories-placeholder = श्रेणियाँ, कॉमा से अलग करें (ज़रूरी नहीं)
+directory-search-help = मिलान शीर्षक, सार और श्रेणियों के पूरे शब्दों पर होता है। विराम-चिह्न छोड़ दिए जाते हैं, इसलिए 50% खोजने पर 50 मिलता है। कोई रैंकिंग नहीं है और पैसे देकर ऊपर आने की सुविधा नहीं है -- नतीजे सबसे नए पहले दिखते हैं।
+directory-search-button = खोजें
+directory-searching = खोज रहे हैं...
+directory-no-sources = आपने कोई डायरेक्टरी नहीं जोड़ी है। ऊपर एक जोड़ें, या लिस्टिंग के मालिक तक सीधे लिंक से पहुँचें।
+directory-searched = { $count } डायरेक्टरी में खोजा गया।
+directory-more-than-returned = इस डायरेक्टरी के पास जितने नतीजे उसने लौटाए उनसे ज़्यादा थे
+directory-results-heading = नतीजे
+directory-no-results = कोई नतीजा नहीं।
+directory-untitled = (बिना शीर्षक)
+directory-hit-categories = श्रेणियाँ: { $categories }
+directory-hit-offered-by = देने वाला: { $issuer }
+directory-signature-ok = हस्ताक्षर: आपके नोड पर जाँचा गया
+directory-signature-bad = हस्ताक्षर: जाँच में सही नहीं निकला -- इसे अज्ञात मानें
+directory-revocation = वापसी: { $status }
+directory-revocation-good = ठीक
+directory-revocation-unknown = अज्ञात
+directory-seen-at = यहाँ दिखा: { $from }
+directory-versions-differ = दो डायरेक्टरी इस पर सहमत नहीं हैं कि इस पेशकश का कौन-सा संस्करण मौजूदा है। हस्ताक्षर वाला नया संस्करण दिखाया गया है।
+directory-engage-button = इस लिस्टिंग के मालिक को संदेश भेजें
+directory-engage-gone = पूरी लिस्टिंग अब इस खोज में नहीं है।
+directory-engage-address = बातचीत का पता: { $address } -- संदेश टैब खोलें और इस पते से बातचीत शुरू करें।
+directory-engage-failed = खोला नहीं जा सका: { $detail }
+directory-truncated = यहाँ दिखाए गए नतीजों से ज़्यादा नतीजे मिले थे।
+directory-refused-heading = अस्वीकार किया गया सबूत
+directory-refused-intro = एक या अधिक डायरेक्टरी ने ये दिए, पर इनके हस्ताक्षर आपके नोड पर सही नहीं निकले। ये इसलिए दिखाए गए हैं कि आपको पता रहे कि किसी डायरेक्टरी ने ये दिए। इन्हें कभी असली पेशकश नहीं माना जाता।
+directory-refused-fallback = हस्ताक्षर सही नहीं निकला
+directory-served-by = इनसे मिला: { $sources }
+directory-refused-truncated = यहाँ दिखाए गए अस्वीकृत सबूत से ज़्यादा सबूत दिए गए थे।

@@ -1,4 +1,3 @@
-import { NO_INSTANT_REMOVAL_NOTICE } from "../directory/membership";
 import { errText, field, refiller, text } from "../dom";
 import { formatUtcDate } from "../i18n/format";
 import { t } from "../i18n/i18n";
@@ -71,7 +70,7 @@ export async function buildMembersPanel(synorgCategories: string[]): Promise<HTM
   const wrap = document.createElement("div");
   wrap.className = "synorg-members";
   wrap.appendChild(text("h3", "Memberships and decisions"));
-  wrap.appendChild(text("p", NO_INSTANT_REMOVAL_NOTICE, "no-instant-removal-notice"));
+  wrap.appendChild(text("p", t("membership-no-instant-removal"), "no-instant-removal-notice"));
 
   const lists = document.createElement("div");
   lists.className = "members-lists";

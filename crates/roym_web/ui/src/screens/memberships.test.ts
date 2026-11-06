@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { NO_INSTANT_REMOVAL_NOTICE, WITHHELD_REVOCATION_NOTICE } from "../directory/membership";
+import { t } from "../i18n/i18n";
 import { renderMemberships } from "./memberships";
 import { stubRpc } from "../testing/stub-rpc";
 
@@ -37,8 +37,8 @@ describe("the Memberships screen", () => {
   it("keeps both notices on screen even with nothing held", async () => {
     stubRpc({ "directory.memberships": () => ({ memberships: [] }), "directory.sources": () => ({ sources: [] }) });
     const host = await render();
-    expect(host.querySelector(".no-instant-removal-notice")?.textContent).toBe(NO_INSTANT_REMOVAL_NOTICE);
-    expect(host.querySelector(".withheld-revocation-notice")?.textContent).toBe(WITHHELD_REVOCATION_NOTICE);
+    expect(host.querySelector(".no-instant-removal-notice")?.textContent).toBe(t("membership-no-instant-removal"));
+    expect(host.querySelector(".withheld-revocation-notice")?.textContent).toBe(t("membership-withheld-revocation"));
     expect(host.querySelector(".memberships-empty")).not.toBeNull();
   });
 

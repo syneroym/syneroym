@@ -17,9 +17,6 @@ const sources = Object.fromEntries(
 /// Files that set visible text from literals. They are not read by the
 /// check yet.
 const NOT_MOVED_YET: string[] = [
-  "../directory/membership.ts",
-  "../screens/directory.ts",
-  "../screens/memberships.ts",
   "../screens/synorg.ts",
   "../screens/synorg_members.ts",
 ];

@@ -32,8 +32,8 @@ error-http = HTTP error { $code }
 
 # Failures shown beside an action. `$detail` is already worded by the Hub.
 login-failed = Sign-in failed: { $detail }
-directory-search-failed = The search failed: { $detail }. Press Search to try again.
-directory-search-not-started = This installation could not start the search. Press Search to try again.
+directory-search-failed = The search failed: { $detail }. Press { $button } to try again.
+directory-search-not-started = This installation could not start the search. Press { $button } to try again.
 messages-quote-expired = This quote has expired. Ask for a new one.
 messages-accept-failed = Could not accept: { $detail }
 contacts-upsert-failed = Upsert failed: { $detail }
@@ -541,3 +541,116 @@ group-key-changed = Group key changed here: { $date } (epoch { $epoch })
 group-transcript-check = Transcript check: { $digest }
 group-sync-button = Sync now
 group-hide-button = Hide this group
+
+## Membership words
+
+membership-no-instant-removal = A group's decision reaches copies other people already hold only when they next check. Nobody can promise it is removed everywhere at once.
+membership-withheld-revocation = This shows every withdrawal the group has published. It cannot show one the group chose not to publish.
+membership-issuer-changed-check = This directory now says it speaks for a different group than the one you first saw. Its answer was not used.
+membership-reason-issuer-changed = the group this directory speaks for is not the one you first saw when you added it
+membership-reason-issuer-not-pinned = this node has not yet recorded which group this directory speaks for
+membership-unknown-no-answer = Membership: unknown ({ $source } gave no answer this node could use)
+membership-valid = Member of { $name }, checked on your node. Group withdrawals checked { $age }.
+membership-none = No membership shown by { $source }
+membership-unknown = Membership: unknown ({ $reason })
+membership-refused = Membership evidence did NOT check out -- treat as unknown
+membership-expired = Membership expired on { $date }
+membership-out-of-scope = Membership does not cover this listing: { $outside }
+membership-refusal-none = This group has no membership on record for you.
+membership-this-group = this group
+membership-publish-not-admitted = this group did not admit this listing. { $why }
+membership-issuer-unrecorded = This node has not recorded which group this directory speaks for.
+membership-issuer-pinned = The group this directory said it is when you added it: { $issuer }
+membership-never-checked = never checked
+membership-checked = checked { $age }
+
+membership-revoked = Membership revoked: the group withdrew it on { $date }.{ $has_reason ->
+        [yes] { " " }Reason given: { $reason }
+       *[no] { "" }
+    }
+membership-suspended =
+    { $scope ->
+        [listing] This listing is suspended
+       *[membership] Membership suspended
+    } by the group under its rule "{ $rule }", since { $since }, { $until ->
+        [date] until { $date }
+       *[lifted] until the group lifts it
+    }.{ $has_reason ->
+        [yes] { " " }Reason given: { $reason }
+       *[no] { "" }
+    }
+
+## Memberships
+
+memberships-title = Memberships
+memberships-intro = Each line is a listing owner's membership in a group, as this node worked it out from the group's own signed statements. It is the copy you hold, not a live answer.
+memberships-load-failed = Could not load memberships: { $detail }
+memberships-empty = No memberships checked yet. One appears here after a search returns a result from a group the listing owner belongs to.
+membership-row-source = Group directory: { $label }
+membership-row-member = Listing owner: { $did }
+membership-last-error = Last check failed: { $error }
+membership-check-again = Check again
+membership-checked-now = Checked just now.
+membership-unreachable = Could not reach this directory; this is the copy you already held.
+membership-check-failed = Could not check: { $detail }
+
+## Directory
+
+directory-check-again = Check membership again
+directory-membership-alone = Membership on its own, not tied to this listing: { $words }
+directory-check-failed = Could not check: { $detail }
+directory-checked-now = Checked just now.
+directory-unreachable = Could not reach this directory. Showing what was { $checked }.
+directory-source-error-not-started = this installation was busy and did not start the call
+directory-source-error-timed-out = the directory did not answer in time
+directory-source-error-not-found = no directory answers at that address
+directory-source-error-refused = the directory refused the request
+directory-source-error-unreadable = the directory's answer could not be read
+directory-title = Directories
+directory-intro = A directory is a place you choose to search. It is optional: you can always reach a listing owner directly from a link they send you. Your node checks every result itself -- a directory is never trusted.
+directory-yours-heading = Your directories
+directory-load-failed = Could not load your directories: { $detail }
+directory-empty = No directories added yet.
+directory-last-error = last error: { $reason }
+directory-answered-recently = answered recently
+directory-remove-failed = Remove failed: { $detail }
+directory-add-heading = Add a directory
+directory-add-help = Paste the Roym Directory service DID a friend, a referral or a well-known list gave you. There is no directory of directories.
+directory-add-did-placeholder = did:key:... (Roym Directory service DID)
+directory-add-label-placeholder = your label for it (optional)
+directory-add-button = Add directory
+directory-added-note = Added. Note: { $probe }.
+directory-added-silent = Added, but the directory did not answer a check just now.
+directory-added = Added.
+directory-add-failed = Could not add: { $detail }
+directory-search-heading = Search your directories
+directory-search-text-placeholder = words to look for (optional)
+directory-search-categories-placeholder = categories, comma separated (optional)
+directory-search-help = Matching is on whole words in the title, summary and categories. Punctuation is ignored, so searching for 50% finds 50. There is no ranking and no paid placement -- results are shown newest first.
+directory-search-button = Search
+directory-searching = Searching...
+directory-no-sources = You have not added any directories. Add one above, or reach a listing owner by a direct link.
+directory-searched = { $count } directories searched.
+directory-more-than-returned = this directory had more matches than it would return
+directory-results-heading = Results
+directory-no-results = No results.
+directory-untitled = (untitled)
+directory-hit-categories = Categories: { $categories }
+directory-hit-offered-by = Offered by: { $issuer }
+directory-signature-ok = signature: checked on your node
+directory-signature-bad = signature: did NOT check out -- treat as unknown
+directory-revocation = revocation: { $status }
+directory-revocation-good = good
+directory-revocation-unknown = unknown
+directory-seen-at = Seen at: { $from }
+directory-versions-differ = Two directories disagree about which version of this offer is current. The newer signed version is shown.
+directory-engage-button = Message this listing owner
+directory-engage-gone = The full listing is no longer in this run.
+directory-engage-address = Conversation address: { $address } -- open the Messages tab and start a conversation with this address.
+directory-engage-failed = Could not open: { $detail }
+directory-truncated = More results were found than are shown here.
+directory-refused-heading = Refused evidence
+directory-refused-intro = One or more directories served these, but their signatures did not check out on your node. They are shown so you know a directory served them. They are never treated as real offers.
+directory-refused-fallback = signature did not verify
+directory-served-by = Served by: { $sources }
+directory-refused-truncated = More refused evidence was served than is shown here.

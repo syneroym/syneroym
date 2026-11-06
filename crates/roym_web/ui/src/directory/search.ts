@@ -92,9 +92,14 @@ export async function findListings(
     reply = await call<FindReply>("directory.find", { query });
   } catch (err) {
     if (err instanceof RpcError && err.code === 503) {
-      throw new HubError(t("directory-search-not-started"));
+      throw new HubError(t("directory-search-not-started", { button: t("directory-search-button") }));
     }
-    throw new HubError(t("directory-search-failed", { detail: errText(err) }));
+    throw new HubError(
+      t("directory-search-failed", {
+        detail: errText(err),
+        button: t("directory-search-button"),
+      }),
+    );
   }
 
   const outcomes: SourceOutcome[] = (reply.outcomes ?? []).map((o) => {

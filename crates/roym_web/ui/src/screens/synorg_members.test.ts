@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { NO_INSTANT_REMOVAL_NOTICE } from "../directory/membership";
+import { t } from "../i18n/i18n";
 import { buildMembersPanel } from "./synorg_members";
 import { stubRpc } from "../testing/stub-rpc";
 
@@ -43,7 +43,7 @@ describe("the SynOrg members panel", () => {
       "member.decisions": () => ({ records: [] }),
     });
     const panel = await buildMembersPanel(["cycling"]);
-    expect(panel.querySelector(".no-instant-removal-notice")?.textContent).toBe(NO_INSTANT_REMOVAL_NOTICE);
+    expect(panel.querySelector(".no-instant-removal-notice")?.textContent).toBe(t("membership-no-instant-removal"));
   });
 
   it("marks a credential current, replaced or revoked, and offers Revoke only on the current one", async () => {

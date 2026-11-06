@@ -1,4 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+import HINDI from "../i18n/hi.ftl?raw";
+import { activate, activateWith } from "../i18n/i18n";
+import { leftoverLatin } from "../testing/latin-words";
 import { RpcError } from "../rpc";
 import {
   checkedWords,
@@ -167,5 +170,30 @@ describe("publishRefusalWords", () => {
     const overLimit = new RpcError(-32602, "over the limit", "Other", { retry_after_secs: 60 });
     expect(publishRefusalWords(overLimit, "over the limit")).toBe("over the limit");
     expect(publishRefusalWords(new Error("boom"), "boom")).toBe("boom");
+  });
+});
+
+describe("membershipWords in Hindi", () => {
+  afterEach(async () => {
+    await activate("en");
+  });
+
+  it("words every verdict in Hindi, with and without a reason, and a missing one", async () => {
+    await activateWith("hi", { hi: async () => HINDI });
+    const all = [...Object.values(VERDICTS), null, undefined];
+    for (const v of all) {
+      const text = membershipWords(v, "Zq-guild", NOW);
+      expect(text, JSON.stringify(v)).toMatch(/[ऀ-ॿ]/);
+      // The group name, the rule, the reason and the category codes come from the verdict.
+      const data = text.replace(/Cycling Guild|r1|r2|late twice|left the guild|issuer mismatch|plumbing|area|\bcycling\b/g, "");
+      expect(leftoverLatin(data), JSON.stringify(v)).toEqual([]);
+    }
+  });
+
+  it("shows the reason only when there is one", async () => {
+    await activateWith("hi", { hi: async () => HINDI });
+    expect(membershipWords(VERDICTS.suspendedListing, "x", NOW)).not.toContain("कारण");
+    expect(membershipWords(VERDICTS.suspendedTimed, "x", NOW)).toContain("कारण: late twice");
+    expect(membershipWords(VERDICTS.suspendedListing, "x", NOW)).not.toMatch(/\s$/);
   });
 });
