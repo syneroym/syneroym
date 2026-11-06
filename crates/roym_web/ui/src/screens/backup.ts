@@ -37,6 +37,24 @@ const BUNDLES: Array<{ label: () => string; exportMethod: string; importMethod: 
   },
 ];
 
+/// What the services answer to an import: a map of counts (conversation,
+/// catalog, directory), a flag (transaction), or other fields (profile).
+interface ImportReply {
+  imported_records?: unknown;
+  imported?: unknown;
+}
+
+/// The number of records an import reply reports, or `undefined` when it
+/// reports none. A map of counts is added up; a flag or an unknown shape is
+/// not a number, so the Hub says it imported the bundle without a count.
+export function importedCount(reply: ImportReply | null | undefined): number | undefined {
+  const reported = reply?.imported_records ?? reply?.imported;
+  if (typeof reported === "number") return reported;
+  if (reported === null || typeof reported !== "object") return undefined;
+  const counts = Object.values(reported).filter((v): v is number => typeof v === "number");
+  return counts.length > 0 ? counts.reduce((sum, v) => sum + v, 0) : undefined;
+}
+
 export async function renderBackup(container: HTMLElement) {
   container.replaceChildren();
   const box = document.createElement("div");
@@ -93,8 +111,8 @@ function bundleRow(b: (typeof BUNDLES)[number]): HTMLElement {
       const textContent = await f.text();
       const parsed = JSON.parse(textContent);
       status.textContent = t("backup-importing");
-      const res = await call<{ imported_records?: number; imported?: number }>(b.importMethod, { bundle: parsed });
-      const count = res?.imported_records ?? res?.imported;
+      const res = await call<ImportReply | null>(b.importMethod, { bundle: parsed });
+      const count = importedCount(res);
       status.textContent =
         count === undefined ? t("backup-imported-unknown") : t("backup-imported", { count });
     } catch (err) {

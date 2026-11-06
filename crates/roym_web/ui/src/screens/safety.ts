@@ -1,5 +1,5 @@
-import { errText, input, refiller, text } from "../dom";
-import { lookupText, messageId, t } from "../i18n/i18n";
+import { codeOptions, errText, input, refiller, select, text } from "../dom";
+import { codeWord, messageId, t } from "../i18n/i18n";
 import { call } from "../rpc";
 
 export async function renderSafety(container: HTMLElement) {
@@ -99,22 +99,6 @@ const REPORT_STATUSES = new Map<string, string>([
   ["withdrawn", messageId("safety-status-withdrawn")],
 ]);
 
-function codeWord(table: Map<string, string>, code: string): string {
-  return lookupText(table, code) ?? code;
-}
-
-/// A `<select>` whose options are the codes of `table`, shown as words.
-function codeSelect(table: Map<string, string>): HTMLSelectElement {
-  const el = document.createElement("select");
-  for (const code of table.keys()) {
-    const o = document.createElement("option");
-    o.value = code;
-    o.textContent = codeWord(table, code);
-    el.appendChild(o);
-  }
-  return el;
-}
-
 /// File and list safety reports. The `[PRD-SAF]` backlog row deferred this
 /// surface from the identity/profile slice to here.
 function buildReportForm(): HTMLElement {
@@ -122,9 +106,9 @@ function buildReportForm(): HTMLElement {
   wrap.className = "report-form";
   wrap.appendChild(text("h3", t("safety-report-heading")));
 
-  const kind = codeSelect(REPORT_KINDS);
+  const kind = select(codeOptions(REPORT_KINDS, [...REPORT_KINDS.keys()]));
   const subjectId = input(t("safety-subject-placeholder"));
-  const category = codeSelect(REPORT_CATEGORIES);
+  const category = select(codeOptions(REPORT_CATEGORIES, [...REPORT_CATEGORIES.keys()]));
   const details = document.createElement("textarea");
   details.placeholder = t("safety-details-placeholder");
 

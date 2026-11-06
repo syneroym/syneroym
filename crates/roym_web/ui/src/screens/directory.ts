@@ -6,7 +6,7 @@ import {
   type SourceOutcome,
 } from "../directory/search";
 import { errText, refiller, text } from "../dom";
-import { lookupText, messageId, t } from "../i18n/i18n";
+import { codeWord, messageId, t } from "../i18n/i18n";
 import {
   checkedWords,
   issuerChanged,
@@ -334,7 +334,7 @@ function renderHits(host: HTMLElement, hits: MergedHit[], truncated: boolean, ru
       text(
         "div",
         t("directory-revocation", {
-          status: lookupText(REVOCATION_LABELS, hit.revocation_status) ?? hit.revocation_status,
+          status: codeWord(REVOCATION_LABELS, hit.revocation_status),
         }),
         "evidence-revocation",
       ),

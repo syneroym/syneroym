@@ -180,7 +180,7 @@ Total: 644 messages (57 with legal or safety weight, 587 others).
 | `tab-backup` | Backup | बैकअप | The Hub shell: title, session bar… |  |
 | `tab-components` | Components | कंपोनेंट | The Hub shell: title, session bar… |  |
 | `login-title` | Sign in | साइन इन | The Hub shell: title, session bar… |  |
-| `login-auth-unreachable` | Could not reach the auth service on this node. | इस नोड की साइन-इन सेवा तक नहीं पहुँच सके। | The Hub shell: title, session bar… |  |
+| `login-auth-unreachable` | Could not reach the auth service on this node. | इस नोड की साइन इन सेवा तक नहीं पहुँच सके। | The Hub shell: title, session bar… |  |
 | `login-no-method` | This node has no browser login method enabled. | इस नोड पर ब्राउज़र से साइन इन करने का कोई तरीका चालू नहीं है। | The Hub shell: title, session bar… |  |
 | `login-intro` | Load a session key file produced by `roymctl session delegate --as <name> --registry-url <registry>`. The key stays in this browser and cannot be read back by page code. | `roymctl session delegate --as <name> --registry-url <registry>` से बनी सत्र-कुंजी की फ़ाइल लोड करें। कुंजी इसी ब्राउज़र में रहती है और पेज का कोड उसे वापस नहीं पढ़ सकता। | The Hub shell: title, session bar… |  |
 | `login-with-stored` | Sign in with this browser's key | इस ब्राउज़र की कुंजी से साइन इन करें | The Hub shell: title, session bar… |  |
@@ -203,11 +203,11 @@ Total: 644 messages (57 with legal or safety weight, 587 others).
 | `error-no-detail` | RPC error | सेवा से त्रुटि मिली | Shared |  |
 | `login-error-odd-hex` | odd-length hex string | हेक्स पाठ में अंकों की संख्या सम नहीं है | Sign-in |  |
 | `login-error-key-length` | temporary secret key must be 32 bytes | अस्थायी गुप्त कुंजी 32 बाइट की होनी चाहिए | Sign-in |  |
-| `login-error-challenge` | challenge failed: HTTP { $status } | साइन-इन की जाँच शुरू नहीं हो सकी: HTTP { $status } | Sign-in |  |
+| `login-error-challenge` | challenge failed: HTTP { $status } | जाँच का अनुरोध नहीं हो सका: HTTP { $status } | Sign-in |  |
 | `login-error-no-assertion` | auth service did not return an assertion to sign | प्रमाणीकरण सेवा ने हस्ताक्षर के लिए कुछ नहीं भेजा | Sign-in |  |
-| `login-error-http` | HTTP { $status } | साइन-इन नहीं हो सका: HTTP { $status } | Sign-in |  |
-| `login-error-service` | { $detail } | साइन-इन को सेवा ने मना कर दिया। विवरण: { $detail } | Sign-in |  |
-| `login-error-methods` | methods failed: HTTP { $status } | साइन-इन के तरीके नहीं मिले: HTTP { $status } | Sign-in |  |
+| `login-error-http` | HTTP { $status } | HTTP { $status } | Sign-in |  |
+| `login-error-service` | { $detail } | सेवा ने मना कर दिया। विवरण: { $detail } | Sign-in |  |
+| `login-error-methods` | methods failed: HTTP { $status } | तरीकों की सूची नहीं मिली: HTTP { $status } | Sign-in |  |
 | `common-saved` | Saved. | सहेज लिया गया। | Sign-in |  |
 | `common-save-failed` | Save failed: { $detail } | सहेजा नहीं जा सका: { $detail } | Sign-in |  |
 | `common-remove` | Remove | हटाएँ | Sign-in |  |

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { t } from "../i18n/i18n";
+import HINDI from "../i18n/hi.ftl?raw";
+import { activate, activateWith, t } from "../i18n/i18n";
 import { buildMembersPanel } from "./synorg_members";
 import { stubRpc } from "../testing/stub-rpc";
 
@@ -191,5 +192,45 @@ describe("the SynOrg members panel", () => {
     const second = calls.filter((c) => c.method === "member.suspend")[1].params;
     expect(second.scope).toEqual({ kind: "listing", listing_id: "lst_x" });
     expect(Math.round(((second.until_secs as number) - NOW) / 86400)).toBe(7);
+  });
+});
+
+describe("the credential status words", () => {
+  afterEach(async () => {
+    await activate("en");
+  });
+
+  async function statusWords(): Promise<string[]> {
+    stubRpc({
+      "credential.list": () => ({
+        records: [
+          credentialRow("rec_old", NOW - 500),
+          credentialRow("rec_mid", NOW - 300),
+          credentialRow("rec_new", NOW - 100),
+        ],
+      }),
+      "revocation.list": () => ({
+        records: [{ record_id: "rec_r", member_did: MEMBER, about: "rec_mid", issued_at_secs: NOW, envelope: "{}" }],
+      }),
+      "member.decisions": () => ({ records: [] }),
+    });
+    const panel = await buildMembersPanel(["cycling"]);
+    return [...panel.querySelectorAll(".credential-row")].map(
+      (row) => `${(row as HTMLElement).dataset.status}=${row.querySelector(".credential-status")?.textContent}`,
+    );
+  }
+
+  it("shows each status as its code in English", async () => {
+    expect(await statusWords()).toEqual(["current=current", "revoked=revoked", "replaced=replaced"]);
+  });
+
+  it("shows a Hindi word in Hindi, and keeps the code in the data attribute", async () => {
+    await activateWith("hi", { hi: async () => HINDI });
+    for (const entry of await statusWords()) {
+      const [code, word] = entry.split("=");
+      expect(["current", "revoked", "replaced"]).toContain(code);
+      expect(word).not.toBe(code);
+      expect(word).toMatch(/[ऀ-ॿ]/);
+    }
   });
 });

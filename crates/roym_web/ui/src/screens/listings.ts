@@ -12,9 +12,9 @@ import {
   SERVICE_LOCATION_KINDS,
 } from "../listings/labels";
 import { publishRefusalWords } from "../directory/membership";
-import { checkbox, errText, field, input, refiller, text } from "../dom";
+import { checkbox, codeOptions, errText, field, input, refiller, select, text } from "../dom";
 import { formatDateTime } from "../i18n/format";
-import { lookupText, messageId, t } from "../i18n/i18n";
+import { codeWord, messageId, t } from "../i18n/i18n";
 import { call } from "../rpc";
 
 interface ListingListRow {
@@ -55,29 +55,6 @@ const DISCLOSURE_LABELS = new Map<string, string>([
   ["on-agreement", messageId("listing-disclosure-on-agreement")],
   ["public", messageId("listing-disclosure-public")],
 ]);
-
-function codeWord(table: Map<string, string>, code: string): string {
-  return lookupText(table, code) ?? code;
-}
-
-/// A `<select>` of `[value, label]` pairs. The value is the code; the label
-/// is the text the person reads.
-function select(options: Array<[string, string]>, value?: string): HTMLSelectElement {
-  const el = document.createElement("select");
-  for (const [optValue, optLabel] of options) {
-    const o = document.createElement("option");
-    o.value = optValue;
-    o.textContent = optLabel;
-    el.appendChild(o);
-  }
-  if (value) el.value = value;
-  return el;
-}
-
-/// The options for the codes of `table`, in the order of `codes`.
-function codeOptions(table: Map<string, string>, codes: string[]): Array<[string, string]> {
-  return codes.map((code): [string, string] => [code, codeWord(table, code)]);
-}
 
 /// A collapsed `<details>` block with an "included" checkbox in the summary.
 /// `kind` keeps the CSS class; `label` is the text shown.

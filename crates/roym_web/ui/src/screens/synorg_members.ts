@@ -1,6 +1,6 @@
 import { errText, field, input, refiller, text } from "../dom";
 import { formatUtcDate } from "../i18n/format";
-import { lookupText, messageId, t } from "../i18n/i18n";
+import { codeWord, messageId, t } from "../i18n/i18n";
 import { call } from "../rpc";
 
 /// One row a SynOrg holds about a record it signed: `credential.list`,
@@ -258,7 +258,7 @@ function buildCredentialList(
       text("span", t("synorg-credential-expires", { date: formatUtcDate(view.expiresAtSecs) }), "credential-expires"),
     );
     line.appendChild(
-      text("span", lookupText(CREDENTIAL_STATUS_LABELS, status) ?? status, "credential-status"),
+      text("span", codeWord(CREDENTIAL_STATUS_LABELS, status), "credential-status"),
     );
     if (status === "current") line.appendChild(revokeControl(row, reload));
     wrap.appendChild(line);

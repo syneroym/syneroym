@@ -1,5 +1,5 @@
 import { HubError } from "./hub-error";
-import { lookupText, messageId, t } from "./i18n/i18n";
+import { codeWord, lookupText, messageId, t } from "./i18n/i18n";
 import { RpcError } from "./rpc";
 
 /// A stranger's directory label, listing text or error string is only ever
@@ -70,6 +70,25 @@ export function input(placeholder: string, value = ""): HTMLInputElement {
   el.placeholder = placeholder;
   el.value = value;
   return el;
+}
+
+/// A `<select>` of `[value, label]` pairs. The value is the code; the label
+/// is the text the person reads.
+export function select(options: Array<[string, string]>, value?: string): HTMLSelectElement {
+  const el = document.createElement("select");
+  for (const [optValue, optLabel] of options) {
+    const o = document.createElement("option");
+    o.value = optValue;
+    o.textContent = optLabel;
+    el.appendChild(o);
+  }
+  if (value) el.value = value;
+  return el;
+}
+
+/// The options for `codes`, each shown as the word of `table`.
+export function codeOptions(table: Map<string, string>, codes: string[]): Array<[string, string]> {
+  return codes.map((code): [string, string] => [code, codeWord(table, code)]);
 }
 
 export function checkbox(labelText: string, checked = false): { wrap: HTMLElement; box: HTMLInputElement } {

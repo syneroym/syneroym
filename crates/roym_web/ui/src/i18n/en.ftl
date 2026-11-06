@@ -455,6 +455,8 @@ request-toggle-button = Send a request
 request-description-placeholder = Describe what you need
 request-categories-placeholder = Categories (comma-separated, e.g. cycling, repair)
 request-listing-placeholder = Listing ID (optional)
+# Held by the Rust crate too: a test reads this file and checks this whole
+# line. Do not change a word, or wrap the line, without changing the Rust side.
 request-data-use-notice = This request is signed by you and sent to the person or business you chose. They keep a copy. It carries the area you gave, not your exact address; an address is disclosed only inside a quote you accept.
 request-submit-button = Submit request
 request-description-required = Description is required
@@ -489,6 +491,8 @@ quote-fees-placeholder = Fees included (optional, e.g. 0.00)
 quote-payee-placeholder = Payee name or company
 quote-timing-after = Payment after work
 quote-timing-before = Payment before work
+# Held by the Rust crate too: a test reads this file and checks this whole
+# line. Do not change a word, or wrap the line, without changing the Rust side.
 quote-address-disclosure-notice = This address becomes part of a signed record that both parties keep and can export. It cannot be removed from a record already signed.
 quote-address-placeholder = Service address
 quote-cancellation-placeholder = Cancellation terms
@@ -505,6 +509,10 @@ quote-currency-unknown = Unknown currency code "{ $currency }"
 quote-amount-required = Amount is required
 quote-payee-required = Payee is required
 quote-failed = Quote failed: { $detail }
+# The next two notes are shown before a delete runs. They match the `note`
+# that the conversation service returns for `conversation.delete-message`.
+# The Hub must not claim that the other side's copy is gone.
+
 messages-delete-note-sent = The local copy is removed and a deletion record kept. A request to delete it was sent to the other side; whether their client honours it is theirs to decide, and this cannot check. This installation's own message store still holds what it received.
 messages-delete-note-received = The local copy is removed and a deletion record kept. This is a message you received; the other side's copy is theirs.
 messages-delete-ask-peer = Also ask them to delete their copy
@@ -544,7 +552,11 @@ group-hide-button = Hide this group
 
 ## Membership words
 
+# Held by the Rust crate too: a test reads this file and checks this whole
+# line. Do not change a word, or wrap the line, without changing the Rust side.
 membership-no-instant-removal = A group's decision reaches copies other people already hold only when they next check. Nobody can promise it is removed everywhere at once.
+# Held by the Rust crate too: a test reads this file and checks this whole
+# line. Do not change a word, or wrap the line, without changing the Rust side.
 membership-withheld-revocation = This shows every withdrawal the group has published. It cannot show one the group chose not to publish.
 membership-issuer-changed-check = This directory now says it speaks for a different group than the one you first saw. Its answer was not used.
 membership-reason-issuer-changed = the group this directory speaks for is not the one you first saw when you added it

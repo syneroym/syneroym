@@ -100,6 +100,8 @@ const NO_WORDS = [
   "listing-slot-line",
   // Four values joined by punctuation.
   "safety-report-row",
+  // The protocol name and a status number; the outer sign-in sentence is Hindi.
+  "login-error-http",
 ];
 
 describe("the Hindi file", () => {

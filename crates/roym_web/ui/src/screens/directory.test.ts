@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import HINDI from "../i18n/hi.ftl?raw";
+import { activate, activateWith } from "../i18n/i18n";
+import { stubRpc } from "../testing/stub-rpc";
 import type { MergedHit } from "../directory/search";
-import { membershipLine } from "./directory";
+import { membershipLine, renderDirectory } from "./directory";
 
 const NOW = Math.floor(Date.now() / 1000);
 
@@ -103,5 +106,44 @@ describe("a search card's membership line", () => {
     expect(line.querySelector(".membership-check-status")?.textContent).toContain(
       "Could not reach this directory. Showing what was checked 2 hours ago.",
     );
+  });
+});
+
+describe("the revocation line of a search hit", () => {
+  afterEach(async () => {
+    await activate("en");
+  });
+
+  async function revocationLine(status: string): Promise<string> {
+    stubRpc({
+      "directory.sources": () => ({ sources: [] }),
+      "directory.find": () => ({
+        run_id: "run",
+        outcomes: [],
+        hits: [{ ...HIT, revocation_status: status }],
+        hits_truncated: false,
+        refused: [],
+        refused_truncated: false,
+      }),
+    });
+    const host = document.createElement("div");
+    await renderDirectory(host);
+    host.querySelector<HTMLButtonElement>("button.run-search")!.click();
+    await vi.waitFor(() => expect(host.querySelector(".evidence-revocation")).not.toBeNull());
+    return host.querySelector(".evidence-revocation")!.textContent ?? "";
+  }
+
+  it("shows the status as it is in English", async () => {
+    expect(await revocationLine("good")).toBe("revocation: good");
+    expect(await revocationLine("unknown")).toBe("revocation: unknown");
+  });
+
+  it("shows a Hindi word for a known status, and any other status as it came", async () => {
+    await activateWith("hi", { hi: async () => HINDI });
+    expect(await revocationLine("good")).not.toContain("good");
+    expect(await revocationLine("good")).toMatch(/[ऀ-ॿ]/);
+    for (const status of ["constructor", "toString", "__proto__"]) {
+      expect(await revocationLine(status)).toContain(status);
+    }
   });
 });

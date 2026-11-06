@@ -166,7 +166,7 @@ tab-safety = सुरक्षा
 tab-backup = बैकअप
 tab-components = कंपोनेंट
 login-title = साइन इन
-login-auth-unreachable = इस नोड की साइन-इन सेवा तक नहीं पहुँच सके।
+login-auth-unreachable = इस नोड की साइन इन सेवा तक नहीं पहुँच सके।
 login-no-method = इस नोड पर ब्राउज़र से साइन इन करने का कोई तरीका चालू नहीं है।
 login-intro = `roymctl session delegate --as <name> --registry-url <registry>` से बनी सत्र-कुंजी की फ़ाइल लोड करें। कुंजी इसी ब्राउज़र में रहती है और पेज का कोड उसे वापस नहीं पढ़ सकता।
 login-with-stored = इस ब्राउज़र की कुंजी से साइन इन करें
@@ -197,11 +197,11 @@ error-no-detail = सेवा से त्रुटि मिली
 
 login-error-odd-hex = हेक्स पाठ में अंकों की संख्या सम नहीं है
 login-error-key-length = अस्थायी गुप्त कुंजी 32 बाइट की होनी चाहिए
-login-error-challenge = साइन-इन की जाँच शुरू नहीं हो सकी: HTTP { $status }
+login-error-challenge = जाँच का अनुरोध नहीं हो सका: HTTP { $status }
 login-error-no-assertion = प्रमाणीकरण सेवा ने हस्ताक्षर के लिए कुछ नहीं भेजा
-login-error-http = साइन-इन नहीं हो सका: HTTP { $status }
-login-error-service = साइन-इन को सेवा ने मना कर दिया। विवरण: { $detail }
-login-error-methods = साइन-इन के तरीके नहीं मिले: HTTP { $status }
+login-error-http = HTTP { $status }
+login-error-service = सेवा ने मना कर दिया। विवरण: { $detail }
+login-error-methods = तरीकों की सूची नहीं मिली: HTTP { $status }
 
 common-saved = सहेज लिया गया।
 common-save-failed = सहेजा नहीं जा सका: { $detail }

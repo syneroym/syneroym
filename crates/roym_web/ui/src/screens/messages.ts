@@ -1,5 +1,5 @@
 import { errText, refiller, text } from "../dom";
-import { lookupText, messageId, t } from "../i18n/i18n";
+import { codeWord, messageId, t } from "../i18n/i18n";
 import { onFeed } from "../events";
 import { call, RpcError } from "../rpc";
 import { whoami } from "../session/login";
@@ -22,7 +22,7 @@ const STATE_LABELS = new Map<string, string>([
 /// The word for a message state; a state this table does not know is shown
 /// as it came, never inferred.
 export function messageStateWord(state: string): string {
-  return lookupText(STATE_LABELS, state) ?? state;
+  return codeWord(STATE_LABELS, state);
 }
 
 interface ConversationRow {

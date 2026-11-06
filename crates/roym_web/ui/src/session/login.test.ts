@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
 import { errText } from "../dom";
-import { activate, activateWith } from "../i18n/i18n";
+import { activate, activateWith, t } from "../i18n/i18n";
 import HINDI from "../i18n/hi.ftl?raw";
 import { leftoverLatin } from "../testing/latin-words";
 import {
@@ -121,19 +121,28 @@ describe("a failed login, as the person reads it", () => {
     expect(await failure()).toBe("key revoked");
   });
 
+  /// The line the sign-in box draws.
+  async function line(): Promise<string> {
+    return t("login-failed", { detail: await failure() });
+  }
+
   it("words the status in Hindi, with no English left", async () => {
     await activateWith("hi", { hi: async () => HINDI });
     fakeAuth({ status: 500 });
-    const text = await failure();
+    const text = await line();
     expect(text).toMatch(/[ऀ-ॿ]/);
     expect(leftoverLatin(text)).toEqual([]);
+    // The sentence "sign-in failed" is there once, and the cause names only the cause.
+    expect(text).toBe("साइन इन नहीं हो सका: HTTP 500");
+    expect(text.match(/साइन/g)).toHaveLength(1);
   });
 
   it("puts the service text only after the detail label, once", async () => {
     await activateWith("hi", { hi: async () => HINDI });
     fakeAuth({ status: 401, body: { error: "key revoked" } });
-    const text = await failure();
+    const text = await line();
     expect(text.match(/विवरण:/g)).toHaveLength(1);
+    expect(text.match(/साइन/g)).toHaveLength(1);
     expect(text.endsWith("विवरण: key revoked")).toBe(true);
   });
 });

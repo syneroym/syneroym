@@ -62,4 +62,25 @@ describe("the listing list", () => {
     const draft = options.find((o) => o.value === "draft");
     expect(draft?.textContent).toMatch(/[ऀ-ॿ]/);
   });
+
+  it("gives every option of the editor tables a Hindi word that differs from English", async () => {
+    stubRpc({ "listing.list": () => ({ listings: [] }) });
+    async function labels(): Promise<string[]> {
+      const host = document.createElement("div");
+      await renderListings(host);
+      const wanted = ["enquiry", "per-hour", "refurbished", "on-agreement", "active"];
+      return [...host.querySelectorAll<HTMLOptionElement>(".listing-editor select option")]
+        .filter((o) => wanted.includes(o.value))
+        .map((o) => `${o.value}=${o.textContent}`);
+    }
+    const english = await labels();
+    expect(english).toHaveLength(5);
+    await activateWith("hi", { hi: async () => HINDI });
+    const hindi = await labels();
+    expect(hindi).toHaveLength(5);
+    hindi.forEach((entry, i) => {
+      expect(entry.split("=")[0]).toBe(english[i].split("=")[0]);
+      expect(entry.split("=")[1]).not.toBe(english[i].split("=")[1]);
+    });
+  });
 });
