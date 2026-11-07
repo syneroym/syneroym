@@ -1,7 +1,6 @@
-import { NO_INSTANT_REMOVAL_NOTICE } from "../directory/membership";
-import { errText, field, refiller, text } from "../dom";
+import { errText, field, input, refiller, text } from "../dom";
 import { formatUtcDate } from "../i18n/format";
-import { t } from "../i18n/i18n";
+import { codeWord, messageId, t } from "../i18n/i18n";
 import { call } from "../rpc";
 
 /// One row a SynOrg holds about a record it signed: `credential.list`,
@@ -24,7 +23,8 @@ interface CredentialView {
 interface DecisionView {
   row: IssuedRow;
   action: "suspend" | "lift";
-  scopeWords: string;
+  /// The listing a suspension covers, or `undefined` for the whole membership.
+  listingId?: string;
   rule: string;
   reason: string;
   untilSecs?: number;
@@ -51,11 +51,26 @@ function decisionView(row: IssuedRow): DecisionView {
   return {
     row,
     action: payload.action === "lift" ? "lift" : "suspend",
-    scopeWords: scope?.kind === "listing" ? `one listing (${scope.listing_id})` : "the whole membership",
+    listingId: scope?.kind === "listing" ? String(scope.listing_id) : undefined,
     rule: String(payload.rule ?? ""),
     reason: String(payload.reason ?? ""),
     untilSecs: typeof payload.until_secs === "number" ? payload.until_secs : undefined,
   };
+}
+
+/// Message id for each credential status the Hub makes itself. The status
+/// itself stays the code in `dataset.status`.
+const CREDENTIAL_STATUS_LABELS = new Map<string, string>([
+  ["revoked", messageId("synorg-credential-status-revoked")],
+  ["current", messageId("synorg-credential-status-current")],
+  ["replaced", messageId("synorg-credential-status-replaced")],
+]);
+
+function decisionWhat(v: DecisionView): string {
+  if (v.action === "lift") return t("synorg-decision-lifted");
+  return v.listingId === undefined
+    ? t("synorg-decision-suspended-membership")
+    : t("synorg-decision-suspended-listing", { id: v.listingId });
 }
 
 async function records(method: string): Promise<IssuedRow[]> {
@@ -70,8 +85,8 @@ async function records(method: string): Promise<IssuedRow[]> {
 export async function buildMembersPanel(synorgCategories: string[]): Promise<HTMLElement> {
   const wrap = document.createElement("div");
   wrap.className = "synorg-members";
-  wrap.appendChild(text("h3", "Memberships and decisions"));
-  wrap.appendChild(text("p", NO_INSTANT_REMOVAL_NOTICE, "no-instant-removal-notice"));
+  wrap.appendChild(text("h3", t("synorg-members-heading")));
+  wrap.appendChild(text("p", t("membership-no-instant-removal"), "no-instant-removal-notice"));
 
   const lists = document.createElement("div");
   lists.className = "members-lists";
@@ -87,7 +102,7 @@ export async function buildMembersPanel(synorgCategories: string[]): Promise<HTM
         buildDecisionList(decisions, reload),
       );
     } catch (err) {
-      into.appendChild(text("p", `Could not load memberships: ${errText(err)}`));
+      into.appendChild(text("p", t("synorg-members-load-failed", { detail: errText(err) })));
     }
   });
 
@@ -99,17 +114,10 @@ export async function buildMembersPanel(synorgCategories: string[]): Promise<HTM
 function buildIssueForm(categories: string[], reload: () => Promise<void>): HTMLElement {
   const form = document.createElement("div");
   form.className = "issue-credential-form";
-  form.appendChild(text("h4", "Issue a membership credential"));
-  form.appendChild(
-    text(
-      "p",
-      "A listing owner gives you their DID outside this app. The credential you sign here is what " +
-        "lets them publish to this group, and what a searcher's node checks.",
-    ),
-  );
-  const member = document.createElement("input");
+  form.appendChild(text("h4", t("synorg-issue-heading")));
+  form.appendChild(text("p", t("synorg-issue-help")));
+  const member = input(t("synorg-member-did-placeholder"));
   member.className = "issue-member-did";
-  member.placeholder = "member DID";
   const boxes = categories.map((c) => {
     const box = document.createElement("input");
     box.type = "checkbox";
@@ -124,17 +132,17 @@ function buildIssueForm(categories: string[], reload: () => Promise<void>): HTML
   const days = document.createElement("input");
   days.className = "issue-days";
   days.value = "365";
-  const button = text("button", "Issue credential", "button issue-credential") as HTMLButtonElement;
+  const button = text("button", t("synorg-issue-button"), "button issue-credential") as HTMLButtonElement;
   const status = text("p", "", "issue-status");
 
   button.onclick = async () => {
     status.textContent = "";
     const chosen = boxes.filter((b) => b.box.checked).map((b) => b.box.value);
     const n = Number.parseInt(days.value, 10);
-    if (!member.value.trim()) return void (status.textContent = "Enter the member's DID.");
-    if (chosen.length === 0) return void (status.textContent = "Choose at least one category.");
+    if (!member.value.trim()) return void (status.textContent = t("synorg-issue-enter-did"));
+    if (chosen.length === 0) return void (status.textContent = t("synorg-issue-choose-category"));
     if (!Number.isInteger(n) || n < 1 || n > 730) {
-      return void (status.textContent = "Days must be a whole number from 1 to 730.");
+      return void (status.textContent = t("synorg-issue-days-range"));
     }
     button.disabled = true;
     try {
@@ -143,19 +151,19 @@ function buildIssueForm(categories: string[], reload: () => Promise<void>): HTML
         categories: chosen,
         expires_at_secs: Math.floor(Date.now() / 1000) + n * 86400,
       });
-      status.textContent = "Issued.";
+      status.textContent = t("synorg-issued");
       member.value = "";
       await reload();
     } catch (err) {
-      status.textContent = `Not issued: ${errText(err)}`;
+      status.textContent = t("synorg-issue-failed", { detail: errText(err) });
     }
     button.disabled = false;
   };
   form.append(
-    field("Member DID", member),
-    text("div", "Covers:", "issue-categories-label"),
+    field(t("synorg-label-member-did"), member),
+    text("div", t("synorg-covers-label"), "issue-categories-label"),
     ...boxes.map((b) => b.label),
-    field("Valid for (days)", days),
+    field(t("synorg-label-valid-days"), days),
     button,
     status,
   );
@@ -165,29 +173,24 @@ function buildIssueForm(categories: string[], reload: () => Promise<void>): HTML
 function buildSuspendForm(reload: () => Promise<void>): HTMLElement {
   const form = document.createElement("div");
   form.className = "suspend-form";
-  form.appendChild(text("h4", "Suspend a member"));
-  const member = document.createElement("input");
+  form.appendChild(text("h4", t("synorg-suspend-heading")));
+  const member = input(t("synorg-member-did-placeholder"));
   member.className = "suspend-member-did";
-  member.placeholder = "member DID";
-  const listing = document.createElement("input");
+  const listing = input(t("synorg-suspend-listing-placeholder"));
   listing.className = "suspend-listing-id";
-  listing.placeholder = "listing id (leave empty to suspend the whole membership)";
-  const rule = document.createElement("input");
+  const rule = input(t("synorg-suspend-rule-placeholder"));
   rule.className = "suspend-rule";
-  rule.placeholder = "which of your rules";
-  const reason = document.createElement("input");
+  const reason = input(t("synorg-reason-placeholder"));
   reason.className = "suspend-reason";
-  reason.placeholder = "reason";
-  const days = document.createElement("input");
+  const days = input(t("synorg-suspend-days-placeholder"));
   days.className = "suspend-days";
-  days.placeholder = "days (empty = until you lift it)";
-  const button = text("button", "Suspend", "button suspend-member") as HTMLButtonElement;
+  const button = text("button", t("synorg-suspend-button"), "button suspend-member") as HTMLButtonElement;
   const status = text("p", "", "suspend-status");
 
   button.onclick = async () => {
     status.textContent = "";
     if (!member.value.trim() || !rule.value.trim()) {
-      status.textContent = "A member DID and the rule are required.";
+      status.textContent = t("synorg-suspend-required");
       return;
     }
     const params: Record<string, unknown> = {
@@ -199,7 +202,7 @@ function buildSuspendForm(reload: () => Promise<void>): HTMLElement {
     if (days.value.trim()) {
       const n = Number.parseInt(days.value, 10);
       if (!Number.isInteger(n) || n < 1) {
-        status.textContent = "Days must be a whole number of at least 1.";
+        status.textContent = t("synorg-suspend-days-min");
         return;
       }
       params.until_secs = Math.floor(Date.now() / 1000) + n * 86400;
@@ -207,19 +210,19 @@ function buildSuspendForm(reload: () => Promise<void>): HTMLElement {
     button.disabled = true;
     try {
       await call("member.suspend", params);
-      status.textContent = "Suspended.";
+      status.textContent = t("synorg-suspended");
       await reload();
     } catch (err) {
-      status.textContent = `Not suspended: ${errText(err)}`;
+      status.textContent = t("synorg-suspend-failed", { detail: errText(err) });
     }
     button.disabled = false;
   };
   form.append(
-    field("Member DID", member),
-    field("One listing only", listing),
-    field("Rule", rule),
-    field("Reason", reason),
-    field("For how long", days),
+    field(t("synorg-label-member-did"), member),
+    field(t("synorg-label-one-listing"), listing),
+    field(t("synorg-label-rule"), rule),
+    field(t("synorg-label-reason"), reason),
+    field(t("synorg-label-how-long"), days),
     button,
     status,
   );
@@ -233,14 +236,14 @@ function buildCredentialList(
 ): HTMLElement {
   const wrap = document.createElement("div");
   wrap.className = "credential-list";
-  wrap.appendChild(text("h4", "Credentials you have issued"));
+  wrap.appendChild(text("h4", t("synorg-credentials-heading")));
   const revoked = new Set(revocations.map((r) => r.about));
   const newestPerMember = new Map<string, IssuedRow>();
   for (const c of credentials) {
     const seen = newestPerMember.get(c.member_did);
     if (!seen || c.issued_at_secs >= seen.issued_at_secs) newestPerMember.set(c.member_did, c);
   }
-  if (credentials.length === 0) wrap.appendChild(text("p", "None issued yet.", "credential-empty"));
+  if (credentials.length === 0) wrap.appendChild(text("p", t("synorg-credentials-empty"), "credential-empty"));
   for (const row of credentials.slice().sort((a, b) => b.issued_at_secs - a.issued_at_secs)) {
     const view = credentialView(row);
     const isCurrent = newestPerMember.get(row.member_did)?.record_id === row.record_id;
@@ -250,11 +253,13 @@ function buildCredentialList(
     line.dataset.status = status;
     line.dataset.member = row.member_did;
     line.appendChild(text("span", row.member_did, "credential-member"));
-    line.appendChild(text("span", `covers ${view.categories.join(", ")}`, "credential-covers"));
+    line.appendChild(text("span", t("synorg-credential-covers", { categories: view.categories.join(", ") }), "credential-covers"));
     line.appendChild(
       text("span", t("synorg-credential-expires", { date: formatUtcDate(view.expiresAtSecs) }), "credential-expires"),
     );
-    line.appendChild(text("span", status, "credential-status"));
+    line.appendChild(
+      text("span", codeWord(CREDENTIAL_STATUS_LABELS, status), "credential-status"),
+    );
     if (status === "current") line.appendChild(revokeControl(row, reload));
     wrap.appendChild(line);
   }
@@ -264,10 +269,9 @@ function buildCredentialList(
 function revokeControl(row: IssuedRow, reload: () => Promise<void>): HTMLElement {
   const wrap = document.createElement("span");
   wrap.className = "revoke-control";
-  const reason = document.createElement("input");
+  const reason = input(t("synorg-reason-placeholder"));
   reason.className = "revoke-reason";
-  reason.placeholder = "reason";
-  const button = text("button", "Revoke", "button revoke-credential") as HTMLButtonElement;
+  const button = text("button", t("synorg-revoke-button"), "button revoke-credential") as HTMLButtonElement;
   const status = text("span", "", "revoke-status");
   button.onclick = async () => {
     button.disabled = true;
@@ -279,7 +283,7 @@ function revokeControl(row: IssuedRow, reload: () => Promise<void>): HTMLElement
       });
       await reload();
     } catch (err) {
-      status.textContent = `Not revoked: ${errText(err)}`;
+      status.textContent = t("synorg-revoke-failed", { detail: errText(err) });
       button.disabled = false;
     }
   };
@@ -290,19 +294,19 @@ function revokeControl(row: IssuedRow, reload: () => Promise<void>): HTMLElement
 function buildDecisionList(decisions: IssuedRow[], reload: () => Promise<void>): HTMLElement {
   const wrap = document.createElement("div");
   wrap.className = "decision-list";
-  wrap.appendChild(text("h4", "Suspensions and lifts"));
+  wrap.appendChild(text("h4", t("synorg-decisions-heading")));
   const views = decisions.map(decisionView).sort((a, b) => b.row.issued_at_secs - a.row.issued_at_secs);
   const lifted = new Set(views.filter((v) => v.action === "lift").map((v) => v.row.about));
-  if (views.length === 0) wrap.appendChild(text("p", "No decisions yet.", "decision-empty"));
+  if (views.length === 0) wrap.appendChild(text("p", t("synorg-decisions-empty"), "decision-empty"));
   for (const v of views) {
     const line = document.createElement("div");
     line.className = "decision-row";
     const active = v.action === "suspend" && !lifted.has(v.row.record_id);
     line.dataset.status = v.action === "lift" ? "lift" : active ? "active" : "lifted";
     line.appendChild(text("span", v.row.member_did, "decision-member"));
-    line.appendChild(text("span", v.action === "lift" ? "lifted a suspension" : `suspended ${v.scopeWords}`, "decision-what"));
+    line.appendChild(text("span", decisionWhat(v), "decision-what"));
     if (v.action === "suspend") {
-      line.appendChild(text("span", `rule: ${v.rule}`, "decision-rule"));
+      line.appendChild(text("span", t("synorg-decision-rule", { rule: v.rule }), "decision-rule"));
       const until = v.untilSecs
         ? t("synorg-until", { date: formatUtcDate(v.untilSecs) })
         : t("synorg-until-lifted");
@@ -318,7 +322,7 @@ function buildDecisionList(decisions: IssuedRow[], reload: () => Promise<void>):
 function liftControl(row: IssuedRow, reload: () => Promise<void>): HTMLElement {
   const wrap = document.createElement("span");
   wrap.className = "lift-control";
-  const button = text("button", "Lift", "button lift-suspension") as HTMLButtonElement;
+  const button = text("button", t("synorg-lift-button"), "button lift-suspension") as HTMLButtonElement;
   const status = text("span", "", "lift-status");
   button.onclick = async () => {
     button.disabled = true;
@@ -327,7 +331,7 @@ function liftControl(row: IssuedRow, reload: () => Promise<void>): HTMLElement {
       await call("member.lift", { decision_record_id: row.record_id });
       await reload();
     } catch (err) {
-      status.textContent = `Not lifted: ${errText(err)}`;
+      status.textContent = t("synorg-lift-failed", { detail: errText(err) });
       button.disabled = false;
     }
   };

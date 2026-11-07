@@ -1,28 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { NO_INSTANT_REMOVAL_NOTICE, WITHHELD_REVOCATION_NOTICE } from "../directory/membership";
+import { t } from "../i18n/i18n";
 import { renderMemberships } from "./memberships";
-
-type Handler = (params: Record<string, unknown>) => unknown;
-
-/// A fake `/rpc` that answers each method with the handler registered for
-/// it, and records every call.
-function stubRpc(handlers: Record<string, Handler>) {
-  const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
-  vi.stubGlobal(
-    "fetch",
-    vi.fn(async (_url: string, init: RequestInit) => {
-      const body = JSON.parse(String(init.body)) as {
-        method: string;
-        params: Record<string, unknown>;
-      };
-      calls.push(body);
-      const handler = handlers[body.method];
-      if (!handler) throw new Error(`unexpected method ${body.method}`);
-      return { ok: true, json: async () => ({ result: handler(body.params) }) };
-    }),
-  );
-  return calls;
-}
+import { stubRpc } from "../testing/stub-rpc";
 
 const NOW = Math.floor(Date.now() / 1000);
 
@@ -58,8 +37,8 @@ describe("the Memberships screen", () => {
   it("keeps both notices on screen even with nothing held", async () => {
     stubRpc({ "directory.memberships": () => ({ memberships: [] }), "directory.sources": () => ({ sources: [] }) });
     const host = await render();
-    expect(host.querySelector(".no-instant-removal-notice")?.textContent).toBe(NO_INSTANT_REMOVAL_NOTICE);
-    expect(host.querySelector(".withheld-revocation-notice")?.textContent).toBe(WITHHELD_REVOCATION_NOTICE);
+    expect(host.querySelector(".no-instant-removal-notice")?.textContent).toBe(t("membership-no-instant-removal"));
+    expect(host.querySelector(".withheld-revocation-notice")?.textContent).toBe(t("membership-withheld-revocation"));
     expect(host.querySelector(".memberships-empty")).not.toBeNull();
   });
 

@@ -94,8 +94,10 @@ import {
   formatMinor,
   toMinorUnits,
 } from "../money.js";
+import { HubError } from "../hub-error";
+import { t } from "../i18n/i18n";
 
-export class ListingInputError extends Error {
+export class ListingInputError extends HubError {
   constructor(message: string) {
     super(message);
     this.name = "ListingInputError";
@@ -115,10 +117,10 @@ export {
 /// At most six decimal places (a micro-degree is about 11 cm); the result
 /// is always an integer.
 export function toMicroDegrees(input: string): number {
-  const t = input.trim();
-  const m = /^(-?)(\d+)(?:\.(\d{1,6}))?$/.exec(t);
+  const trimmed = input.trim();
+  const m = /^(-?)(\d+)(?:\.(\d{1,6}))?$/.exec(trimmed);
   if (!m) {
-    throw new ListingInputError(`"${input}" is not a coordinate in degrees`);
+    throw new ListingInputError(t("listing-error-coordinate", { input }));
   }
   const micros = m[2] + (m[3] ?? "").padEnd(6, "0");
   const magnitude = Number.parseInt(micros, 10);
@@ -128,17 +130,17 @@ export function toMicroDegrees(input: string): number {
 /// A whole non-negative count. "" -> undefined (the caller decides whether
 /// that is allowed); a decimal or a negative value is rejected.
 export function toWholeCount(input: string, field: string): number | undefined {
-  const t = input.trim();
-  if (t === "") return undefined;
-  if (!/^\d+$/.test(t)) {
-    throw new ListingInputError(`${field} must be a whole number of seconds or units`);
+  const trimmed = input.trim();
+  if (trimmed === "") return undefined;
+  if (!/^\d+$/.test(trimmed)) {
+    throw new ListingInputError(t("listing-error-whole", { field }));
   }
-  return Number.parseInt(t, 10);
+  return Number.parseInt(trimmed, 10);
 }
 
 function requireWhole(input: string, field: string): number {
   const v = toWholeCount(input, field);
-  if (v === undefined) throw new ListingInputError(`${field} is required`);
+  if (v === undefined) throw new ListingInputError(t("listing-error-required", { field }));
   return v;
 }
 
@@ -155,9 +157,9 @@ type Block = Record<string, unknown>;
 function bookingBlock(f: BookingFields): Block {
   return {
     mode: f.mode,
-    lead_time_secs: requireWhole(f.lead_time_secs, "lead time"),
-    cancellation_window_secs: requireWhole(f.cancellation_window_secs, "cancellation window"),
-    max_per_booking: requireWhole(f.max_per_booking, "max per booking"),
+    lead_time_secs: requireWhole(f.lead_time_secs, t("listing-field-lead-time")),
+    cancellation_window_secs: requireWhole(f.cancellation_window_secs, t("listing-field-cancellation-window")),
+    max_per_booking: requireWhole(f.max_per_booking, t("listing-field-max-per-booking")),
   };
 }
 
@@ -183,16 +185,16 @@ function paymentBlock(f: PaymentFields): Block {
   };
   const exponent = currencyMinorExponent(currency);
   if (exponent === undefined) {
-    throw new ListingInputError(`unknown currency '${currency}'`);
+    throw new ListingInputError(t("listing-error-currency", { currency }));
   }
   const amount = parseMoney(f.amount, exponent);
   if (f.model !== "quote-only") {
     if (amount === undefined) {
-      throw new ListingInputError("an amount is required unless the model is quote-only");
+      throw new ListingInputError(t("listing-error-amount-required"));
     }
     block.amount_minor = amount;
   } else if (amount !== undefined) {
-    throw new ListingInputError("a quote-only listing must not carry an amount");
+    throw new ListingInputError(t("listing-error-quote-only-amount"));
   }
   const fees = parseMoney(f.fees, exponent);
   if (fees !== undefined) block.fees_minor = fees;
@@ -202,7 +204,7 @@ function paymentBlock(f: PaymentFields): Block {
 function productBlock(f: ProductFields): Block {
   const block: Block = {
     unit: f.unit.trim(),
-    pack_size: requireWhole(f.pack_size, "pack size"),
+    pack_size: requireWhole(f.pack_size, t("listing-field-pack-size")),
     condition: f.condition,
   };
   if (f.sku.trim()) block.sku = f.sku.trim();
@@ -211,7 +213,7 @@ function productBlock(f: ProductFields): Block {
 
 function serviceBlock(f: ServiceFields): Block {
   return {
-    duration_secs: requireWhole(f.duration_secs, "duration"),
+    duration_secs: requireWhole(f.duration_secs, t("listing-field-duration")),
     includes: tokens(f.includes),
     excludes: tokens(f.excludes),
     prerequisites: tokens(f.prerequisites),
@@ -235,7 +237,7 @@ function relationshipBlock(f: RelationshipFields): Block {
   const memberOf = f.member_of.trim();
   if (memberOf) block.member_of = memberOf;
   else if (f.open_to === "members") {
-    throw new ListingInputError("a members-only listing needs the group DID");
+    throw new ListingInputError(t("listing-error-members-group"));
   }
   return block;
 }
@@ -243,8 +245,8 @@ function relationshipBlock(f: RelationshipFields): Block {
 function serviceRecordBlock(f: ServiceRecordFields): Block {
   return {
     issues_fulfilment_receipt: f.issues_fulfilment_receipt,
-    warranty_secs: requireWhole(f.warranty_secs, "warranty"),
-    retention_secs: requireWhole(f.retention_secs, "retention"),
+    warranty_secs: requireWhole(f.warranty_secs, t("listing-field-warranty")),
+    retention_secs: requireWhole(f.retention_secs, t("listing-field-retention")),
   };
 }
 
@@ -252,7 +254,7 @@ function serviceRecordBlock(f: ServiceRecordFields): Block {
 /// integer; blocks whose checkbox is off are omitted entirely.
 export function buildSetListingParams(form: ListingForm): Record<string, unknown> {
   const title = form.title.trim();
-  if (!title) throw new ListingInputError("a title is required");
+  if (!title) throw new ListingInputError(t("listing-error-title-required"));
 
   const params: Record<string, unknown> = {
     title,
@@ -286,14 +288,14 @@ export function slotFromLocalDatetimes(
   const start = Date.parse(startLocal);
   const end = Date.parse(endLocal);
   if (Number.isNaN(start) || Number.isNaN(end)) {
-    throw new ListingInputError("a slot needs a start and an end time");
+    throw new ListingInputError(t("listing-error-slot-times"));
   }
   if (end <= start) {
-    throw new ListingInputError("a slot's end must be after its start");
+    throw new ListingInputError(t("listing-error-slot-order"));
   }
-  const cap = toWholeCount(capacity, "capacity");
+  const cap = toWholeCount(capacity, t("listing-field-capacity"));
   if (cap === undefined || cap < 1) {
-    throw new ListingInputError("a slot needs a capacity of at least 1");
+    throw new ListingInputError(t("listing-error-slot-capacity"));
   }
   return {
     start_secs: Math.floor(start / 1000),

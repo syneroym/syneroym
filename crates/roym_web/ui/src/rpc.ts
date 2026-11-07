@@ -1,3 +1,4 @@
+import { t } from "./i18n/i18n";
 import { authHeaders } from "./session/login";
 
 export type RpcErrorType = "NotSignedIn" | "NotOwner" | "NoOwner" | "NotLocal" | "Other";
@@ -66,7 +67,7 @@ export async function call<T = unknown>(method: string, params: Record<string, u
   }
   if (json.error) {
     const { code } = json.error;
-    throw new RpcError(code, json.error.message || "RPC error", errorType(code), json.error.data);
+    throw new RpcError(code, json.error.message || t("error-no-detail"), errorType(code), json.error.data);
   }
 
   return json.result as T;

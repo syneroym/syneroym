@@ -1,15 +1,12 @@
 // A SynOrg's membership verdict, mirrored from `roym_core::membership`
-// (Rust is the source of truth; a Rust-side test reads this file and
-// compares the two notice strings verbatim).
+// (Rust is the source of truth). The two notices the Hub shows with a verdict
+// are the messages `membership-no-instant-removal` and
+// `membership-withheld-revocation` in the string catalog; a Rust-side test
+// reads `en.ftl` and compares them verbatim.
 
 import { RpcError } from "../rpc";
 import { formatAge, formatUtcDate } from "../i18n/format";
-
-export const NO_INSTANT_REMOVAL_NOTICE =
-  "A group's decision reaches copies other people already hold only when they next check. Nobody can promise it is removed everywhere at once.";
-
-export const WITHHELD_REVOCATION_NOTICE =
-  "This shows every withdrawal the group has published. It cannot show one the group chose not to publish.";
+import { t } from "../i18n/i18n";
 
 export type ModerationScope = { kind: "membership" } | { kind: "listing"; listing_id: string };
 
@@ -57,16 +54,17 @@ export type MembershipVerdict =
 function unknownReasonWords(reason: string): string {
   switch (reason) {
     case "issuer-changed":
-      return "the group this directory speaks for is not the one you first saw when you added it";
+      return t("membership-reason-issuer-changed");
     case "issuer-not-pinned":
-      return "this node has not yet recorded which group this directory speaks for";
+      return t("membership-reason-issuer-not-pinned");
     default:
       return reason;
   }
 }
 
-function withReason(sentence: string, reason: string): string {
-  return reason ? `${sentence} Reason given: ${reason}` : sentence;
+/// The arguments of a message that ends with an optional reason.
+function reasonArgs(reason: string): { has_reason: string; reason: string } {
+  return { has_reason: reason ? "yes" : "no", reason };
 }
 
 /// One line about one source's membership evidence, in words. A missing
@@ -77,36 +75,37 @@ export function membershipWords(
   sourceLabel: string,
   nowSecs: number = Math.floor(Date.now() / 1000),
 ): string {
-  if (!v) return `Membership: unknown (${sourceLabel} gave no answer this node could use)`;
+  if (!v) return t("membership-unknown-no-answer", { source: sourceLabel });
   switch (v.state) {
     case "valid":
-      return (
-        `Member of ${v.synorg_name}, checked on your node. ` +
-        `Group withdrawals checked ${formatAge(Math.max(0, nowSecs - v.revocations_checked_as_of_secs))}.`
-      );
+      return t("membership-valid", {
+        name: v.synorg_name,
+        age: formatAge(Math.max(0, nowSecs - v.revocations_checked_as_of_secs)),
+      });
     case "none":
-      return `No membership shown by ${sourceLabel}`;
+      return t("membership-none", { source: sourceLabel });
     case "unknown":
-      return `Membership: unknown (${unknownReasonWords(v.reason)})`;
+      return t("membership-unknown", { reason: unknownReasonWords(v.reason) });
     case "refused":
-      return "Membership evidence did NOT check out -- treat as unknown";
+      return t("membership-refused");
     case "expired":
-      return `Membership expired on ${formatUtcDate(v.expires_at_secs)}`;
+      return t("membership-expired", { date: formatUtcDate(v.expires_at_secs) });
     case "out-of-scope":
-      return `Membership does not cover this listing: ${v.outside.join(", ")}`;
+      return t("membership-out-of-scope", { outside: v.outside.join(", ") });
     case "revoked":
-      return withReason(
-        `Membership revoked: the group withdrew it on ${formatUtcDate(v.revoked_at_secs)}.`,
-        v.reason,
-      );
-    case "suspended": {
-      const what = v.scope.kind === "listing" ? "This listing is suspended" : "Membership suspended";
-      const until = v.until_secs ? `until ${formatUtcDate(v.until_secs)}` : "until the group lifts it";
-      return withReason(
-        `${what} by the group under its rule "${v.rule}", since ${formatUtcDate(v.since_secs)}, ${until}.`,
-        v.reason,
-      );
-    }
+      return t("membership-revoked", {
+        date: formatUtcDate(v.revoked_at_secs),
+        ...reasonArgs(v.reason),
+      });
+    case "suspended":
+      return t("membership-suspended", {
+        scope: v.scope.kind,
+        rule: v.rule,
+        since: formatUtcDate(v.since_secs),
+        until: v.until_secs ? "date" : "lifted",
+        date: v.until_secs ? formatUtcDate(v.until_secs) : "",
+        ...reasonArgs(v.reason),
+      });
   }
 }
 
@@ -115,8 +114,8 @@ export function membershipWords(
 /// reading a result: not "who shows a membership" but "does this group
 /// admit me".
 export function refusalWords(v: MembershipVerdict | null | undefined): string {
-  if (!v || v.state === "none") return "This group has no membership on record for you.";
-  return membershipWords(v, "this group");
+  if (!v || v.state === "none") return t("membership-refusal-none");
+  return membershipWords(v, t("membership-this-group"));
 }
 
 /// Why a publish was refused. A group that does not admit a listing says
@@ -127,7 +126,7 @@ export function publishRefusalWords(err: unknown, otherwise: string): string {
   if (err instanceof RpcError) {
     const data = err.data as { admission?: string; membership?: MembershipVerdict } | undefined;
     if (data?.admission === "not-admitted") {
-      return `this group did not admit this listing. ${refusalWords(data.membership)}`;
+      return t("membership-publish-not-admitted", { why: refusalWords(data.membership) });
     }
   }
   return otherwise;
@@ -137,14 +136,14 @@ export function publishRefusalWords(err: unknown, otherwise: string): string {
 /// re-recorded by a later reply, and never checked against anything
 /// outside that first reply.
 export function pinnedIssuerWords(issuer: string | null | undefined): string {
-  if (!issuer) return "This node has not recorded which group this directory speaks for.";
-  return `The group this directory said it is when you added it: ${issuer}`;
+  if (!issuer) return t("membership-issuer-unrecorded");
+  return t("membership-issuer-pinned", { issuer });
 }
 
 /// How old a held check is, from the time this node fetched it.
 export function checkedWords(asOfSecs: number, nowSecs: number = Math.floor(Date.now() / 1000)): string {
-  if (!asOfSecs) return "never checked";
-  return `checked ${formatAge(Math.max(0, nowSecs - asOfSecs))}`;
+  if (!asOfSecs) return t("membership-never-checked");
+  return t("membership-checked", { age: formatAge(Math.max(0, nowSecs - asOfSecs)) });
 }
 
 /// What `directory.check-standing` answers. `refreshed: false` means the
@@ -157,9 +156,6 @@ export interface CheckStandingReply {
   refreshed: boolean;
   error?: string;
 }
-
-export const ISSUER_CHANGED_CHECK_WORDS =
-  "This directory now says it speaks for a different group than the one you first saw. Its answer was not used.";
 
 /// The one `refreshed: false` reply where the directory *was* reached.
 export function issuerChanged(res: CheckStandingReply): boolean {

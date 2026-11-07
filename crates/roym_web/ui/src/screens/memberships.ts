@@ -1,15 +1,13 @@
 import {
   checkedWords,
-  ISSUER_CHANGED_CHECK_WORDS,
   issuerChanged,
   membershipWords,
-  NO_INSTANT_REMOVAL_NOTICE,
   pinnedIssuerWords,
-  WITHHELD_REVOCATION_NOTICE,
   type CheckStandingReply,
   type MembershipVerdict,
 } from "../directory/membership";
 import { errText, text } from "../dom";
+import { t } from "../i18n/i18n";
 import { call } from "../rpc";
 
 /// One check this node has made, as `directory.memberships` returns it. The
@@ -42,17 +40,10 @@ export async function renderMemberships(container: HTMLElement) {
   container.replaceChildren();
   const box = document.createElement("div");
   box.className = "memberships-screen";
-  box.appendChild(text("h2", "Memberships"));
-  box.appendChild(
-    text(
-      "p",
-      "Each line is a listing owner's membership in a group, as this node worked it out from the " +
-        "group's own signed statements. It is the copy you hold, not a live answer.",
-      "memberships-intro",
-    ),
-  );
-  box.appendChild(text("p", NO_INSTANT_REMOVAL_NOTICE, "no-instant-removal-notice"));
-  box.appendChild(text("p", WITHHELD_REVOCATION_NOTICE, "withheld-revocation-notice"));
+  box.appendChild(text("h2", t("memberships-title")));
+  box.appendChild(text("p", t("memberships-intro"), "memberships-intro"));
+  box.appendChild(text("p", t("membership-no-instant-removal"), "no-instant-removal-notice"));
+  box.appendChild(text("p", t("membership-withheld-revocation"), "withheld-revocation-notice"));
 
   const list = document.createElement("div");
   list.className = "memberships-list";
@@ -63,18 +54,11 @@ export async function renderMemberships(container: HTMLElement) {
   try {
     rows = (await call<{ memberships: HeldMembership[] }>("directory.memberships")).memberships ?? [];
   } catch (err) {
-    list.appendChild(text("p", `Could not load memberships: ${errText(err)}`));
+    list.appendChild(text("p", t("memberships-load-failed", { detail: errText(err) })));
     return;
   }
   if (rows.length === 0) {
-    list.appendChild(
-      text(
-        "p",
-        "No memberships checked yet. One appears here after a search returns a result from a " +
-          "group the listing owner belongs to.",
-        "memberships-empty",
-      ),
-    );
+    list.appendChild(text("p", t("memberships-empty"), "memberships-empty"));
     return;
   }
   const labels = await sourceLabels();
@@ -85,17 +69,19 @@ function buildRow(row: HeldMembership, label: string): HTMLElement {
   const line = document.createElement("div");
   line.className = "membership-row";
   line.dataset.state = row.verdict.state;
-  line.appendChild(text("div", `Group directory: ${label}`, "membership-source"));
-  line.appendChild(text("div", `Listing owner: ${row.member_did}`, "membership-member"));
+  line.appendChild(text("div", t("membership-row-source", { label }), "membership-source"));
+  line.appendChild(text("div", t("membership-row-member", { did: row.member_did }), "membership-member"));
   const words = text("div", membershipWords(row.verdict, label), "membership-words");
   const checked = text("div", checkedWords(row.as_of_secs), "membership-checked");
   line.append(words, checked);
   line.appendChild(text("div", pinnedIssuerWords(row.issuer_did), "membership-issuer"));
   if (row.last_error) {
-    line.appendChild(text("div", `Last check failed: ${row.last_error}`, "membership-last-error"));
+    line.appendChild(
+      text("div", t("membership-last-error", { error: row.last_error }), "membership-last-error"),
+    );
   }
 
-  const again = text("button", "Check again", "button check-again") as HTMLButtonElement;
+  const again = text("button", t("membership-check-again"), "button check-again") as HTMLButtonElement;
   const status = text("div", "", "membership-check-status");
   again.onclick = async () => {
     again.disabled = true;
@@ -108,17 +94,19 @@ function buildRow(row: HeldMembership, label: string): HTMLElement {
       if (issuerChanged(res)) {
         // The reply was not used, so the row keeps showing the held copy
         // (the one a reload shows) and only the status line says why.
-        status.textContent = ISSUER_CHANGED_CHECK_WORDS;
+        status.textContent = t("membership-issuer-changed-check");
       } else {
         line.dataset.state = res.verdict.state;
         words.textContent = membershipWords(res.verdict, label);
-        checked.textContent = res.refreshed ? "checked moments ago" : checkedWords(res.as_of_secs ?? 0);
+        checked.textContent = res.refreshed
+          ? t("membership-checked", { age: t("age-moments") })
+          : checkedWords(res.as_of_secs ?? 0);
         status.textContent = res.refreshed
-          ? "Checked just now."
-          : "Could not reach this directory; this is the copy you already held.";
+          ? t("membership-checked-now")
+          : t("membership-unreachable");
       }
     } catch (err) {
-      status.textContent = `Could not check: ${errText(err)}`;
+      status.textContent = t("membership-check-failed", { detail: errText(err) });
     }
     again.disabled = false;
   };

@@ -6,6 +6,7 @@ import {
   currentLanguage,
   formatLocale,
   initLanguageWith,
+  codeWord,
   lookupText,
   messageId,
   pickLanguage,
@@ -159,5 +160,19 @@ describe("the stored choice", () => {
 describe("availableLanguages", () => {
   it("lists English first, then the other catalogs sorted", () => {
     expect(availableLanguages({ ta: async () => "", hi: async () => "" })).toEqual(["en", "hi", "ta"]);
+  });
+});
+
+describe("codeWord", () => {
+  const table = new Map<string, string>([["a", messageId("age-moments")]]);
+
+  it("gives the word of a known code", () => {
+    expect(codeWord(table, "a")).toBe("moments ago");
+  });
+
+  it("shows a code the table lacks, or an inherited name, as it came", () => {
+    for (const code of ["zzz", "constructor", "toString", "__proto__", "hasOwnProperty"]) {
+      expect(codeWord(table, code)).toBe(code);
+    }
   });
 });

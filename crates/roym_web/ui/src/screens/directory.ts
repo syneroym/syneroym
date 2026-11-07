@@ -6,16 +6,22 @@ import {
   type SourceOutcome,
 } from "../directory/search";
 import { errText, refiller, text } from "../dom";
-import { t } from "../i18n/i18n";
+import { codeWord, messageId, t } from "../i18n/i18n";
 import {
   checkedWords,
-  ISSUER_CHANGED_CHECK_WORDS,
   issuerChanged,
   membershipWords,
   type CheckStandingReply,
 } from "../directory/membership";
 import { formatAge } from "../i18n/format";
 import { call } from "../rpc";
+
+/// The word for a revocation status. A status this table does not know is
+/// shown as it came.
+const REVOCATION_LABELS = new Map<string, string>([
+  ["good", messageId("directory-revocation-good")],
+  ["unknown", messageId("directory-revocation-unknown")],
+]);
 
 interface SourceRow {
   did: string;
@@ -41,7 +47,7 @@ export function membershipLine(source: MergedHit["sources"][number], hit: Merged
   const words = text("div", membershipWords(source.membership, label), "evidence-membership");
   const fresh = text("div", "", "evidence-membership-fresh");
   const status = text("div", "", "membership-check-status");
-  const again = text("button", "Check membership again", "button check-membership") as HTMLButtonElement;
+  const again = text("button", t("directory-check-again"), "button check-membership") as HTMLButtonElement;
   again.onclick = async () => {
     again.disabled = true;
     status.textContent = "";
@@ -52,10 +58,10 @@ export function membershipLine(source: MergedHit["sources"][number], hit: Merged
       });
       fresh.textContent = issuerChanged(res)
         ? ""
-        : `Membership on its own, not tied to this listing: ${membershipWords(res.verdict, label)}`;
+        : t("directory-membership-alone", { words: membershipWords(res.verdict, label) });
       status.textContent = checkOutcomeWords(res);
     } catch (err) {
-      status.textContent = `Could not check: ${errText(err)}`;
+      status.textContent = t("directory-check-failed", { detail: errText(err) });
     }
     again.disabled = false;
   };
@@ -64,23 +70,23 @@ export function membershipLine(source: MergedHit["sources"][number], hit: Merged
 }
 
 function checkOutcomeWords(res: CheckStandingReply): string {
-  if (res.refreshed) return "Checked just now.";
-  if (issuerChanged(res)) return ISSUER_CHANGED_CHECK_WORDS;
-  return `Could not reach this directory. Showing what was ${checkedWords(res.as_of_secs ?? 0)}.`;
+  if (res.refreshed) return t("directory-checked-now");
+  if (issuerChanged(res)) return t("membership-issuer-changed-check");
+  return t("directory-unreachable", { checked: checkedWords(res.as_of_secs ?? 0) });
 }
 
 function sourceErrorWords(kind: string): string {
   switch (kind) {
     case "not-started":
-      return "this installation was busy and did not start the call";
+      return t("directory-source-error-not-started");
     case "timed-out":
-      return "the directory did not answer in time";
+      return t("directory-source-error-timed-out");
     case "not-found":
-      return "no directory answers at that address";
+      return t("directory-source-error-not-found");
     case "refused":
-      return "the directory refused the request";
+      return t("directory-source-error-refused");
     default:
-      return "the directory's answer could not be read";
+      return t("directory-source-error-unreadable");
   }
 }
 
@@ -88,16 +94,8 @@ export async function renderDirectory(container: HTMLElement) {
   container.replaceChildren();
   const box = document.createElement("div");
   box.className = "directory-screen";
-  box.appendChild(text("h2", "Directories"));
-  box.appendChild(
-    text(
-      "p",
-      "A directory is a place you choose to search. It is optional: you can " +
-        "always reach a listing owner directly from a link they send you. Your node " +
-        "checks every result itself -- a directory is never trusted.",
-      "directory-intro",
-    ),
-  );
+  box.appendChild(text("h2", t("directory-title")));
+  box.appendChild(text("p", t("directory-intro"), "directory-intro"));
 
   const sourcesHost = document.createElement("div");
   sourcesHost.className = "directory-sources";
@@ -107,17 +105,17 @@ export async function renderDirectory(container: HTMLElement) {
   box.appendChild(buildSearch());
 
   const reloadSources = refiller(sourcesHost, async (into) => {
-    into.appendChild(text("h3", "Your directories"));
+    into.appendChild(text("h3", t("directory-yours-heading")));
     let rows: SourceRow[] = [];
     try {
       const res = await call<{ sources: SourceRow[] }>("directory.sources");
       rows = res.sources ?? [];
     } catch (err) {
-      into.appendChild(text("p", `Could not load your directories: ${errText(err)}`));
+      into.appendChild(text("p", t("directory-load-failed", { detail: errText(err) })));
       return;
     }
     if (rows.length === 0) {
-      into.appendChild(text("p", "No directories added yet.", "directory-empty"));
+      into.appendChild(text("p", t("directory-empty"), "directory-empty"));
       return;
     }
     for (const row of rows) {
@@ -128,12 +126,16 @@ export async function renderDirectory(container: HTMLElement) {
       line.appendChild(text("span", row.did, "source-did"));
       if (row.last_error) {
         line.appendChild(
-          text("span", `last error: ${sourceErrorWords(row.last_error.kind)}`, "source-last-error"),
+          text(
+            "span",
+            t("directory-last-error", { reason: sourceErrorWords(row.last_error.kind) }),
+            "source-last-error",
+          ),
         );
       } else if (row.last_ok_secs) {
-        line.appendChild(text("span", "answered recently", "source-last-ok"));
+        line.appendChild(text("span", t("directory-answered-recently"), "source-last-ok"));
       }
-      const rm = text("button", "Remove", "button remove-source") as HTMLButtonElement;
+      const rm = text("button", t("common-remove"), "button remove-source") as HTMLButtonElement;
       rm.onclick = async () => {
         rm.disabled = true;
         try {
@@ -141,7 +143,9 @@ export async function renderDirectory(container: HTMLElement) {
           await reloadSources();
         } catch (err) {
           rm.disabled = false;
-          line.appendChild(text("p", `Remove failed: ${errText(err)}`, "row-error"));
+          line.appendChild(
+            text("p", t("directory-remove-failed", { detail: errText(err) }), "row-error"),
+          );
         }
       };
       line.appendChild(rm);
@@ -156,21 +160,15 @@ export async function renderDirectory(container: HTMLElement) {
 function buildAddSource(onAdded: () => Promise<void>): HTMLElement {
   const wrap = document.createElement("div");
   wrap.className = "add-source";
-  wrap.appendChild(text("h3", "Add a directory"));
-  wrap.appendChild(
-    text(
-      "p",
-      "Paste the Roym Directory service DID a friend, a referral or a " +
-        "well-known list gave you. There is no directory of directories.",
-    ),
-  );
+  wrap.appendChild(text("h3", t("directory-add-heading")));
+  wrap.appendChild(text("p", t("directory-add-help")));
   const didInput = document.createElement("input");
   didInput.className = "add-source-did";
-  didInput.placeholder = "did:key:... (Roym Directory service DID)";
+  didInput.placeholder = t("directory-add-did-placeholder");
   const labelInput = document.createElement("input");
   labelInput.className = "add-source-label";
-  labelInput.placeholder = "your label for it (optional)";
-  const addBtn = text("button", "Add directory", "button add-source-btn") as HTMLButtonElement;
+  labelInput.placeholder = t("directory-add-label-placeholder");
+  const addBtn = text("button", t("directory-add-button"), "button add-source-btn") as HTMLButtonElement;
   const status = text("p", "", "add-source-status");
 
   addBtn.onclick = async () => {
@@ -187,17 +185,17 @@ function buildAddSource(onAdded: () => Promise<void>): HTMLElement {
         // A probe that answered but returned no SynOrg -- stored anyway
         // (the SynOrg may be created later) but the person is told, so
         // they do not sit waiting for results that will never come.
-        status.textContent = `Added. Note: ${res.probe}.`;
+        status.textContent = t("directory-added-note", { probe: res.probe });
       } else if (res.source.last_error) {
-        status.textContent = `Added, but the directory did not answer a check just now.`;
+        status.textContent = t("directory-added-silent");
       } else {
-        status.textContent = "Added.";
+        status.textContent = t("directory-added");
       }
       didInput.value = "";
       labelInput.value = "";
       await onAdded();
     } catch (err) {
-      status.textContent = `Could not add: ${errText(err)}`;
+      status.textContent = t("directory-add-failed", { detail: errText(err) });
     }
     addBtn.disabled = false;
   };
@@ -209,22 +207,16 @@ function buildAddSource(onAdded: () => Promise<void>): HTMLElement {
 function buildSearch(): HTMLElement {
   const wrap = document.createElement("div");
   wrap.className = "directory-search";
-  wrap.appendChild(text("h3", "Search your directories"));
+  wrap.appendChild(text("h3", t("directory-search-heading")));
 
   const textInput = document.createElement("input");
   textInput.className = "search-text";
-  textInput.placeholder = "words to look for (optional)";
+  textInput.placeholder = t("directory-search-text-placeholder");
   const catInput = document.createElement("input");
   catInput.className = "search-categories";
-  catInput.placeholder = "categories, comma separated (optional)";
-  const help = text(
-    "p",
-    "Matching is on whole words in the title, summary and categories. " +
-      "Punctuation is ignored, so searching for 50% finds 50. There is no " +
-      "ranking and no paid placement -- results are shown newest first.",
-    "search-help",
-  );
-  const goBtn = text("button", "Search", "button run-search") as HTMLButtonElement;
+  catInput.placeholder = t("directory-search-categories-placeholder");
+  const help = text("p", t("directory-search-help"), "search-help");
+  const goBtn = text("button", t("directory-search-button"), "button run-search") as HTMLButtonElement;
   const progress = text("p", "", "search-progress");
   const results = document.createElement("div");
   results.className = "search-results";
@@ -237,7 +229,7 @@ function buildSearch(): HTMLElement {
     results.replaceChildren();
     refusedHost.replaceChildren();
     errorsHost.replaceChildren();
-    progress.textContent = "Searching...";
+    progress.textContent = t("directory-searching");
     goBtn.disabled = true;
 
     const query: Record<string, unknown> = {};
@@ -251,14 +243,15 @@ function buildSearch(): HTMLElement {
     try {
       const res = await findListings(query);
       if (res.outcomes.length > 0 && res.outcomes.every((o) => o.kind === "not-started")) {
-        progress.textContent =
-          "This installation could not start the search. Press Search to try again.";
+        progress.textContent = t("directory-search-not-started", {
+          button: t("directory-search-button"),
+        });
         return;
       }
       progress.textContent =
         res.outcomes.length === 0
-          ? "You have not added any directories. Add one above, or reach a listing owner by a direct link."
-          : `${res.outcomes.length} directories searched.`;
+          ? t("directory-no-sources")
+          : t("directory-searched", { count: res.outcomes.length });
       results.replaceChildren();
       refusedHost.replaceChildren();
       errorsHost.replaceChildren();
@@ -271,7 +264,10 @@ function buildSearch(): HTMLElement {
       progress.textContent =
         err instanceof Error
           ? errText(err)
-          : t("directory-search-failed", { detail: String(err) });
+          : t("directory-search-failed", {
+              detail: String(err),
+              button: t("directory-search-button"),
+            });
     } finally {
       goBtn.disabled = false;
     }
@@ -293,16 +289,16 @@ function renderSourceOutcome(
   line.appendChild(text("span", outcome.source, "source-error-did"));
   const reason =
     outcome.kind === "ok"
-      ? "this directory had more matches than it would return"
+      ? t("directory-more-than-returned")
       : sourceErrorWords(outcome.kind);
   line.appendChild(text("span", reason, "source-error-reason"));
   host.appendChild(line);
 }
 
 function renderHits(host: HTMLElement, hits: MergedHit[], truncated: boolean, runId: string) {
-  host.appendChild(text("h3", "Results"));
+  host.appendChild(text("h3", t("directory-results-heading")));
   if (hits.length === 0) {
-    host.appendChild(text("p", "No results.", "no-results"));
+    host.appendChild(text("p", t("directory-no-results"), "no-results"));
     return;
   }
   for (const hit of hits) {
@@ -310,12 +306,14 @@ function renderHits(host: HTMLElement, hits: MergedHit[], truncated: boolean, ru
     card.className = "search-hit";
     card.dataset.verified = String(hit.verified);
 
-    card.appendChild(text("div", hit.title || "(untitled)", "hit-title"));
+    card.appendChild(text("div", hit.title || t("directory-untitled"), "hit-title"));
     card.appendChild(text("div", hit.summary, "hit-summary"));
     if (hit.categories.length) {
-      card.appendChild(text("div", `Categories: ${hit.categories.join(", ")}`, "hit-categories"));
+      card.appendChild(
+        text("div", t("directory-hit-categories", { categories: hit.categories.join(", ") }), "hit-categories"),
+      );
     }
-    card.appendChild(text("div", `Offered by: ${hit.issuer}`, "hit-issuer"));
+    card.appendChild(text("div", t("directory-hit-offered-by", { issuer: hit.issuer }), "hit-issuer"));
     card.appendChild(text("div", t("directory-signed-age", { age: formatAge(hit.age_secs) }), "hit-age"));
 
     const evidence = document.createElement("div");
@@ -327,44 +325,47 @@ function renderHits(host: HTMLElement, hits: MergedHit[], truncated: boolean, ru
       text(
         "div",
         hit.verified
-          ? "signature: checked on your node"
-          : "signature: did NOT check out -- treat as unknown",
+          ? t("directory-signature-ok")
+          : t("directory-signature-bad"),
         "evidence-signature",
       ),
     );
-    evidence.appendChild(text("div", `revocation: ${hit.revocation_status}`, "evidence-revocation"));
+    evidence.appendChild(
+      text(
+        "div",
+        t("directory-revocation", {
+          status: codeWord(REVOCATION_LABELS, hit.revocation_status),
+        }),
+        "evidence-revocation",
+      ),
+    );
     for (const source of hit.sources) evidence.appendChild(membershipLine(source, hit));
     card.appendChild(evidence);
 
     const from = hit.sources.map((s) => s.directory).join(", ");
-    card.appendChild(text("div", `Seen at: ${from}`, "hit-sources"));
+    card.appendChild(text("div", t("directory-seen-at", { from }), "hit-sources"));
     if (hit.versions_differ) {
       card.appendChild(
-        text(
-          "div",
-          "Two directories disagree about which version of this offer is current. " +
-            "The newer signed version is shown.",
-          "hit-versions-differ",
-        ),
+        text("div", t("directory-versions-differ"), "hit-versions-differ"),
       );
     }
 
     if (hit.verified) {
-      const engage = text("button", "Message this listing owner", "button hit-engage") as HTMLButtonElement;
+      const engage = text("button", t("directory-engage-button"), "button hit-engage") as HTMLButtonElement;
       const engageOut = text("div", "", "hit-engage-out");
       engage.onclick = async () => {
         engageOut.textContent = "";
         try {
           const envelope = await runEnvelope(runId, hit.record_id);
           if (!envelope) {
-            engageOut.textContent = "The full listing is no longer in this run.";
+            engageOut.textContent = t("directory-engage-gone");
             return;
           }
-          engageOut.textContent =
-            `Conversation address: ${hit.conversation_address} -- open the Messages tab ` +
-            `and start a conversation with this address.`;
+          engageOut.textContent = t("directory-engage-address", {
+            address: hit.conversation_address,
+          });
         } catch (err) {
-          engageOut.textContent = `Could not open: ${errText(err)}`;
+          engageOut.textContent = t("directory-engage-failed", { detail: errText(err) });
         }
       };
       card.append(engage, engageOut);
@@ -373,30 +374,24 @@ function renderHits(host: HTMLElement, hits: MergedHit[], truncated: boolean, ru
     host.appendChild(card);
   }
   if (truncated) {
-    host.appendChild(text("p", "More results were found than are shown here.", "hits-truncated"));
+    host.appendChild(text("p", t("directory-truncated"), "hits-truncated"));
   }
 }
 
 function renderRefused(host: HTMLElement, refused: RefusedHit[], truncated: boolean) {
   if (refused.length === 0) return;
-  host.appendChild(text("h3", "Refused evidence"));
-  host.appendChild(
-    text(
-      "p",
-      "One or more directories served these, but their signatures did not " +
-        "check out on your node. They are shown so you know a directory served " +
-        "them. They are never treated as real offers.",
-      "refused-intro",
-    ),
-  );
+  host.appendChild(text("h3", t("directory-refused-heading")));
+  host.appendChild(text("p", t("directory-refused-intro"), "refused-intro"));
   for (const r of refused) {
     const line = document.createElement("div");
     line.className = "refused-hit";
-    line.appendChild(text("div", r.reason || "signature did not verify", "refused-reason"));
-    line.appendChild(text("div", `Served by: ${r.sources.join(", ")}`, "refused-sources"));
+    line.appendChild(text("div", r.reason || t("directory-refused-fallback"), "refused-reason"));
+    line.appendChild(
+      text("div", t("directory-served-by", { sources: r.sources.join(", ") }), "refused-sources"),
+    );
     host.appendChild(line);
   }
   if (truncated) {
-    host.appendChild(text("p", "More refused evidence was served than is shown here.", "refused-truncated"));
+    host.appendChild(text("p", t("directory-refused-truncated"), "refused-truncated"));
   }
 }

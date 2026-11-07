@@ -1,5 +1,5 @@
-import { errText, refiller } from "../dom";
-import { t } from "../i18n/i18n";
+import { codeOptions, errText, input, refiller, select, text } from "../dom";
+import { codeWord, messageId, t } from "../i18n/i18n";
 import { call } from "../rpc";
 
 export async function renderSafety(container: HTMLElement) {
@@ -8,7 +8,7 @@ export async function renderSafety(container: HTMLElement) {
   box.className = "safety-screen";
 
   const h2 = document.createElement("h2");
-  h2.textContent = "Safety & Blocklist";
+  h2.textContent = t("safety-title");
   box.appendChild(h2);
 
   const blockDesc = document.createElement("p");
@@ -19,20 +19,20 @@ export async function renderSafety(container: HTMLElement) {
     if (policy?.statement) {
       blockDesc.textContent = policy.statement;
     } else {
-      blockDesc.textContent = "Could not load this node's safety policy.";
+      blockDesc.textContent = t("safety-policy-unavailable");
     }
   } catch {
-    blockDesc.textContent = "Could not load this node's safety policy.";
+    blockDesc.textContent = t("safety-policy-unavailable");
   }
 
   const blockInput = document.createElement("input");
   blockInput.className = "block-input";
-  blockInput.placeholder = "Person DID or Address to block";
+  blockInput.placeholder = t("safety-block-placeholder");
   box.appendChild(blockInput);
 
   const blockBtn = document.createElement("button");
   blockBtn.className = "button";
-  blockBtn.textContent = "Block";
+  blockBtn.textContent = t("safety-block-button");
 
   const blockError = document.createElement("p");
   blockError.className = "block-error";
@@ -64,11 +64,11 @@ export async function renderSafety(container: HTMLElement) {
       const rows = await call<Array<{ person_did?: string; address?: string }>>("block.list");
       for (const r of rows) {
         const item = document.createElement("div");
-        item.textContent = `Blocked: ${r.person_did || r.address || ""}`;
+        item.textContent = t("safety-blocked-line", { who: r.person_did || r.address || "" });
         into.appendChild(item);
       }
     } catch {
-      into.textContent = "Could not load block list.";
+      into.textContent = t("safety-block-list-failed");
     }
   });
   await loadBlocks();
@@ -79,49 +79,41 @@ export async function renderSafety(container: HTMLElement) {
   container.appendChild(box);
 }
 
-function textNode(tag: string, value: string, className?: string): HTMLElement {
-  const el = document.createElement(tag);
-  el.textContent = value;
-  if (className) el.className = className;
-  return el;
-}
-
-const REPORT_CATEGORIES = [
-  "impersonation",
-  "fraud",
-  "harassment",
-  "unsafe-service",
-  "illegal-content",
-];
+/// Message id for each code shown as a word. A `Map`, so a code from
+/// another node can never hit an inherited property; a code not in the
+/// table is shown as it came.
+const REPORT_CATEGORIES = new Map<string, string>([
+  ["impersonation", messageId("safety-category-impersonation")],
+  ["fraud", messageId("safety-category-fraud")],
+  ["harassment", messageId("safety-category-harassment")],
+  ["unsafe-service", messageId("safety-category-unsafe-service")],
+  ["illegal-content", messageId("safety-category-illegal-content")],
+]);
+const REPORT_KINDS = new Map<string, string>([
+  ["person", messageId("safety-kind-person")],
+  ["listing", messageId("safety-kind-listing")],
+  ["message", messageId("safety-kind-message")],
+]);
+const REPORT_STATUSES = new Map<string, string>([
+  ["open", messageId("safety-status-open")],
+  ["withdrawn", messageId("safety-status-withdrawn")],
+]);
 
 /// File and list safety reports. The `[PRD-SAF]` backlog row deferred this
 /// surface from the identity/profile slice to here.
 function buildReportForm(): HTMLElement {
   const wrap = document.createElement("div");
   wrap.className = "report-form";
-  wrap.appendChild(textNode("h3", "Report a person, listing, or message"));
+  wrap.appendChild(text("h3", t("safety-report-heading")));
 
-  const kind = document.createElement("select");
-  for (const k of ["person", "listing", "message"]) {
-    const o = document.createElement("option");
-    o.value = k;
-    o.textContent = k;
-    kind.appendChild(o);
-  }
-  const subjectId = document.createElement("input");
-  subjectId.placeholder = "Subject DID or id";
-  const category = document.createElement("select");
-  for (const c of REPORT_CATEGORIES) {
-    const o = document.createElement("option");
-    o.value = c;
-    o.textContent = c;
-    category.appendChild(o);
-  }
+  const kind = select(codeOptions(REPORT_KINDS, [...REPORT_KINDS.keys()]));
+  const subjectId = input(t("safety-subject-placeholder"));
+  const category = select(codeOptions(REPORT_CATEGORIES, [...REPORT_CATEGORIES.keys()]));
   const details = document.createElement("textarea");
-  details.placeholder = "What happened (optional)";
+  details.placeholder = t("safety-details-placeholder");
 
-  const fileBtn = textNode("button", "File report", "button file-report") as HTMLButtonElement;
-  const status = textNode("p", "", "report-status");
+  const fileBtn = text("button", t("safety-file-report"), "button file-report") as HTMLButtonElement;
+  const status = text("p", "", "report-status");
   const list = document.createElement("div");
   list.className = "report-list";
 
@@ -134,10 +126,18 @@ function buildReportForm(): HTMLElement {
         const line = document.createElement("div");
         line.className = "report-row";
         line.appendChild(
-          textNode("span", `${r.category} - ${r.subject_kind} ${r.subject_id} [${r.status}]`),
+          text(
+            "span",
+            t("safety-report-row", {
+              category: codeWord(REPORT_CATEGORIES, r.category),
+              kind: codeWord(REPORT_KINDS, r.subject_kind),
+              subject: r.subject_id,
+              status: codeWord(REPORT_STATUSES, r.status),
+            }),
+          ),
         );
         if (r.status !== "withdrawn") {
-          const wd = textNode("button", "Withdraw", "button withdraw-report") as HTMLButtonElement;
+          const wd = text("button", t("safety-withdraw"), "button withdraw-report") as HTMLButtonElement;
           wd.onclick = async () => {
             await call("report.withdraw", { report_id: r.report_id });
             await reload();
@@ -147,7 +147,7 @@ function buildReportForm(): HTMLElement {
         into.appendChild(line);
       }
     } catch {
-      into.textContent = "Could not load reports.";
+      into.textContent = t("safety-reports-load-failed");
     }
   });
 
@@ -155,7 +155,7 @@ function buildReportForm(): HTMLElement {
     status.textContent = "";
     const sid = subjectId.value.trim();
     if (!sid) {
-      status.textContent = "A subject is required.";
+      status.textContent = t("safety-subject-required");
       return;
     }
     try {
@@ -165,7 +165,10 @@ function buildReportForm(): HTMLElement {
         category: category.value,
         details: details.value.trim() || undefined,
       });
-      status.textContent = `Recorded ${res.report_id} (${res.status})`;
+      status.textContent = t("safety-recorded", {
+        id: res.report_id,
+        status: codeWord(REPORT_STATUSES, res.status),
+      });
       subjectId.value = "";
       details.value = "";
       await reload();
@@ -184,28 +187,20 @@ function buildReportForm(): HTMLElement {
 async function buildContactLimitEditor(): Promise<HTMLElement> {
   const wrap = document.createElement("div");
   wrap.className = "contact-limit-editor";
-  wrap.appendChild(textNode("h3", "First-contact rate limit"));
-  wrap.appendChild(
-    textNode(
-      "p",
-      "How many strangers may start a conversation with you inside one window. " +
-        "An ongoing conversation is never limited.",
-    ),
-  );
+  wrap.appendChild(text("h3", t("safety-limit-heading")));
+  wrap.appendChild(text("p", t("safety-limit-intro")));
 
-  const windowInput = document.createElement("input");
-  windowInput.placeholder = "window (seconds)";
-  const maxInput = document.createElement("input");
-  maxInput.placeholder = "max new contacts per window";
-  const saveBtn = textNode("button", "Save limit", "button save-contact-limit") as HTMLButtonElement;
-  const status = textNode("p", "", "contact-limit-status");
+  const windowInput = input(t("safety-window-placeholder"));
+  const maxInput = input(t("safety-max-placeholder"));
+  const saveBtn = text("button", t("safety-save-limit"), "button save-contact-limit") as HTMLButtonElement;
+  const status = text("p", "", "contact-limit-status");
 
   try {
     const limits = await call<{ window_secs: number; max_per_window: number }>("contacts.limits");
     windowInput.value = String(limits.window_secs);
     maxInput.value = String(limits.max_per_window);
   } catch {
-    status.textContent = "Could not load the current limit.";
+    status.textContent = t("safety-limit-load-failed");
   }
 
   saveBtn.onclick = async () => {
@@ -213,12 +208,12 @@ async function buildContactLimitEditor(): Promise<HTMLElement> {
     const w = Number.parseInt(windowInput.value, 10);
     const m = Number.parseInt(maxInput.value, 10);
     if (!Number.isInteger(w) || !Number.isInteger(m)) {
-      status.textContent = "Both values must be whole numbers.";
+      status.textContent = t("safety-whole-numbers");
       return;
     }
     try {
       await call("contacts.set-limits", { window_secs: w, max_per_window: m });
-      status.textContent = "Saved.";
+      status.textContent = t("common-saved");
     } catch (err) {
       status.textContent = t("safety-save-failed", { detail: errText(err) });
     }

@@ -31,18 +31,22 @@ pub const AGREEMENT_RECEIPT_VERSION: u32 = 1;
 pub const EVENT_CARD: &str = "transaction.card";
 pub const EVENT_BOOKING: &str = "transaction.booking";
 
-/// The notice a counterparty is shown before a request is signed, and which
-/// the request then carries under their own signature. One constant, so
-/// the Hub, `roymctl` and the record cannot drift apart, and so the
-/// notice is never an empty string nobody noticed.
+/// The English text of the notice a counterparty is shown before a request
+/// is signed, and which the request then carries under their own signature.
+/// `roymctl` uses it as the default. The Hub signs the notice in its own
+/// language: `request-data-use-notice` in the string catalog is this text in
+/// `en.ftl` (a test reads that file and compares), and the Hindi catalog
+/// holds the Hindi text. One constant for English, so `roymctl`, the English
+/// Hub and the record cannot drift apart, and so the notice is never an
+/// empty string nobody noticed.
 pub const DEFAULT_DATA_USE_NOTICE: &str = "This request is signed by you and sent to the person \
                                            or business you chose. They keep a copy. It carries \
                                            the area you gave, not your exact address; an address \
                                            is disclosed only inside a quote you accept.";
 
-/// Shown above the address field whenever a quote states one, and pinned
-/// character-for-character by the browser suite -- the same discipline
-/// `messages.ts` already applies to the deletion notes.
+/// Shown above the address field whenever a quote states one. The Hub holds
+/// it as `quote-address-disclosure-notice` in `en.ftl`; a test reads that
+/// file and compares, and the browser suite pins it character for character.
 pub const ADDRESS_DISCLOSURE_NOTICE: &str = "This address becomes part of a signed record that \
                                              both parties keep and can export. It cannot be \
                                              removed from a record already signed.";

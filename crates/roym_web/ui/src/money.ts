@@ -1,3 +1,4 @@
+import { HubError } from "./hub-error";
 import { cached } from "./i18n/format";
 import { formatLocale, t } from "./i18n/i18n";
 
@@ -27,7 +28,7 @@ export const CURRENCY_CODES = new Set([
   "XCD", "XOF", "XPF", "YER", "ZAR", "ZMW",
 ]);
 
-export class MoneyInputError extends Error {
+export class MoneyInputError extends HubError {
   constructor(message: string) {
     super(message);
     this.name = "MoneyInputError";

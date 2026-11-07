@@ -8,19 +8,19 @@ export async function renderProfile(container: HTMLElement) {
   box.className = "profile-screen";
 
   const h2 = document.createElement("h2");
-  h2.textContent = "Profile";
+  h2.textContent = t("profile-title");
   box.appendChild(h2);
 
   const form = document.createElement("form");
   const nameLabel = document.createElement("label");
-  nameLabel.textContent = "Display Name: ";
+  nameLabel.append(t("profile-display-name"), " ");
   const nameInput = document.createElement("input");
   nameInput.type = "text";
   nameLabel.appendChild(nameInput);
   form.appendChild(nameLabel);
 
   const addrLabel = document.createElement("label");
-  addrLabel.textContent = " Conversation Address: ";
+  addrLabel.append(" ", t("profile-conversation-address"), " ");
   const addrInput = document.createElement("input");
   addrInput.type = "text";
   addrLabel.appendChild(addrInput);
@@ -29,7 +29,7 @@ export async function renderProfile(container: HTMLElement) {
   const saveBtn = document.createElement("button");
   saveBtn.type = "submit";
   saveBtn.className = "button";
-  saveBtn.textContent = "Save Profile";
+  saveBtn.textContent = t("profile-save");
   form.appendChild(saveBtn);
 
   const status = document.createElement("p");
@@ -37,14 +37,17 @@ export async function renderProfile(container: HTMLElement) {
 
   form.onsubmit = async (e) => {
     e.preventDefault();
-    status.textContent = "Saving...";
+    status.textContent = t("profile-saving");
     try {
       const res = await call<{ record_id: string; envelope: string }>("profile.set", {
         display_name: nameInput.value,
         conversation_address: addrInput.value || undefined,
       });
       const env = typeof res.envelope === "string" ? JSON.parse(res.envelope) : res.envelope;
-      status.textContent = `Saved record ${res.record_id || ""} (issuer: ${env.issuer || ""})`;
+      status.textContent = t("profile-saved", {
+        record: res.record_id || "",
+        issuer: env.issuer || "",
+      });
     } catch (err) {
       status.textContent = t("profile-error", { detail: errText(err) });
     }

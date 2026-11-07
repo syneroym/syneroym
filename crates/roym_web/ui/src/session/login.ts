@@ -20,6 +20,9 @@
 // `SameSite=Lax` and a `Max-Age` of one hour (written again before every
 // connect); other requests to the Hub never carry it.
 
+import { HubError } from "../hub-error";
+import { t } from "../i18n/i18n";
+
 const TOKEN_KEY = "roym_session_token";
 
 const DB_NAME = "roym-hub-session";
@@ -144,7 +147,7 @@ const PKCS8_ED25519_PREFIX = new Uint8Array([
 
 function hexToBytes(hex: string): Uint8Array {
   const clean = hex.trim();
-  if (clean.length % 2 !== 0) throw new Error("odd-length hex string");
+  if (clean.length % 2 !== 0) throw new HubError(t("login-error-odd-hex"));
   const out = new Uint8Array(clean.length / 2);
   for (let i = 0; i < out.length; i++) {
     out[i] = parseInt(clean.slice(i * 2, i * 2 + 2), 16);
@@ -154,7 +157,7 @@ function hexToBytes(hex: string): Uint8Array {
 
 async function importTempKey(secretKeyHex: string): Promise<CryptoKey> {
   const seed = hexToBytes(secretKeyHex);
-  if (seed.length !== 32) throw new Error("temporary secret key must be 32 bytes");
+  if (seed.length !== 32) throw new HubError(t("login-error-key-length"));
   const pkcs8 = new Uint8Array(PKCS8_ED25519_PREFIX.length + 32);
   pkcs8.set(PKCS8_ED25519_PREFIX, 0);
   pkcs8.set(seed, PKCS8_ED25519_PREFIX.length);
@@ -231,11 +234,11 @@ async function completeLogin(stored: StoredKey): Promise<void> {
     body: JSON.stringify({ master_did: masterDid }),
   });
   if (!challengeRes.ok) {
-    throw new Error(`challenge failed: HTTP ${challengeRes.status}`);
+    throw new HubError(t("login-error-challenge", { status: String(challengeRes.status) }));
   }
   const challenge: { nonce: string; assertion?: string } = await challengeRes.json();
   if (!challenge.assertion) {
-    throw new Error("auth service did not return an assertion to sign");
+    throw new HubError(t("login-error-no-assertion"));
   }
 
   const signature = new Uint8Array(
@@ -258,14 +261,14 @@ async function completeLogin(stored: StoredKey): Promise<void> {
     }),
   });
   if (!loginRes.ok) {
-    let message = `HTTP ${loginRes.status}`;
+    let message = t("login-error-http", { status: String(loginRes.status) });
     try {
       const body = await loginRes.json();
-      if (body?.error) message = String(body.error);
+      if (body?.error) message = t("login-error-service", { detail: String(body.error) });
     } catch {
       // keep the status-code message
     }
-    throw new Error(message);
+    throw new HubError(message);
   }
   const grant: { token: string } = await loginRes.json();
   setToken(grant.token);
@@ -297,7 +300,7 @@ export interface SessionMethods {
 
 export async function fetchMethods(): Promise<SessionMethods> {
   const res = await fetch(`${authOrigin()}/_syneroym/session/methods`);
-  if (!res.ok) throw new Error(`methods failed: HTTP ${res.status}`);
+  if (!res.ok) throw new HubError(t("login-error-methods", { status: String(res.status) }));
   return res.json();
 }
 

@@ -1,4 +1,5 @@
-import { lookupText, messageId, t } from "./i18n/i18n";
+import { HubError } from "./hub-error";
+import { codeWord, lookupText, messageId, t } from "./i18n/i18n";
 import { RpcError } from "./rpc";
 
 /// A stranger's directory label, listing text or error string is only ever
@@ -36,10 +37,14 @@ function rpcErrorText(err: RpcError): string {
 }
 
 /// The text to show for a failure, in the Hub language. The service's own
-/// English text is only a `$detail` inside the Hub's message.
+/// English text is only a `$detail` inside the Hub's message. A `HubError`
+/// is shown as it is; any other failure (a browser error, a thrown string)
+/// is a `$detail` inside the Hub's own sentence.
 export function errText(err: unknown): string {
   if (err instanceof RpcError) return rpcErrorText(err);
-  return err instanceof Error ? err.message : String(err);
+  if (err instanceof HubError) return err.message;
+  const detail = err instanceof Error ? err.message : String(err);
+  return t("error-unexpected", { detail });
 }
 
 /// A label, one space, then the value nodes. Fluent removes a space at the
@@ -58,6 +63,42 @@ export function field(labelText: string, control: HTMLElement): HTMLElement {
   label.appendChild(text("span", labelText));
   label.appendChild(control);
   return label;
+}
+
+export function input(placeholder: string, value = ""): HTMLInputElement {
+  const el = document.createElement("input");
+  el.placeholder = placeholder;
+  el.value = value;
+  return el;
+}
+
+/// A `<select>` of `[value, label]` pairs. The value is the code; the label
+/// is the text the person reads.
+export function select(options: Array<[string, string]>, value?: string): HTMLSelectElement {
+  const el = document.createElement("select");
+  for (const [optValue, optLabel] of options) {
+    const o = document.createElement("option");
+    o.value = optValue;
+    o.textContent = optLabel;
+    el.appendChild(o);
+  }
+  if (value) el.value = value;
+  return el;
+}
+
+/// The options for `codes`, each shown as the word of `table`.
+export function codeOptions(table: Map<string, string>, codes: string[]): Array<[string, string]> {
+  return codes.map((code): [string, string] => [code, codeWord(table, code)]);
+}
+
+export function checkbox(labelText: string, checked = false): { wrap: HTMLElement; box: HTMLInputElement } {
+  const wrap = document.createElement("label");
+  wrap.className = "checkbox-field";
+  const box = document.createElement("input");
+  box.type = "checkbox";
+  box.checked = checked;
+  wrap.append(box, text("span", labelText));
+  return { wrap, box };
 }
 
 /// Returns a function that refills `host` from the node. The content is

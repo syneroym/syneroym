@@ -1,3 +1,4 @@
+import { t } from "../i18n/i18n";
 import { pendingEnrolment } from "../session/enrolment";
 
 export async function renderSetup(
@@ -10,14 +11,11 @@ export async function renderSetup(
   box.className = "setup-screen";
 
   const h2 = document.createElement("h2");
-  h2.textContent = "Signing Certificate Required";
+  h2.textContent = t("setup-title");
   box.appendChild(h2);
 
   const desc = document.createElement("p");
-  desc.textContent =
-    "This installation has no active record-signing certificate enrolled. " +
-    "To enrol, run `roymctl roym enrol-signing --master <identity> --registry-url <registry>` from your terminal. " +
-    "The browser cannot do this because it holds no master key.";
+  desc.textContent = t("setup-intro");
   box.appendChild(desc);
 
   const pendingList = document.createElement("div");
@@ -26,14 +24,14 @@ export async function renderSetup(
   if (pending.length > 0) {
     const p = document.createElement("p");
     p.className = "pending-services-text";
-    p.textContent = `Missing signing certificates for: ${pending.join(", ")}`;
+    p.textContent = t("setup-missing", { services: pending.join(", ") });
     pendingList.appendChild(p);
   }
   box.appendChild(pendingList);
 
   const checkBtn = document.createElement("button");
   checkBtn.className = "button check-again-button";
-  checkBtn.textContent = "Check again";
+  checkBtn.textContent = t("setup-check-again");
   checkBtn.onclick = async () => {
     checkBtn.disabled = true;
     try {
@@ -45,7 +43,7 @@ export async function renderSetup(
       pendingList.replaceChildren();
       const p = document.createElement("p");
       p.className = "pending-services-text";
-      p.textContent = `Missing signing certificates for: ${remaining.join(", ")}`;
+      p.textContent = t("setup-missing", { services: remaining.join(", ") });
       pendingList.appendChild(p);
     } finally {
       checkBtn.disabled = false;

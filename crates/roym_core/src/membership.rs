@@ -23,9 +23,10 @@ pub const MAX_RULE_LEN: usize = 256;
 pub const MAX_EVIDENCE_CREDENTIALS: usize = 4;
 pub const MAX_EVIDENCE_DECISIONS: usize = 8;
 
-/// Shown verbatim by the Hub (and mirrored in
-/// `crates/roym_web/ui/src/directory/membership.ts`; a test in this
-/// module reads that file and compares).
+/// Shown verbatim by the Hub (and mirrored as the
+/// `membership-no-instant-removal` and `membership-withheld-revocation`
+/// messages in `crates/roym_web/ui/src/i18n/en.ftl`; a test in this module
+/// reads that file and compares).
 pub const NO_INSTANT_REMOVAL_NOTICE: &str = "A group's decision reaches copies other people \
                                              already hold only when they next check. Nobody can \
                                              promise it is removed everywhere at once.";
@@ -600,7 +601,8 @@ pub fn listed_window(
 }
 
 /// Words for `roymctl` and a Rust-side assertion; the Hub has its own
-/// copy (`crates/roym_web/ui/src/directory/membership.ts`).
+/// copy (`crates/roym_web/ui/src/directory/membership.ts`, with the
+/// sentences in the string catalog).
 pub fn verdict_word(v: &MembershipVerdict) -> &'static str {
     match v {
         MembershipVerdict::None => "none",

@@ -178,6 +178,14 @@ export function lookupText<K>(table: Map<K, string>, key: K, args?: Args): strin
   return id === undefined ? undefined : t(id, args);
 }
 
+/// The text for a code, or the code as it came when the table lacks it:
+/// a code from another node is never hidden and never guessed. Every screen
+/// that shows a code as a word reads its table through this function. The
+/// one other reader is `errText`, whose unknown code has a sentence of its own.
+export function codeWord(table: Map<string, string>, code: string): string {
+  return lookupText(table, code) ?? code;
+}
+
 /// True when the choice was written and reads back.
 export function saveLanguage(tag: string): boolean {
   try {

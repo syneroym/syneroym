@@ -560,17 +560,19 @@ fn a_newer_credential_supersedes_the_older_and_its_revocation_no_longer_matters(
 #[test]
 fn no_instant_removal_and_withheld_revocation_notices_match_the_hub_verbatim() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let path = manifest_dir.join("../roym_web/ui/src/directory/membership.ts");
-    assert!(path.exists(), "missing ../roym_web/ui/src/directory/membership.ts");
+    let path = manifest_dir.join("../roym_web/ui/src/i18n/en.ftl");
+    assert!(path.exists(), "missing ../roym_web/ui/src/i18n/en.ftl");
     let content = fs::read_to_string(&path).unwrap();
-    assert!(
-        content.contains(NO_INSTANT_REMOVAL_NOTICE),
-        "NO_INSTANT_REMOVAL_NOTICE not found verbatim"
-    );
-    assert!(
-        content.contains(WITHHELD_REVOCATION_NOTICE),
-        "WITHHELD_REVOCATION_NOTICE not found verbatim"
-    );
+    for (id, notice) in [
+        ("membership-no-instant-removal", NO_INSTANT_REMOVAL_NOTICE),
+        ("membership-withheld-revocation", WITHHELD_REVOCATION_NOTICE),
+    ] {
+        let line = format!("{id} = {notice}");
+        assert!(
+            content.lines().any(|l| l == line),
+            "en.ftl must hold the whole line `{id} = <the Rust notice>`"
+        );
+    }
 }
 
 #[test]

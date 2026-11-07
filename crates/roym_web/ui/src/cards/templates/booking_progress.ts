@@ -7,7 +7,7 @@
 /// - A missing optional field renders as an omitted row, never as undefined
 ///   and never as a guess.
 
-import { lookupText, messageId, t } from "../../i18n/i18n";
+import { codeWord, messageId, t } from "../../i18n/i18n";
 
 export interface BookingProgressData {
   agreement?: string;
@@ -64,7 +64,7 @@ export function renderBookingProgress(data?: BookingProgressData): HTMLElement {
   if (data?.state) {
     const stateP = document.createElement("p");
     stateP.className = "progress-state";
-    stateP.textContent = t("progress-status", { state: lookupText(STATE_WORDS, data.state) ?? data.state });
+    stateP.textContent = t("progress-status", { state: codeWord(STATE_WORDS, data.state) });
     card.appendChild(stateP);
   }
 
@@ -87,7 +87,7 @@ export function renderBookingProgress(data?: BookingProgressData): HTMLElement {
   if (data?.conflict) {
     const conflictP = document.createElement("p");
     conflictP.className = "progress-conflict";
-    conflictP.textContent = lookupText(CONFLICT_SENTENCES, data.conflict) ?? data.conflict;
+    conflictP.textContent = codeWord(CONFLICT_SENTENCES, data.conflict);
     card.appendChild(conflictP);
   }
 

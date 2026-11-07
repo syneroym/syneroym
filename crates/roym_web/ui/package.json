@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "eslint src/ && tsc && vite build",
+    "build": "eslint src/ && tsc && vitest run src/i18n/visible-text.test.ts && vite build",
     "pack": "tar -czf bundle.tar.gz -C dist .",
     "preview": "vite preview",
     "lint": "eslint src/",

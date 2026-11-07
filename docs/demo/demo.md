@@ -1264,10 +1264,11 @@ Automated: `mise run demo`. The script is the source of truth. This text may lag
 In alice's Hub, in the bar at the top (next to **Log out**), open the language list
 and pick **हिन्दी**. The page loads again.
 
-**Expect:** the title, the tab names, the sign-in box and every card are in Hindi.
-Money shows with Indian digit grouping (for example `₹1,00,000.50`), and dates show in
-the Hindi style. Reload the page: it stays in Hindi. The other screens still show
-English text for now.
+**Expect:** the title, the tab names, the sign-in box, every card and every screen are in
+Hindi. Open the **Contacts** tab: its heading and its button are in Hindi. Money shows
+with Indian digit grouping (for example `₹1,00,000.50`), and dates show in the Hindi
+style. Your own data (names, listing titles, message text) stays as it was written.
+Reload the page: it stays in Hindi.
 
 **Say:** "Every person reads Roym in their own language. The choice stays on this device."
 

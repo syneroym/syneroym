@@ -1,9 +1,15 @@
-import { afterEach, beforeEach, describe, it, expect } from "vitest";
+import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
+import { errText } from "../dom";
+import { activate, activateWith, t } from "../i18n/i18n";
+import HINDI from "../i18n/hi.ftl?raw";
+import { leftoverLatin } from "../testing/latin-words";
 import {
   clearEventFeedCookie,
   EVENT_FEED_COOKIE_MAX_AGE_SECS,
+  loginWithBundle,
   setEventFeedCookie,
   z32Encode,
+  type SessionKeyBundle,
 } from "./login";
 
 // Vectors produced by the Rust `z32` crate (the encoding the auth service
@@ -61,5 +67,82 @@ describe("event feed cookie", () => {
       "syneroym_session=; path=/_syneroym/events; Max-Age=0; SameSite=Lax",
       "syneroym_session=; path=/; Max-Age=0; SameSite=Lax",
     ]);
+  });
+});
+
+describe("a failed login, as the person reads it", () => {
+  const BUNDLE = {
+    temp_secret_key_hex: "11".repeat(32),
+    temp_did: "did:key:zTemp",
+    certificate: { master_did: "did:key:zMaster", temporary_did: "did:key:zTemp" },
+  } as unknown as SessionKeyBundle;
+
+  /// The challenge step succeeds; the login step answers with `loginReply`.
+  function fakeAuth(loginReply: { status: number; body?: unknown }): void {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (url.endsWith("/challenge")) {
+          return { ok: true, status: 200, json: async () => ({ nonce: "n", assertion: "a" }) };
+        }
+        return {
+          ok: false,
+          status: loginReply.status,
+          json: async () => {
+            if (loginReply.body === undefined) throw new SyntaxError("no body");
+            return loginReply.body;
+          },
+        };
+      }),
+    );
+  }
+
+  afterEach(async () => {
+    vi.unstubAllGlobals();
+    await activate("en");
+  });
+
+  async function failure(): Promise<string> {
+    const err = await loginWithBundle(BUNDLE).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(err).toBeDefined();
+    return errText(err);
+  }
+
+  it("shows the status in English when the reply has no error text", async () => {
+    fakeAuth({ status: 500 });
+    expect(await failure()).toBe("HTTP 500");
+  });
+
+  it("shows the service text as it came in English", async () => {
+    fakeAuth({ status: 401, body: { error: "key revoked" } });
+    expect(await failure()).toBe("key revoked");
+  });
+
+  /// The line the sign-in box draws.
+  async function line(): Promise<string> {
+    return t("login-failed", { detail: await failure() });
+  }
+
+  it("words the status in Hindi, with no English left", async () => {
+    await activateWith("hi", { hi: async () => HINDI });
+    fakeAuth({ status: 500 });
+    const text = await line();
+    expect(text).toMatch(/[ऀ-ॿ]/);
+    expect(leftoverLatin(text)).toEqual([]);
+    // The sentence "sign-in failed" is there once, and the cause names only the cause.
+    expect(text).toBe("साइन इन नहीं हो सका: HTTP 500");
+    expect(text.match(/साइन/g)).toHaveLength(1);
+  });
+
+  it("puts the service text only after the detail label, once", async () => {
+    await activateWith("hi", { hi: async () => HINDI });
+    fakeAuth({ status: 401, body: { error: "key revoked" } });
+    const text = await line();
+    expect(text.match(/विवरण:/g)).toHaveLength(1);
+    expect(text.match(/साइन/g)).toHaveLength(1);
+    expect(text.endsWith("विवरण: key revoked")).toBe(true);
   });
 });

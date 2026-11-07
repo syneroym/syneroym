@@ -36,4 +36,13 @@ test('Roym languages story: Alice reads her Hub in Hindi, and it stays Hindi', a
     await expect(page.locator('.session-bar')).toContainText('did:key:');
     await expect(profileTab).toHaveText(hubMessage('hi', 'tab-profile'));
   });
+
+  await step(page, "Alice's screen: the Contacts screen is in Hindi too", async () => {
+    await page.getByRole('button', { name: hubMessage('hi', 'tab-contacts') }).click();
+    // The button of a screen, not only the tab names, is in Hindi.
+    await expect(
+      page.getByRole('button', { name: hubMessage('hi', 'contacts-upsert-button') }),
+    ).toBeVisible();
+    await expect(page.locator('.contacts-screen h2')).toHaveText(hubMessage('hi', 'contacts-title'));
+  });
 });
