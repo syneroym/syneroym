@@ -4,7 +4,7 @@
 // A place is named from the giver of the work (the quote author, or the
 // listing owner) and the receiver of the work (the other person).
 
-import { lookupText, messageId } from "../i18n/i18n";
+import { codeWord, messageId } from "../i18n/i18n";
 import type { OpenTo, ServiceLocationKind } from "./editor";
 
 /// For the forms where the person is the one who gives the work.
@@ -29,13 +29,13 @@ const OPEN_TO_LABELS = new Map<string, string>([
 ]);
 
 export function serviceLocationEditorLabel(kind: ServiceLocationKind): string {
-  return lookupText(EDITOR_LABELS, kind) ?? kind;
+  return codeWord(EDITOR_LABELS, kind);
 }
 
 /// A card is data from another node, so an unknown value is shown as it
 /// came, never as "undefined".
 export function serviceLocationCardLabel(where: string): string {
-  return lookupText(CARD_LABELS, where) ?? where;
+  return codeWord(CARD_LABELS, where);
 }
 
 /// The order the listing editor offers the places in.
@@ -45,5 +45,5 @@ export const SERVICE_LOCATION_KINDS: ServiceLocationKind[] = ["remote", "at-give
 export const OPEN_TO_KINDS: OpenTo[] = ["anyone", "members", "referral", "past-counterparties"];
 
 export function openToLabel(kind: OpenTo): string {
-  return lookupText(OPEN_TO_LABELS, kind) ?? kind;
+  return codeWord(OPEN_TO_LABELS, kind);
 }
