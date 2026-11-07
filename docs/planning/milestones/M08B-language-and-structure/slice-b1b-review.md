@@ -861,3 +861,29 @@ did not change): 534 screen texts and 39 sentences, 0 differences.
   the comment and the change doc say "the B1b screens", but one rule in
   one place is the point of R5.
 - *Status:* Fixed (be6f5ca4). Now in: `labels.ts` (the three place and audience words) and `booking_progress.ts` (the state and conflict words) call `codeWord`; the `codeWord` comment and the change doc name the one other reader, `errText`, whose unknown error code has a message of its own and is not shown as it came. `main` (`3165d1a2`, the `vodozemac` upgrade) is merged in (`6ad7dfba`): clippy clean, 406 Rust tests passed in `roym_core` and `conversation`, Hub tests 337 passed.
+
+## Code review round 3 — Claude Opus 5.5, 2026-11-07
+
+Checked the round 2 fix commit `be6f5ca4` and the merge of `main`
+(`6ad7dfba`) on `feat/m08b-b1b-localization-screens` at `39d607ca`, in the
+main checkout.
+
+**Summary:** R7 confirmed fixed. No new items: 0 blocker, 0 major, 0 minor.
+**0 open.**
+
+**Evidence.** `gh pr checks 351`: every job passes on `39d607ca` (CI run
+42332060307: Lints, licenses & checks, Test 1/6 to 6/6, Playwright E2E,
+CI Pipeline; CLA passes; Benchmarks and Code Coverage skip). Here: `npm
+test` 32 files, 337 tests passed; `npm run build` passes; `cargo audit`
+finds no vulnerability.
+
+- **R7 — confirmed fixed (`be6f5ca4`).** The three functions of
+  `listings/labels.ts` and the two reads of `booking_progress.ts` call
+  `codeWord`, with the same result as before (`lookupText(…) ?? code`).
+  The only `lookupText` call left outside `codeWord` is `errText` in
+  `dom.ts`, whose fallback is a sentence (`error-service`), not the code.
+  The `codeWord` comment and the change doc's "Code words" bullet now name
+  that one exception, so both say what the code does.
+- **The merge of `main` (`6ad7dfba`).** It brings only the three files of
+  the `vodozemac` upgrade (PR #352: `Cargo.toml`, `Cargo.lock`,
+  `crates/conversation/Cargo.toml`). No B1b file changes in it.
