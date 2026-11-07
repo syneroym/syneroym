@@ -183,7 +183,7 @@ Most cross-language trade needs only layers A and B. The buyer searches by categ
 - **Shared messages.** A message is shared between two places only when the English text and the meaning are the same and the sentence is generic: `common-load-failed`, `common-save-failed`, `common-saved`, `common-cancel` and `common-remove`. Every other message has its own id under its screen's prefix, even when the English text is the same as another.
 - **Code words.** `codeWord(table, code)` in `src/i18n/i18n.ts` is the one place that reads a table of code words. The only other reader is `errText`, because an error code that the table lacks has a message of its own and is not shown as it came. A code that the table lacks is shown as it came. `select` and `codeOptions` in `dom.ts` build a list of codes.
 - **Message ids.** Lower case, `-` between words, the screen's prefix first (`profile-`, `contacts-`, `messages-`, `request-`, `quote-`, `group-`, `listing-`, `directory-`, `membership-`, `synorg-`, `safety-`, `backup-`, `setup-`, `login-`, `common-`, `error-`). Each `.ftl` file is ordered in sections with a `##` heading.
-- **Hindi review.** An agent wrote the Hindi text. The owner reads all of `hi.ftl` before the slice merges, with a side-by-side file that marks the messages with legal or safety weight; the first comment of `hi.ftl` then says `# owner review: done <date>`.
+- **Hindi review.** An agent wrote the Hindi text. The owner reads all of `hi.ftl` before the slice merges, with a side-by-side file that marks the messages with legal or safety weight; the first comment of `hi.ftl` then says `# owner review: done <date>`. The owner did this review on 2026-11-07 and asked for no changes.
 
 ### B. Language-neutral structure
 

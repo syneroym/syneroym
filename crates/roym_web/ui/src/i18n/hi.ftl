@@ -5,7 +5,7 @@
 # A message that shows a service's own English text puts it last, after
 # `विवरण:`, and never as the main sentence.
 #
-# owner review: pending
+# owner review: done 2026-11-07
 
 language-picker-label = भाषा
 language-not-saved = यह ब्राउज़र हब को भाषा सहेजने नहीं देता, इसलिए भाषा वैसी ही रहेगी।
