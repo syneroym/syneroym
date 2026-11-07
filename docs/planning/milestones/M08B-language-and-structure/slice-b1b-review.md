@@ -781,7 +781,7 @@ doc, the developer guide, `hi-review.md`, task.md, status.md and this file.
 No Rust code changes.
 
 **Summary:** R1 to R6 confirmed fixed. 1 new item: 0 blocker, 0 major,
-1 minor (R7). **1 open.**
+1 minor (R7). R7 Fixed in `be6f5ca4`; 0 open.
 
 **Evidence.** `gh pr checks 351`: every job passes on `12e13f47` (run
 42241961224: Lints, licenses & checks, Test 1/6 to 6/6, Playwright E2E,
@@ -860,4 +860,4 @@ did not change): 534 screen texts and 39 sentences, 0 differences.
   it). Their existing tests stay as they are. The other choice is to make
   the comment and the change doc say "the B1b screens", but one rule in
   one place is the point of R5.
-- *Status:* Open
+- *Status:* Fixed (be6f5ca4). Now in: `labels.ts` (the three place and audience words) and `booking_progress.ts` (the state and conflict words) call `codeWord`; the `codeWord` comment and the change doc name the one other reader, `errText`, whose unknown error code has a message of its own and is not shown as it came. `main` (`3165d1a2`, the `vodozemac` upgrade) is merged in (`6ad7dfba`): clippy clean, 406 Rust tests passed in `roym_core` and `conversation`, Hub tests 337 passed.
