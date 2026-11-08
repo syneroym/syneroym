@@ -1,8 +1,14 @@
 import { FluentBundle, FluentResource } from "@fluent/bundle";
 import { describe, expect, it } from "vitest";
+import { taxonomyMessageIds } from "../taxonomy/taxonomy";
 import { findMessageIds } from "./scan";
 
 const catalogs = import.meta.glob<string>("./*.ftl", {
+  query: "?raw",
+  import: "default",
+  eager: true,
+});
+const taxonomyFiles = import.meta.glob<string>("./taxonomy/*.ftl", {
   query: "?raw",
   import: "default",
   eager: true,
@@ -18,6 +24,9 @@ const ID = /^(-?[A-Za-z][A-Za-z0-9_-]*)\s*=/;
 
 const byTag = Object.fromEntries(
   Object.entries(catalogs).map(([path, text]) => [path.slice(2, -".ftl".length), text]),
+);
+const taxonomyByTag = Object.fromEntries(
+  Object.entries(taxonomyFiles).map(([path, text]) => [path.slice("./taxonomy/".length, -".ftl".length), text]),
 );
 const english = byTag["en"];
 const hindi = byTag["hi"];
@@ -187,5 +196,70 @@ describe("findMessageIds", () => {
   it("reports an import under another name", () => {
     const scan = findMessageIds('import { t as tr } from "./i18n";');
     expect(scan.problems).toHaveLength(1);
+  });
+});
+
+describe("the taxonomy label files", () => {
+  it("are named by a canonical language tag with a matching string catalog", () => {
+    for (const name of Object.keys(taxonomyByTag)) {
+      expect(new Intl.Locale(name).toString()).toBe(name);
+      expect(name).not.toBe("und");
+      expect(byTag).toHaveProperty(name);
+    }
+  });
+
+  it("have no line that ends with a space or a tab", () => {
+    for (const [name, text] of Object.entries(taxonomyByTag)) {
+      expect(text.split("\n").filter((line) => /[ \t]$/.test(line)), name).toEqual([]);
+    }
+  });
+
+  it("have no message that Fluent would drop without an error", () => {
+    for (const [name, text] of Object.entries(taxonomyByTag)) {
+      const entries = text.match(ENTRY)?.length ?? 0;
+      expect(new FluentResource(text).body.length, name).toBe(entries);
+    }
+  });
+
+  it("give English exactly the ids that base.json implies", () => {
+    const enIds = [...variablesById(taxonomyByTag["en"]).keys()].sort();
+    expect(enIds).toEqual(taxonomyMessageIds().sort());
+  });
+
+  it("give Hindi exactly the same ids as English", () => {
+    const hiIds = [...variablesById(taxonomyByTag["hi"]).keys()].sort();
+    expect(hiIds).toEqual(taxonomyMessageIds().sort());
+  });
+
+  it("have a Devanagari letter in every Hindi taxonomy label", () => {
+    const bodies = new Map<string, string>();
+    let current: string | undefined;
+    for (const line of taxonomyByTag["hi"].split("\n")) {
+      if (line.startsWith("#")) continue;
+      const id = ID.exec(line)?.[1];
+      if (id !== undefined) current = id;
+      if (current !== undefined) bodies.set(current, `${bodies.get(current) ?? ""}${line}\n`);
+    }
+    const bare = [...bodies.entries()]
+      .filter(([, body]) => !/[ऀ-ॿ]/.test(body))
+      .map(([id]) => id);
+    expect(bare).toEqual([]);
+  });
+
+  it("ensure no string-catalog id starts with taxonomy-", () => {
+    for (const [name, text] of Object.entries(byTag)) {
+      const ids = [...variablesById(text).keys()].filter((id) => id.startsWith("taxonomy-"));
+      expect(ids, name).toEqual([]);
+    }
+  });
+
+  it("calling addResource on string catalog and then taxonomy file returns empty error lists", () => {
+    for (const name of ["en", "hi"]) {
+      const bundle = new FluentBundle([name], { useIsolating: false });
+      const stringErrors = bundle.addResource(new FluentResource(byTag[name]));
+      expect(stringErrors, `${name} string catalog`).toEqual([]);
+      const taxonomyErrors = bundle.addResource(new FluentResource(taxonomyByTag[name]));
+      expect(taxonomyErrors, `${name} taxonomy`).toEqual([]);
+    }
   });
 });
