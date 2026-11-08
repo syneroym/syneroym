@@ -154,7 +154,7 @@ describe("category search and hit display", () => {
     await activate("en");
   });
 
-  it("ML-8: a category search sends the same query in English and in Hindi", async () => {
+  it("a category search sends the same query in English and in Hindi", async () => {
     let capturedQueryEn: Record<string, unknown> | undefined;
     let capturedQueryHi: Record<string, unknown> | undefined;
 
