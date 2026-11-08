@@ -727,7 +727,7 @@ The reference SynApp implements variation dimensions across workflows using seve
 - **Booking (`BookingTerms`):** Event slots, consulting time slots, and open-ended job requests, modeled by `BookingMode` (`Slots`, `Order`, `Enquiry`). Slot bookings enforce capacity limits (`MAX_SLOT_CAPACITY = 64`) and first-claim concurrency fences.
 - **Payment (`PaymentTerms`):** One-time quote-based payments with pre-delivery or post-delivery timing. This block is modeled by `PaymentModel` (`Fixed`, `PerHour`, `PerUnit`, `QuoteOnly`), currency, and minor-unit amounts.
   > **Envisioned.** Not built yet. Multi-part payments, subscriptions, decentralized escrow, system coins, and mutual credit networks. Today quotes support single out-of-band payments only.
-- **Product type (`ProductDetail`):** Physical goods with unit, pack size, SKU, and condition (`New`, `Used`, `Refurbished`). The unit is a code from the base unit list in `crates/roym_core/taxonomy/base.json`.
+- **Product type (`ProductDetail`):** Physical goods with unit, pack size, SKU, and condition (`New`, `Used`, `Refurbished`). The unit is a code of `[a-z0-9-]`; the Hub offers the base unit list.
   > **Envisioned.** Not built yet. Time-bound prepared food spoilage timers and digital content streaming or DRM pipelines.
 - **Service type (`ServiceDetail`):** Time-slot services, job-completion services, and location-based services with declared durations, inclusions, exclusions, and prerequisites.
 - **Location (`LocationTerms`):** Work at the giver's place, work at the receiver's place, and remote digital services (`ServiceLocation`: `AtGiver`, `AtReceiver`, `Remote`). This block includes bounding service areas and machine-readable address disclosure policies (`AddressDisclosure::OnAgreement` and `AddressDisclosure::Public`).
@@ -1459,7 +1459,7 @@ This appendix defines envisioned extensions to substrate and application contrac
 ### [APP-A11Y] Accessibility and Localisation
 
 - **Localisation:** `ProfilePayload` supports an optional `locale` field (`Option<String>`). The default value is None.
-- **Hub localisation (built):** The Roym Hub has a string catalog for English and Hindi, a language setting in the session bar that is kept in the browser, and local formats for money, numbers, dates and times. Error messages come from the string catalog by error code. Every Hub screen takes its text from the string catalog. The Hub build fails when a source file sets visible text outside it. Listing and request categories, units and payment methods are codes from a base taxonomy kept in the repository, and the Hub shows their labels in English or Hindi.
+- **Hub localisation (built):** The Roym Hub has a string catalog for English and Hindi, a language setting in the session bar that is kept in the browser, and local formats for money, numbers, dates and times. Error messages come from the string catalog by error code. Every Hub screen takes its text from the string catalog. The Hub build fails when a source file sets visible text outside it. Listing and request categories, units and payment methods are codes of `[a-z0-9-]`; the Hub offers the base taxonomy kept in the repository, and shows their labels in English or Hindi.
 
 > **Envisioned.** Not built yet. Translated record text.
 >

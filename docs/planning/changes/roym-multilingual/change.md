@@ -101,7 +101,7 @@ Most cross-language trade needs only layers A and B. The buyer searches by categ
 | **Language-neutral structure** | | |
 | ML-7 | A listing's categories are codes from the taxonomy. The Hub shows each code's label in the reader's language. A code with no label in that language shows its English label. A code not in the taxonomy shows as the code itself. | `taxonomy.test.ts` ("a category shows its label in each language", "falls back to the English label", "shows an unknown code as it came", the `constructor` cases); `category_picker.test.ts`; `hindi-screens.test.ts` (each picker and each shown category in Hindi); `directory.test.ts`, `templates.test.ts` and `synorg_members.test.ts` |
 | ML-8 | A Hindi-language Hub user and an English-language Hub user search with the same category code and get the same results. | `directory.test.ts` ("the same category gives the same query in English and Hindi"); `roym-hub.spec.ts` ("a category search finds the same listings in English and in Hindi") |
-| ML-9 | A product listing's unit is a code from a unit list. The Hub shows its label in the reader's language. | `editor.test.ts`, `listings.test.ts` (unit options in each language); `listing/tests.rs` (the unit code rule); `templates.test.ts` |
+| ML-9 | A product listing's unit is a code from a unit list. The Hub shows its label in the reader's language. | `editor.test.ts`, `listings.test.ts` (unit options in each language); `listing/tests.rs` (the unit code rule) |
 | **Language-tagged free text** | | |
 | ML-10 | `profile`, `listing`, `request` and `quote` each carry a `lang` field. The signer must set it. A record with a missing or malformed tag fails validation. | |
 | ML-11 | The author can add up to a fixed number of translations of the free-text fields, inside the same signed record. Each translation has its own language tag and is shown as "translated by the author". | |
@@ -200,12 +200,14 @@ Rejected: validating categories against the taxonomy inside `validate`. Then eve
 
 - **Data file and parser.** The base taxonomy is `crates/roym_core/taxonomy/base.json`, parsed and validated by `roym_core::taxonomy`. It holds 105 categories (14 groups, 91 children), 17 units, 6 payment methods, and 6 attributes across 12 categories with 16 choices.
 - **Hierarchy.** Two levels: groups (no parent) and leaf categories (parent). Only leaf categories can be picked; groups serve as headings. Search by group comes with M08D.
-- **Labels.** Kept in `src/i18n/taxonomy/<tag>.ftl` (English and Hindi), lazy-loaded alongside the language string catalog. `taxonomyMessageIds()` ensures complete coverage between the data file and label catalogs. M08D adds attribute labels to the same label files.
-- **Code rules across services.** Listing `product.unit`, listing `payment.methods`, quote `terms.payment_methods`, payment acknowledgement `method`, and SynOrg settings `categories` all enforce lowercase `[a-z0-9-]`.
+- **Labels and joined loader.** Kept in `src/i18n/taxonomy/<tag>.ftl` (English and Hindi), with IDs following `taxonomy-category-<code-word>`, `taxonomy-unit-<code-word>`, `taxonomy-method-<code-word>`, `taxonomy-attribute-<code-word>`, and `taxonomy-choice-<attribute-word>-<choice-word>`. The loader starts catalog and taxonomy loads together with `Promise.all` and joins them when present (D-B2-4). `taxonomyMessageIds()` ensures complete coverage between the data file and label catalogs. M08D adds attribute labels to the same label files.
+- **Vite JSON import.** The Hub reads `base.json` through a Vite JSON import. There is no `web` RPC method for the base taxonomy (Q2, D-B2-5).
+- **Code rules across services.** Listing `product.unit`, listing `payment.methods`, quote `terms.payment_methods`, payment acknowledgement `method`, and SynOrg settings `categories` all enforce lowercase `[a-z0-9-]`. The five checks return typed error variants mapped to JSON-RPC `-32602` Invalid Params (D-B2-10).
 - **Hub pickers.** A shared category picker component is used across the listing editor, request form, directory search, and SynOrg settings. It offers taxonomy categories and an own-code option for well-formed custom codes. Filter searches the UI language, English, and the code itself.
 - **Shown labels.** Cards, directory search hits, and SynOrg credential displays show labels for taxonomy codes, falling back to the raw code for unknown or own codes.
+- **Owner review.** The initial Hindi taxonomy labels require owner review in `docs/planning/milestones/M08B-language-and-structure/taxonomy-review.md` before merge (D-B2-12).
 
-**Units.** `ProductDetail.unit` is a free string today (`crates/roym_core/src/listing.rs:104`, up to 32 bytes). It becomes a code from a short unit list in `crates/roym_core` (for example `kg`, `g`, `l`, `ml`, `piece`, `dozen`, `hour`). Each code has labels per language. Using [UN/CEFACT Recommendation 20](https://unece.org/trade/uncefact/cl-recommendations) codes was considered. They are hard to read in records (`KGM`, `H87`), and Roym needs only a few units. Roym keeps its own short codes.
+**Units.** `ProductDetail.unit` is a free string today (`crates/roym_core/src/listing.rs:104`, up to 32 bytes). It becomes a code (any well-formed code; the Hub offers the base unit list from `crates/roym_core`, for example `kg`, `g`, `l`, `ml`, `piece`, `dozen`, `hour`). Each code has labels per language. Using [UN/CEFACT Recommendation 20](https://unece.org/trade/uncefact/cl-recommendations) codes was considered. They are hard to read in records (`KGM`, `H87`), and Roym needs only a few units. Roym keeps its own short codes.
 
 **Areas.** Geometric areas (`Bbox`, `Circle`) are already language-neutral. `Area::Named` has a free `label` and an optional `code` (`crates/roym_core/src/area.rs:29`). The label is free text in the record's language. The `code` is how a named area becomes language-neutral (for example an Indian PIN code). Which code system to use is not decided here.
 
@@ -474,7 +476,8 @@ Checked: `@fluent/bundle` 0.19.1 (Apache-2.0, no runtime dependencies) adds 4,20
 - **The category picker offers an own-code choice.** When the user types a valid code not present in the taxonomy, the picker shows an option to use that own code.
 - **Category groups cannot be picked.** Only leaf categories can be selected; groups serve as visual headings. Searching by group is deferred to M08D.
 - **The category picker searches the UI language, English, and the code itself.** It does not search across all installed languages, avoiding premature loading of untargeted catalogs.
-- **A reader's view of another node's product unit is deferred to M08D.** In B2, the unit appears in the listing editor and payment acknowledgement cards; directory hits do not display product units until shop browse lands in M08D.
+- **A reader's view of another node's product unit is deferred to M08D.** In B2, the unit appears only in the listing editor; directory hits do not display product units until shop browse lands in M08D.
+- **Different from the plan: `tEnglish` is exported from `i18n.ts`.** The category picker needs English fallback labels when searching and showing taxonomy items regardless of the active UI language, so `tEnglish` is exported.
 
 ## Close-out
 
