@@ -482,3 +482,256 @@ are confirmed Fixed. **0 open.**
   code, comments or test names. No B2 review id is left in the plan prose. The
   four ids that remain (`B1a P8`, `B1b P2` and so on, in section 7.8) name
   findings of earlier slices and were there before the review.
+
+## Code review round 1 — Claude Opus 5.5, 2026-11-08
+
+Reviewed `git diff origin/main...HEAD` on `feat/m08b-b2-taxonomy` at
+`30142f64` (PR #353), in the main checkout (not a worktree). The code was
+written by Gemini 3.8 Flash. The prompt lists one change doc,
+[roym-multilingual](../../changes/roym-multilingual/change.md). Every B2
+decision and deviation belongs there. This is the first code review round, so
+there are no earlier R items to confirm.
+
+**Summary:** 0 blocker, 1 major, 8 minor (R1 to R9). **9 open.**
+
+### What was checked and found correct
+
+- **CI.** `gh pr checks 353` on `30142f64`, when this round was written: CLA
+  passes; Lints, Playwright E2E and Test 1/6 to 6/6 are still pending;
+  Benchmarks and Code Coverage skip. So CI is not yet proof that the full
+  suite passes. Check that every job is green before the merge. The parity
+  test (both builds of `roym_core`) runs in those jobs.
+- **Run here.** `cargo nextest run -p syneroym-roym-core`: 257 passed, 21 of
+  them in `taxonomy::tests`. `npm test` in `crates/roym_web/ui`: 34 files, 369
+  tests passed (the same as status.md). `npm run build`: passes (the
+  visible-text check runs inside it). Sizes after `gzip -9`: main script
+  49,207 bytes with no Devanagari letter and 2 hits for `bicycle-repair`;
+  Hindi catalog 14,053; Hindi taxonomy chunk 2,518. These match task.md and
+  are inside plan section 7.6 (+4,047 bytes, under 5 KB; chunk under 8 KB).
+- **The data file (D-B2-1, D-B2-2).** `base.json` has exactly the 14 groups
+  and 91 children of D-B2-2 in that order, the 17 units, the 6 methods and the
+  6 attributes with 16 choices. Every group comes before its children. No
+  version field and no labels.
+- **The Rust module (D-B2-3).** The types, the `deny_unknown_fields` and the
+  nine `TaxonomyError` variants are as in the plan. `validate` uses
+  `listing::valid_token` with the record limits, checks duplicates, a parent
+  that is a group, a group before its children, a group with children,
+  attribute categories and number units. Each function is short. One test per
+  variant, and each test reads the code in the error. No service calls
+  `parse`, so no guest gets new work.
+- **The code rule (W1 to W5, D-B2-10).** The five checks call
+  `valid_token` with the right limit; the four renamed variants and
+  `CategoryShape(String)` carry the value; `git grep` finds no old variant
+  name. `transaction.rs` stays at 776 lines. The checks keep their order in
+  each `validate`. The comment at `listing.rs:27` no longer names a review
+  item or a slice (D-B2-13). `normalize_category` keeps `-`, so a hyphenated
+  code is the same code in a credential scope, in a search and in a listing.
+  No method, WIT file, typed input or record field changes.
+- **Labels (D-B2-4, D-B2-5).** The ids follow the table of D-B2-4. The five
+  label functions read `Map`s through `codeWord` (or `lookupText` for a
+  choice), so `constructor` and `__proto__` show as they came. The catalog
+  test proves both taxonomy files have exactly `taxonomyMessageIds()`, that
+  every Hindi label has a Devanagari letter, that no string-catalog id starts
+  with `taxonomy-`, and that `addResource` gives no error for either file.
+- **The forms (D-B2-6 to D-B2-9).** The picker is in all four forms with the
+  plan's class names and limits; `messages.ts` calls `clear()` after a send;
+  the unit list starts at `piece`; the method boxes send the ticked codes in
+  list order; `buildSetListingParams` sends the arrays as they are. The six
+  placeholders are gone from both catalogs. The directory hit, the request
+  card, the credential row, the issue check boxes and the payment
+  acknowledgement card show labels, and a box `value` stays the code. All text
+  goes through `textContent`; an own code must match `[a-z0-9-]{1,64}`.
+- **e2e and story 40 (Step 8).** The plan's `git grep` finds no fill of a
+  picker box. `hubMessage` reads the taxonomy file when the id is not in the
+  string catalog. `pickCategory` checks the chip. Story 40 picks `gardening`
+  by its Hindi label and does not save.
+- **Backlog.** N-2 left the C5 nits row and is in "Recently resolved". The
+  three new rows (group search, picker languages, no reader's view of a
+  unit) have a reason, a target and a link. No new `TODO`.
+- **Owner review (D-B2-12).** `taxonomy-review.md` has one row per code (150
+  rows). `taxonomy/hi.ftl` still says `# owner review: pending`. This is not a
+  finding; exit criterion 10 still stops the merge.
+
+### Findings
+
+#### R1 — major — the picker list is always open, so every form has about 90 buttons in its Tab order
+
+- *Where:* `crates/roym_web/ui/src/taxonomy/category_picker.ts:41`, `:102`
+  (`renderOptions`), `:224` (`clear`); `src/style.css` (`.picker-options`).
+- *Problem:* the options box has no closed state. With an empty filter it
+  always draws all 14 groups and 91 option buttons, in a 220px scroll box,
+  under each of the four category fields. D-B2-6 says `clear()` "closes the
+  options", which needs a closed state; the code cannot close it.
+- *Failure case:* a keyboard user in the listing editor presses Tab from the
+  category filter. The focus goes through 91 option buttons before it
+  reaches the address field. The same happens in the request form inside a
+  conversation and in the directory search, before the Search button. A
+  screen reader user meets 105 extra items in each form.
+- *Fix:* show `div.picker-options` only while the focus is inside the picker
+  or the filter has text (a `focusin`/`focusout` pair on `root` that checks
+  `relatedTarget`), and hide it in `clear()` and after Escape. Add picker tests:
+  the options are hidden until the filter has focus; `clear()` hides them;
+  Tab from the filter with no text reaches the next field. The Hindi sweep and
+  the e2e steps focus or fill the filter first, so they still see the options.
+- *Status:* Open.
+
+#### R2 — minor — a language's two Fluent files load one after the other
+
+- *Where:* `crates/roym_web/ui/src/i18n/i18n.ts:32` to `:45` (`LOADERS`).
+- *Problem:* the loader awaits the string catalog, and only then starts
+  loading the taxonomy chunk.
+- *Failure case:* a Hindi user opens the Hub on a slow phone network. The
+  first screen waits for two network round trips in a row instead of one.
+- *Fix:* start both loads together:
+  `const [catalog, taxonomy] = await Promise.all([loadCatalog(), loadTaxonomy?.() ?? ""]);`
+  and join them only when `taxonomy` is not empty.
+- *Status:* Open.
+
+#### R3 — minor — the Hindi sweep's picker steps can pass without a chip, and the own-code fixture `x9` is missing
+
+- *Where:* `crates/roym_web/ui/src/i18n/hindi-screens.test.ts:181` to `:186`
+  and `:293` to `:299`.
+- *Problem:* the steps are inside `if (filter) { … }` and use `opt?.click()`,
+  and nothing checks that a chip was drawn. Plan section 7.1 asks for "the
+  listing editor (with the picker open and one chip)". D-B2-11 says the
+  sweep's own-code fixture is `x9`; no fixture in the sweep has an own code.
+- *Failure case:* the class of the picker in the request form changes. The
+  `if` skips the steps, the form is swept with no chip, and the test still
+  passes. And a change that shows an own code through a Latin message
+  (for example `category-picker-own-code` left in English) is never drawn on a
+  Hindi screen.
+- *Fix:* remove the `if` and the `?.`, and assert one
+  `.picker-chip[data-code="bicycle-repair"]` after each pick. Add `x9` to one
+  fixture that the sweep draws (the SynOrg settings `categories`, or a
+  directory hit), so a raw own code is shown and passes.
+- *Status:* Open.
+
+#### R4 — minor — the ML-8 Playwright test compares titles, not listing ids
+
+- *Where:* `crates/substrate/tests/e2e/tests/roym-hub.spec.ts`, test "a
+  category search finds the same listings in English and in Hindi" (the last
+  test of the file).
+- *Problem:* plan section 7.3 says to "keep the listing ids of the hits" and
+  check that they are the same. The test compares `.hit-title` texts. A
+  title is author text; two listings can share it, and the shared e2e node
+  has several cycling listings from other tests.
+- *Failure case:* the Hindi search returns a different listing with the
+  same title (for example a second run of `ensureSynOrgWithListing` that
+  made a new version or a second listing). The test passes, though the two
+  searches did not give the same results.
+- *Fix:* read the `directory.find` answers with
+  `page.waitForResponse` on `/rpc` around each Search click, and compare the
+  sorted `listing_id`s of the hits. Or record the change as a deviation in
+  the change doc, with the reason.
+- *Status:* Open.
+
+#### R5 — minor — a test name carries a criterion id
+
+- *Where:* `crates/roym_web/ui/src/screens/directory.test.ts:157`
+  (`"ML-8: a category search sends the same query in English and in Hindi"`).
+- *Problem:* plan section 0 and AGENTS.md: no planning id (it names "ML-7"
+  as an example) in `.ts` files or test names. The planning-refs gate does
+  not catch `ML-<n>`.
+- *Failure case:* the change doc is archived or its criteria are renumbered,
+  and the test name points at nothing.
+- *Fix:* drop the `ML-8: ` prefix. The change doc's ML-8 row already names
+  the test by its text.
+- *Status:* Open.
+
+#### R6 — minor — new Hindi text spells nasal vowels differently from the catalog
+
+- *Where:* `crates/roym_web/ui/src/i18n/hi.ftl:730`
+  (`category-picker-remove = { $label } हटाएं`), `:733` (`… श्रेणियां …`);
+  `src/i18n/taxonomy/hi.ftl:62` (`जांच`), `:81` (`सेवाएं`), `:96`
+  (`सब्जियां`), `:101` (`वस्तुएं`).
+- *Problem:* `hi.ftl` writes these words with candrabindu: `हटाएँ` (for
+  example `common-remove`, `messages-delete-button`), `श्रेणियाँ` (the label
+  of the same field, `listing-label-categories`, `synorg-label-categories`),
+  and `जाँच` (26 times, never `जांच`). Plan section 7.7: use the same Hindi
+  word for the same thing.
+- *Failure case:* the listing editor shows the field label "श्रेणियाँ" and,
+  at the limit, the message "… 8 श्रेणियां चुन सकते हैं" right under it.
+- *Fix:* write `हटाएँ`, `श्रेणियाँ`, `जाँच`, `सेवाएँ`, `सब्ज़ियाँ`,
+  `वस्तुएँ`, and update the matching rows of `taxonomy-review.md`, so the owner
+  reviews the final text.
+- *Status:* Open.
+
+#### R7 — minor — the same loop is written three times, and the label ids twice
+
+- *Where:* `crates/roym_core/src/taxonomy.rs:152` (`validate_units`), `:165`
+  (`validate_payment_methods`), `:220` (the choice loop);
+  `crates/roym_web/ui/src/taxonomy/taxonomy.ts:122` (`taxonomyMessageIds`).
+- *Problem:* the three Rust loops are the same "`valid_token`, then a
+  `HashSet` for duplicates" with a different kind and limit. AGENTS.md: look
+  for the same shape before writing a new helper. In `taxonomy.ts`,
+  `taxonomyMessageIds` builds every id again with its own string prefixes,
+  instead of reading the five `Map`s that the label functions use.
+- *Failure case:* a later change (M08D adds attributes) changes the id form
+  in one place. The catalog test then compares the label files with ids the
+  label functions do not use, and passes while every label shows its raw
+  code.
+- *Fix:* one `fn check_codes(kind: &'static str, codes: &[String], max: usize) -> Result<(), TaxonomyError>`
+  used by units, methods and choices. `taxonomyMessageIds()` returns
+  `[...CATEGORY_IDS.values(), ...UNIT_IDS.values(), ...METHOD_IDS.values(), ...ATTRIBUTE_IDS.values(), ...CHOICE_IDS.values()]`.
+- *Status:* Open.
+
+#### R8 — minor — the change doc leaves out decisions and real deviations, and one deviation is wrong
+
+- *Where:* `docs/planning/changes/roym-multilingual/change.md:199` (the
+  "Decided 2026-11-07, the base taxonomy" list), `:208` ("Units"), `:477`
+  (the last deviation), `:104` (ML-9 Test column);
+  `docs/planning/deferred-backlog.md:543`.
+- *Problem:*
+  1. The decided list has none of: the Hub reads `base.json` through a Vite
+     import and there is no `web` method (Q2, D-B2-5); the label id forms and
+     the joined loader (D-B2-4); the owner review of the taxonomy labels
+     before the merge (D-B2-12); the error variants and `-32602` of the five
+     checks (D-B2-10). Plan section 3 says every B2 decision goes there.
+  2. The code differs from the plan in ways that `## Deviations` does not
+     list: R1 (no closed state), R3 (no `x9`), R4 (titles, not ids), and the
+     new `tEnglish` export in `i18n.ts`. Each is either fixed or written down.
+  3. The deviation at `:477` and the backlog row at `:543` say "the unit
+     appears in the listing editor and payment acknowledgement cards". The
+     payment acknowledgement card shows the payment method, not the unit
+     (plan Q9 (a)).
+  4. "Units" (`:208`) says the unit "becomes a code from a short unit list".
+     The service accepts any well-formed code (`bundle-of-5` passes,
+     `listing/tests.rs`); only the Hub offers the list.
+  5. The ML-9 Test column names `templates.test.ts`, which has no unit test.
+- *Failure case:* a later slice reads the change doc to learn how the Hub
+  gets the codes, finds nothing, and adds a `taxonomy.get` method that Q2
+  rejected.
+- *Fix:* add the four decisions to the list; add the deviations (or fix
+  R1, R3, R4); in `:477` and the backlog row say "the unit appears only in the
+  listing editor"; in "Units" say "a code (any well-formed code; the Hub
+  offers the base unit list)"; remove `templates.test.ts` from ML-9.
+- *Status:* Open.
+
+#### R9 — minor — the living docs and task.md say a little more, or other, than the code
+
+- *Where:* `docs/system-requirements-spec.md:730` and `:1462`;
+  `docs/system-architecture.md:920`; `docs/developer-guide.md:1761`;
+  `docs/TERMINOLOGY.md:71`;
+  `docs/planning/milestones/M08B-language-and-structure/task.md:157`.
+- *Problem:*
+  - Requirements `:730`: "The unit is a code from the base unit list". The
+    record rule is the shape only (as in R8 point 4). `:1462` says the same
+    for categories, units and methods: "are codes from a base taxonomy".
+  - Architecture `:920`: the base taxonomy is "checked and validated by the
+    Rust module". Only a test runs the check; no service calls `parse`.
+  - Developer guide `:1761`: the taxonomy label files are "lazy-loaded
+    alongside their language's string catalog". The English file is in the
+    main script and is never lazy.
+  - TERMINOLOGY `:71`: "codes in `crates/roym_core/taxonomy/base.json`,
+    with labels per language" reads as if the labels are in that file.
+  - task.md `:157`: "12 Rust taxonomy tests" (21 run) and "limit +10 KB"
+    (plan section 7.6 sets 5 KB).
+- *Failure case:* a developer reads the requirements, expects the service to
+  refuse an unknown unit, and builds a client check on that.
+- *Fix:* requirements: "a code of `[a-z0-9-]`; the Hub offers the base unit
+  list" (and the same for `:1462`); architecture: "checked by a test in
+  `roym_core::taxonomy`"; developer guide: "the English file is in the main
+  script; another language's file loads with its string catalog"; TERMINOLOGY:
+  "codes in `base.json`; their labels are in the Hub's taxonomy label files";
+  task.md: 21 tests, limit 5 KB.
+- *Status:* Open.
