@@ -852,3 +852,57 @@ items. **0 open.**
   (D-B2-12, exit criterion 10) was completed on 2026-11-08 with no changes:
   `taxonomy/hi.ftl` says `# owner review: done 2026-11-08`, and
   `taxonomy-review.md` was deleted.
+
+## Code review round 4 — Claude Opus 5.5, 2026-11-08
+
+Round 3 said 0 open while CI on the fix head was still running. That run
+finished red. This round records why. Checked on `13f72668` (only docs since
+`065d4ad5`).
+
+**Summary:** 0 blocker, 1 major (R12). **1 open.**
+
+- **CI.** Run 42486386143 on `13f72668`: Test 1/6 to 6/6, Lints and CLA pass;
+  Playwright E2E fails. One test fails all 3 tries: `roym-hub.spec.ts:971`,
+  "26. messages tab: sending a request posts a card …", at `:988`: the request
+  form is still visible 15 s after the Submit click. The CI screenshot shows
+  both chips ("Home Cleaning", "Deep Cleaning"), the list closed, no error
+  text, and the form still open: the Submit click never reached the button.
+  The full run was green on `4d235dc0`; the only code change since then is
+  the `mousedown` line of 25654cf9.
+
+#### R12 — major — after a pick, the next click below the picker is lost
+
+- *Where:* `crates/roym_web/ui/src/taxonomy/category_picker.ts`, the
+  `options` `mousedown` handler (25654cf9) together with the `root`
+  `focusout` handler and the in-page `.picker-options` box (85894086).
+- *Problem:* the R10 fix keeps the focus in the filter during a pick. So
+  after a pick the filter still has the focus, the filter is empty, and the
+  list stays open (all groups, up to 220px high). The next `mousedown` on a
+  control below the picker moves the focus out, `focusout` hides the list,
+  and everything below the picker moves up by the list's height before
+  `mouseup`. The click does not land on the control. Before 25654cf9, in
+  Chrome the clicked option was removed from the page during the pick, the
+  focus left the picker, the list closed at once, and the next click worked.
+- *Proof:* a page with only the picker and a button below it, driven by
+  Playwright Chromium (the vite dev server, a throwaway page, deleted after).
+  Fill "Plumbing", click the `plumbing` option, click the button. On
+  `065d4ad5`: the list is open after the pick, and the button's click handler
+  does not run. With the `mousedown` line removed: the list is closed after
+  the pick, and the click handler runs.
+- *Failure case:* Bob picks "Home Cleaning" in the request form and clicks
+  "Submit request". Nothing happens. A second click works. The same happens
+  for any control under the picker in the four forms (Save, Search), and also
+  when a person opens the list and then clicks a control below it without
+  picking.
+- *Fix:* do two things, and keep the `mousedown` line (R10 needs it).
+  1. Make the list float, so that opening or closing it never moves the page:
+     `.category-picker { position: relative; }` and
+     `.picker-options { position: absolute; left: 0; right: 0; top: 100%; z-index: 10; }`
+     (or place it right under the filter).
+  2. Close the list after each pick (`closeOptions()` in `pick()`), and open
+     it again on a click in the filter (`filter.addEventListener("click", openOptions)`)
+     and on input, as now. Then the next control is not under the open list.
+  Test 26 is the guard (it fails today). Add one picker unit test: after a
+  pick, `options.hidden` is true, and a click on the filter opens it again.
+  Run the whole Playwright suite and story 40.
+- *Status:* Open.
