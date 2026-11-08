@@ -821,3 +821,33 @@ blocker, 1 major (R10), 1 minor (R11). **3 open** (R8, R10, R11).
   counts for the same run.
 - *Fix:* write 372 (and the new count after R10's test).
 - *Status:* Fixed (472a6e90). Updated `task.md:157` test count to 373 UI tests.
+
+## Code review round 3 — Claude Opus 5.5, 2026-11-08
+
+Checked the fix commits `25654cf9` to `065d4ad5` (`git diff 48f783d8..065d4ad5`)
+on `feat/m08b-b2-taxonomy`, in the main checkout.
+
+**Summary:** the 3 open items (R8, R10, R11) are confirmed Fixed. No new
+items. **0 open.**
+
+- **R8 — confirmed Fixed (472a6e90).** `change.md:203` now writes the choice id
+  as `taxonomy-choice-<attribute-word>_<choice-word>`, with `_`, as the code
+  and both label files do (`taxonomy-choice-diet_veg`).
+- **R10 — confirmed Fixed (25654cf9).** `options` cancels `mousedown`, so a
+  press on any option (the own-code option too) does not move the focus out
+  of the filter. No `focusout` fires, the list stays open until the click
+  lands, and the focus stays in the filter for the next pick. Wheel and touch
+  scrolling of the list do not use `mousedown`, so they still work. The new
+  test checks that the `mousedown` is cancelled and that the click then adds
+  the chip.
+- **R11 — confirmed Fixed (472a6e90).** task.md says 373 UI tests. Here,
+  `npm test` gives 34 files, 373 tests passed; `npm run build` passes, with
+  the visible-text check (28 passed).
+- **CI.** `gh pr checks 353` on `065d4ad5`, when this round was written:
+  Lints, licenses & checks and CLA pass; Playwright E2E and Test 1/6 to 6/6
+  are still pending. The full run was green on `4d235dc0`. Since then, the
+  only code change is the one `mousedown` line and its unit test. Check that
+  the run on the head is green before the merge.
+- **Before the merge.** The owner review of the taxonomy codes and labels
+  (D-B2-12, exit criterion 10) is still pending: `taxonomy/hi.ftl` says
+  `# owner review: pending`, and `taxonomy-review.md` is still in the folder.
