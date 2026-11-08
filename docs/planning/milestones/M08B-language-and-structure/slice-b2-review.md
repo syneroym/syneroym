@@ -192,7 +192,9 @@ tests or `mise run verify`.
   today. Add a `picker.test.ts` case ("clear removes the chips and
   `codes()` is empty") and a `messages.test.ts` case (after a send, the form's
   chips are gone). Update D-B2-6's signature.
-- *Status:* Fixed (b8203efb)
+- *Status:* Open (round 2: partly fixed. `clear()` is in D-B2-6, Step 7.1
+  and the picker tests, but the `messages.test.ts` case is not in section 7.1.
+  The test that fails when the call is forgotten is the point of the item.)
 
 #### P3 — Typing a group's name finds nothing (minor)
 
@@ -320,7 +322,9 @@ tests or `mise run verify`.
   reached with Tab"; make Enter in the filter pick the first option when
   there is exactly one; set `aria-live="polite"` on the message line. Add a
   backlog sentence to the existing WCAG row if the owner wants more.
-- *Status:* Fixed (b8203efb)
+- *Status:* Open (round 2: partly fixed. Points 1 and 2 are in D-B2-6 and
+  have tests. Point 3 (Enter picks the only option; `aria-live`) is in D-B2-6
+  but section 7.1 has no test for either.)
 
 #### P9 — `Taxonomy::validate` does not check two rules that the file format relies on (minor)
 
@@ -341,3 +345,116 @@ tests or `mise run verify`.
   drawn, with a `taxonomy.test.ts` case. I prefer the Rust check: it fails
   where the file is edited.
 - *Status:* Fixed (b8203efb)
+
+## Plan review round 2 — Claude Sonnet 5.5 (Claude Code desktop), 2026-11-08
+
+Checked on `feat/m08b-b2-taxonomy` at `147de113`, in the main checkout. I read
+the diff from my round 1 commit (`5ed965d6`) to `HEAD` for the plan, the
+change doc, `task.md`, `status.md` and this file, and I re-ran the commands
+the new text uses against the code on `main`. I ran no plan step.
+
+**Summary of this round:** 0 blocker, 0 major, 2 new minor items (P10, P11).
+Round 1 items: 7 confirmed Fixed (P1, P3, P4, P5, P6, P7, P9), 2 sent back to
+Open with a note (P2, P8). **Open now: 4 (P2, P8, P10, P11), all minor.**
+
+### Round 1 items
+
+- **P1 — confirmed Fixed.** Point 7 and Step 8.2 now name
+  `roym-hub.spec.ts:984` and replace the fill with picks of `home-cleaning`
+  and `deep-cleaning`. Both are children in D-B2-2. The grep that Step 8.2
+  adds does not work (see P10); that is a new item, not a reopening, because
+  the spec change itself is right.
+- **P2 — back to Open.** `clear()` is in the return type, in the picker
+  tests ("`clear()` empties the chips and `codes()` is empty") and in Step 7.1
+  (`catsInput.value = ""` becomes `catsPicker.clear()`). The `messages.test.ts`
+  case from my fix text is not in section 7.1 (`grep messages.test` on the plan
+  finds nothing). Without it nothing fails if `messages.ts` forgets the call.
+- **P3 — confirmed Fixed.** D-B2-5 (signature comment and text) and the
+  `matchCategories` test ("a group's label finds its children") now say that a
+  child also matches by its group's label or code and that no group is
+  returned. D-B2-6's "each with its group label before it" still fits.
+- **P4 — confirmed Fixed.** The false claim about `bundleFor` is gone. The
+  catalog test now calls `addResource` for the string catalog and then for
+  the taxonomy file and expects an empty error list each time. (The second
+  call must be on the same bundle; the text implies it.)
+- **P5 — confirmed Fixed.** `category_picker.ts` and `category_picker.test.ts`
+  replace the old names in D-B2-6, Steps 5, 7.1, 7.5, 7.6, section 3 (ML-7 row)
+  and section 9. No bare `picker.ts` or `picker.test.ts` is left in the plan
+  (the language picker is not mentioned any more).
+- **P6 — confirmed Fixed.** Section 9 names the `request`, `quote` and
+  `payment-acknowledgement` card rows, adds `system-requirements-spec.md:730`,
+  and moves the taxonomy paragraph to the listing text at `:918` and `:1355`.
+- **P7 — confirmed Fixed.** `change.md` ("B. Language-neutral structure") and
+  `task.md` row Y2 now say that codes and structure are in the data file and
+  labels are in `src/i18n/taxonomy/<tag>.ftl`, and that M08D adds attribute
+  labels to the same files. Step 9 still tells the implementer to rewrite the
+  same sentences (see P11).
+- **P8 — back to Open.** Points 1 and 2 are fixed: the own code is offered
+  only when it is not already chosen, `codes()` is a set in order of choice,
+  and the no-match message has a trigger and a test (English, with a
+  non-code-shaped text, and Hindi). Point 3 is in D-B2-6 (Tab, Enter picks the
+  only option, `aria-live="polite"`), but section 7.1 has no test for the
+  Enter key or for the `aria-live` attribute.
+- **P9 — confirmed Fixed.** D-B2-3 has `ParentAfterChild` and
+  `GroupWithoutChildren`, the `validate` text lists both rules, and the Rust
+  tests have a case for each. `base.json` as listed in D-B2-2 passes both:
+  every group is first in its list and has 3 to 11 children.
+
+### Owner answers
+
+`status.md` and section 2.1 record Q1 to Q10 as all (a), 2026-11-07. I cannot
+check the owner's answer from the repository; I only checked that the plan
+is consistent with it. It is. Section 3 already lists the deviations that
+(a) implies (Q1, Q3, Q4, Q5, Q7, Q9). One point to carry into Step 9: the
+change doc bullet "The Hub category picker offers only taxonomy codes … in
+any language the taxonomy has" (still there, just after the bullet that P7
+changed) disagrees with Q4 (a) and Q7 (a), so the deviation must say it
+replaces that bullet, not only add to it.
+
+### New findings
+
+#### P10 — The grep that Step 8.2 uses to prove "no fill is left" cannot match (minor)
+
+- **Where:** Step 8.2, last sentence:
+  `git grep -n "cats-input|categories')" crates/substrate/tests/e2e`.
+- **Problem:** `git grep` without `-E` uses basic regular expressions, where
+  `|` is a plain character. I ran the command on `main`: it finds 0 lines,
+  though 13 lines fill a category box (`git grep -n -E "(categories|cats)(-input)?'\)\.fill"`
+  finds all 13). My round 1 fix text wrote `\|`, which `git grep` reads as
+  "or"; the plan dropped the backslash. My pattern had a second flaw: even
+  with `-E`, `categories')` does not match `listing-categories-input')`.
+- **Failure case:** The implementer runs the check after Step 8, sees no
+  output, and believes no fill is left. A missed fill is found only when the
+  e2e run fails.
+- **Fix:** Use
+  `git grep -n -E "(categories|cats)(-input)?'\)\.fill" crates/substrate/tests/e2e`
+  and say the expected result: no line in `roym-hub.spec.ts` or
+  `roym-trust.spec.ts` that fills a picker box (the lines that remain must be
+  `pickCategory` calls or `.fill` on a non-picker field).
+- *Status:* Open.
+
+#### P11 — Step 9 asks for edits that are already done, and the plan text carries review ids (minor)
+
+- **Where:** Step 9.3 and 9.4 (rewrite the "B." sentence and the Y2 row);
+  section 7.1 (`matchCategories` and picker bullets), Step 7.1, owner
+  answers of Q4 to Q6.
+- **Problem:**
+  1. `change.md` and `task.md` row Y2 were already rewritten in `b8203efb`.
+     Step 9 still says "rewrite the existing sentence that says its labels per
+     language", but the sentence no longer says it. An implementer will look for
+     text that is gone.
+  2. The plan prose now contains review ids ("P1", "P2", "P3", "P7", "P8") in
+     bullets that describe tests and code. The id rule forbids planning
+     ids in code, comments and test names. The plan is not code, but an
+     implementer who copies these bullets into a test title or a comment
+     breaks the rule.
+- **Failure case:** (1) Wasted time or a second edit that changes the right
+  text. (2) A test named "a group's label finds its children (P3 …)".
+- **Fix:** (1) Change Step 9.3 and 9.4 to: "`change.md` and `task.md` row Y2
+  were edited in the plan fix; check that they still say so, and replace the
+  bullet 'The Hub category picker offers only taxonomy codes …' to match Q4
+  and Q7". (2) Remove the `(P…)` marks from section 7.1, Step 7.1 and the
+  steps; keep them only in the owner-answer notes, or remove them there too,
+  and add one sentence in section 0: "Do not copy review ids into code,
+  comments or test names."
+- *Status:* Open.
