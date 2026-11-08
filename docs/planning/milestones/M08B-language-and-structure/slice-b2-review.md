@@ -454,3 +454,31 @@ replaces that bullet, not only add to it.
   and add one sentence in section 0: "Do not copy review ids into code,
   comments or test names."
 - *Status:* Fixed (baebc1de)
+
+## Plan review round 3 — Claude Sonnet 5.5 (Claude Code desktop), 2026-11-08
+
+Checked on `feat/m08b-b2-taxonomy` at `2fb5984a`, in the main checkout. I read
+the diff from `099c70ca` to `HEAD` and re-ran the plan's grep.
+
+**Summary of this round:** 0 new items. The four items that round 2 left open
+are confirmed Fixed. **0 open.**
+
+- **P2 — confirmed Fixed.** Section 7.1 now has a `messages.test.ts` entry
+  ("after sending a request, the request form's category chips are gone").
+  `src/screens/messages.test.ts` exists. With `clear()` in D-B2-6 and the Step
+  7.1 call, forgetting the call now fails a test.
+- **P8 — confirmed Fixed.** Section 7.1 has a test for Enter picking the only
+  visible option and one for `aria-live="polite"` on the message container.
+  Points 1 and 2 were already fixed in round 2.
+- **P10 — confirmed Fixed.** Step 8.2 now uses
+  `git grep -n -E "(categories|cats)(-input)?'\)\.fill" crates/substrate/tests/e2e`
+  and says what the remaining lines must be. On `main` it finds the 13 fills
+  that Step 8 replaces, so after the step it must find none that fill a picker
+  box.
+- **P11 — confirmed Fixed.** Step 9.3 and 9.4 no longer ask for the rewrite
+  that is already done: they say to check `change.md` and `task.md` row Y2 and
+  to replace the bullet "The Hub category picker offers only taxonomy
+  codes …" to match Q4 and Q7. Section 0 says not to copy review ids into
+  code, comments or test names. No B2 review id is left in the plan prose. The
+  four ids that remain (`B1a P8`, `B1b P2` and so on, in section 7.8) name
+  findings of earlier slices and were there before the review.
