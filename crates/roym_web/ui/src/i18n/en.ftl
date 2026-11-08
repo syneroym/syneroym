@@ -752,3 +752,11 @@ synorg-decision-suspended-listing = suspended one listing ({ $id })
 synorg-decision-rule = rule: { $rule }
 synorg-lift-button = Lift
 synorg-lift-failed = Not lifted: { $detail }
+
+## Category picker
+
+category-picker-filter-placeholder = Type to find a category
+category-picker-remove = Remove { $label }
+category-picker-own-code = Use the code “{ $code }”
+category-picker-no-match = No category matches.
+category-picker-full = You can choose up to { $max } categories.
