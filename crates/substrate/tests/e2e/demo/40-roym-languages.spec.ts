@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { readDemoEnv } from '../demo-nodes';
-import { chooseHubLanguage, hubMessage, loginWithDelegatedKey } from '../hub-helpers';
+import { chooseHubLanguage, hubMessage, loginWithDelegatedKey, pickCategory } from '../hub-helpers';
 import { requireEnv, step } from './steps';
 
 const SCRIPT = '20-roym-setup.sh';
@@ -44,5 +44,12 @@ test('Roym languages story: Alice reads her Hub in Hindi, and it stays Hindi', a
       page.getByRole('button', { name: hubMessage('hi', 'contacts-upsert-button') }),
     ).toBeVisible();
     await expect(page.locator('.contacts-screen h2')).toHaveText(hubMessage('hi', 'contacts-title'));
+  });
+
+  await step(page, "Alice's screen: pick a category by its Hindi label in Listings", async () => {
+    await page.getByRole('button', { name: hubMessage('hi', 'tab-listings') }).click();
+    await pickCategory(page.locator('.listing-categories-input'), 'gardening', 'hi');
+    const chip = page.locator('.listing-categories-input .picker-chip[data-code="gardening"]');
+    await expect(chip).toContainText(hubMessage('hi', 'taxonomy-category-gardening'));
   });
 });

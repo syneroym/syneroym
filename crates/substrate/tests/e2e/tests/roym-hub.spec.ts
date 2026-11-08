@@ -1,6 +1,6 @@
 import { test, expect, type Page } from '../fixtures';
 import {
-  addContact, hubMessage, loginWithDelegatedKey, openConversation, openMessages, rpcCall, saveProfile,
+  addContact, chooseHubLanguage, hubMessage, loginWithDelegatedKey, openConversation, openMessages, pickCategory, rpcCall, saveProfile,
   sendMessage, threadMessage,
 } from '../hub-helpers';
 import { readE2EPorts } from '../ports';
@@ -473,7 +473,7 @@ test.describe('Roym Hub', () => {
     if (status.includes('runs no SynOrg')) {
       await page.locator('.synorg-name').fill('E2E Trades');
       await page.locator('.synorg-rules').fill('Be honest. Show up.');
-      await page.locator('.synorg-categories').fill('cycling');
+      await pickCategory(page.locator('.synorg-categories'), 'bicycle-repair');
       await page.locator('.synorg-support').fill('help@example.org');
       await page.locator('.synorg-dispute').fill('Email support.');
       await page.locator('.synorg-retention-days').fill('30');
@@ -487,7 +487,7 @@ test.describe('Roym Hub', () => {
       const whoami = await rpcCall(page, 'session.whoami', {});
       const issued = await rpcCall(page, 'credential.issue', {
         member_did: whoami.result?.did,
-        categories: ['cycling'],
+        categories: ['bicycle-repair'],
         expires_at_secs: Math.floor(Date.now() / 1000) + 365 * 24 * 3600,
       });
       expect(issued.result?.record_id).toBeTruthy();
@@ -503,7 +503,7 @@ test.describe('Roym Hub', () => {
 
     await page.getByRole('button', { name: 'Listings' }).click();
     await page.locator('.listing-title-input').fill(title);
-    await page.locator('.listing-categories-input').fill('cycling');
+    await pickCategory(page.locator('.listing-categories-input'), 'bicycle-repair');
     await page.locator('.listing-address-input').fill(DIRECTORY_DID!);
     await page.locator('.block-payment .block-enabled').check();
     await page.locator('.payment-amount-input').fill('40');
@@ -562,7 +562,7 @@ test.describe('Roym Hub', () => {
     await page.getByRole('button', { name: 'Add directory' }).click();
     await expect(page.locator('.add-source-status')).toContainText('Added', { timeout: 15_000 });
 
-    await page.locator('.search-categories').fill('cycling');
+    await pickCategory(page.locator('.search-categories'), 'bicycle-repair');
     await page.getByRole('button', { name: 'Search', exact: true }).click();
 
     const hit = page.locator('.search-hit', { hasText: 'Wheel truing service' });
@@ -604,7 +604,7 @@ test.describe('Roym Hub', () => {
     await page.getByRole('button', { name: 'Add directory' }).click();
     await expect(page.locator('.add-source-status')).toContainText('Added', { timeout: 15_000 });
 
-    await page.locator('.search-categories').fill('cycling');
+    await pickCategory(page.locator('.search-categories'), 'bicycle-repair');
     await page.getByRole('button', { name: 'Search', exact: true }).click();
 
     const hit = page.locator('.search-hit', { hasText: '<img src=x' });
@@ -642,7 +642,7 @@ test.describe('Roym Hub', () => {
     await page.getByRole('button', { name: 'Add directory' }).click();
     await expect(page.locator('.add-source-status')).toContainText('Added', { timeout: 15_000 });
 
-    await page.locator('.search-categories').fill('cycling');
+    await pickCategory(page.locator('.search-categories'), 'bicycle-repair');
     await page.getByRole('button', { name: 'Search', exact: true }).click();
 
     await expect(page.locator('.search-hit', { hasText: 'Chain lube special' })).toHaveCount(1, {
@@ -663,7 +663,7 @@ test.describe('Roym Hub', () => {
     const status = await page.locator('.synorg-status').innerText();
     if (status.includes('runs no SynOrg')) {
       await page.locator('.synorg-name').fill('E2E Trades');
-      await page.locator('.synorg-categories').fill('cycling');
+      await pickCategory(page.locator('.synorg-categories'), 'bicycle-repair');
       await page.locator('.synorg-support').fill('help@example.org');
       await page.locator('.synorg-dispute').fill('Email support.');
       await page.locator('.synorg-retention-days').fill('30');
@@ -728,7 +728,7 @@ test.describe('Roym Hub', () => {
     await page.getByRole('button', { name: 'SynOrg', exact: true }).click();
     if ((await page.locator('.synorg-status').innerText()).includes('runs no SynOrg')) {
       await page.locator('.synorg-name').fill('E2E Trades');
-      await page.locator('.synorg-categories').fill('cycling');
+      await pickCategory(page.locator('.synorg-categories'), 'bicycle-repair');
       await page.locator('.synorg-support').fill('help@example.org');
       await page.locator('.synorg-dispute').fill('Email support.');
       await page.locator('.synorg-retention-days').fill('30');
@@ -738,7 +738,7 @@ test.describe('Roym Hub', () => {
       const whoami = await rpcCall(page, 'session.whoami', {});
       const issued = await rpcCall(page, 'credential.issue', {
         member_did: whoami.result?.did,
-        categories: ['cycling'],
+        categories: ['bicycle-repair'],
         expires_at_secs: Math.floor(Date.now() / 1000) + 365 * 24 * 3600,
       });
       expect(issued.result?.record_id).toBeTruthy();
@@ -789,7 +789,7 @@ test.describe('Roym Hub', () => {
       await expect(page.locator('.add-source-status')).toContainText('Added', { timeout: 15_000 });
     }
 
-    await page.locator('.search-categories').fill('cycling');
+    await pickCategory(page.locator('.search-categories'), 'bicycle-repair');
     await page.getByRole('button', { name: 'Search', exact: true }).click();
 
     // The loopback hit is shown while the unreachable sources are reported
@@ -820,7 +820,7 @@ test.describe('Roym Hub', () => {
       await expect(page.locator('.add-source-status')).toContainText('Added', { timeout: 15_000 });
     }
 
-    await page.locator('.search-categories').fill('cycling');
+    await pickCategory(page.locator('.search-categories'), 'bicycle-repair');
     await page.getByRole('button', { name: 'Search', exact: true }).click();
     await expect(page.locator('.search-progress')).toContainText('8 directories searched', {
       timeout: 40_000,
@@ -981,7 +981,8 @@ test.describe('Roym Hub', () => {
 
     const descText = 'Emergency gutter and downpipe cleaning';
     await page.locator('.request-desc-input').fill(descText);
-    await page.locator('.request-cats-input').fill('gutters, cleaning');
+    await pickCategory(page.locator('.request-cats-input'), 'home-cleaning');
+    await pickCategory(page.locator('.request-cats-input'), 'deep-cleaning');
     await page.locator('.send-request-button').click();
 
     await expect(page.locator('.request-form')).not.toBeVisible({ timeout: 15_000 });
@@ -1308,5 +1309,38 @@ test.describe('Roym Hub', () => {
     expect(failedOnce).toBe(true);
 
     await page2.close();
+  });
+
+  test('a category search finds the same listings in English and in Hindi', async ({ page }) => {
+    await page.goto(HUB_URL);
+    await page.waitForLoadState('networkidle');
+    await loginWithDelegatedKey(page);
+    await ensureSynOrgWithListing(page, 'Multilingual bike repair listing');
+
+    await removeAllSources(page);
+    await page.locator('.add-source-did').fill(DIRECTORY_DID!);
+    await page.getByRole('button', { name: 'Add directory' }).click();
+    await expect(page.locator('.add-source-status')).toContainText('Added', { timeout: 15_000 });
+
+    await pickCategory(page.locator('.search-categories'), 'bicycle-repair');
+    await page.getByRole('button', { name: 'Search', exact: true }).click();
+    const hitEn = page.locator('.search-hit', { hasText: 'Multilingual bike repair listing' });
+    await expect(hitEn).toHaveCount(1, { timeout: 20_000 });
+    const englishTitles = await page.locator('.search-hit .hit-title').allInnerTexts();
+
+    await chooseHubLanguage(page, 'hi');
+    await page.getByRole('button', { name: hubMessage('hi', 'tab-directory') }).click();
+    await pickCategory(page.locator('.search-categories'), 'bicycle-repair', 'hi');
+    await page.getByRole('button', { name: hubMessage('hi', 'directory-search-button'), exact: true }).click();
+
+    const hitHi = page.locator('.search-hit', { hasText: 'Multilingual bike repair listing' });
+    await expect(hitHi).toHaveCount(1, { timeout: 20_000 });
+    const hindiTitles = await page.locator('.search-hit .hit-title').allInnerTexts();
+    expect(hindiTitles).toEqual(englishTitles);
+
+    const hitCategories = await hitHi.locator('.hit-categories').innerText();
+    expect(hitCategories).toContain(hubMessage('hi', 'taxonomy-category-bicycle-repair'));
+
+    await chooseHubLanguage(page, 'en');
   });
 });
