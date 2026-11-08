@@ -137,6 +137,50 @@ describe("categoryPicker component", () => {
     expect(picker.root.querySelectorAll(".picker-chip").length).toBe(0);
   });
 
+  it("options are hidden until the filter has focus, and focusout hides them", () => {
+    const picker = categoryPicker({ className: "test-picker", max: 8 });
+    const options = picker.root.querySelector<HTMLDivElement>(".picker-options")!;
+    const filter = picker.root.querySelector<HTMLInputElement>(".picker-filter")!;
+
+    expect(options.hidden).toBe(true);
+
+    filter.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+    expect(options.hidden).toBe(false);
+
+    filter.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+    expect(options.hidden).toBe(true);
+  });
+
+  it("clear() and Escape hide options", () => {
+    const picker = categoryPicker({ className: "test-picker", max: 8 });
+    const options = picker.root.querySelector<HTMLDivElement>(".picker-options")!;
+    const filter = picker.root.querySelector<HTMLInputElement>(".picker-filter")!;
+
+    filter.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+    expect(options.hidden).toBe(false);
+
+    picker.clear();
+    expect(options.hidden).toBe(true);
+
+    filter.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+    expect(options.hidden).toBe(false);
+
+    filter.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    expect(options.hidden).toBe(true);
+  });
+
+  it("Tab from the filter with no text closes options so focus reaches the next field", () => {
+    const picker = categoryPicker({ className: "test-picker", max: 8 });
+    const options = picker.root.querySelector<HTMLDivElement>(".picker-options")!;
+    const filter = picker.root.querySelector<HTMLInputElement>(".picker-filter")!;
+
+    filter.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+    expect(options.hidden).toBe(false);
+
+    filter.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true }));
+    expect(options.hidden).toBe(true);
+  });
+
   it("picks the option on Enter when exactly one visible option exists", () => {
     const picker = categoryPicker({ className: "test-picker", max: 8 });
     const filter = picker.root.querySelector<HTMLInputElement>(".picker-filter")!;

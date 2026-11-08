@@ -40,7 +40,34 @@ export function categoryPicker(opts: CategoryPickerOptions): CategoryPicker {
 
   const options = document.createElement("div");
   options.className = "picker-options";
+  options.hidden = true;
   root.appendChild(options);
+
+  function openOptions() {
+    options.hidden = false;
+  }
+
+  function closeOptions() {
+    options.hidden = true;
+  }
+
+  root.addEventListener("focusin", () => {
+    openOptions();
+  });
+
+  root.addEventListener("focusout", (e: FocusEvent) => {
+    const next = e.relatedTarget as Node | null;
+    if (!root.contains(next) && !filter.value.trim()) {
+      closeOptions();
+    }
+  });
+
+  root.addEventListener("keydown", (e: KeyboardEvent) => {
+    if (e.key === "Escape") {
+      closeOptions();
+      filter.blur();
+    }
+  });
 
   const selectedCodes: string[] = [];
   if (opts.selected) {
@@ -198,10 +225,15 @@ export function categoryPicker(opts: CategoryPickerOptions): CategoryPicker {
   }
 
   filter.addEventListener("input", () => {
+    openOptions();
     renderOptions();
   });
 
   filter.addEventListener("keydown", (e) => {
+    if (e.key === "Tab" && !filter.value.trim()) {
+      closeOptions();
+      return;
+    }
     if (e.key === "Enter") {
       e.preventDefault();
       const visibleButtons = options.querySelectorAll<HTMLButtonElement>(
@@ -224,6 +256,7 @@ export function categoryPicker(opts: CategoryPickerOptions): CategoryPicker {
     clear() {
       selectedCodes.length = 0;
       filter.value = "";
+      closeOptions();
       renderChips();
       renderOptions();
     },

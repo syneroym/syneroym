@@ -274,6 +274,9 @@ body {
   background: white;
   margin-top: 4px;
 }
+.picker-options[hidden] {
+  display: none;
+}
 .picker-group {
   font-weight: 600;
   font-size: 0.85em;
