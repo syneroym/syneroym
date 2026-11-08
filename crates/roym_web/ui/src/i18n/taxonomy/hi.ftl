@@ -59,7 +59,7 @@ taxonomy-category-doctor = डॉक्टर
 taxonomy-category-nursing = नर्सिंग
 taxonomy-category-physiotherapy = फिजियोथेरेपी
 taxonomy-category-pharmacy = दवा की दुकान
-taxonomy-category-diagnostic-lab = जांच प्रयोगशाला
+taxonomy-category-diagnostic-lab = जाँच प्रयोगशाला
 taxonomy-category-yoga = योग
 
 taxonomy-category-education = शिक्षा
@@ -78,7 +78,7 @@ taxonomy-category-tent-house = टेंट हाउस
 taxonomy-category-priest = पंडित जी
 taxonomy-category-event-music = कार्यक्रम संगीत
 
-taxonomy-category-professional = व्यावसायिक सेवाएं
+taxonomy-category-professional = व्यावसायिक सेवाएँ
 taxonomy-category-accounting = लेखांकन
 taxonomy-category-tax-filing = टैक्स फाइलिंग
 taxonomy-category-legal-help = कानूनी सहायता
@@ -93,12 +93,12 @@ taxonomy-category-tiffin = टिफिन
 taxonomy-category-home-food = घर का खाना
 taxonomy-category-bakery = बेकरी
 taxonomy-category-sweets = मिठाई
-taxonomy-category-fruits-vegetables = फल और सब्जियां
+taxonomy-category-fruits-vegetables = फल और सब्ज़ियाँ
 taxonomy-category-dairy = डेयरी
 taxonomy-category-groceries = किराना
 taxonomy-category-meat-fish = मांस और मछली
 
-taxonomy-category-goods = वस्तुएं और सामान
+taxonomy-category-goods = वस्तुएँ और सामान
 taxonomy-category-clothing = कपड़े
 taxonomy-category-footwear = जूते-चप्पल
 taxonomy-category-electronics = इलेक्ट्रॉनिक्स

@@ -727,7 +727,7 @@ synorg-lift-failed = हटाया नहीं गया: { $detail }
 ## Category picker
 
 category-picker-filter-placeholder = श्रेणी खोजने के लिए टाइप करें
-category-picker-remove = { $label } हटाएं
+category-picker-remove = { $label } हटाएँ
 category-picker-own-code = “{ $code }” कोड का उपयोग करें
 category-picker-no-match = कोई श्रेणी मेल नहीं खाती।
-category-picker-full = आप अधिकतम { $max } श्रेणियां चुन सकते हैं।
+category-picker-full = आप अधिकतम { $max } श्रेणियाँ चुन सकते हैं।

@@ -55,7 +55,7 @@ For the milestone owner to review before merge. Shows every code defined in `cra
 | category | `nursing` | health | Nursing | नर्सिंग |
 | category | `physiotherapy` | health | Physiotherapy | फिजियोथेरेपी |
 | category | `pharmacy` | health | Pharmacy | दवा की दुकान |
-| category | `diagnostic-lab` | health | Diagnostic Lab | जांच प्रयोगशाला |
+| category | `diagnostic-lab` | health | Diagnostic Lab | जाँच प्रयोगशाला |
 | category | `yoga` | health | Yoga | योग |
 | category-group | `education` | - | Education | शिक्षा |
 | category | `tuition` | education | Tuition | ट्यूशन |
@@ -71,7 +71,7 @@ For the milestone owner to review before merge. Shows every code defined in `cra
 | category | `tent-house` | events | Tent House | टेंट हाउस |
 | category | `priest` | events | Priest | पंडित जी |
 | category | `event-music` | events | Event Music | कार्यक्रम संगीत |
-| category-group | `professional` | - | Professional | व्यावसायिक सेवाएं |
+| category-group | `professional` | - | Professional | व्यावसायिक सेवाएँ |
 | category | `accounting` | professional | Accounting | लेखांकन |
 | category | `tax-filing` | professional | Tax Filing | टैक्स फाइलिंग |
 | category | `legal-help` | professional | Legal Help | कानूनी सहायता |
@@ -85,11 +85,11 @@ For the milestone owner to review before merge. Shows every code defined in `cra
 | category | `home-food` | food | Home Food | घर का खाना |
 | category | `bakery` | food | Bakery | बेकरी |
 | category | `sweets` | food | Sweets | मिठाई |
-| category | `fruits-vegetables` | food | Fruits and Vegetables | फल और सब्जियां |
+| category | `fruits-vegetables` | food | Fruits and Vegetables | फल और सब्ज़ियाँ |
 | category | `dairy` | food | Dairy | डेयरी |
 | category | `groceries` | food | Groceries | किराना |
 | category | `meat-fish` | food | Meat and Fish | मांस और मछली |
-| category-group | `goods` | - | Goods | वस्तुएं और सामान |
+| category-group | `goods` | - | Goods | वस्तुएँ और सामान |
 | category | `clothing` | goods | Clothing | कपड़े |
 | category | `footwear` | goods | Footwear | जूते-चप्पल |
 | category | `electronics` | goods | Electronics | इलेक्ट्रॉनिक्स |
