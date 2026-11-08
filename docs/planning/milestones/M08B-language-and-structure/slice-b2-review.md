@@ -705,7 +705,7 @@ there are no earlier R items to confirm.
   R1, R3, R4); in `:477` and the backlog row say "the unit appears only in the
   listing editor"; in "Units" say "a code (any well-formed code; the Hub
   offers the base unit list)"; remove `templates.test.ts` from ML-9.
-- *Status:* Open. Code review round 2: the fix in cce1815f is partial. The new "Labels and joined loader" decision (`change.md:203`) writes the choice id as `taxonomy-choice-<attribute-word>-<choice-word>`; the code and both label files use `_` between the attribute and the choice (`taxonomy-choice-diet_veg`), which is the point of D-B2-4. See round 2. Fix session note: Fixed (cce1815f). Added 4 decisions to `roym-multilingual/change.md`: Vite JSON import, label ID format & joined loader, owner review, error variants & `-32602`. Fixed product unit deviation and backlog row 543 to "appears only in the listing editor", updated Units description to any well-formed code with Hub base list, removed `templates.test.ts` from ML-9 table, and recorded `tEnglish` export under Deviations.
+- *Status:* Fixed (472a6e90). Changed choice ID pattern in `change.md:203` to `taxonomy-choice-<attribute-word>_<choice-word>` with underscore, matching code, label files, and D-B2-4.
 
 #### R9 — minor — the living docs and task.md say a little more, or other, than the code
 
@@ -809,7 +809,7 @@ blocker, 1 major (R10), 1 minor (R11). **3 open** (R8, R10, R11).
   is still in the filter, so the person can pick the next code. Add a picker
   test: a `mousedown` on an option is `defaultPrevented`, and after it a
   `click` on that option adds the chip.
-- *Status:* Open.
+- *Status:* Fixed (25654cf9). Added `options.addEventListener("mousedown", (e) => e.preventDefault());` in `category_picker.ts` so focus remains in `filter` when clicking an option. Added test in `category_picker.test.ts`. Proof: without the fix, the test failed with `AssertionError: expected false to be true` checking `mousedownEvent.defaultPrevented`; with fix, all 14 tests pass.
 
 #### R11 — minor — task.md still gives the old Hub test count
 
@@ -820,4 +820,4 @@ blocker, 1 major (R10), 1 minor (R11). **3 open** (R8, R10, R11).
 - *Failure case:* a reader compares task.md with status.md and sees two
   counts for the same run.
 - *Fix:* write 372 (and the new count after R10's test).
-- *Status:* Open.
+- *Status:* Fixed (472a6e90). Updated `task.md:157` test count to 373 UI tests.
