@@ -120,27 +120,13 @@ export function choiceLabel(attribute: string, choice: string): string {
 }
 
 export function taxonomyMessageIds(): string[] {
-  const ids: string[] = [];
-  for (const c of taxonomyData.categories) {
-    ids.push("taxonomy-category-" + c.code);
-  }
-  for (const u of taxonomyData.units) {
-    ids.push("taxonomy-unit-" + u);
-  }
-  for (const m of taxonomyData.payment_methods) {
-    ids.push("taxonomy-method-" + m);
-  }
-  for (const a of taxonomyData.attributes) {
-    ids.push("taxonomy-attribute-" + a.code);
-  }
-  for (const a of taxonomyData.attributes) {
-    if (a.value.type === "choice") {
-      for (const choice of a.value.choices) {
-        ids.push(`taxonomy-choice-${a.code}_${choice}`);
-      }
-    }
-  }
-  return ids;
+  return [
+    ...CATEGORY_IDS.values(),
+    ...UNIT_IDS.values(),
+    ...METHOD_IDS.values(),
+    ...ATTRIBUTE_IDS.values(),
+    ...CHOICE_IDS.values(),
+  ];
 }
 
 function englishCategoryLabel(code: string): string {

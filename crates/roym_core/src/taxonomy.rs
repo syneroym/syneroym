@@ -149,30 +149,25 @@ fn validate_categories(categories: &[CategoryDef]) -> Result<(), TaxonomyError> 
     Ok(())
 }
 
-fn validate_units(units: &[String]) -> Result<(), TaxonomyError> {
+fn check_codes(kind: &'static str, codes: &[String], max: usize) -> Result<(), TaxonomyError> {
     let mut seen = HashSet::new();
-    for unit in units {
-        if !listing::valid_token(unit, MAX_UNIT_LEN) {
-            return Err(TaxonomyError::CodeShape { kind: "unit", code: unit.clone() });
+    for code in codes {
+        if !listing::valid_token(code, max) {
+            return Err(TaxonomyError::CodeShape { kind, code: code.clone() });
         }
-        if !seen.insert(unit.as_str()) {
-            return Err(TaxonomyError::Duplicate { kind: "unit", code: unit.clone() });
+        if !seen.insert(code.as_str()) {
+            return Err(TaxonomyError::Duplicate { kind, code: code.clone() });
         }
     }
     Ok(())
 }
 
+fn validate_units(units: &[String]) -> Result<(), TaxonomyError> {
+    check_codes("unit", units, MAX_UNIT_LEN)
+}
+
 fn validate_payment_methods(payment_methods: &[String]) -> Result<(), TaxonomyError> {
-    let mut seen = HashSet::new();
-    for method in payment_methods {
-        if !listing::valid_token(method, MAX_PAYMENT_METHOD_LEN) {
-            return Err(TaxonomyError::CodeShape { kind: "payment method", code: method.clone() });
-        }
-        if !seen.insert(method.as_str()) {
-            return Err(TaxonomyError::Duplicate { kind: "payment method", code: method.clone() });
-        }
-    }
-    Ok(())
+    check_codes("payment method", payment_methods, MAX_PAYMENT_METHOD_LEN)
 }
 
 fn validate_attributes(
@@ -217,15 +212,7 @@ fn validate_attribute_value(
             if choices.is_empty() {
                 return Err(TaxonomyError::Empty(attr_code.to_string()));
             }
-            let mut seen_choices = HashSet::new();
-            for choice in choices {
-                if !listing::valid_token(choice, MAX_CHOICE_LEN) {
-                    return Err(TaxonomyError::CodeShape { kind: "choice", code: choice.clone() });
-                }
-                if !seen_choices.insert(choice.as_str()) {
-                    return Err(TaxonomyError::Duplicate { kind: "choice", code: choice.clone() });
-                }
-            }
+            check_codes("choice", choices, MAX_CHOICE_LEN)?;
         }
         AttributeValue::Number { unit } => {
             if let Some(u) = unit
