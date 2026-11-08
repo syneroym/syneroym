@@ -15,7 +15,7 @@ M08A is done. Every record and method that this sub-milestone changes already ha
 | # | Shared part | Used by | Built in |
 | --- | --- | --- | --- |
 | Y1 | **String catalog and the `t()` lookup** in the Hub, with English fallback. | All Hub text; taxonomy labels (B2); widget and extension labels (M08C) | B1a |
-| Y2 | **Taxonomy data file** in `roym_core`: category codes with parents, attribute definitions, unit codes, payment-method codes, labels per language. | Pickers (B2); shop attributes and facets (M08D); hard filters (M08F) | B2 |
+| Y2 | **Taxonomy data file** in `roym_core`: category codes with parents, attribute definitions, unit codes, payment-method codes. Codes and structure in the data file; labels in the Hub's taxonomy label files (`src/i18n/taxonomy/<tag>.ftl`). | Pickers (B2); shop attributes and facets (M08D); hard filters (M08F) | B2 |
 | Y3 | **Language tag type** in `syneroym-text-lang`: parse, check, canonical form (BCP 47). | Records (B3a); chat tags (B3b); forwarding origin (M08C) | B3a |
 | Y4 | **Search keys** in `syneroym-text-lang`: NFC, transliteration tables, Latin folding. | Directory search, conversation search, contacts (B4b); exchange relevance (M08F) | B4b |
 | Y5 | **Full-text option in `data-layer`**: a collection declares text fields; the host keeps two FTS5 tables in sync (trigram, and `unicode61` with a 1 and 2 character prefix index); a text-match filter operator. | Directory (B4b); later the exchange and the shop browse (M08D) | B4a |

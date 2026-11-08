@@ -189,7 +189,7 @@ Most cross-language trade needs only layers A and B. The buyer searches by categ
 
 **Categories.** A category stays a token of `[a-z0-9-]`, as today. The wire shape of `ListingPayload.categories` does not change. What changes is where the tokens come from:
 
-- Roym ships a **base taxonomy**: a data file in `crates/roym_core` with each code, its parent code (for a simple tree), and its labels per language.
+- Roym ships a **base taxonomy**: a data file in `crates/roym_core` with each code and its parent code (for a simple tree). The codes and structure live in the data file. Labels per language live in the Hub's taxonomy label files (`src/i18n/taxonomy/<tag>.ftl`), one per language. M08D adds attribute labels to the same label files.
 - The Hub category picker offers only taxonomy codes. It shows labels in the user's language, and it searches those labels in any language the taxonomy has.
 - `ListingPayload::validate` still accepts any well-formed token. A code outside the base taxonomy is allowed, so a group can use its own codes before they are added. The Hub shows such a code as the raw code (ML-7).
 - The same codes are used in `request.categories` and, in M8, in wants.

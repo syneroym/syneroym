@@ -3,8 +3,8 @@
 *Reader: the developer (or AI) who implements slice B2. You do not have the
 planning conversation. This plan is meant to stand alone.*
 
-**Status: plan written, 2026-11-07. Not reviewed yet. The owner questions
-in section 2.1 are open.**
+**Status: plan review round 1 done, 2026-11-07. Owner questions answered
+2026-11-07. P-items folded in.**
 
 **Size and PR.** M. One PR on `feat/m08b-b2-taxonomy`, with the commits of
 section 6 in that order. The branch starts from `main` at `c44e055c` (B1b
@@ -158,6 +158,12 @@ to `:20`, `:89` to `:100`).
   catalog tests that need literal ids (`findMessageIds`) and "no unused
   message" would need an exception for about 250 ids.
 
+Owner answer: (a), 2026-11-07. Labels live in Fluent files beside the
+string catalogs. `base.json` holds only codes and structure. Step 9 also
+updates task.md Y2 and the "B. Language-neutral structure" sentence in the
+change doc so they no longer say "labels per language" in the data file
+(P7).
+
 **Q2. How does the Hub read the codes? (blocks Step 4)**
 
 task.md: "a build step or a `web` method; the plan decides". The Hub is
@@ -179,6 +185,9 @@ Hub and the Rust code always come from the same commit.
   It can be added later without changing the file.
 - (c) **A build step that copies the file into `src/`.** Two copies that
   can drift; nothing gained over (a).
+
+Owner answer: (a), 2026-11-07. Vite imports `base.json` straight from
+`roym_core`.
 
 **Q3. Which fields get the code rule in the service? (blocks Step 3)**
 
@@ -211,6 +220,11 @@ so `Home Repair` becomes `homerepair`.
 - (c) **No Rust change.** The Hub sends codes, but `roymctl` and other
   clients may still send any text.
 
+Owner answer: (a), 2026-11-07. The code rule applies to all five fields:
+listing `product.unit`, listing `payment.methods`, quote
+`terms.payment_methods`, payment `method`, and SynOrg settings
+`categories`.
+
 **Q4. Can a person use an own code in the Hub? (blocks Step 5)**
 
 The change doc says "The Hub category picker offers only taxonomy codes".
@@ -225,6 +239,10 @@ one.
   chosen chip shows the raw code. *Recommended:* it makes owner answer 5
   work in the Hub at no cost to the normal path.
 - (b) **Only taxonomy codes**, as the change doc says.
+
+Owner answer: (a), 2026-11-07. The picker offers taxonomy codes plus one
+"use your own code" choice. See D-B2-6 for the updated spec (P8:
+own-code offer only when not already chosen, `codes()` returns a set).
 
 **Q5. Can a category group be picked? (blocks Step 5)**
 
@@ -244,6 +262,11 @@ group `home-repair`. The shop change (M08D, SH-11) plans "category code
 - (c) **Any code, and the Hub expands a group into its children for a
   search.** Needs an OR in `directory.search`, a wire change that belongs
   to M08D.
+
+Owner answer: (a), 2026-11-07. Only categories with a parent can be
+picked. A group is a heading. See D-B2-5 and D-B2-3: `validate` checks
+that a group comes before its children and that every group has at least
+one child (P9).
 
 **Q6. Which forms get the category picker? (blocks Step 7)**
 
@@ -265,6 +288,10 @@ and the SynOrg settings
   form and the SynOrg settings keep free text, so a Hindi user still types
   English codes there.
 
+Owner answer: (a), 2026-11-07. All four forms get the picker. See P1:
+Step 8 also updates `roym-hub.spec.ts:984` (the request-form e2e step).
+See P2: the picker gains a `clear()` method for the request form reset.
+
 **Q7. In which languages does the picker search the labels? (blocks
 Step 5)**
 
@@ -279,6 +306,9 @@ is loaded when it is chosen. Other languages are not loaded.
 - (b) **Every language that has a taxonomy file.** The picker loads every
   other taxonomy file the first time it draws (one more script file per
   language).
+
+Owner answer: (a), 2026-11-07. The picker searches the UI language,
+English and the code itself.
 
 **Q8. How much of the attribute part does B2 build? (blocks Step 2 and
 Step 4)**
@@ -296,6 +326,10 @@ attribute values.
   to test until M08D.
 - (c) **Nothing about attributes in B2.** ML-28 moves to M08D.
 
+Owner answer: (a), 2026-11-07. The format, a check, and 6 attributes that
+cover the four types of SH-5, with labels in both languages and Hub label
+functions with unit tests.
+
 **Q9. Does the Hub show a listing's unit to a reader? (blocks Step 6)**
 
 ML-9: "The Hub shows its label in the reader's language." The Hub shows
@@ -310,6 +344,9 @@ to `:32`).
 - (b) **Add unit and price to the directory hit.** Changes the output of
   `directory.find`, a wire change for one line of text.
 
+Owner answer: (a), 2026-11-07. The editor list and the payment-method
+label in the payment card now; a reader's view of a product with M08D.
+
 **Q10. What does story 40 show? (blocks Step 8)**
 
 task.md: "B2: the person picks a category by its Hindi label." The demo
@@ -323,6 +360,9 @@ nothing.
   Playwright test in `roym-hub.spec.ts`, where a directory exists.
 - (b) **In the directory search, with a listing set up by the story.**
   More set-up in a story that is about languages.
+
+Owner answer: (a), 2026-11-07. Story 40 shows the picker in the listing
+editor.
 
 ### 2.2 Points found while reading
 
@@ -396,9 +436,13 @@ nothing.
 7. **e2e steps type a category.** `roym-hub.spec.ts` fills a category box
    with `cycling` at lines 476, 506, 565, 607, 645, 666, 731, 792 and 823,
    and sends `categories: ['cycling']` to `credential.issue` at 490 and
-   741. `roym-trust.spec.ts` does the same at lines 42, 82 and 113. The
-   picker replaces these boxes, so the steps change (Step 8). No spec
-   reads the text of a shown category.
+   741. `roym-hub.spec.ts:984` (test 26, "messages tab: sending a request
+   posts a card …") does
+   `page.locator('.request-cats-input').fill('gutters, cleaning')` —
+   `gutters` is not in the taxonomy and `cleaning` is a group, so both
+   must be replaced with picker calls. `roym-trust.spec.ts` does the same
+   at lines 42, 82 and 113. The picker replaces these boxes, so the steps
+   change (Step 8). No spec reads the text of a shown category.
 8. **The Hindi sweep marks categories as data.** Its fixtures use
    `Zq-cycling` as a category
    ([hindi-screens.test.ts:80](../../../../crates/roym_web/ui/src/i18n/hindi-screens.test.ts#L80),
@@ -447,7 +491,7 @@ nothing.
 
 | Criterion | What B2 does | Test |
 | --- | --- | --- |
-| ML-7 | Listing and request categories come from the picker as taxonomy codes (or an own code, Q4). Every place that shows a category shows its label; a code with no label in the UI language shows its English label; a code not in the taxonomy shows as the code. | `taxonomy.test.ts` ("a category shows its label in each language", "falls back to the English label", "shows an unknown code as it came", the `constructor` cases); `picker.test.ts`; `hindi-screens.test.ts` (each picker and each shown category in Hindi); the label cases in `directory.test.ts`, `templates.test.ts` and `synorg_members.test.ts` |
+| ML-7 | Listing and request categories come from the picker as taxonomy codes (or an own code, Q4). Every place that shows a category shows its label; a code with no label in the UI language shows its English label; a code not in the taxonomy shows as the code. | `taxonomy.test.ts` ("a category shows its label in each language", "falls back to the English label", "shows an unknown code as it came", the `constructor` cases); `category_picker.test.ts`; `hindi-screens.test.ts` (each picker and each shown category in Hindi); the label cases in `directory.test.ts`, `templates.test.ts` and `synorg_members.test.ts` |
 | ML-8 | The search sends the chosen codes, which do not depend on the UI language. | `directory.test.ts` ("the same category gives the same query in English and Hindi"); `roym-hub.spec.ts` ("a category search finds the same listings in English and in Hindi") |
 | ML-9 | A product's unit is a code from the unit list; the editor shows unit labels; the service refuses a unit that is not a code. | `editor.test.ts`, `listings.test.ts` (unit options in each language); `listing/tests.rs` (the unit code rule); the reader's view is Q9 |
 | ML-28 (taxonomy part) | Attribute names and choice values are codes with labels from the taxonomy label files, with English as fallback. | `taxonomy.test.ts` ("an attribute and its choices show their labels", fallback and unknown cases); `taxonomy/tests.rs` (the attribute checks) |
@@ -662,6 +706,10 @@ that depend on an owner answer say so.
       Duplicate { kind: &'static str, code: String },
       #[error("category '{code}' names a parent '{parent}' that is not a group")]
       BadParent { code: String, parent: String },
+      #[error("category '{code}' appears before its group '{parent}'")]
+      ParentAfterChild { code: String, parent: String },
+      #[error("group '{0}' has no children")]
+      GroupWithoutChildren(String),
       #[error("attribute '{attribute}' names an unknown category '{category}'")]
       UnknownCategory { attribute: String, category: String },
       #[error("attribute '{attribute}' names an unknown unit '{unit}'")]
@@ -681,11 +729,13 @@ that depend on an owner answer say so.
   `MAX_UNIT_LEN` (32), a payment method fits `MAX_PAYMENT_METHOD_LEN`
   (32), an attribute code and a choice code fit 64; no code appears twice
   in its list (choices: within their attribute); a `parent` is a category
-  with no parent of its own; an attribute names at least one category, and
-  each exists; a choice attribute has at least one choice; a number unit
-  is in `units`. No service calls `parse` in B2, so no guest links the
-  file. Keep `validate` under the 100-line limit by one small function per
-  list.
+  with no parent of its own; a child must come after its group in the file
+  (otherwise `ParentAfterChild`); every group has at least one child
+  (otherwise `GroupWithoutChildren`); an attribute names at least one
+  category, and each exists; a choice attribute has at least one choice; a
+  number unit is in `units`. No service calls `parse` in B2, so no guest
+  links the file. Keep `validate` under the 100-line limit by one small
+  function per list.
 - **D-B2-4. The labels** (Q1 (a)). `src/i18n/taxonomy/en.ftl` and
   `src/i18n/taxonomy/hi.ftl`. Ids:
 
@@ -709,10 +759,11 @@ that depend on an owner answer say so.
   `./taxonomy/*.ftl` (minus `en`), so each is its own script file that
   loads with its language. `Loaders`, `activateWith`, `initLanguageWith`
   and every test that passes loaders stay as they are (section 2.2
-  point 12). Fluent reports a message id that appears twice in one bundle
-  as an error from `addResource`; `bundleFor` logs it with
-  `console.error`, and a test checks that both real languages add with no
-  error.
+  point 12). Fluent returns an error list from `addResource` for each id
+  that appears twice (`allowOverrides` is false). The catalog test calls
+  `addResource` on the string catalog and then on the taxonomy file for
+  each real language, and expects an empty error list from each call,
+  proving no id appears in both files.
 - **D-B2-5. How the Hub reads the codes** (Q2 (a)).
   `src/taxonomy/taxonomy.ts` imports
   `../../../../roym_core/taxonomy/base.json` and exports:
@@ -731,8 +782,10 @@ that depend on an owner answer say so.
   export function choiceLabel(attribute: string, choice: string): string;
   /// Every label id that base.json implies, for the catalog test.
   export function taxonomyMessageIds(): string[];
-  /// Children (and with Q4 (a) nothing else) whose label in the UI
-  /// language or in English, or whose code, holds `text`.
+  /// Children whose label in the UI language or in English, or whose
+  /// code, holds `text`; also children whose group's label (UI language
+  /// or English) or group code holds `text`. With Q4 (a) no group is
+  /// ever returned.
   export function matchCategories(text: string): string[];
   ```
 
@@ -746,17 +799,19 @@ that depend on an owner answer say so.
   covers it instead: the ids of `taxonomy/en.ftl` are exactly
   `taxonomyMessageIds()`. `matchCategories` compares with
   `toLocaleLowerCase(formatLocale())` and `includes`, and keeps file
-  order. `vite.config.ts` gets `server: { fs: { allow: [".", "../../roym_core/taxonomy"] } }`
+  order. A child also matches when its group's label (UI language or
+  English) or its group code holds the text; the group itself is not
+  returned. `vite.config.ts` gets `server: { fs: { allow: [".", "../../roym_core/taxonomy"] } }`
   so `npm run dev` and vitest may read the file; `vite build` needs
   nothing.
-- **D-B2-6. The category picker**, `src/taxonomy/picker.ts`:
+- **D-B2-6. The category picker**, `src/taxonomy/category_picker.ts`:
 
   ```ts
   export function categoryPicker(opts: {
     className: string;          // keeps today's class, e.g. "listing-categories-input"
     max: number;                // 8 for a listing or a request, 32 for a search or a SynOrg
     selected?: readonly string[];
-  }): { root: HTMLElement; codes(): string[] };
+  }): { root: HTMLElement; codes(): string[]; clear(): void };
   ```
 
   DOM: `div.category-picker.<className>` holds `ul.picker-chosen` (one
@@ -767,16 +822,22 @@ that depend on an owner answer say so.
   every group as a heading (`div.picker-group`) with its children as
   `button.picker-option[data-code]`. When the filter has text, only the
   matching children show, each with its group label before it. A chosen
-  code does not show as an option. At `max` codes every option is
-  disabled and `category-picker-full` (with `$max` as a number) shows.
-  With Q4 (a): when the trimmed, lower-cased filter text is a valid code
-  (`/^[a-z0-9-]{1,64}$/`) and not a taxonomy code, one more option
+  code does not show as an option. The no-match message
+  `category-picker-no-match` shows when the filter has text and there is
+  no option at all (no matching child and no own-code option). At `max`
+  codes every option is disabled and `category-picker-full` (with `$max`
+  as a number) shows. With Q4 (a): when the trimmed, lower-cased filter
+  text is a valid code (`/^[a-z0-9-]{1,64}$/`), is not a taxonomy code,
+  and is not already chosen, one more option
   `button.picker-option.picker-own-code[data-code]` shows
   `category-picker-own-code` with `$code`. A chip of an own code shows the
-  code. `selected` codes that are not in the taxonomy show as chips with
+  code. `codes()` returns a set (no duplicates) in the order chosen.
+  `clear()` empties the chips and the filter and closes the options.
+  `selected` codes that are not in the taxonomy show as chips with
   the raw code (an older SynOrg setting). No `localStorage`, no network.
-  The picker is a set of buttons and an input, so it works with a
-  keyboard (Tab and Enter) with no extra code.
+  The option buttons can be reached with Tab. Enter in the filter picks
+  the first option when there is exactly one. The no-match and full
+  messages have `aria-live="polite"` on their container.
 - **D-B2-7. Units and payment methods in the editor.** The unit box
   becomes `select(UNITS.map(u => [u, unitLabel(u)]), "piece")` (the
   existing `select` in `dom.ts`, [dom.ts:77](../../../../crates/roym_web/ui/src/dom.ts#L77)).
@@ -896,9 +957,9 @@ Done in the planning session: this file and the B2 row of
 
 ### Step 5 — The category picker
 
-1. `src/taxonomy/picker.ts` (D-B2-6) and the messages of D-B2-8 that it
+1. `src/taxonomy/category_picker.ts` (D-B2-6) and the messages of D-B2-8 that it
    uses. Picker styles in `src/style.css`.
-2. `src/taxonomy/picker.test.ts` (section 7.1).
+2. `src/taxonomy/category_picker.test.ts` (section 7.1).
 
 ### Step 6 — The listing editor
 
@@ -915,7 +976,9 @@ Done in the planning session: this file and the B2 row of
    "request-cats-input"`, `max: 8`), `screens/directory.ts` (search,
    `className: "search-categories"`, `max: 32`), `screens/synorg.ts`
    (settings, `className: "synorg-categories"`, `max: 32`, `selected` =
-   the current settings). Remove their placeholders (D-B2-8).
+   the current settings). Remove their placeholders (D-B2-8). In
+   `messages.ts`, replace `catsInput.value = ""` in the post-send reset
+   with `catsPicker.clear()` (D-B2-6, P2).
 2. The labels of D-B2-9: `screens/directory.ts`, `cards/templates/request.ts`,
    `screens/synorg_members.ts`, `cards/templates/payment_acknowledgement.ts`.
 3. `hindi-screens.test.ts` fixtures (D-B2-11) and the screen tests of
@@ -933,7 +996,12 @@ Done in the planning session: this file and the B2 row of
      expects the chip `.picker-chip[data-code="<code>"]`.
 2. `roym-hub.spec.ts` and `roym-trust.spec.ts`: every step of section 2.2
    point 7 uses `pickCategory(page.locator(".<class>"), "bicycle-repair")`,
-   and the two `credential.issue` calls send `["bicycle-repair"]`.
+   including `roym-hub.spec.ts:984` (replace
+   `.fill('gutters, cleaning')` with two `pickCategory` calls for
+   `home-cleaning` and `deep-cleaning`), and the two `credential.issue`
+   calls send `["bicycle-repair"]`. After the changes, run
+   `git grep -n "cats-input|categories')" crates/substrate/tests/e2e`
+   to confirm no fill is left.
 3. `roym-hub.spec.ts`: a new test "a category search finds the same
    listings in English and in Hindi" (section 7.3).
 4. Story 40 (Q10 (a)): one more step (section 7.3). The story file holds
@@ -949,12 +1017,18 @@ Done in the planning session: this file and the B2 row of
    for each `dist/assets/*.js` the raw bytes and `gzip -9 -c | wc -c`.
    Write the numbers into task.md (B2 result line).
 3. Change doc: the decisions of section 5 into "B. Language-neutral
-   structure"; `## Deviations` (section 3); the Test column of ML-2,
-   ML-7, ML-8, ML-9 and ML-28 with the real test names; `demo:` stays
-   story 40; `status` stays `draft` (B6 sets `done`); `living-docs-touched`
-   lists the files of section 9.
+   structure" as a "Decided 2026-11-07, the base taxonomy" list; also
+   rewrite the existing "B." sentence that says "its labels per language"
+   to say "codes and structure in the data file, labels in the Hub's
+   taxonomy label files", and add one line to that list: "M08D adds
+   attribute labels to the same label files"; `## Deviations` (section 3);
+   the Test column of ML-2, ML-7, ML-8, ML-9 and ML-28 with the real test
+   names; `demo:` stays story 40; `status` stays `draft` (B6 sets `done`);
+   `living-docs-touched` lists the files of section 9.
 4. Living docs (section 9), deferred backlog (section 8), task.md B2
-   result line, status.md.
+   result line and Y2 row (rewrite "labels per language" to "codes and
+   structure in the data file, labels in the Hub's taxonomy label files"),
+   status.md.
 5. The import clean-up pass over every Rust file you edited.
 6. `cargo dupes report` over the changed Rust files (AGENTS.md recipe).
 7. `mise run verify` with no `--skip`, as a background job.
@@ -976,7 +1050,9 @@ Done in the planning session: this file and the B2 row of
   label functions.
 - `matchCategories`: `"plumb"` finds `plumbing`; the Hindi label text
   finds it in Hindi; upper case matches lower case; a group code is never
-  returned (Q5 (a)); the result keeps file order.
+  returned (Q5 (a)); a group's label finds its children (P3: typing
+  "Health" in English or the Hindi word for health returns all health
+  children); the result keeps file order.
 - `CATEGORY_GROUPS` has every category of `base.json`, each child under
   its group.
 
@@ -990,10 +1066,11 @@ Done in the planning session: this file and the B2 row of
 - Every Hindi taxonomy label has a Devanagari letter (no exception list:
   write `किलो`, `यूपीआई`, and so on).
 - No string-catalog id starts with `taxonomy-`.
-- The English bundle and the Hindi bundle add both files with no error
-  (no id twice).
+- The English bundle and the Hindi bundle: calling `addResource` for the
+  string catalog and then for the taxonomy file returns an empty error list
+  each time (no id appears in both files).
 
-`src/taxonomy/picker.test.ts`
+`src/taxonomy/category_picker.test.ts`
 
 - An empty filter shows every group as a heading and its children as
   options.
@@ -1001,9 +1078,16 @@ Done in the planning session: this file and the B2 row of
   label, and `codes()` returns the code; the remove button removes it.
 - A chosen code is not offered again; at `max` the options are disabled
   and the full message shows.
-- Q4 (a): `my-group-code` offers the own-code option, and the chip shows
-  the raw code; `Plumbing` (a taxonomy label) and `bad code!` offer no
-  own-code option.
+- Q4 (a): `my-group-code` (not already chosen) offers the own-code
+  option, and the chip shows the raw code; typing the same own code twice
+  does not offer it the second time (already chosen); `codes()` returns a
+  set, so the same code appears only once; `Plumbing` (a taxonomy label)
+  and `bad code!` offer no own-code option.
+- The no-match message shows when the filter has text and there is no
+  option at all; tested in English (a code-shaped word not in the taxonomy
+  still shows the own-code option, so no-match needs text that is not code-
+  shaped and matches nothing); tested in Hindi.
+- `clear()` empties the chips and `codes()` is empty.
 - `selected` with a taxonomy code and an own code shows two chips, one
   label and one raw code.
 - In Hindi, the chips and options show Hindi labels.
@@ -1047,9 +1131,11 @@ a label (section 4, rows 3 and 4).
   (owner answer 5).
 - One test per `TaxonomyError` variant, each on a small JSON string: a bad
   code (`Plumbing`, `a b`, a 65-byte category, a 33-byte unit), a
-  duplicate, a missing parent, a parent that has a parent, an unknown
-  attribute category, an unknown number unit, an attribute with no
-  categories, a choice attribute with no choices, an unknown key (`deny_unknown_fields`).
+  duplicate, a missing parent, a parent that has a parent, a child that
+  appears before its group (`ParentAfterChild`), a group with no children
+  (`GroupWithoutChildren`), an unknown attribute category, an unknown
+  number unit, an attribute with no categories, a choice attribute with no
+  choices, an unknown key (`deny_unknown_fields`).
 
 The code rule (Step 3)
 
@@ -1104,7 +1190,7 @@ The code rule (Step 3)
 | `crates/roym_web/ui/src/screens/listings.ts` | 572 | About +15 |
 | `crates/roym_web/ui/src/screens/messages.ts` | 924 | About ±0 (TypeScript has no length gate) |
 | `crates/roym_web/ui/src/taxonomy/taxonomy.ts` | new | About 110 |
-| `crates/roym_web/ui/src/taxonomy/picker.ts` | new | About 150 |
+| `crates/roym_web/ui/src/taxonomy/category_picker.ts` | new | About 150 |
 | `crates/roym_web/ui/src/i18n/taxonomy/en.ftl`, `hi.ftl` | new | About 160 lines each |
 | `crates/substrate/tests/e2e/tests/roym-hub.spec.ts` | 1312 | About +35 (TypeScript, no gate) |
 
@@ -1116,7 +1202,7 @@ than the baseline, lower `MAX_EXACT_DUPLICATE_PERCENT` as its message says
 ### 7.6 Bundle size
 
 The main script gains `base.json` (about 4 KB raw), the English labels
-(about 5 KB raw), `taxonomy.ts` and `picker.ts`. Expected: under 5 KB more
+(about 5 KB raw), `taxonomy.ts` and `category_picker.ts`. Expected: under 5 KB more
 after `gzip -9`. The Hindi taxonomy file is its own script file, under
 8 KB after `gzip -9`. After B1b the main script was 45,160 bytes and the
 Hindi catalog 13,980 bytes, both after `gzip -9` (task.md, B1b result).
@@ -1190,13 +1276,19 @@ If an owner answer is not the recommendation, drop the matching row.
 - **`docs/system-requirements-spec.md:685`** (the listing owner
   publishes "service categories"): say the categories are codes from the
   base taxonomy or a group's own code.
-- **`docs/system-architecture.md`**: in the Roym records part (the
-  `listing` and `request` rows near line 1206), one paragraph on the base
-  taxonomy: the file, the Rust check, that a record may carry any
-  well-formed code, and that a unit and a payment method must be codes.
-  At `:1414` (Hub languages), one sentence on the taxonomy label files.
+- **`docs/system-requirements-spec.md:730`** (product type with unit):
+  add one sentence: the unit is a code from the base unit list in
+  `crates/roym_core/taxonomy/base.json`.
+- **`docs/system-architecture.md`**: in the Roym records part, update the
+  `request` row near line 1206, the `quote` row (payment methods are
+  codes), and the `payment-acknowledgement` row (`method` is a code, not
+  free text). Also add, near the listing text at lines 918 and 1355, one
+  paragraph on the base taxonomy: the file, the Rust check, that a record
+  may carry any well-formed code, and that a unit and a payment method must
+  be codes. At `:1414` (Hub languages), one sentence on the taxonomy label
+  files.
 - **`docs/planning/traceability-matrix.md:68`** (`[APP-A11Y]`): evidence
-  adds `taxonomy.test.ts`, `picker.test.ts` and `taxonomy/tests.rs`.
+  adds `taxonomy.test.ts`, `category_picker.test.ts` and `taxonomy/tests.rs`.
 - **`docs/developer-guide.md:1745`** ("Hub text and languages"): a
   paragraph "Taxonomy labels": the label files, the id forms of D-B2-4,
   that `taxonomy.ts` is the one place that reads them, and that a new
