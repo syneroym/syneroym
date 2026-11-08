@@ -849,5 +849,6 @@ items. **0 open.**
   only code change is the one `mousedown` line and its unit test. Check that
   the run on the head is green before the merge.
 - **Before the merge.** The owner review of the taxonomy codes and labels
-  (D-B2-12, exit criterion 10) is still pending: `taxonomy/hi.ftl` says
-  `# owner review: pending`, and `taxonomy-review.md` is still in the folder.
+  (D-B2-12, exit criterion 10) was completed on 2026-11-08 with no changes:
+  `taxonomy/hi.ftl` says `# owner review: done 2026-11-08`, and
+  `taxonomy-review.md` was deleted.
