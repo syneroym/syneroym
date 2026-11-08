@@ -123,6 +123,7 @@ export async function pickCategory(scope: Locator, code: string, tag = 'en') {
   await filter.fill(label);
   await scope.locator(`.picker-option[data-code="${code}"]`).click();
   await expect(scope.locator(`.picker-chip[data-code="${code}"]`)).toBeVisible();
+  await filter.blur();
 }
 
 /** Pick a language in the Hub's language list. The page loads again in that language. */
