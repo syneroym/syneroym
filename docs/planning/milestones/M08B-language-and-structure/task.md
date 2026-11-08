@@ -154,7 +154,7 @@ Change doc: roym-multilingual.
 
 Change doc: roym-multilingual.
 
-**B2 result:** done on the branch `feat/m08b-b2-taxonomy`. Size with `gzip -9`: the main Hub script went from 45,160 to 49,207 bytes (+4,047; limit 5 KB), the Hindi catalog is 14,053 bytes (was 13,980 in B1b), and the lazy Hindi taxonomy chunk is 2,518 bytes (limit 8 KB). Base taxonomy has 105 categories (14 groups, 91 leaf categories), 17 product units, 6 payment methods, and 6 attributes with 16 choices (150 codes in all). Unit tests (369 UI tests, 21 Rust taxonomy tests) and E2E tests (including Story 40 category pick in Hindi) pass.
+**B2 result:** done on the branch `feat/m08b-b2-taxonomy`. Size with `gzip -9`: the main Hub script went from 45,160 to 49,207 bytes (+4,047; limit 5 KB), the Hindi catalog is 14,053 bytes (was 13,980 in B1b), and the lazy Hindi taxonomy chunk is 2,518 bytes (limit 8 KB). Base taxonomy has 105 categories (14 groups, 91 leaf categories), 17 product units, 6 payment methods, and 6 attributes with 16 choices (150 codes in all). Unit tests (373 UI tests, 21 Rust taxonomy tests) and E2E tests (including Story 40 category pick in Hindi) pass.
 
 ### B3a — Language-tagged records (M)
 
