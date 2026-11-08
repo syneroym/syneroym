@@ -177,13 +177,16 @@ describe("the messages screen, in Hindi", () => {
     const host = document.createElement("div");
     await renderMessages(host, ME);
     host.querySelector<HTMLButtonElement>("button.toggle-request-form")?.click();
-    const filter = host.querySelector<HTMLInputElement>(".request-cats-input .picker-filter");
-    if (filter) {
-      filter.value = "bicycle";
-      filter.dispatchEvent(new Event("input"));
-      const opt = host.querySelector<HTMLButtonElement>('.request-cats-input .picker-option[data-code="bicycle-repair"]');
-      opt?.click();
-    }
+    const filter = host.querySelector<HTMLInputElement>(".request-cats-input .picker-filter")!;
+    filter.value = "bicycle";
+    filter.dispatchEvent(new Event("input"));
+    const opt = host.querySelector<HTMLButtonElement>(
+      '.request-cats-input .picker-option[data-code="bicycle-repair"]',
+    )!;
+    opt.click();
+    expect(
+      host.querySelectorAll('.request-cats-input .picker-chip[data-code="bicycle-repair"]'),
+    ).toHaveLength(1);
     expect(host.querySelectorAll(".message")).toHaveLength(5);
     expect(english(host)).toEqual([]);
   });
@@ -289,14 +292,17 @@ describe("the listing screen, in Hindi", () => {
     });
     const host = document.createElement("div");
     await renderListings(host);
-    const filter = host.querySelector<HTMLInputElement>(".listing-categories-input .picker-filter");
-    if (filter) {
-      filter.focus();
-      filter.value = "bicycle";
-      filter.dispatchEvent(new Event("input"));
-      const opt = host.querySelector<HTMLButtonElement>('.listing-categories-input .picker-option[data-code="bicycle-repair"]');
-      opt?.click();
-    }
+    const filter = host.querySelector<HTMLInputElement>(".listing-categories-input .picker-filter")!;
+    filter.focus();
+    filter.value = "bicycle";
+    filter.dispatchEvent(new Event("input"));
+    const opt = host.querySelector<HTMLButtonElement>(
+      '.listing-categories-input .picker-option[data-code="bicycle-repair"]',
+    )!;
+    opt.click();
+    expect(
+      host.querySelectorAll('.listing-categories-input .picker-chip[data-code="bicycle-repair"]'),
+    ).toHaveLength(1);
     host.querySelector<HTMLButtonElement>("button.save-listing")!.click();
     host.querySelector<HTMLButtonElement>("button.verify-listing")!.click();
     await settle();
@@ -383,7 +389,7 @@ describe("the SynOrg screen, in Hindi", () => {
     name: "Zq-Guild",
     rules: "Zq-rules",
     area: [],
-    categories: ["bicycle-repair"],
+    categories: ["bicycle-repair", "x9"],
     support_contact: "Zq-support",
     dispute_path: "Zq-dispute",
     retention_secs: 30 * 86400,

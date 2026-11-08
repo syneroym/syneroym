@@ -33,13 +33,12 @@ const LOADERS: Loaders = Object.fromEntries(
   Object.entries(STRING_LOADERS).map(([tag, loadCatalog]) => [
     tag,
     async () => {
-      const catalog = await loadCatalog();
       const loadTaxonomy = TAXONOMY_LOADERS[tag];
-      if (loadTaxonomy) {
-        const taxonomy = await loadTaxonomy();
-        return catalog + "\n" + taxonomy;
-      }
-      return catalog;
+      const [catalog, taxonomy] = await Promise.all([
+        loadCatalog(),
+        loadTaxonomy ? loadTaxonomy() : Promise.resolve(""),
+      ]);
+      return taxonomy ? `${catalog}\n${taxonomy}` : catalog;
     },
   ]),
 );
