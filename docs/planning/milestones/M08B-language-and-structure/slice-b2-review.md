@@ -705,7 +705,7 @@ there are no earlier R items to confirm.
   R1, R3, R4); in `:477` and the backlog row say "the unit appears only in the
   listing editor"; in "Units" say "a code (any well-formed code; the Hub
   offers the base unit list)"; remove `templates.test.ts` from ML-9.
-- *Status:* Fixed (cce1815f). Added 4 decisions to `roym-multilingual/change.md`: Vite JSON import, label ID format & joined loader, owner review, error variants & `-32602`. Fixed product unit deviation and backlog row 543 to "appears only in the listing editor", updated Units description to any well-formed code with Hub base list, removed `templates.test.ts` from ML-9 table, and recorded `tEnglish` export under Deviations.
+- *Status:* Open. Code review round 2: the fix in cce1815f is partial. The new "Labels and joined loader" decision (`change.md:203`) writes the choice id as `taxonomy-choice-<attribute-word>-<choice-word>`; the code and both label files use `_` between the attribute and the choice (`taxonomy-choice-diet_veg`), which is the point of D-B2-4. See round 2. Fix session note: Fixed (cce1815f). Added 4 decisions to `roym-multilingual/change.md`: Vite JSON import, label ID format & joined loader, owner review, error variants & `-32602`. Fixed product unit deviation and backlog row 543 to "appears only in the listing editor", updated Units description to any well-formed code with Hub base list, removed `templates.test.ts` from ML-9 table, and recorded `tEnglish` export under Deviations.
 
 #### R9 — minor — the living docs and task.md say a little more, or other, than the code
 
@@ -735,3 +735,89 @@ there are no earlier R items to confirm.
   "codes in `base.json`; their labels are in the Hub's taxonomy label files";
   task.md: 21 tests, limit 5 KB.
 - *Status:* Fixed (cce1815f). Aligned living docs and task.md with implementation: requirements `:730` & `:1462` state "a code of `[a-z0-9-]`; the Hub offers the base unit list / taxonomy", architecture `:920` states "checked by a test in `roym_core::taxonomy`", developer guide `:1761` clarifies English in main script and other languages loading with catalog, TERMINOLOGY `:71` specifies `base.json` codes and Hub taxonomy label files, and task.md `:157` records 21 Rust taxonomy tests and 5 KB script growth limit.
+
+## Code review round 2 — Claude Opus 5.5, 2026-11-08
+
+Checked the fix commits `85894086` to `4d235dc0` (`git diff 1d7ff7fa..4d235dc0`)
+on `feat/m08b-b2-taxonomy`, in the main checkout. I checked every R item of
+round 1 against its fix commit, then read the fix commits for new problems.
+
+**Summary:** round 1 items: 8 confirmed Fixed, 1 back to Open (R8). New: 0
+blocker, 1 major (R10), 1 minor (R11). **3 open** (R8, R10, R11).
+
+### What was checked and found correct
+
+- **CI.** `gh pr checks 353` on `4d235dc0`: Lints, licenses & checks,
+  Playwright E2E, Test 1/6 to 6/6, CI Pipeline and CLA pass; Benchmarks and
+  Code Coverage skip. This is the proof that the full suite passes on the fix
+  head.
+- **Run here.** `npm test`: 34 files, 372 tests passed (369 plus the 3 new
+  picker tests; the same as status.md). `npm run build` passes, with the
+  visible-text check (28 passed). `cargo nextest run -p syneroym-roym-core taxonomy`:
+  21 passed.
+- **R1 — confirmed Fixed (85894086).** The options start `hidden`, open on
+  `focusin` or input, close on `focusout` to outside the picker with an empty
+  filter, on Tab from an empty filter, on Escape and in `clear()`.
+  `.picker-options[hidden]` has `display: none`, so the hidden buttons leave
+  the Tab order. The three tests check this. The fix causes a new problem in
+  some browsers: R10.
+- **R2 — confirmed Fixed (0e687fb5).** The loader starts both loads with
+  `Promise.all` and joins them only when the taxonomy text is not empty.
+- **R3 — confirmed Fixed (0e687fb5).** The `if` and `?.` are gone, each pick
+  asserts one chip, and `x9` is in the SynOrg settings fixture, so the
+  settings chip and the issue check box draw a raw own code in Hindi.
+- **R4 — confirmed Fixed (4234ffbf).** The test reads the `directory.find`
+  answer around each Search click (the Hub's one search call,
+  `directory/search.ts:92`), sorts the `listing_id`s, checks the English list
+  is not empty and that the Hindi list is equal. Playwright E2E passes on CI.
+- **R5 — confirmed Fixed (49d7308a).** No `ML-<n>` is left in a test name.
+- **R6 — confirmed Fixed (c39df5ae).** The six words use candrabindu (and
+  `सब्ज़ियाँ` has its nukta), and `taxonomy-review.md` has the same text.
+- **R7 — confirmed Fixed (81f8b13a).** `check_codes` serves units, methods
+  and choices with the same kinds and limits as before, and every error still
+  carries the code. `taxonomyMessageIds()` reads the five `Map`s, so the
+  catalog test now checks the ids the label functions use.
+- **R8 — back to Open.** Points 3 to 5 and the `tEnglish` deviation are
+  right. Point 1 is wrong in one place: see the note on R8 above. Point 2:
+  R1, R3 and R4 are now fixed in the code, so they need no deviation.
+- **R9 — confirmed Fixed (cce1815f).** Requirements `:730` and `:1462`,
+  architecture `:920`, developer guide `:1761`, TERMINOLOGY `:71` and task.md
+  `:157` now say what the code does.
+
+### New findings
+
+#### R10 — major — on Safari and iOS, a click on a listed category does nothing when the filter is empty
+
+- *Where:* `crates/roym_web/ui/src/taxonomy/category_picker.ts`, the `root`
+  `focusout` handler added in 85894086 (`if (!root.contains(next) && !filter.value.trim()) closeOptions();`).
+- *Problem:* Safari (macOS and iOS) and Firefox on macOS do not give a
+  `<button>` the focus when it is clicked or tapped. So a press on an option
+  moves the focus from the filter to `<body>`, and `focusout` arrives with
+  `relatedTarget` null. With an empty filter the handler hides the options at
+  once, so the button is `display: none` before the click, and the click
+  lands on nothing. Chrome gives the button the focus, so Chrome and the
+  Playwright tests (Chromium only, and `pickCategory` always types first) do
+  not see it. I checked the handler's part in jsdom: after `filter.focus()`,
+  a `focusout` with `relatedTarget: null` and an empty filter sets
+  `options.hidden` to true.
+- *Failure case:* Alice uses the Hub on an iPhone. She taps the category box,
+  scrolls the list and taps "Gardening". The list closes and no chip
+  appears. She can pick a category only by typing first.
+- *Fix:* keep the focus in the filter while the person presses an option:
+  `options.addEventListener("mousedown", (e) => e.preventDefault());`. Then no
+  `focusout` fires, the click reaches the button, and after a pick the focus
+  is still in the filter, so the person can pick the next code. Add a picker
+  test: a `mousedown` on an option is `defaultPrevented`, and after it a
+  `click` on that option adds the chip.
+- *Status:* Open.
+
+#### R11 — minor — task.md still gives the old Hub test count
+
+- *Where:* `docs/planning/milestones/M08B-language-and-structure/task.md:157`
+  ("Unit tests (369 UI tests, …)").
+- *Problem:* the fix commits added 3 picker tests. `npm test` now runs 372,
+  and status.md says 372.
+- *Failure case:* a reader compares task.md with status.md and sees two
+  counts for the same run.
+- *Fix:* write 372 (and the new count after R10's test).
+- *Status:* Open.
