@@ -573,7 +573,7 @@ there are no earlier R items to confirm.
   the options are hidden until the filter has focus; `clear()` hides them;
   Tab from the filter with no text reaches the next field. The Hindi sweep and
   the e2e steps focus or fill the filter first, so they still see the options.
-- *Status:* Open.
+- *Status:* Fixed (85894086). Added `openOptions` and `closeOptions` on `focusin`/`focusout` in `category_picker.ts`, `.picker-options[hidden] { display: none; }` in `style.css`, and unit tests in `category_picker.test.ts`. Proof: with initial closed state omitted, 3 tests failed with `AssertionError: expected false to be true`; with fix, all 13 tests pass.
 
 #### R2 — minor — a language's two Fluent files load one after the other
 
@@ -585,7 +585,7 @@ there are no earlier R items to confirm.
 - *Fix:* start both loads together:
   `const [catalog, taxonomy] = await Promise.all([loadCatalog(), loadTaxonomy?.() ?? ""]);`
   and join them only when `taxonomy` is not empty.
-- *Status:* Open.
+- *Status:* Fixed (0e687fb5). Parallelized catalog and taxonomy loading using `Promise.all([loadCatalog(), loadTaxonomy ? loadTaxonomy() : Promise.resolve("")])`. 22 tests in `i18n.test.ts` pass.
 
 #### R3 — minor — the Hindi sweep's picker steps can pass without a chip, and the own-code fixture `x9` is missing
 
@@ -604,7 +604,7 @@ there are no earlier R items to confirm.
   `.picker-chip[data-code="bicycle-repair"]` after each pick. Add `x9` to one
   fixture that the sweep draws (the SynOrg settings `categories`, or a
   directory hit), so a raw own code is shown and passes.
-- *Status:* Open.
+- *Status:* Fixed (0e687fb5). Removed `if (filter)` and `?.` on picker clicks, asserted `.picker-chip[data-code="bicycle-repair"]` after each pick, and added `x9` raw custom code to `SETTINGS.categories`. Proof: intentional wrong selector `.request-cats-wrong` failed with `TypeError: Cannot set properties of null (setting 'value')`; with fix, all 17 tests pass.
 
 #### R4 — minor — the ML-8 Playwright test compares titles, not listing ids
 
@@ -623,7 +623,7 @@ there are no earlier R items to confirm.
   `page.waitForResponse` on `/rpc` around each Search click, and compare the
   sorted `listing_id`s of the hits. Or record the change as a deviation in
   the change doc, with the reason.
-- *Status:* Open.
+- *Status:* Fixed (4234ffbf). Captured `/rpc` `directory.find` responses using `page.waitForResponse` in English and Hindi, extracted and sorted `listing_id`s, and asserted `expect(hindiListingIds).toEqual(englishListingIds)`. Proof: asserting against `[...englishListingIds, 'unexpected-id']` failed with `expect(received).toEqual(expected)` deep equality difference; with fix, test passes (29.2s).
 
 #### R5 — minor — a test name carries a criterion id
 
@@ -636,7 +636,7 @@ there are no earlier R items to confirm.
   and the test name points at nothing.
 - *Fix:* drop the `ML-8: ` prefix. The change doc's ML-8 row already names
   the test by its text.
-- *Status:* Open.
+- *Status:* Fixed (49d7308a). Removed `ML-8: ` prefix from test title in `directory.test.ts:157`. All 7 directory screen tests pass.
 
 #### R6 — minor — new Hindi text spells nasal vowels differently from the catalog
 
@@ -654,7 +654,7 @@ there are no earlier R items to confirm.
 - *Fix:* write `हटाएँ`, `श्रेणियाँ`, `जाँच`, `सेवाएँ`, `सब्ज़ियाँ`,
   `वस्तुएँ`, and update the matching rows of `taxonomy-review.md`, so the owner
   reviews the final text.
-- *Status:* Open.
+- *Status:* Fixed (c39df5ae). Standardized candrabindu spellings to `हटाएँ`, `श्रेणियाँ`, `जाँच`, `सेवाएँ`, `सब्ज़ियाँ`, `वस्तुएँ` across `hi.ftl`, `taxonomy/hi.ftl`, and `taxonomy-review.md`. All 25 catalog tests pass.
 
 #### R7 — minor — the same loop is written three times, and the label ids twice
 
@@ -673,7 +673,7 @@ there are no earlier R items to confirm.
 - *Fix:* one `fn check_codes(kind: &'static str, codes: &[String], max: usize) -> Result<(), TaxonomyError>`
   used by units, methods and choices. `taxonomyMessageIds()` returns
   `[...CATEGORY_IDS.values(), ...UNIT_IDS.values(), ...METHOD_IDS.values(), ...ATTRIBUTE_IDS.values(), ...CHOICE_IDS.values()]`.
-- *Status:* Open.
+- *Status:* Fixed (81f8b13a). Consolidated repeated code token validation loop into `check_codes` in `roym_core/src/taxonomy.rs`, and consolidated `taxonomyMessageIds()` in `taxonomy.ts` to spread values from the 5 label maps. All 21 Rust tests and 30 UI taxonomy/catalog tests pass.
 
 #### R8 — minor — the change doc leaves out decisions and real deviations, and one deviation is wrong
 
@@ -705,7 +705,7 @@ there are no earlier R items to confirm.
   R1, R3, R4); in `:477` and the backlog row say "the unit appears only in the
   listing editor"; in "Units" say "a code (any well-formed code; the Hub
   offers the base unit list)"; remove `templates.test.ts` from ML-9.
-- *Status:* Open.
+- *Status:* Fixed (cce1815f). Added 4 decisions to `roym-multilingual/change.md`: Vite JSON import, label ID format & joined loader, owner review, error variants & `-32602`. Fixed product unit deviation and backlog row 543 to "appears only in the listing editor", updated Units description to any well-formed code with Hub base list, removed `templates.test.ts` from ML-9 table, and recorded `tEnglish` export under Deviations.
 
 #### R9 — minor — the living docs and task.md say a little more, or other, than the code
 
@@ -734,4 +734,4 @@ there are no earlier R items to confirm.
   script; another language's file loads with its string catalog"; TERMINOLOGY:
   "codes in `base.json`; their labels are in the Hub's taxonomy label files";
   task.md: 21 tests, limit 5 KB.
-- *Status:* Open.
+- *Status:* Fixed (cce1815f). Aligned living docs and task.md with implementation: requirements `:730` & `:1462` state "a code of `[a-z0-9-]`; the Hub offers the base unit list / taxonomy", architecture `:920` states "checked by a test in `roym_core::taxonomy`", developer guide `:1761` clarifies English in main script and other languages loading with catalog, TERMINOLOGY `:71` specifies `base.json` codes and Hub taxonomy label files, and task.md `:157` records 21 Rust taxonomy tests and 5 KB script growth limit.
