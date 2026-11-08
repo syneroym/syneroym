@@ -1323,20 +1323,31 @@ test.describe('Roym Hub', () => {
     await expect(page.locator('.add-source-status')).toContainText('Added', { timeout: 15_000 });
 
     await pickCategory(page.locator('.search-categories'), 'bicycle-repair');
+    const enResponsePromise = page.waitForResponse(
+      (res) => res.url().includes('/rpc') && res.request().postData()?.includes('directory.find') === true,
+    );
     await page.getByRole('button', { name: 'Search', exact: true }).click();
     const hitEn = page.locator('.search-hit', { hasText: 'Multilingual bike repair listing' });
     await expect(hitEn).toHaveCount(1, { timeout: 20_000 });
-    const englishTitles = await page.locator('.search-hit .hit-title').allInnerTexts();
+    const enResponse = await enResponsePromise;
+    const enJson = (await enResponse.json()) as { result?: { hits?: Array<{ listing_id: string }> } };
+    const englishListingIds = (enJson.result?.hits ?? []).map((h) => h.listing_id).sort();
+    expect(englishListingIds.length).toBeGreaterThan(0);
 
     await chooseHubLanguage(page, 'hi');
     await page.getByRole('button', { name: hubMessage('hi', 'tab-directory') }).click();
     await pickCategory(page.locator('.search-categories'), 'bicycle-repair', 'hi');
+    const hiResponsePromise = page.waitForResponse(
+      (res) => res.url().includes('/rpc') && res.request().postData()?.includes('directory.find') === true,
+    );
     await page.getByRole('button', { name: hubMessage('hi', 'directory-search-button'), exact: true }).click();
 
     const hitHi = page.locator('.search-hit', { hasText: 'Multilingual bike repair listing' });
     await expect(hitHi).toHaveCount(1, { timeout: 20_000 });
-    const hindiTitles = await page.locator('.search-hit .hit-title').allInnerTexts();
-    expect(hindiTitles).toEqual(englishTitles);
+    const hiResponse = await hiResponsePromise;
+    const hiJson = (await hiResponse.json()) as { result?: { hits?: Array<{ listing_id: string }> } };
+    const hindiListingIds = (hiJson.result?.hits ?? []).map((h) => h.listing_id).sort();
+    expect(hindiListingIds).toEqual(englishListingIds);
 
     const hitCategories = await hitHi.locator('.hit-categories').innerText();
     expect(hitCategories).toContain(hubMessage('hi', 'taxonomy-category-bicycle-repair'));
