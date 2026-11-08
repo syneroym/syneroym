@@ -171,7 +171,7 @@ tests or `mise run verify`.
   `'deep-cleaning'`, so the test still sends a list of two. Then run
   `git grep -n "cats-input\|categories')" crates/substrate/tests/e2e` once
   more at the end of Step 8 to prove no fill is left.
-- *Status:* Open.
+- *Status:* Fixed (b8203efb)
 
 #### P2 — The category picker has no way to clear itself, but the request form is reused (major)
 
@@ -192,7 +192,7 @@ tests or `mise run verify`.
   today. Add a `picker.test.ts` case ("clear removes the chips and
   `codes()` is empty") and a `messages.test.ts` case (after a send, the form's
   chips are gone). Update D-B2-6's signature.
-- *Status:* Open.
+- *Status:* Fixed (b8203efb)
 
 #### P3 — Typing a group's name finds nothing (minor)
 
@@ -212,7 +212,7 @@ tests or `mise run verify`.
   shows these children under their group heading. Keep the rule "a group is
   never returned". Add a `taxonomy.test.ts` case ("a group's label finds its
   children").
-- *Status:* Open.
+- *Status:* Fixed (b8203efb)
 
 #### P4 — D-B2-4 says `bundleFor` logs a duplicate id, but it does not (minor)
 
@@ -232,7 +232,7 @@ tests or `mise run verify`.
   string catalog and then on the taxonomy file and expect an empty error list
   from each. Optionally make `bundleFor` log the returned list (one line) with
   a test. Remove the claim that it already logs.
-- *Status:* Open.
+- *Status:* Fixed (b8203efb)
 
 #### P5 — The new `picker.ts` and `picker.test.ts` share names with the language picker (minor)
 
@@ -250,7 +250,7 @@ tests or `mise run verify`.
   `synorg_members.ts`). Update D-B2-6, Steps 5 to 7, section 3, section 7.1,
   section 9 and the change doc rows. The exported function stays
   `categoryPicker`.
-- *Status:* Open.
+- *Status:* Fixed (b8203efb)
 
 #### P6 — Section 9 points at a row that does not exist and misses two that become false (minor)
 
@@ -270,7 +270,7 @@ tests or `mise run verify`.
   `quote` and `payment-acknowledgement` card rows and a paragraph near the
   listing text at `:918`/`:1355` for the taxonomy; add
   `system-requirements-spec.md:730` (unit is a code from the base unit list).
-- *Status:* Open.
+- *Status:* Fixed (b8203efb)
 
 #### P7 — task.md Y2 and a sentence of the change doc still say the data file holds the labels (minor)
 
@@ -291,7 +291,7 @@ tests or `mise run verify`.
   Hub's taxonomy label files", and add one line to the deviation: "M08D adds
   attribute labels to the same label files". If the owner picks Q1 (b) or (c)
   this item changes with it.
-- *Status:* Open.
+- *Status:* Fixed (b8203efb)
 
 #### P8 — The picker spec has three open edges (minor)
 
@@ -320,7 +320,7 @@ tests or `mise run verify`.
   reached with Tab"; make Enter in the filter pick the first option when
   there is exactly one; set `aria-live="polite"` on the message line. Add a
   backlog sentence to the existing WCAG row if the owner wants more.
-- *Status:* Open.
+- *Status:* Fixed (b8203efb)
 
 #### P9 — `Taxonomy::validate` does not check two rules that the file format relies on (minor)
 
@@ -340,4 +340,4 @@ tests or `mise run verify`.
   `CATEGORY_GROUPS` is built in two passes and that an empty group is not
   drawn, with a `taxonomy.test.ts` case. I prefer the Rust check: it fails
   where the file is edited.
-- *Status:* Open.
+- *Status:* Fixed (b8203efb)
