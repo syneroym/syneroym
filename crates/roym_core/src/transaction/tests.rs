@@ -169,8 +169,10 @@ fn agreed_terms_validate_rules() {
     // Payment methods
     t.payment_methods = (0..MAX_PAYMENT_METHODS + 1).map(|i| format!("m{i}")).collect();
     assert_eq!(t.validate(), Err(TransactionError::TooManyPaymentMethods));
-    t.payment_methods = vec!["x".repeat(MAX_PAYMENT_METHOD_LEN + 1)];
-    assert_eq!(t.validate(), Err(TransactionError::PaymentMethodTooLong));
+    for bad in ["x".repeat(MAX_PAYMENT_METHOD_LEN + 1), "UPI".into(), " ".into()] {
+        t.payment_methods = vec![bad.clone()];
+        assert_eq!(t.validate(), Err(TransactionError::PaymentMethodShape(bad)));
+    }
     t.payment_methods = vec!["card".to_string()];
 
     // Cancellation terms

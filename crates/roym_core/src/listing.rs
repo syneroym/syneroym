@@ -24,9 +24,8 @@ pub const MAX_SLUG_LEN: usize = 64;
 pub const MAX_CATEGORY_LEN: usize = 64;
 pub use crate::area::MAX_AREAS;
 
-/// N-2: fields that were unbounded while their neighbours were capped.
-/// From this slice a stranger's bytes sit on a SynOrg owner's disk, so
-/// every field a payload carries gets a bound.
+/// A stranger's listing is stored on a directory owner's disk, so every field
+/// has a bound.
 pub const MAX_PAYEE_LEN: usize = 256;
 pub const MAX_PAYMENT_METHODS: usize = 16;
 pub const MAX_PAYMENT_METHOD_LEN: usize = 32;
@@ -84,6 +83,7 @@ pub struct PaymentTerms {
     pub tax_included: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fees_minor: Option<i64>,
+    /// Payment method codes, lowercase `[a-z0-9-]`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub methods: Vec<String>,
     /// A free string here; it becomes binding only inside an
@@ -101,6 +101,7 @@ pub enum ProductCondition {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProductDetail {
+    /// Unit of measure code, lowercase `[a-z0-9-]`.
     pub unit: String,
     pub pack_size: u32,
     pub condition: ProductCondition,
@@ -182,8 +183,9 @@ pub struct ListingPayload {
     pub slug: String,
     pub title: String,
     pub summary: String,
-    /// Free-form category tokens, lowercase `[a-z0-9-]`. What a search
-    /// filters on; the vocabulary is the group's, not the product's.
+    /// Category codes, lowercase `[a-z0-9-]`. Usually from the base taxonomy
+    /// (`crate::taxonomy`); a group may use its own code, so `validate` checks
+    /// only the shape.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub categories: Vec<String>,
     /// Under the listing owner's own signature, so a stranger who verifies this
@@ -246,10 +248,10 @@ pub enum ListingError {
     PayeeTooLong,
     #[error("more than {MAX_PAYMENT_METHODS} payment methods")]
     TooManyPaymentMethods,
-    #[error("a payment method name is longer than {MAX_PAYMENT_METHOD_LEN} bytes")]
-    PaymentMethodTooLong,
-    #[error("unit is longer than {MAX_UNIT_LEN} bytes")]
-    UnitTooLong,
+    #[error("payment method '{0}' is not 1..={MAX_PAYMENT_METHOD_LEN} chars of [a-z0-9-]")]
+    PaymentMethodShape(String),
+    #[error("unit '{0}' is not 1..={MAX_UNIT_LEN} chars of [a-z0-9-]")]
+    UnitShape(String),
     #[error("sku is longer than {MAX_SKU_LEN} bytes")]
     SkuTooLong,
     #[error("{0} has more than {MAX_SERVICE_LIST_ITEMS} entries")]
@@ -321,16 +323,16 @@ impl ListingPayload {
                     return Err(ListingError::TooManyPaymentMethods);
                 }
                 for m in &p.methods {
-                    if m.len() > MAX_PAYMENT_METHOD_LEN {
-                        return Err(ListingError::PaymentMethodTooLong);
+                    if !valid_token(m, MAX_PAYMENT_METHOD_LEN) {
+                        return Err(ListingError::PaymentMethodShape(m.clone()));
                     }
                 }
             }
         }
 
         if let Some(prod) = &self.product {
-            if prod.unit.len() > MAX_UNIT_LEN {
-                return Err(ListingError::UnitTooLong);
+            if !valid_token(&prod.unit, MAX_UNIT_LEN) {
+                return Err(ListingError::UnitShape(prod.unit.clone()));
             }
             if prod.sku.as_ref().is_some_and(|s| s.len() > MAX_SKU_LEN) {
                 return Err(ListingError::SkuTooLong);

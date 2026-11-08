@@ -316,6 +316,40 @@ fn absent_blocks_contribute_no_bytes() {
 }
 
 #[test]
+fn unit_code_rules() {
+    let mut p = core();
+    p.product = Some(ProductDetail {
+        unit: String::new(),
+        pack_size: 1,
+        condition: ProductCondition::New,
+        sku: None,
+    });
+    let too_long_unit = "u".repeat(MAX_UNIT_LEN + 1);
+    for bad in ["", "Kilogram", "k g", too_long_unit.as_str()] {
+        p.product.as_mut().unwrap().unit = bad.to_string();
+        assert_eq!(p.validate(), Err(ListingError::UnitShape(bad.to_string())));
+    }
+    for good in ["kg", "x9", "bundle-of-5"] {
+        p.product.as_mut().unwrap().unit = good.to_string();
+        assert!(p.validate().is_ok());
+    }
+}
+
+#[test]
+fn payment_method_code_rules() {
+    let mut p = core();
+    let too_long_method = "m".repeat(MAX_PAYMENT_METHOD_LEN + 1);
+    for bad in ["", "Cash", "c a", too_long_method.as_str()] {
+        p.payment.as_mut().unwrap().methods = vec![bad.to_string()];
+        assert_eq!(p.validate(), Err(ListingError::PaymentMethodShape(bad.to_string())));
+    }
+    for good in ["cash", "x9"] {
+        p.payment.as_mut().unwrap().methods = vec![good.to_string()];
+        assert!(p.validate().is_ok());
+    }
+}
+
+#[test]
 fn derive_slot_id_is_stable_and_scoped() {
     let s1 = derive_slot_id("lst_abc", 1000, 2000).unwrap();
     assert_eq!(s1, derive_slot_id("lst_abc", 1000, 2000).unwrap());

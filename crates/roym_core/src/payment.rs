@@ -35,8 +35,8 @@ pub enum PaymentError {
     NegativeAmount(i64),
     #[error("observed_at_secs must be greater than zero")]
     ZeroObservedTime,
-    #[error("payment method is empty or over {MAX_PAYMENT_METHOD_LEN} characters")]
-    InvalidPaymentMethod,
+    #[error("payment method '{0}' is not 1..={MAX_PAYMENT_METHOD_LEN} chars of [a-z0-9-]")]
+    MethodShape(String),
     #[error("reference is over {MAX_REFERENCE_LEN} characters")]
     ReferenceTooLong,
     #[error("note is over {MAX_NOTE_LEN} characters")]
@@ -134,8 +134,10 @@ impl PaymentAcknowledgementPayload {
         if self.observed_at_secs == 0 {
             return Err(PaymentError::ZeroObservedTime);
         }
-        if self.method.as_ref().is_some_and(|m| m.is_empty() || m.len() > MAX_PAYMENT_METHOD_LEN) {
-            return Err(PaymentError::InvalidPaymentMethod);
+        if let Some(m) = &self.method
+            && !listing::valid_token(m, MAX_PAYMENT_METHOD_LEN)
+        {
+            return Err(PaymentError::MethodShape(m.clone()));
         }
         if self.reference.as_ref().is_some_and(|r| r.len() > MAX_REFERENCE_LEN) {
             return Err(PaymentError::ReferenceTooLong);

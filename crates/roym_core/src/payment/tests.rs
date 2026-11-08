@@ -93,7 +93,12 @@ fn payment_acknowledgement_validation() {
     ack.observed_at_secs = 1000;
 
     ack.method = Some(String::new());
-    assert!(matches!(ack.validate(), Err(PaymentError::InvalidPaymentMethod)));
+    assert!(matches!(ack.validate(), Err(PaymentError::MethodShape(_))));
+    ack.method = Some("Cash".to_string());
+    assert!(matches!(
+        ack.validate(),
+        Err(PaymentError::MethodShape(m)) if m == "Cash"
+    ));
     ack.method = Some("card".to_string());
 
     let long_ref = "r".repeat(MAX_REFERENCE_LEN + 1);

@@ -304,8 +304,8 @@ pub enum TransactionError {
     #[error("more than {MAX_PAYMENT_METHODS} payment methods")]
     TooManyPaymentMethods,
 
-    #[error("payment method is empty or over {MAX_PAYMENT_METHOD_LEN} characters")]
-    PaymentMethodTooLong,
+    #[error("payment method '{0}' is not 1..={MAX_PAYMENT_METHOD_LEN} chars of [a-z0-9-]")]
+    PaymentMethodShape(String),
 
     #[error("cancellation_terms is empty")]
     CancellationTermsEmpty,
@@ -442,8 +442,8 @@ impl AgreedTerms {
             return Err(TransactionError::TooManyPaymentMethods);
         }
         for m in &self.payment_methods {
-            if m.trim().is_empty() || m.len() > MAX_PAYMENT_METHOD_LEN {
-                return Err(TransactionError::PaymentMethodTooLong);
+            if !listing::valid_token(m, MAX_PAYMENT_METHOD_LEN) {
+                return Err(TransactionError::PaymentMethodShape(m.clone()));
             }
         }
         if let Some(ref sched) = self.schedule {

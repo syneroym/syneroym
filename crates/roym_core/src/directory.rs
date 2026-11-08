@@ -99,8 +99,8 @@ pub enum SynOrgSettingsError {
     DisputePathTooLong,
     #[error("more than {MAX_CATEGORIES} categories")]
     TooManyCategories,
-    #[error("a category is empty or over {MAX_CATEGORY_LEN} bytes")]
-    CategoryShape,
+    #[error("category '{0}' is not 1..={MAX_CATEGORY_LEN} chars of [a-z0-9-]")]
+    CategoryShape(String),
     #[error("more than {MAX_AREAS} areas")]
     TooManyAreas,
     #[error("area: {0}")]
@@ -129,8 +129,8 @@ impl SynOrgSettings {
             return Err(SynOrgSettingsError::TooManyCategories);
         }
         for c in &self.categories {
-            if c.trim().is_empty() || c.len() > MAX_CATEGORY_LEN {
-                return Err(SynOrgSettingsError::CategoryShape);
+            if !listing::valid_token(c, MAX_CATEGORY_LEN) {
+                return Err(SynOrgSettingsError::CategoryShape(c.clone()));
             }
         }
         if self.area.len() > MAX_AREAS {
@@ -299,6 +299,18 @@ mod tests {
         assert_eq!(s.validate(), Err(SynOrgSettingsError::RetentionOutOfBounds));
         s.retention_secs = MAX_RETENTION_SECS + 1;
         assert_eq!(s.validate(), Err(SynOrgSettingsError::RetentionOutOfBounds));
+    }
+
+    #[test]
+    fn category_code_rules() {
+        let mut s = settings();
+        s.categories = vec!["Home Repair".to_string()];
+        assert_eq!(
+            s.validate(),
+            Err(SynOrgSettingsError::CategoryShape("Home Repair".to_string()))
+        );
+        s.categories = vec!["plumbing".to_string()];
+        assert!(s.validate().is_ok());
     }
 
     #[test]
