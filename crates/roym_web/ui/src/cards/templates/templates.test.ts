@@ -54,6 +54,11 @@ describe("Card templates", () => {
       expect(el.querySelectorAll("img").length).toBe(0);
       expect(el.textContent).toContain(xss);
     });
+
+    it("renders taxonomy category labels and own codes as they came", () => {
+      const el = renderRequest({ categories: ["bicycle-repair", "my-own-code"] });
+      expect(el.textContent).toContain("Bicycle Repair, my-own-code");
+    });
   });
 
   describe("renderQuote", () => {
@@ -293,7 +298,7 @@ describe("Card templates", () => {
 
       expect(el.classList.contains("card-payment-acknowledgement")).toBe(true);
       expect(el.textContent).toContain("€125.00");
-      expect(el.textContent).toContain("bank-transfer");
+      expect(el.textContent).toContain("Bank Transfer");
       expect(el.textContent).toContain("TX-9988");
       expect(datetimes(el, ".payment-ack-observed")).toEqual([new Date(1700000000 * 1000).toISOString()]);
       expect(el.textContent?.toLowerCase()).not.toContain("verif");
@@ -321,6 +326,13 @@ describe("Card templates", () => {
 
       expect(el.querySelectorAll("a").length).toBe(0);
       expect(el.textContent).toContain("javascript:alert(1)");
+    });
+
+    it("renders method label for taxonomy method and raw for unknown method", () => {
+      const elKnown = renderPaymentAcknowledgement({ method: "upi" });
+      expect(elKnown.textContent).toContain("UPI");
+      const elUnknown = renderPaymentAcknowledgement({ method: "barter-tokens" });
+      expect(elUnknown.textContent).toContain("barter-tokens");
     });
   });
 

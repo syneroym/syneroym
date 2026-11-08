@@ -147,3 +147,93 @@ describe("the revocation line of a search hit", () => {
     }
   });
 });
+
+describe("category search and hit display", () => {
+  afterEach(async () => {
+    vi.unstubAllGlobals();
+    await activate("en");
+  });
+
+  it("ML-8: a category search sends the same query in English and in Hindi", async () => {
+    let capturedQueryEn: Record<string, unknown> | undefined;
+    let capturedQueryHi: Record<string, unknown> | undefined;
+
+    // English
+    stubRpc({
+      "directory.sources": () => ({ sources: [] }),
+      "directory.find": (params) => {
+        capturedQueryEn = params as Record<string, unknown>;
+        return {
+          run_id: "run-en",
+          outcomes: [],
+          hits: [],
+          hits_truncated: false,
+          refused: [],
+          refused_truncated: false,
+        };
+      },
+    });
+    const hostEn = document.createElement("div");
+    await renderDirectory(hostEn);
+    const filterEn = hostEn.querySelector<HTMLInputElement>(".search-categories .picker-filter")!;
+    filterEn.value = "Bicycle repair";
+    filterEn.dispatchEvent(new Event("input"));
+    const optEn = hostEn.querySelector<HTMLButtonElement>('.search-categories .picker-option[data-code="bicycle-repair"]')!;
+    optEn.click();
+    hostEn.querySelector<HTMLButtonElement>("button.run-search")!.click();
+    await vi.waitFor(() => expect(capturedQueryEn).toBeDefined());
+    const queryEn = capturedQueryEn?.query as Record<string, unknown>;
+    expect(queryEn?.categories).toEqual(["bicycle-repair"]);
+
+    // Hindi
+    await activate("hi");
+    stubRpc({
+      "directory.sources": () => ({ sources: [] }),
+      "directory.find": (params) => {
+        capturedQueryHi = params as Record<string, unknown>;
+        return {
+          run_id: "run-hi",
+          outcomes: [],
+          hits: [],
+          hits_truncated: false,
+          refused: [],
+          refused_truncated: false,
+        };
+      },
+    });
+    const hostHi = document.createElement("div");
+    await renderDirectory(hostHi);
+    const filterHi = hostHi.querySelector<HTMLInputElement>(".search-categories .picker-filter")!;
+    filterHi.value = "साइकिल";
+    filterHi.dispatchEvent(new Event("input"));
+    const optHi = hostHi.querySelector<HTMLButtonElement>('.search-categories .picker-option[data-code="bicycle-repair"]')!;
+    optHi.click();
+    hostHi.querySelector<HTMLButtonElement>("button.run-search")!.click();
+    await vi.waitFor(() => expect(capturedQueryHi).toBeDefined());
+    const queryHi = capturedQueryHi?.query as Record<string, unknown>;
+    expect(queryHi?.categories).toEqual(["bicycle-repair"]);
+
+    expect(queryHi?.categories).toEqual(queryEn?.categories);
+  });
+
+  it("shows hit categories as labels and an own code as it came", async () => {
+    stubRpc({
+      "directory.sources": () => ({ sources: [] }),
+      "directory.find": () => ({
+        run_id: "run-labels",
+        outcomes: [],
+        hits: [{ ...HIT, categories: ["bicycle-repair", "my-own-category"] }],
+        hits_truncated: false,
+        refused: [],
+        refused_truncated: false,
+      }),
+    });
+    const host = document.createElement("div");
+    await renderDirectory(host);
+    host.querySelector<HTMLButtonElement>("button.run-search")!.click();
+    await vi.waitFor(() => expect(host.querySelector(".hit-categories")).not.toBeNull());
+    expect(host.querySelector(".hit-categories")!.textContent).toBe(
+      "Categories: Bicycle Repair, my-own-category",
+    );
+  });
+});

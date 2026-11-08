@@ -14,6 +14,7 @@
 import { labelled } from "../../dom";
 import { timeElement } from "../../i18n/format";
 import { t } from "../../i18n/i18n";
+import { categoryLabel } from "../../taxonomy/taxonomy";
 
 export interface RequestData {
   request_id?: string;
@@ -53,7 +54,8 @@ export function renderRequest(data?: RequestData): HTMLElement {
   if (data?.categories && data.categories.length > 0) {
     const catsP = document.createElement("p");
     catsP.className = "request-categories";
-    catsP.textContent = t("request-categories", { categories: data.categories.join(", ") });
+    const labels = data.categories.map((c) => categoryLabel(c)).join(", ");
+    catsP.textContent = t("request-categories", { categories: labels });
     card.appendChild(catsP);
   }
 

@@ -233,4 +233,33 @@ describe("the credential status words", () => {
       expect(word).toMatch(/[ऀ-ॿ]/);
     }
   });
+
+  it("shows category labels on issue checkboxes and credential rows, keeping code in value", async () => {
+    stubRpc({
+      "credential.list": () => ({
+        records: [
+          {
+            record_id: "rec_1",
+            member_did: MEMBER,
+            about: "",
+            issued_at_secs: NOW,
+            envelope: JSON.stringify({
+              expires_at_secs: NOW + 86400,
+              payload: { scope: { categories: ["plumbing", "own-code"], area: [] } },
+            }),
+          },
+        ],
+      }),
+      "revocation.list": () => ({ records: [] }),
+      "member.decisions": () => ({ records: [] }),
+    });
+    const panel = await buildMembersPanel(["plumbing", "own-code"]);
+    const labels = [...panel.querySelectorAll(".issue-category-label")].map((l) => l.textContent?.trim());
+    expect(labels).toEqual(["Plumbing", "own-code"]);
+    const boxes = [...panel.querySelectorAll<HTMLInputElement>(".issue-category")].map((b) => b.value);
+    expect(boxes).toEqual(["plumbing", "own-code"]);
+
+    const covers = panel.querySelector(".credential-covers")?.textContent;
+    expect(covers).toBe("covers Plumbing, own-code");
+  });
 });

@@ -9,6 +9,7 @@ import { toMinorUnits, currencyMinorExponent } from "../money";
 import type { ServiceLocationKind } from "../listings/editor";
 import { serviceLocationEditorLabel } from "../listings/labels";
 import { type SearchMatch, searchHits } from "./message_search";
+import { categoryPicker } from "../taxonomy/category_picker";
 
 /// Message id for each message state, shown as a word. A `Map`, so a state
 /// from another node can never hit an inherited property.
@@ -314,9 +315,10 @@ async function renderThread(
   descInput.placeholder = t("request-description-placeholder");
   descInput.className = "request-desc-input";
 
-  const catsInput = document.createElement("input");
-  catsInput.placeholder = t("request-categories-placeholder");
-  catsInput.className = "request-cats-input";
+  const catsPicker = categoryPicker({
+    className: "request-cats-input",
+    max: 8,
+  });
 
   const listingInput = document.createElement("input");
   listingInput.placeholder = t("request-listing-placeholder");
@@ -343,10 +345,7 @@ async function renderThread(
     submitReqBtn.disabled = true;
     reqErr.textContent = "";
     try {
-      const categories = catsInput.value
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean);
+      const categories = catsPicker.codes();
       await call("request.set", {
         conversation: conv.id,
         description: desc,
@@ -355,7 +354,7 @@ async function renderThread(
         data_use_notice: dataUseNotice,
       });
       descInput.value = "";
-      catsInput.value = "";
+      catsPicker.clear();
       listingInput.value = "";
       reqForm.style.display = "none";
       await fillHistory();
@@ -366,7 +365,7 @@ async function renderThread(
     }
   };
 
-  reqForm.append(descInput, catsInput, listingInput, noticeP, submitReqBtn, reqErr);
+  reqForm.append(descInput, catsPicker.root, listingInput, noticeP, submitReqBtn, reqErr);
   requestSection.appendChild(reqForm);
   pane.appendChild(requestSection);
 
