@@ -16,6 +16,8 @@ import { checkbox, codeOptions, errText, field, input, refiller, select, text } 
 import { formatDateTime } from "../i18n/format";
 import { codeWord, messageId, t } from "../i18n/i18n";
 import { call } from "../rpc";
+import { categoryPicker } from "../taxonomy/category_picker";
+import { methodLabel, PAYMENT_METHODS, unitLabel, UNITS } from "../taxonomy/taxonomy";
 
 interface ListingListRow {
   listing_id: string;
@@ -228,8 +230,10 @@ function buildEditor(onSaved: () => Promise<void>): { root: HTMLElement } {
   title.className = "listing-title-input";
   const summary = input(t("listing-placeholder-summary"));
   summary.className = "listing-summary-input";
-  const categories = input(t("listing-placeholder-categories"));
-  categories.className = "listing-categories-input";
+  const categories = categoryPicker({
+    className: "listing-categories-input",
+    max: 8,
+  });
   const address = input(t("listing-placeholder-address"));
   address.className = "listing-address-input";
   const status = select(codeOptions(STATUS_LABELS, ["active", "draft", "withdrawn"]), "active");
@@ -238,7 +242,7 @@ function buildEditor(onSaved: () => Promise<void>): { root: HTMLElement } {
     field(t("listing-label-title"), title),
     field(t("listing-label-slug"), slug),
     field(t("listing-label-summary"), summary),
-    field(t("listing-label-categories"), categories),
+    field(t("listing-label-categories"), categories.root),
     field(t("listing-label-address"), address),
     field(t("listing-label-status"), status),
   );
@@ -265,7 +269,15 @@ function buildEditor(onSaved: () => Promise<void>): { root: HTMLElement } {
   payAmount.className = "payment-amount-input";
   const payFees = input(t("listing-placeholder-fees"));
   const payTax = checkbox(t("listing-label-tax-included"), false);
-  const payMethods = input(t("listing-placeholder-methods"));
+  const payMethodsWrap = document.createElement("div");
+  payMethodsWrap.className = "payment-methods";
+  const payMethodBoxes = PAYMENT_METHODS.map((m) => {
+    const cb = checkbox(methodLabel(m), false);
+    cb.box.value = m;
+    cb.box.classList.add(`payment-method-${m}`);
+    payMethodsWrap.appendChild(cb.wrap);
+    return cb.box;
+  });
   const payPayee = input(t("listing-placeholder-payee"));
   payment.body.append(
     field(t("listing-label-currency"), payCurrency),
@@ -273,13 +285,16 @@ function buildEditor(onSaved: () => Promise<void>): { root: HTMLElement } {
     field(t("listing-label-amount"), payAmount),
     field(t("listing-label-fees"), payFees),
     payTax.wrap,
-    field(t("listing-label-methods"), payMethods),
+    field(t("listing-label-methods"), payMethodsWrap),
     field(t("listing-label-payee"), payPayee),
   );
 
   // --- product ---
   const product = block("product", t("listing-block-product"));
-  const prodUnit = input(t("listing-placeholder-unit"), "item");
+  const prodUnit = select(
+    UNITS.map((u): [string, string] => [u, unitLabel(u)]),
+    "piece",
+  );
   const prodPack = input(t("listing-placeholder-pack-size"), "1");
   const prodCondition = select(codeOptions(CONDITION_LABELS, ["new", "used", "refurbished"]), "new");
   const prodSku = input(t("listing-placeholder-sku"));
@@ -357,7 +372,7 @@ function buildEditor(onSaved: () => Promise<void>): { root: HTMLElement } {
       slug: slug.value,
       title: title.value,
       summary: summary.value,
-      categories: categories.value,
+      categories: categories.codes(),
       conversation_address: address.value,
       status: status.value as ListingForm["status"],
       booking: {
@@ -377,7 +392,7 @@ function buildEditor(onSaved: () => Promise<void>): { root: HTMLElement } {
           amount: payAmount.value,
           tax_included: payTax.box.checked,
           fees: payFees.value,
-          methods: payMethods.value,
+          methods: payMethodBoxes.filter((b) => b.checked).map((b) => b.value),
           payee: payPayee.value,
         },
       },

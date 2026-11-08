@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import HINDI from "../i18n/hi.ftl?raw";
 import { activate, activateWith } from "../i18n/i18n";
 import { stubRpc } from "../testing/stub-rpc";
+import { PAYMENT_METHODS, unitLabel, UNITS } from "../taxonomy/taxonomy";
 import { renderListings, verifyParams } from "./listings.js";
 
 describe("listings verifyParams", () => {
@@ -82,5 +83,66 @@ describe("the listing list", () => {
       expect(entry.split("=")[0]).toBe(english[i].split("=")[0]);
       expect(entry.split("=")[1]).not.toBe(english[i].split("=")[1]);
     });
+  });
+
+  it("unit list starts at piece and has one option per unit with its label", async () => {
+    stubRpc({ "listing.list": () => ({ listings: [] }) });
+    const host = document.createElement("div");
+    await renderListings(host);
+    const productBlock = host.querySelector(".block-product");
+    const unitSelect = productBlock?.querySelector("select");
+    expect(unitSelect).not.toBeNull();
+    expect(unitSelect?.value).toBe("piece");
+    const options = [...(unitSelect?.querySelectorAll("option") ?? [])];
+    expect(options.map((o) => o.value)).toEqual([...UNITS]);
+    expect(options.map((o) => o.textContent)).toEqual(UNITS.map((u) => unitLabel(u)));
+  });
+
+  it("sends the ticked payment methods in list order and chosen categories on save", async () => {
+    let savedParams: Record<string, unknown> | undefined;
+    stubRpc({
+      "listing.list": () => ({ listings: [] }),
+      "listing.set": (params) => {
+        savedParams = params;
+        return { listing_id: "l1", record_id: "r1", version_count: 1 };
+      },
+    });
+    const host = document.createElement("div");
+    await renderListings(host);
+
+    // Verify all payment methods are present as checkboxes
+    const methodBoxes = [...host.querySelectorAll<HTMLInputElement>(".payment-methods input[type='checkbox']")];
+    expect(methodBoxes.map((b) => b.value)).toEqual([...PAYMENT_METHODS]);
+
+    const title = host.querySelector<HTMLInputElement>(".listing-title-input")!;
+    title.value = "Test Title";
+
+    // Category picker: pick "plumbing"
+    const filter = host.querySelector<HTMLInputElement>(".listing-categories-input .picker-filter")!;
+    filter.value = "Plumbing";
+    filter.dispatchEvent(new Event("input"));
+    const opt = host.querySelector<HTMLButtonElement>('.picker-option[data-code="plumbing"]')!;
+    opt.click();
+
+    // Enable payment block
+    const payBlock = host.querySelector(".block-payment")!;
+    const payEnabled = payBlock.querySelector<HTMLInputElement>(".block-enabled")!;
+    payEnabled.checked = true;
+    const amountInput = payBlock.querySelector<HTMLInputElement>(".payment-amount-input")!;
+    amountInput.value = "10.00";
+
+    // Tick upi and cash out of order
+    const upiBox = payBlock.querySelector<HTMLInputElement>(".payment-method-upi")!;
+    const cashBox = payBlock.querySelector<HTMLInputElement>(".payment-method-cash")!;
+    upiBox.checked = true;
+    cashBox.checked = true;
+
+    const saveBtn = host.querySelector<HTMLButtonElement>(".save-listing")!;
+    saveBtn.click();
+    await vi.waitFor(() => expect(savedParams).toBeDefined());
+
+    expect(savedParams!.categories).toEqual(["plumbing"]);
+    const payment = savedParams!.payment as Record<string, unknown>;
+    expect(payment.methods).toEqual(["cash", "upi"]);
   });
 });
