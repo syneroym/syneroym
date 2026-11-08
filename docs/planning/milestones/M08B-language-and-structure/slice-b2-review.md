@@ -192,9 +192,7 @@ tests or `mise run verify`.
   today. Add a `picker.test.ts` case ("clear removes the chips and
   `codes()` is empty") and a `messages.test.ts` case (after a send, the form's
   chips are gone). Update D-B2-6's signature.
-- *Status:* Open (round 2: partly fixed. `clear()` is in D-B2-6, Step 7.1
-  and the picker tests, but the `messages.test.ts` case is not in section 7.1.
-  The test that fails when the call is forgotten is the point of the item.)
+- *Status:* Fixed (baebc1de)
 
 #### P3 — Typing a group's name finds nothing (minor)
 
@@ -322,9 +320,7 @@ tests or `mise run verify`.
   reached with Tab"; make Enter in the filter pick the first option when
   there is exactly one; set `aria-live="polite"` on the message line. Add a
   backlog sentence to the existing WCAG row if the owner wants more.
-- *Status:* Open (round 2: partly fixed. Points 1 and 2 are in D-B2-6 and
-  have tests. Point 3 (Enter picks the only option; `aria-live`) is in D-B2-6
-  but section 7.1 has no test for either.)
+- *Status:* Fixed (baebc1de)
 
 #### P9 — `Taxonomy::validate` does not check two rules that the file format relies on (minor)
 
@@ -355,7 +351,7 @@ the new text uses against the code on `main`. I ran no plan step.
 
 **Summary of this round:** 0 blocker, 0 major, 2 new minor items (P10, P11).
 Round 1 items: 7 confirmed Fixed (P1, P3, P4, P5, P6, P7, P9), 2 sent back to
-Open with a note (P2, P8). **Open now: 4 (P2, P8, P10, P11), all minor.**
+Open with a note (P2, P8). **Open now: 4 (P2, P8, P10, P11), all minor.** Fixed in baebc1de; 0 open.
 
 ### Round 1 items
 
@@ -431,7 +427,7 @@ replaces that bullet, not only add to it.
   and say the expected result: no line in `roym-hub.spec.ts` or
   `roym-trust.spec.ts` that fills a picker box (the lines that remain must be
   `pickCategory` calls or `.fill` on a non-picker field).
-- *Status:* Open.
+- *Status:* Fixed (baebc1de)
 
 #### P11 — Step 9 asks for edits that are already done, and the plan text carries review ids (minor)
 
@@ -457,4 +453,4 @@ replaces that bullet, not only add to it.
   steps; keep them only in the owner-answer notes, or remove them there too,
   and add one sentence in section 0: "Do not copy review ids into code,
   comments or test names."
-- *Status:* Open.
+- *Status:* Fixed (baebc1de)
