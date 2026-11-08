@@ -217,6 +217,23 @@ describe("categoryPicker component", () => {
     expect(chips[1].textContent).toContain("own-custom-code");
   });
 
+  it("prevents mousedown on options to preserve focus and allow clicking an option", () => {
+    const picker = categoryPicker({ className: "test-picker", max: 8 });
+    const filter = picker.root.querySelector<HTMLInputElement>(".picker-filter")!;
+    const optionsContainer = picker.root.querySelector<HTMLDivElement>(".picker-options")!;
+
+    filter.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+    expect(optionsContainer.hidden).toBe(false);
+
+    const option = picker.root.querySelector<HTMLButtonElement>('.picker-option[data-code="plumbing"]')!;
+    const mousedownEvent = new MouseEvent("mousedown", { bubbles: true, cancelable: true });
+    option.dispatchEvent(mousedownEvent);
+    expect(mousedownEvent.defaultPrevented).toBe(true);
+
+    option.click();
+    expect(picker.codes()).toEqual(["plumbing"]);
+  });
+
   it("shows Hindi labels for chips and options in Hindi", async () => {
     await activate("hi");
     const picker = categoryPicker({

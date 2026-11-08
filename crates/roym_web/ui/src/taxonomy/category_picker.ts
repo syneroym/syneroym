@@ -41,6 +41,7 @@ export function categoryPicker(opts: CategoryPickerOptions): CategoryPicker {
   const options = document.createElement("div");
   options.className = "picker-options";
   options.hidden = true;
+  options.addEventListener("mousedown", (e) => e.preventDefault());
   root.appendChild(options);
 
   function openOptions() {
