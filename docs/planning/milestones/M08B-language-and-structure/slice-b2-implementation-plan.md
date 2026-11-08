@@ -3,7 +3,7 @@
 *Reader: the developer (or AI) who implements slice B2. You do not have the
 planning conversation. This plan is meant to stand alone.*
 
-**Status: plan review round 1 done, 2026-11-07. Owner questions answered
+**Status: plan review round 2 done, 2026-11-08. Owner questions answered
 2026-11-07. P-items folded in.**
 
 **Size and PR.** M. One PR on `feat/m08b-b2-taxonomy`, with the commits of
@@ -33,6 +33,7 @@ B2: both change `ListingPayload` and the listing editor.
   - No planning ids in code or comments: no "M08B", "B2", "ML-7", "N-2" or
     "D-B2-3" in `.rs`, `.ts`, `.ftl`, `.json` files or test names. B2 also
     removes one such comment that is already there (section 2.2 point 9).
+    Do not copy review ids into code, comments or test names.
   - Comments never cite size rules.
   - The import clean-up pass over the Rust files you edit, the deferred
     backlog, the living-docs close-out and the demo close-out.
@@ -160,9 +161,8 @@ to `:20`, `:89` to `:100`).
 
 Owner answer: (a), 2026-11-07. Labels live in Fluent files beside the
 string catalogs. `base.json` holds only codes and structure. Step 9 also
-updates task.md Y2 and the "B. Language-neutral structure" sentence in the
-change doc so they no longer say "labels per language" in the data file
-(P7).
+checks that task.md Y2 and the "B. Language-neutral structure" sentence in the
+change doc say labels live in the Hub taxonomy label files.
 
 **Q2. How does the Hub read the codes? (blocks Step 4)**
 
@@ -241,8 +241,8 @@ one.
 - (b) **Only taxonomy codes**, as the change doc says.
 
 Owner answer: (a), 2026-11-07. The picker offers taxonomy codes plus one
-"use your own code" choice. See D-B2-6 for the updated spec (P8:
-own-code offer only when not already chosen, `codes()` returns a set).
+"use your own code" choice. See D-B2-6 for the spec: own-code offer only
+when not already chosen, and `codes()` returns a set.
 
 **Q5. Can a category group be picked? (blocks Step 5)**
 
@@ -266,7 +266,7 @@ group `home-repair`. The shop change (M08D, SH-11) plans "category code
 Owner answer: (a), 2026-11-07. Only categories with a parent can be
 picked. A group is a heading. See D-B2-5 and D-B2-3: `validate` checks
 that a group comes before its children and that every group has at least
-one child (P9).
+one child.
 
 **Q6. Which forms get the category picker? (blocks Step 7)**
 
@@ -288,9 +288,9 @@ and the SynOrg settings
   form and the SynOrg settings keep free text, so a Hindi user still types
   English codes there.
 
-Owner answer: (a), 2026-11-07. All four forms get the picker. See P1:
-Step 8 also updates `roym-hub.spec.ts:984` (the request-form e2e step).
-See P2: the picker gains a `clear()` method for the request form reset.
+Owner answer: (a), 2026-11-07. All four forms get the picker. Step 8
+also updates `roym-hub.spec.ts:984` (the request-form e2e step). The picker
+gains a `clear()` method for the request form reset.
 
 **Q7. In which languages does the picker search the labels? (blocks
 Step 5)**
@@ -978,7 +978,7 @@ Done in the planning session: this file and the B2 row of
    (settings, `className: "synorg-categories"`, `max: 32`, `selected` =
    the current settings). Remove their placeholders (D-B2-8). In
    `messages.ts`, replace `catsInput.value = ""` in the post-send reset
-   with `catsPicker.clear()` (D-B2-6, P2).
+   with `catsPicker.clear()` (D-B2-6).
 2. The labels of D-B2-9: `screens/directory.ts`, `cards/templates/request.ts`,
    `screens/synorg_members.ts`, `cards/templates/payment_acknowledgement.ts`.
 3. `hindi-screens.test.ts` fixtures (D-B2-11) and the screen tests of
@@ -1000,8 +1000,10 @@ Done in the planning session: this file and the B2 row of
    `.fill('gutters, cleaning')` with two `pickCategory` calls for
    `home-cleaning` and `deep-cleaning`), and the two `credential.issue`
    calls send `["bicycle-repair"]`. After the changes, run
-   `git grep -n "cats-input|categories')" crates/substrate/tests/e2e`
-   to confirm no fill is left.
+   `git grep -n -E "(categories|cats)(-input)?'\)\.fill" crates/substrate/tests/e2e`
+   to confirm no line in `roym-hub.spec.ts` or `roym-trust.spec.ts` fills a
+   picker box (the lines that remain must be `pickCategory` calls or `.fill`
+   on a non-picker field).
 3. `roym-hub.spec.ts`: a new test "a category search finds the same
    listings in English and in Hindi" (section 7.3).
 4. Story 40 (Q10 (a)): one more step (section 7.3). The story file holds
@@ -1016,19 +1018,17 @@ Done in the planning session: this file and the B2 row of
 2. Size (section 7.6): before (on `main`) and after, `npm run build`, then
    for each `dist/assets/*.js` the raw bytes and `gzip -9 -c | wc -c`.
    Write the numbers into task.md (B2 result line).
-3. Change doc: the decisions of section 5 into "B. Language-neutral
-   structure" as a "Decided 2026-11-07, the base taxonomy" list; also
-   rewrite the existing "B." sentence that says "its labels per language"
-   to say "codes and structure in the data file, labels in the Hub's
-   taxonomy label files", and add one line to that list: "M08D adds
+3. Change doc: `change.md` and `task.md` row Y2 were edited in the plan
+   fix; check that they still say so, and replace the bullet "The Hub
+   category picker offers only taxonomy codes …" to match Q4 and Q7; write
+   the decisions of section 5 into "B. Language-neutral structure" as a
+   "Decided 2026-11-07, the base taxonomy" list, with one line: "M08D adds
    attribute labels to the same label files"; `## Deviations` (section 3);
    the Test column of ML-2, ML-7, ML-8, ML-9 and ML-28 with the real test
    names; `demo:` stays story 40; `status` stays `draft` (B6 sets `done`);
    `living-docs-touched` lists the files of section 9.
 4. Living docs (section 9), deferred backlog (section 8), task.md B2
-   result line and Y2 row (rewrite "labels per language" to "codes and
-   structure in the data file, labels in the Hub's taxonomy label files"),
-   status.md.
+   result line, status.md.
 5. The import clean-up pass over every Rust file you edited.
 6. `cargo dupes report` over the changed Rust files (AGENTS.md recipe).
 7. `mise run verify` with no `--skip`, as a background job.
@@ -1050,9 +1050,8 @@ Done in the planning session: this file and the B2 row of
   label functions.
 - `matchCategories`: `"plumb"` finds `plumbing`; the Hindi label text
   finds it in Hindi; upper case matches lower case; a group code is never
-  returned (Q5 (a)); a group's label finds its children (P3: typing
-  "Health" in English or the Hindi word for health returns all health
-  children); the result keeps file order.
+  returned (Q5 (a)); a group's label finds its children (typing "Health" in English or the
+  Hindi word for health returns all health children); the result keeps file order.
 - `CATEGORY_GROUPS` has every category of `base.json`, each child under
   its group.
 
@@ -1088,6 +1087,10 @@ Done in the planning session: this file and the B2 row of
   still shows the own-code option, so no-match needs text that is not code-
   shaped and matches nothing); tested in Hindi.
 - `clear()` empties the chips and `codes()` is empty.
+- Enter in the filter picks the option when there is exactly one visible
+  option.
+- The message container has `aria-live="polite"` so screen readers
+  announce no-match and full messages.
 - `selected` with a taxonomy code and an own code shows two chips, one
   label and one raw code.
 - In Hindi, the chips and options show Hindi labels.
@@ -1104,6 +1107,11 @@ Done in the planning session: this file and the B2 row of
 - ML-8: with a fake `/rpc`, the same picked category sends the same
   `directory.find` query in English and in Hindi.
 - A hit shows its categories as labels, and an own code as it came.
+
+`src/screens/messages.test.ts`
+
+- After sending a request, the request form's category chips are gone
+  (`clear()` was called on the picker).
 
 `src/cards/templates/templates.test.ts`, `src/screens/synorg_members.test.ts`
 
