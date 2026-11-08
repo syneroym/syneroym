@@ -93,15 +93,15 @@ Most cross-language trade needs only layers A and B. The buyer searches by categ
 | --- | --- | --- |
 | **UI localisation** | | |
 | ML-1 | Every user-visible string in the Hub comes from the string catalog. A check fails the UI build when a string literal is set as visible text outside the catalog. | `crates/roym_web/ui/src/i18n/visible-text.test.ts` ("sets no visible text outside the string catalog", and one case for each rule of the check; `npm run build` runs it); `hindi-screens.test.ts` (each screen drawn in Hindi has no English word left, and a raw code or an English screen makes the sweep fail); `catalog.test.ts` (every Hindi message has a Devanagari letter) |
-| ML-2 | Adding a new language needs only a new catalog file and taxonomy labels. No code change. A missing message in that language falls back to English, never to a raw message id. | `crates/roym_web/ui/src/i18n/i18n.test.ts` ("falls back to English for a message the language lacks"); `catalog.test.ts` (file names are canonical tags; every used id is in `en.ftl`; `hi.ftl` has the ids of `en.ftl`) |
+| ML-2 | Adding a new language needs only a new catalog file and taxonomy labels. No code change. A missing message in that language falls back to English, never to a raw message id. | `crates/roym_web/ui/src/i18n/i18n.test.ts` ("falls back to English for a message the language lacks"); `catalog.test.ts` (file names are canonical tags; every used id is in `en.ftl`; `hi.ftl` has the ids of `en.ftl`; taxonomy label files match base.json and have Devanagari letters in Hindi); `taxonomy.test.ts` (falls back to English for missing taxonomy labels) |
 | ML-3 | A user switches the Hub language between English and Hindi. The choice survives a reload. The first choice comes from the browser's preferred languages. | `i18n.test.ts` (`pickLanguage`, the stored choice); `picker.test.ts`; `roym-hub.spec.ts` ("the Hub opens in Hindi with no choice made", browser set to `hi-IN`); story 40 |
 | ML-4 | Dates, times and numbers use the Hub language's format. ₹1,00,000.50 shows with Indian digit grouping and the `₹` sign in both English and Hindi. | `format.test.ts`; `money.test.ts` ("groups rupees the Indian way in English and in Hindi") |
 | ML-5 | The Hub sets `lang` on the page, and on each block of user text to that text's language tag, so the browser picks a correct font and screen readers read it in the right language. | Page `lang` only so far: `i18n.test.ts` ("sets the page language and the format locale"); story 40. Record text follows with the language-tagged records. |
 | ML-6 | The Hub shows service errors by error code from the catalog. It does not show English error text from a service to a Hindi user, except as an extra detail line. | `errors.test.ts` (including a `HubError`, a browser error, a thrown string and an `RpcError` with no message); `rpc.test.ts`; `login.test.ts` (a failed sign-in in Hindi); the editor error table in `editor.test.ts` |
 | **Language-neutral structure** | | |
-| ML-7 | A listing's categories are codes from the taxonomy. The Hub shows each code's label in the reader's language. A code with no label in that language shows its English label. A code not in the taxonomy shows as the code itself. | |
-| ML-8 | A Hindi-language Hub user and an English-language Hub user search with the same category code and get the same results. | |
-| ML-9 | A product listing's unit is a code from a unit list. The Hub shows its label in the reader's language. | |
+| ML-7 | A listing's categories are codes from the taxonomy. The Hub shows each code's label in the reader's language. A code with no label in that language shows its English label. A code not in the taxonomy shows as the code itself. | `taxonomy.test.ts` ("a category shows its label in each language", "falls back to the English label", "shows an unknown code as it came", the `constructor` cases); `category_picker.test.ts`; `hindi-screens.test.ts` (each picker and each shown category in Hindi); `directory.test.ts`, `templates.test.ts` and `synorg_members.test.ts` |
+| ML-8 | A Hindi-language Hub user and an English-language Hub user search with the same category code and get the same results. | `directory.test.ts` ("the same category gives the same query in English and Hindi"); `roym-hub.spec.ts` ("a category search finds the same listings in English and in Hindi") |
+| ML-9 | A product listing's unit is a code from a unit list. The Hub shows its label in the reader's language. | `editor.test.ts`, `listings.test.ts` (unit options in each language); `listing/tests.rs` (the unit code rule); `templates.test.ts` |
 | **Language-tagged free text** | | |
 | ML-10 | `profile`, `listing`, `request` and `quote` each carry a `lang` field. The signer must set it. A record with a missing or malformed tag fails validation. | |
 | ML-11 | The author can add up to a fixed number of translations of the free-text fields, inside the same signed record. Each translation has its own language tag and is shown as "translated by the author". | |
@@ -128,7 +128,7 @@ Most cross-language trade needs only layers A and B. The buyer searches by categ
 | ML-26 | Each hook point in [Translation hook points](#translation-hook-points) calls the translation interface. With the v1 implementation, each call returns `unavailable`, and the flow continues with the original text. A test covers every hook point. | |
 | ML-27 | A translate action appears in the Hub only at a hook point, and only when `supported-targets` is not empty. | |
 | **Extension and taxonomy labels** | | |
-| ML-28 | Taxonomy attribute names and choice values, widget labels and extension step names come from the string catalog and show in the reader's language, with the English label as fallback. | |
+| ML-28 | Taxonomy attribute names and choice values, widget labels and extension step names come from the string catalog and show in the reader's language, with the English label as fallback. | Taxonomy attributes and choices: `crates/roym_web/ui/src/taxonomy/taxonomy.test.ts` ("an attribute and its choices show their labels", fallback and unknown cases), `crates/roym_core/src/taxonomy/tests.rs` (the attribute checks); widget and extension labels follow in M08C/M08D |
 
 ## Design
 
@@ -190,11 +190,20 @@ Most cross-language trade needs only layers A and B. The buyer searches by categ
 **Categories.** A category stays a token of `[a-z0-9-]`, as today. The wire shape of `ListingPayload.categories` does not change. What changes is where the tokens come from:
 
 - Roym ships a **base taxonomy**: a data file in `crates/roym_core` with each code and its parent code (for a simple tree). The codes and structure live in the data file. Labels per language live in the Hub's taxonomy label files (`src/i18n/taxonomy/<tag>.ftl`), one per language. M08D adds attribute labels to the same label files.
-- The Hub category picker offers only taxonomy codes. It shows labels in the user's language, and it searches those labels in any language the taxonomy has.
+- The Hub category picker offers taxonomy codes, plus a "use your own code" choice for a well-formed code not in the taxonomy. It shows labels in the user's language, and it searches those labels in the UI language, English, and the code itself.
 - `ListingPayload::validate` still accepts any well-formed token. A code outside the base taxonomy is allowed, so a group can use its own codes before they are added. The Hub shows such a code as the raw code (ML-7).
 - The same codes are used in `request.categories` and, in M8, in wants.
 
 Rejected: validating categories against the taxonomy inside `validate`. Then every taxonomy change would need a new build on every node before old nodes could read new listings.
+
+**Decided 2026-11-07, the base taxonomy:**
+
+- **Data file and parser.** The base taxonomy is `crates/roym_core/taxonomy/base.json`, parsed and validated by `roym_core::taxonomy`. It holds 105 categories (14 groups, 91 children), 17 units, 6 payment methods, and 6 attributes across 12 categories with 16 choices.
+- **Hierarchy.** Two levels: groups (no parent) and leaf categories (parent). Only leaf categories can be picked; groups serve as headings. Search by group comes with M08D.
+- **Labels.** Kept in `src/i18n/taxonomy/<tag>.ftl` (English and Hindi), lazy-loaded alongside the language string catalog. `taxonomyMessageIds()` ensures complete coverage between the data file and label catalogs. M08D adds attribute labels to the same label files.
+- **Code rules across services.** Listing `product.unit`, listing `payment.methods`, quote `terms.payment_methods`, payment acknowledgement `method`, and SynOrg settings `categories` all enforce lowercase `[a-z0-9-]`.
+- **Hub pickers.** A shared category picker component is used across the listing editor, request form, directory search, and SynOrg settings. It offers taxonomy categories and an own-code option for well-formed custom codes. Filter searches the UI language, English, and the code itself.
+- **Shown labels.** Cards, directory search hits, and SynOrg credential displays show labels for taxonomy codes, falling back to the raw code for unknown or own codes.
 
 **Units.** `ProductDetail.unit` is a free string today (`crates/roym_core/src/listing.rs:104`, up to 32 bytes). It becomes a code from a short unit list in `crates/roym_core` (for example `kg`, `g`, `l`, `ml`, `piece`, `dozen`, `hour`). Each code has labels per language. Using [UN/CEFACT Recommendation 20](https://unece.org/trade/uncefact/cl-recommendations) codes was considered. They are hard to read in records (`KGM`, `H87`), and Roym needs only a few units. Roym keeps its own short codes.
 
@@ -460,6 +469,12 @@ Checked: `@fluent/bundle` 0.19.1 (Apache-2.0, no runtime dependencies) adds 4,20
 - **Different from the plan: the Hindi sign-in messages name only the cause.** `login-error-http`, `login-error-challenge`, `login-error-service` and `login-error-methods` do not repeat "sign-in failed", because `login-failed` already says it. `login-error-http` has no Devanagari letter (`HTTP { $status }`).
 - **Different from the plan: `NO_WORDS` in `catalog.test.ts`.** It holds `terms-range-separator`, `tab-synorg` and the messages that are only values and punctuation (`listing-version`, `listing-slot-line`, `safety-report-row`, `login-error-http`). There is no command message in the list, because every command sits inside a Hindi sentence.
 - **Different from the plan: more entries in the list of allowed Latin words, and whole-word matching.** The sweep also needs `HTTP`, `JSON`, `ISO-4217`, `EUR` and `USD` (Hindi messages that name a protocol, a format or an example code), `did:key:...`, `item` (the unit the listing editor starts with), and `am` and `pm`, which `Intl` writes in Latin letters for Hindi times (a backlog row records this). An item matches as a whole word, so `am` does not hide the start of another word.
+- **Labels in Fluent files and not in the base data file.** `crates/roym_core/taxonomy/base.json` defines codes and hierarchy without language strings. Labels live in `src/i18n/taxonomy/<tag>.ftl`, loaded per language with English fallback, keeping the data file compact and localization unified.
+- **The code rule applies to five fields, not two.** Listing `product.unit`, listing `payment.methods`, quote `terms.payment_methods`, payment acknowledgement `method`, and SynOrg settings `categories` all enforce `listing::valid_token` (`[a-z0-9-]`, 1..=32 or 1..=64 bytes).
+- **The category picker offers an own-code choice.** When the user types a valid code not present in the taxonomy, the picker shows an option to use that own code.
+- **Category groups cannot be picked.** Only leaf categories can be selected; groups serve as visual headings. Searching by group is deferred to M08D.
+- **The category picker searches the UI language, English, and the code itself.** It does not search across all installed languages, avoiding premature loading of untargeted catalogs.
+- **A reader's view of another node's product unit is deferred to M08D.** In B2, the unit appears in the listing editor and payment acknowledgement cards; directory hits do not display product units until shop browse lands in M08D.
 
 ## Close-out
 
