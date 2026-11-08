@@ -1,0 +1,196 @@
+{
+  "categories": [
+    { "code": "home-repair" },
+    { "code": "plumbing", "parent": "home-repair" },
+    { "code": "electrical", "parent": "home-repair" },
+    { "code": "carpentry", "parent": "home-repair" },
+    { "code": "painting", "parent": "home-repair" },
+    { "code": "masonry", "parent": "home-repair" },
+    { "code": "waterproofing", "parent": "home-repair" },
+    { "code": "appliance-repair", "parent": "home-repair" },
+    { "code": "ac-repair", "parent": "home-repair" },
+    { "code": "water-purifier-service", "parent": "home-repair" },
+    { "code": "pest-control", "parent": "home-repair" },
+    { "code": "locksmith", "parent": "home-repair" },
+
+    { "code": "cleaning" },
+    { "code": "home-cleaning", "parent": "cleaning" },
+    { "code": "deep-cleaning", "parent": "cleaning" },
+    { "code": "water-tank-cleaning", "parent": "cleaning" },
+    { "code": "sofa-carpet-cleaning", "parent": "cleaning" },
+    { "code": "laundry", "parent": "cleaning" },
+    { "code": "dry-cleaning", "parent": "cleaning" },
+
+    { "code": "household-help" },
+    { "code": "cook", "parent": "household-help" },
+    { "code": "domestic-help", "parent": "household-help" },
+    { "code": "babysitting", "parent": "household-help" },
+    { "code": "elder-care", "parent": "household-help" },
+    { "code": "driver", "parent": "household-help" },
+    { "code": "security-guard", "parent": "household-help" },
+
+    { "code": "vehicles" },
+    { "code": "bicycle-repair", "parent": "vehicles" },
+    { "code": "two-wheeler-repair", "parent": "vehicles" },
+    { "code": "car-repair", "parent": "vehicles" },
+    { "code": "car-wash", "parent": "vehicles" },
+    { "code": "taxi", "parent": "vehicles" },
+    { "code": "auto-rickshaw", "parent": "vehicles" },
+    { "code": "vehicle-rental", "parent": "vehicles" },
+
+    { "code": "moving-delivery" },
+    { "code": "packers-movers", "parent": "moving-delivery" },
+    { "code": "courier", "parent": "moving-delivery" },
+    { "code": "local-delivery", "parent": "moving-delivery" },
+    { "code": "goods-transport", "parent": "moving-delivery" },
+
+    { "code": "personal-care" },
+    { "code": "salon", "parent": "personal-care" },
+    { "code": "beauty-parlour", "parent": "personal-care" },
+    { "code": "barber", "parent": "personal-care" },
+    { "code": "massage", "parent": "personal-care" },
+    { "code": "mehndi", "parent": "personal-care" },
+    { "code": "tailoring", "parent": "personal-care" },
+
+    { "code": "health" },
+    { "code": "doctor", "parent": "health" },
+    { "code": "nursing", "parent": "health" },
+    { "code": "physiotherapy", "parent": "health" },
+    { "code": "pharmacy", "parent": "health" },
+    { "code": "diagnostic-lab", "parent": "health" },
+    { "code": "yoga", "parent": "health" },
+
+    { "code": "education" },
+    { "code": "tuition", "parent": "education" },
+    { "code": "music-lessons", "parent": "education" },
+    { "code": "dance-lessons", "parent": "education" },
+    { "code": "language-lessons", "parent": "education" },
+    { "code": "computer-lessons", "parent": "education" },
+    { "code": "driving-lessons", "parent": "education" },
+
+    { "code": "events" },
+    { "code": "catering", "parent": "events" },
+    { "code": "photography", "parent": "events" },
+    { "code": "decoration", "parent": "events" },
+    { "code": "tent-house", "parent": "events" },
+    { "code": "priest", "parent": "events" },
+    { "code": "event-music", "parent": "events" },
+
+    { "code": "professional" },
+    { "code": "accounting", "parent": "professional" },
+    { "code": "tax-filing", "parent": "professional" },
+    { "code": "legal-help", "parent": "professional" },
+    { "code": "documents-help", "parent": "professional" },
+    { "code": "computer-repair", "parent": "professional" },
+    { "code": "mobile-repair", "parent": "professional" },
+    { "code": "printing", "parent": "professional" },
+    { "code": "web-design", "parent": "professional" },
+
+    { "code": "food" },
+    { "code": "tiffin", "parent": "food" },
+    { "code": "home-food", "parent": "food" },
+    { "code": "bakery", "parent": "food" },
+    { "code": "sweets", "parent": "food" },
+    { "code": "fruits-vegetables", "parent": "food" },
+    { "code": "dairy", "parent": "food" },
+    { "code": "groceries", "parent": "food" },
+    { "code": "meat-fish", "parent": "food" },
+
+    { "code": "goods" },
+    { "code": "clothing", "parent": "goods" },
+    { "code": "footwear", "parent": "goods" },
+    { "code": "electronics", "parent": "goods" },
+    { "code": "mobile-phones", "parent": "goods" },
+    { "code": "furniture", "parent": "goods" },
+    { "code": "books-stationery", "parent": "goods" },
+    { "code": "hardware", "parent": "goods" },
+    { "code": "handicrafts", "parent": "goods" },
+    { "code": "second-hand", "parent": "goods" },
+
+    { "code": "agriculture" },
+    { "code": "gardening", "parent": "agriculture" },
+    { "code": "farm-produce", "parent": "agriculture" },
+    { "code": "seeds-plants", "parent": "agriculture" },
+    { "code": "farm-labour", "parent": "agriculture" },
+    { "code": "tractor-hire", "parent": "agriculture" },
+
+    { "code": "animals" },
+    { "code": "pet-care", "parent": "animals" },
+    { "code": "veterinary", "parent": "animals" },
+    { "code": "livestock", "parent": "animals" }
+  ],
+  "units": [
+    "piece",
+    "pair",
+    "set",
+    "dozen",
+    "pack",
+    "box",
+    "kg",
+    "g",
+    "quintal",
+    "l",
+    "ml",
+    "m",
+    "sq-ft",
+    "hour",
+    "day",
+    "visit",
+    "km"
+  ],
+  "payment_methods": [
+    "cash",
+    "upi",
+    "bank-transfer",
+    "card",
+    "cheque",
+    "wallet"
+  ],
+  "attributes": [
+    {
+      "code": "diet",
+      "categories": ["food"],
+      "value": {
+        "type": "choice",
+        "choices": ["veg", "egg", "non-veg", "vegan", "jain"]
+      }
+    },
+    {
+      "code": "fabric",
+      "categories": ["clothing"],
+      "value": {
+        "type": "choice",
+        "choices": ["cotton", "silk", "wool", "linen", "synthetic"]
+      }
+    },
+    {
+      "code": "size",
+      "categories": ["clothing", "footwear"],
+      "value": {
+        "type": "choice",
+        "choices": ["xs", "s", "m", "l", "xl", "xxl"]
+      }
+    },
+    {
+      "code": "seats",
+      "categories": ["taxi", "vehicle-rental"],
+      "value": {
+        "type": "number"
+      }
+    },
+    {
+      "code": "home-visit",
+      "categories": ["home-repair", "health", "personal-care", "education"],
+      "value": {
+        "type": "yes-no"
+      }
+    },
+    {
+      "code": "brand",
+      "categories": ["electronics", "mobile-phones"],
+      "value": {
+        "type": "text"
+      }
+    }
+  ]
+}
