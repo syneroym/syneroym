@@ -145,4 +145,37 @@ describe("the listing list", () => {
     const payment = savedParams!.payment as Record<string, unknown>;
     expect(payment.methods).toEqual(["cash", "upi"]);
   });
+
+  it("status select has class listing-status-select and translation rows add/remove/cap at 4", async () => {
+    stubRpc({ "listing.list": () => ({ listings: [] }) });
+    const host = document.createElement("div");
+    await renderListings(host);
+
+    const statusSel = host.querySelector(".listing-status-select");
+    expect(statusSel).not.toBeNull();
+
+    const addBtn = host.querySelector<HTMLButtonElement>(".listing-translation-add-btn")!;
+    expect(addBtn).not.toBeNull();
+    expect(addBtn.disabled).toBe(false);
+
+    expect(host.querySelectorAll(".listing-translation-row")).toHaveLength(0);
+
+    // Add row 1
+    addBtn.click();
+    expect(host.querySelectorAll(".listing-translation-row")).toHaveLength(1);
+    expect(addBtn.disabled).toBe(false);
+
+    // Add row 2, 3, 4
+    addBtn.click();
+    addBtn.click();
+    addBtn.click();
+    expect(host.querySelectorAll(".listing-translation-row")).toHaveLength(4);
+    expect(addBtn.disabled).toBe(true);
+
+    // Remove one row
+    const rmBtn = host.querySelector<HTMLButtonElement>(".listing-translation-remove-btn")!;
+    rmBtn.click();
+    expect(host.querySelectorAll(".listing-translation-row")).toHaveLength(3);
+    expect(addBtn.disabled).toBe(false);
+  });
 });

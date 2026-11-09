@@ -306,6 +306,38 @@ describe("text that the person signs", () => {
     expect(value(".quote-disp-input")).toBe(t("quote-default-dispute"));
     expect(value(".quote-canc-input")).toMatch(/[ऀ-ॿ]/);
   });
+
+  it("quote form sends lang from its control in terms, starting at UI language", async () => {
+    let sentTerms: Record<string, unknown> | undefined;
+    stubRpc({
+      "quote.set": (params) => {
+        sentTerms = (params as { terms: Record<string, unknown> }).terms;
+        return { quote_id: "q1", record_id: "rec_q1" };
+      },
+    });
+
+    const anchor = document.createElement("div");
+    const request = { record_id: "rec_req" } as CardRow;
+    openQuoteForm(anchor, request, "conv1", async () => {});
+
+    const langSel = anchor.querySelector<HTMLSelectElement>(".quote-text-lang")!;
+    expect(langSel).not.toBeNull();
+    expect(langSel.value).toBe("en");
+
+    // Change to hi
+    langSel.value = "hi";
+
+    anchor.querySelector<HTMLInputElement>(".quote-scope-input")!.value = "Scope of work";
+    anchor.querySelector<HTMLInputElement>(".quote-currency-input")!.value = "EUR";
+    anchor.querySelector<HTMLInputElement>(".quote-amount-input")!.value = "100";
+    anchor.querySelector<HTMLInputElement>(".quote-payee-input")!.value = "Alice";
+
+    const submitBtn = anchor.querySelector<HTMLButtonElement>(".submit-quote-button")!;
+    submitBtn.click();
+
+    await vi.waitFor(() => expect(sentTerms).toBeDefined());
+    expect(sentTerms!.lang).toBe("hi");
+  });
 });
 
 describe("the message state word", () => {
@@ -380,5 +412,43 @@ describe("request form category picker reset", () => {
     await vi.waitFor(() =>
       expect(host.querySelectorAll(".request-cats-input .picker-chip")).toHaveLength(0),
     );
+  });
+
+  it("request form sends lang from its control, starting at UI language", async () => {
+    let sentLang: string | undefined;
+    stubRpc({
+      whoami: () => ({ person_did: "did:key:me" }),
+      "conversation.list": () => ({
+        conversations: [{ id: "conv-1", peer_address: "peer-1", message_count: 0 }],
+      }),
+      "transaction.sync": () => ({}),
+      "transaction.thread": () => ({ cards: [] }),
+      "conversation.history": () => ({ messages: [] }),
+      "request.set": (params) => {
+        sentLang = (params as { lang: string }).lang;
+        return { request_id: "req-1", record_id: "rec-1" };
+      },
+    });
+
+    const host = document.createElement("div");
+    await renderMessages(host);
+
+    const toggleBtn = host.querySelector<HTMLButtonElement>("button.toggle-request-form")!;
+    toggleBtn.click();
+
+    const langSel = host.querySelector<HTMLSelectElement>(".request-text-lang")!;
+    expect(langSel).not.toBeNull();
+    expect(langSel.value).toBe("en");
+
+    langSel.value = "ta";
+
+    const desc = host.querySelector<HTMLTextAreaElement>(".request-desc-input")!;
+    desc.value = "Need bike repair";
+
+    const sendBtn = host.querySelector<HTMLButtonElement>("button.send-request-button")!;
+    sendBtn.click();
+
+    await vi.waitFor(() => expect(sentLang).toBeDefined());
+    expect(sentLang).toBe("ta");
   });
 });

@@ -14,7 +14,8 @@ import {
 import { publishRefusalWords } from "../directory/membership";
 import { checkbox, codeOptions, errText, field, input, refiller, select, text } from "../dom";
 import { formatDateTime } from "../i18n/format";
-import { codeWord, messageId, t } from "../i18n/i18n";
+import { codeWord, currentLanguage, messageId, t } from "../i18n/i18n";
+import { RECORD_LANGUAGES, textLangSelect } from "../i18n/text_lang";
 import { call } from "../rpc";
 import { categoryPicker } from "../taxonomy/category_picker";
 import { methodLabel, PAYMENT_METHODS, unitLabel, UNITS } from "../taxonomy/taxonomy";
@@ -228,8 +229,92 @@ function buildEditor(onSaved: () => Promise<void>): { root: HTMLElement } {
   const slug = input(t("listing-placeholder-slug"));
   const title = input(t("listing-placeholder-title"));
   title.className = "listing-title-input";
+  const langSelect = textLangSelect("listing-text-lang", currentLanguage());
   const summary = input(t("listing-placeholder-summary"));
   summary.className = "listing-summary-input";
+
+  const translationsWrap = document.createElement("div");
+  translationsWrap.className = "listing-translations";
+  translationsWrap.appendChild(text("h4", t("listing-translations-heading")));
+
+  const translationsList = document.createElement("div");
+  translationsList.className = "listing-translations-list";
+
+  const addTranslationBtn = text(
+    "button",
+    t("listing-translation-add"),
+    "button listing-translation-add-btn",
+  ) as HTMLButtonElement;
+  addTranslationBtn.type = "button";
+
+  interface TranslationRow {
+    langSelect: HTMLSelectElement;
+    titleInput: HTMLInputElement;
+    summaryInput: HTMLInputElement;
+    rowEl: HTMLElement;
+  }
+  const translationRows: TranslationRow[] = [];
+
+  function updateAddButton() {
+    addTranslationBtn.disabled = translationRows.length >= 4;
+  }
+
+  function addTranslationRow() {
+    if (translationRows.length >= 4) return;
+    const rowEl = document.createElement("div");
+    rowEl.className = "listing-translation-row";
+
+    const usedLangs = new Set([
+      langSelect.value,
+      ...translationRows.map((r) => r.langSelect.value),
+    ]);
+    const defaultTag = RECORD_LANGUAGES.find((tag) => !usedLangs.has(tag)) || "en";
+
+    const rowLang = textLangSelect("listing-translation-lang", defaultTag);
+    const rowTitle = input(t("listing-label-translation-title"));
+    rowTitle.className = "listing-translation-title";
+    const rowSummary = input(t("listing-label-translation-summary"));
+    rowSummary.className = "listing-translation-summary";
+    const rmBtn = text(
+      "button",
+      t("listing-translation-remove"),
+      "button listing-translation-remove-btn",
+    ) as HTMLButtonElement;
+    rmBtn.type = "button";
+
+    const rowObj: TranslationRow = {
+      langSelect: rowLang,
+      titleInput: rowTitle,
+      summaryInput: rowSummary,
+      rowEl,
+    };
+    translationRows.push(rowObj);
+
+    rmBtn.onclick = () => {
+      const idx = translationRows.indexOf(rowObj);
+      if (idx !== -1) {
+        translationRows.splice(idx, 1);
+        rowEl.remove();
+        updateAddButton();
+      }
+    };
+
+    rowEl.append(
+      field(t("listing-text-language"), rowLang),
+      field(t("listing-label-translation-title"), rowTitle),
+      field(t("listing-label-translation-summary"), rowSummary),
+      rmBtn,
+    );
+    translationsList.appendChild(rowEl);
+    updateAddButton();
+  }
+
+  addTranslationBtn.onclick = () => {
+    addTranslationRow();
+  };
+
+  translationsWrap.append(translationsList, addTranslationBtn);
+
   const categories = categoryPicker({
     className: "listing-categories-input",
     max: 8,
@@ -237,11 +322,14 @@ function buildEditor(onSaved: () => Promise<void>): { root: HTMLElement } {
   const address = input(t("listing-placeholder-address"));
   address.className = "listing-address-input";
   const status = select(codeOptions(STATUS_LABELS, ["active", "draft", "withdrawn"]), "active");
+  status.classList.add("listing-status-select");
 
   root.append(
     field(t("listing-label-title"), title),
     field(t("listing-label-slug"), slug),
+    field(t("listing-text-language"), langSelect),
     field(t("listing-label-summary"), summary),
+    translationsWrap,
     field(t("listing-label-categories"), categories.root),
     field(t("listing-label-address"), address),
     field(t("listing-label-status"), status),
@@ -372,6 +460,12 @@ function buildEditor(onSaved: () => Promise<void>): { root: HTMLElement } {
       slug: slug.value,
       title: title.value,
       summary: summary.value,
+      lang: langSelect.value,
+      translations: translationRows.map((r) => ({
+        lang: r.langSelect.value,
+        title: r.titleInput.value,
+        summary: r.summaryInput.value,
+      })),
       categories: categories.codes(),
       conversation_address: address.value,
       status: status.value as ListingForm["status"],
