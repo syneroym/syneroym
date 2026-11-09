@@ -3,7 +3,7 @@
 *Reader: the developer (or AI) who implements slice B3a. You do not have the
 planning conversation. This plan is meant to stand alone.*
 
-**Status: plan written, 2026-11-09. Owner questions open (section 2.1).**
+**Status: plan review round 1 done, 2026-11-09. Owner questions answered 2026-11-05. P-items folded in.**
 
 **Size and PR.** M, at the top of M (see Q8). One PR on
 `feat/m08b-b3a-lang-records`, with the commits of section 6 in that order.
@@ -169,6 +169,12 @@ A receipt card is drawn from the receipt payload only; it has no quote.
 - (c) **Both in `AgreedTerms`.** Each receipt half then also carries every
   translation, so a signed acceptance holds text that does not bind.
 
+Owner answer: (a), 2026-11-05. It needs P1 fixed. `lang` goes in `AgreedTerms`
+and `translations` on `QuotePayload`. When a quote card shows an author
+translation, it adds a warning line that the original text is what binds
+(`record-text-original-binds`, P1). The gap before `viewed_lang` (B5) is
+recorded as a deviation.
+
 **Q2. Which fields does an author translation hold? (blocks Step 4)**
 
 The change doc says "the same translatable fields as the record (for a
@@ -187,6 +193,11 @@ addresses are not translated".
   reader reads first.
 - (b) **As (a), plus the three service lists** (each a list of at most 32
   strings). A listing translation then needs list rules too.
+
+Owner answer: (a), 2026-11-05. Translatable fields are profile `about`;
+listing `title`, `summary`; request `description`; quote `scope`,
+`cancellation_terms`, `refund_terms`, `dispute_path`. The listing service
+lists get a backlog row for M08D.
 
 **Q3. Which form of a tag does the wire take? (blocks Step 3)**
 
@@ -208,6 +219,12 @@ must hold the same bytes that the struct reads back.
   client, but the input types need a second tag type (lenient) beside the
   record type (strict).
 
+Owner answer: (a), 2026-11-05. It carries the P10 coupling, which the plan
+states: the wire accepts only canonical syntax form, refusing non-canonical
+tags. This couples signed records to `icu_locale_core` printer output; the S0
+table is a golden test, and any printer change on upgrade requires an owner
+decision.
+
 **Q4. Is `lang` required in every method input? (blocks Step 4)**
 
 About 145 lines name one of the four `*.set` methods: Rust parity
@@ -226,6 +243,9 @@ field and a missing required field with `-32602` and `data.field`
   Fewer test edits, but a record tagged `und` defeats the point, and a
   client that forgets the field gets no error.
 
+Owner answer: (a), 2026-11-05. `lang` is required in every method input
+(`profile.set`, `listing.set`, `request.set`, `quote.set`).
+
 **Q5. In which Hub forms can the author add translations? (blocks Step 7)**
 
 ML-11: "The author can add up to a fixed number of translations". The Hub
@@ -241,6 +261,11 @@ to `:33`), the listing editor, the request form and the quote form.
   B3a an M slice.
 - (b) **All four forms.** The profile form also needs a new `about`
   field.
+
+Owner answer: (a), 2026-11-05. It needs P6 fixed: translations can be added in
+the listing editor only. The Hub profile form loads `about` and `translations`
+from the stored profile envelope and sends them back unchanged so a Hub save
+does not erase them (P6).
 
 **Q6. Which languages does the Hub offer for a record? (blocks Step 6)**
 
@@ -261,6 +286,10 @@ rows and the profile languages. The Hub's own catalogs are only `en` and
 - (c) **Only the catalog languages (`en`, `hi`).** Too few: a Tamil
   speaker cannot tag Tamil text.
 
+Owner answer: (a), 2026-11-05. It needs P12 added: a fixed list
+`RECORD_LANGUAGES` in the Hub. Unit tests verify that every entry in
+`RECORD_LANGUAGES` and every catalog tag is in canonical syntax form (P12).
+
 **Q7. What does story 40 show for B3a? (blocks Step 9)**
 
 task.md's "Demo" paragraph (owner confirmed 2026-11-05) builds story 40 in
@@ -280,6 +309,10 @@ line.
   Playwright test shows the new parts. The change doc's `demo:` list
   already names story 40, so nothing changes there.
 
+Owner answer: (a), 2026-11-05. One step in story 40 in the listing editor: with
+Hindi Hub, Alice adds an English translation row and types an English title
+without saving.
+
 **Q8. One PR or two? (blocks Step 2)**
 
 B3a touches one new crate, `roym_core`, four services, `roymctl`, the
@@ -293,6 +326,8 @@ slice.
   *Recommended.*
 - (b) **Two PRs:** B3a-1 (Steps 2 to 5) and B3a-2 (Steps 6 to 10). Two
   review cycles, and a status row more.
+
+Owner answer: (a), 2026-11-05. One PR on `feat/m08b-b3a-lang-records`.
 
 ### 2.2 Points found while reading
 
@@ -325,11 +360,14 @@ slice.
    ([quote_ops.rs:79](../../../../crates/roym_transaction/src/app/quote_ops.rs#L79))
    with `QuoteTermsInput` (`:38`), which `into_agreed_terms` (`:57`) copies
    field by field; the payload is built at `:189`.
-4. **`transaction.rs` is 776 lines** and **`transaction/tests.rs` is 799
-   lines.** Neither is in `xtask/oversized-test-files.txt`, so both are
-   capped at 800. B3a adds fields, a variant and checks to the first, and
-   fixtures and tests to the second. So both are split first, with no
-   change of behaviour (D-B3a-8).
+4. **`transaction.rs` is 776 lines**, **`transaction/tests.rs` is 799
+   lines**, and **`ListingPayload::validate` is at the clippy limit (100 lines).**
+   Neither file is in `xtask/oversized-test-files.txt`, so both are capped at
+   800. B3a adds fields, a variant and checks to the first, and fixtures and
+   tests to the second. `ListingPayload::validate` would exceed the 100-line
+   clippy limit once translation checks are added. So both files are split and
+   `validate` is decomposed into helper methods first, with no change of
+   behaviour (D-B3a-3, D-B3a-8, P3).
 5. **Card data is the record payload.** The transaction service files a
    card with `data: Some(envelope.payload)`
    ([app.rs:504](../../../../crates/roym_transaction/src/app.rs#L504)),
@@ -422,11 +460,14 @@ slice.
     change doc's two Hub rules: a stored `iw` and a browser `he` both
     become `he` in `Intl.Locale`, and a throw is "unknown". B3a moves both
     into one module and exports them (D-B3a-9), so there is one copy.
-14. **`saveProfile` finds inputs by position.** The e2e step
+14. **`saveProfile` finds inputs by position and asserts on `<p>`.** The e2e step
     ([hub-helpers.ts:46](../../../../crates/substrate/tests/e2e/hub-helpers.ts#L46)
-    to `:53`) fills `.profile-screen input[type="text"]` number 0 and 1.
-    The new profile controls must be `<select>` and buttons, never text
-    inputs, or stories 20 and the Hub suite break.
+    to `:53`) fills `.profile-screen input[type="text"]` number 0 and 1, and
+    checks `.profile-screen p` in strict mode. The new profile controls must be
+    `<select>` and buttons, never text inputs. Furthermore, every button must have
+    `type="button"` so it does not submit the form, and no new element in
+    `.profile-screen` may be a `<p>` (use `<ul>`, `<li>`, `<span>`) to avoid
+    strict-mode locator failure (P5).
 15. **The wire-words test fills every optional field**
     ([wire_words.rs:5](../../../../crates/roym_core/src/record/tests/wire_words.rs#L5)
     to `:7`). Its samples get `translations` too.
@@ -446,12 +487,19 @@ slice.
     text language that is not the UI language, the record mixes two
     languages. The record is tagged with its main language, as the change
     doc allows. A backlog row records it (section 8).
+18. **`roym-hub.spec.ts:764` selects the first `<select>` in the listing editor.**
+    ([roym-hub.spec.ts:764](../../../../crates/substrate/tests/e2e/tests/roym-hub.spec.ts#L764))
+    does `page.locator('.listing-editor select').first().selectOption('draft')`.
+    Today the status list is the first `<select>`. Adding `textLangSelect` before
+    status would break this positional pick. The status `<select>` in `listings.ts`
+    gets the class `.listing-status-select`, and `roym-hub.spec.ts:764` is updated
+    to target `.listing-status-select` (P4).
 
 ## 3. What B3a meets
 
 | Criterion | What B3a does | Test |
 | --- | --- | --- |
-| ML-5 (record text) | Every block of record text in the Hub has `lang` set to the shown version's tag, or `""` when `Intl.Locale` refuses the tag. The label of a row is a separate element in the UI language. | `record_text.test.ts` ("sets lang on the shown text", "an unknown tag gives an empty lang"); `templates.test.ts` (request, quote and receipt rows); `directory.test.ts` (hit title and summary); `roym-hub.spec.ts` (the title of a hit has `lang`) |
+| ML-5 (record text) | Every block of record text in the Hub for `profile`, `listing`, `request`, `quote` and fulfilment receipt (at D-B3a-14) has `lang` set to the shown version's tag, or `""` when `Intl.Locale` refuses the tag. The label of a row is a separate element in the UI language. | `record_text.test.ts` ("sets lang on the shown text", "an unknown tag gives an empty lang"); `templates.test.ts` (request, quote, receipt and fulfilment receipt rows); `directory.test.ts` (hit title and summary); `roym-hub.spec.ts` (the title of a hit has `lang`) |
 | ML-10 | `lang` is required on `profile`, `listing`, `request` and on a quote's `terms` (Q1). A missing tag, a malformed tag and a tag not in canonical form fail. | `text_lang` unit tests (the S0 table); `listing/tests.rs`, `transaction/tests/lang.rs`, `person.rs` tests (missing, malformed, not canonical); `method_contract` (`-32602` with `data.field = "lang"`) |
 | ML-11 | Up to 4 author translations on each of the four records, each with its own tag; the listing editor adds them (Q5); the Hub shows one as "translated by the author". | The same Rust test files (count, duplicate, same as the record, empty and long fields); `editor.test.ts`, `listings.test.ts`; `record_text.test.ts` |
 | ML-12 | The Hub shows the best text version for the reader languages, always says which one it shows when the record has a translation, and has a button for the original. | `record_text.test.ts` (`bestVersion` table, the note and the button); `roym-hub.spec.ts` ("an English reader sees the author's English title of a Hindi listing and can open the original") |
@@ -461,13 +509,19 @@ slice.
 the roym-multilingual change doc, so every B3a decision and deviation goes
 there and only there, at close-out (Step 10): decisions into "C.
 Language-tagged free text" as a new "Decided <date>, language-tagged
-records" list; deviations under `## Deviations`. The deviations known now
-(they depend on the owner answers): the quote's `lang` is in its terms
-(Q1); the list of translatable fields (Q2); a tag that is not canonical is
-refused, not rewritten (Q3); translations in the listing editor only
-(Q5); the fixed language list (Q6); directory search does not index
-author translations (D-B3a-6); the reader languages do not include the
-reader's own profile `languages` (D-B3a-10).
+records" list; deviations under `## Deviations`. The deviations (from the
+owner answers and plan review): the quote's `lang` is in its terms (Q1); the
+list of translatable fields (Q2); a tag that is not canonical is refused, not
+rewritten (Q3), which couples signed records to `icu_locale_core` printer output
+(P10); translations in the listing editor only (Q5); the fixed language list
+(Q6); directory search does not index author translations (D-B3a-6); the reader
+languages do not include the reader's own profile `languages` (D-B3a-10); ML-5
+covers record text of the four records at D-B3a-14 and the fulfilment receipt
+(P2), not names, own listing rows or untagged records (P7); ML-12 shows a note
+only when a record has an author translation, not when a record has a single
+version (P7); and B3a shows author translations on quote cards before
+`viewed_lang` exists (B5), covering the gap with the warning that the original
+text binds (`record-text-original-binds`, P1).
 
 ## 4. Behaviour-change audit
 
@@ -483,7 +537,7 @@ substrate behaviour changes. Every refusal below is `-32602`.
 | W3 | `listing.set` input and `listing` payload | — | `lang` (required), `translations?` (0 to 4, each `{lang, title, summary?}`) |
 | W4 | `request.set` input and `request` payload | — | `lang` (required), `translations?` (each `{lang, description}`) |
 | W5 | `quote.set` input | `terms` without `lang` | `terms.lang` (required), top-level `translations?` (each `{lang, scope, cancellation_terms, refund_terms, dispute_path}`) (Q1) |
-| W6 | `quote` payload and both `agreement-receipt` halves | `terms` without `lang` | `terms.lang`; the quote also has `translations`. A receipt copies `terms`, so it carries `terms.lang` and no translations. `halves_agree` compares `terms`, so it now also compares `lang` |
+| W6 | `quote` payload, both `agreement-receipt` halves, and `fulfilment-receipt` payload | `terms` without `lang` | `terms.lang`; the quote also has `translations`. A receipt and fulfilment receipt copy `terms`, so they carry `terms.lang` and no translations. `halves_agree` compares `terms`, so it now also compares `lang` (P2) |
 | W7 | `directory.find` output, each hit | `title`, `summary`, … | also `lang` and `translations` of the listing (D-B3a-6) |
 | W8 | Every check of a stored or received record | — | A record with no `lang`, a malformed tag, or a tag not in canonical form is refused (Q3): `listing.verify`, `request.verify`, `quote.verify`, `agreement.verify`, agreement acceptance, card filing (the card shows as refused), `contacts` profile import, the directory client half (the hit goes to `refused`), and `*.import` of a backup bundle |
 | W9 | `roymctl roym transaction request` and `quote` | no language flag | a required `--lang <tag>`, put in canonical form by `LangTag::parse` before the call (Q3, Q4) |
@@ -573,6 +627,13 @@ that depend on an owner answer say so.
   cargo feature: S0 showed that a guest that calls only the tag code does
   not pay for `nfc()` (task.md, B3a), so when B4a adds `nfc()` to this
   crate, it needs no feature either.
+
+  The canonical text is part of what a signature covers, so `Deserialize`
+  enforces `parse_canonical` on verify too (Q3 (a)). This couples signed
+  records to the `icu_locale_core` printer output (P10). The S0 table is a
+  golden test, and any upgrade of `icu_locale_core` that changes printer
+  output requires an owner decision (for example: accepting any well-formed
+  tag on verify while keeping strict canonical form on input).
 - **D-B3a-2. Shared record rules in `roym_core::lang`** (new file
   `crates/roym_core/src/lang.rs`, `pub mod lang;` in `lib.rs`).
 
@@ -614,9 +675,11 @@ that depend on an owner answer say so.
 
   Tags are compared as canonical strings, so `hi` and `hi-IN` are two
   different translations. The limit 4 is the "small number such as 4" of
-  the change doc. A listing with 4 translations of a full title and
-  summary is at most about 11 KB of text, within the size of other
-  records.
+  the change doc. A quote with 4 translations of scope and three terms at
+  maximum length holds ~51.2 KB of text plus ~3 KB of other fields,
+  reaching ~55 KB (about 84% of the 64 KiB `MAX_PAYLOAD_BYTES` ceiling,
+  P9). A request is about 20 KB, a listing about 20 KB (with the service
+  lists), a profile about 5 KB.
 - **D-B3a-3. The record fields** (Q1 (a), Q2 (a)). Each translation struct
   sits beside its record, has `Serialize`, `Deserialize`, and no
   `deny_unknown_fields` (no record struct has it).
@@ -675,7 +738,13 @@ that depend on an owner answer say so.
   profile with translations and no `about` is refused
   (`TranslationWithoutAbout`). "Required" means not empty after `trim`,
   as the originals check. Field order in a struct is the order above; the
-  canonical encoding sorts keys anyway.
+  canonical encoding sorts keys anyway. `ListingPayload::validate` is at
+  the clippy line limit (100 lines), so it first decomposes its `location`
+  and `relationship` checks into private helper methods
+  `validate_location(&self) -> Result<(), ListingError>` and
+  `validate_relationship(&self) -> Result<(), ListingError>` in Step 2 with
+  no change of behaviour, and then adds `self.validate_translations()?` in
+  Step 4 (P3).
 - **D-B3a-4. Profile `languages`.** 0 to 8 tags, most preferred first, no
   two equal. An empty list is allowed: the person did not say. The Hub
   starts a new profile's list with the UI language (D-B3a-12).
@@ -699,12 +768,15 @@ that depend on an owner answer say so.
   half does not index translations: its index changes in B4b anyway, and
   B4b decides then (backlog row, section 8).
 - **D-B3a-7. `roymctl`.** `roym transaction request` and `roym
-  transaction quote` get a required `--lang <tag>`. The handler calls
-  `LangTag::parse` and sends `as_str()`; a bad tag stops before the call
-  with the `LangTagError` text. `roymctl` has no profile or listing
-  command, so nothing else changes. `docs/demo/demo.md:1290` and `:1294`
-  get `--lang en`.
-- **D-B3a-8. Two splits first, with no change of behaviour.**
+  transaction quote` get a required `--lang <tag>`. `handle_request`
+  extracts `build_request_params(…) -> Result<Value>` (the code before
+  `call_and_print`), which accepts `lang` and calls `LangTag::parse` (P11).
+  `build_quote_params` accepts `lang` the same way. Both handlers send
+  `as_str()`; a bad tag stops before the call with the `LangTagError` text.
+  This allows unit testing `build_request_params` and `build_quote_params`.
+  `roymctl` has no profile or listing command, so nothing else changes.
+  `docs/demo/demo.md:1290` and `:1294` get `--lang en`.
+- **D-B3a-8. Splits and decomposition first, with no change of behaviour.**
   `TransactionError` (`transaction.rs:262` to `:375`) moves to
   `crates/roym_core/src/transaction/error.rs`, with `mod error; pub use
   error::TransactionError;` in `transaction.rs`. In
@@ -714,8 +786,10 @@ that depend on an owner answer say so.
   `transaction/tests/verify.rs`; the fixtures (`sample_terms`,
   `sample_request`, `sample_quote`) and `sign_envelope` stay in `tests.rs`
   as `pub(super)`. Module layout: `transaction/tests.rs` + `transaction/tests/`
-  (AGENTS.md "Module layout"). New language tests go in
-  `transaction/tests/lang.rs`.
+  (AGENTS.md "Module layout"). In `crates/roym_core/src/listing.rs`,
+  `ListingPayload::validate` moves `location` and `relationship` checks into
+  private methods `validate_location` and `validate_relationship` (P3). New
+  language tests go in `transaction/tests/lang.rs`.
 - **D-B3a-9. Hub module `src/i18n/text_lang.ts`** (new). One place for tag
   work in the Hub:
 
@@ -738,7 +812,10 @@ that depend on an owner answer say so.
 
   `sameLanguage` is `matches` moved from `i18n.ts:89` (which then imports
   it), and the language picker calls `languageName(tag, tag)` (its own
-  name, as today), so there is one copy of each.
+  name, as today), so there is one copy of each. Every entry of
+  `RECORD_LANGUAGES` and every catalog tag is checked in unit tests to be
+  in canonical syntax form (`new Intl.Locale(tag).toString()` equals the
+  tag, P12).
 - **D-B3a-10. Hub module `src/records/record_text.ts`** (new).
 
   ```ts
@@ -769,7 +846,11 @@ that depend on an owner answer say so.
   text. The reader languages do not include the reader's own profile
   `languages`: that needs a `profile.get` before every card (backlog row).
   Message ids use the prefix `record-text-` (like `terms-`, a prefix for
-  a shared part, not a screen).
+  a shared part, not a screen). On the quote card (and receipt card), when
+  an author translation is shown, an additional warning line states: "The
+  original text, in { $language }, is what binds."
+  (`record-text-original-binds`, P1). This warns the reader before tapping
+  Accept until `viewed_lang` is added in B5.
 - **D-B3a-11. The text language control in the forms** (Q6 (a)). The
   profile form, the listing editor, the request form and the quote form
   each get `textLangSelect(...)` in a `field(t("<screen>-text-language"),
@@ -777,13 +858,20 @@ that depend on an owner answer say so.
   `request-text-lang`, `quote-text-lang`. It starts at
   `currentLanguage()`; the profile form, which loads the stored profile,
   starts at the stored `lang`. It is a `<select>`, so `saveProfile` keeps
-  working (section 2.2 point 14).
-- **D-B3a-12. The profile languages list.** Below the name and address, a
-  heading "Languages you speak", one row per language (name, a "move up"
-  button for every row but the first, a "remove" button), and an "add a
-  language" `<select>` of the `RECORD_LANGUAGES` not yet in the list. At
-  8 rows the add list is disabled. A new profile starts with the UI
-  language. The form sends the list in its order.
+  working (section 2.2 point 14). The listing editor's status `<select>`
+  receives the class `.listing-status-select`, and `textLangSelect` receives
+  `.listing-text-lang`, so e2e steps avoid positional selector collision (P4).
+- **D-B3a-12. The profile languages list and form persistence.** Below the name
+  and address, a heading "Languages you speak", one row per language (name, a
+  "move up" button for every row but the first, a "remove" button), and an "add a
+  language" `<select>` of the `RECORD_LANGUAGES` not yet in the list. At 8 rows
+  the add list is disabled. Every new button has `type="button"` so it does not
+  submit the form, and no element in `.profile-screen` is a `<p>` (use `<ul>`,
+  `<li>`, `<span>`) so `saveProfile` strict mode locator does not fail (P5).
+  The form loads `about` and `translations` from the stored profile envelope
+  (`env.payload`) and sends them back unchanged on save so a Hub save does not
+  erase them (P6). A new profile starts with the UI language. The form sends the
+  list in its order.
 - **D-B3a-13. The listing editor translations** (Q5 (a)). Below the
   summary, "Translations by you" with an "Add a translation" button. Each
   row: a `textLangSelect` (class `listing-translation-lang`), a title
@@ -798,16 +886,20 @@ that depend on an owner answer say so.
   checks the same rules.
 - **D-B3a-14. The display places** (section 2.2 points 7 and 8). The
   directory hit draws title and summary through `recordText`. The request
-  card draws the description through `recordText`, and the notice with
-  `lang` = the record's `lang`. The quote card draws scope, cancellation,
-  refund and dispute through `recordText` (address: original only, with
-  `lang` = `terms.lang`). The receipt card draws its terms (no
-  translations) with `lang` = `terms.lang`. The five messages
-  `terms-scope`, `terms-address`, `terms-cancellation`, `terms-refund` and
-  `request-notice` become `-label` messages (`terms-scope-label =
-  Scope:`) drawn with `labelled(p, t("…-label"), valueSpan)`, where
-  `valueSpan` has the `lang`. The old ids go; the English and Hindi label
-  text is the old text without `{ $value }`.
+  card draws the description through `recordText`, and the notice without a
+  `lang` attribute (the notice is written in the writer's UI language, which
+  the record does not store; page language is the best default, P8). The quote
+  card draws scope, cancellation, refund and dispute through `recordText`
+  (address: original only, with `lang` = `terms.lang`), and when an author
+  translation is shown, adds `record-text-original-binds` (P1). The receipt
+  card draws its terms (no translations) with `lang` = `terms.lang`. The
+  fulfilment receipt card draws its scope with
+  `labelled(p, t("terms-scope-label"), valueSpan)` and `lang = terms.lang`
+  (P2). The five messages `terms-scope`, `terms-address`, `terms-cancellation`,
+  `terms-refund` and `request-notice` become `-label` messages
+  (`terms-scope-label = Scope:`) drawn with `labelled(p, t("…-label"), valueSpan)`,
+  where `valueSpan` has the `lang`. The old ids go; the English and Hindi
+  label text is the old text without `{ $value }`.
 - **D-B3a-15. Test data.** `cards/samples.json` gets `lang` on the
   request, `terms.lang` on the quote and receipt, and one translation on
   the quote, so the gallery shows the note. The Hindi sweep fixtures
@@ -827,8 +919,8 @@ that depend on an owner answer say so.
   `listing-error-translation-same-language`,
   `listing-error-translation-duplicate`, `request-text-language`,
   `quote-text-language`, `record-text-by-author`, `record-text-original`,
-  `record-text-show-original`, `record-text-show-translation`, and the
-  five `-label` ids of D-B3a-14.
+  `record-text-original-binds`, `record-text-show-original`,
+  `record-text-show-translation`, and the five `-label` ids of D-B3a-14.
 
 ## 6. Step-by-step changes
 
@@ -842,11 +934,12 @@ repository root.
 Done in the planning session: this file and the B3a row of
 [status.md](status.md).
 
-### Step 2 — The two splits (no change of behaviour)
+### Step 2 — Splits and decomposition (no change of behaviour)
 
 1. `crates/roym_core/src/transaction/error.rs` (D-B3a-8).
 2. `crates/roym_core/src/transaction/tests/verify.rs` (D-B3a-8).
-3. `cargo nextest run -p syneroym-roym-core`: the same tests pass, the
+3. `crates/roym_core/src/listing.rs`: decompose `ListingPayload::validate` by extracting private helper methods `validate_location` and `validate_relationship` (D-B3a-3, P3).
+4. `cargo nextest run -p syneroym-roym-core`: the same tests pass, the
    same number.
 
 ### Step 3 — The crate `syneroym-text-lang`
@@ -920,17 +1013,24 @@ steps).
 ### Step 7 — Hub: the forms
 
 1. The text language control in the four forms (D-B3a-11), replacing the
-   `currentLanguage()` of Step 4.6.
-2. The profile languages list (D-B3a-12).
+   `currentLanguage()` of Step 4.6. The status `<select>` in `listings.ts`
+   gets class `.listing-status-select` (P4).
+2. The profile languages list (D-B3a-12): buttons have `type="button"`, no
+   `<p>` element (P5); the form loads and resends stored `about` and
+   `translations` (P6).
 3. The listing editor translations (D-B3a-13).
 4. `profile.test.ts` (new if missing), `editor.test.ts`,
    `listings.test.ts`, `messages.test.ts` (section 7.1).
 
 ### Step 8 — Hub: the display places
 
-1. `screens/directory.ts`, `cards/templates/request.ts`, `quote.ts`,
-   `agreement_receipt.ts` (D-B3a-14); the label messages in `en.ftl` and
-   `hi.ftl`; the old ids removed in the same step.
+1. `screens/directory.ts`, `cards/templates/request.ts` (notice has no `lang`, P8),
+   `quote.ts` (with `record-text-original-binds`, P1), `agreement_receipt.ts`,
+   `fulfilment_receipt.ts` (drawn with `labelled` and `terms.lang`, P2) (D-B3a-14);
+   the label messages in `en.ftl` and `hi.ftl`; the old ids removed in the same
+   step. Run
+   `git grep -n "terms-scope\|terms-address\|terms-cancellation\|terms-refund\|request-notice"`
+   and expect no match outside the `-label` ids (P2).
 2. `cards/samples.json` (D-B3a-15).
 3. `templates.test.ts`, `directory.test.ts`, `hindi-screens.test.ts`
    (section 7.1).
@@ -942,7 +1042,10 @@ steps).
    add button (by `hubMessage(tag, "listing-translation-add")`), picks
    `lang` in the last `.listing-translation-lang`, and fills the last
    `.listing-translation-title`.
-2. `roym-hub.spec.ts`: the new test of section 7.3.
+2. `roym-hub.spec.ts`: update line 764 to use `.listing-status-select` instead of
+   positional `.first()` (P4); add the new test of section 7.3. Run
+   `git grep -n "\.first()\|nth(" crates/substrate/tests/e2e` to prove no
+   positional pick is left on a screen that gained a control (P4).
 3. Story 40 (Q7 (a)): one more step (section 7.3).
 4. `mise run test:e2e` and `mise run demo`, output redirected; keep the
    summaries for the PR text.
@@ -954,11 +1057,14 @@ steps).
    six Roym `.wasm` component sizes from `mise run build:roym`. Write the
    numbers into task.md (B3a result line).
 2. Change doc: decisions into "C. Language-tagged free text" as "Decided
-   <date>, language-tagged records"; `## Deviations` (section 3); the Test
-   column of ML-5, ML-10, ML-11, ML-12 and ML-13 with the real test names;
-   the "Profile languages" paragraph says "at most 8"; `demo:` stays story
-   40; `status` stays `draft` (B6 sets `done`); `living-docs-touched`
-   lists the files of section 9.
+   <date>, language-tagged records"; `## Deviations` (section 3); rewrite
+   the "Tag validation" sentence of `change.md` to state that canonical
+   syntax form is required and non-canonical tags are refused with `-32602`
+   (P10, P13); update the ML-10 row accordingly (P13); the Test column of
+   ML-5, ML-10, ML-11, ML-12 and ML-13 with the real test names; the "Profile
+   languages" paragraph says "at most 8"; `demo:` stays story 40; `status`
+   stays `draft` (B6 sets `done`); `living-docs-touched` lists the files of
+   section 9.
 3. Living docs (section 9), deferred backlog (section 8), task.md B3a
    result line, status.md.
 4. The import clean-up pass over every Rust file you edited.
@@ -980,6 +1086,9 @@ steps).
 - `textLangSelect`: the options are `RECORD_LANGUAGES` in order; a
   `current` not in the list (`"sa"`) is added and selected; option values
   are tags, option text is names.
+- Canonical syntax form: every entry of `RECORD_LANGUAGES` and every
+  catalog tag from `availableLanguages()` equals
+  `new Intl.Locale(tag).toString()` (P12).
 
 `src/records/record_text.test.ts`
 
@@ -1002,8 +1111,11 @@ steps).
 - A stored profile with `lang: "ta"` and `languages: ["ta", "en"]` shows
   both, in order.
 - Add, move up and remove change the order; the add list has no language
-  already chosen and is disabled at 8.
+  already chosen and is disabled at 8. Buttons have `type="button"` and
+  clicking "move up" does not submit the form (P5).
 - Save sends `lang`, `languages` in order, and no `locale`.
+- Save preserves stored `about` and `translations` from the profile envelope
+  and sends them back unchanged (P6).
 
 `src/listings/editor.test.ts`, `src/screens/listings.test.ts`
 
@@ -1021,20 +1133,23 @@ steps).
 
 `src/cards/templates/templates.test.ts`, `src/screens/directory.test.ts`
 
-- The request, quote and receipt rows show the same English text as before
-  ("Scope: …"), and the value `<span>` has `lang`; the label `<span>` has
-  none.
+- The request, quote, receipt and fulfilment receipt rows show the same
+  English text as before ("Scope: …"), and the value `<span>` has `lang`;
+  the label `<span>` has none.
 - A quote with an English translation, read in English, shows the
-  translation and the note; a receipt shows the original terms with
-  `terms.lang`.
+  translation, the note, and `record-text-original-binds` (P1); a receipt
+  shows the original terms with `terms.lang`.
+- A fulfilment receipt displays `terms.scope` with `terms-scope-label` and
+  `terms.lang` (P2).
 - A directory hit with a translation shows the best version and the note;
   a hit without one shows no note.
 
 `src/i18n/hindi-screens.test.ts`
 
 - The profile screen (with languages), the listing editor (with one
-  translation row), a directory hit with a translation, and the three
-  cards with a translation are drawn in Hindi; no Latin word is left.
+  translation row), a directory hit with a translation, and the four
+  cards with a translation or terms (including fulfilment receipt, P2)
+  are drawn in Hindi; no Latin word is left.
 
 `src/i18n/catalog.test.ts` runs unchanged: every new id is used, and
 `hi.ftl` has the ids of `en.ftl`.
@@ -1065,7 +1180,8 @@ steps).
 - `transaction/tests/lang.rs`: the same rules for a request
   (`description`) and a quote (the four texts, against `terms.lang`); a
   receipt built from a quote has the quote's `terms.lang`; `halves_agree`
-  is false when only `terms.lang` differs.
+  is false when only `terms.lang` differs; a quote with all five versions
+  at the maximum length, plain ASCII, signs and verifies (P9).
 - `person.rs` tests: `languages` with 9 tags is `TooManyLanguages`; two
   `hi` is `DuplicateLanguage`; an empty list passes; a translation with no
   `about` is `TranslationWithoutAbout`; a payload with `locale` and no
@@ -1084,13 +1200,15 @@ Services and parity
 - Parity `directory_find.rs`: Step 5.2.
 - `roym_federated_query`: a hit carries the payload's `lang` and
   `translations`; a refused row has `lang: ""`.
-- `roymctl`: a unit test that `--lang HI-latn` sends `hi-Latn` and
-  `--lang hi_IN` stops with the `Malformed` text, without a call.
+- `roymctl`: unit tests for `build_request_params` and `build_quote_params`
+  (P11): `--lang HI-latn` sends `hi-Latn` and `--lang hi_IN` stops with the
+  `Malformed` text, without a call.
 
 ### 7.3 Playwright
 
 - Every spec runs with the Hub sending `lang` (Step 4.6): no step changes
-  for it.
+  for it, except `roym-hub.spec.ts:764` which uses `.listing-status-select`
+  instead of positional `.first()` (P4).
 - `roym-hub.spec.ts`, new test "an English reader sees the author's
   English title of a Hindi listing and can open the original" (ML-12,
   ML-5). The Hub stays in English. Make a listing as
@@ -1122,7 +1240,7 @@ Services and parity
 | --- | --- | --- |
 | `crates/roym_core/src/transaction.rs` | 776 | -115 (Step 2), then about +45. Limit 800 |
 | `crates/roym_core/src/transaction/tests.rs` | 799 | down by the ten moved tests (Step 2), then about +5. Limit 800 |
-| `crates/roym_core/src/listing.rs` | 549 | about +30 |
+| `crates/roym_core/src/listing.rs` | 549 | -25 (Step 2 decomposition), then about +35. Limit 800 (P3) |
 | `crates/roym_core/src/person.rs` | 102 | about +60 (tests are in the file) |
 | `crates/roym_core/src/lang.rs` | new | about 80 |
 | `crates/text_lang/src/lib.rs`, `tests.rs` | new | about 120, 120 |
@@ -1193,7 +1311,9 @@ the PR text lists them (about 25 messages), so no review file is needed.
 In [deferred-backlog.md](../../deferred-backlog.md):
 
 - **§10, row "Language tags are not CLDR-canonicalised"** (line 535):
-  add the link `crates/text_lang/src/lib.rs` (`LangTag`).
+  update the text to state that the node refuses a tag that is not in
+  canonical form and does not replace old codes; add the link
+  `crates/text_lang/src/lib.rs` (`LangTag`) (P13).
 - **§10, new row "Only the listing editor can add author
   translations"** (Q5 (a)): requests, quotes and profiles take them
   through the API only; the profile form has no `about` field. Target
@@ -1206,8 +1326,16 @@ In [deferred-backlog.md](../../deferred-backlog.md):
   profile languages"** (D-B3a-10). Target `TBD`. Link
   `crates/roym_web/ui/src/records/record_text.ts` (`readerLanguages`).
 - **§10, new row "The signed request notice and default quote terms are
-  in the UI language"** (section 2.2 point 16). Target `TBD`. Link
+  in the UI language"** (section 2.2 point 17, P8): the notice and default
+  quote terms are written in the writer's UI language, but records only store
+  one `lang` tag; setting the record tag on the notice would mislabel
+  mixed-language records. Target `TBD`. Link
   `crates/roym_web/ui/src/screens/messages.ts`.
+- **§10, new row "Quote payload exceeding 64 KiB at signing returns internal
+  error"** (P9): a quote with 4 translations approaching or exceeding
+  `MAX_PAYLOAD_BYTES` (64 KiB) is refused at signing with an internal error
+  rather than `-32602`. Target `TBD`. Link
+  `crates/roym_transaction/src/app/quote_ops.rs`.
 - **§11, new row "Directory search does not index author
   translations"** (D-B3a-6). Target M08B B4b, which rebuilds the index.
   Link `crates/roym_directory/src/app/search_ops.rs`
@@ -1228,9 +1356,10 @@ row.
   Hub shows the best version for the reader with a way to open the
   original. **`:1464`** (the "Envisioned … Translated record text"
   box): it now says only machine translation is envisioned.
-- **`docs/system-architecture.md`**: the Roym records table (`:1206` to
-  `:1210`, and the `profile` and `listing` rows): `lang`, `translations`,
-  `languages`; a short paragraph near `:1418` (Hub languages) on the text
+- **`docs/system-architecture.md`**: Cards table (`:1204` to `:1216`) for
+  `request`, `quote`, `agreement-receipt` and `fulfilment-receipt` (P2); and
+  prose at `:918` and `:1138` for listing record: `lang`, `translations`,
+  `languages` (P13); a short paragraph near `:1418` (Hub languages) on the text
   version view and the `lang` attribute; one sentence in the crate list
   for `syneroym-text-lang` ("the language tag type, used by `roym_core`;
   `data_db` and `conversation` will use it").
@@ -1244,10 +1373,10 @@ row.
   `recordText` and `langAttr`. **§6.6** (`directory.find`, near `:2500`):
   one sentence: each hit has `lang` and `translations`; show the version
   that fits the reader and say when it is the author's translation. Near
-  "Unknown fields" (`:2541`): one sentence: every method that signs a
+  "Unknown fields" (`:2542`): one sentence: every method that signs a
   `profile`, `listing`, `request` or quote takes a required `lang` in
   canonical form, and a non-canonical tag answers `-32602` with the form
-  to send.
+  to send (P13).
 - **`docs/TERMINOLOGY.md`**: rows "Language tag" (BCP 47, canonical
   syntax form, `syneroym-text-lang`) and "Author translation" (signed by
   the author inside the record; not machine translation; the original

@@ -103,7 +103,7 @@ Most cross-language trade needs only layers A and B. The buyer searches by categ
 | ML-8 | A Hindi-language Hub user and an English-language Hub user search with the same category code and get the same results. | `directory.test.ts` ("the same category gives the same query in English and Hindi"); `roym-hub.spec.ts` ("a category search finds the same listings in English and in Hindi") |
 | ML-9 | A product listing's unit is a code from a unit list. The Hub shows its label in the reader's language. | `editor.test.ts`, `listings.test.ts` (unit options in each language); `listing/tests.rs` (the unit code rule) |
 | **Language-tagged free text** | | |
-| ML-10 | `profile`, `listing`, `request` and `quote` each carry a `lang` field. The signer must set it. A record with a missing or malformed tag fails validation. | |
+| ML-10 | `profile`, `listing`, `request` and `quote` each carry a `lang` field. The signer must set it. A record with a missing, malformed or non-canonical tag fails validation. | |
 | ML-11 | The author can add up to a fixed number of translations of the free-text fields, inside the same signed record. Each translation has its own language tag and is shown as "translated by the author". | |
 | ML-12 | The Hub shows the version of a record's text that best matches the reader's languages: the original, or an author translation. It always shows which one it shows, and the reader can always open the original. | |
 | ML-13 | A profile carries `languages`, an ordered list of language tags. `locale` is removed. | |
@@ -241,7 +241,7 @@ Names (`display_name`, `payee`) and addresses are not translated. They are cover
 
 **Author translations.** A record may carry `translations`: a short list. Each entry has its own `lang` and the same translatable fields as the record (for a listing: `title` and `summary`). The author signs them with the record. The Hub shows them as "translated by the author". The original `lang` text still binds. The maximum number of entries is set in the plan (a small number such as 4, to keep record size bounded, as other limits in `listing.rs` do).
 
-**Tag validation.** The Rust side is the new crate `syneroym-text-lang` (see `## Deviations`). It checks that each tag is a well-formed BCP 47 tag and stores it in syntax form: fixed letter case and order, so `HI-latn` becomes `hi-Latn`. It uses `icu_locale_core` 2.4.0 from the ICU4X project, with `default-features = false, features = ["alloc"]`. The parse functions need `alloc`. No other feature is needed (no `serde`, `zerovec` or `databake`). Decided 2026-11-05: the node does not use the CLDR form, where old codes are replaced by new ones (`iw` becomes `he`). That form needs the larger `icu_locale` crate and its CLDR data, and the cost would land in every Roym guest.
+**Tag validation.** The Rust side is the new crate `syneroym-text-lang` (see `## Deviations`). It checks that each tag is a well-formed BCP 47 tag in canonical syntax form: fixed letter case and order (`hi-Latn`). A tag that is not in canonical form (`HI-latn`) is refused with `-32602`. It uses `icu_locale_core` 2.4.0 from the ICU4X project, with `default-features = false, features = ["alloc"]`. The parse functions need `alloc`. No other feature is needed (no `serde`, `zerovec` or `databake`). Decided 2026-11-05: the node does not use the CLDR form, where old codes are replaced by new ones (`iw` becomes `he`). That form needs the larger `icu_locale` crate and its CLDR data, and the cost would land in every Roym guest.
 
 Checked: `icu_locale_core` builds for `wasm32-wasip2` and runs in `wasmtime`. It has no C code. Its normal dependencies are `litemap`, `tinystr` and `writeable`, and the `displaydoc` proc-macro. It adds about 17 KB to a test component built with the workspace release profile. The underscore form `hi_IN` is refused. The Hub uses `Intl.Locale` to parse tags. The same 15 inputs went through both parsers:
 
@@ -478,6 +478,7 @@ Checked: `@fluent/bundle` 0.19.1 (Apache-2.0, no runtime dependencies) adds 4,20
 - **The category picker searches the UI language, English, and the code itself.** It does not search across all installed languages, avoiding premature loading of untargeted catalogs.
 - **A reader's view of another node's product unit is deferred to M08D.** In B2, the unit appears only in the listing editor; directory hits do not display product units until shop browse lands in M08D.
 - **Different from the plan: `tEnglish` is exported from `i18n.ts`.** The category picker needs English fallback labels when searching and showing taxonomy items regardless of the active UI language, so `tEnglish` is exported.
+- **A tag not in canonical form is refused, not rewritten.** A node refuses `HI-latn` and tells the client to send `hi-Latn`. This holds on input and on verify. It keeps the signed bytes equal to the struct. The canonical text is covered by signatures, so the S0 table is a golden test, and an `icu_locale_core` upgrade that changes printer output needs an owner decision.
 
 ## Close-out
 
