@@ -460,7 +460,7 @@ each fix. I did not run any plan step.
   existed. At close-out, the change doc "Decided <date>" list copies the wrong
   date.
 - **Fix:** Change the nine dates to 2026-11-09. Leave line 295.
-- *Status:* Open
+- *Status:* Fixed (8f8f2085)
 
 #### P15 — The size row for `listing.rs` says the file shrinks by 25 lines, but a move into helper methods does not shrink it (minor)
 
@@ -475,4 +475,4 @@ each fix. I did not run any plan step.
   not care (549 is far from 800), but the number is wrong.
 - **Fix:** Write "about +6 (Step 2, helper methods), then about +35. Limit
   800".
-- *Status:* Open
+- *Status:* Fixed (8f8f2085)
