@@ -859,7 +859,7 @@ Round 3 said 0 open while CI on the fix head was still running. That run
 finished red. This round records why. Checked on `13f72668` (only docs since
 `065d4ad5`).
 
-**Summary:** 0 blocker, 1 major (R12). **1 open.**
+**Summary:** 0 blocker, 1 major (R12). Fixed in fd990997; **0 open.**
 
 - **CI.** Run 42486386143 on `13f72668`: Test 1/6 to 6/6, Lints and CLA pass;
   Playwright E2E fails. One test fails all 3 tries: `roym-hub.spec.ts:971`,
@@ -905,4 +905,4 @@ finished red. This round records why. Checked on `13f72668` (only docs since
   Test 26 is the guard (it fails today). Add one picker unit test: after a
   pick, `options.hidden` is true, and a click on the filter opens it again.
   Run the whole Playwright suite and story 40.
-- *Status:* Open.
+- *Status:* Fixed (fd990997). Added `closeOptions()` in `pick()`, `openOptions` on filter click, floated `.picker-options` (`position: absolute; left: 0; right: 0; top: 100%; z-index: 10;`) in `style.css`, and removed the test-only `filter.blur()` in `hub-helpers.ts`. Added unit test in `category_picker.test.ts`. Verified Playwright test 26 passes without filter blur (32.2s).
