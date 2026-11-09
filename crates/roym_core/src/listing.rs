@@ -356,6 +356,13 @@ impl ListingPayload {
             }
         }
 
+        self.validate_location()?;
+        self.validate_relationship()?;
+
+        Ok(())
+    }
+
+    fn validate_location(&self) -> Result<(), ListingError> {
         if let Some(loc) = &self.location {
             if loc.service_area.len() > MAX_AREAS {
                 return Err(ListingError::TooManyAreas);
@@ -364,7 +371,10 @@ impl ListingPayload {
                 a.validate()?;
             }
         }
+        Ok(())
+    }
 
+    fn validate_relationship(&self) -> Result<(), ListingError> {
         if let Some(rel) = &self.relationship {
             match (&rel.open_to, &rel.member_of) {
                 (OpenTo::Members, None) => return Err(ListingError::MemberOfRequired),
@@ -374,7 +384,6 @@ impl ListingPayload {
                 _ => {}
             }
         }
-
         Ok(())
     }
 }
