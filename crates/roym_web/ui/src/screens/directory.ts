@@ -307,6 +307,7 @@ function renderHits(host: HTMLElement, hits: MergedHit[], truncated: boolean, ru
     const card = document.createElement("div");
     card.className = "search-hit";
     card.dataset.verified = String(hit.verified);
+    card.dataset.listingId = hit.listing_id;
 
     interface HitTextFields {
       title: string;

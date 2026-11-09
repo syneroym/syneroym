@@ -227,6 +227,7 @@ function buildEditor(onSaved: () => Promise<void>): { root: HTMLElement } {
   root.appendChild(text("h3", t("listing-editor-heading")));
 
   const slug = input(t("listing-placeholder-slug"));
+  slug.className = "listing-slug-input";
   const title = input(t("listing-placeholder-title"));
   title.className = "listing-title-input";
   const langSelect = textLangSelect("listing-text-lang", currentLanguage());
