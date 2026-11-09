@@ -114,6 +114,7 @@ export function categoryPicker(opts: CategoryPickerOptions): CategoryPicker {
     }
     selectedCodes.push(code);
     filter.value = "";
+    closeOptions();
     renderChips();
     renderOptions();
   }
@@ -224,6 +225,10 @@ export function categoryPicker(opts: CategoryPickerOptions): CategoryPicker {
       message.textContent = t("category-picker-no-match");
     }
   }
+
+  filter.addEventListener("click", () => {
+    openOptions();
+  });
 
   filter.addEventListener("input", () => {
     openOptions();

@@ -223,6 +223,7 @@ body {
 /* --- Category picker --- */
 .category-picker {
   margin: 6px 0;
+  position: relative;
 }
 .picker-chosen {
   list-style: none;
@@ -266,6 +267,11 @@ body {
   margin-top: 4px;
 }
 .picker-options {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 100%;
+  z-index: 10;
   max-height: 220px;
   overflow-y: auto;
   border: 1px solid #cbd5e1;
@@ -273,6 +279,7 @@ body {
   padding: 4px;
   background: white;
   margin-top: 4px;
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
 }
 .picker-options[hidden] {
   display: none;

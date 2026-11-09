@@ -234,6 +234,24 @@ describe("categoryPicker component", () => {
     expect(picker.codes()).toEqual(["plumbing"]);
   });
 
+  it("closes options after a pick, and clicking filter re-opens them", () => {
+    const picker = categoryPicker({ className: "test-picker", max: 8 });
+    const filter = picker.root.querySelector<HTMLInputElement>(".picker-filter")!;
+    const options = picker.root.querySelector<HTMLDivElement>(".picker-options")!;
+
+    filter.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+    expect(options.hidden).toBe(false);
+
+    const option = picker.root.querySelector<HTMLButtonElement>('.picker-option[data-code="plumbing"]')!;
+    option.click();
+
+    expect(picker.codes()).toEqual(["plumbing"]);
+    expect(options.hidden).toBe(true);
+
+    filter.click();
+    expect(options.hidden).toBe(false);
+  });
+
   it("shows Hindi labels for chips and options in Hindi", async () => {
     await activate("hi");
     const picker = categoryPicker({
