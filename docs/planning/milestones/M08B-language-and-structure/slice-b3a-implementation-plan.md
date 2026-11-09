@@ -3,7 +3,7 @@
 *Reader: the developer (or AI) who implements slice B3a. You do not have the
 planning conversation. This plan is meant to stand alone.*
 
-**Status: plan review round 1 done, 2026-11-09. Owner questions answered 2026-11-05. P-items folded in.**
+**Status: plan review round 1 done, 2026-11-09. Owner questions answered 2026-11-09. P-items folded in.**
 
 **Size and PR.** M, at the top of M (see Q8). One PR on
 `feat/m08b-b3a-lang-records`, with the commits of section 6 in that order.
@@ -169,7 +169,7 @@ A receipt card is drawn from the receipt payload only; it has no quote.
 - (c) **Both in `AgreedTerms`.** Each receipt half then also carries every
   translation, so a signed acceptance holds text that does not bind.
 
-Owner answer: (a), 2026-11-05. It needs P1 fixed. `lang` goes in `AgreedTerms`
+Owner answer: (a), 2026-11-09. It needs P1 fixed. `lang` goes in `AgreedTerms`
 and `translations` on `QuotePayload`. When a quote card shows an author
 translation, it adds a warning line that the original text is what binds
 (`record-text-original-binds`, P1). The gap before `viewed_lang` (B5) is
@@ -194,7 +194,7 @@ addresses are not translated".
 - (b) **As (a), plus the three service lists** (each a list of at most 32
   strings). A listing translation then needs list rules too.
 
-Owner answer: (a), 2026-11-05. Translatable fields are profile `about`;
+Owner answer: (a), 2026-11-09. Translatable fields are profile `about`;
 listing `title`, `summary`; request `description`; quote `scope`,
 `cancellation_terms`, `refund_terms`, `dispute_path`. The listing service
 lists get a backlog row for M08D.
@@ -219,7 +219,7 @@ must hold the same bytes that the struct reads back.
   client, but the input types need a second tag type (lenient) beside the
   record type (strict).
 
-Owner answer: (a), 2026-11-05. It carries the P10 coupling, which the plan
+Owner answer: (a), 2026-11-09. It carries the P10 coupling, which the plan
 states: the wire accepts only canonical syntax form, refusing non-canonical
 tags. This couples signed records to `icu_locale_core` printer output; the S0
 table is a golden test, and any printer change on upgrade requires an owner
@@ -243,7 +243,7 @@ field and a missing required field with `-32602` and `data.field`
   Fewer test edits, but a record tagged `und` defeats the point, and a
   client that forgets the field gets no error.
 
-Owner answer: (a), 2026-11-05. `lang` is required in every method input
+Owner answer: (a), 2026-11-09. `lang` is required in every method input
 (`profile.set`, `listing.set`, `request.set`, `quote.set`).
 
 **Q5. In which Hub forms can the author add translations? (blocks Step 7)**
@@ -262,7 +262,7 @@ to `:33`), the listing editor, the request form and the quote form.
 - (b) **All four forms.** The profile form also needs a new `about`
   field.
 
-Owner answer: (a), 2026-11-05. It needs P6 fixed: translations can be added in
+Owner answer: (a), 2026-11-09. It needs P6 fixed: translations can be added in
 the listing editor only. The Hub profile form loads `about` and `translations`
 from the stored profile envelope and sends them back unchanged so a Hub save
 does not erase them (P6).
@@ -286,7 +286,7 @@ rows and the profile languages. The Hub's own catalogs are only `en` and
 - (c) **Only the catalog languages (`en`, `hi`).** Too few: a Tamil
   speaker cannot tag Tamil text.
 
-Owner answer: (a), 2026-11-05. It needs P12 added: a fixed list
+Owner answer: (a), 2026-11-09. It needs P12 added: a fixed list
 `RECORD_LANGUAGES` in the Hub. Unit tests verify that every entry in
 `RECORD_LANGUAGES` and every catalog tag is in canonical syntax form (P12).
 
@@ -309,7 +309,7 @@ line.
   Playwright test shows the new parts. The change doc's `demo:` list
   already names story 40, so nothing changes there.
 
-Owner answer: (a), 2026-11-05. One step in story 40 in the listing editor: with
+Owner answer: (a), 2026-11-09. One step in story 40 in the listing editor: with
 Hindi Hub, Alice adds an English translation row and types an English title
 without saving.
 
@@ -327,7 +327,7 @@ slice.
 - (b) **Two PRs:** B3a-1 (Steps 2 to 5) and B3a-2 (Steps 6 to 10). Two
   review cycles, and a status row more.
 
-Owner answer: (a), 2026-11-05. One PR on `feat/m08b-b3a-lang-records`.
+Owner answer: (a), 2026-11-09. One PR on `feat/m08b-b3a-lang-records`.
 
 ### 2.2 Points found while reading
 
@@ -1240,7 +1240,7 @@ Services and parity
 | --- | --- | --- |
 | `crates/roym_core/src/transaction.rs` | 776 | -115 (Step 2), then about +45. Limit 800 |
 | `crates/roym_core/src/transaction/tests.rs` | 799 | down by the ten moved tests (Step 2), then about +5. Limit 800 |
-| `crates/roym_core/src/listing.rs` | 549 | -25 (Step 2 decomposition), then about +35. Limit 800 (P3) |
+| `crates/roym_core/src/listing.rs` | 549 | about +6 (Step 2, helper methods), then about +35. Limit 800 |
 | `crates/roym_core/src/person.rs` | 102 | about +60 (tests are in the file) |
 | `crates/roym_core/src/lang.rs` | new | about 80 |
 | `crates/text_lang/src/lib.rs`, `tests.rs` | new | about 120, 120 |
