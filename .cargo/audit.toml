@@ -48,4 +48,24 @@ ignore = [
     "RUSTSEC-2026-0404",
     "RUSTSEC-2026-0405",
     "RUSTSEC-2026-0406",
+
+    # --- rusqlite 0.38 / libsqlite3-sys 0.36 (CVE-2026-119375) ---
+    # `libsqlite3-sys` 0.36.0 comes from `rusqlite` 0.38.0.
+    # `deadpool-sqlite` 0.13 requires `rusqlite` 0.38.0. `deadpool-sqlite` 0.14
+    # requires `rusqlite` 0.40.0, which still bundles affected SQLite
+    # (`libsqlite3-sys` 0.38). No released version of `deadpool-sqlite` supports
+    # `rusqlite` 0.41 (`libsqlite3-sys` 0.39).
+    #
+    # Also, we build `rusqlite` with `bundled-sqlcipher`. In `libsqlite3-sys`
+    # 0.39.0 and 0.39.1, `bundled-sqlcipher` builds `sqlcipher-src =419.0.6`,
+    # which bundles SQLite 3.53.4 and remains affected.
+    #
+    # The vulnerability requires opening an untrusted database file alongside
+    # a crafted sibling `-wal` file with mismatched page sizes. Syneroym creates
+    # and manages its own encrypted database files and WAL files with uniform
+    # page sizes.
+    #
+    # Delete when `deadpool-sqlite` supports `rusqlite` >= 0.41 and SQLCipher
+    # updates to SQLite >= 3.54.0.
+    "RUSTSEC-2026-0459",
 ]
