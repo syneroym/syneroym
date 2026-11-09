@@ -8,10 +8,7 @@ use std::collections::{HashMap, HashSet};
 
 use serde::Deserialize;
 
-use crate::{
-    listing,
-    listing::{MAX_CATEGORY_LEN, MAX_PAYMENT_METHOD_LEN, MAX_UNIT_LEN},
-};
+use crate::listing::{self, MAX_CATEGORY_LEN, MAX_PAYMENT_METHOD_LEN, MAX_UNIT_LEN};
 
 const MAX_ATTRIBUTE_LEN: usize = 64;
 const MAX_CHOICE_LEN: usize = 64;
