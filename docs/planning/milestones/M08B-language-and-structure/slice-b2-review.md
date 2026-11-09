@@ -906,3 +906,29 @@ finished red. This round records why. Checked on `13f72668` (only docs since
   pick, `options.hidden` is true, and a click on the filter opens it again.
   Run the whole Playwright suite and story 40.
 - *Status:* Fixed (fd990997). Added `closeOptions()` in `pick()`, `openOptions` on filter click, floated `.picker-options` (`position: absolute; left: 0; right: 0; top: 100%; z-index: 10;`) in `style.css`, and removed the test-only `filter.blur()` in `hub-helpers.ts`. Added unit test in `category_picker.test.ts`. Verified Playwright test 26 passes without filter blur (32.2s).
+
+## Code review round 5 — Claude Opus 5.5, 2026-11-09
+
+Checked `git diff 3debd0b8..79889900` on `feat/m08b-b2-taxonomy`, in the main
+checkout.
+
+**Summary:** R12 confirmed Fixed. No new items. **0 open.**
+
+- **R12 — confirmed Fixed (fd990997).** `pick()` closes the list, a click in
+  the filter opens it again, and `.picker-options` floats under the filter
+  (`position: absolute` in a `position: relative` picker), so opening or
+  closing it does not move the page. The `mousedown` line of R10 stays. The
+  Chromium probe of round 4, run again on this code: after a pick the list is
+  closed and the click on the button below runs. With the list open and no
+  pick, the list covers the button below, as a dropdown does; the person
+  closes it (Escape, or a click elsewhere) before they can see the button. The
+  new unit test checks close-on-pick and reopen-on-click. `f99fe762` added a
+  `filter.blur()` to `pickCategory` and `fd990997` removed it again, so the
+  e2e helper is unchanged and test 26 passes with the real picker behaviour.
+- **Other commits.** `e9bc9e61` only merges two `use` lines in
+  `taxonomy.rs`.
+- **Run here.** `npm test`: 34 files, 374 tests passed (as status.md says).
+- **CI.** `gh pr checks 353` on `79889900`: every job passes (Lints, Playwright
+  E2E, Test 1/6 to 6/6, CI Pipeline, CLA); Benchmarks and Code Coverage skip.
+- **Status.** status.md already says "Merged" for B2. The PR is still open
+  and not merged, so that word is true only after the merge.
