@@ -95,7 +95,7 @@ import {
   toMinorUnits,
 } from "../money.js";
 import { HubError } from "../hub-error";
-import { t } from "../i18n/i18n";
+import { currentLanguage, t } from "../i18n/i18n";
 
 export class ListingInputError extends HubError {
   constructor(message: string) {
@@ -259,6 +259,7 @@ export function buildSetListingParams(form: ListingForm): Record<string, unknown
   const params: Record<string, unknown> = {
     title,
     summary: form.summary.trim(),
+    lang: currentLanguage(),
     categories: form.categories,
     status: form.status,
   };

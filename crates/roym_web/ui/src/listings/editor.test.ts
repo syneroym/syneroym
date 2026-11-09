@@ -146,6 +146,7 @@ describe("buildSetListingParams", () => {
     expect(params).toEqual({
       title: "Hedge trimming",
       summary: "",
+      lang: "en",
       categories: [],
       status: "active",
     });

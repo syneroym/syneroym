@@ -131,7 +131,11 @@ async fn set_up_synorg_and_listing_owner(t: &Trio) -> (String, String) {
 
     t.y.rpc_ok(
         "profile.set",
-        json!({ "display_name": "Yara", "conversation_address": t.y.dids["conversation"] }),
+        json!({
+            "display_name": "Yara",
+            "conversation_address": t.y.dids["conversation"],
+            "lang": "en",
+        }),
     )
     .await;
     let listing =
@@ -140,6 +144,7 @@ async fn set_up_synorg_and_listing_owner(t: &Trio) -> (String, String) {
             json!({
                 "title": "Bike repair",
                 "summary": "Same-day, at your door.",
+                "lang": "en",
                 "categories": ["cycling"],
                 "payment": {
                     "currency": "EUR", "model": "fixed", "amount_minor": 6000,
@@ -259,7 +264,11 @@ async fn hire_the_listing_owner(t: &Trio, hit: &Value, listing_id: &str, slot_id
     let address = hit["conversation_address"].as_str().unwrap();
     t.x.rpc_ok(
         "profile.set",
-        json!({ "display_name": "Xavi", "conversation_address": t.x.dids["conversation"] }),
+        json!({
+            "display_name": "Xavi",
+            "conversation_address": t.x.dids["conversation"],
+            "lang": "en",
+        }),
     )
     .await;
     let (x_conv, _request) = open_request_conv(&t.x, address, "Fix my bike", &["cycling"]).await;

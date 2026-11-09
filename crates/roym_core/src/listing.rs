@@ -13,6 +13,7 @@ use syneroym_signed_record::{EnvelopeError, content_digest};
 
 use crate::{
     area::{self, Area, AreaError},
+    lang::{LangTag, TranslationError, check_text, check_translation_langs},
     money,
 };
 
@@ -175,6 +176,14 @@ pub struct ServiceRecordTerms {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListingTranslation {
+    pub lang: LangTag,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ListingPayload {
     /// Stable across every version of this listing, content-derived from
     /// `(issuer, slug)`. A new version supersedes the previous envelope
@@ -183,6 +192,9 @@ pub struct ListingPayload {
     pub slug: String,
     pub title: String,
     pub summary: String,
+    pub lang: LangTag,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub translations: Vec<ListingTranslation>,
     /// Category codes, lowercase `[a-z0-9-]`. Usually from the base taxonomy
     /// (`crate::taxonomy`); a group may use its own code, so `validate` checks
     /// only the shape.
@@ -258,6 +270,8 @@ pub enum ListingError {
     ServiceListTooLong(&'static str),
     #[error("an entry in {0} is longer than {MAX_SERVICE_LIST_ITEM_LEN} bytes")]
     ServiceListItemTooLong(&'static str),
+    #[error(transparent)]
+    Translation(#[from] TranslationError),
 }
 
 fn is_slug_char(c: char) -> bool {
@@ -358,7 +372,19 @@ impl ListingPayload {
 
         self.validate_location()?;
         self.validate_relationship()?;
+        self.validate_translations()?;
 
+        Ok(())
+    }
+
+    fn validate_translations(&self) -> Result<(), ListingError> {
+        if !self.translations.is_empty() {
+            check_translation_langs(&self.lang, self.translations.iter().map(|t| &t.lang))?;
+            for t in &self.translations {
+                check_text(&t.lang, "title", &t.title, MAX_TITLE_LEN, true)?;
+                check_text(&t.lang, "summary", &t.summary, MAX_SUMMARY_LEN, false)?;
+            }
+        }
         Ok(())
     }
 

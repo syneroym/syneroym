@@ -81,13 +81,22 @@ async fn boot_three_nodes(
     let y_conv_did = node_y.dids["conversation"].clone();
 
     node_x
-        .rpc_ok("profile.set", json!({ "display_name": "X", "conversation_address": x_conv_did }))
+        .rpc_ok(
+            "profile.set",
+            json!({ "display_name": "X", "conversation_address": x_conv_did, "lang": "en" }),
+        )
         .await;
     node_w
-        .rpc_ok("profile.set", json!({ "display_name": "W", "conversation_address": w_conv_did }))
+        .rpc_ok(
+            "profile.set",
+            json!({ "display_name": "W", "conversation_address": w_conv_did, "lang": "en" }),
+        )
         .await;
     node_y
-        .rpc_ok("profile.set", json!({ "display_name": "Y", "conversation_address": y_conv_did }))
+        .rpc_ok(
+            "profile.set",
+            json!({ "display_name": "Y", "conversation_address": y_conv_did, "lang": "en" }),
+        )
         .await;
 
     let listing = node_y
@@ -96,6 +105,7 @@ async fn boot_three_nodes(
             json!({
                 "title": "Garden clearance",
                 "summary": "Same-day one-off garden clearance",
+                "lang": "en",
                 "categories": ["gardening"],
                 "payment": {
                     "currency": "EUR", "model": "fixed", "amount_minor": 6000,

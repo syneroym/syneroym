@@ -188,11 +188,7 @@ async fn scenario_146_peer_replaying_older_request_or_quote_refused_parity() {
     let (rw, _) = both_rpc(
         &h,
         "request.set",
-        json!({
-            "conversation": conv,
-            "description": "Replay quote test",
-            "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
-        }),
+        json!({ "conversation": conv, "description": "Replay quote test", "lang": "en", "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE }),
     )
     .await;
     let own_req_rec_id = rw["result"]["record_id"].as_str().unwrap();
@@ -262,6 +258,7 @@ async fn scenario_147_replaying_declined_quote_preserves_decline_parity() {
         json!({
             "conversation": conv,
             "description": "Decline replay job",
+            "lang": "en",
             "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
         }),
     )
@@ -398,6 +395,7 @@ async fn scenario_148_request_or_receipt_with_expiry_is_refused_parity() {
         json!({
             "conversation": conv,
             "description": "Receipt expiry test",
+            "lang": "en",
             "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
         }),
     )
@@ -487,6 +485,7 @@ async fn scenario_149_quote_naming_wrong_counterparty_did_refused_parity() {
         json!({
             "conversation": conv,
             "description": "Wrong counterparty DID test",
+            "lang": "en",
             "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
         }),
     )

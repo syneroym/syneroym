@@ -9,6 +9,7 @@ use crate::{
 
 fn sample_terms() -> AgreedTerms {
     AgreedTerms {
+        lang: crate::lang::LangTag::parse("en").unwrap(),
         scope: "All work".to_string(),
         currency: "USD".to_string(),
         amount_minor: 10_000,

@@ -32,6 +32,7 @@ fn peer_signed_request_with_identity(
         "sequence": 1,
         "categories": ["gardening"],
         "description": "Fix fence",
+        "lang": "en",
         "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
     });
     let draft = RecordDraft {

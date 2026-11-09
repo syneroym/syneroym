@@ -87,7 +87,7 @@ pub(crate) async fn enrol_signing(h: &Harness, service: &str) {
 /// blocks filled and no non-integer number anywhere.
 pub(crate) fn full_listing_params(slug: &str, title: &str) -> Value {
     json!({
-        "slug": slug,
+        "slug": slug, "lang": "en",
         "title": title,
         "summary": "Neat hedges, fortnightly.",
         "categories": ["gardening", "outdoor"],
@@ -242,7 +242,7 @@ pub(crate) fn inbound_card(
 
 pub(crate) fn sample_quote_terms() -> Value {
     json!({
-        "scope": "Garden repair",
+        "lang": "en", "scope": "Garden repair",
         "currency": "EUR",
         "amount_minor": 50000,
         "tax_minor": 5000,
@@ -266,7 +266,7 @@ pub(crate) fn peer_signed_request(conv: &str, seq: u32, issued_at: u64) -> (Stri
         "request_id": req_id,
         "conversation": conv,
         "sequence": seq,
-        "categories": ["gardening"],
+        "categories": ["gardening"], "lang": "en",
         "description": "Prune apple tree",
         "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
     });
@@ -365,7 +365,7 @@ pub(crate) fn peer_signed_request_with(
         "request_id": req_id,
         "conversation": conv,
         "sequence": seq,
-        "categories": ["gardening"],
+        "categories": ["gardening"], "lang": "en",
         "description": "Prune apple tree",
         "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
     });

@@ -102,6 +102,7 @@ pub async fn open_request_conv(
             json!({
                 "conversation": conv_id,
                 "description": description,
+                "lang": "en",
                 "categories": categories,
                 "data_use_notice": DEFAULT_DATA_USE_NOTICE,
             }),
@@ -161,6 +162,7 @@ pub async fn request_record_on_quote_author(
 
 pub fn quote_terms(payee: &str, amount_minor: u64) -> Value {
     json!({
+        "lang": "en",
         "scope": "Clear garden waste and green bin collection",
         "currency": "EUR",
         "amount_minor": amount_minor,

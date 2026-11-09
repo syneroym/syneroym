@@ -139,6 +139,7 @@ async fn scenario_140c_quote_decline_parity() {
         json!({
             "conversation": conv,
             "description": "Plumbing service",
+            "lang": "en",
             "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
         }),
     )
@@ -270,6 +271,7 @@ async fn scenario_141b_filed_card_carries_host_sender_timestamp_not_guest_clock(
         json!({
             "conversation": conv,
             "description": "Timestamp verification job",
+            "lang": "en",
             "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
         }),
     )
@@ -315,6 +317,7 @@ async fn scenario_142_transaction_export_import_roundtrip_parity() {
         json!({
             "conversation": conv,
             "description": "Export roundtrip job",
+            "lang": "en",
             "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
         }),
     )
@@ -611,6 +614,7 @@ async fn scenario_143_guard_transaction_verbs_local_admission() {
         json!({
             "conversation": conv,
             "description": "Guard request",
+            "lang": "en",
             "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
         }),
     )
@@ -649,6 +653,7 @@ async fn scenario_143_guard_transaction_verbs_local_admission() {
             json!({
                 "conversation": conv,
                 "description": "Another",
+                "lang": "en",
                 "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
             }),
         ),

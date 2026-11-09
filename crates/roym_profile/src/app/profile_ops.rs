@@ -11,11 +11,12 @@ use syneroym_app_host::{
 use syneroym_roym_core::{
     clock,
     envelope::Response,
+    lang::LangTag,
     method::{
         NoParams, Reply,
         profile::{ProfileGetInput, ProfileRecord},
     },
-    person::ProfilePayload,
+    person::{ProfilePayload, ProfileTranslation},
     record::{Envelope, RECORD_PROFILE},
     signing::{self, CertificateError},
 };
@@ -35,7 +36,11 @@ pub struct ProfileSetInput {
     pub display_name: String,
     pub about: Option<String>,
     pub conversation_address: Option<String>,
-    pub locale: Option<String>,
+    pub lang: LangTag,
+    #[serde(default)]
+    pub languages: Vec<LangTag>,
+    #[serde(default)]
+    pub translations: Vec<ProfileTranslation>,
 }
 
 #[derive(Debug, Serialize)]
@@ -137,7 +142,9 @@ async fn parse_and_validate_payload<H: AppHost>(
         display_name: input.display_name.clone(),
         about: input.about.clone(),
         conversation_address: address,
-        locale: input.locale.clone(),
+        lang: input.lang.clone(),
+        languages: input.languages.clone(),
+        translations: input.translations.clone(),
     };
     if let Err(e) = payload.validate() {
         return Err(Response::invalid_params(e.to_string()));

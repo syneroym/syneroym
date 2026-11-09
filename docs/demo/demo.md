@@ -1288,11 +1288,11 @@ CLI equivalent (from a person's terminal):
 ```bash
 # bob
 roymctl --dir "$S2_DIR" --as owner roym transaction request \
-  --conversation <CONVERSATION-ID> --description "Mow the lawn" \
+  --conversation <CONVERSATION-ID> --description "Mow the lawn" --lang en \
   --gateway-url "http://127.0.0.1:$S2_GW" --host "$ROYM2_HOST"
 # alice
 roymctl --dir "$S1_DIR" --as owner roym transaction quote --request <REQUEST-ID> \
-  --scope "Mow the lawn" --currency INR --amount 500 --payee <ALICE-DID> \
+  --scope "Mow the lawn" --lang en --currency INR --amount 500 --payee <ALICE-DID> \
   --timing "this week" --where "at your home" \
   --gateway-url "http://127.0.0.1:$S1_GW" --host "$ROYM1_HOST"
 # bob

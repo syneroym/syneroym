@@ -5,10 +5,12 @@ use syneroym_signed_record::{Envelope, RecordDraft};
 
 use super::*;
 
+mod lang;
 mod verify;
 
 pub(super) fn sample_terms() -> AgreedTerms {
     AgreedTerms {
+        lang: LangTag::parse("en").unwrap(),
         scope: "Install garden fence".to_string(),
         currency: "EUR".to_string(),
         amount_minor: 50000,
@@ -41,6 +43,8 @@ pub(super) fn sample_request(issuer: &str) -> RequestPayload {
         listing_id: Some("lst_abc123".to_string()),
         categories: vec!["gardening".to_string()],
         description: "Need fence installed".to_string(),
+        lang: LangTag::parse("en").unwrap(),
+        translations: vec![],
         area: None,
         window: Some(TimeWindow { earliest_secs: 10000, latest_secs: 20000 }),
         data_use_notice: DEFAULT_DATA_USE_NOTICE.to_string(),
@@ -60,6 +64,7 @@ pub(super) fn sample_quote(issuer: &str, counterparty_did: &str) -> QuotePayload
         slot_id: None,
         counterparty_did: counterparty_did.to_string(),
         terms: sample_terms(),
+        translations: vec![],
     }
 }
 

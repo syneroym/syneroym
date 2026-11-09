@@ -83,10 +83,16 @@ async fn an_offer_is_agreed_across_two_installations() {
 
     // Step 2: Y sets a profile and an active listing; X sets a profile.
     node_x
-        .rpc_ok("profile.set", json!({ "display_name": "X", "conversation_address": x_conv_did }))
+        .rpc_ok(
+            "profile.set",
+            json!({ "display_name": "X", "conversation_address": x_conv_did, "lang": "en" }),
+        )
         .await;
     node_y
-        .rpc_ok("profile.set", json!({ "display_name": "Y", "conversation_address": y_conv_did }))
+        .rpc_ok(
+            "profile.set",
+            json!({ "display_name": "Y", "conversation_address": y_conv_did, "lang": "en" }),
+        )
         .await;
 
     let y_listing = node_y
@@ -95,6 +101,7 @@ async fn an_offer_is_agreed_across_two_installations() {
             json!({
                 "title": "Bike repair",
                 "summary": "Same-day service at your door",
+                "lang": "en",
                 "categories": ["cycling"],
                 "payment": {
                     "currency": "EUR", "model": "fixed", "amount_minor": 4500,
@@ -124,6 +131,7 @@ async fn an_offer_is_agreed_across_two_installations() {
             json!({
                 "conversation": x_conv_id,
                 "description": "Fix my front brake cable",
+                "lang": "en",
                 "categories": ["cycling"],
                 "data_use_notice": DEFAULT_DATA_USE_NOTICE,
             }),
@@ -165,6 +173,7 @@ async fn an_offer_is_agreed_across_two_installations() {
                 "request_record_id": req_record_id,
                 "expires_in_secs": 3600,
                 "terms": {
+                    "lang": "en",
                     "scope": "Replace brake cable and adjust pads",
                     "currency": "EUR",
                     "amount_minor": 4500,
@@ -362,26 +371,26 @@ async fn a_tampered_card_is_filed_refused_and_never_verified() {
     let y_conv_did = node_y.dids["conversation"].clone();
 
     node_x
-        .rpc_ok("profile.set", json!({ "display_name": "X", "conversation_address": x_conv_did }))
+        .rpc_ok(
+            "profile.set",
+            json!({ "display_name": "X", "conversation_address": x_conv_did, "lang": "en" }),
+        )
         .await;
     node_y
-        .rpc_ok("profile.set", json!({ "display_name": "Y", "conversation_address": y_conv_did }))
+        .rpc_ok(
+            "profile.set",
+            json!({ "display_name": "Y", "conversation_address": y_conv_did, "lang": "en" }),
+        )
         .await;
 
     let opened = node_x.rpc_ok("conversation.open", json!({ "address": y_conv_did })).await;
     let x_conv_id = opened["conversation_id"].as_str().unwrap().to_string();
 
-    let req_res = node_x
-        .rpc_ok(
-            "request.set",
-            json!({
-                "conversation": x_conv_id,
-                "description": "Legitimate request description",
-                "categories": ["cycling"],
-                "data_use_notice": DEFAULT_DATA_USE_NOTICE,
-            }),
-        )
-        .await;
+    let req_params = json!({
+        "conversation": x_conv_id, "description": "Legitimate request description",
+        "lang": "en", "categories": ["cycling"], "data_use_notice": DEFAULT_DATA_USE_NOTICE,
+    });
+    let req_res = node_x.rpc_ok("request.set", req_params).await;
     let req_id = req_res["request_id"].as_str().unwrap().to_string();
     let req_get = node_x.rpc_ok("request.get", json!({ "request_id": req_id })).await;
     let valid_envelope_str = req_get["envelope"].as_str().unwrap();
@@ -398,16 +407,8 @@ async fn a_tampered_card_is_filed_refused_and_never_verified() {
 
     let tampered_card = card_body(RECORD_REQUEST, REQUEST_VERSION, &tampered_env_str).unwrap();
 
-    let sent = node_x
-        .rpc_ok(
-            "conversation.send",
-            json!({
-                "conversation": x_conv_id,
-                "body": tampered_card,
-                "content_type": CARD_CONTENT_TYPE,
-            }),
-        )
-        .await;
+    let send_params = json!({ "conversation": x_conv_id, "body": tampered_card, "content_type": CARD_CONTENT_TYPE });
+    let sent = node_x.rpc_ok("conversation.send", send_params).await;
     let sent_msg_id = sent["message_id"].as_str().unwrap().to_string();
 
     let delivered = wait_delivered(&node_x, &sent_msg_id).await;

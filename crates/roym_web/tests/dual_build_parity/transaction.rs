@@ -25,7 +25,7 @@ async fn scenario_123_request_set_signs_stores_and_sends_parity() {
 
     let params = json!({
         "conversation": conv,
-        "description": "Install new fence",
+        "description": "Install new fence", "lang": "en",
         "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
     });
     let (w, n) = both_rpc(&h, "request.set", params).await;
@@ -65,7 +65,7 @@ async fn scenario_124_request_set_without_enrolment_answers_not_enrolled_parity(
 
     let params = json!({
         "conversation": conv,
-        "description": "Unenrolled request",
+        "description": "Unenrolled request", "lang": "en",
         "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
     });
     let (w, n) = both_rpc(&h, "request.set", params).await;
@@ -83,7 +83,7 @@ async fn scenario_125_request_set_with_id_produces_superseding_version_parity() 
 
     let params1 = json!({
         "conversation": conv,
-        "description": "Initial fence proposal",
+        "description": "Initial fence proposal", "lang": "en",
         "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
     });
     let (w1, n1) = both_rpc(&h, "request.set", params1).await;
@@ -95,7 +95,7 @@ async fn scenario_125_request_set_with_id_produces_superseding_version_parity() 
     let params2 = json!({
         "conversation": conv,
         "request_id": req_id,
-        "description": "Revised fence proposal with painted finish",
+        "description": "Revised fence proposal with painted finish", "lang": "en",
         "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
     });
     let (w2, n2) = both_rpc(&h, "request.set", params2).await;
@@ -125,7 +125,7 @@ async fn scenario_126_quote_set_refuses_own_request_parity() {
 
     let params = json!({
         "conversation": conv,
-        "description": "My own job request",
+        "description": "My own job request", "lang": "en",
         "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
     });
     let (w, _) = both_rpc(&h, "request.set", params).await;
@@ -308,7 +308,7 @@ async fn scenario_129_agreement_accept_quote_author_and_counterparty_halves_pari
         "request.set",
         json!({
             "conversation": conv,
-            "description": "Another request",
+            "description": "Another request", "lang": "en",
             "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
         }),
     )
@@ -573,7 +573,7 @@ async fn scenario_133_expired_quote_card_filed_verified_with_terms_accept_refuse
         "request.set",
         json!({
             "conversation": conv,
-            "description": "Window cleaning",
+            "description": "Window cleaning", "lang": "en",
             "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
         }),
     )

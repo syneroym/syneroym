@@ -13,15 +13,17 @@ use crate::{
     area::Area,
     booking::{BookingProgressPayload, BookingState, ConflictReason, NextStep, TrackState},
     fulfilment::FulfilmentReceiptPayload,
+    lang::LangTag,
     listing::{
-        AddressDisclosure, BookingMode, BookingTerms, ListingPayload, ListingStatus, LocationTerms,
-        OpenTo, PaymentModel, PaymentTerms, ProductCondition, ProductDetail, RelationshipTerms,
-        ServiceDetail, ServiceLocation, ServiceRecordTerms,
+        AddressDisclosure, BookingMode, BookingTerms, ListingPayload, ListingStatus,
+        ListingTranslation, LocationTerms, OpenTo, PaymentModel, PaymentTerms, ProductCondition,
+        ProductDetail, RelationshipTerms, ServiceDetail, ServiceLocation, ServiceRecordTerms,
     },
     payment::{PaymentAcknowledgementPayload, PaymentRequestPayload},
     transaction::{
         AgreedTerms, AgreementReceiptPayload, DEFAULT_DATA_USE_NOTICE, DealRole, PaymentTiming,
-        QuoteLocation, QuotePayload, RequestPayload, TimeWindow,
+        QuoteLocation, QuotePayload, QuoteTranslation, RequestPayload, RequestTranslation,
+        TimeWindow,
     },
 };
 
@@ -131,6 +133,7 @@ fn every_conflict() -> [ConflictReason; 2] {
 
 fn terms(place: ServiceLocation) -> AgreedTerms {
     AgreedTerms {
+        lang: LangTag::parse("en").unwrap(),
         scope: "Trim the hedge".to_string(),
         currency: "EUR".to_string(),
         amount_minor: 12_000,
@@ -160,6 +163,11 @@ fn request() -> RequestPayload {
         listing_id: Some("lst_1".to_string()),
         categories: vec!["gardening".to_string()],
         description: "Trim the hedge".to_string(),
+        lang: LangTag::parse("en").unwrap(),
+        translations: vec![RequestTranslation {
+            lang: LangTag::parse("hi").unwrap(),
+            description: "झाड़ी काटें".to_string(),
+        }],
         area: Some(Area::Circle { lat_e6: 1, lon_e6: 2, radius_m: 3 }),
         window: Some(TimeWindow { earliest_secs: 1_000, latest_secs: 2_000 }),
         data_use_notice: DEFAULT_DATA_USE_NOTICE.to_string(),
@@ -193,6 +201,12 @@ fn listing(place: ServiceLocation, open_to: OpenTo) -> ListingPayload {
         slug: "hedge-trimming".to_string(),
         title: "Hedge trimming".to_string(),
         summary: "Neat hedges.".to_string(),
+        lang: LangTag::parse("en").unwrap(),
+        translations: vec![ListingTranslation {
+            lang: LangTag::parse("hi").unwrap(),
+            title: "झाड़ी कटाई".to_string(),
+            summary: "साफ झाड़ियाँ।".to_string(),
+        }],
         categories: vec!["gardening".to_string()],
         conversation_address: "did:key:zListingOwnerConv".to_string(),
         status: ListingStatus::Active,
@@ -309,6 +323,13 @@ fn a_request_and_a_quote_say_no_old_word() {
             slot_id: Some("slot_1".to_string()),
             counterparty_did: COUNTERPARTY.to_string(),
             terms: terms(place),
+            translations: vec![QuoteTranslation {
+                lang: LangTag::parse("hi").unwrap(),
+                scope: "झाड़ी काटें".to_string(),
+                cancellation_terms: "रद्दीकरण".to_string(),
+                refund_terms: "वापसी".to_string(),
+                dispute_path: "विवाद".to_string(),
+            }],
         };
         assert_no_old_words("quote", &quote);
     }

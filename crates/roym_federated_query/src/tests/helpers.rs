@@ -10,6 +10,7 @@ use syneroym_app_host::{
 use syneroym_identity::{Identity, substrate};
 use syneroym_roym_core::{
     directory::{AreaMatch, SearchHit},
+    lang::LangTag,
     listing::{
         LISTING_VERSION, ListingPayload, ListingStatus, ListingVerdict, PaymentModel, PaymentTerms,
         derive_listing_id, verify_envelope,
@@ -98,6 +99,8 @@ pub fn sign_max_payload_listing_with_issuer(
         slug: slug.to_string(),
         title: title.to_string(),
         summary: max_escaping_summary(),
+        lang: LangTag::parse_canonical("en").expect("valid tag"),
+        translations: Vec::new(),
         categories: vec!["services".to_string()],
         conversation_address: format!("{issuer}#conv"),
         status: ListingStatus::Active,
@@ -161,6 +164,8 @@ pub fn sign_test_listing_with_issuer(
         slug: slug.to_string(),
         title: title.to_string(),
         summary: format!("Summary {slug}"),
+        lang: LangTag::parse_canonical("en").expect("valid tag"),
+        translations: Vec::new(),
         categories: vec!["services".to_string()],
         conversation_address: format!("{issuer}#conv"),
         status: ListingStatus::Active,

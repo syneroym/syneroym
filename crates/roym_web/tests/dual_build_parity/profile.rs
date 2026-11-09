@@ -257,7 +257,7 @@ async fn scenario_12_profile_set_without_enrolment_fails_parity() {
     let h = harness().await;
     let req = json!({
         "method": "profile.set",
-        "params": { "display_name": "Alice" }
+        "params": { "display_name": "Alice", "lang": "en" }
     })
     .to_string()
     .into_bytes();
@@ -339,7 +339,7 @@ async fn scenario_14_profile_set_and_get_envelope_parity() {
 
     let set_req = json!({
         "method": "profile.set",
-        "params": { "display_name": "Parity Alice", "conversation_address": "syneroym://addr/1" }
+        "params": { "display_name": "Parity Alice", "conversation_address": "syneroym://addr/1", "lang": "en" }
     })
     .to_string()
     .into_bytes();
@@ -800,7 +800,7 @@ async fn scenario_28_expired_certificate_refuses_signing_parity() {
 
     let set_req = json!({
         "method": "profile.set",
-        "params": { "display_name": "Expired Alice" }
+        "params": { "display_name": "Expired Alice", "lang": "en" }
     })
     .to_string()
     .into_bytes();
@@ -839,9 +839,9 @@ async fn scenario_29_stale_certificate_refuses_signing_parity() {
     h.wasm_http.post("/rpc", install1.clone(), Some(caller_identity.clone())).await;
     h.native_http.post("/rpc", install1, Some(caller_identity.clone())).await;
 
-    let set_req = json!({ "method": "profile.set", "params": { "display_name": "Alice 1" } })
-        .to_string()
-        .into_bytes();
+    let p =
+        json!({ "method": "profile.set", "params": { "display_name": "Alice 1", "lang": "en" } });
+    let set_req = p.to_string().into_bytes();
     let wasm_set1 = h.wasm_http.post("/rpc", set_req.clone(), Some(caller_identity.clone())).await;
     let native_set1 = h.native_http.post("/rpc", set_req, Some(caller_identity)).await;
     assert_eq!(wasm_set1.body, native_set1.body);

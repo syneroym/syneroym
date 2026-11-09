@@ -126,10 +126,16 @@ async fn boot_restore_cluster(
     let x_conv_did = node_x.dids["conversation"].clone();
     let y_conv_did = node_y.dids["conversation"].clone();
     node_x
-        .rpc_ok("profile.set", json!({ "display_name": "X", "conversation_address": x_conv_did }))
+        .rpc_ok(
+            "profile.set",
+            json!({ "display_name": "X", "conversation_address": x_conv_did, "lang": "en" }),
+        )
         .await;
     node_y
-        .rpc_ok("profile.set", json!({ "display_name": "Y", "conversation_address": y_conv_did }))
+        .rpc_ok(
+            "profile.set",
+            json!({ "display_name": "Y", "conversation_address": y_conv_did, "lang": "en" }),
+        )
         .await;
 
     let listing = node_y
@@ -138,6 +144,7 @@ async fn boot_restore_cluster(
             json!({
                 "title": "Deep clean",
                 "summary": "One-off deep clean",
+                "lang": "en",
                 "categories": ["cleaning"],
                 "payment": {
                     "currency": "EUR", "model": "fixed", "amount_minor": 8000,
@@ -197,6 +204,7 @@ async fn setup_scheduled_transaction(
             json!({
                 "conversation": x_conv_id,
                 "description": description,
+                "lang": "en",
                 "categories": ["cleaning"],
                 "data_use_notice": DEFAULT_DATA_USE_NOTICE,
             }),
@@ -222,6 +230,7 @@ async fn setup_scheduled_transaction(
                 "slot_id": slot_id,
                 "expires_in_secs": 3600,
                 "terms": {
+                    "lang": "en",
                     "scope": description,
                     "currency": "EUR", "amount_minor": 8000, "tax_minor": 0, "fees_minor": 0,
                     "payment_methods": ["cash"], "payee": "Y Cleaning",

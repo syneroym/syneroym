@@ -18,6 +18,7 @@ async fn scenario_150_superseded_request_card_verifies_after_import_parity() {
         json!({
             "conversation": conv,
             "description": "Initial request",
+            "lang": "en",
             "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
         }),
     )
@@ -33,6 +34,7 @@ async fn scenario_150_superseded_request_card_verifies_after_import_parity() {
             "conversation": conv,
             "request_id": req_id,
             "description": "Revised request",
+            "lang": "en",
             "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
         }),
     )

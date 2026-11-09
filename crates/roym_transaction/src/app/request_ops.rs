@@ -11,10 +11,13 @@ use syneroym_roym_core::{
     area::Area,
     clock,
     envelope::Response,
+    lang::LangTag,
     method::{self, EnvelopeHistoryOutput, Reply, VerifyInput},
     paging,
     record::{Envelope, RECORD_REQUEST},
-    transaction::{self, REQUEST_VERSION, RecordVerdict, RequestPayload, TimeWindow},
+    transaction::{
+        self, REQUEST_VERSION, RecordVerdict, RequestPayload, RequestTranslation, TimeWindow,
+    },
 };
 
 use super::{
@@ -33,6 +36,9 @@ pub struct RequestSetInput {
     pub listing_id: Option<String>,
     #[serde(default)]
     pub categories: Vec<String>,
+    pub lang: LangTag,
+    #[serde(default)]
+    pub translations: Vec<RequestTranslation>,
     pub description: String,
     #[serde(default)]
     pub area: Option<Area>,
@@ -93,6 +99,8 @@ pub(crate) async fn set<H: AppHost>(host: &H, input: RequestSetInput) -> Reply<R
         sequence,
         listing_id: input.listing_id,
         categories: input.categories,
+        lang: input.lang,
+        translations: input.translations,
         description: input.description,
         area: input.area,
         window: input.window,

@@ -136,10 +136,16 @@ async fn setup_pair(temp_a: &Path, temp_b: &Path) -> (RoymNode, RoymNode, String
     let owner_b_did = substrate::derive_did_key(&owner_b.public_key());
 
     let a_profile = node_a
-        .rpc_ok("profile.set", json!({ "display_name": "Ann", "conversation_address": a_conv_did }))
+        .rpc_ok(
+            "profile.set",
+            json!({ "display_name": "Ann", "conversation_address": a_conv_did, "lang": "en" }),
+        )
         .await;
     let b_profile = node_b
-        .rpc_ok("profile.set", json!({ "display_name": "Bo", "conversation_address": b_conv_did }))
+        .rpc_ok(
+            "profile.set",
+            json!({ "display_name": "Bo", "conversation_address": b_conv_did, "lang": "en" }),
+        )
         .await;
 
     let a_envelope = a_profile["envelope"].as_str().unwrap().to_string();

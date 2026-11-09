@@ -1,5 +1,5 @@
 import { errText, refiller, text } from "../dom";
-import { codeWord, messageId, t } from "../i18n/i18n";
+import { codeWord, currentLanguage, messageId, t } from "../i18n/i18n";
 import { onFeed } from "../events";
 import { call, RpcError } from "../rpc";
 import { whoami } from "../session/login";
@@ -349,6 +349,7 @@ async function renderThread(
       await call("request.set", {
         conversation: conv.id,
         description: desc,
+        lang: currentLanguage(),
         categories,
         listing_id: listingInput.value.trim() || undefined,
         data_use_notice: dataUseNotice,
@@ -836,6 +837,7 @@ export function openQuoteForm(
         request_record_id: reqCard.record_id,
         expires_in_secs,
         terms: {
+          lang: currentLanguage(),
           scope,
           currency,
           amount_minor: amountMinor,

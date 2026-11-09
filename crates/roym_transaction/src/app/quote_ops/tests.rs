@@ -1,5 +1,6 @@
 use serde_json::Value;
 use syneroym_roym_core::{
+    lang::LangTag,
     listing::ServiceLocation,
     transaction::{PaymentTiming, QuoteLocation, TimeWindow},
 };
@@ -9,6 +10,7 @@ use super::QuoteTermsInput;
 #[test]
 fn quote_terms_input_matches_agreed_terms_fields() {
     let input = QuoteTermsInput {
+        lang: LangTag::parse_canonical("en").expect("valid tag"),
         scope: "gardening".to_string(),
         currency: "EUR".to_string(),
         amount_minor: 5000,

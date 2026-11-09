@@ -120,4 +120,7 @@ pub enum TransactionError {
 
     #[error("slot_id does not match the id derived from listing_id and terms.schedule")]
     SlotIdMismatch,
+
+    #[error(transparent)]
+    Translation(#[from] crate::lang::TranslationError),
 }

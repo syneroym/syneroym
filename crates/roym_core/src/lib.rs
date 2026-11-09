@@ -14,6 +14,7 @@ pub mod directory;
 pub mod dual_build;
 pub mod envelope;
 pub mod fulfilment;
+pub mod lang;
 pub mod listing;
 pub mod membership;
 pub mod method;

@@ -49,6 +49,7 @@ async fn deal_request_and_quote_shapes(h: &Harness, conv: &str) -> (String, Stri
         json!({
             "conversation": conv,
             "description": "Fix the fence",
+            "lang": "en",
             "categories": ["gardening"],
             "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
         }),
@@ -64,6 +65,7 @@ async fn deal_request_and_quote_shapes(h: &Harness, conv: &str) -> (String, Stri
         json!({
             "conversation": "nonexistent-conversation",
             "description": "Fix the fence elsewhere",
+            "lang": "en",
             "categories": ["gardening"],
             "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
         }),

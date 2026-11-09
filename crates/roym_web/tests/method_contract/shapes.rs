@@ -151,7 +151,7 @@ async fn profile_shapes() {
             "display_name": "Parity Alice",
             "about": "Testing profile",
             "conversation_address": "syneroym://addr/alice",
-            "locale": "en-GB"
+            "lang": "en",
         }),
     )
     .await;

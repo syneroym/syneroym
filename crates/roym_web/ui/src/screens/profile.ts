@@ -1,5 +1,5 @@
 import { errText } from "../dom";
-import { t } from "../i18n/i18n";
+import { currentLanguage, t } from "../i18n/i18n";
 import { call } from "../rpc";
 
 export async function renderProfile(container: HTMLElement) {
@@ -42,6 +42,7 @@ export async function renderProfile(container: HTMLElement) {
       const res = await call<{ record_id: string; envelope: string }>("profile.set", {
         display_name: nameInput.value,
         conversation_address: addrInput.value || undefined,
+        lang: currentLanguage(),
       });
       const env = typeof res.envelope === "string" ? JSON.parse(res.envelope) : res.envelope;
       status.textContent = t("profile-saved", {

@@ -142,6 +142,7 @@ pub(crate) async fn setup_synced_counterparty_quote(
         json!({
             "conversation": conv,
             "description": "Counterparty deal",
+            "lang": "en",
             "categories": ["gardening"],
             "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
         }),
