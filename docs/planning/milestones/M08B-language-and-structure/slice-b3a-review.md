@@ -148,7 +148,7 @@ not run any plan step, the Hub tests or `mise run verify`.
   every `recordText` note, change the note text instead. Then list in section 3
   that B3a shows author translations before `viewed_lang` exists (B5), and say
   how the line covers the gap.
-- *Status:* Open
+- *Status:* Fixed (ffdacc8d)
 
 #### P2 — The fulfilment receipt also carries `terms`, but the plan misses its wire change, its card and its message id (major)
 
@@ -172,7 +172,7 @@ not run any plan step, the Hub tests or `mise run verify`.
   a case to `templates.test.ts` and to the Hindi sweep. Run
   `git grep -n "terms-scope\|terms-address\|terms-cancellation\|terms-refund\|request-notice"`
   at the end of Step 8 and expect no match outside the `-label` ids.
-- *Status:* Open
+- *Status:* Fixed (ffdacc8d)
 
 #### P3 — `ListingPayload::validate` is exactly at the clippy line limit, so the translation check breaks the clippy gate (major)
 
@@ -195,7 +195,7 @@ not run any plan step, the Hub tests or `mise run verify`.
   behaviour, and then adds `self.validate_translations()?`. Put the move in
   Step 2 beside the other no-change splits, so the diff of Step 4 stays about
   the new rules. Update the size row for `listing.rs`.
-- *Status:* Open
+- *Status:* Fixed (ffdacc8d)
 
 #### P4 — A Playwright step takes the first `<select>` of the listing editor, and the plan says no step changes (major)
 
@@ -222,7 +222,7 @@ not run any plan step, the Hub tests or `mise run verify`.
   `git grep -n "\.first()\|nth(" crates/substrate/tests/e2e` at the end of
   Step 9 to prove no positional pick is left on a screen that gained a
   control. Section 7.3 then says which steps change.
-- *Status:* Open
+- *Status:* Fixed (ffdacc8d)
 
 #### P5 — The new profile controls can submit the form or break the status line step (minor)
 
@@ -242,7 +242,7 @@ not run any plan step, the Hub tests or `mise run verify`.
   element in `.profile-screen` is a `<p>` (use `<ul>`, `<li>`, `<span>`). Add a
   `profile.test.ts` case ("move up does not submit the form") and keep the
   existing `saveProfile` step unchanged.
-- *Status:* Open
+- *Status:* Fixed (ffdacc8d)
 
 #### P6 — Saving the profile in the Hub erases `about` and the translations that came from the API (minor)
 
@@ -264,7 +264,7 @@ not run any plan step, the Hub tests or `mise run verify`.
   unchanged. Add a `profile.test.ts` case ("save sends the stored about and
   translations back"). The form still shows no field for them; that stays in
   the backlog row.
-- *Status:* Open
+- *Status:* Fixed (ffdacc8d)
 
 #### P7 — Some ML-5 and ML-12 limits are real but not in the deviation list (minor)
 
@@ -288,7 +288,7 @@ not run any plan step, the Hub tests or `mise run verify`.
   with the records that get a tag: opinion, M08G; chat, B3b); ML-12 shows a note
   only when a record has an author translation. Reword the ML-5 row of the
   table to match.
-- *Status:* Open
+- *Status:* Fixed (ffdacc8d)
 
 #### P8 — The request notice and the default quote terms are tagged with the record's language, but they are written in the UI language (minor)
 
@@ -308,7 +308,7 @@ not run any plan step, the Hub tests or `mise run verify`.
   The page language is then the best default. The `lang` stays on the
   description and the translations. Keep the backlog row of section 8 and add
   this reason to it.
-- *Status:* Open
+- *Status:* Fixed (ffdacc8d)
 
 #### P9 — The largest quote with four translations is about 55 KB, and the signing error for a too-large payload is an internal error (minor)
 
@@ -334,7 +334,7 @@ not run any plan step, the Hub tests or `mise run verify`.
   in `QuotePayload::validate` (and the request) refuse a payload whose
   `serde_json::to_vec` is over `MAX_PAYLOAD_BYTES` with a typed error, so the
   answer is `-32602`. (b) is about 8 lines.
-- *Status:* Open
+- *Status:* Fixed (ffdacc8d)
 
 #### P10 — Refusing a non-canonical tag on the verify path ties old signed records to the version of the ICU printer (minor)
 
@@ -356,7 +356,7 @@ not run any plan step, the Hub tests or `mise run verify`.
   owner decision (for example: on the verify path, accept any well-formed tag
   as received, and keep the strict rule for the input path only). No code
   change is needed now.
-- *Status:* Open
+- *Status:* Fixed (ffdacc8d)
 
 #### P11 — `roymctl roym transaction request` has no function to unit-test, so the planned test has no place to stand (minor)
 
@@ -372,7 +372,7 @@ not run any plan step, the Hub tests or `mise run verify`.
 - **Fix:** In D-B3a-7, say: extract `build_request_params(…) -> Result<Value>`
   (the code of `handle_request` before `call_and_print`), give it `lang`, and
   test it there. Pass `lang` into `build_quote_params` in the same way.
-- *Status:* Open
+- *Status:* Fixed (ffdacc8d)
 
 #### P12 — Nothing checks that every `RECORD_LANGUAGES` entry is in canonical form (minor)
 
@@ -388,7 +388,7 @@ not run any plan step, the Hub tests or `mise run verify`.
   catalog tag from `availableLanguages()` (the catalog test already checks the
   file names). The two parsers agree on the S0 table, so this catches a
   typo.
-- *Status:* Open
+- *Status:* Fixed (ffdacc8d)
 
 #### P13 — A few statements in the living-docs list and the backlog list are wrong or become wrong (minor)
 
@@ -416,4 +416,4 @@ not run any plan step, the Hub tests or `mise run verify`.
   row ("the node refuses a tag that is not in canonical form and does not
   replace old codes") as well as the link. In Step 10.2: rewrite the "Tag
   validation" sentence of the change doc, not only add a deviation. Fix `:2542`.
-- *Status:* Open
+- *Status:* Fixed (ffdacc8d)
