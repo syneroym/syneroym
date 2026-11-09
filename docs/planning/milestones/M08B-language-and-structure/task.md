@@ -15,7 +15,7 @@ M08A is done. Every record and method that this sub-milestone changes already ha
 | # | Shared part | Used by | Built in |
 | --- | --- | --- | --- |
 | Y1 | **String catalog and the `t()` lookup** in the Hub, with English fallback. | All Hub text; taxonomy labels (B2); widget and extension labels (M08C) | B1a |
-| Y2 | **Taxonomy data file** in `roym_core`: category codes with parents, attribute definitions, unit codes, payment-method codes, labels per language. | Pickers (B2); shop attributes and facets (M08D); hard filters (M08F) | B2 |
+| Y2 | **Taxonomy data file** in `roym_core`: category codes with parents, attribute definitions, unit codes, payment-method codes. Codes and structure in the data file; labels in the Hub's taxonomy label files (`src/i18n/taxonomy/<tag>.ftl`). | Pickers (B2); shop attributes and facets (M08D); hard filters (M08F) | B2 |
 | Y3 | **Language tag type** in `syneroym-text-lang`: parse, check, canonical form (BCP 47). | Records (B3a); chat tags (B3b); forwarding origin (M08C) | B3a |
 | Y4 | **Search keys** in `syneroym-text-lang`: NFC, transliteration tables, Latin folding. | Directory search, conversation search, contacts (B4b); exchange relevance (M08F) | B4b |
 | Y5 | **Full-text option in `data-layer`**: a collection declares text fields; the host keeps two FTS5 tables in sync (trigram, and `unicode61` with a 1 and 2 character prefix index); a text-match filter operator. | Directory (B4b); later the exchange and the shop browse (M08D) | B4a |
@@ -153,6 +153,8 @@ Change doc: roym-multilingual.
 - Demo: story 40 picks a category by its Hindi label.
 
 Change doc: roym-multilingual.
+
+**B2 result:** done on the branch `feat/m08b-b2-taxonomy`. Size with `gzip -9`: the main Hub script went from 45,160 to 49,207 bytes (+4,047; limit 5 KB), the Hindi catalog is 14,053 bytes (was 13,980 in B1b), and the lazy Hindi taxonomy chunk is 2,518 bytes (limit 8 KB). Base taxonomy has 105 categories (14 groups, 91 leaf categories), 17 product units, 6 payment methods, and 6 attributes with 16 choices (150 codes in all). Unit tests (374 UI tests, 21 Rust taxonomy tests) and E2E tests (including Story 40 category pick in Hindi) pass. Code review: 4 rounds, 12 items, all fixed. The owner reviewed the taxonomy codes and Hindi labels on 2026-11-08 with no changes.
 
 ### B3a — Language-tagged records (M)
 

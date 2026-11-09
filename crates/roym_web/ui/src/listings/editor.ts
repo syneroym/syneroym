@@ -34,7 +34,7 @@ export interface PaymentFields {
   amount: string;
   tax_included: boolean;
   fees: string;
-  methods: string;
+  methods: string[];
   payee: string;
 }
 
@@ -74,7 +74,7 @@ export interface ListingForm {
   slug: string;
   title: string;
   summary: string;
-  categories: string;
+  categories: string[];
   conversation_address: string;
   status: ListingStatus;
   booking: BlockToggle<BookingFields>;
@@ -180,7 +180,7 @@ function paymentBlock(f: PaymentFields): Block {
     currency,
     model: f.model,
     tax_included: f.tax_included,
-    methods: tokens(f.methods),
+    methods: f.methods,
     payee: f.payee.trim(),
   };
   const exponent = currencyMinorExponent(currency);
@@ -259,7 +259,7 @@ export function buildSetListingParams(form: ListingForm): Record<string, unknown
   const params: Record<string, unknown> = {
     title,
     summary: form.summary.trim(),
-    categories: tokens(form.categories).map((c) => c.toLowerCase()),
+    categories: form.categories,
     status: form.status,
   };
   const slug = form.slug.trim();

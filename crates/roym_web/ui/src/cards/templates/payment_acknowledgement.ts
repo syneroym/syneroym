@@ -15,6 +15,7 @@ import { labelled } from "../../dom";
 import { timeElement } from "../../i18n/format";
 import { t } from "../../i18n/i18n";
 import { formatMinor } from "../../money";
+import { methodLabel } from "../../taxonomy/taxonomy";
 
 export interface PaymentAcknowledgementData {
   agreement?: string;
@@ -65,7 +66,7 @@ export function renderPaymentAcknowledgement(data?: PaymentAcknowledgementData):
   if (data?.method) {
     const methodP = document.createElement("p");
     methodP.className = "payment-ack-method";
-    methodP.textContent = t("payment-method", { method: data.method });
+    methodP.textContent = t("payment-method", { method: methodLabel(data.method) });
     card.appendChild(methodP);
   }
 

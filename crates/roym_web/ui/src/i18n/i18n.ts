@@ -1,5 +1,6 @@
 import { FluentBundle, FluentResource } from "@fluent/bundle";
-import EN_SOURCE from "./en.ftl?raw";
+import EN_BASE_SOURCE from "./en.ftl?raw";
+import EN_TAXONOMY_SOURCE from "./taxonomy/en.ftl?raw";
 
 export const FALLBACK_LANGUAGE = "en";
 /// Region added to a catalog tag that has none, so money and numbers get
@@ -11,12 +12,35 @@ type Args = Record<string, string | number>;
 /// Catalog tag -> loader of that language's `.ftl` text.
 export type Loaders = Record<string, () => Promise<string>>;
 
-/// Every `.ftl` file but `en.ftl` is its own script file, loaded only when
-/// that language is chosen. A new file here is a new language.
-const LOADERS: Loaders = Object.fromEntries(
+const TAXONOMY_LOADERS = Object.fromEntries(
+  Object.entries(
+    import.meta.glob<string>(["./taxonomy/*.ftl", "!./taxonomy/en.ftl"], {
+      query: "?raw",
+      import: "default",
+    }),
+  ).map(([path, load]) => [path.slice("./taxonomy/".length, -".ftl".length), load]),
+);
+
+const STRING_LOADERS = Object.fromEntries(
   Object.entries(
     import.meta.glob<string>(["./*.ftl", "!./en.ftl"], { query: "?raw", import: "default" }),
   ).map(([path, load]) => [path.slice("./".length, -".ftl".length), load]),
+);
+
+/// Every `.ftl` file but `en.ftl` is its own script file, loaded only when
+/// that language is chosen. A new file here is a new language.
+const LOADERS: Loaders = Object.fromEntries(
+  Object.entries(STRING_LOADERS).map(([tag, loadCatalog]) => [
+    tag,
+    async () => {
+      const loadTaxonomy = TAXONOMY_LOADERS[tag];
+      const [catalog, taxonomy] = await Promise.all([
+        loadCatalog(),
+        loadTaxonomy ? loadTaxonomy() : Promise.resolve(""),
+      ]);
+      return taxonomy ? `${catalog}\n${taxonomy}` : catalog;
+    },
+  ]),
 );
 
 interface State {
@@ -46,6 +70,7 @@ function bundleFor(locale: string, source: string): FluentBundle {
 
 // English exists from the moment this module loads, so `t()` works in unit
 // tests and before `initLanguage()` has finished.
+const EN_SOURCE = EN_BASE_SOURCE + "\n" + EN_TAXONOMY_SOURCE;
 const START_LOCALE = localeFor(FALLBACK_LANGUAGE);
 const startEnglish = bundleFor(START_LOCALE, EN_SOURCE);
 let state: State = {
@@ -158,6 +183,15 @@ export function t(id: string, args?: Args): string {
   const text = format(state.active, id, args) ?? format(state.english, id, args);
   if (text !== undefined) return text;
   console.error(`missing message "${id}"`);
+  return id;
+}
+
+export function tEnglish(id: string, args?: Args): string {
+  if (typeof id !== "string") {
+    return String(id);
+  }
+  const text = format(state.english, id, args);
+  if (text !== undefined) return text;
   return id;
 }
 

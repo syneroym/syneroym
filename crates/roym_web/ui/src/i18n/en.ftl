@@ -370,7 +370,6 @@ listing-label-capacity = Capacity
 listing-placeholder-slug = slug (optional; derived from the title)
 listing-placeholder-title = title
 listing-placeholder-summary = summary
-listing-placeholder-categories = categories, comma separated
 listing-placeholder-address = conversation address (optional; taken from your profile)
 listing-placeholder-lead-time = lead time (seconds)
 listing-placeholder-cancellation-window = cancellation window (seconds)
@@ -378,9 +377,7 @@ listing-placeholder-max-per-booking = max per booking
 listing-placeholder-currency = currency (ISO-4217, e.g. EUR)
 listing-placeholder-amount = amount, e.g. 35.50
 listing-placeholder-fees = fees, e.g. 2.50 (optional)
-listing-placeholder-methods = methods, comma separated
 listing-placeholder-payee = payee (informational only)
-listing-placeholder-unit = unit, e.g. item
 listing-placeholder-pack-size = pack size
 listing-placeholder-sku = SKU (optional)
 listing-placeholder-duration = duration (seconds)
@@ -453,7 +450,6 @@ messages-send-button = Send
 messages-send-failed = Send failed: { $detail }
 request-toggle-button = Send a request
 request-description-placeholder = Describe what you need
-request-categories-placeholder = Categories (comma-separated, e.g. cycling, repair)
 request-listing-placeholder = Listing ID (optional)
 # Held by the Rust crate too: a test reads this file and checks this whole
 # line. Do not change a word, or wrap the line, without changing the Rust side.
@@ -637,7 +633,6 @@ directory-added = Added.
 directory-add-failed = Could not add: { $detail }
 directory-search-heading = Search your directories
 directory-search-text-placeholder = words to look for (optional)
-directory-search-categories-placeholder = categories, comma separated (optional)
 directory-search-help = Matching is on whole words in the title, summary and categories. Punctuation is ignored, so searching for 50% finds 50. There is no ranking and no paid placement -- results are shown newest first.
 directory-search-button = Search
 directory-searching = Searching...
@@ -678,7 +673,6 @@ synorg-settings-edit = Edit settings
 synorg-settings-create = Create your SynOrg
 synorg-name-placeholder = name
 synorg-rules-placeholder = the rules a person reads before deciding to trust this group
-synorg-categories-placeholder = categories, comma separated
 synorg-support-placeholder = support contact
 synorg-dispute-placeholder = how a dispute is handled
 synorg-retention-placeholder = how many days a publication is kept
@@ -752,3 +746,11 @@ synorg-decision-suspended-listing = suspended one listing ({ $id })
 synorg-decision-rule = rule: { $rule }
 synorg-lift-button = Lift
 synorg-lift-failed = Not lifted: { $detail }
+
+## Category picker
+
+category-picker-filter-placeholder = Type to find a category
+category-picker-remove = Remove { $label }
+category-picker-own-code = Use the code “{ $code }”
+category-picker-no-match = No category matches.
+category-picker-full = You can choose up to { $max } categories.

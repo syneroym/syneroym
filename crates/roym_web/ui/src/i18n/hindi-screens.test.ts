@@ -77,7 +77,7 @@ const VALID_VERDICT = {
   credential_record_id: "Zq-cred",
   issuer: "did:key:zZqIssuer",
   synorg_name: "Zq-Guild",
-  scope: { categories: ["Zq-cycling"], area: [] },
+  scope: { categories: ["bicycle-repair"], area: [] },
   expires_at_secs: NOW + 86400,
   revocations_checked_as_of_secs: NOW - 7200,
 };
@@ -176,6 +176,17 @@ describe("the messages screen, in Hindi", () => {
     stubMessages();
     const host = document.createElement("div");
     await renderMessages(host, ME);
+    host.querySelector<HTMLButtonElement>("button.toggle-request-form")?.click();
+    const filter = host.querySelector<HTMLInputElement>(".request-cats-input .picker-filter")!;
+    filter.value = "bicycle";
+    filter.dispatchEvent(new Event("input"));
+    const opt = host.querySelector<HTMLButtonElement>(
+      '.request-cats-input .picker-option[data-code="bicycle-repair"]',
+    )!;
+    opt.click();
+    expect(
+      host.querySelectorAll('.request-cats-input .picker-chip[data-code="bicycle-repair"]'),
+    ).toHaveLength(1);
     expect(host.querySelectorAll(".message")).toHaveLength(5);
     expect(english(host)).toEqual([]);
   });
@@ -281,6 +292,17 @@ describe("the listing screen, in Hindi", () => {
     });
     const host = document.createElement("div");
     await renderListings(host);
+    const filter = host.querySelector<HTMLInputElement>(".listing-categories-input .picker-filter")!;
+    filter.focus();
+    filter.value = "bicycle";
+    filter.dispatchEvent(new Event("input"));
+    const opt = host.querySelector<HTMLButtonElement>(
+      '.listing-categories-input .picker-option[data-code="bicycle-repair"]',
+    )!;
+    opt.click();
+    expect(
+      host.querySelectorAll('.listing-categories-input .picker-chip[data-code="bicycle-repair"]'),
+    ).toHaveLength(1);
     host.querySelector<HTMLButtonElement>("button.save-listing")!.click();
     host.querySelector<HTMLButtonElement>("button.verify-listing")!.click();
     await settle();
@@ -313,7 +335,7 @@ describe("the directory screens, in Hindi", () => {
             issuer: "did:key:zZqOwner",
             title: "Zq-title",
             summary: "Zq-summary",
-            categories: ["Zq-cycling"],
+            categories: ["bicycle-repair"],
             conversation_address: "Zq-addr",
             status: "active",
             verified: true,
@@ -367,7 +389,7 @@ describe("the SynOrg screen, in Hindi", () => {
     name: "Zq-Guild",
     rules: "Zq-rules",
     area: [],
-    categories: ["Zq-cycling"],
+    categories: ["bicycle-repair", "x9"],
     support_contact: "Zq-support",
     dispute_path: "Zq-dispute",
     retention_secs: 30 * 86400,
@@ -382,7 +404,7 @@ describe("the SynOrg screen, in Hindi", () => {
       issued_at_secs: issuedAt,
       envelope: JSON.stringify({
         expires_at_secs: NOW + 86400 * 30,
-        payload: { scope: { categories: ["Zq-cycling"], area: [] } },
+        payload: { scope: { categories: ["bicycle-repair"], area: [] } },
       }),
     };
   }
@@ -455,5 +477,13 @@ describe("the sweep itself", () => {
     raw.textContent = "delivered";
     host.append(raw);
     expect(english(host)).toEqual(['"delivered" -> delivered']);
+  });
+
+  it("finds a raw taxonomy code left on a screen", () => {
+    const host = document.createElement("div");
+    const raw = document.createElement("span");
+    raw.textContent = "bicycle-repair";
+    host.append(raw);
+    expect(english(host)).toEqual(['"bicycle-repair" -> bicycle, repair']);
   });
 });

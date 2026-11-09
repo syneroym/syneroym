@@ -68,6 +68,7 @@ neighbourhood.
 | **Listing owner** | The participant who publishes a listing. A listing exists before any deal, so this is not a deal role. | Quote author (usually the same person, but a different idea). |
 | **Searcher** | The participant who searches directories and reads the results. Not a deal role. | Counterparty. |
 | **String catalog (Hub)** | The file of all Hub text for one language, in `crates/roym_web/ui/src/i18n/` (`en.ftl`, `hi.ftl`). A message in it has an id, and the Hub looks up its text by that id. | The `catalog` Roym service (listings). |
+| **Taxonomy (Roym)** | The base lists of category, unit, payment-method and attribute codes in `base.json`; their labels are in the Hub's taxonomy label files. | Free-text categories. |
 
 ## Key phrasings
 

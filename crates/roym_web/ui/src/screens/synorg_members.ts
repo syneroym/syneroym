@@ -2,6 +2,7 @@ import { errText, field, input, refiller, text } from "../dom";
 import { formatUtcDate } from "../i18n/format";
 import { codeWord, messageId, t } from "../i18n/i18n";
 import { call } from "../rpc";
+import { categoryLabel } from "../taxonomy/taxonomy";
 
 /// One row a SynOrg holds about a record it signed: `credential.list`,
 /// `revocation.list` and `member.decisions` all answer with these. The
@@ -126,7 +127,7 @@ function buildIssueForm(categories: string[], reload: () => Promise<void>): HTML
     box.checked = true;
     const label = document.createElement("label");
     label.className = "issue-category-label";
-    label.append(box, text("span", c));
+    label.append(box, text("span", categoryLabel(c)));
     return { box, label };
   });
   const days = document.createElement("input");
@@ -253,7 +254,8 @@ function buildCredentialList(
     line.dataset.status = status;
     line.dataset.member = row.member_did;
     line.appendChild(text("span", row.member_did, "credential-member"));
-    line.appendChild(text("span", t("synorg-credential-covers", { categories: view.categories.join(", ") }), "credential-covers"));
+    const labels = view.categories.map((c) => categoryLabel(c)).join(", ");
+    line.appendChild(text("span", t("synorg-credential-covers", { categories: labels }), "credential-covers"));
     line.appendChild(
       text("span", t("synorg-credential-expires", { date: formatUtcDate(view.expiresAtSecs) }), "credential-expires"),
     );

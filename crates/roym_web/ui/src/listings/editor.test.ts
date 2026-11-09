@@ -19,7 +19,7 @@ function emptyForm(): ListingForm {
     slug: "",
     title: "",
     summary: "",
-    categories: "",
+    categories: [],
     conversation_address: "",
     status: "active",
     booking: {
@@ -39,7 +39,7 @@ function emptyForm(): ListingForm {
         amount: "",
         tax_included: false,
         fees: "",
-        methods: "",
+        methods: [],
         payee: "",
       },
     },
@@ -154,11 +154,14 @@ describe("buildSetListingParams", () => {
   it("emits an integer amount_minor for a decimal price and never a decimal anywhere", () => {
     const f = emptyForm();
     f.title = "Hedge trimming";
-    f.categories = "Gardening, Outdoor";
+    f.categories = ["gardening", "outdoor"];
     f.payment.enabled = true;
     f.payment.value.amount = "35.50";
     f.payment.value.fees = "2.5";
+    f.payment.value.methods = ["cash", "card"];
     f.payment.value.payee = "A. Gardener";
+    f.product.enabled = true;
+    f.product.value.unit = "piece";
     f.booking.enabled = true;
     f.booking.value.mode = "slots";
     f.booking.value.lead_time_secs = "3600";
@@ -167,9 +170,12 @@ describe("buildSetListingParams", () => {
 
     const params = buildSetListingParams(f);
     const payment = params.payment as Record<string, unknown>;
+    const product = params.product as Record<string, unknown>;
     expect(payment.amount_minor).toBe(3550);
     expect(payment.fees_minor).toBe(250);
     expect(payment.currency).toBe("EUR");
+    expect(payment.methods).toEqual(["cash", "card"]);
+    expect(product.unit).toBe("piece");
     expect(params.categories).toEqual(["gardening", "outdoor"]);
 
     expect(everyNumberIsAnInteger(params)).toBe(true);

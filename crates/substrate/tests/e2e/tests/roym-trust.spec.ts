@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '../fixtures';
-import { loginWithDelegatedKey, rpcCall } from '../hub-helpers';
+import { loginWithDelegatedKey, pickCategory, rpcCall } from '../hub-helpers';
 import { readE2EPorts } from '../ports';
 
 // The trust half of the Hub, on the one node the whole suite shares: the
@@ -39,7 +39,7 @@ test.describe('Roym Hub: cross-installation trust', () => {
     if (status.includes('runs no SynOrg')) {
       await page.locator('.synorg-name').fill('E2E Trades');
       await page.locator('.synorg-rules').fill('Be honest. Show up.');
-      await page.locator('.synorg-categories').fill('cycling');
+      await pickCategory(page.locator('.synorg-categories'), 'bicycle-repair');
       await page.locator('.synorg-support').fill('help@example.org');
       await page.locator('.synorg-dispute').fill('Email support.');
       await page.locator('.synorg-retention-days').fill('30');
@@ -79,7 +79,7 @@ test.describe('Roym Hub: cross-installation trust', () => {
     await expect(page.locator('.listing-title-input')).toBeVisible({ timeout: 15_000 });
     if ((await page.locator('.listing-row', { hasText: LISTING_TITLE }).count()) > 0) return;
     await page.locator('.listing-title-input').fill(LISTING_TITLE);
-    await page.locator('.listing-categories-input').fill('cycling');
+    await pickCategory(page.locator('.listing-categories-input'), 'bicycle-repair');
     await page.locator('.listing-address-input').fill(DIRECTORY_DID!);
     await page.locator('.block-payment .block-enabled').check();
     await page.locator('.payment-amount-input').fill('40');
@@ -110,7 +110,7 @@ test.describe('Roym Hub: cross-installation trust', () => {
     await page.locator('.add-source-did').fill(DIRECTORY_DID!);
     await page.getByRole('button', { name: 'Add directory' }).click();
     await expect(page.locator('.add-source-status')).toContainText('Added', { timeout: 15_000 });
-    await page.locator('.search-categories').fill('cycling');
+    await pickCategory(page.locator('.search-categories'), 'bicycle-repair');
     await page.getByRole('button', { name: 'Search', exact: true }).click();
     await expect(page.locator('.search-progress')).toContainText('searched', { timeout: 30_000 });
   }

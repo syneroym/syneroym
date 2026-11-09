@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { expect, type Page } from './fixtures';
+import { expect, type Locator, type Page } from './fixtures';
 
 // Drive the real delegated-key login: hand the Hub the session-key.json that
 // `roymctl session delegate` produced, exactly as a person would after running
@@ -102,8 +102,27 @@ export function hubMessage(tag: string, id: string): string {
     .readFileSync(file, 'utf8')
     .split('\n')
     .find((candidate) => candidate.startsWith(`${id} = `));
-  if (line === undefined) throw new Error(`message ${id} is not in ${file}`);
+  if (line === undefined) {
+    const taxFile = path.join(__dirname, '../../../roym_web/ui/src/i18n/taxonomy', `${tag}.ftl`);
+    if (fs.existsSync(taxFile)) {
+      const taxLine = fs
+        .readFileSync(taxFile, 'utf8')
+        .split('\n')
+        .find((candidate) => candidate.startsWith(`${id} = `));
+      if (taxLine !== undefined) return taxLine.slice(`${id} = `.length).trim();
+    }
+    throw new Error(`message ${id} is not in ${file}`);
+  }
   return line.slice(`${id} = `.length).trim();
+}
+
+/** Pick a category in a category picker component by its code and UI language. */
+export async function pickCategory(scope: Locator, code: string, tag = 'en') {
+  const label = hubMessage(tag, 'taxonomy-category-' + code);
+  const filter = scope.locator('.picker-filter');
+  await filter.fill(label);
+  await scope.locator(`.picker-option[data-code="${code}"]`).click();
+  await expect(scope.locator(`.picker-chip[data-code="${code}"]`)).toBeVisible();
 }
 
 /** Pick a language in the Hub's language list. The page loads again in that language. */

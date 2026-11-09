@@ -917,6 +917,8 @@ flowchart TD
 
 **Catalog Search (a Roym feature).** Matching listings is not a substrate component. It is the `directory` service of Roym. A listing owner signs a `listing` record and publishes it to a SynOrg directory that the listing owner chose. A SynOrg (Syneroym Organization) is a local group that runs a `directory` service; see [Trust & Reputation](#trust--reputation). The directory holds the listings published to it. It answers queries by category, area, text, and filters. Its answer is a list of candidates and is never a verified answer. Today a listing owner publishes only the `listing` record to a directory.
 
+**Base Taxonomy and Structured Codes.** Roym ships a base taxonomy in `crates/roym_core/taxonomy/base.json`, checked by a test in `roym_core::taxonomy`. It defines standard category codes in two levels (groups and child categories), product units, payment methods, and category attributes. A listing or request record may carry any well-formed token of `[a-z0-9-]` (so groups can use own codes before they are merged into the base file), but `product.unit`, `payment.methods`, quote `terms.payment_methods`, payment acknowledgement `method`, and SynOrg settings `categories` must strictly be valid codes.
+
 The searcher's node asks each directory that the person chose. It then checks every hit itself: the signature, the issue time, the expiry and the delegation window. Each hit also carries a revocation status. Today this status is always `unknown`, because no revocation source is given to the check. A hit that fails the check is kept apart from the others. A withdrawn membership is judged apart, by the standing check (see [Trust & Reputation](#trust--reputation)). Each node that runs the `directory` service keeps its own list of directories and chooses which of them to query. [Cross-Substrate Discovery Flow](#cross-substrate-discovery-flow) gives the full flow and the limits.
 
 > **Envisioned.** Not built yet. A real revocation check on each listing hit. The verifier accepts a revocation source, but the node gives it none, so no hit is checked against a revocation list today.
@@ -1203,12 +1205,12 @@ A card is a signed record sent as a message with content type `application/vnd.r
 
 | Card | Signed by | Meaning |
 |---|---|---|
-| `request` | the counterparty | The counterparty asks for a service. It has a description, and it may name a listing, categories, an area, and a time window. |
-| `quote` | the quote author | An offer. It carries the agreed terms: scope, currency, and amount, payment methods, payee, when payment is due, schedule, location, cancellation terms, refund terms, and a dispute path as text. It may name one slot of the listing. It has an expiry. |
+| `request` | the counterparty | The counterparty asks for a service. It has a description, and it may name a listing, category codes (from the base taxonomy or custom codes), an area, and a time window. |
+| `quote` | the quote author | An offer. It carries the agreed terms: scope, currency, and amount, payment methods as codes, payee, when payment is due, schedule, location, cancellation terms, refund terms, and a dispute path as text. It may name one slot of the listing. It has an expiry. |
 | `agreement-receipt` | each party signs one half | Each side signs the quote terms. A deal exists when both halves exist. |
 | `booking-progress` | the quote author's service | A snapshot of the booking. The counterparty's node accepts it only when the signer is the one that signed the quote. |
 | `payment-request` | the quote author | The quote author asks to be paid. It carries currency, amount, and an optional note. It is optional. |
-| `payment-acknowledgement` | either party | A statement about a payment made outside Roym, with an optional method and reference as text. |
+| `payment-acknowledgement` | either party | A statement about a payment made outside Roym, with an optional method (a code from the agreed payment methods) and reference as text. |
 | `fulfilment-receipt` | either party | A statement that the work is done. |
 
 The expiry of a quote is set by the quote author. It must be from 5 minutes to 90 days. A request has no expiry. The counterparty can mark a quote as declined with `quote.decline`. This mark stays on the counterparty's own node and sends nothing. It is refused after either half of the agreement is signed. Roym has no method for a quote author to reject a request.
@@ -1356,6 +1358,8 @@ Notes on the flow:
 
 A searcher's own node runs the search. It keeps a list of up to 8 directories that the person added. The client (the Hub or `roymctl`) makes one call to `directory.find` on its own node. The `directory` service uses the federated query library (`syneroym-roym-federated-query`) to query every added directory in parallel via `proxy.call-all`, up to `call_all_max_concurrency` (default 8). There is no client-side loop or retry. The node verifies the signed envelope of every listing itself; a directory's own answer never counts as verification. The node keeps hits that fail verification apart from the others in a separate refused list. It merges the verified hits using deterministic round-robin ordering across sources, taking one hit from each directory in turn, with at most 10 hits per directory and 50 per page. The node keeps page envelopes in working state and deletes runs older than one hour when the next search starts. It keeps no index cache.
 
+Categories in directory queries and published listings are codes. The base taxonomy (`crates/roym_core/taxonomy/base.json`) defines shared categories, product units, and payment methods. While directory validation accepts any well-formed token of `[a-z0-9-]`, the Hub provides pickers and displays translated labels.
+
 ```mermaid
 flowchart TD
     subgraph REGION_A["Region A (e.g. Mumbai)"]
@@ -1411,7 +1415,7 @@ No central coordinator is required. These contracts are based on convention, and
 
 The Hub holds little state. It keeps the session token in `sessionStorage` and a delegated key in IndexedDB, as a non-extractable WebCrypto key. It has no local database. All data is in the person's own node, in its SQLite databases. The node encrypts them when encryption is enabled. The master key never enters the browser. The Hub logs in with a delegated key: it signs a challenge from the node's auth service, which has its own origin ([ADR-0024](decisions/0024-client-gateway-identity-and-auth-service.md)). A short-lived delegation certificate for that key comes from `roymctl session delegate`.
 
-The Hub also keeps the person's UI language in `localStorage` (the key `roym-hub-language`). This is a setting of this browser. It is not part of the profile. The Hub text comes from Fluent string catalogs, one file per language (`en` and `hi` today), with English as the fallback for a missing message. The Hub formats money, numbers, dates and times with the browser's `Intl` for the UI language, with region India and Latin digits, so `₹1,00,000.50` shows with Indian digit grouping in every language. Every screen draws its text from these catalogs. The Hub build fails when a source file sets visible text that does not come from a catalog.
+The Hub also keeps the person's UI language in `localStorage` (the key `roym-hub-language`). This is a setting of this browser. It is not part of the profile. The Hub text comes from Fluent string catalogs, one file per language (`en` and `hi` today), with English as the fallback for a missing message. Taxonomy labels are kept in matching per-language files (`src/i18n/taxonomy/<tag>.ftl`) and loaded alongside the string catalogs. The Hub formats money, numbers, dates and times with the browser's `Intl` for the UI language, with region India and Latin digits, so `₹1,00,000.50` shows with Indian digit grouping in every language. Every screen draws its text from these catalogs. The Hub build fails when a source file sets visible text that does not come from a catalog.
 
 The Hub does no message crypto. Message encryption and the key ratchet run in the `conversation` service of the substrate, with `vodozemac` ([ADR-0013](decisions/0013-p2p-messaging-architecture.md)). There is no `libsignal`.
 

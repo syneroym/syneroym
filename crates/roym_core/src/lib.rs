@@ -26,5 +26,6 @@ pub mod router;
 pub mod safety;
 pub mod services;
 pub mod signing;
+pub mod taxonomy;
 pub mod transaction;
 pub mod verdict;

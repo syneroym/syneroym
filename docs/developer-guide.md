@@ -1706,6 +1706,8 @@ roymctl --dir <DIR> --as owner roym directory member add did:key:z...
 roymctl --dir <DIR> --as owner roym directory member list
 ```
 
+A `--category` is a code from the base taxonomy, or a group's own code of `[a-z0-9-]`.
+
 A person adds a directory by its Roym Directory service DID (found out of
 band — word of mouth, a shared link, a referral), then searches every
 directory they hold at once:
@@ -1742,11 +1744,21 @@ drive the same JSON-RPC API. This command group and the browser Hub are
 two clients of one service; both call `directory.find` to perform federated
 fan-out across sources in parallel.
 
+##### Add a code to the base taxonomy
+
+To add a category, unit, payment method, or attribute to the base taxonomy:
+
+1. Edit `crates/roym_core/taxonomy/base.json` to include the new code (and its `parent` if it is a child category).
+2. Add the corresponding label to both `crates/roym_web/ui/src/i18n/taxonomy/en.ftl` and `hi.ftl`.
+3. Run `cargo nextest run -p syneroym-roym-core taxonomy` and `mise run test:roym-ui` to verify.
+
 ##### Hub text and languages
 
 *Reader: a developer who changes the Hub UI (`crates/roym_web/ui`).*
 
 All visible Hub text lives in **string catalogs**: one file per language in `crates/roym_web/ui/src/i18n/`, named by the language tag (`en.ftl`, `hi.ftl`). (This is not the `catalog` Roym service.) The files use [Fluent](https://projectfluent.org/): a line `tab-profile = Profile` is a message with the id `tab-profile`. English is the fallback. A message that another language does not have is shown in English, never as an id.
+
+**Taxonomy labels.** Category, unit, payment method, and attribute labels are kept in separate label files under `crates/roym_web/ui/src/i18n/taxonomy/` (`en.ftl`, `hi.ftl`); the English file is in the main script; another language's file loads with its string catalog. Message ids follow fixed patterns: `taxonomy-category-<code>`, `taxonomy-unit-<code>`, `taxonomy-method-<code>`, `taxonomy-attribute-<code>`, and `taxonomy-choice-<attribute>_<choice>`. The module `src/taxonomy/taxonomy.ts` is the one place that reads these labels via `categoryLabel`, `unitLabel`, `methodLabel`, `attributeLabel`, and `choiceLabel`. A new language adds a matching taxonomy label file alongside its string catalog.
 
 To add a message:
 
@@ -1762,7 +1774,7 @@ Times and numbers: use `i18n/format.ts` (`formatDateTime`, `formatAge`, `formatN
 
 **The build check.** `npm run build` runs `src/i18n/visible-text.test.ts` before `vite build`. It parses every source file (not the tests, `src/testing/`, `i18n.ts` or `scan.ts`) with `findVisibleText` in `src/i18n/scan.ts`. It fails the build for a string literal that reaches a place where text is shown: `textContent`, `placeholder`, `title`, `setAttribute("aria-label", …)`, an argument of `append`, the Hub helpers `text`, `field`, `labelled`, `input` and `checkbox`, `new Option`, a `new …Error`, or a `label:` or `text:` key. It also fails for any literal that reads like a sentence (two words), except a class list, a selector and a log line. There is no comment that turns the check off. A command or a product name inside a sentence is still a message, with the same text in each file. Data that looks like text, such as the sample cards, goes in a `.json` file. A code that is shown as a word (a state, a status, a category) goes in a `Map` of message ids, as in step 5 above. The check cannot see a single word that is kept in a variable and drawn later, so `src/i18n/hindi-screens.test.ts` also draws every screen in Hindi with a fake `/rpc` (`src/testing/stub-rpc.ts`) and fails when an English word is left. A value that a person types or another node sends holds the marker `Zq` in the fixtures. A Latin word that may stay is listed in `src/testing/latin-words.ts`. To put a new screen under the sweep, add a test that renders it with fixtures.
 
-To add a language, add `src/i18n/<tag>.ftl`. The file name must be the canonical language tag (`ta`, `pt-BR`). No code change is needed: the language list and the loading find the file. Each language is its own script file that loads only when chosen.
+To add a language, add `src/i18n/<tag>.ftl` and `src/i18n/taxonomy/<tag>.ftl`. The file name must be the canonical language tag (`ta`, `pt-BR`). No code change is needed: the language list and the loading find the file. Each language is its own script file that loads only when chosen.
 
 The Hub picks its language from the saved choice (`localStorage` key `roym-hub-language`), then from `navigator.languages`, then English. `mise run test:roym-ui` runs the checks on the catalogs: every id the code uses is in `en.ftl`, `hi.ftl` has the same ids and a Devanagari letter in each message, and no message is unused. It also runs the build check and the Hindi sweep. `mise run verify` runs it as the `hub-ui` gate.
 

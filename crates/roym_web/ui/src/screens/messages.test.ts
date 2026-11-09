@@ -13,6 +13,7 @@ import {
   stateHint,
 } from "./messages.js";
 import { _resetForTest, startFeed } from "../events";
+import { stubRpc } from "../testing/stub-rpc";
 
 describe("newestRequestMap and quote superseded notice", () => {
   const reqV1: CardRow = {
@@ -324,5 +325,60 @@ describe("the message state word", () => {
     for (const state of ["constructor", "toString", "__proto__", "new-state"]) {
       expect(messageStateWord(state)).toBe(state);
     }
+  });
+});
+
+describe("request form category picker reset", () => {
+  afterEach(async () => {
+    vi.unstubAllGlobals();
+    await activate("en");
+  });
+
+  it("clears category chips after sending a request", async () => {
+    let sentCategories: string[] | undefined;
+    stubRpc({
+      whoami: () => ({ person_did: "did:key:me" }),
+      "conversation.list": () => ({
+        conversations: [{ id: "conv-1", peer_address: "peer-1", message_count: 0 }],
+      }),
+      "transaction.sync": () => ({}),
+      "transaction.thread": () => ({ cards: [] }),
+      "conversation.history": () => ({ messages: [] }),
+      "request.set": (params) => {
+        sentCategories = (params as { categories: string[] }).categories;
+        return { request_id: "req-1", record_id: "rec-1" };
+      },
+    });
+
+    const host = document.createElement("div");
+    await renderMessages(host);
+
+    // Open request form
+    const toggleBtn = host.querySelector<HTMLButtonElement>("button.toggle-request-form")!;
+    toggleBtn.click();
+
+    // Fill description
+    const desc = host.querySelector<HTMLTextAreaElement>(".request-desc-input")!;
+    desc.value = "Need bike repair";
+
+    // Add category in picker
+    const filter = host.querySelector<HTMLInputElement>(".request-cats-input .picker-filter")!;
+    filter.value = "Bicycle";
+    filter.dispatchEvent(new Event("input"));
+    const opt = host.querySelector<HTMLButtonElement>('.request-cats-input .picker-option[data-code="bicycle-repair"]')!;
+    opt.click();
+
+    expect(host.querySelectorAll(".request-cats-input .picker-chip")).toHaveLength(1);
+
+    // Send request
+    const sendBtn = host.querySelector<HTMLButtonElement>("button.send-request-button")!;
+    sendBtn.click();
+
+    await vi.waitFor(() => expect(sentCategories).toBeDefined());
+    expect(sentCategories).toEqual(["bicycle-repair"]);
+    // Category chips are gone because clear() was called
+    await vi.waitFor(() =>
+      expect(host.querySelectorAll(".request-cats-input .picker-chip")).toHaveLength(0),
+    );
   });
 });

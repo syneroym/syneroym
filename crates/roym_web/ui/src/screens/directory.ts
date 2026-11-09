@@ -15,6 +15,8 @@ import {
 } from "../directory/membership";
 import { formatAge } from "../i18n/format";
 import { call } from "../rpc";
+import { categoryPicker } from "../taxonomy/category_picker";
+import { categoryLabel } from "../taxonomy/taxonomy";
 
 /// The word for a revocation status. A status this table does not know is
 /// shown as it came.
@@ -212,9 +214,10 @@ function buildSearch(): HTMLElement {
   const textInput = document.createElement("input");
   textInput.className = "search-text";
   textInput.placeholder = t("directory-search-text-placeholder");
-  const catInput = document.createElement("input");
-  catInput.className = "search-categories";
-  catInput.placeholder = t("directory-search-categories-placeholder");
+  const catPicker = categoryPicker({
+    className: "search-categories",
+    max: 32,
+  });
   const help = text("p", t("directory-search-help"), "search-help");
   const goBtn = text("button", t("directory-search-button"), "button run-search") as HTMLButtonElement;
   const progress = text("p", "", "search-progress");
@@ -234,10 +237,7 @@ function buildSearch(): HTMLElement {
 
     const query: Record<string, unknown> = {};
     if (textInput.value.trim()) query.text = textInput.value.trim();
-    const cats = catInput.value
-      .split(",")
-      .map((c) => c.trim())
-      .filter(Boolean);
+    const cats = catPicker.codes();
     if (cats.length) query.categories = cats;
 
     try {
@@ -273,7 +273,7 @@ function buildSearch(): HTMLElement {
     }
   };
 
-  wrap.append(textInput, catInput, help, goBtn, progress, results, refusedHost, errorsHost);
+  wrap.append(textInput, catPicker.root, help, goBtn, progress, results, refusedHost, errorsHost);
   return wrap;
 }
 
@@ -309,8 +309,9 @@ function renderHits(host: HTMLElement, hits: MergedHit[], truncated: boolean, ru
     card.appendChild(text("div", hit.title || t("directory-untitled"), "hit-title"));
     card.appendChild(text("div", hit.summary, "hit-summary"));
     if (hit.categories.length) {
+      const labels = hit.categories.map((c) => categoryLabel(c)).join(", ");
       card.appendChild(
-        text("div", t("directory-hit-categories", { categories: hit.categories.join(", ") }), "hit-categories"),
+        text("div", t("directory-hit-categories", { categories: labels }), "hit-categories"),
       );
     }
     card.appendChild(text("div", t("directory-hit-offered-by", { issuer: hit.issuer }), "hit-issuer"));

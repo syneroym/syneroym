@@ -1,6 +1,7 @@
 import { errText, field, input, refiller, text } from "../dom";
 import { t } from "../i18n/i18n";
 import { call } from "../rpc";
+import { categoryPicker } from "../taxonomy/category_picker";
 import { buildMembersPanel } from "./synorg_members";
 
 interface SynOrgSettings {
@@ -61,10 +62,11 @@ function buildSettingsForm(current: SynOrgSettings | null): HTMLElement {
   rules.className = "synorg-rules";
   rules.placeholder = t("synorg-rules-placeholder");
   rules.value = current?.rules ?? "";
-  const categories = document.createElement("input");
-  categories.className = "synorg-categories";
-  categories.placeholder = t("synorg-categories-placeholder");
-  categories.value = (current?.categories ?? []).join(", ");
+  const categories = categoryPicker({
+    className: "synorg-categories",
+    max: 32,
+    selected: current?.categories ?? [],
+  });
   const support = document.createElement("input");
   support.className = "synorg-support";
   support.placeholder = t("synorg-support-placeholder");
@@ -95,10 +97,7 @@ function buildSettingsForm(current: SynOrgSettings | null): HTMLElement {
         name: name.value.trim(),
         rules: rules.value,
         area: current?.area ?? [],
-        categories: categories.value
-          .split(",")
-          .map((c) => c.trim())
-          .filter(Boolean),
+        categories: categories.codes(),
         support_contact: support.value.trim(),
         dispute_path: dispute.value,
         retention_secs: days * 86400,
@@ -118,7 +117,7 @@ function buildSettingsForm(current: SynOrgSettings | null): HTMLElement {
   wrap.append(
     field(t("synorg-label-name"), name),
     field(t("synorg-label-rules"), rules),
-    field(t("synorg-label-categories"), categories),
+    field(t("synorg-label-categories"), categories.root),
     field(t("synorg-label-support"), support),
     field(t("synorg-label-dispute"), dispute),
     field(t("synorg-label-retention"), retentionDays),
