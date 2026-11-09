@@ -238,4 +238,60 @@ describe("category search and hit display", () => {
       "Categories: Bicycle Repair, my-own-category",
     );
   });
+
+  it("a directory hit with a translation shows the best version and the note; a hit without one shows no note", async () => {
+    stubRpc({
+      "directory.sources": () => ({ sources: [] }),
+      "directory.find": () => ({
+        run_id: "run-trans",
+        outcomes: [],
+        hits: [
+          {
+            ...HIT,
+            listing_id: "l_trans",
+            lang: "hi",
+            title: "झाड़ी कटाई",
+            summary: "बगीचे की सफाई",
+            translations: [
+              {
+                lang: "en",
+                title: "Hedge trimming",
+                summary: "Garden cleanup",
+              },
+            ],
+          },
+          {
+            ...HIT,
+            listing_id: "l_notrans",
+            lang: "en",
+            title: "Plumbing",
+            summary: "Pipe fixing",
+            translations: [],
+          },
+        ],
+        hits_truncated: false,
+        refused: [],
+        refused_truncated: false,
+      }),
+    });
+    const host = document.createElement("div");
+    await renderDirectory(host);
+    host.querySelector<HTMLButtonElement>("button.run-search")!.click();
+    await vi.waitFor(() => expect(host.querySelectorAll(".search-hit")).toHaveLength(2));
+
+    const hits = host.querySelectorAll(".search-hit");
+    // Hit 1 with translation, reader in English: shows English title and summary + note
+    expect(hits[0].querySelector(".hit-title")?.textContent).toBe("Hedge trimming");
+    expect(hits[0].querySelector(".hit-title")?.getAttribute("lang")).toBe("en");
+    expect(hits[0].querySelector(".hit-summary")?.textContent).toBe("Garden cleanup");
+    expect(hits[0].querySelector(".hit-summary")?.getAttribute("lang")).toBe("en");
+    expect(hits[0].querySelector(".record-text-note")?.textContent).toBe("Translated by the author from Hindi.");
+    expect(hits[0].querySelector(".record-text-switch")?.textContent).toBe("Show the original");
+
+    // Hit 2 without translation: shows original, no note or switch
+    expect(hits[1].querySelector(".hit-title")?.textContent).toBe("Plumbing");
+    expect(hits[1].querySelector(".hit-title")?.getAttribute("lang")).toBe("en");
+    expect(hits[1].querySelector(".record-text-note")).toBeNull();
+    expect(hits[1].querySelector(".record-text-switch")).toBeNull();
+  });
 });

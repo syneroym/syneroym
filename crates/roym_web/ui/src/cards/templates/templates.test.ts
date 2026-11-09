@@ -59,6 +59,19 @@ describe("Card templates", () => {
       const el = renderRequest({ categories: ["bicycle-repair", "my-own-code"] });
       expect(el.textContent).toContain("Bicycle Repair, my-own-code");
     });
+
+    it("marks description with lang and keeps label without lang", () => {
+      const el = renderRequest({
+        lang: "hi",
+        description: "Need roof repair",
+        data_use_notice: "Notice text",
+      });
+      const desc = el.querySelector(".request-description");
+      expect(desc?.getAttribute("lang")).toBe("hi");
+      const notice = el.querySelector(".request-data-use-notice");
+      expect(notice?.children[0]?.getAttribute("lang")).toBeNull();
+      expect(notice?.children[1]?.getAttribute("lang")).toBeNull();
+    });
   });
 
   describe("renderQuote", () => {
@@ -169,6 +182,60 @@ describe("Card templates", () => {
       expect(anchors.length).toBe(0);
       expect(el.querySelector(".quote-payee")?.textContent).toContain("javascript:alert(document.cookie)");
     });
+
+    it("renders scope, address, cancellation, refund and dispute with value span having lang and label span having none", () => {
+      const el = renderQuote({
+        terms: {
+          lang: "hi",
+          scope: "Composite roofing",
+          location: { where: "at-receiver", address: "123 Main Street" },
+          cancellation_terms: "Full refund",
+          refund_terms: "Pro-rated",
+          dispute_path: "Arbitrate",
+        },
+      });
+      for (const cls of [".quote-scope", ".quote-address", ".quote-cancellation", ".quote-refund", ".quote-dispute"]) {
+        const row = el.querySelector(cls)!;
+        expect(row.children[0].getAttribute("lang")).toBeNull();
+        expect(row.children[1].getAttribute("lang")).toBe("hi");
+      }
+    });
+
+    it("a quote with an English translation, read in English, shows the translation, the note, and record-text-original-binds", () => {
+      const el = renderQuote({
+        terms: {
+          lang: "hi",
+          scope: "छत की मरम्मत",
+          cancellation_terms: "रद्द करने की शर्त",
+          refund_terms: "वापसी की शर्त",
+          dispute_path: "विवाद का रास्ता",
+        },
+        translations: [
+          {
+            lang: "en",
+            scope: "Roof repair",
+            cancellation_terms: "Cancellation terms",
+            refund_terms: "Refund terms",
+            dispute_path: "Dispute path",
+          },
+        ],
+      });
+      expect(el.querySelector(".quote-scope")?.textContent).toBe("Scope: Roof repair");
+      expect(el.querySelector(".quote-scope")?.children[1].getAttribute("lang")).toBe("en");
+      const note = el.querySelector(".record-text-note");
+      expect(note?.textContent).toBe("Translated by the author from Hindi.");
+      const binds = el.querySelector(".quote-original-binds");
+      expect(binds?.textContent).toBe("The original text, in Hindi, is what binds.");
+      const btn = el.querySelector(".record-text-switch") as HTMLButtonElement;
+      expect(btn?.textContent).toBe("Show the original");
+
+      // Switch to original
+      btn.click();
+      expect(el.querySelector(".quote-scope")?.textContent).toBe("Scope: छत की मरम्मत");
+      expect(el.querySelector(".quote-scope")?.children[1].getAttribute("lang")).toBe("hi");
+      expect(el.querySelector(".quote-original-binds")).toBeNull();
+      expect(el.querySelector(".record-text-note")?.textContent).toBe("Original text, in Hindi.");
+    });
   });
 
   describe("renderAgreementReceipt", () => {
@@ -237,6 +304,24 @@ describe("Card templates", () => {
       const anchors = el.querySelectorAll(".receipt-payee a");
       expect(anchors.length).toBe(0);
       expect(el.querySelector(".receipt-payee")?.textContent).toContain("javascript:alert(1)");
+    });
+
+    it("shows the original terms with terms.lang", () => {
+      const el = renderAgreementReceipt({
+        terms: {
+          lang: "ta",
+          scope: "Plumbing repair",
+          location: { where: "at-receiver", address: "456 Oak Ave" },
+          cancellation_terms: "Non-refundable",
+          refund_terms: "No refund",
+          dispute_path: "Mediation",
+        },
+      });
+      for (const cls of [".receipt-scope", ".receipt-address", ".receipt-cancellation", ".receipt-refund", ".receipt-dispute"]) {
+        const row = el.querySelector(cls)!;
+        expect(row.children[0].getAttribute("lang")).toBeNull();
+        expect(row.children[1].getAttribute("lang")).toBe("ta");
+      }
     });
   });
 
@@ -374,6 +459,19 @@ describe("Card templates", () => {
 
       expect(el.querySelectorAll("a").length).toBe(0);
       expect(el.textContent).toContain("javascript:alert(1)");
+    });
+
+    it("displays terms.scope with terms-scope-label and terms.lang", () => {
+      const el = renderFulfilmentReceipt({
+        terms: {
+          lang: "mr",
+          scope: "Replaced panel",
+        },
+      });
+      const row = el.querySelector(".fulfilment-scope")!;
+      expect(row.textContent).toBe("Scope: Replaced panel");
+      expect(row.children[0].getAttribute("lang")).toBeNull();
+      expect(row.children[1].getAttribute("lang")).toBe("mr");
     });
   });
 

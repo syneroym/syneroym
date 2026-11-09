@@ -79,6 +79,7 @@ group-event-updated = { $author } updated the group
 
 record-text-by-author = Translated by the author from { $language }.
 record-text-original = Original text, in { $language }.
+record-text-original-binds = The original text, in { $language }, is what binds.
 record-text-show-original = Show the original
 record-text-show-translation = Show the author's translation
 
@@ -91,7 +92,7 @@ card-refused-notice = This node received a card of this type, but could not veri
 card-refused-reason = Reason: { $reason }
 
 # The terms shared by the quote and the agreement receipt
-terms-scope = Scope: { $value }
+terms-scope-label = Scope:
 terms-total = Total: { $amount }
 terms-tax = Tax: { $amount }
 terms-fees = Fees: { $amount }
@@ -101,9 +102,9 @@ terms-payee-label = Payee, as agreed in this quote:
 terms-schedule-label = Schedule:
 terms-range-separator = { " - " }
 terms-location = Location: { $where }
-terms-address = Address given in this quote: { $address }
-terms-cancellation = Cancellation terms: { $value }
-terms-refund = Refund terms: { $value }
+terms-address-label = Address given in this quote:
+terms-cancellation-label = Cancellation terms:
+terms-refund-label = Refund terms:
 terms-dispute-label = Dispute path:
 
 quote-title = Quote
@@ -126,7 +127,7 @@ request-title = Request
 request-categories = Categories: { $categories }
 request-listing = Listing: { $id }
 request-window-label = Window:
-request-notice = Notice: { $value }
+request-notice-label = Notice:
 
 progress-title = Booking Progress
 progress-status = Status: { $state }

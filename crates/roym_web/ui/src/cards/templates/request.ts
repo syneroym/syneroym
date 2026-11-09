@@ -14,6 +14,8 @@
 import { labelled } from "../../dom";
 import { timeElement } from "../../i18n/format";
 import { t } from "../../i18n/i18n";
+import { langAttr } from "../../i18n/text_lang";
+import { recordText, type TextVersion } from "../../records/record_text";
 import { categoryLabel } from "../../taxonomy/taxonomy";
 
 export interface RequestData {
@@ -23,6 +25,8 @@ export interface RequestData {
   listing_id?: string;
   categories?: string[];
   description?: string;
+  lang?: string;
+  translations?: Array<{ lang: string; description: string }>;
   area?: {
     center?: { lat: number; lon: number };
     radius_m?: number;
@@ -45,10 +49,26 @@ export function renderRequest(data?: RequestData): HTMLElement {
 
   const desc = data?.description ?? data?.summary;
   if (desc !== undefined && desc !== null && desc !== "") {
-    const descP = document.createElement("p");
-    descP.className = "request-description";
-    descP.textContent = desc;
-    card.appendChild(descP);
+    const versions: TextVersion<{ description: string }>[] = [
+      {
+        lang: data?.lang ?? "",
+        fields: { description: desc },
+        byAuthor: false,
+      },
+      ...(data?.translations || []).map((tr) => ({
+        lang: tr.lang,
+        fields: { description: tr.description },
+        byAuthor: true,
+      })),
+    ];
+    recordText(card, versions, (v) => {
+      const descP = document.createElement("p");
+      descP.className = "request-description";
+      descP.textContent = v.fields.description;
+      const attr = langAttr(v.lang);
+      if (attr) descP.setAttribute("lang", attr);
+      return [descP];
+    });
   }
 
   if (data?.categories && data.categories.length > 0) {
@@ -82,7 +102,9 @@ export function renderRequest(data?: RequestData): HTMLElement {
   if (data?.data_use_notice) {
     const noticeP = document.createElement("p");
     noticeP.className = "request-data-use-notice";
-    noticeP.textContent = t("request-notice", { value: data.data_use_notice });
+    const valSpan = document.createElement("span");
+    valSpan.textContent = data.data_use_notice;
+    labelled(noticeP, t("request-notice-label"), valSpan);
     card.appendChild(noticeP);
   }
 

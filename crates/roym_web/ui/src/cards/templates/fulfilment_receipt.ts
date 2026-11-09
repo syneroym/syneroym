@@ -7,7 +7,9 @@
 /// - A missing optional field renders as an omitted row, never as undefined
 ///   and never as a guess.
 
+import { labelled } from "../../dom";
 import { t } from "../../i18n/i18n";
+import { langAttr } from "../../i18n/text_lang";
 import { type AgreedTermsData } from "./quote";
 
 export interface FulfilmentReceiptData {
@@ -37,7 +39,11 @@ export function renderFulfilmentReceipt(data?: FulfilmentReceiptData): HTMLEleme
   if (data?.terms?.scope) {
     const scopeP = document.createElement("p");
     scopeP.className = "fulfilment-scope";
-    scopeP.textContent = t("terms-scope", { value: data.terms.scope });
+    const valSpan = document.createElement("span");
+    valSpan.textContent = data.terms.scope;
+    const attr = langAttr(data.terms.lang ?? "");
+    if (attr) valSpan.setAttribute("lang", attr);
+    labelled(scopeP, t("terms-scope-label"), valSpan);
     card.appendChild(scopeP);
   }
 

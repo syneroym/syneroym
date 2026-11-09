@@ -3,6 +3,7 @@
     "type": "request",
     "version": 1,
     "data": {
+      "lang": "en",
       "description": "Front brake cable replacement and tuning",
       "categories": [
         "cycling",
@@ -15,6 +16,7 @@
     "version": 1,
     "data": {
       "terms": {
+        "lang": "en",
         "scope": "Replace brake cable and adjust pads",
         "currency": "EUR",
         "amount_minor": 4500,
@@ -34,7 +36,16 @@
         "refund_terms": "Full refund if work not completed",
         "dispute_path": "Small claims court or informal mediation",
         "quote_expires_at_secs": 1900000000
-      }
+      },
+      "translations": [
+        {
+          "lang": "hi",
+          "scope": "ब्रेक केबल बदलें और पैड ठीक करें",
+          "cancellation_terms": "पूरी वापसी के लिए 24 घंटे पहले सूचना आवश्यक है",
+          "refund_terms": "काम पूरा न होने पर पूरी वापसी",
+          "dispute_path": "छोटा दावा न्यायालय या अनौपचारिक मध्यस्थता"
+        }
+      ]
     }
   },
   {
@@ -49,6 +60,7 @@
         "state": "complete"
       },
       "terms": {
+        "lang": "en",
         "scope": "Replace brake cable and adjust pads",
         "currency": "EUR",
         "amount_minor": 4500,

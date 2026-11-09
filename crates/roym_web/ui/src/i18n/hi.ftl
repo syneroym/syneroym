@@ -75,6 +75,7 @@ group-event-updated = { $author } ने समूह में बदलाव 
 
 record-text-by-author = लेखक द्वारा { $language } से अनुवादित।
 record-text-original = मूल विवरण, { $language } में।
+record-text-original-binds = मूल पाठ, { $language } में, ही मान्य होगा।
 record-text-show-original = मूल विवरण दिखाएँ
 record-text-show-translation = लेखक का अनुवाद दिखाएँ
 
@@ -84,7 +85,7 @@ card-refused-title = असत्यापित { $type } कार्ड (v{ $
 card-refused-notice = इस नोड को इस प्रकार का एक कार्ड मिला, पर वह उसे सत्यापित नहीं कर सका। यह इसलिए दिखाया गया है कि आपको पता चले कि वह भेजा गया था, पर उसे स्वीकार नहीं किया जा सकता और उस पर कोई कार्रवाई नहीं की जा सकती।
 card-refused-reason = कारण: { $reason }
 
-terms-scope = काम का ब्योरा: { $value }
+terms-scope-label = काम का ब्योरा:
 terms-total = कुल: { $amount }
 terms-tax = कर: { $amount }
 terms-fees = शुल्क: { $amount }
@@ -94,9 +95,9 @@ terms-payee-label = भुगतान पाने वाला, जैसा �
 terms-schedule-label = समय:
 terms-range-separator = { " - " }
 terms-location = जगह: { $where }
-terms-address = इस कोटेशन में दिया गया पता: { $address }
-terms-cancellation = रद्द करने की शर्तें: { $value }
-terms-refund = वापसी की शर्तें: { $value }
+terms-address-label = इस कोटेशन में दिया गया पता:
+terms-cancellation-label = रद्द करने की शर्तें:
+terms-refund-label = वापसी की शर्तें:
 terms-dispute-label = विवाद सुलझाने का तरीका:
 
 quote-title = कोटेशन
@@ -119,7 +120,7 @@ request-title = अनुरोध
 request-categories = श्रेणियाँ: { $categories }
 request-listing = लिस्टिंग: { $id }
 request-window-label = समय-सीमा:
-request-notice = सूचना: { $value }
+request-notice-label = सूचना:
 
 progress-title = बुकिंग की स्थिति
 progress-status = स्थिति: { $state }
