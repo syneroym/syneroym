@@ -73,6 +73,11 @@ group-event-added = { $author } ने { $subject } को जोड़ा
 group-event-removed = { $author } ने { $subject } को हटाया
 group-event-updated = { $author } ने समूह में बदलाव किया
 
+record-text-by-author = लेखक द्वारा { $language } से अनुवादित।
+record-text-original = मूल विवरण, { $language } में।
+record-text-show-original = मूल विवरण दिखाएँ
+record-text-show-translation = लेखक का अनुवाद दिखाएँ
+
 card-unknown-title = अज्ञात कार्ड ({ $type } v{ $version })
 card-unknown-body = यह क्लाइंट इस कार्ड के प्रकार या संस्करण को नहीं समझता।
 card-refused-title = असत्यापित { $type } कार्ड (v{ $version })

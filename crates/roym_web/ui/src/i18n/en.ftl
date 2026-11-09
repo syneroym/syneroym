@@ -77,6 +77,11 @@ group-event-added = { $author } added { $subject }
 group-event-removed = { $author } removed { $subject }
 group-event-updated = { $author } updated the group
 
+record-text-by-author = Translated by the author from { $language }.
+record-text-original = Original text, in { $language }.
+record-text-show-original = Show the original
+record-text-show-translation = Show the author's translation
+
 # Cards. A label that is followed by a value of another kind (a link, a
 # time) has no `$value`: the card draws the value after it.
 card-unknown-title = Unknown Card ({ $type } v{ $version })

@@ -2,6 +2,8 @@ import { FluentBundle, FluentResource } from "@fluent/bundle";
 import EN_BASE_SOURCE from "./en.ftl?raw";
 import EN_TAXONOMY_SOURCE from "./taxonomy/en.ftl?raw";
 
+import { sameLanguage } from "./text_lang";
+
 export const FALLBACK_LANGUAGE = "en";
 /// Region added to a catalog tag that has none, so money and numbers get
 /// Indian digit grouping in every language.
@@ -84,18 +86,6 @@ export function availableLanguages(loaders: Loaders = LOADERS): string[] {
   return [FALLBACK_LANGUAGE, ...Object.keys(loaders).sort()];
 }
 
-/// Same language and same script, so `hi-Latn` does not match the
-/// Devanagari `hi` catalog. A tag that does not parse matches nothing.
-function matches(requested: string, available: string): boolean {
-  try {
-    const a = new Intl.Locale(requested);
-    const b = new Intl.Locale(available);
-    return a.language === b.language && a.maximize().script === b.maximize().script;
-  } catch {
-    return false;
-  }
-}
-
 export function pickLanguage(
   stored: string | null,
   preferred: readonly string[],
@@ -103,7 +93,7 @@ export function pickLanguage(
 ): string {
   if (stored !== null && available.includes(stored)) return stored;
   for (const tag of preferred) {
-    const hit = available.find((candidate) => matches(tag, candidate));
+    const hit = available.find((candidate) => sameLanguage(tag, candidate));
     if (hit !== undefined) return hit;
   }
   return FALLBACK_LANGUAGE;
