@@ -277,3 +277,17 @@ async fn page_envelopes_cover_every_source_of_every_hit_once() {
     assert!(env_records.contains(&record_id_a.as_str()));
     assert!(env_records.contains(&record_id_b.as_str()));
 }
+
+#[tokio::test]
+async fn verified_hit_preserves_lang_and_translations() {
+    let (listing_id, record_id, envelope) = sign_test_listing("slug-lang", "Title", 1000);
+    let hit = canned_search_hit(&listing_id, &record_id, &envelope, Default::default(), 1000);
+    let source = Source { did: "did:key:s1".to_string(), pinned_issuer: None };
+    let resp = canned_search_response(vec![hit], false);
+    let proxy = FakeProxy::new(Ok(vec![Ok(resp)]));
+
+    let res = find(&proxy, &[source], &SearchQuery::default(), 1000).await.unwrap();
+    assert_eq!(res.page.hits.len(), 1);
+    assert_eq!(res.page.hits[0].lang, "en");
+    assert!(res.page.hits[0].translations.is_empty());
+}

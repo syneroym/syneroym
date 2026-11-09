@@ -7,6 +7,7 @@
       ],
       "conversation_address": "string",
       "issuer": "string",
+      "lang": "string",
       "listing_id": "string",
       "record_id": "string",
       "revocation_status": "unknown",
@@ -34,6 +35,7 @@
       "status": "active",
       "summary": "string",
       "title": "string",
+      "translations": [],
       "verified": "boolean",
       "versions_differ": "boolean"
     }

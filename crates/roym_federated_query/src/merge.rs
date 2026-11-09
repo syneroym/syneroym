@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use syneroym_roym_core::{
     area::Area,
     directory::{MAX_HITS_PER_SOURCE, MAX_REFUSED_RESULTS, MAX_SEARCH_RESULTS},
+    listing::ListingTranslation,
     membership::{self, CheckInput, ListingRef, MembershipEvidence, MembershipVerdict},
 };
 
@@ -32,6 +33,8 @@ pub struct MergedHit {
     pub age_secs: u64,
     pub sources: Vec<HitSource>,
     pub versions_differ: bool,
+    pub lang: String,
+    pub translations: Vec<ListingTranslation>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -59,6 +62,8 @@ pub struct Row {
     pub raw_evidence: Option<MembershipEvidence>,
     pub pinned_issuer: Option<String>,
     pub areas: Vec<Area>,
+    pub lang: String,
+    pub translations: Vec<ListingTranslation>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -243,6 +248,8 @@ fn build_hits(
                 age_secs: now.saturating_sub(winner.issued_at_secs),
                 sources,
                 versions_differ: distinct_record_ids.len() > 1,
+                lang: winner.lang.clone(),
+                translations: winner.translations.clone(),
             })
         })
         .collect()

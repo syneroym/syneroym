@@ -33,6 +33,8 @@ async fn find_over_one_source_matches_the_native_and_wasm_builds() {
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0]["sources"][0]["directory"], "did:key:hForeign");
     assert_eq!(hits[0]["versions_differ"], false);
+    assert_eq!(hits[0]["lang"], "en");
+    assert_eq!(hits[0]["translations"], json!([]));
     assert!(hits[0].get("envelope").is_none(), "find must return projections, not envelopes");
 
     let outcomes = fw["result"]["outcomes"].as_array().unwrap();

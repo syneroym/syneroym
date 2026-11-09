@@ -4,6 +4,12 @@ import { t } from "../i18n/i18n";
 import { call, RpcError } from "../rpc";
 import type { MembershipVerdict } from "./membership";
 
+export interface ListingTranslation {
+  lang: string;
+  title: string;
+  summary?: string | null;
+}
+
 /// One merged search hit, as `directory.find` returns it. Every field the
 /// directory could not vouch for is still present -- an absent field is
 /// what a UI turns into a positive default, so the node fills all of them.
@@ -13,6 +19,8 @@ export interface MergedHit {
   issuer: string;
   title: string;
   summary: string;
+  lang: string;
+  translations: ListingTranslation[];
   categories: string[];
   conversation_address: string;
   status: string;

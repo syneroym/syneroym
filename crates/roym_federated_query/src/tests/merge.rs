@@ -163,3 +163,22 @@ fn an_empty_input_gives_an_empty_page() {
     assert!(res.refused.is_empty());
     assert!(!res.refused_truncated);
 }
+
+#[test]
+fn winning_row_language_and_translations_propagate_to_hit() {
+    use syneroym_roym_core::{lang::LangTag, listing::ListingTranslation};
+
+    let mut row = test_row("did:key:sA", "listing_lang", "rec_lang", 100);
+    row.lang = "hi".to_string();
+    row.translations = vec![ListingTranslation {
+        lang: LangTag::parse_canonical("en").unwrap(),
+        title: "English Title".to_string(),
+        summary: "English Summary".to_string(),
+    }];
+
+    let res = merge_rows(vec![row], Vec::new(), 200);
+    assert_eq!(res.hits.len(), 1);
+    assert_eq!(res.hits[0].lang, "hi");
+    assert_eq!(res.hits[0].translations.len(), 1);
+    assert_eq!(res.hits[0].translations[0].title, "English Title");
+}

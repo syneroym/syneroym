@@ -21,6 +21,8 @@ const HIT: MergedHit = {
   age_secs: 10,
   sources: [],
   versions_differ: false,
+  lang: "en",
+  translations: [],
 };
 
 const OUT_OF_SCOPE = {

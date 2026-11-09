@@ -152,6 +152,8 @@ fn build_verified_row(
         raw_evidence: Some(hit.membership.clone()),
         pinned_issuer: source.pinned_issuer.clone(),
         areas,
+        lang: payload.lang.to_string(),
+        translations: payload.translations,
     })
 }
 
