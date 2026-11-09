@@ -417,3 +417,62 @@ not run any plan step, the Hub tests or `mise run verify`.
   replace old codes") as well as the link. In Step 10.2: rewrite the "Tag
   validation" sentence of the change doc, not only add a deviation. Fix `:2542`.
 - *Status:* Fixed (ffdacc8d)
+
+## Plan review round 1, verification — Claude Sonnet 5.5 (Claude Code desktop), 2026-11-09
+
+Checked on `feat/m08b-b3a-lang-records` at `3bd56437`. I read the diff of the
+plan (`453eeb36..HEAD`), the diff of the change doc, and the code facts behind
+each fix. I did not run any plan step.
+
+**Summary:** 13 items confirmed fixed. 2 new minor items (P14, P15). 2 Open.
+
+### Confirmed
+
+| Item | Where the plan now answers it |
+| --- | --- |
+| P1 | D-B3a-10 and D-B3a-14: `record-text-original-binds` on the quote card, shown with an author translation. In the message-id list. Test case in section 7.1. Deviation in section 3 names the gap until B5. (D-B3a-10 also says "and receipt card". The receipt never shows a translation, so this is harmless.) |
+| P2 | W6, the ML-5 row, D-B3a-14, Step 8.1 (`fulfilment_receipt.ts`, the `git grep`), the tests of 7.1 and the Hindi sweep. |
+| P3 | Point 4 of section 2.2, D-B3a-3, D-B3a-8, Step 2 item 3 (the split moves to Step 2) and the size row. The size row has an error (P15). |
+| P4 | Point 18, D-B3a-11 (`.listing-status-select`, `.listing-text-lang`), Step 7.1, Step 9.2 (the spec line and the `git grep`), section 7.3. |
+| P5 | Point 14, D-B3a-12 (`type="button"`, no `<p>`), Step 7.2 and the test in 7.1. |
+| P6 | D-B3a-12, Step 7.2, and the test in 7.1 ("save preserves stored `about` and `translations`"). |
+| P7 | The deviation list of section 3 and the reworded ML-5 row. |
+| P8 | D-B3a-14: the notice has no `lang`, with the reason. Step 8.1. The backlog row of section 8 has the reason. |
+| P9 | D-B3a-2 has the worst-case sizes. The test of 7.2 is added. The plan chooses (a): a backlog row in section 8. |
+| P10 | D-B3a-1 paragraph, the deviation list, the change doc deviation (added), and the "Tag validation" sentence and ML-10 row of the change doc (rewritten). |
+| P11 | D-B3a-7: `build_request_params`, and the tests of 7.2. A new `allow(clippy::too_many_arguments)` is fine: `build_quote_params` already has one, and `xtask/src/lint_suppressions.rs` does not count it. |
+| P12 | D-B3a-9 and the test in 7.1. |
+| P13 | Section 9 (Cards table `:1204`, prose `:918`/`:1138`, `:2542`), section 8 (the `:535` row text), Step 10.2 (the rewrite). |
+
+### New findings
+
+#### P14 — The owner answers are dated 2026-11-05, but the plan was written and the answers were given on 2026-11-09 (minor)
+
+- **Where:** plan lines 6, 172, 197, 222, 246, 265, 289, 312 and 330
+  (the status line and every "Owner answer: (a), 2026-11-05").
+- **Problem:** The plan was committed on 2026-11-09 (`453eeb36`) with "Owner
+  questions open". The answers came with the fix in `ffdacc8d`, also on
+  2026-11-09. The date 2026-11-05 is the date of the owner decisions in
+  `task.md` (the demo, the crate, the catalog format), and was copied by
+  mistake. Line 295 ("owner confirmed 2026-11-05") is correct: it is about
+  the `task.md` demo paragraph.
+- **Failure case:** The plan says the owner answered four days before the plan
+  existed. At close-out, the change doc "Decided <date>" list copies the wrong
+  date.
+- **Fix:** Change the nine dates to 2026-11-09. Leave line 295.
+- *Status:* Open
+
+#### P15 — The size row for `listing.rs` says the file shrinks by 25 lines, but a move into helper methods does not shrink it (minor)
+
+- **Where:** plan line 1243 (section 7.5, row `listing.rs`).
+- **Problem:** The row says "-25 (Step 2 decomposition), then about +35".
+  Moving the `location` and `relationship` blocks into two methods keeps the
+  same lines and adds two function signatures and two calls: about +6. The
+  `transaction.rs` row is right to say "-115", because that code leaves the
+  file.
+- **Failure case:** The implementer or a reviewer looks for a 25-line drop
+  after Step 2, does not find it, and doubts the step. The ratchet gate does
+  not care (549 is far from 800), but the number is wrong.
+- **Fix:** Write "about +6 (Step 2, helper methods), then about +35. Limit
+  800".
+- *Status:* Open
