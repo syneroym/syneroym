@@ -4,7 +4,7 @@ use super::{
     MAX_ADDRESS_LEN, MAX_CATEGORIES, MAX_CATEGORY_LEN, MAX_DESCRIPTION_LEN, MAX_NOTICE_LEN,
     MAX_PAYEE_LEN, MAX_PAYMENT_METHOD_LEN, MAX_PAYMENT_METHODS, MAX_SCOPE_LEN, MAX_TERMS_TEXT_LEN,
 };
-use crate::area::AreaError;
+use crate::{area::AreaError, lang::TranslationError};
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum TransactionError {
@@ -122,5 +122,5 @@ pub enum TransactionError {
     SlotIdMismatch,
 
     #[error(transparent)]
-    Translation(#[from] crate::lang::TranslationError),
+    Translation(#[from] TranslationError),
 }

@@ -3,6 +3,7 @@
 use std::{fmt, str::FromStr};
 
 use icu_locale_core::Locale;
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
 #[cfg(test)]
 mod tests;
@@ -75,15 +76,15 @@ impl FromStr for LangTag {
     }
 }
 
-impl serde::Serialize for LangTag {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+impl Serialize for LangTag {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.serialize_str(&self.0)
     }
 }
 
-impl<'de> serde::Deserialize<'de> for LangTag {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+impl<'de> Deserialize<'de> for LangTag {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let s = String::deserialize(deserializer)?;
-        Self::parse_canonical(&s).map_err(serde::de::Error::custom)
+        Self::parse_canonical(&s).map_err(de::Error::custom)
     }
 }

@@ -1778,6 +1778,8 @@ To add a language, add `src/i18n/<tag>.ftl` and `src/i18n/taxonomy/<tag>.ftl`. T
 
 The Hub picks its language from the saved choice (`localStorage` key `roym-hub-language`), then from `navigator.languages`, then English. `mise run test:roym-ui` runs the checks on the catalogs: every id the code uses is in `en.ftl`, `hi.ftl` has the same ids and a Devanagari letter in each message, and no message is unused. It also runs the build check and the Hindi sweep. `mise run verify` runs it as the `hub-ui` gate.
 
+**Record languages.** Record text (`profile`, `listing`, `request`, `quote`) is shown using `recordText(currentLanguage(), originalLang, originalText, translations)` from `src/records/record_text.ts`. It picks the best version for the reader based on the active language and the browser's preferred languages. When it shows an author translation, it displays a translation note and a button to view the author's original signed text. Every place in the Hub that draws record text sets the HTML `lang` attribute via `langAttr` (`src/i18n/text_lang.ts`). Form controls that choose a record's language use `textLangSelect(current)` with options drawn from `RECORD_LANGUAGES`.
+
 ##### Add a Roym method
 
 Every Roym service has a method table in its `api.rs`. `web` lists only its own `session.whoami` and forwards every other method, with its `params` unchanged, to the service that owns it. Methods use typed input and output structs in Rust:
@@ -2501,7 +2503,7 @@ roym directory.find '{"query":{"text":"plumber"}}' | jq '.result | {outcomes, hi
 `directory.add-source` asks the directory for its public information first, and returns the saved `source` and the `probe` answer. `directory.find` asks every saved source at the same time, checks every answer on this node, and returns one merged page:
 
 - `outcomes`: one entry for each source: `source`, `verified` (how many listings passed the checks), `refused` (how many did not), `truncated`, and `error`. `error` is `null` when the source answered. Otherwise it names why: `not-found` (the node of the source could not be reached or has no such service), `timed-out`, `not-started` (this node could not start the search), `refused` (the source refused the call), or `unreadable` (the answer was too large or not valid).
-- `hits`: the listings that passed the checks, from all sources, without duplicates. Show these to the person. `hits_truncated` says that more existed than the page holds.
+- `hits`: the listings that passed the checks, from all sources, without duplicates. Show these to the person. Each hit has `lang` and `translations`; show the version that fits the reader and say when it is the author's translation. `hits_truncated` says that more existed than the page holds.
 - `refused`: evidence that failed a check, for example a listing with a wrong signature. Show it apart from `hits`; never mix the two. `refused_truncated` is the same flag for this list.
 - `run_id`: the id of this search.
 
@@ -2539,7 +2541,7 @@ roym transaction.thread "{\"conversation\":\"$CONV\"}" | jq .result.cards
 
 An HTTP `503` means the node has too many calls at the moment. Wait and try again. An HTTP `500` with the text "Native service not found" is described below, under "After a node restart".
 
-**Unknown fields.** A method that works only on the person's own node refuses a field it does not list. It answers `-32602` with `data.field` set to that field. So send only the fields that the method lists. This rule assumes that a client and its node have the same version. A client for a newer node can fail on an older node. When that happens, read `data.field` and tell the person to update the node. A nested record, for example `query` in `directory.find`, ignores a key it does not know. See "Bad input and parameter validation" above for more.
+**Unknown fields.** A method that works only on the person's own node refuses a field it does not list. It answers `-32602` with `data.field` set to that field. So send only the fields that the method lists. Every method that signs a `profile`, `listing`, `request` or quote takes a required `lang` in canonical form, and a non-canonical tag answers `-32602` with the form to send. This rule assumes that a client and its node have the same version. A client for a newer node can fail on an older node. When that happens, read `data.field` and tell the person to update the node. A nested record, for example `query` in `directory.find`, ignores a key it does not know. See "Bad input and parameter validation" above for more.
 
 **After a node restart.** The event feed starts empty, so an old cursor gets `reload` (6.5). A node that was only restarted, with no new deploy, may answer every `POST /rpc` with HTTP `500` and `{"error":{"code":-32603,"message":"Native service not found for did:key:…"},"id":null,"jsonrpc":"2.0"}`. The sign-in still works. The Roym services are not running on the node yet. Ask the node owner to deploy the Roym app again (`roymctl app deploy`, or `roymctl app reconcile` on a supervised app), then call again.
 

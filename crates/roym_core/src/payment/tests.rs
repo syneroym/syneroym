@@ -3,13 +3,14 @@ use syneroym_signed_record::{Envelope, RecordDraft};
 
 use super::*;
 use crate::{
+    lang::LangTag,
     listing::ServiceLocation,
     transaction::{PaymentTiming, QuoteLocation},
 };
 
 fn sample_terms() -> AgreedTerms {
     AgreedTerms {
-        lang: crate::lang::LangTag::parse("en").unwrap(),
+        lang: LangTag::parse("en").unwrap(),
         scope: "All work".to_string(),
         currency: "USD".to_string(),
         amount_minor: 10_000,

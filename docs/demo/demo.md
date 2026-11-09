@@ -1267,9 +1267,10 @@ and pick **हिन्दी**. The page loads again.
 **Expect:** the title, the tab names, the sign-in box, every card and every screen are in
 Hindi. Open the **Contacts** tab: its heading and its button are in Hindi. Open **Listings**
 and pick a category in the category picker: type its Hindi label, pick it, and the chosen chip
-shows the Hindi label. Money shows with Indian digit grouping (for example `₹1,00,000.50`), and
-dates show in the Hindi style. Your own data (names, listing titles, message text) stays as it
-was written. Reload the page: it stays in Hindi.
+shows the Hindi label. Create a Hindi listing with its text language set to Hindi, and add an
+English translation with its title in the translation rows. Money shows with Indian digit
+grouping (for example `₹1,00,000.50`), and dates show in the Hindi style. Your own data
+(names, listing titles, message text) stays as it was written. Reload the page: it stays in Hindi.
 
 **Say:** "Every person reads Roym in their own language. The choice stays on this device."
 

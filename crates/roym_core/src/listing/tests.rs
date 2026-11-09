@@ -1,8 +1,10 @@
 #![allow(clippy::cognitive_complexity)]
 
 use syneroym_identity::{Identity, substrate};
+use syneroym_signed_record::{Envelope, RecordDraft};
 
 use super::*;
+use crate::record;
 
 /// Signs with the issuer this payload's `listing_id` was actually
 /// derived from -- the only shape `verify_envelope` accepts as
@@ -12,16 +14,15 @@ fn sign_listing_with_own_issuer(payload: &ListingPayload, now: u64) -> String {
     let issuer = substrate::derive_did_key(&issuer_key.public_key());
     let mut p = payload.clone();
     p.listing_id = derive_listing_id(&issuer, &p.slug).unwrap();
-    let draft = syneroym_signed_record::RecordDraft {
+    let draft = RecordDraft {
         version: LISTING_VERSION,
-        record_type: crate::record::RECORD_LISTING.to_string(),
+        record_type: record::RECORD_LISTING.to_string(),
         subject: p.listing_id.clone(),
         payload: serde_json::to_value(&p).unwrap(),
         expires_at_secs: None,
         supersedes: None,
     };
-    let (mut env, bytes) =
-        syneroym_signed_record::Envelope::unsigned(draft, issuer.clone(), None, now).unwrap();
+    let (mut env, bytes) = Envelope::unsigned(draft, issuer.clone(), None, now).unwrap();
     let sig = z32::encode(&issuer_key.sign(&bytes).to_bytes());
     env.attach_signature(sig).unwrap();
     env.to_json().unwrap()
@@ -387,16 +388,15 @@ fn sign_raw_payload(payload: serde_json::Value, slug: &str, now: u64) -> String 
     let listing_id = derive_listing_id(&issuer, slug).unwrap();
     let mut p = payload;
     p["listing_id"] = serde_json::json!(listing_id);
-    let draft = syneroym_signed_record::RecordDraft {
+    let draft = RecordDraft {
         version: LISTING_VERSION,
-        record_type: crate::record::RECORD_LISTING.to_string(),
+        record_type: record::RECORD_LISTING.to_string(),
         subject: listing_id,
         payload: p,
         expires_at_secs: None,
         supersedes: None,
     };
-    let (mut env, bytes) =
-        syneroym_signed_record::Envelope::unsigned(draft, issuer, None, now).unwrap();
+    let (mut env, bytes) = Envelope::unsigned(draft, issuer, None, now).unwrap();
     let sig = z32::encode(&issuer_key.sign(&bytes).to_bytes());
     env.attach_signature(sig).unwrap();
     env.to_json().unwrap()

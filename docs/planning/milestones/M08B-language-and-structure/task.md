@@ -167,6 +167,8 @@ Change doc: roym-multilingual.
 
 Change doc: roym-multilingual.
 
+**B3a result:** done on the branch `feat/m08b-b3a-lang-records`. Size with `gzip -9`: the main Hub script went from 49,207 to 51,902 bytes (+2,695; limit 5 KB), the Hindi catalog is 14,377 bytes (was 14,053 in B2; +324 bytes, limit 1 KB), and the lazy Hindi taxonomy chunk is 2,539 bytes. The six Roym components build for `wasm32-wasip2`: web 255,652 bytes, conversation 769,589 bytes, profile 766,889 bytes, catalog 927,674 bytes, transaction 1,505,300 bytes, directory 1,463,108 bytes. Unit tests, dual-build parity tests, Playwright tests and Story 40 pass.
+
 ### B3b — Language tags on chat messages (M)
 
 - Up to 3 language tags on a chat message, main language first: the conversation WIT `message` record, the stored row in `crates/conversation`, the signed message between nodes, and both builds.
