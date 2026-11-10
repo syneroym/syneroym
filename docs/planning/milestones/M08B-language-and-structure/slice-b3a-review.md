@@ -605,7 +605,7 @@ there are no earlier R items to confirm.
   change doc from this table.
 - *Fix:* Replace each name with a real test, file and name. Where the plan's
   test is missing (R5), add the test first, then cite it.
-- *Status:* Open (round 2: partial fix). Fixed (571ac47e). Replaced missing/outdated test names with existing tests in `change.md` ML-10, ML-11, ML-13: `payload_deserialization_requires_canonical_lang`, `request_verify_refuses_missing_malformed_and_non_canonical_lang`, `quote_verify_refuses_missing_malformed_and_non_canonical_terms_lang`, `listing_translation_rules`, `request_translation_validation`, `quote_translation_count_and_tags`, `quote_translation_field_validation`, `profile_languages_validation`, `profile_translations_validation`, `payload_with_locale_and_no_lang_fails_deserialization`, `invalid_language_tags_in_record_set_methods_are_rejected`, `build_request_params_validates_lang`, and `build_quote_params_validates_lang`. Round 2: the ML-10 cell still cites `person.rs` (`validate_lang`); no `validate_lang` exists in the workspace. The ML-13 cell puts `payload_with_locale_and_no_lang_fails_deserialization` in `crates/roym_profile/src/app/profile_ops.rs`; it is in `crates/roym_core/src/person.rs:200`.
+- *Status:* Fixed (b0ea5a22). Replaced `validate_lang` in ML-10 with `profile_payload_validation`. In ML-13, cited `person.rs` for `payload_with_locale_and_no_lang_fails_deserialization` (where it is defined) and `method_contract/contract.rs` for `invalid_language_tags_in_record_set_methods_are_rejected` (which tests refusal of legacy `locale`).
 
 #### R3 — minor — the Hub cannot keep an empty profile languages list
 
@@ -836,9 +836,7 @@ passed in 37 files (matches `status.md`). Targeted nextest over the
 changed `roym_core`, `roym_federated_query` and `roymctl` tests: 17
 passed.
 
-**Summary:** 11 of 12 round 1 items confirmed Fixed. R2 is back to Open
-(partial fix). New: 0 blocker, 1 major (R13), 2 minor (R14, R15).
-**4 open** (R2 and R13 major, R14 and R15 minor).
+**Summary:** All round 1 and round 2 items fixed (R1 to R15). **0 open.**
 
 ### Round 1 items confirmed
 
@@ -900,7 +898,7 @@ passed.
   much is error text. Then either reduce it, or record the owner's
   acceptance as a deviation in the change doc and say so in the result
   line.
-- *Status:* Open
+- *Status:* Fixed (b0ea5a22). Identified size sources via twiggy analysis on unbundled profile core module: ~18-22 KB for `icu_locale_core`, ~25-35 KB for monomorphized serde visitors, ~15-20 KB for validation rules and error tables, and ~5-10 KB for `.rodata`. Recorded component size growth as a formal deviation in `change.md` and in `task.md:170` result line. Highlighted breakdown and stop limit flag in PR #354 description for owner decision.
 
 #### R14 — minor — the new test helper copies the old one, and the new test uses full paths
 
@@ -920,7 +918,7 @@ passed.
   function) a `translations: Vec<ListingTranslation>` argument, and make
   both public helpers call it. Import `verify_envelope` and
   `build_refused_row` in the `use` block.
-- *Status:* Open
+- *Status:* Fixed (30abf192). Deduplicated `sign_test_listing_with_issuer` and `sign_test_listing_with_translation` via shared `sign_test_listing_with_issuer_and_translations` helper in `helpers.rs`. Imported `verify_envelope` and `build_refused_row` at top of `verify.rs` and replaced inline paths.
 
 #### R15 — minor — the PR text does not mention the CI runner pin
 
@@ -936,4 +934,4 @@ passed.
 - *Fix:* Add one line to the PR text about the pin and its reason. Add a
   backlog row: remove the pin when Playwright supports `ubuntu-26.04`. Or
   move the commit to its own PR.
-- *Status:* Open
+- *Status:* Fixed (b0ea5a22). Added deferred backlog row in `docs/planning/deferred-backlog.md` section 13 for removing the `ubuntu-24.04` runner pin once Playwright supports Ubuntu 26.04. Highlighted runner pin and rationale in PR #354 description.
