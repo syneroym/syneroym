@@ -75,7 +75,7 @@ group-event-updated = { $author } ने समूह में बदलाव 
 
 record-text-by-author = लेखक द्वारा { $language } से अनुवादित।
 record-text-original = मूल विवरण, { $language } में।
-record-text-original-binds = मूल पाठ, { $language } में, ही मान्य होगा।
+record-text-original-binds = मूल विवरण, { $language } में, ही मान्य होगा।
 record-text-show-original = मूल विवरण दिखाएँ
 record-text-show-translation = लेखक का अनुवाद दिखाएँ
 
