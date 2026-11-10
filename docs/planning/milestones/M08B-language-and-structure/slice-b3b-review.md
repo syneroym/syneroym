@@ -178,7 +178,7 @@ step, the Hub tests or `mise run verify`, and I changed no code.
   `u64::MAX`, and a count of `u64::MAX`; each must return `Err` and not panic.
   Say in the plan (and in the PR text) that this also closes an existing hole,
   so the owner knows the fix is in this slice and no backlog row is needed.
-- *Status:* Open
+- *Status:* Fixed (6dbe9dcd)
 
 #### P2 — `sign` and `enqueue_direct` get an eighth argument, and clippy refuses that (minor)
 
@@ -199,7 +199,7 @@ step, the Hub tests or `mise run verify`, and I changed no code.
 - **Fix:** Say in Step 3.4 that these two functions get
   `#[allow(clippy::too_many_arguments)]`, as the other five do. `canonical_bytes`
   (6 to 7) and `send_group` (6 to 7) stay inside the limit.
-- *Status:* Open
+- *Status:* Fixed (6dbe9dcd)
 
 #### P3 — Three raw `INSERT` statements are not named as places that write `languages` (minor)
 
@@ -223,7 +223,7 @@ step, the Hub tests or `mise run verify`, and I changed no code.
   the import, `m.languages`; for the withdrawn row, say "no list" (the body is
   gone, and the default `''` is right). Add to section 7.2 a group test that
   reads the stored row (not the notification) after a tagged entry arrives.
-- *Status:* Open
+- *Status:* Fixed (6dbe9dcd)
 
 #### P4 — A group entry with a bad list is retried on every pass and nobody sees it (minor)
 
@@ -247,7 +247,7 @@ step, the Hub tests or `mise run verify`, and I changed no code.
   withdrawn path does, so it is not retried; then "what is stored" is
   still what was signed, and the entry is still not shown. I prefer (a) now
   because (b) changes the DAG head logic and is a separate decision.
-- *Status:* Open
+- *Status:* Fixed (6dbe9dcd)
 
 #### P5 — "Language not stated" is planned for every non-card, non-deleted row, including binary ones (minor)
 
@@ -268,7 +268,7 @@ step, the Hub tests or `mise run verify`, and I changed no code.
   `body_encoding === "utf8"`; other rows are drawn as today. Add a case to
   `messages.test.ts` and `groups.test.ts`: a `base64` row has no note and no
   `lang`.
-- *Status:* Open
+- *Status:* Fixed (6dbe9dcd)
 
 #### P6 — D-B3b-6 does not say how to put `data.field` on the "languages" error (minor)
 
@@ -285,7 +285,7 @@ step, the Hub tests or `mise run verify`, and I changed no code.
   Step 4.5 fails with "missing data.field".
 - **Fix:** Write in D-B3b-6: `ParamError { field: Some("languages".into()), message:
   e.to_string() }.into_response()`.
-- *Status:* Open
+- *Status:* Fixed (6dbe9dcd)
 
 #### P7 — Point 2 names a second conversation test host that does not exist (minor)
 
@@ -298,7 +298,7 @@ step, the Hub tests or `mise run verify`, and I changed no code.
 - **Failure case:** An implementer looks for a second conversation host,
   finds none, and loses time, or edits the wrong function.
 - **Fix:** Name one host (`signing.rs:516`). Keep `:686` out of the list.
-- *Status:* Open
+- *Status:* Fixed (6dbe9dcd)
 
 #### P8 — The language list needs a name and a role for screen readers (minor)
 
@@ -318,7 +318,7 @@ step, the Hub tests or `mise run verify`, and I changed no code.
   satisfied), and give the "add" `<select>` the same text as an `aria-label`.
   Add a case to `language_list.test.ts`. The profile screen gets the same
   change, so it should pass its own label.
-- *Status:* Open
+- *Status:* Fixed (6dbe9dcd)
 
 #### P9 — Step 3 is one large step, and the host half can be checked alone first (minor)
 
@@ -336,4 +336,4 @@ step, the Hub tests or `mise run verify`, and I changed no code.
   the WIT unchanged; run `cargo nextest run -p syneroym-conversation`. Step 3b:
   the WIT, `syneroym-rpc`, the hosts and converters, the host `send` taking the
   list and checking it (D-B3b-4), and both builds. Both parts stay in one PR.
-- *Status:* Open
+- *Status:* Fixed (6dbe9dcd)
