@@ -992,3 +992,10 @@ number as the proof instead of the twiggy ranges, which did not say how
 to repeat them. `task.md` section 1 has the new limit for later slices:
 +40 KB for the shared code, and +15% for a component that gets new record
 code.
+
+### Owner decisions on the audit ignore and the Hindi text, 2026-11-10
+
+- The owner accepted the `RUSTSEC-2026-0459` ignore in `.cargo/audit.toml`
+  (commit `865bc893`), with its backlog row.
+- The owner reviewed the 26 new Hindi messages listed in the PR text and
+  accepted them with no changes.
