@@ -17,9 +17,73 @@ pub struct DeliveryPayload {
     pub author: String,
     pub sender_timestamp_ms: i64,
     pub content_type: String,
+    pub languages: Vec<String>,
     pub body: Vec<u8>,
     #[serde(with = "crate::wire::fixed_bytes")]
     pub signature: [u8; 64],
+}
+
+/// `u64` count, then each tag as a `u64` length and its bytes. Lengths,
+/// not separators, so no byte can move between two tags or into the body.
+pub(crate) fn put_languages(out: &mut Vec<u8>, languages: &[String]) {
+    out.extend_from_slice(&(languages.len() as u64).to_be_bytes());
+    for lang in languages {
+        out.extend_from_slice(&(lang.len() as u64).to_be_bytes());
+        out.extend_from_slice(lang.as_bytes());
+    }
+}
+
+/// The reverse of `put_languages`, reading from `bytes[*at..]` and moving
+/// `at`. Fails on a short buffer, a count over MAX_MESSAGE_LANGUAGES,
+/// an offset overflow or a tag that is not UTF-8.
+pub(crate) fn take_languages(bytes: &[u8], at: &mut usize) -> Result<Vec<String>, String> {
+    let count_end = at.checked_add(8).ok_or_else(|| "offset overflow".to_string())?;
+    let count_bytes = bytes
+        .get(*at..count_end)
+        .ok_or_else(|| "unexpected end of buffer reading language count".to_string())?;
+    let count_u64 = u64::from_be_bytes(
+        count_bytes.try_into().map_err(|_| "slice conversion failed".to_string())?,
+    );
+    *at = count_end;
+
+    if count_u64 > syneroym_text_lang::MAX_MESSAGE_LANGUAGES as u64 {
+        return Err(format!(
+            "language count {} exceeds maximum {}",
+            count_u64,
+            syneroym_text_lang::MAX_MESSAGE_LANGUAGES
+        ));
+    }
+    let count = usize::try_from(count_u64).map_err(|_| "count overflow".to_string())?;
+
+    let mut languages = Vec::with_capacity(count);
+    for _ in 0..count {
+        let len_end = at.checked_add(8).ok_or_else(|| "offset overflow".to_string())?;
+        let len_bytes = bytes
+            .get(*at..len_end)
+            .ok_or_else(|| "unexpected end of buffer reading tag length".to_string())?;
+        let tag_len_u64 = u64::from_be_bytes(
+            len_bytes.try_into().map_err(|_| "slice conversion failed".to_string())?,
+        );
+        *at = len_end;
+
+        if tag_len_u64 > syneroym_text_lang::MAX_TAG_LEN as u64 {
+            return Err("tag length exceeds maximum".to_string());
+        }
+        let tag_len =
+            usize::try_from(tag_len_u64).map_err(|_| "tag length overflow".to_string())?;
+
+        let tag_end = at.checked_add(tag_len).ok_or_else(|| "offset overflow".to_string())?;
+        let tag_bytes = bytes
+            .get(*at..tag_end)
+            .ok_or_else(|| "unexpected end of buffer reading tag".to_string())?;
+        *at = tag_end;
+
+        let tag = std::str::from_utf8(tag_bytes)
+            .map_err(|_| "invalid UTF-8 in language tag".to_string())?
+            .to_string();
+        languages.push(tag);
+    }
+    Ok(languages)
 }
 
 /// `len_be(body)`, not a bare separator, so no field can be reassigned
@@ -33,6 +97,7 @@ pub fn canonical_bytes(
     author: &str,
     sender_timestamp_ms: i64,
     content_type: &str,
+    languages: &[String],
     body: &[u8],
 ) -> Vec<u8> {
     let mut out = Vec::with_capacity(
@@ -41,7 +106,7 @@ pub fn canonical_bytes(
             + author.len()
             + content_type.len()
             + body.len()
-            + 16,
+            + 64,
     );
     out.extend_from_slice(b"syneroym:conversation:v1");
     out.push(0);
@@ -55,6 +120,7 @@ pub fn canonical_bytes(
     out.push(0);
     out.extend_from_slice(content_type.as_bytes());
     out.push(0);
+    put_languages(&mut out, languages);
     out.extend_from_slice(&(body.len() as u64).to_be_bytes());
     out.extend_from_slice(body);
     out
@@ -63,6 +129,7 @@ pub fn canonical_bytes(
 /// Signs the canonical encoding of `payload`'s fields under `signing_key`,
 /// returning the fields' own signature (not stored on `payload` -- the
 /// caller assigns it).
+#[allow(clippy::too_many_arguments)]
 #[must_use]
 pub fn sign(
     signing_key: &SigningKey,
@@ -71,6 +138,7 @@ pub fn sign(
     author: &str,
     sender_timestamp_ms: i64,
     content_type: &str,
+    languages: &[String],
     body: &[u8],
 ) -> [u8; 64] {
     let bytes = canonical_bytes(
@@ -79,6 +147,7 @@ pub fn sign(
         author,
         sender_timestamp_ms,
         content_type,
+        languages,
         body,
     );
     signing_key.sign(&bytes).to_bytes()
@@ -94,6 +163,7 @@ pub fn verify(verifying_key: &VerifyingKey, payload: &DeliveryPayload) -> bool {
         &payload.author,
         payload.sender_timestamp_ms,
         &payload.content_type,
+        &payload.languages,
         &payload.body,
     );
     let Ok(sig) = Signature::try_from(payload.signature.as_slice()) else { return false };
@@ -106,8 +176,16 @@ mod tests {
 
     fn payload() -> (SigningKey, DeliveryPayload) {
         let signing_key = SigningKey::generate(&mut rand_core::OsRng);
-        let signature =
-            sign(&signing_key, "msg:1", "conv:1", "did:key:zAuthor", 1_000, "text/plain", b"hello");
+        let signature = sign(
+            &signing_key,
+            "msg:1",
+            "conv:1",
+            "did:key:zAuthor",
+            1_000,
+            "text/plain",
+            &[],
+            b"hello",
+        );
         (
             signing_key,
             DeliveryPayload {
@@ -116,6 +194,7 @@ mod tests {
                 author: "did:key:zAuthor".to_string(),
                 sender_timestamp_ms: 1_000,
                 content_type: "text/plain".to_string(),
+                languages: vec![],
                 body: b"hello".to_vec(),
                 signature,
             },
@@ -126,6 +205,46 @@ mod tests {
     fn a_correctly_signed_payload_verifies() {
         let (signing_key, payload) = payload();
         assert!(verify(&signing_key.verifying_key(), &payload));
+    }
+
+    #[test]
+    fn payload_with_languages_verifies_and_detects_tampering() {
+        let signing_key = SigningKey::generate(&mut rand_core::OsRng);
+        let langs = vec!["hi".to_string(), "en".to_string()];
+        let signature = sign(
+            &signing_key,
+            "msg:1",
+            "conv:1",
+            "did:key:zAuthor",
+            1_000,
+            "text/plain",
+            &langs,
+            b"hello",
+        );
+        let payload = DeliveryPayload {
+            message_id: "msg:1".to_string(),
+            conversation_id: "conv:1".to_string(),
+            author: "did:key:zAuthor".to_string(),
+            sender_timestamp_ms: 1_000,
+            content_type: "text/plain".to_string(),
+            languages: langs.clone(),
+            body: b"hello".to_vec(),
+            signature,
+        };
+        let vk = signing_key.verifying_key();
+        assert!(verify(&vk, &payload));
+
+        let mut changed_tag = payload.clone();
+        changed_tag.languages = vec!["ta".to_string(), "en".to_string()];
+        assert!(!verify(&vk, &changed_tag));
+
+        let mut removed_tag = payload.clone();
+        removed_tag.languages = vec!["hi".to_string()];
+        assert!(!verify(&vk, &removed_tag));
+
+        let mut swapped_order = payload.clone();
+        swapped_order.languages = vec!["en".to_string(), "hi".to_string()];
+        assert!(!verify(&vk, &swapped_order));
     }
 
     #[test]
@@ -159,9 +278,39 @@ mod tests {
     /// canonical encoding.
     #[test]
     fn moving_a_byte_across_the_body_length_prefix_cannot_produce_a_collision() {
-        let a = canonical_bytes("m", "c", "a", 0, "xy", b"z");
-        let b = canonical_bytes("m", "c", "a", 0, "x", b"yz");
+        let a = canonical_bytes("m", "c", "a", 0, "xy", &[], b"z");
+        let b = canonical_bytes("m", "c", "a", 0, "x", &[], b"yz");
         assert_ne!(a, b, "the length prefix must prevent this exact ambiguity");
+
+        let c = canonical_bytes("m", "c", "a", 0, "x", &["ab".to_string()], b"");
+        let d = canonical_bytes("m", "c", "a", 0, "x", &["a".to_string(), "b".to_string()], b"");
+        assert_ne!(c, d, "tag boundaries cannot collide");
+
+        let e = canonical_bytes("m", "c", "a", 0, "x", &["a".to_string()], b"b");
+        let f = canonical_bytes("m", "c", "a", 0, "x", &["ab".to_string()], b"");
+        assert_ne!(e, f, "tag and body cannot collide");
+    }
+
+    #[test]
+    fn put_and_take_languages_roundtrip_and_safety() {
+        let tags = vec!["hi".to_string(), "en".to_string()];
+        let mut buf = Vec::new();
+        put_languages(&mut buf, &tags);
+
+        let mut at = 0;
+        let read = take_languages(&buf, &mut at).expect("roundtrip");
+        assert_eq!(read, tags);
+        assert_eq!(at, buf.len());
+
+        let short_buf = buf[..buf.len() - 1].to_vec();
+        at = 0;
+        assert!(take_languages(&short_buf, &mut at).is_err());
+
+        // Count over maximum: 4
+        let mut bad_count_buf = Vec::new();
+        bad_count_buf.extend_from_slice(&4u64.to_be_bytes());
+        at = 0;
+        assert!(take_languages(&bad_count_buf, &mut at).is_err());
     }
 
     #[test]

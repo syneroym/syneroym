@@ -122,6 +122,7 @@ pub struct StoredMessage {
     pub sender_timestamp_ms: i64,
     pub received_at_ms: i64,
     pub content_type: String,
+    pub languages: Vec<String>,
     pub body: Vec<u8>,
     pub signature: [u8; 64],
     pub outgoing: bool,

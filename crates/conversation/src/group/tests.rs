@@ -191,7 +191,7 @@ fn an_entry_whose_epoch_key_is_absent_stays_unapplied_and_applies_when_the_key_a
         1,
         vec![],
         &epoch_key,
-        &encode_body("text/plain", b"msg"),
+        &encode_body("text/plain", &[], b"msg"),
     )
     .unwrap();
 
@@ -403,7 +403,7 @@ fn row_7_joiner_cannot_decrypt_pre_join_and_removed_cannot_decrypt_post_removal(
         1,
         vec![],
         &epoch1_key,
-        &encode_body("text/plain", b"epoch 1 secret"),
+        &encode_body("text/plain", &[], b"epoch 1 secret"),
     )
     .unwrap();
     {
@@ -449,7 +449,7 @@ fn row_7_joiner_cannot_decrypt_pre_join_and_removed_cannot_decrypt_post_removal(
         3,
         vec![],
         &epoch3_key,
-        &encode_body("text/plain", b"epoch 3 secret"),
+        &encode_body("text/plain", &[], b"epoch 3 secret"),
     )
     .unwrap();
     let conn = s.conn().lock().unwrap();
@@ -689,6 +689,7 @@ async fn get_message_hides_system_messages_host() {
             owner,
             store::now_ms(),
             "application/vnd.syneroym.group-key+json",
+            &[],
             b"secret-key-material",
             &[0u8; 64],
             "svc:bob",
@@ -764,3 +765,4 @@ async fn an_own_group_message_is_numbered_and_searchable_at_once() {
 }
 
 mod deletion;
+mod languages;

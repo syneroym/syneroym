@@ -506,6 +506,7 @@ mod tests {
             author: "did:key:zA".to_string(),
             sender_timestamp_ms: 1_000,
             content_type: "text/plain".to_string(),
+            languages: vec![],
             body: b"hello".to_vec(),
             signature: [0u8; 64],
         }

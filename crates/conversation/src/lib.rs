@@ -387,6 +387,7 @@ impl ConversationService {
             author: msg.author.clone(),
             sender_timestamp_ms: msg.sender_timestamp,
             content_type: msg.content_type,
+            languages: vec![],
             body: msg.body,
             signature: [0u8; 64],
         };
@@ -428,12 +429,14 @@ impl ConversationService {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn enqueue_direct(
         &self,
         store: &ConversationStore,
         service_id: &str,
         peer_address: &str,
         content_type: &str,
+        languages: &[String],
         body: &[u8],
         system: bool,
     ) -> Result<String, ConversationError> {
@@ -474,6 +477,7 @@ impl ConversationService {
             &author,
             sender_ts,
             content_type,
+            languages,
             body,
         );
 
@@ -484,6 +488,7 @@ impl ConversationService {
                 &author,
                 sender_ts,
                 content_type,
+                languages,
                 body,
                 &signature,
                 peer_address,

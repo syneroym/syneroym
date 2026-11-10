@@ -33,6 +33,8 @@ pub struct BackupMessage {
     pub sender_timestamp: i64,
     pub received_at: i64,
     pub content_type: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub languages: Vec<String>,
     pub body: Vec<u8>,
     #[serde(with = "crate::wire::fixed_bytes")]
     pub signature: [u8; 64],
@@ -203,14 +205,16 @@ impl ConversationStore {
     ) -> Result<Option<String>> {
         let mut m_stmt = conn.prepare(
             "SELECT id, conversation_id, author, sender_timestamp, received_at, content_type, \
-             body, signature, outgoing, state, last_error, system, entry_id, admission, \
-             admission_reason, deleted_at, rowid FROM messages WHERE system = 0 AND rowid > ?1 \
-             ORDER BY rowid ASC LIMIT ?2",
+             languages, body, signature, outgoing, state, last_error, system, entry_id, \
+             admission, admission_reason, deleted_at, rowid FROM messages WHERE system = 0 AND \
+             rowid > ?1 ORDER BY rowid ASC LIMIT ?2",
         )?;
         let mut m_rows = m_stmt.query(params![after_rowid, EXPORT_PAGE_SIZE + 1])?;
         let mut rowids = Vec::new();
         while let Some(r) = m_rows.next()? {
-            let sig_blob: Vec<u8> = r.get(7)?;
+            let langs_raw: String = r.get(6)?;
+            let languages = langs_raw.split_ascii_whitespace().map(String::from).collect();
+            let sig_blob: Vec<u8> = r.get(8)?;
             let signature: [u8; 64] = sig_blob.as_slice().try_into().unwrap_or([0u8; 64]);
             bundle.messages.push(BackupMessage {
                 id: r.get(0)?,
@@ -219,18 +223,19 @@ impl ConversationStore {
                 sender_timestamp: r.get(3)?,
                 received_at: r.get(4)?,
                 content_type: r.get(5)?,
-                body: r.get(6)?,
+                languages,
+                body: r.get(7)?,
                 signature,
-                outgoing: r.get::<_, i64>(8)? != 0,
-                state: r.get(9)?,
-                last_error: r.get(10)?,
-                system: r.get::<_, i64>(11)? != 0,
-                entry_id: r.get(12)?,
-                admission: r.get(13)?,
-                admission_reason: r.get(14)?,
-                deleted_at: r.get(15)?,
+                outgoing: r.get::<_, i64>(9)? != 0,
+                state: r.get(10)?,
+                last_error: r.get(11)?,
+                system: r.get::<_, i64>(12)? != 0,
+                entry_id: r.get(13)?,
+                admission: r.get(14)?,
+                admission_reason: r.get(15)?,
+                deleted_at: r.get(16)?,
             });
-            rowids.push(r.get::<_, i64>(16)?);
+            rowids.push(r.get::<_, i64>(17)?);
         }
         if bundle.messages.len() as i64 > EXPORT_PAGE_SIZE {
             bundle.messages.pop();
@@ -372,6 +377,9 @@ impl ConversationStore {
                 ))
                 .into());
             }
+            syneroym_text_lang::parse_message_languages(&m.languages).map_err(|e| {
+                StoreError::InvalidInput(format!("invalid message languages in backup: {e}"))
+            })?;
 
             // A message that is already stored is skipped, so importing the same
             // bundle twice changes nothing and an interrupted import can be rerun.
@@ -395,11 +403,11 @@ impl ConversationStore {
             let vseq = Self::next_visible_seq(tx, &m.conversation_id)?;
             tx.execute(
                 "INSERT INTO messages (id, conversation_id, author, sender_timestamp, \
-                 received_at, content_type, body, signature, outgoing, verified, state, \
-                 last_error, system, entry_id, admission, admission_reason, admission_changed_at, \
-                 notify_attempts, next_notify_at, report_refusal, refused, deleted_at, restored, \
-                 visible_seq) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10, ?11, ?12, ?13, \
-                 ?14, ?15, NULL, 0, NULL, 0, NULL, ?16, 1, ?17)",
+                 received_at, content_type, languages, body, signature, outgoing, verified, \
+                 state, last_error, system, entry_id, admission, admission_reason, \
+                 admission_changed_at, notify_attempts, next_notify_at, report_refusal, refused, \
+                 deleted_at, restored, visible_seq) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, \
+                 ?10, 0, ?11, ?12, ?13, ?14, ?15, ?16, NULL, 0, NULL, 0, NULL, ?17, 1, ?18)",
                 params![
                     m.id,
                     m.conversation_id,
@@ -407,6 +415,7 @@ impl ConversationStore {
                     m.sender_timestamp,
                     m.received_at,
                     m.content_type,
+                    m.languages.join(" "),
                     m.body,
                     m.signature.as_slice(),
                     if m.outgoing { 1i64 } else { 0i64 },

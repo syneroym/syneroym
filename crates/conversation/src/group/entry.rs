@@ -143,9 +143,16 @@ fn apply_message_entry(
         Ok(p) => p,
         Err(_) => return Ok((false, None, None)),
     };
-    let (content_type, body) = match decode_body(&plaintext) {
+    let (content_type, languages, body) = match decode_body(&plaintext) {
         Ok(b) => b,
-        Err(_) => return Ok((false, None, None)),
+        Err(e) => {
+            tracing::warn!(
+                entry_id = %entry.entry_id,
+                author = %entry.author,
+                "group entry refused: {e}"
+            );
+            return Ok((false, None, None));
+        }
     };
     if body.len() as u32 > config.max_body_bytes {
         return Ok((false, None, None));
@@ -164,9 +171,9 @@ fn apply_message_entry(
     let next_notify_at = now + claim_window_ms;
     let inserted = tx.execute(
         "INSERT OR IGNORE INTO messages (id, conversation_id, author, sender_timestamp, \
-         received_at, content_type, body, signature, outgoing, verified, state, last_error, \
-         system, entry_id, admission, next_notify_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, \
-         1, 'delivered', NULL, 0, ?1, 'undecided', ?9)",
+         received_at, content_type, languages, body, signature, outgoing, verified, state, \
+         last_error, system, entry_id, admission, next_notify_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, \
+         ?7, ?8, ?9, 0, 1, 'delivered', NULL, 0, ?1, 'undecided', ?10)",
         rusqlite::params![
             entry.entry_id,
             conv_id,
@@ -174,6 +181,7 @@ fn apply_message_entry(
             entry.sender_timestamp_ms,
             now,
             content_type,
+            languages.join(" "),
             body,
             entry.signature.as_slice(),
             next_notify_at,
@@ -183,35 +191,55 @@ fn apply_message_entry(
     // The chat moves up the list when the app accepts the message, not when
     // it arrives: a held or dropped message must not show as activity.
     if inserted > 0 {
-        let msg = StoredMessage {
-            id: entry.entry_id.clone(),
-            conversation_id: conv_id.to_string(),
-            author: entry.author.clone(),
-            sender_timestamp_ms: entry.sender_timestamp_ms,
-            received_at_ms: now,
-            content_type,
-            body,
-            signature: entry.signature,
-            outgoing: false,
-            verified: true,
-            state: ConversationDeliveryState::Delivered,
-            last_error: None,
-            system: false,
-            entry_id: Some(entry.entry_id.clone()),
-            admission: "undecided".to_string(),
-            admission_reason: None,
-            admission_changed_at: None,
-            notify_attempts: 0,
-            next_notify_at: Some(next_notify_at),
-            report_refusal: false,
-            refused: None,
-            deleted_at: None,
-            restored: false,
-            visible_seq: 0,
-        };
+        let msg = incoming_group_row(
+            conv_id,
+            entry,
+            (content_type, languages, body),
+            now,
+            next_notify_at,
+        );
         Ok((true, Some(msg), None))
     } else {
         Ok((false, None, None))
+    }
+}
+
+type Content = (String, Vec<String>, Vec<u8>);
+
+fn incoming_group_row(
+    conv_id: &str,
+    entry: &StoredDagEntry,
+    content: Content,
+    now: i64,
+    next_notify_at: i64,
+) -> StoredMessage {
+    let (content_type, languages, body) = content;
+    StoredMessage {
+        id: entry.entry_id.clone(),
+        conversation_id: conv_id.to_string(),
+        author: entry.author.clone(),
+        sender_timestamp_ms: entry.sender_timestamp_ms,
+        received_at_ms: now,
+        content_type,
+        languages,
+        body,
+        signature: entry.signature,
+        outgoing: false,
+        verified: true,
+        state: ConversationDeliveryState::Delivered,
+        last_error: None,
+        system: false,
+        entry_id: Some(entry.entry_id.clone()),
+        admission: "undecided".to_string(),
+        admission_reason: None,
+        admission_changed_at: None,
+        notify_attempts: 0,
+        next_notify_at: Some(next_notify_at),
+        report_refusal: false,
+        refused: None,
+        deleted_at: None,
+        restored: false,
+        visible_seq: 0,
     }
 }
 

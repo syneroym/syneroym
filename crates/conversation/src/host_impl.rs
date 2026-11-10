@@ -98,14 +98,15 @@ impl ConversationHost for ConversationService {
             .map_err(internal)?
             .ok_or(ConversationError::NotFound)?;
         if conv.kind == ConversationKind::Group {
-            return self.send_group(service_id, &store, &conv, content_type, &body).await;
+            return self.send_group(service_id, &store, &conv, content_type, &[], &body).await;
         }
         let peer_address = conv.peer_address.ok_or_else(|| {
             ConversationError::Internal(
                 "direct conversation is missing its peer address".to_string(),
             )
         })?;
-        self.enqueue_direct(&store, service_id, &peer_address, content_type, &body, false).await
+        self.enqueue_direct(&store, service_id, &peer_address, content_type, &[], &body, false)
+            .await
     }
 
     async fn history(
@@ -344,7 +345,14 @@ impl ConversationHost for ConversationService {
             let body = deletion_request_body(message);
             if conv.kind == ConversationKind::Group {
                 let _ = self
-                    .send_group(service_id, &store, &conv, DELETION_REQUEST_CONTENT_TYPE, &body)
+                    .send_group(
+                        service_id,
+                        &store,
+                        &conv,
+                        DELETION_REQUEST_CONTENT_TYPE,
+                        &[],
+                        &body,
+                    )
                     .await;
             } else if let Some(peer) = conv.peer_address {
                 let _ = self
@@ -353,6 +361,7 @@ impl ConversationHost for ConversationService {
                         service_id,
                         &peer,
                         DELETION_REQUEST_CONTENT_TYPE,
+                        &[],
                         &body,
                         true,
                     )

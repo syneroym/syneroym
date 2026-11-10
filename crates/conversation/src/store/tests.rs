@@ -93,6 +93,7 @@ fn the_author_id_index_rejects_a_repeat() {
                 author,
                 1_000,
                 "text/plain",
+                &[],
                 b"hi",
                 &[0u8; 64],
                 1_000,
@@ -118,6 +119,7 @@ fn the_author_id_index_rejects_a_repeat() {
                 author,
                 1_000,
                 "text/plain",
+                &[],
                 b"hi",
                 &[0u8; 64],
                 2_000,
@@ -149,6 +151,7 @@ fn exhausting_one_conversation_quota_leaves_another_conversation_unaffected() {
             author_1,
             1_000,
             "text/plain",
+            &[],
             b"1",
             &[0u8; 64],
             1_000,
@@ -162,6 +165,7 @@ fn exhausting_one_conversation_quota_leaves_another_conversation_unaffected() {
             author_1,
             1_001,
             "text/plain",
+            &[],
             b"2",
             &[0u8; 64],
             1_001,
@@ -182,6 +186,7 @@ fn exhausting_one_conversation_quota_leaves_another_conversation_unaffected() {
             author_1,
             1_002,
             "text/plain",
+            &[],
             b"3",
             &[0u8; 64],
             1_002,
@@ -201,6 +206,7 @@ fn exhausting_one_conversation_quota_leaves_another_conversation_unaffected() {
             author_2,
             1_000,
             "text/plain",
+            &[],
             b"hello",
             &[0u8; 64],
             1_000,
@@ -225,6 +231,7 @@ fn history_returns_the_documented_order_under_a_skewed_clock() {
             author,
             ts,
             "text/plain",
+            &[],
             b"x",
             &[0u8; 64],
             "did:key:zPeer",
@@ -258,6 +265,7 @@ fn history_pages_and_reports_a_next_cursor() {
             "did:key:zA",
             i,
             "text/plain",
+            &[],
             b"x",
             &[0u8; 64],
             "did:key:zPeer",
@@ -502,6 +510,7 @@ fn history_and_outbox_exclude_system_messages() {
         "svc:me",
         1000,
         "text/plain",
+        &[],
         b"hello",
         &[0u8; 64],
         "did:key:zPeer",
@@ -515,6 +524,7 @@ fn history_and_outbox_exclude_system_messages() {
         "svc:me",
         1001,
         "application/vnd.syneroym.group-key+json",
+        &[],
         b"{}",
         &[0u8; 64],
         "did:key:zPeer",
@@ -609,6 +619,7 @@ fn restart_pending_gives_a_failed_message_a_fresh_window() {
         "did:key:zA",
         1_000,
         "text/plain",
+        &[],
         b"x",
         &[0u8; 64],
         "did:key:zPeer",
@@ -671,6 +682,7 @@ fn get_message_returns_stored_message_and_preserves_signed_timestamp() {
         "did:key:zAlice",
         1_500,
         "text/plain",
+        &[],
         b"body",
         &[0u8; 64],
         "did:key:zBob",
@@ -685,7 +697,27 @@ fn get_message_returns_stored_message_and_preserves_signed_timestamp() {
     assert_eq!(m.received_at_ms, 2_000);
     assert_eq!(m.content_type, "text/plain");
     assert_eq!(m.body, b"body");
+    assert!(m.languages.is_empty());
     assert!(!m.system);
+}
+
+#[test]
+fn hand_inserted_row_with_default_languages_reads_back_as_empty_list() {
+    let s = store();
+    let conv_id = s.get_or_create_direct("did:key:zPeer", "conv:1", 1_000).unwrap();
+    {
+        let conn = s.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO messages (id, conversation_id, author, sender_timestamp, received_at, \
+             content_type, body, signature, outgoing, verified, state, last_error) VALUES \
+             ('msg:default_lang', ?1, 'a', 0, 0, 'text', X'00', zeroblob(64), 1, 1, 'pending', \
+             NULL)",
+            params![conv_id],
+        )
+        .unwrap();
+    }
+    let m = s.get_message("msg:default_lang").unwrap().unwrap();
+    assert!(m.languages.is_empty());
 }
 
 #[test]
@@ -698,6 +730,7 @@ fn get_message_marks_system_messages() {
         "did:key:zAlice",
         1_500,
         "application/vnd.syneroym.group-key+json",
+        &[],
         b"secret-key-material",
         &[0u8; 64],
         "did:key:zBob",

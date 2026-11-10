@@ -60,8 +60,17 @@ fn group_without_key(s: &ConversationStore, members: &[(&str, &SigningKey)]) -> 
 }
 
 fn entry(sk: &SigningKey, author: &str, at: i64, content_type: &str, body: &[u8]) -> WireEntry {
-    build_message_entry(sk, CONV, author, at, 1, vec![], &KEY, &encode_body(content_type, body))
-        .unwrap()
+    build_message_entry(
+        sk,
+        CONV,
+        author,
+        at,
+        1,
+        vec![],
+        &KEY,
+        &encode_body(content_type, &[], body),
+    )
+    .unwrap()
 }
 
 #[test]

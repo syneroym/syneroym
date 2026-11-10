@@ -214,6 +214,7 @@ impl ConversationService {
             author: msg.author.clone(),
             sender_timestamp_ms: msg.sender_timestamp_ms,
             content_type: msg.content_type.clone(),
+            languages: msg.languages.clone(),
             body: msg.body.clone(),
             signature: msg.signature,
         };
@@ -379,6 +380,9 @@ impl ConversationService {
             ));
         }
 
+        syneroym_text_lang::parse_message_languages(&payload.languages)
+            .map_err(|e| ConversationError::InvalidArgument(format!("message languages: {e}")))?;
+
         Ok((session, payload, author))
     }
 
@@ -463,6 +467,7 @@ impl ConversationService {
                     author,
                     payload.sender_timestamp_ms,
                     &payload.content_type,
+                    &payload.languages,
                     &payload.body,
                     &payload.signature,
                     now,

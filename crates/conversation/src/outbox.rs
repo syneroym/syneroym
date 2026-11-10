@@ -594,8 +594,9 @@ impl ConversationService {
             return;
         };
         let body = dag::refusal_notice_body(&msg.id, &drop_ans.reason);
-        let _ =
-            self.enqueue_direct(store, svc, &peer, REFUSAL_NOTICE_CONTENT_TYPE, &body, true).await;
+        let _ = self
+            .enqueue_direct(store, svc, &peer, REFUSAL_NOTICE_CONTENT_TYPE, &[], &body, true)
+            .await;
     }
 
     async fn expire_held_once(&self) {

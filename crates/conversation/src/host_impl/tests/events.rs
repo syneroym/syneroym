@@ -161,7 +161,7 @@ fn make_entry(
         1,
         vec![],
         &GROUP_KEY,
-        &encode_body(content_type, body),
+        &encode_body(content_type, &[], body),
     )
     .unwrap()
 }
@@ -232,7 +232,7 @@ async fn sending_a_group_message_records_one_message_event() {
     }
 
     let msg_id =
-        service.send_group(ME, &store, &conv, "text/plain", b"group send text").await.unwrap();
+        service.send_group(ME, &store, &conv, "text/plain", &[], b"group send text").await.unwrap();
 
     assert_eq!(probe_called.load(Ordering::SeqCst), 1);
     let events = read_events(&bus, "app-1");
@@ -448,6 +448,7 @@ async fn an_undecided_message_deleted_by_its_author_records_nothing() {
                 PEER,
                 1000,
                 "text/plain",
+                &[],
                 b"undecided text",
                 &[0u8; 64],
                 1000,
