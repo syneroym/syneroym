@@ -439,7 +439,7 @@ test.describe('Roym Hub', () => {
 
     // Reload and reopen conversation: still lang="hi" read back from store
     await page.reload();
-    await page.waitForLoadState('networkidle');
+    await page.waitForLoadState('domcontentloaded');
     await openMessages(page);
     await openConversation(page, 'did:key:z6MkhubE2ePeerAddressNeverAnswers00000000000000');
 
