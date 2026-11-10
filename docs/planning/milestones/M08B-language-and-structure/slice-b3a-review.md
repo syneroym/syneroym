@@ -605,7 +605,7 @@ there are no earlier R items to confirm.
   change doc from this table.
 - *Fix:* Replace each name with a real test, file and name. Where the plan's
   test is missing (R5), add the test first, then cite it.
-- *Status:* Fixed (b0ea5a22). Replaced `validate_lang` in ML-10 with `profile_payload_validation`. In ML-13, cited `person.rs` for `payload_with_locale_and_no_lang_fails_deserialization` (where it is defined) and `method_contract/contract.rs` for `invalid_language_tags_in_record_set_methods_are_rejected` (which tests refusal of legacy `locale`).
+- *Status:* Open (round 3: partial fix). Fixed (b0ea5a22). Replaced `validate_lang` in ML-10 with `profile_payload_validation`. In ML-13, cited `person.rs` for `payload_with_locale_and_no_lang_fails_deserialization` (where it is defined) and `method_contract/contract.rs` for `invalid_language_tags_in_record_set_methods_are_rejected` (which tests refusal of legacy `locale`). Round 3: `profile_payload_validation` (`person.rs:121`) exists, but it builds only valid tags and checks the name, about and address rules. It never tests a missing, malformed or non-canonical `lang`, which is the ML-10 claim.
 
 #### R3 — minor — the Hub cannot keep an empty profile languages list
 
@@ -836,7 +836,9 @@ passed in 37 files (matches `status.md`). Targeted nextest over the
 changed `roym_core`, `roym_federated_query` and `roymctl` tests: 17
 passed.
 
-**Summary:** All round 1 and round 2 items fixed (R1 to R15). **0 open.**
+**Summary:** 11 of 12 round 1 items confirmed Fixed. R2 is back to Open
+(partial fix). New: 0 blocker, 1 major (R13), 2 minor (R14, R15).
+**4 open** (R2 and R13 major, R14 and R15 minor).
 
 ### Round 1 items confirmed
 
@@ -935,3 +937,39 @@ passed.
   backlog row: remove the pin when Playwright supports `ubuntu-26.04`. Or
   move the commit to its own PR.
 - *Status:* Fixed (b0ea5a22). Added deferred backlog row in `docs/planning/deferred-backlog.md` section 13 for removing the `ubuntu-24.04` runner pin once Playwright supports Ubuntu 26.04. Highlighted runner pin and rationale in PR #354 description.
+
+## Code review round 3 — Claude Opus 5.5, 2026-11-10
+
+Checked `git diff b2963bf1..e6c8336d` on `feat/m08b-b3a-lang-records`, in
+the main checkout: 30abf192 (test helper), b0ea5a22 (change doc, backlog,
+`task.md`) and the PR text. CI on `e6c8336d` (run 42761894366): Lints,
+Playwright E2E, Test 1/6 to 6/6, CI Pipeline and CLA pass.
+`syneroym-roym-federated-query` here: 38 passed.
+
+**Summary:** R13, R14 and R15 confirmed Fixed. R2 is back to Open (partial
+fix, see its status line). No new items. **1 open** (R2).
+
+- **R2.** ML-13 is now right: both tests are in `person.rs`, and the
+  contract test does check that `profile.set` refuses `locale`
+  (`contract.rs:448`). ML-10 is still wrong. The fix: in the ML-10 cell,
+  replace `profile_payload_validation` with
+  `payload_with_locale_and_no_lang_fails_deserialization` (a profile with no
+  `lang` is refused) and `serde_round_trip_and_canonical_enforcement` in
+  `crates/text_lang/src/tests.rs` (a malformed or non-canonical tag is
+  refused when a record is read). Or add a profile case with `hi_IN` and
+  `HI` to `person.rs` and cite that.
+- **R13.** The PR text now has its own section that asks the owner to
+  decide, with the four numbers and the 40 KB limit. The change doc has a
+  deviation with the byte sources, and the `task.md` result line says the
+  limit is broken, pending owner sign-off. That is what the item asked for.
+  The decision itself is still the owner's. When it is made, write it into
+  the deviation. The deviation calls the limit a "planning guideline"; the
+  plan calls it a stop limit, so say "stop limit" there.
+- **R14.** One inner helper,
+  `sign_test_listing_with_issuer_and_translations`, now builds the listing,
+  and both public helpers call it. `verify_envelope` and
+  `build_refused_row` are imported.
+- **R15.** The PR text has a section on the runner pin with its reason. The
+  backlog has a row to remove the pin. Its reason ("glibc mismatches") is
+  less exact than the commit ("Playwright 1.60.0 does not recognize
+  `ubuntu-26.04`"); this does not change what anyone must do.
