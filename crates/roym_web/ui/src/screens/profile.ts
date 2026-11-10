@@ -27,7 +27,7 @@ export async function renderProfile(container: HTMLElement) {
   addrLabel.appendChild(addrInput);
   form.appendChild(addrLabel);
 
-  const langSelect = textLangSelect("profile-text-lang", currentLanguage());
+  let langSelect = textLangSelect("profile-text-lang", currentLanguage());
   form.appendChild(field(t("profile-text-language"), langSelect));
 
   const langHeading = document.createElement("h3");
@@ -155,11 +155,11 @@ export async function renderProfile(container: HTMLElement) {
         storedAbout = env.payload.about;
         storedTranslations = env.payload.translations || [];
         if (env.payload.lang) {
-          langSelect.value = env.payload.lang;
+          const freshSelect = textLangSelect("profile-text-lang", env.payload.lang);
+          langSelect.replaceWith(freshSelect);
+          langSelect = freshSelect;
         }
-        if (Array.isArray(env.payload.languages) && env.payload.languages.length > 0) {
-          languages = [...env.payload.languages];
-        }
+        languages = Array.isArray(env.payload.languages) ? [...env.payload.languages] : [];
         renderLanguageRows();
       }
     }

@@ -143,4 +143,66 @@ describe("profile screen", () => {
     expect(savedParams!.about).toBe("Stored about text");
     expect(savedParams!.translations).toEqual([{ lang: "hi", about: "हिंदी विवरण" }]);
   });
+
+  it("stored profile with unlisted lang (e.g. en-GB) shows selected and is preserved on save", async () => {
+    let savedParams: Record<string, unknown> | undefined;
+    const initialPayload = {
+      display_name: "British English Speaker",
+      conversation_address: "did:key:alice#conv",
+      lang: "en-GB",
+      languages: ["en"],
+    };
+    stubRpc({
+      "profile.get": () => ({
+        envelope: JSON.stringify({ payload: initialPayload }),
+      }),
+      "profile.set": (params) => {
+        savedParams = params as Record<string, unknown>;
+        return { record_id: "rec_1", envelope: "{}" };
+      },
+    });
+
+    const host = document.createElement("div");
+    await renderProfile(host);
+
+    const langSel = host.querySelector<HTMLSelectElement>(".profile-text-lang");
+    expect(langSel?.value).toBe("en-GB");
+
+    const form = host.querySelector<HTMLFormElement>("form")!;
+    form.dispatchEvent(new Event("submit", { cancelable: true }));
+
+    await vi.waitFor(() => expect(savedParams).toBeDefined());
+    expect(savedParams!.lang).toBe("en-GB");
+  });
+
+  it("stored profile with empty languages displays empty list and preserves empty languages on save", async () => {
+    let savedParams: Record<string, unknown> | undefined;
+    const initialPayload = {
+      display_name: "Polyglot Who Reset Languages",
+      conversation_address: "did:key:alice#conv",
+      lang: "en",
+      languages: [],
+    };
+    stubRpc({
+      "profile.get": () => ({
+        envelope: JSON.stringify({ payload: initialPayload }),
+      }),
+      "profile.set": (params) => {
+        savedParams = params as Record<string, unknown>;
+        return { record_id: "rec_1", envelope: "{}" };
+      },
+    });
+
+    const host = document.createElement("div");
+    await renderProfile(host);
+
+    const rows = host.querySelectorAll(".profile-language-row");
+    expect(rows).toHaveLength(0);
+
+    const form = host.querySelector<HTMLFormElement>("form")!;
+    form.dispatchEvent(new Event("submit", { cancelable: true }));
+
+    await vi.waitFor(() => expect(savedParams).toBeDefined());
+    expect(savedParams!.languages).toEqual([]);
+  });
 });
