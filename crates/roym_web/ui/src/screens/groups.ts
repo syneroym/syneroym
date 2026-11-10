@@ -1,7 +1,9 @@
+import { messageText } from "../chat/message_text";
 import { errText, field, refiller, text } from "../dom";
 import { onFeed } from "../events";
 import { formatDateTime, formatTime } from "../i18n/format";
-import { t } from "../i18n/i18n";
+import { currentLanguage, t } from "../i18n/i18n";
+import { languageList } from "../i18n/language_list";
 import { renderRefusedCard } from "../cards/refused";
 import {
   MEMBERSHIP_EVENT_CONTENT_TYPE,
@@ -64,6 +66,7 @@ export interface GroupMessageRow {
   state: "pending" | "delivered" | "failed";
   last_error?: string;
   deleted_at_secs?: number;
+  languages?: string[];
 }
 
 export function parseProfileName(body?: string): string | null {
@@ -111,7 +114,12 @@ export function renderMessageRow(
   }
   const authorName = nameOf(msg.author);
   row.appendChild(text("div", authorName, "message-author"));
-  row.appendChild(text("div", msg.body ?? "", "message-body"));
+  if (msg.body_encoding === "utf8") {
+    const nodes = messageText(msg.body ?? "", msg.languages ?? [], "div");
+    row.append(...nodes);
+  } else {
+    row.appendChild(text("div", msg.body ?? "", "message-body"));
+  }
 
   const meta = document.createElement("div");
   meta.className = "message-meta";
@@ -418,12 +426,28 @@ export async function renderGroups(container: HTMLElement) {
       const sendErr = document.createElement("div");
       sendErr.className = "error-text composer-error";
 
+      const langList = languageList(
+        "group",
+        3,
+        [currentLanguage()],
+        {
+          add: t("group-languages-add"),
+          moveUp: t("group-languages-move-up"),
+          remove: t("group-languages-remove"),
+        },
+        t("group-languages-label"),
+      );
+
       const doSend = async () => {
         const body = sendInput.value.trim();
         if (!body) return;
         sendErr.textContent = "";
         try {
-          await call("conversation.send", { conversation: gid, body });
+          await call("conversation.send", {
+            conversation: gid,
+            body,
+            languages: langList.value(),
+          });
           sendInput.value = "";
           await reloadThread();
         } catch (err) {
@@ -439,7 +463,8 @@ export async function renderGroups(container: HTMLElement) {
       sendInput.onkeydown = (e) => {
         if (e.key === "Enter") doSend();
       };
-      composerBox.append(sendInput, sendBtn, sendErr);
+      const langField = field(t("group-languages-label"), langList.root);
+      composerBox.append(sendInput, sendBtn, sendErr, langField);
     }
     threadCol.appendChild(composerBox);
 

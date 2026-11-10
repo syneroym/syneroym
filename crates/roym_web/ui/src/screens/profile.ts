@@ -1,6 +1,7 @@
 import { errText, field } from "../dom";
 import { currentLanguage, t } from "../i18n/i18n";
-import { RECORD_LANGUAGES, languageName, textLangSelect } from "../i18n/text_lang";
+import { languageList } from "../i18n/language_list";
+import { textLangSelect } from "../i18n/text_lang";
 import { call } from "../rpc";
 
 export async function renderProfile(container: HTMLElement) {
@@ -34,83 +35,21 @@ export async function renderProfile(container: HTMLElement) {
   langHeading.textContent = t("profile-languages-heading");
   form.appendChild(langHeading);
 
-  let languages: string[] = [currentLanguage()];
   let storedAbout: string | undefined;
   let storedTranslations: unknown[] = [];
 
-  const listContainer = document.createElement("ul");
-  listContainer.className = "profile-languages-list";
-  form.appendChild(listContainer);
-
-  const addSelect = document.createElement("select");
-  addSelect.className = "profile-languages-add";
-  form.appendChild(addSelect);
-
-  function renderLanguageRows() {
-    listContainer.replaceChildren();
-    for (let idx = 0; idx < languages.length; idx++) {
-      const tag = languages[idx];
-      const li = document.createElement("li");
-      li.className = "profile-language-row";
-
-      const nameSpan = document.createElement("span");
-      nameSpan.className = "profile-language-name";
-      nameSpan.textContent = languageName(tag);
-      li.appendChild(nameSpan);
-
-      if (idx > 0) {
-        const upBtn = document.createElement("button");
-        upBtn.type = "button";
-        upBtn.className = "button profile-language-move-up";
-        upBtn.textContent = t("profile-languages-move-up");
-        upBtn.onclick = () => {
-          const temp = languages[idx - 1];
-          languages[idx - 1] = languages[idx];
-          languages[idx] = temp;
-          renderLanguageRows();
-        };
-        li.appendChild(upBtn);
-      }
-
-      const rmBtn = document.createElement("button");
-      rmBtn.type = "button";
-      rmBtn.className = "button profile-language-remove";
-      rmBtn.textContent = t("profile-languages-remove");
-      rmBtn.onclick = () => {
-        languages.splice(idx, 1);
-        renderLanguageRows();
-      };
-      li.appendChild(rmBtn);
-
-      listContainer.appendChild(li);
-    }
-
-    addSelect.replaceChildren();
-    const defaultOpt = document.createElement("option");
-    defaultOpt.value = "";
-    defaultOpt.textContent = t("profile-languages-add");
-    addSelect.appendChild(defaultOpt);
-
-    for (const tag of RECORD_LANGUAGES) {
-      if (!languages.includes(tag)) {
-        const opt = document.createElement("option");
-        opt.value = tag;
-        opt.textContent = languageName(tag);
-        addSelect.appendChild(opt);
-      }
-    }
-    addSelect.disabled = languages.length >= 8;
-  }
-
-  addSelect.onchange = () => {
-    if (addSelect.value) {
-      languages.push(addSelect.value);
-      renderLanguageRows();
-      addSelect.value = "";
-    }
-  };
-
-  renderLanguageRows();
+  const langList = languageList(
+    "profile",
+    8,
+    [currentLanguage()],
+    {
+      add: t("profile-languages-add"),
+      moveUp: t("profile-languages-move-up"),
+      remove: t("profile-languages-remove"),
+    },
+    t("profile-languages-heading"),
+  );
+  form.appendChild(langList.root);
 
   const saveBtn = document.createElement("button");
   saveBtn.type = "submit";
@@ -129,7 +68,7 @@ export async function renderProfile(container: HTMLElement) {
         display_name: nameInput.value,
         conversation_address: addrInput.value || undefined,
         lang: langSelect.value,
-        languages,
+        languages: langList.value(),
         about: storedAbout,
         translations: storedTranslations.length > 0 ? storedTranslations : undefined,
       });
@@ -159,8 +98,9 @@ export async function renderProfile(container: HTMLElement) {
           langSelect.replaceWith(freshSelect);
           langSelect = freshSelect;
         }
-        languages = Array.isArray(env.payload.languages) ? [...env.payload.languages] : [];
-        renderLanguageRows();
+        if (Array.isArray(env.payload.languages)) {
+          langList.set(env.payload.languages);
+        }
       }
     }
   } catch {

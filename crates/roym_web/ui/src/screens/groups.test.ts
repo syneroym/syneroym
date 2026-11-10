@@ -352,4 +352,191 @@ describe("Groups screen rendering", () => {
     expect(titles.length).toBe(1);
     expect(titles[0].textContent).toBe("Garden Group");
   });
+
+  it("group chat box language list sends languages, keeps rows after send, and allows move up and remove", async () => {
+    type SendParams = { conversation: string; body: string; languages?: string[] };
+    let lastSendParams: SendParams | undefined;
+    stubRpc({
+      "conversation.list": () => ({
+        conversations: [
+          {
+            id: "grp-1",
+            kind: "group",
+            message_count: 0,
+            group: { name: "Garden Group", admission: { state: "shown" } },
+          },
+        ],
+      }),
+      "group.info": () => ({
+        id: "grp-1",
+        name: "Garden Group",
+        owner_address: "did:key:zAlice",
+        is_owner: true,
+        is_member: true,
+        restored_only: false,
+        key_epoch: 1,
+        key_stored_at_ms: 0,
+        members: [{ address: "did:key:zAlice", is_owner: true }],
+      }),
+      "conversation.transcript-digest": () => ({ digest: "abcdef123456" }),
+      "contacts.list": () => [],
+      "conversation.history": () => ({ messages: [] }),
+      "conversation.send": (params) => {
+        lastSendParams = params as SendParams;
+        return { message_id: "m_grp_new" };
+      },
+    });
+
+    const host = document.createElement("div");
+    await renderGroups(host);
+
+    // Initial language list has 1 row with English
+    let rows = host.querySelectorAll(".group-language-row");
+    expect(rows).toHaveLength(1);
+    expect(rows[0].querySelector(".group-language-name")?.textContent).toBe("English");
+
+    // Send with default ["en"]
+    const composerBox = host.querySelector(".composer-box")!;
+    const sendInput = composerBox.querySelector<HTMLInputElement>("input")!;
+    const sendBtn = composerBox.querySelector<HTMLButtonElement>("button")!;
+
+    sendInput.value = "Hello group";
+    sendBtn.click();
+
+    await vi.waitFor(() => expect(lastSendParams).toBeDefined());
+    expect((lastSendParams as SendParams | undefined)?.languages).toEqual(["en"]);
+
+    // After send, list keeps its rows
+    rows = host.querySelectorAll(".group-language-row");
+    expect(rows).toHaveLength(1);
+
+    // Add Hindi
+    const addSel = host.querySelector<HTMLSelectElement>(".group-languages-add")!;
+    addSel.value = "hi";
+    addSel.dispatchEvent(new Event("change"));
+
+    rows = host.querySelectorAll(".group-language-row");
+    expect(rows).toHaveLength(2);
+    expect(rows[0].querySelector(".group-language-name")?.textContent).toBe("English");
+    expect(rows[1].querySelector(".group-language-name")?.textContent).toBe("Hindi");
+
+    // Move Hindi up
+    const upBtn = rows[1].querySelector<HTMLButtonElement>(".group-language-move-up")!;
+    upBtn.click();
+
+    rows = host.querySelectorAll(".group-language-row");
+    expect(rows[0].querySelector(".group-language-name")?.textContent).toBe("Hindi");
+    expect(rows[1].querySelector(".group-language-name")?.textContent).toBe("English");
+
+    // Send with ["hi", "en"]
+    lastSendParams = undefined;
+    sendInput.value = "नमस्ते समूह";
+    sendBtn.click();
+
+    await vi.waitFor(() => expect(lastSendParams).toBeDefined());
+    expect((lastSendParams as SendParams | undefined)?.languages).toEqual(["hi", "en"]);
+
+    // Remove every row
+    rows = host.querySelectorAll(".group-language-row");
+    rows[0].querySelector<HTMLButtonElement>(".group-language-remove")!.click();
+    rows = host.querySelectorAll(".group-language-row");
+    rows[0].querySelector<HTMLButtonElement>(".group-language-remove")!.click();
+
+    expect(host.querySelectorAll(".group-language-row")).toHaveLength(0);
+
+    // Send with empty list
+    lastSendParams = undefined;
+    sendInput.value = "No tag group message";
+    sendBtn.click();
+
+    await vi.waitFor(() => expect(lastSendParams).toBeDefined());
+    expect((lastSendParams as SendParams | undefined)?.languages).toEqual([]);
+  });
+
+  it("renderMessageRow sets lang attribute and note, and omits note for binary messages", () => {
+    // 1. Tagged text message
+    const msgTa: GroupMessageRow = {
+      id: "m-ta",
+      conversation: "grp-1",
+      author: "did:key:zAlice",
+      direction: "incoming",
+      sender_timestamp_ms: 1000,
+      content_type: "text/plain",
+      body_encoding: "utf8",
+      body: "வணக்கம்",
+      languages: ["ta"],
+      state: "delivered",
+    };
+    const rowTa = renderMessageRow(msgTa, nameOf);
+    const bodyTa = rowTa.querySelector(".message-body");
+    expect(bodyTa?.getAttribute("lang")).toBe("ta");
+    expect(rowTa.querySelector(".message-language-note")).toBeNull();
+
+    // 2. Untagged text message
+    const msgNoTag: GroupMessageRow = {
+      id: "m-notag",
+      conversation: "grp-1",
+      author: "did:key:zAlice",
+      direction: "incoming",
+      sender_timestamp_ms: 2000,
+      content_type: "text/plain",
+      body_encoding: "utf8",
+      body: "plain text",
+      state: "delivered",
+    };
+    const rowNoTag = renderMessageRow(msgNoTag, nameOf);
+    const bodyNoTag = rowNoTag.querySelector(".message-body");
+    expect(bodyNoTag?.getAttribute("lang")).toBe("");
+    const note = rowNoTag.querySelector(".message-language-note");
+    expect(note).not.toBeNull();
+    expect(note?.textContent).toBe("Language not stated");
+
+    // 3. Binary message
+    const msgBin: GroupMessageRow = {
+      id: "m-bin",
+      conversation: "grp-1",
+      author: "did:key:zAlice",
+      direction: "incoming",
+      sender_timestamp_ms: 3000,
+      content_type: "application/octet-stream",
+      body_encoding: "base64",
+      body: "AAAA",
+      state: "delivered",
+    };
+    const rowBin = renderMessageRow(msgBin, nameOf);
+    const bodyBin = rowBin.querySelector(".message-body");
+    expect(bodyBin?.hasAttribute("lang")).toBe(false);
+    expect(rowBin.querySelector(".message-language-note")).toBeNull();
+  });
+
+  it("membership and group profile name rows show no note", () => {
+    const threadList = document.createElement("div");
+    const msgs: GroupMessageRow[] = [
+      {
+        id: "ev-1",
+        conversation: "grp-1",
+        author: "did:key:zAlice",
+        direction: "incoming",
+        sender_timestamp_ms: 1000,
+        content_type: MEMBERSHIP_EVENT_CONTENT_TYPE,
+        body_encoding: "utf8",
+        body: JSON.stringify({ action: "add", subject: "did:key:zBob", epoch: 2 }),
+        state: "delivered",
+      },
+      {
+        id: "p-1",
+        conversation: "grp-1",
+        author: "did:key:zAlice",
+        direction: "incoming",
+        sender_timestamp_ms: 2000,
+        content_type: "application/vnd.roym.group-profile+json",
+        body_encoding: "utf8",
+        body: JSON.stringify({ name: "New Name" }),
+        state: "delivered",
+      },
+    ];
+
+    renderThreadMessages(threadList, msgs, nameOf, () => {}, () => {});
+    expect(threadList.querySelector(".message-language-note")).toBeNull();
+  });
 });
