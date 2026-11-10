@@ -1,4 +1,8 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { renderAgreementReceipt } from "../cards/templates/agreement_receipt";
+import { renderFulfilmentReceipt } from "../cards/templates/fulfilment_receipt";
+import { renderQuote } from "../cards/templates/quote";
+import { renderRequest } from "../cards/templates/request";
 import { RpcError } from "../rpc";
 import { renderBackup } from "../screens/backup";
 import { renderContacts } from "../screens/contacts";
@@ -101,7 +105,12 @@ describe("the small screens, in Hindi", () => {
   it("draws the profile screen and its saved line", async () => {
     stubRpc({
       "profile.get": () => ({
-        envelope: envelope({ display_name: "Zq-Alice", conversation_address: "Zq-addr" }),
+        envelope: envelope({
+          display_name: "Zq-Alice",
+          conversation_address: "Zq-addr",
+          lang: "hi",
+          languages: ["hi", "ta"],
+        }),
       }),
       "profile.set": () => ({ record_id: "Zq-rec", envelope: envelope({}) }),
     });
@@ -303,6 +312,8 @@ describe("the listing screen, in Hindi", () => {
     expect(
       host.querySelectorAll('.listing-categories-input .picker-chip[data-code="bicycle-repair"]'),
     ).toHaveLength(1);
+    host.querySelector<HTMLButtonElement>("button.listing-translation-add-btn")!.click();
+    expect(host.querySelectorAll(".listing-translation-row")).toHaveLength(1);
     host.querySelector<HTMLButtonElement>("button.save-listing")!.click();
     host.querySelector<HTMLButtonElement>("button.verify-listing")!.click();
     await settle();
@@ -341,6 +352,8 @@ describe("the directory screens, in Hindi", () => {
             verified: true,
             revocation_status: "good",
             age_secs: 3600,
+            lang: "hi",
+            translations: [{ lang: "en", title: "Zq-en-title", summary: "Zq-en-summary" }],
             sources: [
               { directory: "did:key:zZqDirB", record_id: "Zq-r", received_at_secs: NOW, membership: VALID_VERDICT },
             ],
@@ -456,6 +469,106 @@ describe("the SynOrg screen, in Hindi", () => {
     const host = document.createElement("div");
     await renderSynOrg(host);
     expect(english(host)).toEqual([]);
+  });
+});
+
+describe("the cards, in Hindi", () => {
+  it("draws the request card", () => {
+    const el = renderRequest({
+      lang: "hi",
+      description: "Zq-desc",
+      categories: ["bicycle-repair"],
+      data_use_notice: "Zq-notice",
+      window: { earliest_secs: NOW, latest_secs: NOW + 3600 },
+    });
+    expect(english(el)).toEqual([]);
+  });
+
+  it("draws the quote card with a translation", () => {
+    const el = renderQuote({
+      terms: {
+        lang: "hi",
+        scope: "Zq-scope",
+        amount_minor: 1000,
+        currency: "INR",
+        location: { where: "at-receiver", address: "Zq-addr" },
+        cancellation_terms: "Zq-canc",
+        refund_terms: "Zq-refund",
+        dispute_path: "Zq-disp",
+        quote_expires_at_secs: NOW + 86400,
+      },
+      translations: [
+        {
+          lang: "en",
+          scope: "Zq-en-scope",
+          cancellation_terms: "Zq-en-canc",
+          refund_terms: "Zq-en-refund",
+          dispute_path: "Zq-en-disp",
+        },
+      ],
+    });
+    expect(english(el)).toEqual([]);
+  });
+
+  it("draws the quote card showing an author translation in Hindi with binds warning", () => {
+    const el = renderQuote({
+      terms: {
+        lang: "en",
+        scope: "Zq-scope",
+        amount_minor: 1000,
+        currency: "INR",
+        location: { where: "at-receiver", address: "Zq-addr" },
+        cancellation_terms: "Zq-canc",
+        refund_terms: "Zq-refund",
+        dispute_path: "Zq-disp",
+        quote_expires_at_secs: NOW + 86400,
+      },
+      translations: [
+        {
+          lang: "hi",
+          scope: "Zq-hi-scope",
+          cancellation_terms: "Zq-hi-canc",
+          refund_terms: "Zq-hi-refund",
+          dispute_path: "Zq-hi-disp",
+        },
+      ],
+    });
+    expect(el.querySelector(".quote-original-binds")?.textContent).toMatch(/[ऀ-ॿ]/);
+    expect(el.querySelector(".record-text-note")?.textContent).toMatch(/[ऀ-ॿ]/);
+    expect(english(el)).toEqual([]);
+  });
+
+  it("draws the agreement receipt card", () => {
+    const el = renderAgreementReceipt({
+      role: "counterparty",
+      pair: { state: "complete" },
+      counterparty_did: "did:key:zZqCounterparty",
+      quote_author_did: "did:key:zZqQuoteAuthor",
+      quote_record_id: "Zq-rec",
+      terms: {
+        lang: "hi",
+        scope: "Zq-scope",
+        amount_minor: 1000,
+        currency: "INR",
+        location: { where: "at-receiver", address: "Zq-addr" },
+        cancellation_terms: "Zq-canc",
+        refund_terms: "Zq-refund",
+        dispute_path: "Zq-disp",
+        quote_expires_at_secs: NOW + 86400,
+      },
+    });
+    expect(english(el)).toEqual([]);
+  });
+
+  it("draws the fulfilment receipt card", () => {
+    const el = renderFulfilmentReceipt({
+      role: "quote-author",
+      terms: {
+        lang: "hi",
+        scope: "Zq-scope",
+      },
+    });
+    expect(english(el)).toEqual([]);
   });
 });
 

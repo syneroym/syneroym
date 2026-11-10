@@ -422,6 +422,7 @@ async fn invalid_field_types_and_unknown_fields_in_catalog_and_transaction_are_r
         Some(json!({
             "conversation": "c1",
             "description": "Need help",
+            "lang": "en",
             "data_use_notice": "standard",
             "area": {
                 "kind": "circle",
@@ -437,5 +438,68 @@ async fn invalid_field_types_and_unknown_fields_in_catalog_and_transaction_are_r
     assert_eq!(
         w["error"]["message"].as_str().unwrap(),
         "invalid params: area: invalid type: string \"x\", expected u64"
+    );
+}
+
+#[tokio::test]
+async fn invalid_language_tags_in_record_set_methods_are_rejected() {
+    let h = harness().await;
+
+    // profile.set with locale
+    let (w, _) = post_rpc(
+        &h,
+        "profile.set",
+        Some(json!({
+            "display_name": "Alice",
+            "lang": "en",
+            "locale": "en",
+        })),
+    )
+    .await;
+    assert_eq!(w["error"]["code"], -32602);
+    assert_eq!(w["error"]["data"]["field"], "locale");
+
+    // listing.set with no lang
+    let (w, _) = post_rpc(
+        &h,
+        "listing.set",
+        Some(json!({
+            "title": "Hedge trimming",
+        })),
+    )
+    .await;
+    assert_eq!(w["error"]["code"], -32602);
+    assert_eq!(w["error"]["data"]["field"], "lang");
+
+    // listing.set with malformed lang: hi_IN
+    let (w, _) = post_rpc(
+        &h,
+        "listing.set",
+        Some(json!({
+            "title": "Hedge trimming",
+            "lang": "hi_IN",
+        })),
+    )
+    .await;
+    assert_eq!(w["error"]["code"], -32602);
+    assert_eq!(w["error"]["data"]["field"], "lang");
+    assert!(
+        w["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("language tag 'hi_IN' is not a well-formed BCP 47 tag")
+    );
+
+    // quote.set with non-canonical terms.lang
+    let mut q_params = super::fixtures::valid_quote_params("c1", "rec_req");
+    q_params["terms"]["lang"] = json!("hi-latn");
+    let (w, _) = post_rpc(&h, "quote.set", Some(q_params)).await;
+    assert_eq!(w["error"]["code"], -32602);
+    assert_eq!(w["error"]["data"]["field"], "terms.lang");
+    assert!(
+        w["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("language tag 'hi-latn' is not in canonical form; send 'hi-Latn'")
     );
 }

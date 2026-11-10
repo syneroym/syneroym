@@ -69,6 +69,8 @@ neighbourhood.
 | **Searcher** | The participant who searches directories and reads the results. Not a deal role. | Counterparty. |
 | **String catalog (Hub)** | The file of all Hub text for one language, in `crates/roym_web/ui/src/i18n/` (`en.ftl`, `hi.ftl`). A message in it has an id, and the Hub looks up its text by that id. | The `catalog` Roym service (listings). |
 | **Taxonomy (Roym)** | The base lists of category, unit, payment-method and attribute codes in `base.json`; their labels are in the Hub's taxonomy label files. | Free-text categories. |
+| **Language tag** | A BCP 47 language code in canonical syntax form (e.g. `hi`, `en`, `hi-Latn`), parsed and verified by `syneroym-text-lang`. | Free-form locale strings or non-canonical casing. |
+| **Author translation** | An alternative translation signed by the author inside the record envelope (up to 4 translations per record). The original text always binds. | Machine translation (MT), which is unsigned software output. |
 
 ## Key phrasings
 

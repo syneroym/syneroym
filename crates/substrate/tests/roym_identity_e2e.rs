@@ -335,7 +335,7 @@ async fn test_roym_identity_e2e() {
             "jsonrpc": "2.0",
             "id": 2,
             "method": "profile.set",
-            "params": { "display_name": "Alice" }
+            "params": { "display_name": "Alice", "lang": "en" }
         }))
         .send()
         .await
@@ -386,7 +386,8 @@ async fn test_roym_identity_e2e() {
             "method": "profile.set",
             "params": {
                 "display_name": "Alice",
-                "conversation_address": "syneroym://conv.addr/1"
+                "conversation_address": "syneroym://conv.addr/1",
+                "lang": "en"
             }
         }))
         .send()

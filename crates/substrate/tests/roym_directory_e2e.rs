@@ -71,6 +71,7 @@ fn listing_params(title: &str, summary: &str) -> Value {
     json!({
         "title": title,
         "summary": summary,
+        "lang": "en",
         "categories": ["cycling"],
         "payment": {
             "currency": "EUR", "model": "per-hour", "amount_minor": 4000,
@@ -157,7 +158,7 @@ async fn roym_directory_search_half_across_three_substrates() {
     node_y
         .rpc_ok(
             "profile.set",
-            json!({ "display_name": "Yara", "conversation_address": y_conv_did }),
+            json!({ "display_name": "Yara", "conversation_address": y_conv_did, "lang": "en" }),
         )
         .await;
     let y_listing = node_y
@@ -391,6 +392,7 @@ async fn roym_directory_search_half_across_three_substrates() {
             json!({
                 "title": "Bike repair",
                 "summary": "Same-day, at your door. Now with loan bikes.",
+                "lang": "en",
                 "categories": ["cycling"],
                 "payment": {
                     "currency": "EUR", "model": "per-hour", "amount_minor": 4500,
@@ -476,7 +478,11 @@ async fn roym_directory_search_half_across_three_substrates() {
     node_w
         .rpc_ok(
             "profile.set",
-            json!({ "display_name": "Wes", "conversation_address": node_w.dids["conversation"] }),
+            json!({
+                "display_name": "Wes",
+                "conversation_address": node_w.dids["conversation"],
+                "lang": "en",
+            }),
         )
         .await;
     let w_listing =

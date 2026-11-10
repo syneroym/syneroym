@@ -15,11 +15,11 @@
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use syneroym_signed_record::{EnvelopeError, VerifyOptions, content_digest};
-use thiserror::Error;
 
 pub use crate::record::{RECORD_AGREEMENT_RECEIPT, RECORD_QUOTE, RECORD_REQUEST};
 use crate::{
-    area::{Area, AreaError},
+    area::Area,
+    lang::{LangTag, check_text, check_translation_langs},
     listing::{self, ServiceLocation},
     money, person, record,
 };
@@ -128,12 +128,30 @@ pub struct QuoteLocation {
     pub address: Option<String>,
 }
 
+/// An author translation of a request's free-text fields.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RequestTranslation {
+    pub lang: LangTag,
+    pub description: String,
+}
+
+/// An author translation of a quote's free-text fields.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuoteTranslation {
+    pub lang: LangTag,
+    pub scope: String,
+    pub cancellation_terms: String,
+    pub refund_terms: String,
+    pub dispute_path: String,
+}
+
 /// The one struct the quote states and both halves of the agreement
 /// receipt carry verbatim. Every field the Records table names for an
 /// `agreement-receipt` is here: payee, expiry, cancellation and refund
 /// terms, and dispute path.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgreedTerms {
+    pub lang: LangTag,
     pub scope: String,
     /// ISO-4217, and a code `money::currency_minor_exponent` knows.
     pub currency: String,
@@ -174,6 +192,9 @@ pub struct RequestPayload {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub categories: Vec<String>,
     pub description: String,
+    pub lang: LangTag,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub translations: Vec<RequestTranslation>,
     /// Approximate, deliberately. An exact address is disclosed inside a
     /// quote, when the work needs one, and never here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -205,6 +226,8 @@ pub struct QuotePayload {
     /// it is what makes the agreement pair checkable.
     pub counterparty_did: String,
     pub terms: AgreedTerms,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub translations: Vec<QuoteTranslation>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -258,121 +281,8 @@ pub fn pair_state(
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Error)]
-pub enum TransactionError {
-    #[error("latest_secs ({latest_secs}) is before earliest_secs ({earliest_secs})")]
-    InvalidTimeWindow { earliest_secs: u64, latest_secs: u64 },
-
-    #[error("address is only applicable when location is at-receiver")]
-    AddressNotApplicable,
-
-    #[error("address is over {MAX_ADDRESS_LEN} characters")]
-    AddressTooLong,
-
-    #[error("area: {0}")]
-    Area(#[from] AreaError),
-
-    #[error("scope is empty")]
-    ScopeEmpty,
-
-    #[error("scope is over {MAX_SCOPE_LEN} characters")]
-    ScopeTooLong,
-
-    #[error("currency '{0}' is not a currency code this build knows")]
-    CurrencyUnknown(String),
-
-    #[error("amount_minor ({0}) cannot be negative")]
-    NegativeAmount(i64),
-
-    #[error("tax_minor ({0}) cannot be negative")]
-    NegativeTax(i64),
-
-    #[error("fees_minor ({0}) cannot be negative")]
-    NegativeFees(i64),
-
-    #[error(
-        "tax_minor ({tax_minor}) + fees_minor ({fees_minor}) exceeds amount_minor ({amount_minor})"
-    )]
-    BreakdownExceedsTotal { tax_minor: i64, fees_minor: i64, amount_minor: i64 },
-
-    #[error("payee is empty")]
-    PayeeEmpty,
-
-    #[error("payee is over {MAX_PAYEE_LEN} characters")]
-    PayeeTooLong,
-
-    #[error("more than {MAX_PAYMENT_METHODS} payment methods")]
-    TooManyPaymentMethods,
-
-    #[error("payment method '{0}' is not 1..={MAX_PAYMENT_METHOD_LEN} chars of [a-z0-9-]")]
-    PaymentMethodShape(String),
-
-    #[error("cancellation_terms is empty")]
-    CancellationTermsEmpty,
-
-    #[error("cancellation_terms is over {MAX_TERMS_TEXT_LEN} characters")]
-    CancellationTermsTooLong,
-
-    #[error("refund_terms is empty")]
-    RefundTermsEmpty,
-
-    #[error("refund_terms is over {MAX_TERMS_TEXT_LEN} characters")]
-    RefundTermsTooLong,
-
-    #[error("dispute_path is empty")]
-    DisputePathEmpty,
-
-    #[error("dispute_path is over {MAX_TERMS_TEXT_LEN} characters")]
-    DisputePathTooLong,
-
-    #[error("quote_expires_at_secs must be non-zero")]
-    QuoteExpiryZero,
-
-    #[error("quote_id is empty")]
-    QuoteIdEmpty,
-
-    #[error("conversation is empty")]
-    ConversationEmpty,
-
-    #[error("sequence must be >= 1, got {0}")]
-    InvalidSequence(u32),
-
-    #[error("record_id '{0}' must start with 'rec_'")]
-    InvalidRecordId(String),
-
-    #[error("did '{0}' is not a valid did:key")]
-    InvalidDid(String),
-
-    #[error("counterparty and quote author cannot be the same DID")]
-    SamePartyDid,
-
-    #[error("request_id is empty")]
-    RequestIdEmpty,
-
-    #[error("description is empty")]
-    DescriptionEmpty,
-
-    #[error("description is over {MAX_DESCRIPTION_LEN} characters")]
-    DescriptionTooLong,
-
-    #[error("more than {MAX_CATEGORIES} categories")]
-    TooManyCategories,
-
-    #[error("category '{0}' is not 1..={MAX_CATEGORY_LEN} chars of [a-z0-9-]")]
-    InvalidCategory(String),
-
-    #[error("data_use_notice is empty")]
-    DataUseNoticeEmpty,
-
-    #[error("data_use_notice is over {MAX_NOTICE_LEN} characters")]
-    DataUseNoticeTooLong,
-
-    #[error("slot_id requires both listing_id and terms.schedule")]
-    SlotNeedsListingAndSchedule,
-
-    #[error("slot_id does not match the id derived from listing_id and terms.schedule")]
-    SlotIdMismatch,
-}
+mod error;
+pub use error::TransactionError;
 
 impl TimeWindow {
     pub fn validate(&self) -> Result<(), TransactionError> {
@@ -512,6 +422,12 @@ impl RequestPayload {
         if self.data_use_notice.len() > MAX_NOTICE_LEN {
             return Err(TransactionError::DataUseNoticeTooLong);
         }
+        if !self.translations.is_empty() {
+            check_translation_langs(&self.lang, self.translations.iter().map(|t| &t.lang))?;
+            for t in &self.translations {
+                check_text(&t.lang, "description", &t.description, MAX_DESCRIPTION_LEN, true)?;
+            }
+        }
         Ok(())
     }
 }
@@ -550,6 +466,21 @@ impl QuotePayload {
                     .map_err(|_| TransactionError::SlotIdMismatch)?;
             if slot_id != &expected_slot {
                 return Err(TransactionError::SlotIdMismatch);
+            }
+        }
+        if !self.translations.is_empty() {
+            check_translation_langs(&self.terms.lang, self.translations.iter().map(|t| &t.lang))?;
+            for t in &self.translations {
+                check_text(&t.lang, "scope", &t.scope, MAX_SCOPE_LEN, true)?;
+                check_text(
+                    &t.lang,
+                    "cancellation_terms",
+                    &t.cancellation_terms,
+                    MAX_TERMS_TEXT_LEN,
+                    true,
+                )?;
+                check_text(&t.lang, "refund_terms", &t.refund_terms, MAX_TERMS_TEXT_LEN, true)?;
+                check_text(&t.lang, "dispute_path", &t.dispute_path, MAX_TERMS_TEXT_LEN, true)?;
             }
         }
         Ok(())

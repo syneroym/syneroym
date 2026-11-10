@@ -56,10 +56,16 @@ async fn a_rate_limited_sender_sees_the_reason_on_its_own_message() {
     let a_conv = node_a.dids["conversation"].clone();
     let b_conv = node_b.dids["conversation"].clone();
     node_a
-        .rpc_ok("profile.set", json!({ "display_name": "Ann", "conversation_address": a_conv }))
+        .rpc_ok(
+            "profile.set",
+            json!({ "display_name": "Ann", "conversation_address": a_conv, "lang": "en" }),
+        )
         .await;
     let b_profile = node_b
-        .rpc_ok("profile.set", json!({ "display_name": "Bo", "conversation_address": b_conv }))
+        .rpc_ok(
+            "profile.set",
+            json!({ "display_name": "Bo", "conversation_address": b_conv, "lang": "en" }),
+        )
         .await;
     node_a
         .rpc_ok(

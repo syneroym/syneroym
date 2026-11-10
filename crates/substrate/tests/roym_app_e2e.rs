@@ -507,6 +507,7 @@ async fn test_roym_app_e2e_lifecycle() {
         json!({
             "title": "Hedge trimming",
             "summary": "Neat hedges, fortnightly.",
+            "lang": "en",
             "categories": ["gardening"],
             "conversation_address": conv_address,
             "payment": {

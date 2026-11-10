@@ -12,7 +12,8 @@ use syneroym_app_host::{
 use syneroym_roym_core::{
     clock,
     envelope::Response,
-    listing::{self, ListingPayload, ListingStatus, ListingVerdict},
+    lang::LangTag,
+    listing::{self, ListingPayload, ListingStatus, ListingTranslation, ListingVerdict},
     method::{
         EnvelopeHistoryOutput, Reply, SiblingError, VerifyInput, call_sibling,
         catalog::{ListingGetOutput, ListingKeyInput},
@@ -83,6 +84,9 @@ pub struct SetListingInput {
     pub title: String,
     #[serde(default)]
     pub summary: String,
+    pub lang: LangTag,
+    #[serde(default)]
+    pub translations: Vec<ListingTranslation>,
     #[serde(default)]
     pub categories: Vec<String>,
     pub conversation_address: Option<String>,
@@ -425,6 +429,8 @@ async fn build_payload<H: AppHost>(
         slug,
         title: p.title,
         summary: p.summary,
+        lang: p.lang,
+        translations: p.translations,
         categories: p.categories,
         conversation_address: address,
         status: forced_status.or(p.status).or(prior_status).unwrap_or(ListingStatus::Active),

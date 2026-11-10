@@ -102,10 +102,16 @@ async fn roym_conversation_survives_restarts_blocks_and_round_trips() {
     // --- Step 2: profile.set on both, each carrying its own conversation
     //     service address (`roymctl roym address` supplies it). ------------
     node_a
-        .rpc_ok("profile.set", json!({ "display_name": "Ann", "conversation_address": a_conv_did }))
+        .rpc_ok(
+            "profile.set",
+            json!({ "display_name": "Ann", "conversation_address": a_conv_did, "lang": "en" }),
+        )
         .await;
     let b_profile = node_b
-        .rpc_ok("profile.set", json!({ "display_name": "Bo", "conversation_address": b_conv_did }))
+        .rpc_ok(
+            "profile.set",
+            json!({ "display_name": "Bo", "conversation_address": b_conv_did, "lang": "en" }),
+        )
         .await;
     // `contacts.upsert` wants the envelope as the raw JSON string, verbatim.
     let b_profile_envelope = b_profile["envelope"].as_str().unwrap().to_string();
@@ -232,6 +238,7 @@ async fn roym_conversation_survives_restarts_blocks_and_round_trips() {
             json!({
                 "title": "Bike repair",
                 "summary": "Same-day, at your door.",
+                "lang": "en",
                 "categories": ["cycling"],
                 "payment": {
                     "currency": "EUR", "model": "per-hour", "amount_minor": 4000,
@@ -406,7 +413,11 @@ async fn a_pending_message_and_its_body_survive_a_substrate_restart() {
 
     node.rpc_ok(
         "profile.set",
-        json!({ "display_name": "Solo", "conversation_address": node.dids["conversation"] }),
+        json!({
+            "display_name": "Solo",
+            "conversation_address": node.dids["conversation"],
+            "lang": "en",
+        }),
     )
     .await;
 
@@ -479,7 +490,11 @@ async fn a_message_that_never_reaches_its_peer_settles_failed_with_the_hosts_rea
 
     node.rpc_ok(
         "profile.set",
-        json!({ "display_name": "Solo", "conversation_address": node.dids["conversation"] }),
+        json!({
+            "display_name": "Solo",
+            "conversation_address": node.dids["conversation"],
+            "lang": "en",
+        }),
     )
     .await;
 

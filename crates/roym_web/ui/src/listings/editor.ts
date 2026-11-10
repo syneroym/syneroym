@@ -74,6 +74,8 @@ export interface ListingForm {
   slug: string;
   title: string;
   summary: string;
+  lang?: string;
+  translations?: Array<{ lang: string; title: string; summary: string }>;
   categories: string[];
   conversation_address: string;
   status: ListingStatus;
@@ -95,7 +97,7 @@ import {
   toMinorUnits,
 } from "../money.js";
 import { HubError } from "../hub-error";
-import { t } from "../i18n/i18n";
+import { currentLanguage, t } from "../i18n/i18n";
 
 export class ListingInputError extends HubError {
   constructor(message: string) {
@@ -256,12 +258,38 @@ export function buildSetListingParams(form: ListingForm): Record<string, unknown
   const title = form.title.trim();
   if (!title) throw new ListingInputError(t("listing-error-title-required"));
 
+  const lang = form.lang || currentLanguage();
   const params: Record<string, unknown> = {
     title,
     summary: form.summary.trim(),
+    lang,
     categories: form.categories,
     status: form.status,
   };
+
+  if (form.translations && form.translations.length > 0) {
+    const seenLangs = new Set<string>();
+    const translations = [];
+    for (const tr of form.translations) {
+      const trTitle = tr.title.trim();
+      if (!trTitle) {
+        throw new ListingInputError(t("listing-error-translation-title-required"));
+      }
+      if (tr.lang === lang) {
+        throw new ListingInputError(t("listing-error-translation-same-language"));
+      }
+      if (seenLangs.has(tr.lang)) {
+        throw new ListingInputError(t("listing-error-translation-duplicate"));
+      }
+      seenLangs.add(tr.lang);
+      translations.push({
+        lang: tr.lang,
+        title: trTitle,
+        summary: tr.summary.trim(),
+      });
+    }
+    params.translations = translations;
+  }
   const slug = form.slug.trim();
   if (slug) params.slug = slug;
   const address = form.conversation_address.trim();

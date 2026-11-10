@@ -1267,9 +1267,10 @@ and pick **हिन्दी**. The page loads again.
 **Expect:** the title, the tab names, the sign-in box, every card and every screen are in
 Hindi. Open the **Contacts** tab: its heading and its button are in Hindi. Open **Listings**
 and pick a category in the category picker: type its Hindi label, pick it, and the chosen chip
-shows the Hindi label. Money shows with Indian digit grouping (for example `₹1,00,000.50`), and
-dates show in the Hindi style. Your own data (names, listing titles, message text) stays as it
-was written. Reload the page: it stays in Hindi.
+shows the Hindi label. Create a Hindi listing with its text language set to Hindi, and add an
+English translation with its title in the translation rows. Money shows with Indian digit
+grouping (for example `₹1,00,000.50`), and dates show in the Hindi style. Your own data
+(names, listing titles, message text) stays as it was written. Reload the page: it stays in Hindi.
 
 **Say:** "Every person reads Roym in their own language. The choice stays on this device."
 
@@ -1288,11 +1289,11 @@ CLI equivalent (from a person's terminal):
 ```bash
 # bob
 roymctl --dir "$S2_DIR" --as owner roym transaction request \
-  --conversation <CONVERSATION-ID> --description "Mow the lawn" \
+  --conversation <CONVERSATION-ID> --description "Mow the lawn" --lang en \
   --gateway-url "http://127.0.0.1:$S2_GW" --host "$ROYM2_HOST"
 # alice
 roymctl --dir "$S1_DIR" --as owner roym transaction quote --request <REQUEST-ID> \
-  --scope "Mow the lawn" --currency INR --amount 500 --payee <ALICE-DID> \
+  --scope "Mow the lawn" --lang en --currency INR --amount 500 --payee <ALICE-DID> \
   --timing "this week" --where "at your home" \
   --gateway-url "http://127.0.0.1:$S1_GW" --host "$ROYM1_HOST"
 # bob

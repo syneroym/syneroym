@@ -1,8 +1,10 @@
 #![allow(clippy::cognitive_complexity)]
 
 use syneroym_identity::{Identity, substrate};
+use syneroym_signed_record::{Envelope, RecordDraft};
 
 use super::*;
+use crate::record;
 
 /// Signs with the issuer this payload's `listing_id` was actually
 /// derived from -- the only shape `verify_envelope` accepts as
@@ -12,16 +14,15 @@ fn sign_listing_with_own_issuer(payload: &ListingPayload, now: u64) -> String {
     let issuer = substrate::derive_did_key(&issuer_key.public_key());
     let mut p = payload.clone();
     p.listing_id = derive_listing_id(&issuer, &p.slug).unwrap();
-    let draft = syneroym_signed_record::RecordDraft {
+    let draft = RecordDraft {
         version: LISTING_VERSION,
-        record_type: crate::record::RECORD_LISTING.to_string(),
+        record_type: record::RECORD_LISTING.to_string(),
         subject: p.listing_id.clone(),
         payload: serde_json::to_value(&p).unwrap(),
         expires_at_secs: None,
         supersedes: None,
     };
-    let (mut env, bytes) =
-        syneroym_signed_record::Envelope::unsigned(draft, issuer.clone(), None, now).unwrap();
+    let (mut env, bytes) = Envelope::unsigned(draft, issuer.clone(), None, now).unwrap();
     let sig = z32::encode(&issuer_key.sign(&bytes).to_bytes());
     env.attach_signature(sig).unwrap();
     env.to_json().unwrap()
@@ -82,6 +83,8 @@ fn core() -> ListingPayload {
         slug: "hedge-trimming".to_string(),
         title: "Hedge trimming".to_string(),
         summary: "Neat hedges, fortnightly.".to_string(),
+        lang: LangTag::parse("en").unwrap(),
+        translations: vec![],
         categories: vec!["gardening".to_string(), "outdoor".to_string()],
         conversation_address: "did:key:zListingOwnerConv".to_string(),
         status: ListingStatus::Active,
@@ -377,4 +380,153 @@ fn the_wire_values_of_locations_and_audiences_are_pinned() {
     ] {
         assert_eq!(serde_json::to_value(open_to).unwrap(), wire);
     }
+}
+
+fn sign_raw_payload(payload: serde_json::Value, slug: &str, now: u64) -> String {
+    let issuer_key = Identity::generate().unwrap();
+    let issuer = substrate::derive_did_key(&issuer_key.public_key());
+    let listing_id = derive_listing_id(&issuer, slug).unwrap();
+    let mut p = payload;
+    p["listing_id"] = serde_json::json!(listing_id);
+    let draft = RecordDraft {
+        version: LISTING_VERSION,
+        record_type: record::RECORD_LISTING.to_string(),
+        subject: listing_id,
+        payload: p,
+        expires_at_secs: None,
+        supersedes: None,
+    };
+    let (mut env, bytes) = Envelope::unsigned(draft, issuer, None, now).unwrap();
+    let sig = z32::encode(&issuer_key.sign(&bytes).to_bytes());
+    env.attach_signature(sig).unwrap();
+    env.to_json().unwrap()
+}
+
+#[test]
+fn payload_deserialization_requires_canonical_lang() {
+    let p = core();
+    let base_val = serde_json::to_value(&p).unwrap();
+
+    // Missing lang
+    let mut missing_lang = base_val.clone();
+    missing_lang.as_object_mut().unwrap().remove("lang");
+    let env_missing = sign_raw_payload(missing_lang, &p.slug, 1000);
+    let v_missing = verify_envelope(&env_missing, 1000);
+    assert!(!v_missing.verified);
+    assert!(
+        v_missing.reason.as_deref().unwrap_or("").contains("payload: missing field `lang`"),
+        "expected missing field lang refusal: {:?}",
+        v_missing.reason
+    );
+
+    // Malformed lang: hi_IN
+    let mut malformed = base_val.clone();
+    malformed["lang"] = serde_json::json!("hi_IN");
+    let env_malformed = sign_raw_payload(malformed, &p.slug, 1000);
+    let v_malformed = verify_envelope(&env_malformed, 1000);
+    assert!(!v_malformed.verified);
+
+    // Non-canonical lang: HI
+    let mut non_canonical = base_val.clone();
+    non_canonical["lang"] = serde_json::json!("HI");
+    let env_non_canonical = sign_raw_payload(non_canonical, &p.slug, 1000);
+    let v_non_canonical = verify_envelope(&env_non_canonical, 1000);
+    assert!(!v_non_canonical.verified);
+    assert!(
+        v_non_canonical
+            .reason
+            .as_deref()
+            .unwrap_or("")
+            .contains("is not in canonical form; send 'hi'"),
+        "expected non-canonical refusal: {:?}",
+        v_non_canonical.reason
+    );
+}
+
+#[test]
+fn listing_translation_rules() {
+    let mut p = core();
+    p.lang = LangTag::parse("hi").unwrap();
+
+    // 5 translations exceeds MAX_TRANSLATIONS (4)
+    let tags = ["ta", "bn", "gu", "kn", "ml"];
+    p.translations = tags
+        .into_iter()
+        .map(|t| ListingTranslation {
+            lang: LangTag::parse(t).unwrap(),
+            title: format!("Title {t}"),
+            summary: String::new(),
+        })
+        .collect();
+    assert_eq!(p.validate(), Err(ListingError::Translation(TranslationError::TooMany)));
+
+    // 4 translations pass
+    p.translations.pop();
+    assert!(p.validate().is_ok());
+
+    // One with record's own tag
+    p.translations = vec![ListingTranslation {
+        lang: LangTag::parse("hi").unwrap(),
+        title: "Same as record".to_string(),
+        summary: String::new(),
+    }];
+    assert_eq!(
+        p.validate(),
+        Err(ListingError::Translation(TranslationError::SameAsRecord("hi".to_string())))
+    );
+
+    // Two translations with the same tag
+    p.translations = vec![
+        ListingTranslation {
+            lang: LangTag::parse("en").unwrap(),
+            title: "English 1".to_string(),
+            summary: String::new(),
+        },
+        ListingTranslation {
+            lang: LangTag::parse("en").unwrap(),
+            title: "English 2".to_string(),
+            summary: String::new(),
+        },
+    ];
+    assert_eq!(
+        p.validate(),
+        Err(ListingError::Translation(TranslationError::Duplicate("en".to_string())))
+    );
+
+    // Empty title
+    p.translations = vec![ListingTranslation {
+        lang: LangTag::parse("en").unwrap(),
+        title: "   ".to_string(),
+        summary: String::new(),
+    }];
+    assert_eq!(
+        p.validate(),
+        Err(ListingError::Translation(TranslationError::Empty {
+            lang: "en".to_string(),
+            field: "title",
+        }))
+    );
+
+    // 161-byte title (exceeds MAX_TITLE_LEN = 160)
+    p.translations = vec![ListingTranslation {
+        lang: LangTag::parse("en").unwrap(),
+        title: "a".repeat(161),
+        summary: String::new(),
+    }];
+    assert_eq!(
+        p.validate(),
+        Err(ListingError::Translation(TranslationError::TooLong {
+            lang: "en".to_string(),
+            field: "title",
+            max: MAX_TITLE_LEN,
+        }))
+    );
+
+    // Empty summary passes
+    p.translations = vec![ListingTranslation {
+        lang: LangTag::parse("en").unwrap(),
+        title: "Valid Title".to_string(),
+        summary: String::new(),
+    }];
+    assert!(p.validate().is_ok());
 }

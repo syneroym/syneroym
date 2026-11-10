@@ -10,6 +10,7 @@ workspace = true
 [dependencies]
 syneroym-app-host.workspace = true
 syneroym-signed-record.workspace = true
+syneroym-text-lang.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 serde_path_to_error.workspace = true

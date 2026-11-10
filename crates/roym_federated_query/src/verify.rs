@@ -152,10 +152,12 @@ fn build_verified_row(
         raw_evidence: Some(hit.membership.clone()),
         pinned_issuer: source.pinned_issuer.clone(),
         areas,
+        lang: payload.lang.to_string(),
+        translations: payload.translations,
     })
 }
 
-fn build_refused_row(source: &Source, hit: SearchHit, verdict: ListingVerdict) -> Row {
+pub(crate) fn build_refused_row(source: &Source, hit: SearchHit, verdict: ListingVerdict) -> Row {
     Row {
         listing_id: hit.listing_id,
         record_id: hit.record_id,

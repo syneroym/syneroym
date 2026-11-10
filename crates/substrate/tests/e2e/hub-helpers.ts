@@ -125,6 +125,14 @@ export async function pickCategory(scope: Locator, code: string, tag = 'en') {
   await expect(scope.locator(`.picker-chip[data-code="${code}"]`)).toBeVisible();
 }
 
+/** Add a translation row in the listing editor and fill its language and title. */
+export async function addListingTranslation(page: Page, lang: string, title: string, tag = 'en') {
+  const addBtnText = hubMessage(tag, 'listing-translation-add');
+  await page.getByRole('button', { name: addBtnText, exact: true }).click();
+  await page.locator('.listing-translation-lang').last().selectOption(lang);
+  await page.locator('.listing-translation-title').last().fill(title);
+}
+
 /** Pick a language in the Hub's language list. The page loads again in that language. */
 export async function chooseHubLanguage(page: Page, tag: string) {
   await page.locator('.language-picker').selectOption(tag);

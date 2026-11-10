@@ -146,6 +146,7 @@ describe("buildSetListingParams", () => {
     expect(params).toEqual({
       title: "Hedge trimming",
       summary: "",
+      lang: "en",
       categories: [],
       status: "active",
     });
@@ -211,6 +212,54 @@ describe("buildSetListingParams", () => {
     f.relationship.value.open_to = "members";
     expect(() => buildSetListingParams(f)).toThrow(ListingInputError);
   });
+
+  it("sends lang and translations trimmed in row order", () => {
+    const f = emptyForm();
+    f.title = "Title";
+    f.lang = "en";
+    f.translations = [
+      { lang: "hi", title: "  शीर्षक  ", summary: "  सार  " },
+      { lang: "ta", title: "தலைப்பு", summary: "   " },
+    ];
+    const params = buildSetListingParams(f);
+    expect(params.lang).toBe("en");
+    expect(params.translations).toEqual([
+      { lang: "hi", title: "शीर्षक", summary: "सार" },
+      { lang: "ta", title: "தலைப்பு", summary: "" },
+    ]);
+  });
+
+  it("refuses empty translation title", () => {
+    const f = emptyForm();
+    f.title = "Title";
+    f.translations = [{ lang: "hi", title: "   ", summary: "" }];
+    expect(() => buildSetListingParams(f)).toThrow(ListingInputError);
+    expect(() => buildSetListingParams(f)).toThrow("a translation title is required");
+  });
+
+  it("refuses translation in listing own language", () => {
+    const f = emptyForm();
+    f.title = "Title";
+    f.lang = "en";
+    f.translations = [{ lang: "en", title: "Tr", summary: "" }];
+    expect(() => buildSetListingParams(f)).toThrow(ListingInputError);
+    expect(() => buildSetListingParams(f)).toThrow(
+      "a translation cannot use the listing's own language",
+    );
+  });
+
+  it("refuses duplicate translation language", () => {
+    const f = emptyForm();
+    f.title = "Title";
+    f.translations = [
+      { lang: "hi", title: "Tr 1", summary: "" },
+      { lang: "hi", title: "Tr 2", summary: "" },
+    ];
+    expect(() => buildSetListingParams(f)).toThrow(ListingInputError);
+    expect(() => buildSetListingParams(f)).toThrow(
+      "two translations cannot use the same language",
+    );
+  });
 });
 
 describe("slotFromLocalDatetimes", () => {
@@ -272,6 +321,37 @@ describe("every editor error, in Hindi", () => {
     ["quote-only with an amount", withBlock("payment", { model: "quote-only", amount: "5" })],
     ["members need a group", withBlock("relationship", { open_to: "members", member_of: "" })],
     ["title required", () => buildSetListingParams(emptyForm())],
+    [
+      "translation title required",
+      () => {
+        const f = emptyForm();
+        f.title = "T";
+        f.translations = [{ lang: "hi", title: "   ", summary: "" }];
+        return buildSetListingParams(f);
+      },
+    ],
+    [
+      "translation same language",
+      () => {
+        const f = emptyForm();
+        f.title = "T";
+        f.lang = "en";
+        f.translations = [{ lang: "en", title: "Tr", summary: "" }];
+        return buildSetListingParams(f);
+      },
+    ],
+    [
+      "translation duplicate",
+      () => {
+        const f = emptyForm();
+        f.title = "T";
+        f.translations = [
+          { lang: "hi", title: "Tr 1", summary: "" },
+          { lang: "hi", title: "Tr 2", summary: "" },
+        ];
+        return buildSetListingParams(f);
+      },
+    ],
     ["slot times", () => slotFromLocalDatetimes("", "", "1")],
     ["slot order", () => slotFromLocalDatetimes("2030-01-01T11:00", "2030-01-01T10:00", "1")],
     ["slot capacity", () => slotFromLocalDatetimes("2030-01-01T10:00", "2030-01-01T11:00", "")],

@@ -14,6 +14,8 @@ import {
   type CheckStandingReply,
 } from "../directory/membership";
 import { formatAge } from "../i18n/format";
+import { langAttr } from "../i18n/text_lang";
+import { recordText, type TextVersion } from "../records/record_text";
 import { call } from "../rpc";
 import { categoryPicker } from "../taxonomy/category_picker";
 import { categoryLabel } from "../taxonomy/taxonomy";
@@ -305,9 +307,44 @@ function renderHits(host: HTMLElement, hits: MergedHit[], truncated: boolean, ru
     const card = document.createElement("div");
     card.className = "search-hit";
     card.dataset.verified = String(hit.verified);
+    card.dataset.listingId = hit.listing_id;
 
-    card.appendChild(text("div", hit.title || t("directory-untitled"), "hit-title"));
-    card.appendChild(text("div", hit.summary, "hit-summary"));
+    interface HitTextFields {
+      title: string;
+      summary: string;
+    }
+    const versions: TextVersion<HitTextFields>[] = [
+      {
+        lang: hit.lang,
+        fields: {
+          title: hit.title,
+          summary: hit.summary,
+        },
+        byAuthor: false,
+      },
+      ...(hit.translations || []).map((tr) => ({
+        lang: tr.lang,
+        fields: {
+          title: tr.title,
+          summary: tr.summary ?? "",
+        },
+        byAuthor: true,
+      })),
+    ];
+    recordText(card, versions, (v) => {
+      let titleEl: HTMLElement;
+      if (v.fields.title) {
+        titleEl = text("div", v.fields.title, "hit-title");
+        titleEl.setAttribute("lang", langAttr(v.lang));
+      } else {
+        titleEl = text("div", t("directory-untitled"), "hit-title");
+      }
+
+      const summaryEl = text("div", v.fields.summary, "hit-summary");
+      summaryEl.setAttribute("lang", langAttr(v.lang));
+
+      return [titleEl, summaryEl];
+    });
     if (hit.categories.length) {
       const labels = hit.categories.map((c) => categoryLabel(c)).join(", ");
       card.appendChild(

@@ -15,8 +15,13 @@ async fn find_over_one_source_matches_the_native_and_wasm_builds() {
     ensure_synorg(&h).await;
     enrol_signing(&h, "catalog").await;
 
-    let (_id, gw, _gn) =
-        set_and_get(&h, full_listing_params("find-single-source", "Single Source")).await;
+    let mut params = full_listing_params("find-single-source", "Single Source");
+    params["translations"] = json!([{
+        "lang": "hi",
+        "title": "एकल स्रोत",
+        "summary": "विवरण"
+    }]);
+    let (_id, gw, _gn) = set_and_get(&h, params).await;
     let env_bytes = gw["result"]["envelope"].as_str().unwrap().to_string();
     publish_signed_listing(&h, &env_bytes).await;
 
@@ -33,6 +38,11 @@ async fn find_over_one_source_matches_the_native_and_wasm_builds() {
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0]["sources"][0]["directory"], "did:key:hForeign");
     assert_eq!(hits[0]["versions_differ"], false);
+    assert_eq!(hits[0]["lang"], "en");
+    let trs = hits[0]["translations"].as_array().unwrap();
+    assert_eq!(trs.len(), 1);
+    assert_eq!(trs[0]["lang"], "hi");
+    assert_eq!(trs[0]["title"], "एकल स्रोत");
     assert!(hits[0].get("envelope").is_none(), "find must return projections, not envelopes");
 
     let outcomes = fw["result"]["outcomes"].as_array().unwrap();

@@ -13,6 +13,7 @@ use syneroym_app_host::{
 use syneroym_roym_core::{
     clock,
     envelope::Response,
+    lang::LangTag,
     method::{
         self, EnvelopeHistoryOutput, Reply, SiblingError, VerifyInput, call_sibling,
         catalog::{SlotKeyInput, SlotRow},
@@ -23,7 +24,8 @@ use syneroym_roym_core::{
     signing::{self, CertificateError},
     transaction::{
         self, AgreedTerms, MAX_QUOTE_LIFETIME_SECS, MIN_QUOTE_LIFETIME_SECS, PaymentTiming,
-        QUOTE_VERSION, QuoteLocation, QuotePayload, RecordVerdict, RequestPayload, TimeWindow,
+        QUOTE_VERSION, QuoteLocation, QuotePayload, QuoteTranslation, RecordVerdict,
+        RequestPayload, TimeWindow,
     },
 };
 
@@ -36,6 +38,7 @@ use super::{
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct QuoteTermsInput {
+    pub lang: LangTag,
     pub scope: String,
     pub currency: String,
     pub amount_minor: i64,
@@ -56,6 +59,7 @@ pub struct QuoteTermsInput {
 impl QuoteTermsInput {
     pub fn into_agreed_terms(self, quote_expires_at_secs: u64) -> AgreedTerms {
         AgreedTerms {
+            lang: self.lang,
             scope: self.scope,
             currency: self.currency,
             amount_minor: self.amount_minor,
@@ -86,6 +90,8 @@ pub struct QuoteSetInput {
     pub slot_id: Option<String>,
     pub expires_in_secs: u64,
     pub terms: QuoteTermsInput,
+    #[serde(default)]
+    pub translations: Vec<QuoteTranslation>,
 }
 
 #[derive(Debug, Serialize)]
@@ -194,6 +200,7 @@ pub(crate) async fn set<H: AppHost>(host: &H, input: QuoteSetInput) -> Reply<Quo
         listing_id: input.listing_id,
         slot_id: input.slot_id,
         counterparty_did: counterparty_did.clone(),
+        translations: input.translations,
         terms,
     };
     if let Err(e) = payload.validate() {

@@ -565,6 +565,7 @@ WebSocket is an option for one app. The guest declares an HTTP route with `targe
 
 - `syneroym-identity` holds Ed25519 identities and delegation certificates.
 - `syneroym-data-keystore` holds the key encryption key (KEK) of the node and the data encryption key (DEK) of each service.
+- `syneroym-text-lang` holds the language tag type, used by `roym_core`; `data_db` and `conversation` will use it.
 - The App Supervisor key vault holds the master key of each managed app instance. The operator must back each key up with `export-master`. A supervisor that is rebuilt without these backups creates new master keys. The `supervisor` interface has 17 verbs. See [LFC-MGT](#lfc-mgt-synapp-lifecycle-management-design).
 
 **Deploy and lifecycle.** Three parts share this work.
@@ -915,7 +916,7 @@ flowchart TD
 
 **Relay Discovery:** BEP 0044 Mainline DHT (via `pkarr`) resolves endpoint records and master anchors. These are identity-to-route lookups and not catalog search. A lookup asks the HTTP community registry first, when one is configured. It falls back to the DHT when the registry has no answer, and then writes the answer back to the registry.
 
-**Catalog Search (a Roym feature).** Matching listings is not a substrate component. It is the `directory` service of Roym. A listing owner signs a `listing` record and publishes it to a SynOrg directory that the listing owner chose. A SynOrg (Syneroym Organization) is a local group that runs a `directory` service; see [Trust & Reputation](#trust--reputation). The directory holds the listings published to it. It answers queries by category, area, text, and filters. Its answer is a list of candidates and is never a verified answer. Today a listing owner publishes only the `listing` record to a directory.
+**Catalog Search (a Roym feature).** Matching listings is not a substrate component. It is the `directory` service of Roym. A listing owner signs a `listing` record and publishes it to a SynOrg directory that the listing owner chose. A SynOrg (Syneroym Organization) is a local group that runs a `directory` service; see [Trust & Reputation](#trust--reputation). The directory holds the listings published to it. It answers queries by category, area, text, and filters. Its answer is a list of candidates and is never a verified answer. Today a listing owner publishes only the `listing` record to a directory. A listing carries a required `lang` tag and optional author `translations` (up to 4).
 
 **Base Taxonomy and Structured Codes.** Roym ships a base taxonomy in `crates/roym_core/taxonomy/base.json`, checked by a test in `roym_core::taxonomy`. It defines standard category codes in two levels (groups and child categories), product units, payment methods, and category attributes. A listing or request record may carry any well-formed token of `[a-z0-9-]` (so groups can use own codes before they are merged into the base file), but `product.unit`, `payment.methods`, quote `terms.payment_methods`, payment acknowledgement `method`, and SynOrg settings `categories` must strictly be valid codes.
 
@@ -1135,7 +1136,7 @@ Escrow and dispute-mediated fund custody are deferred; see [Decentralized Escrow
 ## Layer 4 — SynApp Specifications
 
 ### SynApp 1: Roym
-Roym is the SynApp built so far. A deal between two people is a chain of signed records that they exchange as cards over their conversation. The chain has three records: `request` (the counterparty asks), `quote` (the quote author offers) and `agreement-receipt` (each side signs one half). After that, a booking exists on the quote author's node. Its status travels as `booking-progress` cards. Payment and fulfilment add three more records: `payment-request`, `payment-acknowledgement`, and `fulfilment-receipt`. The [Roym spec](roym-integrated-experience-spec.md) describes the product. [Phase 6](#phase-6-high-level-applications-synapps) lists the card types and what is not built.
+Roym is the SynApp built so far. A deal between two people is a chain of signed records that they exchange as cards over their conversation. The chain has three records: `request` (the counterparty asks), `quote` (the quote author offers) and `agreement-receipt` (each side signs one half). After that, a booking exists on the quote author's node. Its status travels as `booking-progress` cards. Payment and fulfilment add three more records: `payment-request`, `payment-acknowledgement`, and `fulfilment-receipt`. Signed records (`profile`, `listing`, `request`, `quote`) carry a required canonical `lang` tag and up to 4 author `translations`; `profile` carries `languages` (up to 8 preferred tags). The [Roym spec](roym-integrated-experience-spec.md) describes the product. [Phase 6](#phase-6-high-level-applications-synapps) lists the card types and what is not built.
 
 #### Component Architecture
 
@@ -1205,13 +1206,13 @@ A card is a signed record sent as a message with content type `application/vnd.r
 
 | Card | Signed by | Meaning |
 |---|---|---|
-| `request` | the counterparty | The counterparty asks for a service. It has a description, and it may name a listing, category codes (from the base taxonomy or custom codes), an area, and a time window. |
-| `quote` | the quote author | An offer. It carries the agreed terms: scope, currency, and amount, payment methods as codes, payee, when payment is due, schedule, location, cancellation terms, refund terms, and a dispute path as text. It may name one slot of the listing. It has an expiry. |
-| `agreement-receipt` | each party signs one half | Each side signs the quote terms. A deal exists when both halves exist. |
+| `request` | the counterparty | The counterparty asks for a service. It carries a description, a required `lang` tag, optional author `translations`, and may name a listing, category codes (from the base taxonomy or custom codes), an area, and a time window. |
+| `quote` | the quote author | An offer. It carries agreed terms (with a required `terms.lang`), optional author `translations`, scope, currency, amount, payment methods as codes, payee, when payment is due, schedule, location, cancellation terms, refund terms, and a dispute path as text. It may name one slot of the listing. It has an expiry. |
+| `agreement-receipt` | each party signs one half | Each side signs the quote terms (including `terms.lang`). A deal exists when both halves exist. |
 | `booking-progress` | the quote author's service | A snapshot of the booking. The counterparty's node accepts it only when the signer is the one that signed the quote. |
 | `payment-request` | the quote author | The quote author asks to be paid. It carries currency, amount, and an optional note. It is optional. |
 | `payment-acknowledgement` | either party | A statement about a payment made outside Roym, with an optional method (a code from the agreed payment methods) and reference as text. |
-| `fulfilment-receipt` | either party | A statement that the work is done. |
+| `fulfilment-receipt` | either party | A statement that the work is done. It carries `terms` with `terms.lang`. |
 
 The expiry of a quote is set by the quote author. It must be from 5 minutes to 90 days. A request has no expiry. The counterparty can mark a quote as declined with `quote.decline`. This mark stays on the counterparty's own node and sends nothing. It is refused after either half of the agreement is signed. Roym has no method for a quote author to reject a request.
 
@@ -1416,6 +1417,8 @@ No central coordinator is required. These contracts are based on convention, and
 The Hub holds little state. It keeps the session token in `sessionStorage` and a delegated key in IndexedDB, as a non-extractable WebCrypto key. It has no local database. All data is in the person's own node, in its SQLite databases. The node encrypts them when encryption is enabled. The master key never enters the browser. The Hub logs in with a delegated key: it signs a challenge from the node's auth service, which has its own origin ([ADR-0024](decisions/0024-client-gateway-identity-and-auth-service.md)). A short-lived delegation certificate for that key comes from `roymctl session delegate`.
 
 The Hub also keeps the person's UI language in `localStorage` (the key `roym-hub-language`). This is a setting of this browser. It is not part of the profile. The Hub text comes from Fluent string catalogs, one file per language (`en` and `hi` today), with English as the fallback for a missing message. Taxonomy labels are kept in matching per-language files (`src/i18n/taxonomy/<tag>.ftl`) and loaded alongside the string catalogs. The Hub formats money, numbers, dates and times with the browser's `Intl` for the UI language, with region India and Latin digits, so `₹1,00,000.50` shows with Indian digit grouping in every language. Every screen draws its text from these catalogs. The Hub build fails when a source file sets visible text that does not come from a catalog.
+
+For record text (listing, request and quote text, and the receipts' terms), the Hub selects the best version for the reader based on the active UI language and the reader's preferred browser languages (`navigator.languages`). When the record has multiple versions, it displays a translation note (showing whether the reader is seeing an author translation or the original) and allows switching between them. Every block of listing, request, and quote text, and the receipts' terms sets the HTML `lang` attribute to its language tag.
 
 The Hub does no message crypto. Message encryption and the key ratchet run in the `conversation` service of the substrate, with `vodozemac` ([ADR-0013](decisions/0013-p2p-messaging-architecture.md)). There is no `libsignal`.
 

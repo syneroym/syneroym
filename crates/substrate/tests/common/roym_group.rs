@@ -74,7 +74,7 @@ pub async fn form_group(owner: &RoymNode, name: &str, members: &[&RoymNode]) -> 
     let owner_profile = owner
         .rpc_ok(
             "profile.set",
-            json!({ "display_name": owner.label, "conversation_address": owner_conv_did }),
+            json!({ "display_name": owner.label, "conversation_address": owner_conv_did, "lang": "en" }),
         )
         .await;
     let owner_profile_envelope = owner_profile["envelope"].as_str().unwrap().to_string();
@@ -85,7 +85,7 @@ pub async fn form_group(owner: &RoymNode, name: &str, members: &[&RoymNode]) -> 
         let member_profile = member
             .rpc_ok(
                 "profile.set",
-                json!({ "display_name": member.label, "conversation_address": member_conv_did }),
+                json!({ "display_name": member.label, "conversation_address": member_conv_did, "lang": "en" }),
             )
             .await;
         let member_profile_envelope = member_profile["envelope"].as_str().unwrap().to_string();

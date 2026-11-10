@@ -115,12 +115,18 @@ async fn three_members_see_one_order_from_skewed_clocks() {
 async fn exchange_contacts(a: &RoymNode, b: &RoymNode) {
     let a_conv = a.dids["conversation"].clone();
     let a_prof = a
-        .rpc_ok("profile.set", json!({ "display_name": a.label, "conversation_address": a_conv }))
+        .rpc_ok(
+            "profile.set",
+            json!({ "display_name": a.label, "conversation_address": a_conv, "lang": "en" }),
+        )
         .await;
     let a_env = a_prof["envelope"].as_str().unwrap().to_string();
     let b_conv = b.dids["conversation"].clone();
     let b_prof = b
-        .rpc_ok("profile.set", json!({ "display_name": b.label, "conversation_address": b_conv }))
+        .rpc_ok(
+            "profile.set",
+            json!({ "display_name": b.label, "conversation_address": b_conv, "lang": "en" }),
+        )
         .await;
     let b_env = b_prof["envelope"].as_str().unwrap().to_string();
     a.rpc_ok("contacts.upsert", json!({ "person_did": b.owner_did(), "profile_envelope": b_env }))

@@ -1,5 +1,6 @@
-import { errText, refiller, text } from "../dom";
-import { codeWord, messageId, t } from "../i18n/i18n";
+import { errText, field, refiller, text } from "../dom";
+import { codeWord, currentLanguage, messageId, t } from "../i18n/i18n";
+import { textLangSelect } from "../i18n/text_lang";
 import { onFeed } from "../events";
 import { call, RpcError } from "../rpc";
 import { whoami } from "../session/login";
@@ -320,6 +321,8 @@ async function renderThread(
     max: 8,
   });
 
+  const reqLang = textLangSelect("request-text-lang", currentLanguage());
+
   const listingInput = document.createElement("input");
   listingInput.placeholder = t("request-listing-placeholder");
   listingInput.className = "request-listing-input";
@@ -349,6 +352,7 @@ async function renderThread(
       await call("request.set", {
         conversation: conv.id,
         description: desc,
+        lang: reqLang.value,
         categories,
         listing_id: listingInput.value.trim() || undefined,
         data_use_notice: dataUseNotice,
@@ -365,7 +369,7 @@ async function renderThread(
     }
   };
 
-  reqForm.append(descInput, catsPicker.root, listingInput, noticeP, submitReqBtn, reqErr);
+  reqForm.append(descInput, field(t("request-text-language"), reqLang), catsPicker.root, listingInput, noticeP, submitReqBtn, reqErr);
   requestSection.appendChild(reqForm);
   pane.appendChild(requestSection);
 
@@ -682,6 +686,8 @@ export function openQuoteForm(
   const form = document.createElement("div");
   form.className = "quote-form";
 
+  const quoteLang = textLangSelect("quote-text-lang", currentLanguage());
+
   const scopeInput = document.createElement("input");
   scopeInput.placeholder = t("quote-scope-placeholder");
   scopeInput.className = "quote-scope-input";
@@ -836,6 +842,7 @@ export function openQuoteForm(
         request_record_id: reqCard.record_id,
         expires_in_secs,
         terms: {
+          lang: quoteLang.value,
           scope,
           currency,
           amount_minor: amountMinor,
@@ -861,6 +868,7 @@ export function openQuoteForm(
   };
 
   form.append(
+    field(t("quote-text-language"), quoteLang),
     scopeInput,
     currencyInput,
     amountInput,

@@ -92,7 +92,7 @@ async fn scenario_41_listing_address_from_profile_parity() {
     both_rpc(
         &h,
         "profile.set",
-        json!({ "display_name": "Alice", "conversation_address": "did:key:zAliceConvFromProfile" }),
+        json!({ "display_name": "Alice", "conversation_address": "did:key:zAliceConvFromProfile", "lang": "en" }),
     )
     .await;
 
@@ -338,4 +338,25 @@ async fn scenario_51_catalog_import_tampered_listing_refused_parity() {
     let (w, n) = both_rpc(&h, "catalog.import", json!({ "bundle": bundle })).await;
     assert_eq!(w, n);
     assert!(is_err(&w, -32602));
+}
+
+#[tokio::test]
+async fn listing_with_translation_parity() {
+    let h = harness().await;
+    enrol_signing(&h, "catalog").await;
+    let mut params = full_listing_params("hedge-trimming", "झाड़ी कटाई");
+    params["lang"] = json!("hi");
+    params["translations"] = json!([{
+        "lang": "en",
+        "title": "Hedge trimming",
+        "summary": "Neat hedges, fortnightly."
+    }]);
+    let (_id, gw, gn) = set_and_get(&h, params).await;
+    assert_eq!(gw["result"]["envelope"], gn["result"]["envelope"]);
+    let env_str = gw["result"]["envelope"].as_str().unwrap();
+    let env: Value = serde_json::from_str(env_str).unwrap();
+    let trs = env["payload"]["translations"].as_array().expect("translations array");
+    assert_eq!(trs.len(), 1);
+    assert_eq!(trs[0]["lang"], "en");
+    assert_eq!(trs[0]["title"], "Hedge trimming");
 }

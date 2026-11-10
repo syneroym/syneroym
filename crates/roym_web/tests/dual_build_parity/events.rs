@@ -81,6 +81,7 @@ async fn a_request_card_records_a_card_event_in_both_builds() {
     let params = json!({
         "conversation": conv,
         "description": "Paint fence",
+        "lang": "en",
         "data_use_notice": DEFAULT_DATA_USE_NOTICE,
     });
     let (rw, rn) = both_rpc(&h, "request.set", params).await;
@@ -240,6 +241,7 @@ async fn a_transaction_import_records_no_event() {
     let params = json!({
         "conversation": conv,
         "description": "Request for import test",
+        "lang": "en",
         "data_use_notice": DEFAULT_DATA_USE_NOTICE,
     });
     both_rpc(&h, "request.set", params).await;

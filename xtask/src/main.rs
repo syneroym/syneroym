@@ -186,6 +186,7 @@ fn check_roym_deps() -> Result<()> {
             "syneroym-roym-core",
             "syneroym-roym-federated-query",
             "syneroym-signed-record",
+            "syneroym-text-lang",
             "serde",
             "serde_json",
             "serde_path_to_error",

@@ -25,7 +25,7 @@ async fn scenario_123_request_set_signs_stores_and_sends_parity() {
 
     let params = json!({
         "conversation": conv,
-        "description": "Install new fence",
+        "description": "Install new fence", "lang": "en",
         "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
     });
     let (w, n) = both_rpc(&h, "request.set", params).await;
@@ -65,7 +65,7 @@ async fn scenario_124_request_set_without_enrolment_answers_not_enrolled_parity(
 
     let params = json!({
         "conversation": conv,
-        "description": "Unenrolled request",
+        "description": "Unenrolled request", "lang": "en",
         "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
     });
     let (w, n) = both_rpc(&h, "request.set", params).await;
@@ -83,7 +83,7 @@ async fn scenario_125_request_set_with_id_produces_superseding_version_parity() 
 
     let params1 = json!({
         "conversation": conv,
-        "description": "Initial fence proposal",
+        "description": "Initial fence proposal", "lang": "en",
         "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
     });
     let (w1, n1) = both_rpc(&h, "request.set", params1).await;
@@ -95,7 +95,7 @@ async fn scenario_125_request_set_with_id_produces_superseding_version_parity() 
     let params2 = json!({
         "conversation": conv,
         "request_id": req_id,
-        "description": "Revised fence proposal with painted finish",
+        "description": "Revised fence proposal with painted finish", "lang": "en",
         "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
     });
     let (w2, n2) = both_rpc(&h, "request.set", params2).await;
@@ -125,7 +125,7 @@ async fn scenario_126_quote_set_refuses_own_request_parity() {
 
     let params = json!({
         "conversation": conv,
-        "description": "My own job request",
+        "description": "My own job request", "lang": "en",
         "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
     });
     let (w, _) = both_rpc(&h, "request.set", params).await;
@@ -237,6 +237,14 @@ async fn scenario_128_quote_set_against_filed_request_parity() {
     );
 }
 
+fn strip_accept_envelope_fields(v: &mut Value) {
+    if let Some(res) = v.get_mut("result").and_then(Value::as_object_mut) {
+        for k in ["message_id", "agreement_record_id", "record_id", "quote_record_id"] {
+            res.remove(k);
+        }
+    }
+}
+
 #[tokio::test]
 async fn scenario_129_agreement_accept_quote_author_and_counterparty_halves_parity() {
     let h = harness().await;
@@ -272,23 +280,11 @@ async fn scenario_129_agreement_accept_quote_author_and_counterparty_halves_pari
         one_rpc(&h, true, "agreement.accept", json!({ "quote_record_id": q_rec_id_w })).await;
     let mut an =
         one_rpc(&h, false, "agreement.accept", json!({ "quote_record_id": q_rec_id_n })).await;
-    // agreement.accept mints its own receipt envelope with
-    // clock::now_secs() (unlike a listing's pinned signing clock), so
-    // record_id/quote_record_id -- content hashes over that envelope --
-    // and agreement_record_id/message_id are each build's own values,
-    // never equal to the other build's.
-    if let Some(res) = aw.get_mut("result").and_then(Value::as_object_mut) {
-        res.remove("message_id");
-        res.remove("agreement_record_id");
-        res.remove("record_id");
-        res.remove("quote_record_id");
-    }
-    if let Some(res) = an.get_mut("result").and_then(Value::as_object_mut) {
-        res.remove("message_id");
-        res.remove("agreement_record_id");
-        res.remove("record_id");
-        res.remove("quote_record_id");
-    }
+    // agreement.accept mints its own receipt envelope with clock::now_secs(),
+    // so record_id/quote_record_id and agreement_record_id/message_id are each
+    // build's own values, never equal to the other build's.
+    strip_accept_envelope_fields(&mut aw);
+    strip_accept_envelope_fields(&mut an);
     assert_eq!(stripped(&aw), stripped(&an));
     assert_eq!(aw["result"]["role"], "quote-author");
     assert_eq!(aw["result"]["pair"]["state"], "half");
@@ -297,6 +293,8 @@ async fn scenario_129_agreement_accept_quote_author_and_counterparty_halves_pari
     let gn = one_rpc(&h, false, "agreement.get", json!({ "quote_record_id": q_rec_id_n })).await;
     assert_eq!(gw["result"]["pair"]["state"], "half");
     assert_eq!(gn["result"]["pair"]["state"], "half");
+    assert_eq!(gw["result"]["terms"]["lang"], "en");
+    assert_eq!(gn["result"]["terms"]["lang"], "en");
     assert!(gw["result"]["quote_author"].is_object());
     assert!(gn["result"]["quote_author"].is_object());
     assert!(gw["result"]["counterparty"].is_null());
@@ -308,7 +306,7 @@ async fn scenario_129_agreement_accept_quote_author_and_counterparty_halves_pari
         "request.set",
         json!({
             "conversation": conv,
-            "description": "Another request",
+            "description": "Another request", "lang": "en",
             "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
         }),
     )
@@ -351,6 +349,8 @@ async fn scenario_129_agreement_accept_quote_author_and_counterparty_halves_pari
         both_rpc(&h, "agreement.get", json!({ "quote_record_id": peer_q_rec_id })).await;
     assert_eq!(cgw["result"]["pair"]["state"], "half");
     assert_eq!(cgn["result"]["pair"]["state"], "half");
+    assert_eq!(cgw["result"]["terms"]["lang"], "en");
+    assert_eq!(cgn["result"]["terms"]["lang"], "en");
     assert!(cgw["result"]["counterparty"].is_object());
     assert!(cgn["result"]["counterparty"].is_object());
     assert!(cgw["result"]["quote_author"].is_null());
@@ -573,7 +573,7 @@ async fn scenario_133_expired_quote_card_filed_verified_with_terms_accept_refuse
         "request.set",
         json!({
             "conversation": conv,
-            "description": "Window cleaning",
+            "description": "Window cleaning", "lang": "en",
             "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
         }),
     )

@@ -8,7 +8,7 @@ use std::{
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
 use serde_json::{Value, json};
-use syneroym_roym_core::{money, transaction};
+use syneroym_roym_core::{lang::LangTag, money, transaction};
 
 use super::{
     directory::{RpcCtx, call_and_print},
@@ -22,6 +22,8 @@ pub struct QuoteArgs {
     pub request: String,
     #[arg(long)]
     pub scope: String,
+    #[arg(long)]
+    pub lang: String,
     #[arg(long)]
     pub currency: String,
     #[arg(long)]
@@ -67,6 +69,8 @@ pub enum TransactionCommands {
         conversation: String,
         #[arg(long)]
         description: String,
+        #[arg(long)]
+        lang: String,
         #[arg(long = "category")]
         categories: Vec<String>,
         #[arg(long)]
@@ -155,10 +159,49 @@ pub enum TransactionCommands {
     },
 }
 
+struct RequestParamsArgs<'a> {
+    conversation: &'a str,
+    description: &'a str,
+    lang: &'a str,
+    categories: &'a [String],
+    listing: Option<&'a str>,
+    near: Option<&'a str>,
+    window: Option<&'a str>,
+    notice: Option<&'a str>,
+}
+
+fn build_request_params(args: RequestParamsArgs<'_>) -> Result<Value> {
+    let parsed_lang = LangTag::parse(args.lang)?;
+    let data_use_notice = args
+        .notice
+        .map(str::to_string)
+        .unwrap_or_else(|| transaction::DEFAULT_DATA_USE_NOTICE.to_string());
+
+    let mut params = json!({
+        "conversation": args.conversation,
+        "description": args.description,
+        "lang": parsed_lang.as_str(),
+        "categories": args.categories,
+        "data_use_notice": data_use_notice,
+    });
+    if let Some(l) = args.listing {
+        params["listing_id"] = json!(l);
+    }
+    if let Some(n) = args.near {
+        params["area"] = parse_near(n)?;
+    }
+    if let Some(w) = args.window {
+        params["window"] = parse_window(w)?;
+    }
+
+    Ok(params)
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn handle_request(
     conversation: &str,
     description: &str,
+    lang: &str,
     categories: &[String],
     listing: Option<&str>,
     near: Option<&str>,
@@ -168,26 +211,19 @@ async fn handle_request(
     host: Option<&str>,
     ctx: RpcCtx<'_>,
 ) -> Result<()> {
-    let data_use_notice = notice
-        .map(str::to_string)
-        .unwrap_or_else(|| transaction::DEFAULT_DATA_USE_NOTICE.to_string());
+    let data_use_notice = notice.unwrap_or(transaction::DEFAULT_DATA_USE_NOTICE);
     println!("{data_use_notice}");
 
-    let mut params = json!({
-        "conversation": conversation,
-        "description": description,
-        "categories": categories,
-        "data_use_notice": data_use_notice,
-    });
-    if let Some(l) = listing {
-        params["listing_id"] = json!(l);
-    }
-    if let Some(n) = near {
-        params["area"] = parse_near(n)?;
-    }
-    if let Some(w) = window {
-        params["window"] = parse_window(w)?;
-    }
+    let params = build_request_params(RequestParamsArgs {
+        conversation,
+        description,
+        lang,
+        categories,
+        listing,
+        near,
+        window,
+        notice,
+    })?;
 
     call_and_print(ctx, gateway_url, host, "request.set", params).await
 }
@@ -200,6 +236,7 @@ async fn handle_request(
 fn build_quote_params(
     request: &str,
     scope: &str,
+    lang: &str,
     currency: &str,
     amount: &str,
     payee: &str,
@@ -216,6 +253,7 @@ fn build_quote_params(
     expires_hours: u64,
     slot: Option<&str>,
 ) -> Result<Value> {
+    let parsed_lang = LangTag::parse(lang)?;
     let curr = currency.trim().to_uppercase();
     let exp = money::currency_minor_exponent(&curr).ok_or_else(|| {
         anyhow::anyhow!("currency '{currency}' is not a currency code this build knows")
@@ -255,6 +293,7 @@ fn build_quote_params(
     }
 
     let mut terms = json!({
+        "lang": parsed_lang.as_str(),
         "scope": scope,
         "currency": curr,
         "amount_minor": amount_minor,
@@ -396,6 +435,7 @@ pub(super) async fn handle_transaction(
         TransactionCommands::Request {
             conversation,
             description,
+            lang,
             categories,
             listing,
             near,
@@ -407,6 +447,7 @@ pub(super) async fn handle_transaction(
             handle_request(
                 conversation,
                 description,
+                lang,
                 categories,
                 listing.as_deref(),
                 near.as_deref(),
@@ -422,6 +463,7 @@ pub(super) async fn handle_transaction(
             let params = build_quote_params(
                 &args.request,
                 &args.scope,
+                &args.lang,
                 &args.currency,
                 &args.amount,
                 &args.payee,
@@ -525,4 +567,103 @@ pub(crate) fn parse_minor_units(input: &str, currency: &str, exp: u32) -> Result
     }
     let minor: i64 = minor_str.parse().context("amount out of range")?;
     Ok(minor)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_request_params_validates_lang() {
+        let params = build_request_params(RequestParamsArgs {
+            conversation: "conv1",
+            description: "desc",
+            lang: "HI-latn",
+            categories: &[],
+            listing: None,
+            near: None,
+            window: None,
+            notice: None,
+        });
+        assert!(params.is_ok());
+        if let Ok(p) = params {
+            assert_eq!(p["lang"], "hi-Latn");
+        }
+
+        let err = build_request_params(RequestParamsArgs {
+            conversation: "conv1",
+            description: "desc",
+            lang: "hi_IN",
+            categories: &[],
+            listing: None,
+            near: None,
+            window: None,
+            notice: None,
+        });
+        assert!(err.is_err());
+        if let Err(e) = err {
+            assert!(e.to_string().contains("is not a well-formed BCP 47 tag"));
+        }
+    }
+
+    #[test]
+    fn build_quote_params_validates_lang() {
+        let dir = tempfile::tempdir();
+        assert!(dir.is_ok());
+        let Ok(dir) = dir else { return };
+        let cancel_path = dir.path().join("cancel.txt");
+        let refund_path = dir.path().join("refund.txt");
+        assert!(fs::write(&cancel_path, "cancel terms").is_ok());
+        assert!(fs::write(&refund_path, "refund terms").is_ok());
+
+        let params = build_quote_params(
+            "req1",
+            "scope",
+            "HI-latn",
+            "EUR",
+            "10.00",
+            "did:key:payee",
+            None,
+            None,
+            &[],
+            "before-work",
+            None,
+            "remote",
+            None,
+            &cancel_path,
+            &refund_path,
+            "arbitration",
+            24,
+            None,
+        );
+        assert!(params.is_ok());
+        if let Ok(p) = params {
+            assert_eq!(p["terms"]["lang"], "hi-Latn");
+        }
+
+        let err = build_quote_params(
+            "req1",
+            "scope",
+            "hi_IN",
+            "EUR",
+            "10.00",
+            "did:key:payee",
+            None,
+            None,
+            &[],
+            "before-work",
+            None,
+            "remote",
+            None,
+            &cancel_path,
+            &refund_path,
+            "arbitration",
+            24,
+            None,
+        );
+        assert!(err.is_err());
+        if let Err(e) = err {
+            assert!(e.to_string().contains("is not a well-formed BCP 47 tag"));
+        }
+    }
 }

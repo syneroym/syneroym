@@ -41,6 +41,7 @@
           "currency": "string",
           "dispute_path": "string",
           "fees_minor": "number",
+          "lang": "string",
           "location": {
             "address": "string",
             "where": "at-receiver"
@@ -82,6 +83,7 @@
           "currency": "string",
           "dispute_path": "string",
           "fees_minor": "number",
+          "lang": "string",
           "location": {
             "address": "string",
             "where": "at-receiver"
@@ -150,6 +152,7 @@
           "currency": "string",
           "dispute_path": "string",
           "fees_minor": "number",
+          "lang": "string",
           "location": {
             "address": "string",
             "where": "at-receiver"
@@ -188,6 +191,7 @@
         "conversation": "string",
         "data_use_notice": "string",
         "description": "string",
+        "lang": "string",
         "request_id": "string",
         "sequence": "number"
       },

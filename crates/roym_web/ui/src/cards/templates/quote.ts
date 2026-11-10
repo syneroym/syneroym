@@ -16,10 +16,21 @@ import { serviceLocationCardLabel } from "../../listings/labels";
 import { labelled } from "../../dom";
 import { timeElement, formatDateTime } from "../../i18n/format";
 import { t } from "../../i18n/i18n";
+import { languageName } from "../../i18n/text_lang";
 import { formatMinor } from "../../money";
+import { recordText, recordValue, type TextVersion } from "../../records/record_text";
 import { renderLink } from "../link";
 
+export interface QuoteTranslationData {
+  lang: string;
+  scope: string;
+  cancellation_terms: string;
+  refund_terms: string;
+  dispute_path: string;
+}
+
 export interface AgreedTermsData {
+  lang?: string;
   scope?: string;
   currency?: string;
   amount_minor?: number;
@@ -51,6 +62,7 @@ export interface QuoteData {
   listing_id?: string;
   counterparty_did?: string;
   terms?: AgreedTermsData;
+  translations?: QuoteTranslationData[];
   scope?: string;
   currency?: string;
   amount_minor?: number;
@@ -98,132 +110,175 @@ export function renderQuote(data?: QuoteData): HTMLElement {
     ...(data?.quote_expires_at_secs !== undefined ? { quote_expires_at_secs: data.quote_expires_at_secs } : {}),
   };
 
-  // 1. Scope
-  if (terms.scope) {
-    const scopeP = document.createElement("p");
-    scopeP.className = "quote-scope";
-    scopeP.textContent = t("terms-scope", { value: terms.scope });
-    card.appendChild(scopeP);
+  interface QuoteTextFields {
+    scope?: string;
+    cancellation_terms?: string;
+    refund_terms?: string;
+    dispute_path?: string;
   }
 
-  // 2. Total
-  if (terms.amount_minor !== undefined && terms.currency) {
-    const totalP = document.createElement("p");
-    totalP.className = "quote-total";
-    totalP.textContent = t("terms-total", { amount: formatMinor(terms.amount_minor, terms.currency) });
-    card.appendChild(totalP);
-  }
+  const versions: TextVersion<QuoteTextFields>[] = [
+    {
+      lang: terms.lang ?? "",
+      fields: {
+        scope: terms.scope,
+        cancellation_terms: terms.cancellation_terms,
+        refund_terms: terms.refund_terms,
+        dispute_path: terms.dispute_path,
+      },
+      byAuthor: false,
+    },
+    ...(data?.translations ?? []).map((tr) => ({
+      lang: tr.lang,
+      fields: {
+        scope: tr.scope,
+        cancellation_terms: tr.cancellation_terms,
+        refund_terms: tr.refund_terms,
+        dispute_path: tr.dispute_path,
+      },
+      byAuthor: true,
+    })),
+  ];
 
-  // 3. Tax and fees lines when non-zero
-  if (terms.tax_minor !== undefined && terms.tax_minor !== 0 && terms.currency) {
-    const taxP = document.createElement("p");
-    taxP.className = "quote-tax";
-    taxP.textContent = t("terms-tax", { amount: formatMinor(terms.tax_minor, terms.currency) });
-    card.appendChild(taxP);
-  }
-  if (terms.fees_minor !== undefined && terms.fees_minor !== 0 && terms.currency) {
-    const feesP = document.createElement("p");
-    feesP.className = "quote-fees";
-    feesP.textContent = t("terms-fees", { amount: formatMinor(terms.fees_minor, terms.currency) });
-    card.appendChild(feesP);
-  }
+  recordText(card, versions, (v) => {
+    const nodes: Node[] = [];
 
-  // 4. Payment timing in words
-  if (terms.payment_timing) {
-    const timingP = document.createElement("p");
-    timingP.className = "quote-timing";
-    timingP.textContent =
-      terms.payment_timing === "before-work" ? t("terms-timing-before") : t("terms-timing-after");
-    card.appendChild(timingP);
-  }
-
-  // 5. Payee, labelled "Payee, as agreed in this quote"
-  if (terms.payee) {
-    const payeeP = document.createElement("p");
-    payeeP.className = "quote-payee";
-    const isLink = terms.payee.startsWith("http://") || terms.payee.startsWith("https://");
-    labelled(
-      payeeP,
-      t("terms-payee-label"),
-      isLink ? renderLink(terms.payee) : document.createTextNode(terms.payee),
-    );
-    card.appendChild(payeeP);
-  }
-
-  // 6. Schedule window
-  if (terms.schedule) {
-    const schedP = document.createElement("p");
-    schedP.className = "quote-schedule";
-    labelled(
-      schedP,
-      t("terms-schedule-label"),
-      timeElement(terms.schedule.earliest_secs),
-      t("terms-range-separator"),
-      timeElement(terms.schedule.latest_secs),
-    );
-    card.appendChild(schedP);
-  }
-
-  // 7. Location and address
-  if (terms.location) {
-    const locP = document.createElement("p");
-    locP.className = "quote-location";
-    locP.textContent = t("terms-location", { where: serviceLocationCardLabel(terms.location.where) });
-    card.appendChild(locP);
-
-    if (terms.location.address) {
-      const addrP = document.createElement("p");
-      addrP.className = "quote-address";
-      addrP.textContent = t("terms-address", { address: terms.location.address });
-      card.appendChild(addrP);
+    // 1. Scope
+    if (v.fields.scope) {
+      const scopeP = document.createElement("p");
+      scopeP.className = "quote-scope";
+      labelled(scopeP, t("terms-scope-label"), recordValue(v.lang, v.fields.scope));
+      nodes.push(scopeP);
     }
-  }
 
-  // 8. Cancellation, refund and dispute text
-  if (terms.cancellation_terms) {
-    const cancP = document.createElement("p");
-    cancP.className = "quote-cancellation";
-    cancP.textContent = t("terms-cancellation", { value: terms.cancellation_terms });
-    card.appendChild(cancP);
-  }
-  if (terms.refund_terms) {
-    const refP = document.createElement("p");
-    refP.className = "quote-refund";
-    refP.textContent = t("terms-refund", { value: terms.refund_terms });
-    card.appendChild(refP);
-  }
-  if (terms.dispute_path) {
-    const dispP = document.createElement("p");
-    dispP.className = "quote-dispute";
-    const isLink = terms.dispute_path.startsWith("http://") || terms.dispute_path.startsWith("https://");
-    labelled(
-      dispP,
-      t("terms-dispute-label"),
-      isLink ? renderLink(terms.dispute_path) : document.createTextNode(terms.dispute_path),
-    );
-    card.appendChild(dispP);
-  }
-
-  // 9. Expiry as an absolute time plus "expired" when past
-  if (terms.quote_expires_at_secs) {
-    const nowSecs = Math.floor(Date.now() / 1000);
-    const isPast = data?.expired || nowSecs > terms.quote_expires_at_secs;
-    const expP = document.createElement("p");
-    expP.className = "quote-expiry";
-    if (isPast) {
-      const date = formatDateTime(terms.quote_expires_at_secs);
-      expP.textContent = t("quote-expires-expired", { date });
-      card.appendChild(expP);
-
-      const expiredNotice = document.createElement("p");
-      expiredNotice.className = "quote-expired-notice";
-      expiredNotice.textContent = t("quote-expired-notice", { date });
-      card.appendChild(expiredNotice);
-    } else {
-      labelled(expP, t("quote-expiry-label"), timeElement(terms.quote_expires_at_secs));
-      card.appendChild(expP);
+    // 2. Total
+    if (terms.amount_minor !== undefined && terms.currency) {
+      const totalP = document.createElement("p");
+      totalP.className = "quote-total";
+      totalP.textContent = t("terms-total", { amount: formatMinor(terms.amount_minor, terms.currency) });
+      nodes.push(totalP);
     }
-  }
+
+    // 3. Tax and fees lines when non-zero
+    if (terms.tax_minor !== undefined && terms.tax_minor !== 0 && terms.currency) {
+      const taxP = document.createElement("p");
+      taxP.className = "quote-tax";
+      taxP.textContent = t("terms-tax", { amount: formatMinor(terms.tax_minor, terms.currency) });
+      nodes.push(taxP);
+    }
+    if (terms.fees_minor !== undefined && terms.fees_minor !== 0 && terms.currency) {
+      const feesP = document.createElement("p");
+      feesP.className = "quote-fees";
+      feesP.textContent = t("terms-fees", { amount: formatMinor(terms.fees_minor, terms.currency) });
+      nodes.push(feesP);
+    }
+
+    // 4. Payment timing in words
+    if (terms.payment_timing) {
+      const timingP = document.createElement("p");
+      timingP.className = "quote-timing";
+      timingP.textContent =
+        terms.payment_timing === "before-work" ? t("terms-timing-before") : t("terms-timing-after");
+      nodes.push(timingP);
+    }
+
+    // 5. Payee, labelled "Payee, as agreed in this quote"
+    if (terms.payee) {
+      const payeeP = document.createElement("p");
+      payeeP.className = "quote-payee";
+      const isLink = terms.payee.startsWith("http://") || terms.payee.startsWith("https://");
+      labelled(
+        payeeP,
+        t("terms-payee-label"),
+        isLink ? renderLink(terms.payee) : document.createTextNode(terms.payee),
+      );
+      nodes.push(payeeP);
+    }
+
+    // 6. Schedule window
+    if (terms.schedule) {
+      const schedP = document.createElement("p");
+      schedP.className = "quote-schedule";
+      labelled(
+        schedP,
+        t("terms-schedule-label"),
+        timeElement(terms.schedule.earliest_secs),
+        t("terms-range-separator"),
+        timeElement(terms.schedule.latest_secs),
+      );
+      nodes.push(schedP);
+    }
+
+    // 7. Location and address
+    if (terms.location) {
+      const locP = document.createElement("p");
+      locP.className = "quote-location";
+      locP.textContent = t("terms-location", { where: serviceLocationCardLabel(terms.location.where) });
+      nodes.push(locP);
+
+      if (terms.location.address) {
+        const addrP = document.createElement("p");
+        addrP.className = "quote-address";
+        labelled(addrP, t("terms-address-label"), recordValue(terms.lang ?? "", terms.location.address));
+        nodes.push(addrP);
+      }
+    }
+
+    // 8. Cancellation, refund and dispute text
+    if (v.fields.cancellation_terms) {
+      const cancP = document.createElement("p");
+      cancP.className = "quote-cancellation";
+      labelled(cancP, t("terms-cancellation-label"), recordValue(v.lang, v.fields.cancellation_terms));
+      nodes.push(cancP);
+    }
+    if (v.fields.refund_terms) {
+      const refP = document.createElement("p");
+      refP.className = "quote-refund";
+      labelled(refP, t("terms-refund-label"), recordValue(v.lang, v.fields.refund_terms));
+      nodes.push(refP);
+    }
+    if (v.fields.dispute_path) {
+      const dispP = document.createElement("p");
+      dispP.className = "quote-dispute";
+      const isLink = v.fields.dispute_path.startsWith("http://") || v.fields.dispute_path.startsWith("https://");
+      const val = isLink ? renderLink(v.fields.dispute_path) : v.fields.dispute_path;
+      labelled(dispP, t("terms-dispute-label"), recordValue(v.lang, val));
+      nodes.push(dispP);
+    }
+
+    // Warning line when author translation is shown
+    if (v.byAuthor) {
+      const bindsP = document.createElement("p");
+      bindsP.className = "quote-original-binds";
+      bindsP.textContent = t("record-text-original-binds", {
+        language: languageName(versions[0].lang),
+      });
+      nodes.push(bindsP);
+    }
+
+    // 9. Expiry as an absolute time plus "expired" when past
+    if (terms.quote_expires_at_secs) {
+      const nowSecs = Math.floor(Date.now() / 1000);
+      const isPast = data?.expired || nowSecs > terms.quote_expires_at_secs;
+      const expP = document.createElement("p");
+      expP.className = "quote-expiry";
+      if (isPast) {
+        const date = formatDateTime(terms.quote_expires_at_secs);
+        expP.textContent = t("quote-expires-expired", { date });
+        nodes.push(expP);
+
+        const expiredNotice = document.createElement("p");
+        expiredNotice.className = "quote-expired-notice";
+        expiredNotice.textContent = t("quote-expired-notice", { date });
+        nodes.push(expiredNotice);
+      } else {
+        labelled(expP, t("quote-expiry-label"), timeElement(terms.quote_expires_at_secs));
+        nodes.push(expP);
+      }
+    }
+
+    return nodes;
+  });
 
   return card;
 }

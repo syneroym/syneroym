@@ -18,6 +18,7 @@ import { labelled } from "../../dom";
 import { timeElement } from "../../i18n/format";
 import { t } from "../../i18n/i18n";
 import { formatMinor } from "../../money";
+import { recordValue } from "../../records/record_text";
 import { renderLink } from "../link";
 import { type AgreedTermsData } from "./quote";
 
@@ -130,7 +131,7 @@ export function renderAgreementReceipt(data?: AgreementReceiptData): HTMLElement
   if (terms.scope) {
     const scopeP = document.createElement("p");
     scopeP.className = "receipt-scope";
-    scopeP.textContent = t("terms-scope", { value: terms.scope });
+    labelled(scopeP, t("terms-scope-label"), recordValue(terms.lang ?? "", terms.scope));
     card.appendChild(scopeP);
   }
 
@@ -196,7 +197,7 @@ export function renderAgreementReceipt(data?: AgreementReceiptData): HTMLElement
     if (terms.location.address) {
       const addrP = document.createElement("p");
       addrP.className = "receipt-address";
-      addrP.textContent = t("terms-address", { address: terms.location.address });
+      labelled(addrP, t("terms-address-label"), recordValue(terms.lang ?? "", terms.location.address));
       card.appendChild(addrP);
     }
   }
@@ -204,24 +205,21 @@ export function renderAgreementReceipt(data?: AgreementReceiptData): HTMLElement
   if (terms.cancellation_terms) {
     const cancP = document.createElement("p");
     cancP.className = "receipt-cancellation";
-    cancP.textContent = t("terms-cancellation", { value: terms.cancellation_terms });
+    labelled(cancP, t("terms-cancellation-label"), recordValue(terms.lang ?? "", terms.cancellation_terms));
     card.appendChild(cancP);
   }
   if (terms.refund_terms) {
     const refP = document.createElement("p");
     refP.className = "receipt-refund";
-    refP.textContent = t("terms-refund", { value: terms.refund_terms });
+    labelled(refP, t("terms-refund-label"), recordValue(terms.lang ?? "", terms.refund_terms));
     card.appendChild(refP);
   }
   if (terms.dispute_path) {
     const dispP = document.createElement("p");
     dispP.className = "receipt-dispute";
     const isLink = terms.dispute_path.startsWith("http://") || terms.dispute_path.startsWith("https://");
-    labelled(
-      dispP,
-      t("terms-dispute-label"),
-      isLink ? renderLink(terms.dispute_path) : document.createTextNode(terms.dispute_path),
-    );
+    const val = isLink ? renderLink(terms.dispute_path) : terms.dispute_path;
+    labelled(dispP, t("terms-dispute-label"), recordValue(terms.lang ?? "", val));
     card.appendChild(dispP);
   }
 

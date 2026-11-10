@@ -1,6 +1,6 @@
 import { test, expect, type Page } from '../fixtures';
 import {
-  addContact, chooseHubLanguage, hubMessage, loginWithDelegatedKey, openConversation, openMessages, pickCategory, rpcCall, saveProfile,
+  addContact, addListingTranslation, chooseHubLanguage, hubMessage, loginWithDelegatedKey, openConversation, openMessages, pickCategory, rpcCall, saveProfile,
   sendMessage, threadMessage,
 } from '../hub-helpers';
 import { readE2EPorts } from '../ports';
@@ -761,7 +761,7 @@ test.describe('Roym Hub', () => {
     // A draft listing is refused at the directory with a reason.
     await page.locator('.listing-title-input').fill('Draft that cannot publish');
     await page.locator('.listing-address-input').fill(DIRECTORY_DID!);
-    await page.locator('.listing-editor select').first().selectOption('draft');
+    await page.locator('.listing-status-select').selectOption('draft');
     await page.locator('.block-payment .block-enabled').check();
     await page.locator('.payment-amount-input').fill('25');
     await page.locator('.save-listing').click();
@@ -1351,6 +1351,69 @@ test.describe('Roym Hub', () => {
 
     const hitCategories = await hitHi.locator('.hit-categories').innerText();
     expect(hitCategories).toContain(hubMessage('hi', 'taxonomy-category-bicycle-repair'));
+
+    await chooseHubLanguage(page, 'en');
+  });
+
+  test("an English reader sees the author's English title of a Hindi listing and can open the original", async ({ page }) => {
+    await page.goto(HUB_URL);
+    await page.waitForLoadState('networkidle');
+    await loginWithDelegatedKey(page);
+    await ensureSynOrgWithListing(page, 'Bilingual seed listing');
+
+    await page.getByRole('button', { name: 'Listings' }).click();
+    await page.locator('.listing-text-lang').selectOption('hi');
+    await page.locator('.listing-title-input').fill('झाड़ी कटाई');
+    await page.locator('.listing-slug-input').fill('hedge-trimming');
+    await pickCategory(page.locator('.listing-categories-input'), 'bicycle-repair');
+    await page.locator('.listing-address-input').fill(DIRECTORY_DID!);
+    await page.locator('.block-payment .block-enabled').check();
+    await page.locator('.payment-amount-input').fill('40');
+    await addListingTranslation(page, 'en', 'Hedge trimming');
+    await page.locator('.save-listing').click();
+    const saveResult = page.locator('.listing-save-result');
+    await expect(saveResult).toContainText('Saved lst_', { timeout: 15_000 });
+    const listingIdMatch = (await saveResult.innerText()).match(/lst_[a-zA-Z0-9]+/);
+    expect(listingIdMatch).toBeTruthy();
+    const listingId = listingIdMatch![0];
+
+    const row = page.locator('.listing-row', { hasText: 'झाड़ी कटाई' }).first();
+    await row.locator('.publish-directory-did').fill(DIRECTORY_DID!);
+    await row.locator('.publish-listing').click();
+    await expect(row.locator('.publish-status')).toContainText('Published', { timeout: 15_000 });
+
+    await removeAllSources(page);
+    await page.locator('.add-source-did').fill(DIRECTORY_DID!);
+    await page.getByRole('button', { name: 'Add directory' }).click();
+    await expect(page.locator('.add-source-status')).toContainText('Added', { timeout: 15_000 });
+
+    await pickCategory(page.locator('.search-categories'), 'bicycle-repair');
+    await page.getByRole('button', { name: 'Search', exact: true }).click();
+
+    const hit = page.locator(`.search-hit[data-listing-id="${listingId}"]`);
+    await expect(hit).toHaveCount(1, { timeout: 20_000 });
+
+    const titleEl = hit.locator('.hit-title');
+    await expect(titleEl).toHaveText('Hedge trimming');
+    await expect(titleEl).toHaveAttribute('lang', 'en');
+    await expect(hit.locator('.record-text-note')).toHaveText('Translated by the author from Hindi.');
+
+    await hit.locator('.record-text-switch').click();
+    await expect(titleEl).toHaveText('झाड़ी कटाई');
+    await expect(titleEl).toHaveAttribute('lang', 'hi');
+    await expect(hit.locator('.record-text-note')).toHaveText('Original text, in Hindi.');
+
+    await chooseHubLanguage(page, 'hi');
+    await page.getByRole('button', { name: hubMessage('hi', 'tab-directory') }).click();
+    await pickCategory(page.locator('.search-categories'), 'bicycle-repair', 'hi');
+    await page.getByRole('button', { name: hubMessage('hi', 'directory-search-button'), exact: true }).click();
+
+    const hitHi = page.locator(`.search-hit[data-listing-id="${listingId}"]`);
+    await expect(hitHi).toHaveCount(1, { timeout: 20_000 });
+    const titleHi = hitHi.locator('.hit-title');
+    await expect(titleHi).toHaveText('झाड़ी कटाई');
+    await expect(titleHi).toHaveAttribute('lang', 'hi');
+    await expect(hitHi.locator('.record-text-note')).toHaveText('मूल विवरण, हिन्दी में।');
 
     await chooseHubLanguage(page, 'en');
   });

@@ -77,6 +77,12 @@ group-event-added = { $author } added { $subject }
 group-event-removed = { $author } removed { $subject }
 group-event-updated = { $author } updated the group
 
+record-text-by-author = Translated by the author from { $language }.
+record-text-original = Original text, in { $language }.
+record-text-original-binds = The original text, in { $language }, is what binds.
+record-text-show-original = Show the original
+record-text-show-translation = Show the author's translation
+
 # Cards. A label that is followed by a value of another kind (a link, a
 # time) has no `$value`: the card draws the value after it.
 card-unknown-title = Unknown Card ({ $type } v{ $version })
@@ -86,7 +92,7 @@ card-refused-notice = This node received a card of this type, but could not veri
 card-refused-reason = Reason: { $reason }
 
 # The terms shared by the quote and the agreement receipt
-terms-scope = Scope: { $value }
+terms-scope-label = Scope:
 terms-total = Total: { $amount }
 terms-tax = Tax: { $amount }
 terms-fees = Fees: { $amount }
@@ -96,9 +102,9 @@ terms-payee-label = Payee, as agreed in this quote:
 terms-schedule-label = Schedule:
 terms-range-separator = { " - " }
 terms-location = Location: { $where }
-terms-address = Address given in this quote: { $address }
-terms-cancellation = Cancellation terms: { $value }
-terms-refund = Refund terms: { $value }
+terms-address-label = Address given in this quote:
+terms-cancellation-label = Cancellation terms:
+terms-refund-label = Refund terms:
 terms-dispute-label = Dispute path:
 
 quote-title = Quote
@@ -121,7 +127,7 @@ request-title = Request
 request-categories = Categories: { $categories }
 request-listing = Listing: { $id }
 request-window-label = Window:
-request-notice = Notice: { $value }
+request-notice-label = Notice:
 
 progress-title = Booking Progress
 progress-status = Status: { $state }
@@ -222,6 +228,11 @@ common-remove = Remove
 
 profile-title = Profile
 profile-display-name = Display Name:
+profile-text-language = Text language
+profile-languages-heading = Languages you speak
+profile-languages-add = Add a language
+profile-languages-move-up = Move up
+profile-languages-remove = Remove
 profile-conversation-address = Conversation Address:
 profile-save = Save Profile
 profile-saving = Saving...
@@ -367,6 +378,12 @@ listing-label-retention = Retention (s)
 listing-label-start = Start
 listing-label-end = End
 listing-label-capacity = Capacity
+listing-text-language = Text language
+listing-translations-heading = Translations by you
+listing-translation-add = Add a translation
+listing-translation-remove = Remove
+listing-label-translation-title = Title in this language
+listing-label-translation-summary = Summary in this language (optional)
 listing-placeholder-slug = slug (optional; derived from the title)
 listing-placeholder-title = title
 listing-placeholder-summary = summary
@@ -428,6 +445,9 @@ listing-error-amount-required = an amount is required unless the model is quote-
 listing-error-quote-only-amount = a quote-only listing must not carry an amount
 listing-error-members-group = a members-only listing needs the group DID
 listing-error-title-required = a title is required
+listing-error-translation-title-required = a translation title is required
+listing-error-translation-same-language = a translation cannot use the listing's own language
+listing-error-translation-duplicate = two translations cannot use the same language
 listing-error-slot-times = a slot needs a start and an end time
 listing-error-slot-order = a slot's end must be after its start
 listing-error-slot-capacity = a slot needs a capacity of at least 1
@@ -449,6 +469,7 @@ messages-compose-placeholder = Write a message
 messages-send-button = Send
 messages-send-failed = Send failed: { $detail }
 request-toggle-button = Send a request
+request-text-language = Text language
 request-description-placeholder = Describe what you need
 request-listing-placeholder = Listing ID (optional)
 # Held by the Rust crate too: a test reads this file and checks this whole
@@ -479,6 +500,7 @@ messages-decline-note-placeholder = Optional note (for yourself only)
 messages-decline-confirm = Confirm Decline
 messages-decline-failed = Decline failed: { $detail }
 common-cancel = Cancel
+quote-text-language = Text language
 quote-scope-placeholder = Scope of work
 quote-currency-placeholder = Currency (e.g. EUR, USD)
 quote-amount-placeholder = Total amount (e.g. 45.00)

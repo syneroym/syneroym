@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { readDemoEnv } from '../demo-nodes';
-import { chooseHubLanguage, hubMessage, loginWithDelegatedKey, pickCategory } from '../hub-helpers';
+import { addListingTranslation, chooseHubLanguage, hubMessage, loginWithDelegatedKey, pickCategory } from '../hub-helpers';
 import { requireEnv, step } from './steps';
 
 const SCRIPT = '20-roym-setup.sh';
@@ -51,5 +51,11 @@ test('Roym languages story: Alice reads her Hub in Hindi, and it stays Hindi', a
     await pickCategory(page.locator('.listing-categories-input'), 'gardening', 'hi');
     const chip = page.locator('.listing-categories-input .picker-chip[data-code="gardening"]');
     await expect(chip).toContainText(hubMessage('hi', 'taxonomy-category-gardening'));
+  });
+
+  await step(page, "Alice's screen: add an English translation to her Hindi listing", async () => {
+    await expect(page.locator('.listing-text-lang')).toHaveValue('hi');
+    await addListingTranslation(page, 'en', 'Garden work', 'hi');
+    await expect(page.locator('.listing-translation-title').last()).toHaveValue('Garden work');
   });
 });

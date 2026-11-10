@@ -10,9 +10,10 @@ use syneroym_app_host::{
 use syneroym_identity::{Identity, substrate};
 use syneroym_roym_core::{
     directory::{AreaMatch, SearchHit},
+    lang::LangTag,
     listing::{
-        LISTING_VERSION, ListingPayload, ListingStatus, ListingVerdict, PaymentModel, PaymentTerms,
-        derive_listing_id, verify_envelope,
+        LISTING_VERSION, ListingPayload, ListingStatus, ListingTranslation, ListingVerdict,
+        PaymentModel, PaymentTerms, derive_listing_id, verify_envelope,
     },
     membership::{
         MAX_REASON_LEN, MAX_RULE_LEN, MEMBERSHIP_CREDENTIAL_VERSION, MODERATION_DECISION_VERSION,
@@ -80,6 +81,23 @@ pub fn sign_test_listing(slug: &str, title: &str, now: u64) -> (String, String, 
     sign_test_listing_with_issuer(&key, &issuer, slug, title, now)
 }
 
+pub fn sign_test_listing_with_translation(
+    slug: &str,
+    title: &str,
+    tr_lang: &str,
+    tr_title: &str,
+    now: u64,
+) -> (String, String, String) {
+    let key = Identity::generate().unwrap();
+    let issuer = substrate::derive_did_key(&key.public_key());
+    let translations = vec![ListingTranslation {
+        lang: LangTag::parse_canonical(tr_lang).expect("valid tr tag"),
+        title: tr_title.to_string(),
+        summary: format!("Summary {tr_title}"),
+    }];
+    sign_test_listing_with_issuer_and_translations(&key, &issuer, slug, title, translations, now)
+}
+
 pub fn max_escaping_summary() -> String {
     let pattern = "text \"quoted\" \\\n ";
     pattern.repeat(2000 / pattern.len())
@@ -98,6 +116,8 @@ pub fn sign_max_payload_listing_with_issuer(
         slug: slug.to_string(),
         title: title.to_string(),
         summary: max_escaping_summary(),
+        lang: LangTag::parse_canonical("en").expect("valid tag"),
+        translations: Vec::new(),
         categories: vec!["services".to_string()],
         conversation_address: format!("{issuer}#conv"),
         status: ListingStatus::Active,
@@ -155,12 +175,25 @@ pub fn sign_test_listing_with_issuer(
     title: &str,
     now: u64,
 ) -> (String, String, String) {
+    sign_test_listing_with_issuer_and_translations(key, issuer, slug, title, Vec::new(), now)
+}
+
+fn sign_test_listing_with_issuer_and_translations(
+    key: &Identity,
+    issuer: &str,
+    slug: &str,
+    title: &str,
+    translations: Vec<ListingTranslation>,
+    now: u64,
+) -> (String, String, String) {
     let listing_id = derive_listing_id(issuer, slug).unwrap();
     let payload = ListingPayload {
         listing_id: listing_id.clone(),
         slug: slug.to_string(),
         title: title.to_string(),
         summary: format!("Summary {slug}"),
+        lang: LangTag::parse_canonical("en").expect("valid tag"),
+        translations,
         categories: vec!["services".to_string()],
         conversation_address: format!("{issuer}#conv"),
         status: ListingStatus::Active,

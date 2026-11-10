@@ -93,6 +93,7 @@ miniapp-demo1-web = { path = "test-components/miniapp-demo1-web" }
 syneroym-test-dual-build-fixture = { path = "test-components/dual-build-fixture" }
 roymctl = { path = "apps/roymctl" }
 syneroym-roym-core = { path = "crates/roym_core" }
+syneroym-text-lang = { path = "crates/text_lang" }
 syneroym-roym-web = { path = "crates/roym_web" }
 syneroym-roym-conversation = { path = "crates/roym_conversation" }
 syneroym-roym-profile = { path = "crates/roym_profile" }
@@ -123,6 +124,7 @@ x509-parser = "0.18"
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
+icu_locale_core = { version = "2.4", default-features = false, features = ["alloc"] }
 # `float_roundtrip` makes parsing a float give back the exact `f64` that was
 # serialized. Signed JSON (message hashes, signatures) needs it: without it
 # many floats change by one bit, and a signature over them fails.
