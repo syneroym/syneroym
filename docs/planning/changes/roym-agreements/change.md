@@ -921,7 +921,7 @@ Each row is a rule from another document that this document changes. The last co
 
 ## Open questions
 
-Each has a recommendation. The owner decides. Questions 1 and 3 to 11 are decided. Question 2 belongs to a C0 ADR. Question 12 is new from review round 1.
+Each has a recommendation. The owner decides. Questions 1 and 3 to 12 are decided. Question 2 belongs to a C0 ADR.
 
 1. **Declared values in a mixed exchange.**
    Owner direction: there is no barter special case. An exchange is any mix of goods, services, EEPs and money. The offering says what its owner accepts in return. Each resource has a value in the unit of account. The totals need not match, and the Hub shows the difference.
@@ -982,6 +982,9 @@ Each has a recommendation. The owner decides. Questions 1 and 3 to 11 are decide
     The M08C `task.md` puts the commitment model in C1, disclosure in C2, and the move of slots to the scheduling extension in C3. C1's shapes have hidden fields, but the encoder is in C2. C1 removes the booking track, but the extension that replaces it is in C3.
     Recommendation: C1 ships the commitment model with plain `DealTerms` (no `_sd` yet) and keeps today's slot path inside `transaction`, behind the new shapes, so booking keeps working. C2 adds `_sd`, the encoder, the hidden fields of every record and `deal.present`. C3 moves slots to the scheduling extension and adds `commitment-failure`.
     Reason: each slice ends with a working system and stays a size one review can cover. The cost is that C2 changes C1's canonical bytes once. The product is not released, so only test fixtures change. The other option is to merge C1 and C2 into one larger slice.
+    Owner decision (2026-11-10): merge C1 and C2 if the merged slice stays manageable; otherwise keep them apart.
+    Applied: keep them apart. C1 alone already carries about 25 acceptance rows (AG-1 to AG-15, AG-22, AG-23, AG-31 to AG-33, AG-35 to AG-37, AG-39, AG-41 to AG-43): every record shape, the state tables, the writer's decision and settlement. C2 adds 8 more (AG-17 to AG-21, AG-34, AG-38, AG-40) and a second hard area, the RFC 9901 encoding and its test vectors. One review should not have to check the state machine and the byte encoding at the same time.
+    Check again when the C1 slice plan is written: if C1's plan turns out small (for example, if the settlement records or `deal-decline` move to a later slice), fold C2 into it.
 
 ## What the C0 ADRs must decide
 
@@ -1005,7 +1008,7 @@ This document does not write the two ADRs. They must decide:
 
 - [ ] Owner review of this draft and the open questions.
 - [ ] Write the two C0 ADRs (owner decides).
-- [ ] C1: commitment model with plain `DealTerms`, records, states and transition tables, the writer's decision, the version check, `deal-decline`, per-commitment settlement records. Today's slot path stays inside `transaction` behind the new shapes. Replace today's shapes in place. (Slice cut: open question 12.)
+- [ ] C1: commitment model with plain `DealTerms`, records, states and transition tables, the writer's decision, the version check, `deal-decline`, per-commitment settlement records. Today's slot path stays inside `transaction` behind the new shapes. Replace today's shapes in place. (Slice cut: open question 12; kept apart from C2.)
 - [ ] C2: `_sd` and the hidden fields of every record, the disclosure encoder and verifier, `deal.present`; disclosures in the card wrapper and the backup bundle.
 - [ ] C3 (with the extensions change): move slots to the scheduling extension; the reserve, confirm and release calls at the points above; `commitment-failure`.
 - [ ] C6: mixed exchanges in the Hub (totals and difference), the event log, `eventlog.*`, `statement.export` with the EEP section, the Hub's statement screen.
