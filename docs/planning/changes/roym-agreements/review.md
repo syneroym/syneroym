@@ -167,7 +167,7 @@ I do not re-decide any question. These notes are only about the reasons.
 
 ### Findings
 
-- [ ] **P1 — blocker.** *Where:* change.md:148, :464, :481, :705, :747; AG-14.
+- [x] **P1 — blocker.** *Where:* change.md:148, :464, :481, :705, :747; AG-14.
   Code: [ledger.rs:116](../../../../crates/roym_transaction/src/app/ledger.rs#L116),
   [ledger.rs:142](../../../../crates/roym_transaction/src/app/ledger.rs#L142),
   [data-layer.wit:161](../../../../crates/wit_interfaces/wit/data-layer/data-layer.wit#L161),
@@ -197,9 +197,9 @@ I do not re-decide any question. These notes are only about the reasons.
   If the owner wants the scheduling extension linked into `transaction` as a
   library with rows in the `ledger` collection, say that instead, and update
   EX-17 and change.md:705.
-  *Status:* Open.
+  *Status:* Fixed (f638722b). Agreed. New section "The writer's decision": (1) checks, (2) fence row `decision:<quote_id>` with state `deciding`, (3) idempotent local reserves, (4) confirm, countersign under a `countersign:<agreement>` unique insert (so a repeat never signs twice), then put the row to `agreed` or `not-formed`. Every sync finishes `deciding` rows. Facts row and AG-14 updated. Linking scheduling into `transaction` is listed as a rejected option (against EX-17).
 
-- [ ] **P2 — major.** *Where:* AG-12 (change.md:109); "Deal and agreement"
+- [x] **P2 — major.** *Where:* AG-12 (change.md:109); "Deal and agreement"
   table (change.md:426-438); change.md:464.
   *Problem:* the named conflicts have no carrier, and `accepted` has no
   defined way out on the counterparty's node. All traffic is cards
@@ -225,9 +225,9 @@ I do not re-decide any question. These notes are only about the reasons.
   a method error. (d) Say that a counterparty cannot withdraw an acceptance
   (or define how). Reword AG-12's test: two-node, and the counterparty's
   node shows `not-formed` with the reason.
-  *Status:* Open.
+  *Status:* Fixed (f638722b). Agreed with (a) to (d). New "Reason codes" table; the writer answers with a `not-formed` snapshot, `seq` 1. `expired` is computed on each node, and a countersigned half signed before the expiry still wins (AG-43). `agreement.accept` refuses a non-latest version, and the Hub shows "Accept" only on the latest card. `accepted` cannot be withdrawn or declined; the expiry bounds the wait. AG-12 reworded.
 
-- [ ] **P3 — major.** *Where:* change.md:24, :344-345, :464-465; the state
+- [x] **P3 — major.** *Where:* change.md:24, :344-345, :464-465; the state
   diagram (change.md:418-424). Code:
   [quote_ops.rs:605-611](../../../../crates/roym_transaction/src/app/quote_ops.rs#L605).
   *Problem:* the key `decision:<quote_id>` plus "no revision after
@@ -249,9 +249,9 @@ I do not re-decide any question. These notes are only about the reasons.
   new quote id (or that `not-formed` does not take the decision row); and
   whether two quote ids for one enquiry may both form agreements. Then define
   "deal" to match. Add these to AG-10 and AG-12.
-  *Status:* Open.
+  *Status:* Fixed (f638722b). Agreed. Chose the simplest rule, in a new "Deal rules" section: every end (`declined`, `expired`, `not-formed`, `cancelled`, `closed`) ends the quote id, `quote.set` answers `quote-ended`, and a new offer is a new quote id (one click in the Hub). So the fence row is never reused. A decline of any version ends the quote id. Several quote ids per enquiry may each form an agreement. "Deal" is redefined as one quote id. New AG-35.
 
-- [ ] **P4 — major.** *Where:* AG-7, AG-8 (change.md:103-104); snapshot
+- [x] **P4 — major.** *Where:* AG-7, AG-8 (change.md:103-104); snapshot
   `missing_half` (change.md:365); commitment table and rules
   (change.md:446-456); AG-16.
   *Problem:* the failure ends do not show "which party failed which
@@ -275,9 +275,9 @@ I do not re-decide any question. These notes are only about the reasons.
   simple rule: when any commitment ends `failed`, every commitment that is
   still `promised` or `payment-requested` ends `cancelled` with reason
   `other-commitment-failed`, written by the writer. Add a test.
-  *Status:* Open.
+  *Status:* Fixed (f638722b). Agreed with both. (a) `missing_half` became `claimed: bool`, and AG-8 gives the two Hub wordings. (b) When a commitment fails, every commitment still `promised` or `payment-requested` becomes `cancelled` with `other-commitment-failed` (AG-36).
 
-- [ ] **P5 — major.** *Where:* "Where the event log lives" (change.md:579-583);
+- [x] **P5 — major.** *Where:* "Where the event log lives" (change.md:579-583);
   `EventLogEntry.at_secs` (change.md:592); the statement rows
   (change.md:627-628); AG-27 to AG-29.
   Code: [data-layer.wit:161-174](../../../../crates/wit_interfaces/wit/data-layer/data-layer.wit#L161).
@@ -302,9 +302,9 @@ I do not re-decide any question. These notes are only about the reasons.
   the event (the settling half; the countersigned half for
   `agreement-formed`). Statement periods and dates use it. (c) Keep
   `recorded_at_secs` for the cursor. Say this in AG-29 and in Q10.
-  *Status:* Open.
+  *Status:* Fixed (f638722b). Agreed. (a) Kept the decision, changed the reason: completeness comes from running the derive step on every sync, not from an atomic append. (b) Added `occurred_at_secs` from the signed record; statement periods and dates use it. (c) `recorded_at_secs` is the `eventlog.list` cursor. AG-29 and Q10's reason updated.
 
-- [ ] **P6 — major.** *Where:* AG-15 (change.md:113); "Reserve, confirm and
+- [x] **P6 — major.** *Where:* AG-15 (change.md:113); "Reserve, confirm and
   release" (change.md:478-483); "Commitment failure" (change.md:374-384);
   AG-8; who-signs table (change.md:411).
   *Problem:* the draft never says which node owns the reservation of a
@@ -321,9 +321,9 @@ I do not re-decide any question. These notes are only about the reasons.
   "counterparty"` (visible), or the rule "the giver always reserves". Then
   use that party in AG-15, AG-16, `commitment-failure` and the who-signs
   table. Remove "or it made a bid" from AG-15.
-  *Status:* Open.
+  *Status:* Fixed (f638722b). Agreed. Chose the rule over a field: the giver of a commitment owns its reservation (new "Who reserves" part). A receiver-owned reservation is not in v1; M08F adds `reserved_by` if it needs one. AG-15, AG-16, `commitment-failure` and the who-signs table use this. "Or it made a bid" removed.
 
-- [ ] **P7 — major.** *Where:* change.md:10; `## Deviations` (change.md:857,
+- [x] **P7 — major.** *Where:* change.md:10; `## Deviations` (change.md:857,
   empty); and the places below.
   *Problem:* the overview says each module document "must follow the rules
   here, or record a deviation". The draft says differences are "listed in the
@@ -352,9 +352,9 @@ I do not re-decide any question. These notes are only about the reasons.
   one row each: the rule, what this document does, why, and which document
   is updated at close-out. For VX-45, name the obligations document as the
   owner of EEP events, and say that the statement joins both logs.
-  *Status:* Open.
+  *Status:* Fixed (f638722b). Agreed. New section "Differences from the overview and sibling changes", one row per difference with the document updated at close-out. Line 10 now points at it. The `_sd_alg` row is gone, because P12's fix removes that difference. `## Deviations` stays empty, because it is for code-against-plan differences during implementation.
 
-- [ ] **P8 — major.** *Where:* "Showing a deal to a third party"
+- [x] **P8 — major.** *Where:* "Showing a deal to a third party"
   (change.md:542-554); AG-18.
   *Problem:* VX-11 says "a party can show a **quote** or an agreement with
   chosen fields hidden". `Presentation.records` holds receipt halves, the
@@ -366,9 +366,9 @@ I do not re-decide any question. These notes are only about the reasons.
   example, `deal.present`). When a quote and a receipt half are both present,
   the verifier checks that their `terms` are equal. Add AG-18b: show a quote
   with the price hidden and the scope shown, unit and two-node.
-  *Status:* Open.
+  *Status:* Fixed (f638722b). Agreed. `Presentation.records` may hold a quote. The method is renamed `deal.present` (and `deal.verify-presentation`). A quote and receipt halves must have equal `terms`. New AG-34.
 
-- [ ] **P9 — major.** *Where:* "Tasks" (change.md:851-854);
+- [x] **P9 — major.** *Where:* "Tasks" (change.md:851-854);
   [M08C task.md](../../milestones/M08C-deal-core-and-extensions/task.md),
   slices C1 to C3.
   *Problem:* the slices do not fit the doc as cut. (a) C1 "replaces today's
@@ -386,9 +386,9 @@ I do not re-decide any question. These notes are only about the reasons.
   today's slot path inside `transaction` behind the new shapes; C2 adds
   `_sd`, disclosures and the per-commitment hidden fields; C3 moves slots out
   and adds `commitment-failure`. Or merge C1 and C2. Ask the owner which.
-  *Status:* Open.
+  *Status:* Fixed (f638722b), as an owner question. Agreed that the cut does not fit. The Tasks list now follows the reviewer's first option (C1 plain `DealTerms` and today's slot path; C2 adds `_sd`; C3 moves slots and adds `commitment-failure`), and new open question 12 asks the owner to confirm it or merge C1 and C2. `task.md` is not edited here; the differences table names it.
 
-- [ ] **P10 — major.** *Where:* "Ids" (change.md:199); `commitment_id`
+- [x] **P10 — major.** *Where:* "Ids" (change.md:199); `commitment_id`
   (change.md:256); the snapshot (change.md:362); rejected option
   (change.md:756).
   *Problem:* `commitment_id` is chosen by the quote author, is
@@ -403,9 +403,9 @@ I do not re-decide any question. These notes are only about the reasons.
   `quote.set` refuses any other form. The Hub shows what changed between
   versions from the disclosed `description`, not from the id. Drop "the
   author should keep a commitment's id across versions".
-  *Status:* Open.
+  *Status:* Fixed (f638722b). Agreed. The service assigns `c1` to `c16` by position, and `quote.set` and `verify_quote` refuse anything else (AG-37). The "keep ids across versions" advice is removed. Also listed as a rejected option.
 
-- [ ] **P11 — major.** *Where:* "Progress snapshot" (change.md:349, :360);
+- [x] **P11 — major.** *Where:* "Progress snapshot" (change.md:349, :360);
   "What is hidden" (change.md:493); AG-8 (change.md:104); presentation
   verifier (change.md:551). Code:
   [booking.rs:326-328](../../../../crates/roym_core/src/booking.rs#L326),
@@ -428,9 +428,9 @@ I do not re-decide any question. These notes are only about the reasons.
   checked". (b) make `cancel_reason` a reason code in the snapshot, and move
   the author's text into a hidden field of a signed record, or say plainly
   that it is visible and the Hub warns the author.
-  *Status:* Open.
+  *Status:* Fixed (f638722b). Agreed. (a) The binding rule is stated in "Progress snapshot" and in the presentation verifier: issuer equals the `signer_did` of the author's receipt half or of the quote; otherwise "writer not checked", also after a key change (AG-38). (b) `cancel_reason` is now a `CancelReason` code; the author's own words go in the conversation as a normal message.
 
-- [ ] **P12 — minor.** *Where:* change.md:497, :505, :518; AG-19.
+- [x] **P12 — minor.** *Where:* change.md:497, :505, :518; AG-19.
   *Problem:* the SD-JWT reference is out of date. It is RFC 9901,
   "Selective Disclosure for JSON Web Tokens", November 2025 (checked on
   rfc-editor.org). Also: RFC 9901 section 4.1.1 says `_sd_alg` MUST appear
@@ -442,9 +442,9 @@ I do not re-decide any question. These notes are only about the reasons.
   record: our verifier accepts only SHA-256 anyway, and an absent `_sd_alg`
   means SHA-256 in the RFC. This removes a deviation. Label the 16-byte salt
   and the sorted `_sd` as "our rules on top of RFC 9901".
-  *Status:* Open.
+  *Status:* Fixed (f638722b). Agreed. Cites RFC 9901; `unverified` removed. `_sd_alg` dropped from every record. The 16-byte salt and the sorted `_sd` are marked "Roym rule".
 
-- [ ] **P13 — minor.** *Where:* AG-19 (change.md:118); encoding step 2
+- [x] **P13 — minor.** *Where:* AG-19 (change.md:118); encoding step 2
   (change.md:502).
   *Problem:* AG-19 says "our digest function gives the result of the worked
   example in the SD-JWT specification". The RFC's example disclosure is
@@ -457,9 +457,9 @@ I do not re-decide any question. These notes are only about the reasons.
   is `X9yH0Ajrdm1Oij4tWso9UzzKJvPoDxwmuEcO3XAdRC0` (RFC 9901, section
   4.2.3); (2) our verifier accepts that disclosure as written; (3) our own
   encoder's output for a fixed salt is pinned by our own vector.
-  *Status:* Open.
+  *Status:* Fixed (f638722b), with one change to the proposal. AG-19 is split into the RFC vector (digest checked locally: it matches), the decoder, our own vector, and the refusals. Part (2) needed a fix: the RFC's example salt is 23 characters, not 16 bytes, so our decoder only requires the salt to be a string. The 16-byte rule moved to the Roym record check (AG-21, "Verifying").
 
-- [ ] **P14 — minor.** *Where:* "Settlement records" (change.md:390-400);
+- [x] **P14 — minor.** *Where:* "Settlement records" (change.md:390-400);
   `agreement.present` (change.md:691).
   *Problem:* the settlement records are not exact enough to build. (a) The
   table lists hidden fields, but not where their `_sd` list sits (top level
@@ -477,9 +477,9 @@ I do not re-decide any question. These notes are only about the reasons.
   records. Define `role` as `giver | receiver`. Say whether the DIDs and
   corrections stay. Give the path syntax, for example
   `terms.scope` and `terms.commitments[c2].declared_value_minor`.
-  *Status:* Open.
+  *Status:* Fixed (f638722b). Agreed. The three settlement payloads are now code blocks, with `_sd` at the top level and every hidden field always present. `role` is `giver | receiver`. The two DIDs stay. `supersedes` stays on `payment-acknowledgement`, per commitment. The field path syntax is given under "Showing a deal to a third party".
 
-- [ ] **P15 — minor.** *Where:* "Facts checked in the code" (change.md:147,
+- [x] **P15 — minor.** *Where:* "Facts checked in the code" (change.md:147,
   :148); track window (change.md:457).
   Code: [agreement_ops.rs:373-377](../../../../crates/roym_transaction/src/app/agreement_ops.rs#L373),
   [ledger.rs:105-114](../../../../crates/roym_transaction/src/app/ledger.rs#L105),
@@ -497,9 +497,9 @@ I do not re-decide any question. These notes are only about the reasons.
   *Fix:* correct the three facts. Say that `agreement.accept` on the
   writer's node is refused (or is a manual countersign of a filed
   acceptance). Mark the `max` as a change.
-  *Status:* Open.
+  *Status:* Fixed (f638722b). Agreed. The three facts are corrected and two facts are added (decline cleared by a new version; the track window today). `agreement.accept` on the writer's node is refused with `writer-countersigns` (AG-41). The `max` is marked as a change, with the reason.
 
-- [ ] **P16 — minor.** *Where:* "Text fields are language-tagged"
+- [x] **P16 — minor.** *Where:* "Text fields are language-tagged"
   (change.md:188-198); AG-32.
   *Problem:* `LocalText` gives each free-text field its own translation
   list. The multilingual change gives each record one list, "with the same
@@ -512,9 +512,9 @@ I do not re-decide any question. These notes are only about the reasons.
   has the same set of translation languages. Then `viewed_lang` stays one
   value, and `bestVersion` still works per record. Record this in the
   deviations section (P7).
-  *Status:* Open.
+  *Status:* Fixed (f638722b). Agreed. One set of translation languages per record (AG-39). Listed in the differences table.
 
-- [ ] **P17 — minor.** *Where:* `details` limit (change.md:265); "Where
+- [x] **P17 — minor.** *Where:* `details` limit (change.md:265); "Where
   disclosures travel" (change.md:526).
   *Problem:* `details` is "inside the 64 KiB payload limit". But `details`
   is a hidden field, so the payload holds only its digest. Its size is
@@ -525,9 +525,9 @@ I do not re-decide any question. These notes are only about the reasons.
   *Fix:* give `details` its own byte limit (for example 8 KiB of encoded
   disclosure). Give one total limit for all disclosures of a record, and
   have the Hub show the size against it in the quote form.
-  *Status:* Open.
+  *Status:* Fixed (f638722b). Agreed. `details` disclosure at most 8 KiB, all disclosures of one record at most 96 KiB, both encoded. The Hub shows the size before signing (AG-40). C2's plan must check the 96 KiB against the real envelope size; the doc says so.
 
-- [ ] **P18 — minor.** *Where:* AG-3 (change.md:98).
+- [x] **P18 — minor.** *Where:* AG-3 (change.md:98).
   *Problem:* "build both quote forms from the same terms and compare the
   receipts byte for byte" cannot pass. The two quotes differ in `answers`,
   so their `record_id`s differ, and the receipt's `quote_record_id` and
@@ -535,9 +535,9 @@ I do not re-decide any question. These notes are only about the reasons.
   *Fix:* "with a fixed salt source, the two receipt payloads are equal
   except `quote_record_id`, and the two first snapshots are equal except
   `agreement`".
-  *Status:* Open.
+  *Status:* Fixed (f638722b). Agreed. AG-3's test uses the reviewer's wording.
 
-- [ ] **P19 — minor.** *Where:* AG-26 (change.md:128).
+- [x] **P19 — minor.** *Where:* AG-26 (change.md:128).
   *Problem:* "no other code path refuses" cannot be checked by a unit test.
   The row also misses a rule that one node can test: the agreement writer
   marks an `eep-transfer` commitment `refused` only when it holds the
@@ -547,9 +547,9 @@ I do not re-decide any question. These notes are only about the reasons.
   EEP, a signed refusal with one of them, or an internal error (a table test
   over the handler's inputs); (b) service, on the writer's node: an unsigned
   refusal, or one with an unknown reason, leaves the commitment `endorsed`.
-  *Status:* Open.
+  *Status:* Fixed (f638722b). Agreed. AG-26 is split into (a) reference code and (b) a writer-side service test.
 
-- [ ] **P20 — minor.** *Where:* AG-6 (change.md:102); commitment table
+- [x] **P20 — minor.** *Where:* AG-6 (change.md:102); commitment table
   (change.md:446-456).
   *Problem:* AG-6 asks for a table test "over every (state, event) pair",
   but the draft never lists the events (giver's half, receiver's half,
@@ -558,9 +558,9 @@ I do not re-decide any question. These notes are only about the reasons.
   cannot happen to a currency commitment.
   *Fix:* add an event list and one transition table per kind, with the
   refused pairs. Remove `failed` from `currency` until it has a reason.
-  *Status:* Open.
+  *Status:* Fixed (f638722b). Agreed. An event list and one transition table for each M08C kind (`fulfilment`, `currency`), with refused pairs. `failed` removed from `currency`. The obligations document adds the EEP tables (AG-6).
 
-- [ ] **P21 — minor.** *Where:* AG-10 (change.md:106); `declined` row
+- [x] **P21 — minor.** *Where:* AG-10 (change.md:106); `declined` row
   (change.md:433); `requested` (change.md:428).
   *Problem:* AG-10 says "the writer moves the deal to `declined`". The state
   table says each node writes it, from the signed decline. Also: the
@@ -569,9 +569,9 @@ I do not re-decide any question. These notes are only about the reasons.
   *Fix:* use the table's wording in AG-10. Add "the counterparty withdraws
   its enquiry" (a `deal-decline` of its own enquiry), or say it is not
   allowed.
-  *Status:* Open.
+  *Status:* Fixed (f638722b), with one pushback. AG-10 now uses the table's wording, and the counterparty can withdraw its own enquiry with a `deal-decline`. Pushback: no automatic end for an unanswered enquiry. It is like an unanswered message, it holds no reservation, and the person can withdraw it. An expiry rule would add a clock with nothing to release.
 
-- [ ] **P22 — minor.** *Where:* change.md:726; AG-21 (change.md:120).
+- [x] **P22 — minor.** *Where:* change.md:726; AG-21 (change.md:120).
   *Problem:* (a) "Their places in the record exist now, so the canonical
   bytes do not change again later" is not true for `listing_id`, which
   "becomes the intent id when M08D renames listings". (b) AG-21 "a salt used
@@ -580,9 +580,9 @@ I do not re-decide any question. These notes are only about the reasons.
   *Fix:* (a) name the field `intent_id` now, or drop the claim. (b) say
   "inside one record"; across versions is the author's duty and is not
   checked.
-  *Status:* Open.
+  *Status:* Fixed (f638722b), with one pushback. (a) Dropped the claim rather than naming the field `intent_id` now: M08C still has listings, and the product is not released, so M08D renames it in place. (b) Agreed: "inside one record"; reuse across versions is not checked (AG-21).
 
-- [ ] **P23 — minor.** *Where:* "How the counterparty's node files the
+- [x] **P23 — minor.** *Where:* "How the counterparty's node files the
   writer's records" (change.md:466-470); "Who appends" (change.md:612).
   *Problem:* (a) after a writer restores an old backup, its next snapshot
   can reuse a `seq` the counterparty already holds. The counterparty keeps
@@ -595,9 +595,9 @@ I do not re-decide any question. These notes are only about the reasons.
   conversation during sync and continues from that `seq`. (b) "the
   counterparty derives events by comparing the new snapshot with the one it
   held".
-  *Status:* Open.
+  *Status:* Fixed (f638722b). Agreed with both. The writer continues from the highest `seq` it finds in the conversation or holds (AG-42). The counterparty derives events by comparing the new snapshot with the one it held.
 
-- [ ] **P24 — minor.** *Where:* M08C
+- [x] **P24 — minor.** *Where:* M08C
   [task.md](../../milestones/M08C-deal-core-and-extensions/task.md) "Demo"
   and slice C6; change.md:21.
   *Problem:* `task.md` names the demo "request, quote and agreement", and
@@ -605,4 +605,21 @@ I do not re-decide any question. These notes are only about the reasons.
   not use "barter". This document cannot edit `task.md`.
   *Fix:* list both words in the deviations section (P7), so the M08C plan
   uses "enquiry" and "mixed exchanges".
-  *Status:* Open.
+  *Status:* Fixed (f638722b). Agreed. Both words are in the differences table, with `task.md` as the document to update.
+
+## Fix session round 1 — Claude Opus 5.5 (Claude Code), 2026-11-10
+
+Fixes are in `f638722b` on `claude/m08c-agreements-change-doc-1708e9`.
+All 24 findings are fixed. Three take a different route from the
+proposed fix, with the reason in the item's status: P13 (the RFC's
+example salt is not 16 bytes), P21 (no automatic end for an enquiry)
+and P22a (no early rename to `intent_id`). P9 is now open question 12
+for the owner.
+
+Not done here: the reviewer suggests a backlog row now for path 2 of
+the `ledger.rs:52` bug (accepting an old version), because it is a bug
+in today's code. That is the owner's call. This change only plans the
+fix for M08C.
+
+New AG rows: AG-34 to AG-43. Ids were appended, not renumbered, so
+this file's references stay valid.
