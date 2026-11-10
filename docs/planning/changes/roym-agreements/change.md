@@ -7,7 +7,7 @@ demo:
 
 *Reader: developers who plan and build M08C (deal core and extensions), and the project owner, who makes the product decisions listed under [Open questions](#open-questions).*
 
-This is the **agreements module** change document of the [Roym Value Exchange](../roym-value-exchange/change.md) (the overview). The overview gives the rules. This document gives the exact formats: the records, their fields and limits, the states, the disclosure encoding, the event log, the statement and the methods. It follows the overview's rules. Where it refines or differs from the overview, it says so, and the difference is listed in the report to the owner, not fixed in the overview.
+This is the **agreements module** change document of the [Roym Value Exchange](../roym-value-exchange/change.md) (the overview). The overview gives the rules. This document gives the exact formats: the records, their fields and limits, the states, the disclosure encoding, the event log, the statement and the methods. It follows the overview's rules. Where it refines or differs from the overview or a sibling change, the difference is listed in [Differences from the overview and sibling changes](#differences-from-the-overview-and-sibling-changes), with the document that is updated at close-out.
 
 Related documents:
 
@@ -21,7 +21,7 @@ Related documents:
 Terms from the overview (participant, resource, resource kind, commitment, commitment kind, declared value, unit of account, enquiry, bid, quote author, agreement, economic event, event log, statement, EEP) keep their meaning. This document does not use the overview's term "barter". Every agreement has one shape, with any mix of resources on each side, and an agreement without money follows no special rule. New terms here:
 
 - **Hub:** the Roym app screens a participant uses. Each participant's own node serves them, from its `web` service (`crates/roym_web/ui`). The Hub is not a shared server or meeting place. When this document says "the Hub shows", it means the participant's own app computes and shows it.
-- **Deal:** one enquiry, the quotes that answer it, and the agreement if one forms. A deal is named by its quote id (`quo_…`), which stays the same across quote versions.
+- **Deal:** one quote id (`quo_…`) with all its versions, the enquiry it answers, and the agreement if one forms. The quote id stays the same across versions. One enquiry can lead to several deals, for example two different offers, and each deal can form its own agreement. See [Deal rules](#deal-rules).
 - **Agreement id:** the `record_id` (`rec_…`) of the quote version that both parties accepted. Today's code already uses this value as the agreement id (`payment.agreement`, `fulfilment.agreement`).
 - **Writer:** the quote author's `transaction` service. It is the only node that writes the agreement's state.
 - **Progress snapshot:** a signed record, written only by the writer, that states the agreement's state and each commitment's state at one moment. It replaces today's `booking-progress`.
@@ -31,7 +31,7 @@ Terms from the overview (participant, resource, resource kind, commitment, commi
 - **Disclosure:** the salt, the field name and the value of one hidden field, encoded as one string. Whoever holds a disclosure can show that field to someone else. The format is SD-JWT's (see [Selective disclosure](#selective-disclosure)).
 - **Digest:** the hash of one disclosure. The signed record holds the digests.
 - **Presentation:** what a party gives a third party to show a deal: signed records plus the disclosures it chooses.
-- **Reservation:** a short hold on a resource (for example a seat in a slot), taken by the resource owner's node. See [Roym extensions](../roym-extensions/change.md).
+- **Reservation:** a short hold on a resource (for example a seat in a slot), taken by the node of the party that gives the resource (see [Who reserves](#who-reserves)). See [Roym extensions](../roym-extensions/change.md).
 
 ## Problem
 
@@ -95,29 +95,38 @@ Kinds of test:
 | **Participants and resources** | | |
 | AG-1 | One identity is the quote author of one deal and the counterparty of another, on the same node, at the same time, with no role setting (VX-1). | Two-node: A quotes B, and B quotes A; both agreements reach `agreed`. |
 | AG-2 | Each built resource kind can be given by either party: for every pair (giver, resource kind) the quote validator accepts the commitment (VX-2). M08C builds `service-in-slot`, `goods-or-service` and `currency`. M08E adds `eep` to the same table. | Unit: a table test over giver × resource kind. Two-node: a service-for-service agreement with no currency commitment that closes. |
-| AG-3 | A quote that answers a want and a quote that answers an enquiry produce the same agreement receipt and the same progress snapshot. The receipt does not carry the `answers` field (VX-6). M08C builds only enquiries. M08F adds the Want-Bid end-to-end test. | Unit: build both quote forms from the same terms and compare the receipts byte for byte. |
+| AG-3 | A quote that answers a want and a quote that answers an enquiry produce the same agreement receipt and the same progress snapshot. The receipt does not carry the `answers` field (VX-6). M08C builds only enquiries. M08F adds the Want-Bid end-to-end test. | Unit: build both quote forms from the same terms, with a fixed salt source. The two receipt payloads are equal except `quote_record_id`, and the two first snapshots are equal except `agreement`. |
 | **Agreements and commitments** | | |
 | AG-4 | One agreement holds 1 to 16 commitments. Each names its giver, its resource kind, its commitment kind and its declared value. All declared values are in the agreement's one currency (VX-7). | Unit: validation table (0, 1, 16, 17 commitments; missing fields). Two-node: an agreement with a service, a currency commitment and a goods commitment forms and closes. |
+| AG-37 | The service assigns commitment ids `c1` to `c16`, by position in the list. `quote.set` and `verify_quote` refuse any other id. The quote author never chooses one. | Unit. |
 | AG-5 | No commitment carries its own currency. A quote with a currency that `money::currency_minor_exponent` does not know is refused (one currency per agreement). | Unit. |
-| AG-6 | Each commitment moves only through the states of its kind, and every kind has a failure end. The agreement closes only when every commitment is final (VX-8). | Unit: a table test of the pure transition function over every (state, event) pair, for every kind. |
-| AG-7 | A commitment that has not settled when its track window ends becomes `ended-unconfirmed`. The progress snapshot names which party's half is missing (VX-8, VX-12). | Service: controllable clock. |
-| AG-8 | Each final failure state names the party it is about: `ended-unconfirmed` names the role whose half is missing, and `failed` names the giver and a reason code. A reader can see this with no disclosures (VX-12). | Unit: verify a presentation that holds only the progress snapshot and the receipt halves. |
+| AG-6 | Each commitment moves only through the states of its kind, and every kind has a failure end. The agreement closes only when every commitment is final (VX-8). | Unit: a table test of the pure transition function over every (state, event) pair of the transition tables in [Commitments](#commitments), for every kind built in M08C. The obligations document adds the EEP kinds' tables. |
+| AG-7 | A commitment that has not settled when its track window ends becomes `ended-unconfirmed`. The progress snapshot says whether the giver's half exists (`claimed`) (VX-8, VX-12). | Service: controllable clock. |
+| AG-8 | Each final failure state says what is known with no disclosures: `ended-unconfirmed` carries `claimed`, and `failed` and `cancelled` carry a reason code. The Hub words the two `ended-unconfirmed` cases differently: "the giver says it delivered; the receiver did not confirm" (`claimed: true`) and "nobody recorded anything" (`claimed: false`) (VX-12). | Unit: verify a presentation that holds only the progress snapshot and the receipt halves. |
 | AG-9 | Only the quote author cancels, and only while no half of any commitment exists. A later cancel is refused with `commitment-moved`. | Service. |
-| AG-10 | Either party can decline: the counterparty declines a quote, the quote author declines an enquiry. The decline is a signed `deal-decline` record. The writer moves the deal to `declined`. A repeated decline returns the same record. | Two-node. |
+| AG-10 | Either party can decline with a signed `deal-decline` record: the counterparty declines a quote or withdraws its own enquiry, and the quote author declines an enquiry. Each node moves the deal (or the enquiry) to `declined` when it files the signed decline. A decline of any version ends the whole quote id. A repeated decline returns the same record. | Two-node. |
 | **Single writer** | | |
 | AG-11 | Only the writer writes the agreement state. The counterparty's node files a progress snapshot only when the writer signed it, and only when its `seq` is higher than the one it holds (VX-9). | Unit and service. |
-| AG-12 | A second, conflicting change gets a named conflict, never a merge: accepting a quote version that a newer version superseded → `quote-superseded`; accepting a second version of a quote that already formed an agreement → `quote-already-agreed`; two snapshots with the same `seq` and different content → `progress-fork`, and the first one is kept (VX-9). | Two-node for the first two; unit for the third. |
+| AG-12 | A second, conflicting change gets a named conflict, never a merge. `agreement.accept` of a version that is not the latest one the counterparty holds answers `quote-superseded`. When the writer refuses an acceptance it files, it sends a snapshot with `seq` 1, state `not-formed` and a code from [Reason codes](#reason-codes). Two snapshots with the same `seq` and different content → `progress-fork`, and the first one is kept (VX-9). | Service for the method error. Two-node: the counterparty accepts a superseded version through a test hook that skips the method check, and its node then shows `not-formed` with `quote-superseded`. Unit for the fork. |
+| AG-35 | Every end of a deal ends its quote id. After `declined`, `expired`, `not-formed`, `cancelled` or `closed`, `quote.set` refuses a new version of that quote id with `quote-ended`. A new offer is a new quote id. Two quote ids that answer one enquiry may both form agreements. | Service. |
+| AG-43 | `quoted → expired` and `accepted → expired` are computed on each node from `quote_expires_at_secs`. The writer refuses to countersign after the expiry by its own clock (`not-formed`, `quote-expired`). A countersigned half whose `issued_at_secs` is before the expiry moves the deal to `agreed`, even when it arrives after the expiry. | Service with a controllable clock. |
+| AG-41 | `agreement.accept` on the quote author's own node is refused with `writer-countersigns`. The counterparty always signs first. The writer countersigns only in `transaction.sync`. | Service. |
 | AG-13 | Every state-changing call is idempotent. A repeated `agreement.accept`, `fulfilment.sign`, `payment.acknowledge` or `deal.decline` returns the record already made (today's `D-C8-6`). | Service. |
+| AG-42 | After a restore from an old backup, the writer's next snapshot has a `seq` higher than any of its own snapshots in the conversation. | Service: restore an old backup, then sync. |
 | **Reserve, confirm, release (agreement side)** | | |
-| AG-14 | When the writer owns a reserved resource, it reserves it under its own fence when it files the counterparty's acceptance. Two counterparties who accept quotes for the last seat: one agreement reaches `agreed`, the other ends `not-formed` with reason `slot-taken` (VX-10, EX-6). | Two-node: today's booking race test, moved to the scheduling extension. |
-| AG-15 | When the counterparty owns a reserved resource (for example it gives a service in a booked slot, or it made a bid), its node reserves it before it signs its acceptance. If the reserve fails, it signs nothing, and `agreement.accept` answers `reserve-failed` with the extension's reason (VX-10, EX-5). | Service. |
-| AG-16 | If a non-writer owner's confirm is refused after its reservation expired and the resource was given away, the owner's node sends a signed `commitment-failure`. The writer marks that commitment `failed` with reason `reservation-lost` (EX-22). | Two-node with a controllable clock. |
+| AG-14 | When the writer gives a resource that needs a reservation, it takes the fence and reserves in the order of [The writer's decision](#the-writers-decision). Two counterparties who accept quotes for the last seat: one agreement reaches `agreed`, the other ends `not-formed` with reason `slot-taken` (VX-10, EX-6). A crash after any step ends, after the next sync, in the same state as no crash. | Two-node: today's booking race test, moved to the scheduling extension. Service: a test host that fails the next write after each step. |
+| AG-15 | When the counterparty gives a resource that needs a reservation (for example a service in a booked slot), its node reserves it before it signs its acceptance. If the reserve fails, it signs nothing, and `agreement.accept` answers `reserve-failed` with the extension's reason (VX-10, EX-5). | Service. |
+| AG-16 | If the counterparty's confirm is refused after its reservation expired and the resource was given away, its node sends a signed `commitment-failure`. The writer marks that commitment `failed` with reason `reservation-lost` (EX-22). | Two-node with a controllable clock. |
+| AG-36 | When a commitment ends `failed`, the writer ends every other commitment of the agreement that is still `promised` or `payment-requested` as `cancelled`, with reason `other-commitment-failed`, in the same snapshot. A commitment that already has a half keeps its own path. | Unit for the transition tables; service for the snapshot. |
 | **Selective disclosure** | | |
 | AG-17 | The quote, the agreement receipt and the settlement records carry no hidden value in plain form. A test serialises each signed payload and checks that no hidden value appears in it (VX-11). | Unit. |
 | AG-18 | A party shows its agreement to a third party with the price hidden and the scope shown. The third party's node verifies both receipt halves and the shown field (VX-11). | Unit, and two-node with a third node that only verifies. |
-| AG-19 | The encoder and verifier follow SD-JWT: our digest function gives the result of the worked example in the SD-JWT specification. The verifier refuses a disclosure whose digest is not in the record, a digest that appears twice, a name that is not a hidden field of that object, a name that equals a visible field, and a value with a non-integer number. | Unit: test vectors. |
+| AG-34 | A party shows a quote, before any agreement, with the price hidden and the scope shown. The third party's node verifies the quote and the shown field. When a presentation holds a quote and a receipt half, the verifier checks that their `terms` are equal (VX-11). | Unit, and two-node with a third node that only verifies. |
+| AG-38 | A presentation verifier accepts a progress snapshot as the writer's only when its issuer equals the `signer_did` of the quote author's receipt half, or of the quote, in the same presentation. Otherwise it shows the snapshot as "writer not checked". | Unit. |
+| AG-19 | The digest and the verifier follow RFC 9901. (1) Our digest function gives `X9yH0Ajrdm1Oij4tWso9UzzKJvPoDxwmuEcO3XAdRC0` for the RFC's disclosure string `WyJfMjZiYzRMVC1hYzZxMktJNmNCVzVlcyIsICJmYW1pbHlfbmFtZSIsICJNw7ZiaXVzIl0` (RFC 9901, section 4.2.3). (2) Our disclosure decoder accepts that string as written, with its spaces. The 16-byte salt rule (AG-21) is a Roym record rule, not a decoder rule, because the RFC's example salt is not 16 bytes. (3) Our encoder's output for a fixed salt is pinned by our own vector. (4) The verifier refuses a disclosure whose digest is not in the record, a digest that appears twice, a name that is not a hidden field of that object, a name that equals a visible field, and a value with a non-integer number. | Unit: test vectors. |
 | AG-20 | Both receipt halves carry a `terms` object that is byte-identical, after canonicalisation, to the quote's `terms`. A half whose `terms` differ is refused when it is filed. | Unit. |
-| AG-21 | Every quote version uses fresh salts. Each salt is 16 bytes. The counterparty's node refuses a quote with a salt of another length or a salt used twice. | Unit. |
+| AG-21 | Every quote version uses fresh salts. Each salt is 16 bytes (a Roym rule on top of RFC 9901). The counterparty's node refuses a quote with a salt of another length, or a salt used twice inside one record. Reuse across versions is the author's duty and is not checked. | Unit. |
+| AG-40 | The `details` disclosure of one commitment is at most 8 KiB, encoded. All disclosures of one record are at most 96 KiB, encoded. `quote.set` refuses a larger quote with `quote-too-large`, and the Hub's quote form shows the size against the limit before the person signs. | Unit; E2E for the Hub's size display. |
 | **Mixed exchanges and declared values** | | |
 | AG-22 | An agreement with no currency commitment forms and closes through the same code path as one with money. It still names a currency, and every commitment still has a declared value. No validator, state or card checks whether a currency commitment exists. | Two-node, and a unit test that runs the same quote with and without a currency commitment. |
 | AG-23 | A declared value is an integer from 0 to 10^15 minor units. A `currency` commitment's value is at least 1. Before a party signs, the Hub shows the declared value of every commitment, the total that party gives, the total it receives, and the difference when they are not equal. A difference never blocks signing. No record stores the difference. | Unit for the range; E2E for the Hub, with one agreement whose totals differ. |
@@ -125,15 +134,16 @@ Kinds of test:
 | **EEP rules checked on the agreement side (built in M08E and M08H)** | | |
 | AG-24 | **One node only.** The issuer's node refuses to sign a quote or an acceptance that makes it the giver of an `eep-issue` commitment while it has no published offering (VX-13). The receiving node cannot know the issuer's full offering list. It shows "not checked" unless it found an offering of the issuer that is valid now. | Service, on the issuer's node. Built in M08E. |
 | AG-25 | **One node only.** The issuer's node refuses an `eep-issue` commitment whose face-value currency does not appear in its own published offerings, or whose face value is not an integer in minor units (VX-14). The receiving node checks only the integer rule, and shows the currency rule as "not checked". | Service, on the issuer's node. Built in M08E. |
-| AG-26 | **Reference code only.** An `eep-transfer` commitment ends `refused` only with one of the three refusal reasons of VX-27, read from the issuer's signed refusal. The rule that an issuer refuses only for these reasons cannot be checked from another node. The test checks Roym's own reissue code: the refusal reason type has exactly three values, and no other code path refuses. | Unit, against the `obligation` code. Built in M08H. |
+| AG-26 | (a) **Reference code only.** The refusal reason type of Roym's reissue code has exactly the three values of VX-27. The reissue handler returns a reissued EEP, a signed refusal with one of the three reasons, or an internal error. The rule that any issuer refuses only for these reasons cannot be checked from another node. (b) On the writer's node, an `eep-transfer` commitment ends `refused` only when the writer holds the issuer's signed refusal with one of the three reasons. An unsigned refusal, or one with an unknown reason, leaves the commitment `endorsed`. | (a) Unit: a table test over the handler's inputs, against the `obligation` code. (b) Service, on the writer's node. Built in M08H. |
 | **Event log and statement** | | |
 | AG-27 | Every agreement event this node takes part in is appended to its event log exactly once. Running `transaction.sync` again, or `eventlog.rebuild`, adds no duplicate (VX-45). | Service. |
 | AG-28 | Nothing on the deal path reads the event log. A full deal runs under a test host that records every data-layer read, and no read touches the `event_log` collection (VX-45). | Service. |
-| AG-29 | `statement.export` for a period lists every commitment settled in that period, given and received, with resource kind, commitment kind, counterparty, currency and declared value, and totals per currency. Commitments of agreements with and without money appear the same way (VX-46). | Service, and E2E for the Hub's export. |
+| AG-29 | `statement.export` for a period lists every commitment settled in that period, by the signed time of its settling half (`occurred_at_secs`), so both parties put it in the same period. It lists commitments given and received, with resource kind, commitment kind, counterparty, currency and declared value, and totals per currency. Commitments of agreements with and without money appear the same way (VX-46). | Service, and E2E for the Hub's export. |
 | AG-30 | The statement has an `eeps` section. Before the `obligation` service exists, it says `not-available`. With an `obligation` sibling, it lists the EEPs outstanding (issued and held) at the start and at the end of the period. If the sibling call fails, it says `unavailable` with the reason. It is never left out and never empty in place of an error. | Service, with a fake `obligation` sibling. |
 | **Methods and language** | | |
 | AG-31 | Every `transaction` method answers `-32013` when called from another node. | Service: extend the admission test table. |
 | AG-32 | Each acceptance half carries `viewed_lang` and `viewed_via_mt` outside `terms`. The two halves of one agreement may differ only in `role`, `viewed_lang` and `viewed_via_mt` (ML-18, kept). | Unit. |
+| AG-39 | Every `LocalText` in one record has the same set of translation languages. `quote.set` and the verifier refuse a record that breaks this. | Unit. |
 
 ## Design
 
@@ -144,12 +154,15 @@ The design builds on these facts about today's code (checked 2026-11-10 on `main
 | Fact | Where |
 | --- | --- |
 | A quote's id is `content_digest("quo_", {conversation, issuer, sequence})`, so it stays the same across versions. A version supersedes the previous one. | `crates/roym_core/src/transaction.rs:524`, `crates/roym_transaction/src/app/quote_ops.rs:285` |
-| The agreement is two `agreement-receipt` halves over the quote's `record_id`. The counterparty signs first. The quote author's node countersigns during `transaction.sync`, after it decides the booking. | `crates/roym_transaction/src/app/agreement_ops.rs:99`, `:402` |
-| The writer's fence is a unique insert: `AppDataLayer::create` writes rows `decision:<agreement>`, `seat:<slot>:<n>` and `step:<agreement>:1` together, or none, and names the first row that already exists. | `crates/roym_transaction/src/app/ledger.rs:52`, `:134` |
+| The agreement is two `agreement-receipt` halves over the quote's `record_id`. For a quote with a slot, the counterparty signs first, and the quote author's node countersigns during `transaction.sync`, after it decides the booking. For a quote with no slot, the quote author may also call `agreement.accept` first. | `crates/roym_transaction/src/app/agreement_ops.rs:99`, `:373`, `:402` |
+| The writer's fence is a unique insert: `AppDataLayer::create` writes `decision:<agreement>` and `step:<agreement>:1`, plus `seat:<slot>:<n>` for a slot quote, together or not at all, and names the first row that already exists. All these rows are in `transaction`'s one `ledger` collection. A `create` or `batch-mutate` call works on one collection of one service. | `crates/roym_transaction/src/app/ledger.rs:52`, `:105`, `:116`, `crates/wit_interfaces/wit/data-layer/data-layer.wit:161`, `:174` |
 | `booking-progress` is signed by the node's service key (`Principal::Service`), not by the person. The reader binds it to the quote's signer. | `crates/roym_transaction/src/app/progress.rs:32`, `crates/roym_core/src/booking.rs:327` |
 | A track settles when the party that receives the resource signs its half ("against interest"). The giver's half alone is a claim. | `crates/roym_core/src/booking.rs:260` |
 | Declining a quote is local and unsigned. The quote author is never told. | `crates/roym_transaction/src/app/quote_ops.rs:508` |
-| `quote.set` lets the author revise a quote that was already accepted, and the decision row is keyed by the agreement (the version's `record_id`), not by the quote id. From reading the code (not run), two versions of one quote can both become agreements. | `quote_ops.rs:285`, `ledger.rs:52` |
+| Two versions of one quote can both become agreements, by two paths (from reading the code, not run; confirmed in review). (1) `quote.set` lets the author revise a quote that was already accepted, and the decision row is keyed by the version's `record_id`, not by the quote id. (2) `agreement.accept` loads any held version by its `record_id` and does not check that it is the latest, and the Hub shows "Accept" on every version's card. | `quote_ops.rs:285`, `ledger.rs:52`, `agreement_ops.rs:168`, `crates/roym_web/ui/src/screens/messages.ts:598` |
+| A new quote version clears a decline. One enquiry can get several quote ids. | `quote_ops.rs:610`, `:310` |
+| A payment acknowledgement can be corrected with `supersedes`. | `crates/roym_transaction/src/app/sync/receipts.rs:452` |
+| The track window ends at `window.latest_secs` (or the scheduling time when there is no window) plus `TRACK_WINDOW_SECS` (30 days). | `crates/roym_core/src/booking.rs:189` |
 | A signed payload is canonical key-sorted `serde_json`, not full RFC 8785. Ids are z-base-32 SHA-256. A payload is at most 64 KiB. A card body is at most 160 KiB. | `crates/signed_record/src/envelope.rs:213`, `crates/roym_core/src/card.rs:63` |
 | Every `transaction` method is local-only (`admit::require_internal`). | `crates/roym_transaction/src/app.rs:278` |
 | The Hub has seven card types. | `crates/roym_core/src/card.rs:9` |
@@ -168,8 +181,8 @@ The design builds on these facts about today's code (checked 2026-11-10 on `main
  agreement.accept
    reserve own resources (if any)
    sign acceptance half ── receipt half card ──▶ sync files the half          deal: accepted
-                                                   unique insert decision:<quote_id>
-                                                   reserve own resources under its fence
+                                                   fence decision:<quote_id> (deciding)
+                                                   reserve own resources (idempotent)
                                                    ok:   countersign          agreement: agreed
                                                    fail: release, snapshot    deal: not-formed
              ◀───── countersigned half + progress snapshot seq 1 ──
@@ -196,7 +209,9 @@ All traffic between the two parties is Conversation cards, as today. No step nee
   ```
 
   The language and translation rules are M08B's (`check_text`, `check_translation_langs`). This replaces today's quote-level `lang` and `translations` list, because each text field can now be hidden on its own, and a translation must be hidden with its original. The byte limit applies to `text` and to each translation separately.
-- **Ids.** `quote_id` and `enquiry_id` are derived as today. A `commitment_id` is chosen by the quote author: 1 to 16 characters of `[a-z0-9-]`, unique inside the quote. The author should keep a commitment's id across versions, so the Hub can show what changed. This is not enforced.
+
+  **One set of translation languages per record.** Every `LocalText` in one record has the same set of translation languages. So the Hub's `bestVersion` (ML-12) still picks one version for the whole record, and one `viewed_lang` per acceptance half (ML-18) still says which text the person read.
+- **Ids.** `quote_id` and `enquiry_id` are derived as today. A `commitment_id` is assigned by the service: `c1` to `c16`, by the commitment's position in the list. `quote.set` and `verify_quote` refuse any other id. The quote author never chooses it, because a visible free id (for example `inr-5000`) could carry a price. The Hub shows what changed between versions by comparing the disclosed descriptions, not the ids.
 - **DIDs.** Every party DID is a `did:key` master DID (`person::is_did_key`).
 - **Signer.** Every record is signed by a person through the `signing` host interface, except the progress snapshot, which is signed by the writer's service key, as `booking-progress` is today.
 
@@ -235,7 +250,6 @@ Answers =
 
 | Field | Type | Limit | Visible or hidden |
 | --- | --- | --- | --- |
-| `_sd_alg` | string | always `"sha-256"` | visible |
 | `currency` | string | ISO 4217, a code `money::currency_minor_exponent` knows | visible |
 | `quote_expires_at_secs` | u64 | must equal the envelope expiry | visible |
 | `home_exchange` | string or absent | a DID; set by M08F, absent in M08C | visible |
@@ -253,7 +267,7 @@ One commitment is one party giving one resource to the other.
 
 | Field | Type | Limit | Visible or hidden |
 | --- | --- | --- | --- |
-| `commitment_id` | string | `[a-z0-9-]{1,16}`, unique in the quote | visible |
+| `commitment_id` | string | `c1` to `c16`, by position; assigned by the service | visible |
 | `giver` | `"quote-author"` or `"counterparty"` | | visible. The receiver is the other party. |
 | `resource_kind` | see the kind table | | visible |
 | `kind` | see the kind table | | visible |
@@ -262,7 +276,7 @@ One commitment is one party giving one resource to the other.
 | `_sd` | list of strings | exactly 10, sorted ascending | the digests of the ten hidden fields below |
 | `description` | `LocalText` | 2048 bytes | hidden. What is given. |
 | `declared_value_minor` | i64 | 0 to 10^15; at least 1 for `currency` | hidden |
-| `details` | `Details` or null | inside the 64 KiB payload limit | hidden |
+| `details` | `Details` or null | its disclosure at most 8 KiB, encoded | hidden |
 | `window` | `TimeWindow` or null | `latest_secs >= earliest_secs` | hidden. When the work or delivery happens. |
 | `location` | `QuoteLocation` or null | address 512 bytes | hidden. Today's `QuoteLocation`; an `address` only when the work is at the receiver's place. |
 | `payee` | string or null | 256 bytes; currency only | hidden |
@@ -341,12 +355,16 @@ DealDeclinePayload {
 }
 ```
 
-- The counterparty declines a quote. The quote author declines an enquiry. Neither can decline after the agreement forms. After that, only the quote author cancels.
+- The counterparty declines a quote, or withdraws its own enquiry. The quote author declines an enquiry.
+- Neither party can decline once the counterparty has signed its acceptance. From `accepted` the deal waits for the writer, and the quote's expiry bounds the wait. After the agreement forms, only the quote author cancels.
+- A decline of any version ends the whole quote id (see [Deal rules](#deal-rules)). Asking for changes is a message or a new enquiry version, not a decline.
 - It replaces today's local, unsigned `quote.decline`. The other party now learns of it, and the deal ends `declined` on both nodes.
 
 ### Progress snapshot
 
-Record type `agreement-progress`, version 1. It replaces `booking-progress`. Signed by the writer's service key, and bound to the writer as `booking-progress` is today. It holds no hidden value, so it can be shown to anyone.
+Record type `agreement-progress`, version 1. It replaces `booking-progress`. Signed by the writer's service key. It holds no hidden value and no free text, so it can be shown to anyone.
+
+**Binding to the writer.** The issuer of a snapshot is the service key's `did:key`, not the person. The counterparty's node accepts a snapshot only when its issuer equals the `signer_did` of the quote, as `booking-progress` is bound today (`receipts.rs:89`). A third party may have no quote. Its verifier requires that the issuer equals the `signer_did` of the quote author's receipt half, or of the quote, in the same presentation. When the writer's node changes key (for example after a restore to a new device), the binding fails, and the verifier shows the snapshot as "writer not checked".
 
 ```text
 AgreementProgressPayload {
@@ -357,21 +375,23 @@ AgreementProgressPayload {
   seq:                u32                 // from 1, raised by each change
   state:              AgreementState      // see States
   state_reason:       string or absent    // a reason code, e.g. "slot-taken"
-  cancel_reason:      string or absent    // 512 bytes, the quote author's text
+  cancel_reason:      CancelReason or absent   // a code, never free text
   commitments: [ {
     commitment_id:        string
     state:                CommitmentState
-    reason:               string or absent   // a reason code for "failed"
-    missing_half:         role or absent     // for "ended-unconfirmed": whose half is missing
+    reason:               string or absent   // a reason code for "failed" or "cancelled"
+    claimed:              bool or absent     // for "ended-unconfirmed": whether the giver's half exists
     halves:               [ "rec_…" ]        // the settlement records the writer holds
     track_ends_at_secs:   u64
   } ]
 }
 ```
 
+`CancelReason` is one of `cannot-deliver`, `schedule-conflict`, `counterparty-asked`, `other`. The author's own words, if any, go in the conversation as an ordinary message. They are not part of a signed record that may be shown to strangers.
+
 ### Commitment failure
 
-New record type `commitment-failure`, version 1. Signed by the giver of one commitment. In v1 its only use is EX-22: a resource owner that is not the writer could not confirm its reservation.
+New record type `commitment-failure`, version 1. Signed by the giver of one commitment, who also owns its reservation (see [Who reserves](#who-reserves)). In v1 its only use is EX-22: the counterparty, as giver, could not confirm its reservation. The writer confirms its own reservations at once, so it never needs one.
 
 ```text
 CommitmentFailurePayload {
@@ -387,12 +407,36 @@ The writer accepts it only from that commitment's giver, and only while no settl
 
 Each settlement record now names one commitment. None carries a hidden value in plain form. This is needed because today a `fulfilment-receipt` carries the whole `AgreedTerms` and a `payment-acknowledgement` carries the amount, the method and the reference. Showing either one would show the price.
 
-| Record | Signed by | Fields | Hidden fields |
-| --- | --- | --- | --- |
-| `payment-request` v1 | the receiver of a currency commitment | `agreement`, `conversation`, `commitment_id` | `note` (`LocalText` or null, 512 bytes) |
-| `payment-acknowledgement` v1 | the payer (a claim) or the payee (settles) | `agreement`, `conversation`, `commitment_id`, `role`, `observed_at_secs` | `method` (code or null), `reference` (string or null, 512 bytes), `settlement_note` |
-| `fulfilment-receipt` v1 | the giver (a claim) or the receiver (settles) | `agreement`, `conversation`, `commitment_id`, `role` | `settlement_note` |
+```text
+PaymentRequestPayload {            // signed by the receiver of a currency commitment
+  agreement:         "rec_…"
+  conversation:      string
+  commitment_id:     string
+  quote_author_did:  string
+  counterparty_did:  string
+  _sd:               [ 1 digest ]  // hidden: note (LocalText or null, 512 bytes)
+}
 
+PaymentAcknowledgementPayload {    // signed by the payer (a claim) or the payee (settles)
+  agreement, conversation, commitment_id, quote_author_did, counterparty_did
+  role:              "giver" | "receiver"
+  observed_at_secs:  u64
+  supersedes:        "rec_…" or absent   // corrects this signer's earlier half, as today
+  _sd:               [ 3 digests ] // hidden: method (code or null),
+                                   //   reference (string or null, 512 bytes), settlement_note
+}
+
+FulfilmentReceiptPayload {         // signed by the giver (a claim) or the receiver (settles)
+  agreement, conversation, commitment_id, quote_author_did, counterparty_did
+  role:              "giver" | "receiver"
+  _sd:               [ 1 digest ]  // hidden: settlement_note
+}
+```
+
+- `_sd` sits at the top level of each payload. Every hidden field is always present in its disclosure, with `null` when it is not used, as for commitments.
+- `role` is the signer's role for this one commitment: `giver` or `receiver`. It replaces today's `DealRole`, because either party can be the payer of one commitment and the payee of another.
+- The two DIDs stay, as today (`payment.rs:94`, `fulfilment.rs:36`). They are visible in the receipt anyway, and they let a reader see who signed what from one record.
+- `supersedes` keeps today's correction rule for acknowledgements (`receipts.rs:452`), per commitment: only the same signer, only for the same commitment.
 - The amount of a payment is the commitment's declared value. It is not repeated.
 - **`settlement_note`** (`LocalText` or null, 1024 bytes, hidden) says how the resource was really handed over, when that differs from the agreement. Example: the agreement says ₹1,000, and the payee accepts ₹600 and a sack of rice. Either half may carry one. The note on the receiver's half is the one that counts, because that half settles the commitment. By signing it, the receiver says "I accept this as full settlement". The declared value does not change. See [Mixed exchanges and declared values](#mixed-exchanges-and-declared-values).
 - The hidden fields of a settlement record use the same encoding as the quote. The signer of that record picks its salts and sends the disclosures with the card.
@@ -408,7 +452,7 @@ Each settlement record now names one commitment. None carries a hidden value in 
 | `agreement-receipt` | one half | one half | |
 | `deal-decline` | declines an enquiry | declines a quote | |
 | `agreement-progress` | | | signs |
-| `commitment-failure` | as giver | as giver | |
+| `commitment-failure` | | as giver of the commitment (v1) | |
 | `payment-request`, `payment-acknowledgement`, `fulfilment-receipt` | its own half, as giver or receiver | its own half, as giver or receiver | |
 
 ### States and transitions
@@ -425,19 +469,46 @@ Each settlement record now names one commitment. None carries a hidden value in 
 
 | State | Means | Entered when | Written by |
 | --- | --- | --- | --- |
-| `requested` | an enquiry exists, no quote | the enquiry is filed | each node, locally |
+| `requested` | an enquiry exists, and no quote answers it yet. This is the enquiry's state; each quote id that answers it is its own deal from `quoted` on. | the enquiry is filed | each node, locally |
 | `quoted` | a quote version is open | the quote is filed | each node, locally |
-| `accepted` | the counterparty signed its half, the writer has not countersigned | the counterparty's half is filed | each node, locally |
+| `accepted` | the counterparty signed its half, the writer has not countersigned. The counterparty cannot withdraw or decline from here. | the counterparty's half is filed | each node, locally |
 | `agreed` | both halves exist | the writer countersigns | writer |
 | `closed` | every commitment is final | the last commitment becomes final | writer |
-| `declined` | ended by a `deal-decline` | the decline is filed | each node, from the signed decline |
-| `expired` | the quote expired before the writer countersigned | the writer's clock passes `quote_expires_at_secs` with no countersign | writer |
-| `not-formed` | a reserve failed, with `state_reason` | the writer's reserve fails | writer |
-| `cancelled` | the quote author cancelled, with `cancel_reason` | `agreement.cancel` | writer |
+| `declined` | ended by a `deal-decline` (also an enquiry the counterparty withdrew) | the decline is filed | each node, from the signed decline |
+| `expired` | the quote expired before the writer countersigned | the node's clock passes `quote_expires_at_secs`, and it holds no countersigned half signed before that time | each node, computed |
+| `not-formed` | the writer refused the acceptance, with `state_reason` | the writer files an acceptance it cannot take (see [Reason codes](#reason-codes)) | writer, in a snapshot with `seq` 1 |
+| `cancelled` | the quote author cancelled, with a `cancel_reason` code | `agreement.cancel` | writer |
 
-- The states before `agreed` come from signed records each node holds, so each node can show them on its own. From `agreed` on, the writer's snapshot is the state.
+- The states before `agreed` come from signed records each node holds, and from each node's clock for `expired`, so each node can show them on its own. From `agreed` on, the writer's snapshot is the state.
+- **One way out of an end state.** A countersigned half whose `issued_at_secs` is before `quote_expires_at_secs` moves the deal from `expired` to `agreed`, even when it arrives later. The writer never countersigns after the expiry by its own clock. It sends `not-formed` with `quote-expired` instead. A counterparty that released its reservations at the expiry and then gets a late countersigned half confirms as usual; a refused confirm ends in `reservation-lost`.
 - The overview lists `requested → quoted → agreed → closed, or expired, or cancelled`. This document adds `accepted`, `declined` and `not-formed` (today's `conflict`), because each is a real end or wait that a person sees.
 - Today's `scheduled` and `in-progress` are not deal-core states. They become step records of the scheduling extension (rule 1 of the extensions change).
+
+#### Reason codes
+
+Every code a deal can end with or a method can refuse with, in one place.
+
+| Code | Meaning | Carried in |
+| --- | --- | --- |
+| `quote-superseded` | the accepted version is not the latest one held | `agreement.accept` error on the counterparty's node; a `not-formed` snapshot when the writer finds it |
+| `quote-already-agreed` | another version of this quote id already formed an agreement. The version check and "no revision after acceptance" leave only a bug or a restored backup as a cause. | `not-formed` snapshot |
+| `quote-expired` | the writer filed the acceptance after the quote's expiry | `not-formed` snapshot |
+| the extension's reason, for example `slot-taken` | the writer's own reserve failed | `not-formed` snapshot, as `state_reason` |
+| `reserve-failed` | the counterparty's own reserve failed; the extension's reason comes with it | `agreement.accept` error |
+| `reservation-lost` | a confirm was refused after the reservation expired | `commitment-failure`, then the commitment's `reason` |
+| `other-commitment-failed` | another commitment of the agreement failed | the commitment's `reason` (state `cancelled`) |
+| `quote-already-accepted` | the author tried to revise a quote that has an acceptance | `quote.set` error |
+| `quote-ended` | the author tried to revise a quote id whose deal has ended | `quote.set` error |
+| `writer-countersigns` | the quote author called `agreement.accept` on its own quote | `agreement.accept` error |
+| `commitment-kind-not-supported`, `quote-too-large` | see [Commitment](#commitment) and [Where disclosures travel](#where-disclosures-travel) | `quote.set` error |
+| `progress-fork` | two snapshots with the same `seq` and different content | a local warning on the counterparty's node |
+
+#### Deal rules
+
+- A deal is one quote id. One enquiry can lead to several deals. Each may form its own agreement, for example when the author offers two options and the counterparty takes both.
+- **Every end of a deal ends its quote id:** `declined`, `expired`, `not-formed`, `cancelled` and `closed`. `quote.set` refuses a new version of that quote id with `quote-ended`. A new offer is a new quote id in the same conversation. The Hub's "send a new quote" action fills it from the old one, so for the person this is one click.
+- So the fence row `decision:<quote_id>` is written once and never reused.
+- This differs from today, where a new version clears a decline (`quote_ops.rs:610`) and a `conflict` quote can be revised. One rule for every end is simpler, and it keeps the fence a single unique insert.
 
 #### Commitments
 
@@ -446,39 +517,91 @@ Every commitment starts `promised` when the agreement forms. "Final" states are 
 | Kind | Path to success | Failure ends |
 | --- | --- | --- |
 | `fulfilment` | `promised` → `claimed` (giver's half) → `fulfilled` **(final)** (receiver's half) | `ended-unconfirmed` **(final)** at the track end; `failed` **(final)** with a reason; `cancelled` **(final)** |
-| `currency` | `promised` → `payment-requested` (optional `payment-request`) → `claimed` (payer's half) → `acknowledged` **(final)** (payee's half) | the same three |
+| `currency` | `promised` → `payment-requested` (optional `payment-request`) → `claimed` (payer's half) → `acknowledged` **(final)** (payee's half) | `ended-unconfirmed` **(final)**; `cancelled` **(final)** |
 | `eep-issue` | `promised` → `issued` **(final)** | `ended-unconfirmed`, `cancelled` (M08E may add more) |
 | `eep-transfer` | `promised` → `endorsed` → `reissued` **(final)** | `refused` **(final)** with one of the VX-27 reasons; `cancelled` |
 | `eep-return` | `promised` → `returned` → `closed` **(final)** | `ended-unconfirmed`, `cancelled` |
 
+A `currency` commitment has no `failed` end, because its only reason, `reservation-lost`, cannot happen to it.
+
+**Events.** The transition function takes one commitment's state and one event:
+
+- `giver-half`: the giver's settlement half is filed.
+- `receiver-half`: the receiver's settlement half is filed.
+- `payment-request`: the receiver of a currency commitment files a `payment-request`.
+- `tick`: the writer's sync runs after `track_ends_at_secs`.
+- `cancel`: `agreement.cancel`. It is allowed only when every commitment of the agreement allows it.
+- `failure`: a `commitment-failure` for this commitment, from its giver. Only for a commitment whose extension has a reserve hook.
+- `other-failed`: another commitment of the same agreement became `failed`.
+
+"No change" in a final state means: the record is kept as evidence, and the state stays. "Refused" means the call or the filing is refused. An event a kind does not list (for example `payment-request` on a `fulfilment`) is refused.
+
+`fulfilment`:
+
+| State | `giver-half` | `receiver-half` | `tick` | `cancel` | `failure` | `other-failed` |
+| --- | --- | --- | --- | --- | --- | --- |
+| `promised` | `claimed` | `fulfilled` | `ended-unconfirmed`, `claimed: false` | `cancelled` | `failed`, `reservation-lost` | `cancelled`, `other-commitment-failed` |
+| `claimed` | no change | `fulfilled` | `ended-unconfirmed`, `claimed: true` | refused | refused | no change |
+| any final | no change | no change | no change | refused | refused | no change |
+
+`currency`:
+
+| State | `payment-request` | `giver-half` | `receiver-half` | `tick` | `cancel` | `other-failed` |
+| --- | --- | --- | --- | --- | --- | --- |
+| `promised` | `payment-requested` | `claimed` | `acknowledged` | `ended-unconfirmed`, `claimed: false` | `cancelled` | `cancelled`, `other-commitment-failed` |
+| `payment-requested` | no change | `claimed` | `acknowledged` | `ended-unconfirmed`, `claimed: false` | `cancelled` | `cancelled`, `other-commitment-failed` |
+| `claimed` | no change | no change (a `supersedes` correction replaces the held half) | `acknowledged` | `ended-unconfirmed`, `claimed: true` | refused | no change |
+| any final | no change | no change | no change | no change | refused | no change |
+
 - The receiver's half settles a commitment even with no giver's half, as today. A payee can acknowledge a payment the payer never claimed.
-- `cancelled` happens only through `agreement.cancel`, which is allowed only while every commitment is `promised` (or `payment-requested`). So a cancel never undoes a half.
+- `cancelled` comes from `agreement.cancel` or from `other-failed`. Neither undoes a half.
 - `failed` has one reason code in v1: `reservation-lost`.
-- **Track window.** A commitment's track ends at `max(window.latest_secs, agreed_at_secs) + TRACK_WINDOW_SECS` (30 days, today's value). The writer applies a tick event on each sync, as today. `track_ends_at_secs` is in the snapshot, so the other party sees the date.
+- **When one commitment fails,** the writer cancels every other commitment that is still `promised` or `payment-requested`, with `other-commitment-failed`, in the same snapshot. Without this rule, a payment for a service that could not be given would end `ended-unconfirmed` after 30 days, and evidence would point at the payer. A commitment that already has a half keeps its own path: a payment already claimed may still be acknowledged. Refunds are outside Roym, as today.
+- **Track window.** A commitment's track ends at `max(window.latest_secs, agreed_at_secs) + TRACK_WINDOW_SECS`. The 30 days is today's value. The `max` is a change: today the end is `window.latest_secs`, or the scheduling time when there is no window, plus 30 days (`booking.rs:189`). With no window, the new rule uses `agreed_at_secs`. A deal recorded after the work (a window that ended before the agreement) still gets 30 days. The writer applies a `tick` on each sync, as today. `track_ends_at_secs` is in the snapshot, so the other party sees the date.
 - The EEP rows give the names from the overview. The obligations document fixes their records and may add failure ends.
 
 ### Single writer and keeping the counterparty's copy in step
 
 - **The writer is the quote author's `transaction` service, always.** It writes the agreement row, every commitment state and every progress snapshot. This keeps today's rule. In Want-Bid the writer is the bidder, because the bidder writes the quote.
 - **The counterparty writes only its own signed records:** its enquiry, its acceptance half, its declines, its settlement halves and its commitment failures. It sends each as a card.
-- **The fence.** When the writer files an acceptance half, it inserts a row `decision:<quote_id>`, together with its own reservation rows, in one `AppDataLayer::create` call. The key is the quote id, not the version's `record_id`, so at most one version of a quote becomes an agreement. A later acceptance of another version gets `quote-already-agreed`. An acceptance of a version that a newer one supersedes gets `quote-superseded`. This closes the gap found in today's code (see [Facts checked in the code](#facts-checked-in-the-code)).
+- **The fence.** The writer takes one row, `decision:<quote_id>`, with a unique insert. The key is the quote id, not the version's `record_id`, so at most one version of a quote becomes an agreement. The full order of steps, with crash recovery, is in [The writer's decision](#the-writers-decision).
+- **The version check.** `agreement.accept` on the counterparty's node refuses a version that is not the latest one it holds (`quote-superseded`). The Hub shows "Accept" only on the card of the latest version of a quote id. The writer repeats the check when it files the half, because a card can arrive late. Together with the fence and the rule below, this closes both paths of the gap in today's code (see [Facts checked in the code](#facts-checked-in-the-code)).
+- **The writer never signs first.** `agreement.accept` on the quote author's own node is refused with `writer-countersigns`. The writer countersigns only in `transaction.sync`, after its decision. Today the author of a quote with no slot may accept first (`agreement_ops.rs:373`). This is removed, so every deal has one order.
 - **No revision after acceptance.** `quote.set` refuses to revise a quote id once the writer holds an acceptance of any version of it (`quote-already-accepted`).
 - **How the counterparty's node files the writer's records** (in `transaction.sync`, which reads the conversation, as today):
   - A quote, a countersigned half or a snapshot is filed only when the writer signed it.
   - A snapshot replaces the held one only when its `seq` is higher.
   - Two snapshots with the same `seq` and different content are a `progress-fork`. The node keeps the first, keeps the second as evidence, and shows a warning. The writer's own code never makes a fork. A fork means a bug or a restored backup.
   - A missing `seq` (a lost card) is not an error. The next snapshot carries the whole state.
+- **The writer's `seq` after a restore.** During sync, the writer reads its own snapshot cards in the conversation and continues from the highest `seq` it finds there or holds. So a writer restored from an old backup does not reuse a `seq` the counterparty already holds.
 - **How the writer files the counterparty's records:** only from the counterparty DID the quote names, and only with the role that fits (for example, a payee half of a currency commitment only from that commitment's receiver).
 - **What each node shows.** From `agreed` on, both nodes show the writer's snapshot. Each node also holds every signed half, so a person can always open the signed facts behind a state.
+
+### The writer's decision
+
+When the writer's `transaction.sync` files an acceptance half, it runs these steps in this order:
+
+1. **Checks.** The half is signed by the counterparty the quote names. The accepted version is the latest one the writer holds; otherwise `not-formed` with `quote-superseded`. The writer's clock is before the quote's expiry; otherwise `not-formed` with `quote-expired`.
+2. **Fence.** `create` the row `decision:<quote_id>` = `{ state: "deciding", agreement: <version record_id>, at_secs }` in the `ledger` collection. If the row exists with the same agreement, this is a repeat: continue from the row's state. If it exists with another agreement: `not-formed` with `quote-already-agreed`.
+3. **Reserve.** For each commitment the writer gives whose extension has a reserve hook, call the extension's local `reserve`, keyed by (agreement id, commitment id). Reserve is idempotent (EX-21). This is not one write with step 2: the reservation is in the extension service's own data, and a data-layer write covers one collection of one service.
+4. **Finish.**
+   - If every reserve succeeded: `confirm` each reservation. Store the countersigned half with a unique insert keyed `countersign:<agreement>`; if that row exists, use the half already stored, so a repeat never signs twice. Put the decision row to `agreed`. Store and send the countersigned half and a snapshot with `seq` 1 and state `agreed`.
+   - If one reserve failed: `release` the others. Put the decision row to `not-formed` with the reason. Send a snapshot with `seq` 1 and state `not-formed`.
+
+**Recovery.** On every sync, the writer finishes each decision row that is still `deciding` by running steps 3 and 4 again. This is safe, because reserve, confirm and release are idempotent and the countersigned half is reused. Two syncs at the same time are safe for the same reasons: the second one finds the row in step 2 and repeats. A reservation left by a crash that is never finished expires on its owner's node (EX-20). Only the writer writes the decision row, so the later `put` in step 4 needs no fence.
 
 ### Reserve, confirm and release: the agreement side
 
 The hooks themselves (their idempotency, expiry and the owner's clean-up) are the extensions change's (EX-5, EX-6, EX-20 to EX-22). This section says when the deal core calls them.
 
-**Each owner reserves its own resource, on its own node, at the moment it signs.** There is no reserve call between nodes.
+#### Who reserves
 
-1. **The counterparty owns a resource** (for example it gives a service in a booked slot, or a bid where the wanter books its own slot). `agreement.accept` calls the extension's local `reserve` for each such commitment, before it signs. If one fails, it calls `release` on the ones that succeeded, signs nothing, and answers `reserve-failed` with the extension's reason.
-2. **The writer owns a resource** (the usual List-Search case, today's slot booking). When the writer files the acceptance half, it calls `reserve` for each such commitment, under its fence. If one fails, it releases the others, signs nothing, and sends a snapshot with state `not-formed` and the reason. The counterparty's node then releases its own reservations. The writer forms the agreement on its own node, so it confirms its own reservations at once. They never wait for an expiry.
+**The giver of a commitment owns its reservation**, when the commitment's extension has a reserve hook. The giver's node reserves, confirms and releases. No record field names the owner, because this rule needs none. A case where the receiver owns the reservation (for example a wanter that books its own venue) is not in v1. If M08F needs it, it adds a visible `reserved_by` field.
+
+**Each owner reserves on its own node, at the moment it signs.** There is no reserve call between nodes.
+
+1. **The counterparty gives a resource that needs a reservation** (for example a service in a booked slot). `agreement.accept` calls the extension's local `reserve` for each such commitment, before it signs. If one fails, it calls `release` on the ones that succeeded, signs nothing, and answers `reserve-failed` with the extension's reason.
+2. **The writer gives such a resource** (the usual List-Search case, today's slot booking). The writer reserves in step 3 of [The writer's decision](#the-writers-decision). If one reserve fails, it releases the others, signs nothing, and sends a snapshot with state `not-formed` and the reason. The counterparty's node then releases its own reservations. The writer forms the agreement on its own node, so it confirms its own reservations at once. They never wait for an expiry.
 3. **Confirm.** When the counterparty's node files the countersigned half, it calls `confirm` for its own reservations. If a confirm is refused (EX-22: expired, and the resource was given to someone else), it sends a `commitment-failure` with `reservation-lost`, and the writer marks that commitment `failed`.
 4. **Release** also happens when the deal ends `expired`, `not-formed`, `declined` or `cancelled`. A lost release is harmless, because each reservation expires on its owner's node (EX-20).
 
@@ -494,15 +617,15 @@ Visible always: ids, the two parties, the currency, the expiry, the home exchang
 
 #### The encoding
 
-The format is SD-JWT's disclosure and digest format, from the IETF specification "Selective Disclosure for JWTs (SD-JWT)" (`draft-ietf-oauth-selective-disclosure-jwt`; `unverified`: the final RFC number, to be checked when C2 is planned). We take its disclosure, digest and `_sd` rules exactly, and leave out its JWT wrapper.
+The format is SD-JWT's disclosure and digest format, from RFC 9901, "Selective Disclosure for JSON Web Tokens" (November 2025). We take its disclosure, digest and `_sd` rules exactly, and leave out its JWT wrapper. Our own rules on top of RFC 9901 are marked "Roym rule".
 
 For each hidden field of an object:
 
-1. **Salt.** 16 bytes from the host's secure random source, encoded base64url with no padding (22 characters). A fresh salt for every field of every version. Never derived from data.
+1. **Salt.** 16 bytes from the host's secure random source, encoded base64url with no padding (22 characters). A fresh salt for every field of every version. Never derived from data. (Roym rule. RFC 9901, section 4.2.1, requires only a string, and recommends 128 bits.)
 2. **Disclosure.** The JSON array `[salt, name, value]`, serialised as compact UTF-8 JSON (no spaces), then encoded base64url with no padding. `name` is the field name, for example `"declared_value_minor"`. `value` is the field's value, or `null`.
 3. **Digest.** SHA-256 over the US-ASCII bytes of the disclosure string (the base64url text, not the decoded JSON), encoded base64url with no padding (43 characters).
-4. **Place.** The field is left out of the object. Its digest goes into that object's `_sd` list. The list is sorted ascending by byte value, so its order says nothing about the order of the fields. (SD-JWT allows sorting or shuffling. We sort, so the canonical bytes are stable.)
-5. **Algorithm.** `terms._sd_alg` is `"sha-256"`. A verifier refuses any other value.
+4. **Place.** The field is left out of the object. Its digest goes into that object's `_sd` list. RFC 9901 allows an `_sd` list at any level (section 4.2.4.1). The list is sorted ascending by byte value, so its order says nothing about the order of the fields. (Roym rule: sorted. RFC 9901 allows sorting or shuffling. We sort, so the canonical bytes are stable.)
+5. **Algorithm.** No record carries `_sd_alg`. RFC 9901, section 4.1.1, allows it only at the top level, and an absent `_sd_alg` means SHA-256. Our verifier uses SHA-256 only.
 
 The digest is over the disclosure string as sent. So our canonicaliser (key-sorted `serde_json`, not RFC 8785) never has to reproduce the JSON inside a disclosure.
 
@@ -515,7 +638,7 @@ What we leave out of SD-JWT, and why:
 | Decoy digests | not used | Every object always has the same hidden field names (with `null` values), so the number of digests already says nothing. |
 | Array element disclosures (`{"...": digest}`) | not used | No list element is hidden on its own. `payment_methods` is hidden as a whole. |
 | Nested disclosures | not used in v1 | `details` is hidden as a whole. |
-| `_sd_alg` at the top of the payload | inside `terms` | `terms` is the object both records carry, so the receipt needs it there. |
+| `_sd_alg` | not carried | An absent `_sd_alg` means SHA-256 (RFC 9901, section 4.1.1), the only algorithm we use. |
 
 #### Where disclosures travel
 
@@ -523,7 +646,7 @@ What we leave out of SD-JWT, and why:
 - The quote card carries every disclosure of the quote. The counterparty's node checks them and stores them with the quote.
 - A receipt half card carries none. Both parties already hold the quote's disclosures.
 - A settlement card carries the disclosures of its own hidden fields.
-- The quote with its disclosures must fit in one card body (160 KiB). `quote.set` refuses a larger quote with `quote-too-large`.
+- **Size limits.** All disclosures of one record together are at most 96 KiB, encoded. The `details` disclosure of one commitment is at most 8 KiB, so one large `details` cannot use the whole limit. `quote.set` refuses a larger quote with `quote-too-large`. The Hub's quote form shows the size against the limit before the person signs. The payload holds only digests, so it stays at a few KiB, and 96 KiB leaves room for it and the envelope in the 160 KiB card body. C2's plan checks this number against the real envelope size.
 - Both parties keep all disclosures in their backup bundle. Without them, a party cannot show its own deal.
 
 #### Verifying
@@ -531,24 +654,28 @@ What we leave out of SD-JWT, and why:
 Given an envelope and some disclosures, the verifier:
 
 1. verifies the envelope as today;
-2. for each disclosure: decodes it, checks it is a 3-element array with a 16-byte salt, computes its digest, and finds that digest in exactly one `_sd` list;
+2. for each disclosure: decodes it, checks it is a 3-element array whose salt is a string, computes its digest, and finds that digest in exactly one `_sd` list;
 3. refuses if a digest appears twice anywhere in the payload, if the name is not a hidden field of that object, if the name equals a visible field, or if the value fails the field's type and limits (a non-integer number fails);
 4. returns the payload with the disclosed fields put back, and every other hidden field marked "hidden".
 
-The counterparty's node also checks, before it accepts a quote, that it received a disclosure for every digest and that no salt repeats. It cannot check that a salt is random. An author who wants to leak a price can do so anyway, by telling someone.
+The counterparty's node also checks, before it accepts a quote, that it received a disclosure for every digest, that every salt is 16 bytes (Roym rule), and that no salt repeats inside the record. It cannot check that a salt is random. An author who wants to leak a price can do so anyway, by telling someone.
 
 #### Showing a deal to a third party
 
 ```text
 Presentation {
   presentation_version: 1
-  records:      [ envelope ]   // one or both receipt halves; optionally the progress snapshot
-                               // and settlement records of the same agreement
+  records:      [ envelope ]   // a quote version, and/or one or both receipt halves;
+                               // optionally the progress snapshot and settlement
+                               // records of the same deal
   disclosures:  [ string ]     // the ones the presenter chooses
 }
 ```
 
-- The verifier checks that every record names the same agreement and, for receipt halves, carries the same `terms`.
+- The verifier checks that every record names the same deal. A quote and receipt halves must have equal `terms`. Receipt halves, the snapshot and settlement records must name the same agreement.
+- A quote alone can be shown, before any agreement, for example to ask a contact "is this a fair price?" (VX-11, AG-34).
+- A progress snapshot counts as the writer's only when it is bound as in [Progress snapshot](#progress-snapshot). Otherwise the verifier shows it as "writer not checked".
+- **Field paths** name what to show: `terms.<field>` for a field of `terms`, `terms.commitments[<commitment_id>].<field>` for a commitment's field, and `<record_id>.<field>` for a hidden field of a settlement record. Examples: `terms.scope`, `terms.commitments[c2].declared_value_minor`.
 - A presentation with no disclosures still shows each commitment's kind, giver and outcome. That is what reputation needs without consent (overview principle 9).
 - **What cryptography cannot stop.** Both parties hold every disclosure. Either can show any hidden field. The overview's rule that amounts need the other party's grant is kept by honest clients and judged by reputation. It is not enforced by the format. The M08G disclosure ADR defines the grant.
 - M08G evidence records will embed a presentation. This document fixes only its format.
@@ -579,7 +706,7 @@ Every agreement is an exchange of resources for resources. It holds 1 to 16 comm
 This confirms the overview's "inside `transaction`" for agreements and the statement. It rejects one shared log written by two services, for these reasons:
 
 - **One writer per record.** If `obligation` appended to a log that `transaction` owns, the log would have two writers.
-- **Atomic append.** A service can write a log entry in the same data-layer call as the state change it records. A call to another service cannot be part of that write. A crash between the two would lose the entry.
+- **Complete by derivation.** A log entry is not written in the same call as the state change, because every data-layer write covers one collection. Instead, every `transaction.sync` runs the same derive step as `eventlog.rebuild`: it derives the entries from the records and snapshots the node holds, and creates the missing ones. A crash between a state change and its entry is repaired on the next sync. A log in another service could only be repaired by calling it on every sync.
 - **No new dependency on the deal path.** `obligation` would otherwise call `transaction` on every EEP event. Now only the statement export, which is a read, calls `obligation`.
 
 #### The log entry
@@ -589,7 +716,9 @@ Collection `event_log` in `transaction`. Entries are only ever created, never ch
 ```text
 EventLogEntry {
   id:               "<agreement>:<commitment_id or '-'>:<event>"   // row id; unique
-  at_secs:          u64           // indexed; when this node recorded the event
+  occurred_at_secs: u64           // the issued_at_secs of the signed record behind the event;
+                                  // the same on both nodes (see below)
+  recorded_at_secs: u64           // indexed; when this node created the entry; the list cursor
   event:            "agreement-formed" | "agreement-closed" | "agreement-cancelled"
                   | "agreement-not-formed" | "commitment-settled" | "commitment-failed"
   agreement:        "rec_…"
@@ -609,7 +738,8 @@ EventLogEntry {
 
 - The entry is local data, not a signed record. The signed records it points at are the proof.
 - The entry holds the declared value in plain form. It never leaves the node, except in the participant's own statement and backup.
-- **Who appends.** Each node appends for its own deals: the writer when it changes a state, the counterparty when it files the snapshot that shows the change.
+- **Two times.** `occurred_at_secs` is the `issued_at_secs` of the signed record behind the event: the receiver's settling half for `commitment-settled`, the countersigned half for `agreement-formed`, and the writer's snapshot for the other events. So both parties give one event the same time. Statement periods and dates use it. `recorded_at_secs` is local, and only orders `eventlog.list`, so an old event that is appended late is not skipped by the cursor.
+- **Who appends.** Each node appends for its own deals: the writer when it changes a state, the counterparty when it files a snapshot. The counterparty derives the events by comparing the new snapshot with the one it held, so a lost snapshot loses no event.
 - **Nothing on the deal path reads the log** (AG-28). Readers are `eventlog.list`, `statement.export` and, later, policy hooks.
 - **Rebuild.** Every entry can be derived from the records and snapshots a node holds. `eventlog.rebuild` derives them again and creates only the missing ones. It helps after a restore from an old backup.
 
@@ -625,7 +755,7 @@ Statement {
   generated_at_secs:  u64
   rows: [ {
     agreement, commitment_id
-    agreed_at_secs, settled_at_secs
+    agreed_at_secs, settled_at_secs     // occurred_at_secs of agreement-formed, commitment-settled
     direction:            "given" | "received"
     counterparty_did:     string
     counterparty_name:    string or absent    // from the owner's contacts; not signed
@@ -642,7 +772,8 @@ Statement {
 }
 ```
 
-- A row is a commitment whose `commitment-settled` event falls in the period. Failed and cancelled commitments are not given or received, so they are not rows. (The owner agreed to this. See open question 10.)
+- A row is a commitment whose `commitment-settled` event has its `occurred_at_secs` in the period. Because this time comes from a signed record, both parties put one commitment in the same period and show the same dates. The receiver writes it, as the signer of the settling half, so it is that party's statement of when it received the resource.
+- Failed and cancelled commitments are not given or received, so they are not rows. (The owner agreed to this. See open question 10.)
 - Totals are per currency. Roym never converts between currencies.
 - The Hub offers the statement as a CSV download with one line per row, plus a JSON download of the whole object.
 
@@ -678,25 +809,25 @@ Every method below is **local-only**: it answers only calls from the same node (
 | Method | Status | What it does |
 | --- | --- | --- |
 | `enquiry.set`, `.get`, `.list`, `.history`, `.verify` | renamed from `request.*` | as today, with the new `description` shape |
-| `quote.set` | changed | input: `answers`, `counterparty_did`, `terms` with plain values. The service picks salts, builds digests, signs, and sends the card with all disclosures. Refuses `quote-already-accepted`, `commitment-kind-not-supported`, `quote-too-large`. |
+| `quote.set` | changed | input: `answers`, `counterparty_did`, `terms` with plain values. The service picks salts, builds digests, signs, and sends the card with all disclosures. The service assigns the commitment ids. Refuses `quote-already-accepted`, `quote-ended`, `commitment-kind-not-supported`, `quote-too-large`. |
 | `quote.get`, `.list`, `.history` | changed | the view holds the plain values for the two parties, from the stored disclosures |
 | `quote.verify` | changed | input: an envelope and optional disclosures. Returns the verdict and the disclosed fields. |
 | `quote.decline` | removed | replaced by `deal.decline` |
-| `deal.decline` | new | signs and sends a `deal-decline` for an enquiry or a quote version |
-| `agreement.accept` | changed | reserves this node's own resources, then signs and sends this party's half. Input adds `viewed_lang`, `viewed_via_mt`. |
+| `deal.decline` | new | signs and sends a `deal-decline` for a quote version, an enquiry, or one's own enquiry (a withdrawal) |
+| `agreement.accept` | changed | counterparty only: refuses on the quote author's node (`writer-countersigns`) and for a version that is not the latest held (`quote-superseded`). Reserves this node's own resources, then signs and sends this party's half. Input adds `viewed_lang`, `viewed_via_mt`. |
 | `agreement.get`, `.list` | changed | the view holds every commitment with its state, from the latest snapshot |
 | `agreement.verify` | changed | input: an envelope and optional disclosures |
-| `agreement.cancel` | new (from `booking.cancel`) | quote author only, while every commitment is `promised` or `payment-requested` |
+| `agreement.cancel` | new (from `booking.cancel`) | quote author only, with a `CancelReason` code, while every commitment is `promised` or `payment-requested` |
 | `agreement.progress` | new (from `booking.get` and `booking.history`) | the snapshots of one agreement, latest first |
-| `agreement.present` | new | input: an agreement and a list of field paths to show. Returns a `Presentation`. |
-| `agreement.verify-presentation` | new | verifies a `Presentation` from someone else and returns what it shows |
+| `deal.present` | new | input: a quote id or an agreement id, the records to include, and the [field paths](#showing-a-deal-to-a-third-party) to show. Returns a `Presentation`. |
+| `deal.verify-presentation` | new | verifies a `Presentation` from someone else and returns what it shows |
 | `payment.request` | changed | input adds `commitment_id` |
 | `payment.acknowledge` | changed | input adds `commitment_id`; `method` and `reference` become hidden fields |
 | `payment.get`, `.verify` | changed | per commitment |
 | `fulfilment.sign` | changed | input adds `commitment_id` |
 | `fulfilment.get`, `.verify` | changed | per commitment |
 | `booking.*` | removed | the booking track moves to the scheduling extension; the deal parts move to `agreement.*` |
-| `eventlog.list` | new | input: `after` (an `{at_secs, id}` cursor, or absent) and `limit`. Pages the log in `(at_secs, id)` order. |
+| `eventlog.list` | new | input: `after` (a `{recorded_at_secs, id}` cursor, or absent) and `limit`. Pages the log in `(recorded_at_secs, id)` order. |
 | `eventlog.rebuild` | new | creates missing log entries from held records; returns the count made |
 | `statement.export` | new | see [The statement](#the-statement) |
 | `transaction.sync`, `.thread`, `.export`, `.import`, `.signing-status`, `.install-signing-certificate` | changed inside | sync files the new cards; export and import carry disclosures and the event log |
@@ -723,7 +854,7 @@ With the three generic cards of the extensions change (`step`, `widget`, `widget
 - **Extensions.** A commitment names its extension and carries its `details`. A `step` record names an `agreement` and a `commitment_id` from this document. Reserve and confirm are called at the points above.
 - **Message forwarding (FW-7).** A forwarded quote travels as its signed envelope. Its hidden fields stay hidden unless the forward carries disclosures. In M08C, the forward action carries none. Whether a private forward may show the price is the M08G disclosure ADR's question.
 - **EEPs (M08E, M08H).** The three EEP kinds, the `eep` hidden field, AG-24 to AG-26 and the statement's EEP section are reserved here. The obligations document fixes the `eep` field's shape and the settlement records. One open point for it: whether an EEP's face-value currency must equal the agreement's currency. The rule "one currency per agreement" suggests it must.
-- **Intents and wants (M08D, M08F).** `listing_id` becomes the intent id when M08D renames listings. `answers.kind = "want"` and `home_exchange` are filled by M08F. Their places in the record exist now, so the canonical bytes do not change again later.
+- **Intents and wants (M08D, M08F).** `answers.kind = "want"` and `home_exchange` are filled by M08F, and their places in the record exist now. `listing_id` is renamed in place when M08D renames listings to intents. The product is not released, so that change needs no migration.
 - **Reputation (M08G).** Evidence embeds a `Presentation`. The progress snapshot and the receipt halves show outcomes with no disclosure.
 - **Multilingual (M08B).** `LocalText` uses M08B's tags and limits. `viewed_lang` and `viewed_via_mt` (ML-18) sit in each acceptance half.
 
@@ -750,6 +881,24 @@ The product is not released. Every shape changes in place, `SCHEMA_VERSION` of `
 
 The Hub's quote, agreement and booking screens, `roymctl roym transaction`, the parity harness and the backup bundle sections change with these shapes.
 
+### Differences from the overview and sibling changes
+
+Each row is a rule from another document that this document changes. The last column names the document that is updated at close-out, so it describes the result.
+
+| Rule there | This document | Why | Updated at close-out |
+| --- | --- | --- | --- |
+| VX-45 and the overview's "event log": one log holds every agreement and EEP event | Agreement events are in `transaction`'s log. EEP events are in `obligation`'s own log. The statement joins both through `obligation.statement-part`. | One writer per log, and each log is repaired by its own derive step. | The overview's VX-45. The obligations document owns VX-45 for EEP events and needs its own test row for it. |
+| Overview: "each field of the quote is hashed with its own random salt"; amounts are "hidden fields by default" | A fixed set of hidden fields per object. Ids, parties, kinds and structure stay visible. The author cannot change the set. | Reputation needs outcomes with no disclosure. A choice by the author could make the price visible. | Overview, selective-disclosure paragraph. |
+| Overview agreement life: `requested → quoted → agreed → closed, or expired, or cancelled` | Adds `accepted`, `declined`, `not-formed`. Every end ends the quote id. | Each is a real wait or end that a person sees. One rule for every end. | Overview; integrated spec. |
+| Overview term "declared value": "what the giver would charge" | The quote author writes every value, and the other party agrees by signing (open question 1a). | One writer for the quote. | Overview Terms. |
+| Overview term "barter" | Not used. Every agreement has one shape (open question 1). | Owner decision. | Overview Terms and text. |
+| Extensions EX-5 ("the deal core calls the reserve hook of each extension"), and its text that the writer reserves on the owner's node | Each giver reserves on its own node when it signs. The writer reserves inside its decision (open question 5). | No wire-reachable method. | Extensions change. |
+| Extensions change: the card table grows to 10 types | It grows to 12, with `deal-decline` and `commitment-failure`. | Two new records. | Extensions change. |
+| FW-7: a forwarded quote "verifies as it does today" | It verifies, but shows only visible fields: no scope, no description, no value (open question 11). | Amounts need the other party's grant. | Forwarding change, FW-7. |
+| Multilingual change: one `translations` list per record | A `LocalText` per field, with one set of translation languages per record. | Each field can be hidden on its own. One set keeps `bestVersion` and `viewed_lang` working. | Multilingual change. |
+| M08C `task.md`: demo "request, quote and agreement"; slice C6 "Barter"; the content of slices C1 to C3 | "enquiry" (open question 8); "mixed exchanges"; the slice cut in [Tasks](#tasks) (open question 12). | | M08C `task.md`. |
+| Overview line reference `transaction.rs:192` for `AgreementReceiptPayload` | It is now `transaction.rs:234`. | The code moved. | Overview. |
+
 ### Rejected options
 
 - **Our own disclosure format.** SD-JWT's is reviewed and used elsewhere. The overview also rules this out.
@@ -763,13 +912,16 @@ The Hub's quote, agreement and booking screens, `roymctl roym transaction`, the 
 - **Requiring the two sides' totals to be equal.** It forbids gifts and discounts, and it would force parties to adjust declared values to pass a check. The values would then report less truth, not more.
 - **Storing the difference between the two sides in the agreement.** It is computed from signed values, and a stored copy could disagree with them.
 - **Checking a quote against the offering's in-return terms.** The quote author owns both and may agree to more. The overview also says acceptance rules are never published in detail, so another node could not check it fully.
-- **One shared event log for `transaction` and `obligation`.** Two writers, and no atomic append. See [Where the event log lives](#where-the-event-log-lives).
+- **One shared event log for `transaction` and `obligation`.** Two writers, and the derive step on each sync could not repair it without a call to the other service. See [Where the event log lives](#where-the-event-log-lives).
 - **A statement built from a scan of all records at export time, with no log.** Possible, but every later reader (policy hooks, insight extensions) would repeat the scan, and the overview asks for a log.
+- **Linking the scheduling extension into `transaction` as a library, so the decision and the seat rows are one write.** It puts slot code back into `transaction`, against EX-17. The ordered steps with recovery give the same safety.
+- **Reusing a quote id after `not-formed` or `declined`.** The fence row would need a second state machine for reuse. A new quote id costs the person nothing.
+- **A free `commitment_id` chosen by the author.** A visible free id could carry a price.
 - **A per-commitment currency.** It breaks "one currency per agreement", and totals would need a conversion rule.
 
 ## Open questions
 
-Each has a recommendation. The owner decides. Questions 1 and 3 to 11 are decided. Question 2 belongs to a C0 ADR.
+Each has a recommendation. The owner decides. Questions 1 and 3 to 11 are decided. Question 2 belongs to a C0 ADR. Question 12 is new from review round 1.
 
 1. **Declared values in a mixed exchange.**
    Owner direction: there is no barter special case. An exchange is any mix of goods, services, EEPs and money. The offering says what its owner accepts in return. Each resource has a value in the unit of account. The totals need not match, and the Hub shows the difference.
@@ -818,13 +970,18 @@ Each has a recommendation. The owner decides. Questions 1 and 3 to 11 are decide
 
 10. **Which commitments does a statement period contain?** (New.)
     Recommendation: a commitment is in the period when it settled in the period. Commitments agreed but not final at the end are listed apart (`open_at_end`). Failed and cancelled ones are not listed as rows.
-    Reason: they were not given or received. The settlement time is the time both parties signed that the resource changed hands. Accountants who need the agreement date have `agreed_at_secs` on every row.
+    Reason: they were not given or received. The settlement time is the `issued_at_secs` of the receiver's settling half, so both parties use the same time (refined in review round 1). Accountants who need the agreement date have `agreed_at_secs` on every row.
     Owner decision (2026-11-10): agreed.
 
 11. **Private forwards of a quote with the price shown.** (New.)
     Recommendation: in M08C, a forwarded quote carries no disclosures. The M08G disclosure ADR decides whether a private forward to a contact may show amounts.
     Reason: the overview's rule is that a third party sees amounts only with the other party's grant. A forward is the first place this rule is felt. It is better decided once, in the ADR, than quietly in the forward action.
     Owner decision (2026-11-10): agreed.
+
+12. **How to cut slices C1 to C3.** (New, review round 1.)
+    The M08C `task.md` puts the commitment model in C1, disclosure in C2, and the move of slots to the scheduling extension in C3. C1's shapes have hidden fields, but the encoder is in C2. C1 removes the booking track, but the extension that replaces it is in C3.
+    Recommendation: C1 ships the commitment model with plain `DealTerms` (no `_sd` yet) and keeps today's slot path inside `transaction`, behind the new shapes, so booking keeps working. C2 adds `_sd`, the encoder, the hidden fields of every record and `deal.present`. C3 moves slots to the scheduling extension and adds `commitment-failure`.
+    Reason: each slice ends with a working system and stays a size one review can cover. The cost is that C2 changes C1's canonical bytes once. The product is not released, so only test fixtures change. The other option is to merge C1 and C2 into one larger slice.
 
 ## What the C0 ADRs must decide
 
@@ -848,9 +1005,9 @@ This document does not write the two ADRs. They must decide:
 
 - [ ] Owner review of this draft and the open questions.
 - [ ] Write the two C0 ADRs (owner decides).
-- [ ] C1: commitment model, records, states, single writer, `deal-decline`, `commitment-failure`, per-commitment settlement records. Replace today's shapes in place.
-- [ ] C2: the disclosure encoder, verifier and presentation; disclosures in the card wrapper and the backup bundle.
-- [ ] C3 (with the extensions change): the reserve, confirm and release calls at the points above.
+- [ ] C1: commitment model with plain `DealTerms`, records, states and transition tables, the writer's decision, the version check, `deal-decline`, per-commitment settlement records. Today's slot path stays inside `transaction` behind the new shapes. Replace today's shapes in place. (Slice cut: open question 12.)
+- [ ] C2: `_sd` and the hidden fields of every record, the disclosure encoder and verifier, `deal.present`; disclosures in the card wrapper and the backup bundle.
+- [ ] C3 (with the extensions change): move slots to the scheduling extension; the reserve, confirm and release calls at the points above; `commitment-failure`.
 - [ ] C6: mixed exchanges in the Hub (totals and difference), the event log, `eventlog.*`, `statement.export` with the EEP section, the Hub's statement screen.
 - [ ] Demo story for enquiry, quote and agreement, as the M08C `task.md` asks.
 
