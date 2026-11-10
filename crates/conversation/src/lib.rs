@@ -387,7 +387,7 @@ impl ConversationService {
             author: msg.author.clone(),
             sender_timestamp_ms: msg.sender_timestamp,
             content_type: msg.content_type,
-            languages: vec![],
+            languages: msg.languages,
             body: msg.body,
             signature: [0u8; 64],
         };

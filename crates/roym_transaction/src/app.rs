@@ -539,6 +539,7 @@ pub(crate) async fn send_card_and_file<H: AppHost>(
             conversation: conversation.to_string(),
             body,
             content_type: Some(CARD_CONTENT_TYPE.to_string()),
+            languages: Vec::new(),
         },
     )
     .await;

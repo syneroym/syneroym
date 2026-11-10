@@ -6144,6 +6144,7 @@ dependencies = [
  "syneroym-roym-core",
  "syneroym-sdk",
  "syneroym-signed-record",
+ "syneroym-text-lang",
  "syneroym-ucan",
  "tempfile",
  "tokio",
@@ -8347,6 +8348,7 @@ dependencies = [
  "syneroym-app-host",
  "syneroym-roym-core",
  "syneroym-rpc",
+ "syneroym-text-lang",
  "syneroym-wit-interfaces",
  "wit-bindgen",
 ]

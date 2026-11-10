@@ -81,6 +81,8 @@ pub enum GroupCommands {
         group: String,
         #[arg(long)]
         body: String,
+        #[arg(long = "lang")]
+        langs: Vec<String>,
         #[arg(long, default_value = DEFAULT_GATEWAY_URL)]
         gateway_url: String,
         #[arg(long)]
@@ -189,8 +191,8 @@ pub(super) async fn handle_group(
             let params = json!({ "conversation": group });
             call_and_print(ctx, gateway_url, host.as_deref(), "group.info", params).await
         }
-        GroupCommands::Send { group, body, gateway_url, host } => {
-            let params = json!({ "conversation": group, "body": body });
+        GroupCommands::Send { group, body, langs, gateway_url, host } => {
+            let params = build_send_params(group, body, langs)?;
             call_and_print(ctx, gateway_url, host.as_deref(), "conversation.send", params).await
         }
         GroupCommands::History { group, limit, gateway_url, host } => {
@@ -224,4 +226,24 @@ pub(super) async fn handle_group(
             call_and_print(ctx, gateway_url, host.as_deref(), "group.unhide", params).await
         }
     }
+}
+
+pub(crate) fn build_send_params(
+    group: &str,
+    body: &str,
+    langs: &[String],
+) -> Result<serde_json::Value> {
+    let mut parsed_langs = Vec::new();
+    for l in langs {
+        let tag = syneroym_text_lang::LangTag::parse(l)?;
+        parsed_langs.push(tag.to_string());
+    }
+    let mut params = json!({
+        "conversation": group,
+        "body": body,
+    });
+    if !parsed_langs.is_empty() {
+        params["languages"] = json!(parsed_langs);
+    }
+    Ok(params)
 }

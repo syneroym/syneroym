@@ -9,6 +9,9 @@
       "conversation": "string",
       "direction": "outgoing",
       "id": "string",
+      "languages": [
+        "string"
+      ],
       "last_error": "null",
       "refused": "null",
       "restored": "boolean",
@@ -26,6 +29,7 @@
       "deleted_at_secs": "number",
       "direction": "outgoing",
       "id": "string",
+      "languages": [],
       "last_error": "string",
       "refused": "null",
       "restored": "boolean",

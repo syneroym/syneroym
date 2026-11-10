@@ -483,6 +483,7 @@ pub(crate) async fn maybe_countersign<H: AppHost>(
             conversation: row.conversation.clone(),
             body,
             content_type: Some(CARD_CONTENT_TYPE.to_string()),
+            languages: Vec::new(),
         },
     )
     .await;

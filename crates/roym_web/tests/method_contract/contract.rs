@@ -286,6 +286,103 @@ async fn invalid_field_types_and_unknown_fields_are_rejected() {
     assert_eq!(w["error"]["data"]["field"], "colour");
 }
 
+#[tokio::test]
+async fn conversation_send_languages_contract() {
+    let h = harness().await;
+    let (open_w, _) =
+        post_rpc(&h, "conversation.open", Some(json!({ "address": "did:key:zLangPeer" }))).await;
+    let conv_id = open_w["result"]["conversation_id"].as_str().unwrap();
+
+    let (w, _) = post_rpc(
+        &h,
+        "conversation.send",
+        Some(json!({
+            "conversation": conv_id,
+            "body": "hello",
+            "languages": ["hi_IN"],
+        })),
+    )
+    .await;
+    assert_eq!(w["error"]["code"], -32602);
+    assert_eq!(w["error"]["data"]["field"], "languages[0]");
+
+    let (w, _) = post_rpc(
+        &h,
+        "conversation.send",
+        Some(json!({
+            "conversation": conv_id,
+            "body": "hello",
+            "languages": ["hi", "hi"],
+        })),
+    )
+    .await;
+    assert_eq!(w["error"]["code"], -32602);
+    assert_eq!(w["error"]["data"]["field"], "languages");
+
+    let (w, _) = post_rpc(
+        &h,
+        "conversation.send",
+        Some(json!({
+            "conversation": conv_id,
+            "body": "hello",
+            "languages": ["en", "hi", "ta", "te"],
+        })),
+    )
+    .await;
+    assert_eq!(w["error"]["code"], -32602);
+    assert_eq!(w["error"]["data"]["field"], "languages");
+
+    let res_w = post_one(
+        &h.wasm_http,
+        &h,
+        "conversation.send",
+        Some(json!({
+            "conversation": conv_id,
+            "body": "hello",
+            "languages": [],
+        })),
+    )
+    .await;
+    assert!(res_w["result"]["message_id"].is_string());
+
+    let res_n = post_one(
+        &h.native_http,
+        &h,
+        "conversation.send",
+        Some(json!({
+            "conversation": conv_id,
+            "body": "hello",
+            "languages": [],
+        })),
+    )
+    .await;
+    assert!(res_n["result"]["message_id"].is_string());
+
+    let res_w2 = post_one(
+        &h.wasm_http,
+        &h,
+        "conversation.send",
+        Some(json!({
+            "conversation": conv_id,
+            "body": "hello without lang",
+        })),
+    )
+    .await;
+    assert!(res_w2["result"]["message_id"].is_string());
+
+    let res_n2 = post_one(
+        &h.native_http,
+        &h,
+        "conversation.send",
+        Some(json!({
+            "conversation": conv_id,
+            "body": "hello without lang",
+        })),
+    )
+    .await;
+    assert!(res_n2["result"]["message_id"].is_string());
+}
+
 async fn post_one<D: HttpDriver>(
     driver: &D,
     h: &Harness,
