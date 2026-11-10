@@ -20,6 +20,7 @@ Related documents:
 
 Terms from the overview (participant, resource, resource kind, commitment, commitment kind, declared value, unit of account, enquiry, bid, quote author, agreement, economic event, event log, statement, EEP) keep their meaning. This document does not use the overview's term "barter". Every agreement has one shape, with any mix of resources on each side, and an agreement without money follows no special rule. New terms here:
 
+- **Hub:** the Roym app screens a participant uses. Each participant's own node serves them, from its `web` service (`crates/roym_web/ui`). The Hub is not a shared server or meeting place. When this document says "the Hub shows", it means the participant's own app computes and shows it.
 - **Deal:** one enquiry, the quotes that answer it, and the agreement if one forms. A deal is named by its quote id (`quo_…`), which stays the same across quote versions.
 - **Agreement id:** the `record_id` (`rec_…`) of the quote version that both parties accepted. Today's code already uses this value as the agreement id (`payment.agreement`, `fulfilment.agreement`).
 - **Writer:** the quote author's `transaction` service. It is the only node that writes the agreement's state.
@@ -120,6 +121,7 @@ Kinds of test:
 | **Mixed exchanges and declared values** | | |
 | AG-22 | An agreement with no currency commitment forms and closes through the same code path as one with money. It still names a currency, and every commitment still has a declared value. No validator, state or card checks whether a currency commitment exists. | Two-node, and a unit test that runs the same quote with and without a currency commitment. |
 | AG-23 | A declared value is an integer from 0 to 10^15 minor units. A `currency` commitment's value is at least 1. Before a party signs, the Hub shows the declared value of every commitment, the total that party gives, the total it receives, and the difference when they are not equal. A difference never blocks signing. No record stores the difference. | Unit for the range; E2E for the Hub, with one agreement whose totals differ. |
+| AG-33 | The receiver can settle a commitment with a `settlement_note` that says how it was really handed over. The commitment settles as usual, its declared value does not change, and `statement.export` shows the note on that commitment's row. The note is hidden like every other free text (AG-17). | Service, and unit for AG-17's check on the new field. |
 | **EEP rules checked on the agreement side (built in M08E and M08H)** | | |
 | AG-24 | **One node only.** The issuer's node refuses to sign a quote or an acceptance that makes it the giver of an `eep-issue` commitment while it has no published offering (VX-13). The receiving node cannot know the issuer's full offering list. It shows "not checked" unless it found an offering of the issuer that is valid now. | Service, on the issuer's node. Built in M08E. |
 | AG-25 | **One node only.** The issuer's node refuses an `eep-issue` commitment whose face-value currency does not appear in its own published offerings, or whose face value is not an integer in minor units (VX-14). The receiving node checks only the integer rule, and shows the currency rule as "not checked". | Service, on the issuer's node. Built in M08E. |
@@ -388,10 +390,11 @@ Each settlement record now names one commitment. None carries a hidden value in 
 | Record | Signed by | Fields | Hidden fields |
 | --- | --- | --- | --- |
 | `payment-request` v1 | the receiver of a currency commitment | `agreement`, `conversation`, `commitment_id` | `note` (`LocalText` or null, 512 bytes) |
-| `payment-acknowledgement` v1 | the payer (a claim) or the payee (settles) | `agreement`, `conversation`, `commitment_id`, `role`, `observed_at_secs` | `method` (code or null), `reference` (string or null, 512 bytes) |
-| `fulfilment-receipt` v1 | the giver (a claim) or the receiver (settles) | `agreement`, `conversation`, `commitment_id`, `role` | none |
+| `payment-acknowledgement` v1 | the payer (a claim) or the payee (settles) | `agreement`, `conversation`, `commitment_id`, `role`, `observed_at_secs` | `method` (code or null), `reference` (string or null, 512 bytes), `settlement_note` |
+| `fulfilment-receipt` v1 | the giver (a claim) or the receiver (settles) | `agreement`, `conversation`, `commitment_id`, `role` | `settlement_note` |
 
 - The amount of a payment is the commitment's declared value. It is not repeated.
+- **`settlement_note`** (`LocalText` or null, 1024 bytes, hidden) says how the resource was really handed over, when that differs from the agreement. Example: the agreement says ₹1,000, and the payee accepts ₹600 and a sack of rice. Either half may carry one. The note on the receiver's half is the one that counts, because that half settles the commitment. By signing it, the receiver says "I accept this as full settlement". The declared value does not change. See [Mixed exchanges and declared values](#mixed-exchanges-and-declared-values).
 - The hidden fields of a settlement record use the same encoding as the quote. The signer of that record picks its salts and sends the disclosures with the card.
 - A settlement record does not repeat the terms. To read what was delivered, a reader needs the receipt and the disclosures. This is the price of hiding.
 - Today's rule stays: the receiver's half settles a commitment, and the giver's half alone is a claim.
@@ -563,6 +566,7 @@ Every agreement is an exchange of resources for resources. It holds 1 to 16 comm
   The difference is shown whenever the totals differ. There is no threshold. It never blocks signing.
 - **The difference is computed, never stored.** It is a sum of values both parties already signed. A stored copy could disagree with them. An author who wants to explain a difference writes it in `scope`, or in the conversation.
 - **What the counterparty may give.** An offering says what its owner accepts in return. In M08C the listing still has only today's `PaymentTerms` (`crates/roym_core/src/listing.rs:77`), which names one currency. So the Hub pre-fills one currency commitment from the counterparty. M08D replaces `PaymentTerms` with the in-return terms (accepted currency methods, goods or services, EEPs), and the Hub pre-fills from them. Either way this is only a starting point. No node checks a quote against the offering: the quote author owns both, and may agree to something its offering does not list.
+- **Settled in another form.** At handover, the parties may agree to a different form than the agreement says, for example part cash and part goods. The receiver settles the commitment as usual and writes the real form in `settlement_note`. Because each resource has a value in the unit of account, the declared value usually stays right, and only the form differs. If the receiver accepts less than the declared value, the note says so. The statement still shows the declared value, next to the note, and the participant corrects it by hand if needed. Roym does not record a second value per commitment.
 - An agreement with a booked slot on each side uses both reserve paths (writer and counterparty) from the section above.
 - The statement lists each commitment with its declared value. Its totals per currency and direction show what the participant gave and received over the period.
 
@@ -598,6 +602,7 @@ EventLogEntry {
   final_state:      CommitmentState or absent        // e.g. "fulfilled", "ended-unconfirmed"
   currency:         string
   declared_value_minor: i64 or absent
+  settlement_note:  LocalText or absent              // from the receiver's settling half
   records:          [ "rec_…" ]   // the signed records behind the event
 }
 ```
@@ -628,6 +633,7 @@ Statement {
     description:          LocalText           // the original text binds
     currency:             string
     declared_value_minor: i64
+    settlement_note:      LocalText or absent // from the receiver's settling half
     records:              [ "rec_…" ]
   } ]
   open_at_end: [ … same row shape, without settled_at_secs … ]   // agreed, not final at to_secs
@@ -763,17 +769,14 @@ The Hub's quote, agreement and booking screens, `roymctl roym transaction`, the 
 
 ## Open questions
 
-Each has a recommendation. The owner decides. Questions 3 to 11 are decided. Question 1 is partly decided. Question 2 belongs to a C0 ADR.
+Each has a recommendation. The owner decides. Questions 1 and 3 to 11 are decided. Question 2 belongs to a C0 ADR.
 
-1. **Declared values in a mixed exchange.** Owner direction: there is no barter special case; an exchange is any mix of goods, services, EEPs and money; the offering says what its owner accepts in return; the totals need not match, and the Hub shows the difference. This document follows that. Two points are still open:
-   - **a. Who writes the value of what the counterparty gives?**
-     - Option A (recommended): the quote author writes every value, and the counterparty agrees by signing. One writer, and both parties report the same value.
-     - Option B: each party also keeps a private value of its own for its statement, on its own node only. It helps a participant whose tax rules value goods differently. But the two statements then disagree about one agreement. Add it later only if a participant needs it.
-   - **b. Where does the difference appear?**
-     - Option A (recommended): only on the Hub's screens, computed from the declared values. Nothing stores it.
-     - Option B: a signed, hidden field in `terms`. It is redundant with the values and could disagree with them.
-     - Option C: an optional free-text reason in `terms` ("discount for a neighbour"). `scope` and the conversation already hold such text.
-   Reason for A in both: one writer and one source of truth for every value.
+1. **Declared values in a mixed exchange.**
+   Owner direction: there is no barter special case. An exchange is any mix of goods, services, EEPs and money. The offering says what its owner accepts in return. Each resource has a value in the unit of account. The totals need not match, and the Hub shows the difference.
+   - **a. Who writes the value of what the counterparty gives?** The quote author writes every value, and the counterparty agrees by signing. Each commitment has one value, which both parties report. Rejected: a second, private value per party, because both parties normally agree on the value.
+   - **b. Where does the difference appear?** Only on the Hub's screens, computed from the declared values. No record stores it. Rejected: a stored field (it could disagree with the values) and a separate free-text reason (`scope` and the conversation already hold such text).
+   - **c. A handover in another form than agreed.** The receiver's settlement record carries an optional hidden `settlement_note`, and the declared value does not change. Rejected: a "value actually received" field (a second value per commitment, with its own signing rules; add it only if participants need exact statements), and changing the agreement after it formed (it undoes the rule that an agreed quote is fixed).
+   Owner decision (2026-11-10): agreed, a, b and c as above.
 
 2. **The forward mode default: `signed` or `not-forwardable`.**
    This belongs to C0's ADR on signed message origins. It is listed here only as a cross-reference. The forwarding change recommends `not-forwardable`.
