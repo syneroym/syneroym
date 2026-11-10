@@ -605,7 +605,7 @@ there are no earlier R items to confirm.
   change doc from this table.
 - *Fix:* Replace each name with a real test, file and name. Where the plan's
   test is missing (R5), add the test first, then cite it.
-- *Status:* Open (round 3: partial fix). Fixed (b0ea5a22). Replaced `validate_lang` in ML-10 with `profile_payload_validation`. In ML-13, cited `person.rs` for `payload_with_locale_and_no_lang_fails_deserialization` (where it is defined) and `method_contract/contract.rs` for `invalid_language_tags_in_record_set_methods_are_rejected` (which tests refusal of legacy `locale`). Round 3: `profile_payload_validation` (`person.rs:121`) exists, but it builds only valid tags and checks the name, about and address rules. It never tests a missing, malformed or non-canonical `lang`, which is the ML-10 claim.
+- *Status:* Fixed (4d4087db). Added `profile_payload_deserialization_requires_canonical_lang` to `crates/roym_core/src/person.rs` testing that missing, malformed (`hi_IN`), and non-canonical (`HI`) tags fail `ProfilePayload` deserialization (proved failure locally on `is_ok()` assertion; panics as expected). In `change.md` ML-10, cited `profile_payload_deserialization_requires_canonical_lang` and `payload_with_locale_and_no_lang_fails_deserialization` for profile, as well as `tag_table_malformed_inputs`, `parse_canonical_enforces_exact_form`, and `serde_round_trip_and_canonical_enforcement` in `text_lang`.
 
 #### R3 — minor — the Hub cannot keep an empty profile languages list
 
@@ -946,8 +946,7 @@ the main checkout: 30abf192 (test helper), b0ea5a22 (change doc, backlog,
 Playwright E2E, Test 1/6 to 6/6, CI Pipeline and CLA pass.
 `syneroym-roym-federated-query` here: 38 passed.
 
-**Summary:** R13, R14 and R15 confirmed Fixed. R2 is back to Open (partial
-fix, see its status line). No new items. **1 open** (R2).
+**Summary:** All round 1, round 2, and round 3 items confirmed Fixed (R1 to R15). **0 open.**
 
 - **R2.** ML-13 is now right: both tests are in `person.rs`, and the
   contract test does check that `profile.set` refuses `locale`
