@@ -63,15 +63,15 @@ export async function addContact(page: Page, personDid: string, conversationAddr
 }
 
 /** Open the Messages screen. The Hub fetches the list again each time it is opened. */
-export async function openMessages(page: Page) {
-  await page.getByRole('button', { name: 'Messages' }).click();
+export async function openMessages(page: Page, tag = 'en') {
+  await page.getByRole('button', { name: hubMessage(tag, 'tab-messages') }).click();
   await expect(page.locator('.messages-screen')).toBeVisible();
 }
 
 /** Start a conversation with an address and show its thread. */
-export async function openConversation(page: Page, conversationAddress: string) {
+export async function openConversation(page: Page, conversationAddress: string, tag = 'en') {
   await page.locator('.open-conversation-input').fill(conversationAddress);
-  await page.getByRole('button', { name: 'Open conversation' }).click();
+  await page.getByRole('button', { name: hubMessage(tag, 'messages-open-button') }).click();
   await expect(page.locator('.conversation-thread h3').first()).toBeVisible({ timeout: 15_000 });
   // The Hub draws the first conversation by itself when the screen opens, and then draws the
   // opened one again. The selected row shows that the second drawing has replaced the first,
@@ -80,10 +80,15 @@ export async function openConversation(page: Page, conversationAddress: string) 
 }
 
 /** Send a message in the open thread. The box clears only when the send succeeds. */
-export async function sendMessage(page: Page, body: string) {
+export async function sendMessage(page: Page, body: string, tag = 'en') {
   await page.locator('.compose-input').fill(body);
-  await page.getByRole('button', { name: 'Send', exact: true }).click();
+  await page.getByRole('button', { name: hubMessage(tag, 'messages-send-button'), exact: true }).click();
   await expect(page.locator('.compose-input')).toHaveValue('', { timeout: 15_000 });
+}
+
+/** Pick a language in the message composer's language list. */
+export async function addMessageLanguage(page: Page, lang: string, _tag = 'en') {
+  await page.locator('.messages-languages-add').selectOption(lang);
 }
 
 /** The message in the open thread that holds this text. */

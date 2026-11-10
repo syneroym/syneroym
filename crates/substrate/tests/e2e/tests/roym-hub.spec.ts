@@ -1,6 +1,6 @@
 import { test, expect, type Page } from '../fixtures';
 import {
-  addContact, addListingTranslation, chooseHubLanguage, hubMessage, loginWithDelegatedKey, openConversation, openMessages, pickCategory, rpcCall, saveProfile,
+  addContact, addListingTranslation, addMessageLanguage, chooseHubLanguage, hubMessage, loginWithDelegatedKey, openConversation, openMessages, pickCategory, rpcCall, saveProfile,
   sendMessage, threadMessage,
 } from '../hub-helpers';
 import { readE2EPorts } from '../ports';
@@ -402,6 +402,51 @@ test.describe('Roym Hub', () => {
     expect(note.toLowerCase()).not.toContain('deleted for everyone');
     // The "also ask them" choice is present because this is a message we sent.
     await expect(page.locator('.delete-dialog .ask-peer')).toBeVisible();
+  });
+
+  test('messages tab: a message in two languages keeps its text and has its main language', async ({ page }) => {
+    await page.goto(HUB_URL);
+    await page.waitForLoadState('networkidle');
+    await loginWithDelegatedKey(page);
+
+    await openMessages(page);
+    await openConversation(page, 'did:key:z6MkhubE2ePeerAddressNeverAnswers00000000000000');
+
+    // The language list shows English by default
+    const langRows = page.locator('.messages-language-row');
+    await expect(langRows.first().locator('.messages-language-name')).toHaveText('English');
+
+    await addMessageLanguage(page, 'hi');
+    const hindiRow = langRows.nth(1);
+    await expect(hindiRow.locator('.messages-language-name')).toHaveText('Hindi');
+    await hindiRow.locator('.messages-language-move-up').click();
+
+    await expect(langRows.first().locator('.messages-language-name')).toHaveText('Hindi');
+    await expect(langRows.nth(1).locator('.messages-language-name')).toHaveText('English');
+
+    const runTag = Date.now().toString(36);
+    const msg = `नमस्ते, see you at 5 ${runTag}`;
+    await sendMessage(page, msg);
+
+    const body = page.locator('.thread-messages .message .message-body', { hasText: msg }).first();
+    await expect(body).toBeVisible({ timeout: 15_000 });
+    await expect(body).toHaveAttribute('lang', 'hi');
+    await expect(body).toHaveText(msg);
+
+    // No "Language not stated" note
+    const note = page.locator('.thread-messages .message .message-language-note');
+    await expect(note).toHaveCount(0);
+
+    // Reload and reopen conversation: still lang="hi" read back from store
+    await page.reload();
+    await page.waitForLoadState('networkidle');
+    await openMessages(page);
+    await openConversation(page, 'did:key:z6MkhubE2ePeerAddressNeverAnswers00000000000000');
+
+    const bodyReloaded = page.locator('.thread-messages .message .message-body', { hasText: msg }).first();
+    await expect(bodyReloaded).toBeVisible({ timeout: 15_000 });
+    await expect(bodyReloaded).toHaveAttribute('lang', 'hi');
+    await expect(bodyReloaded).toHaveText(msg);
   });
 
   test('11. listings tab: a malicious listing title renders as literal text, no element, no request', async ({ page }) => {
