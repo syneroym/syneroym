@@ -1,11 +1,12 @@
 import { currentLanguage } from "./i18n";
 
-/// The languages a person can pick for a record, in this order (Q6).
+/// The languages a person can pick for a record, in this order.
 export const RECORD_LANGUAGES: readonly string[] = [
   "en", "hi", "hi-Latn", "bn", "gu", "kn", "ml", "mr", "or", "pa", "ta", "ta-Latn", "te",
 ];
 
-/// Same language and same script; a tag `Intl.Locale` refuses matches nothing.
+/// Same language and same script, so hi-Latn does not match the Devanagari
+/// hi catalog. A tag `Intl.Locale` refuses matches nothing.
 export function sameLanguage(requested: string, available: string): boolean {
   try {
     const a = new Intl.Locale(requested);

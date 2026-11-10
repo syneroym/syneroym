@@ -13,6 +13,7 @@ export function languagePicker(reload: () => void = () => window.location.reload
   for (const tag of availableLanguages()) {
     const option = document.createElement("option");
     option.value = tag;
+    // The language's own name, so a person finds theirs in any Hub language.
     option.textContent = languageName(tag, tag);
     select.appendChild(option);
   }
