@@ -3,7 +3,7 @@
 *Reader: the developer (or AI) who implements slice B3b. You do not have the
 planning conversation. This plan is meant to stand alone.*
 
-**Status: plan written, 2026-11-10. Owner questions open (section 2.1).**
+**Status: plan review round 1 done, 2026-11-10. Owner questions answered 2026-11-10. P-items folded in.**
 
 **Size and PR.** M. One PR on `feat/m08b-b3b-chat-lang-tags`, with the
 commits of section 6 in that order. The branch starts from `main` at
@@ -168,6 +168,8 @@ option.
 **Q1. What does a receiver do with a message whose language list breaks
 the rule? (blocks Step 3)**
 
+Owner answer: (a), 2026-11-10. Refuse the whole message. Add a log line for refused group entries (P4).
+
 The rule (D-B3b-1): at most 3 tags, each in canonical form, no tag twice.
 The sender's host checks it before it signs, so only a node that does not
 follow the rule sends a bad list. For records, the owner chose "canonical
@@ -193,6 +195,8 @@ form only, everywhere", also on verify (B3a Q3 (a)).
 
 **Q2. How does the WIT carry the list? (blocks Step 3)**
 
+Owner answer: (a), 2026-11-10. A languages parameter on send.
+
 The WIT is `syneroym:conversation@0.1.0`
 ([conversation.wit:1](../../../../crates/wit_interfaces/wit/conversation/conversation.wit#L1)).
 `send` takes `(conversation, content-type, body)` (`:185` to `:189`), and
@@ -213,6 +217,8 @@ the `message` record has `content-type` at `:67`.
 **Q3. What does the chat box show for the message languages? (blocks
 Step 5)**
 
+Owner answer: (a), 2026-11-10. The shared list component. One risk for the owner: the default tag is the Hub language, so Hindi typed in an English Hub goes out as en. The list also resets each time a 1:1 thread is redrawn.
+
 ML-14 allows 3 tags, main language first, and ML-25 says a mixed message
 lists both languages. The profile screen already has an ordered language
 list with add, "move up" and remove
@@ -231,6 +237,8 @@ to `:111`).
 
 **Q4. What does the Hub show for a message that has tags? (blocks Step 5)**
 
+Owner answer: (a), 2026-11-10. No language name under a tagged message.
+
 - (a) **Only `lang` on the text.** Nothing more is visible. A reader sees
   the script, and B5 adds the translate action at the chat hook point,
   where the source language will matter. *Recommended:* ML-14 asks only for
@@ -240,6 +248,8 @@ to `:111`).
   a line to many messages and one more rule.
 
 **Q5. Do cards carry message languages? (blocks Step 4)**
+
+Owner answer: (a), 2026-11-10. Cards carry no message languages.
 
 The transaction service sends a card with `SendInput { conversation, body,
 content_type }`
@@ -256,6 +266,8 @@ Since B3a, the record inside the card has its own `lang`.
   the same thing, and they can disagree.
 
 **Q6. What does story 40 show for B3b? (blocks Step 6)**
+
+Owner answer: (a), 2026-11-10. One send step in story 40.
 
 Story 40 runs on the demo nodes after story 20, so Alice's chat with Bob
 exists and the story reads `BOB_ADDR` from the same demo env
@@ -308,9 +320,9 @@ exists and the story reads `BOB_ADDR` from the same demo env
    - Never-built stubs that must still compile:
      [synsvc_native/conversation.rs:33](../../../../crates/control_plane/src/synsvc_native/conversation.rs#L33),
      [host_capabilities.rs:143](../../../../crates/sandbox_wasm/src/host_capabilities.rs#L143),
-     and two test hosts in
+     and one test host in
      [roym_core/signing.rs:516](../../../../crates/roym_core/src/signing.rs#L516)
-     and `:686`.
+     (`:686` is WebSocket).
 3. **The signed 1:1 payload.** `canonical_bytes`
    ([envelope.rs:30](../../../../crates/conversation/src/envelope.rs#L30)
    to `:61`) writes the domain `syneroym:conversation:v1`, then the fields
@@ -503,7 +515,7 @@ What the Hub sends changes too:
 | --- | --- | --- |
 | 1 | A chat box has a text input and Send | Also a language list under it (Q3), starting at the Hub language |
 | 2 | Message text has no `lang` | `lang` is the main language; `lang=""` when the message has no tag or its tag does not parse |
-| 3 | — | A text message with no tag shows "Language not stated" under its text. A card, a deleted message and a group system row do not |
+| 3 | — | A text message with no tag shows "Language not stated" under its text. A card, a deleted message, a binary message and a group system row do not |
 | 4 | A search hit has no `lang` | The snippet has `lang` from the main language |
 
 ### Stays the same
@@ -571,6 +583,8 @@ that depend on an owner answer say so.
     `content_type`. `canonical_bytes`, `sign` and `verify` take
     `languages: &[String]` after `content_type`. In the bytes, after
     `content_type` and its `0`, comes the list, then the body as today.
+    `sign` gains `#[allow(clippy::too_many_arguments)]` (7 to 8 arguments,
+    P2).
   - One helper writes the list, in `envelope.rs`, and `dag.rs` uses it
     too:
 
@@ -579,18 +593,25 @@ that depend on an owner answer say so.
     /// not separators, so no byte can move between two tags or into the body.
     pub(crate) fn put_languages(out: &mut Vec<u8>, languages: &[String]);
     /// The reverse of `put_languages`, reading from `bytes[*at..]` and moving
-    /// `at`. Fails on a short buffer, a count over MAX_MESSAGE_LANGUAGES or
-    /// a tag that is not UTF-8.
+    /// `at`. Fails on a short buffer, a count over MAX_MESSAGE_LANGUAGES,
+    /// an offset overflow or a tag that is not UTF-8.
     pub(crate) fn take_languages(bytes: &[u8], at: &mut usize) -> Result<Vec<String>, String>;
     ```
 
     `take_languages` refuses a count over 3 before it allocates, so a bad
-    entry cannot ask for a large `Vec`.
+    entry cannot ask for a large `Vec`. Safe length parsing rule (P1): no `+`
+    or `-` on a length read from the wire. Read each length with
+    `usize::try_from(u64)`, add offsets with `checked_add`, and take slices
+    with `get(a..b)`; any failure is `Err`. Refuse a tag longer than
+    `MAX_TAG_LEN` before slicing.
   - `encode_body(content_type, languages, body)` writes `u64 ct_len`, the
     content type, `put_languages`, then the body. `decode_body` returns
     `(String, Vec<String>, Vec<u8>)` and also runs
     `parse_message_languages` on the list (Q1 (a)): a bad list is an
     `Err`, so the entry takes the path of a body that cannot be decoded.
+    `decode_body` applies the same safe length parsing rule (P1) for
+    `ct_len` and offsets, closing an existing panic/overflow hole on hostile
+    lengths.
   - The domain string of the 1:1 bytes stays `syneroym:conversation:v1`:
     nothing reads the old form, as with record versions (D-S0-5).
 - **D-B3b-3. The message id does not change.** Section 2.2 point 5.
@@ -606,7 +627,10 @@ that depend on an owner answer say so.
     limit (section 2.2 point 12). The test hook `deliver_inbound`
     ([lib.rs:374](../../../../crates/conversation/src/lib.rs#L374)) skips
     this check, as it already skips the signature check.
-  - Group receipt: `decode_body` (D-B3b-2).
+  - Group receipt: `decode_body` (D-B3b-2). When a group entry is refused
+    because of a bad language list, emit a `tracing::warn!` with entry id
+    and author (never the body text, P4). The entry stays unapplied and retry
+    on each pass is the accepted cost (deferred backlog).
   - Backup import (`import_messages`,
     [backup.rs:358](../../../../crates/conversation/src/store/backup.rs#L358)):
     the same call per message; an error fails the chunk with
@@ -634,8 +658,12 @@ that depend on an owner answer say so.
   (`insert_outgoing_and_enqueue`, `insert_outgoing_without_enqueue`,
   `insert_incoming_if_absent`) and `record_outgoing_group_message` take
   `languages: &[String]` right after `content_type`, and write
-  `languages.join(" ")`. No `ALTER TABLE` and no schema version: pre-release
-  rule (W7).
+  `languages.join(" ")`. Three raw `INSERT` statements are updated too (P3):
+  `apply_message_entry` (`group/entry.rs:166`) adds `languages` to the
+  statement and binds `content.1.join(" ")`; the backup import
+  (`store/backup.rs:397`) adds `languages` and binds `m.languages.join(" ")`;
+  the withdrawn row (`group/entry.rs:286`) stores no list (`''` default, as the
+  body is gone). No `ALTER TABLE` and no schema version: pre-release rule (W7).
 - **D-B3b-6. The Roym input.** `SendInput` gains
 
   ```rust
@@ -647,9 +675,10 @@ that depend on an owner answer say so.
   tag answers `-32602` with `data.field = "languages[0]"` through
   `parse_value` ([method.rs:107](../../../../crates/roym_core/src/method.rs#L107)).
   `messages::send` then calls `check_tag_list(&input.languages,
-  MAX_MESSAGE_LANGUAGES)`; an error is `Response::invalid_params(…)` with
-  `data.field = "languages"` (as `method.rs:76` adds it), before the host
-  call. It passes `as_str()` strings to `AppConversation::send`. With
+  MAX_MESSAGE_LANGUAGES)`; an error is returned as `ParamError { field:
+  Some("languages".into()), message: e.to_string() }.into_response()` (P6),
+  giving `-32602` with `data.field = "languages"` before the host call. It
+  passes `as_str()` strings to `AppConversation::send`. With
   `skip_serializing_if`, the transaction service's two card sends (Q5 (a))
   add `languages: Vec::new()` and send the same JSON as before.
 - **D-B3b-7. The Roym output.** `MessageView` gains `pub languages:
@@ -693,12 +722,18 @@ that depend on an owner answer say so.
   /// `${prefix}-language-remove` and `${prefix}-languages-add`.
   export function languageList(
     prefix: string, max: number, initial: string[], labels: LanguageListLabels,
+    groupLabel: string,
   ): LanguageList;
   ```
 
-  The profile screen uses it with the prefix `profile` and `max` 8, so its
-  class names and its rows stay as they are (`profile.test.ts` and the e2e
-  step `saveProfile` pass unchanged); its stored list goes through `set`.
+  Accessibility (P8): `root` gets `role="group"` and `aria-label` set to
+  `groupLabel` (`t("messages-languages-label")` or `t("group-languages-label")`,
+  or the profile's label). The "add" `<select>` also gets `aria-label` set to
+  `groupLabel`.
+  The profile screen uses it with the prefix `profile`, `max` 8, and its own
+  label, so its class names and its rows stay as they are (`profile.test.ts`
+  and the e2e step `saveProfile` pass unchanged); its stored list goes through
+  `set`.
   The 1:1 chat box uses the prefix `messages` and the group chat box the
   prefix `group`, both with `max` 3 and `initial` `[currentLanguage()]`.
   The list lives as long as the open thread: it keeps its rows between
@@ -718,15 +753,19 @@ that depend on an owner answer say so.
   export function messageLang(languages: readonly string[]): string;
   ```
 
-  `messages.ts` (`:533`, with `span`) and `groups.ts` (`:114`, with `div`) call `messageText`; the
-  search hit (`messages.ts:152`) sets `lang = messageLang(h.languages)` on
-  the snippet. `MessageRow`, `GroupMessageRow` and `SearchMatch` gain
-  `languages?: string[]`; a missing field is read as `[]`. A card, a
-  deleted message and a group system row (membership, group name) are not
-  drawn through `messageText`, so they get no note. With Q4 (a), a tagged
-  message shows no language name. `lang=""` is the HTML way to say "the
-  language is not known"; a message with no tag must not inherit the page
-  language, which would mark a Tamil text as Hindi.
+  `messageText` is used only when `body_encoding === "utf8"` (P5). A binary row
+  (`body_encoding === "base64"`) is drawn as today, with no `lang` attribute
+  and no note.
+  `messages.ts` (`:533`, with `span`) and `groups.ts` (`:114`, with `div`) call
+  `messageText` for text messages; the search hit (`messages.ts:152`) sets
+  `lang = messageLang(h.languages)` on the snippet. `MessageRow`,
+  `GroupMessageRow` and `SearchMatch` gain `languages?: string[]`; a missing
+  field is read as `[]`. A card, a deleted message, a binary message and a
+  group system row (membership, group name) are not drawn through
+  `messageText`, so they get no note. With Q4 (a), a tagged message shows no
+  language name. `lang=""` is the HTML way to say "the language is not known";
+  a message with no tag must not inherit the page language, which would mark
+  a Tamil text as Hindi.
 - **D-B3b-12. Hub messages.** New ids, English and Hindi, each added in the
   step that first uses it: `messages-languages-add`,
   `messages-languages-move-up`, `messages-languages-remove`,
@@ -771,51 +810,58 @@ Done in the planning session: this file and the B3b row of
 3. Tests of section 7.2 ("text_lang").
 4. `cargo nextest run -p syneroym-text-lang -p syneroym-roym-core`.
 
-### Step 3 — The host, the WIT and both builds
-
-This step changes the WIT, so every layer of section 2.2 point 2 changes in
-it.
+### Step 3a — Host internals and storage
 
 1. `crates/conversation/src/group/entry.rs`: `incoming_group_row`
    (D-B3b-13), with no new field yet. `cargo nextest run -p
    syneroym-conversation`: the same tests pass, the same number.
-2. WIT (W1, W2): `crates/wit_interfaces/wit/conversation/conversation.wit`
-   `message` and `send`, with a doc line on each: "Language tags of the
-   text, main language first, at most 3, each in canonical form. Empty
-   when not stated."
-3. `syneroym-rpc`: `ConversationMessage.languages`, `ConversationHost::send`
-   (W3).
-4. `crates/conversation`:
+2. `crates/conversation`:
    - `Cargo.toml`: `syneroym-text-lang.workspace = true`.
-   - `envelope.rs`: the field, `canonical_bytes`, `sign`, `verify`,
-     `put_languages`, `take_languages` (D-B3b-2); its tests.
-   - `dag.rs`: `encode_body`, `decode_body` (D-B3b-2); tests in its
-     existing `mod tests` (`dag.rs:374`).
+   - `envelope.rs`: `put_languages`, `take_languages` (with length overflow
+     checks, D-B3b-2), the field in `DeliveryPayload`, `canonical_bytes`,
+     `sign` (`#[allow(clippy::too_many_arguments)]`, P2), `verify` (D-B3b-2);
+     its tests.
+   - `dag.rs`: `encode_body`, `decode_body` (safe lengths with `checked_add`
+     and slice `get`, D-B3b-2, P1); tests in its existing `mod tests`
+     (`dag.rs:374`).
    - `store/schema.rs`, `store.rs` (`StoredMessage`, `into_wire`),
      `store/message.rs` (`MESSAGE_COLUMNS`, the three insert functions,
      `row_to_message`), `store/history.rs`, `store/search.rs`,
-     `store/backup.rs` (D-B3b-5, D-B3b-4).
-   - `host_impl.rs` `send`, `lib.rs` `enqueue_direct` (with
-     `languages: &[String]`; the system sends pass `&[]`) and
+     `store/backup.rs` (named insert in `backup.rs:397`, D-B3b-5, P3).
+   - `lib.rs`: `enqueue_direct` (`#[allow(clippy::too_many_arguments)]`, P2;
+     with `languages: &[String]`; the system sends pass `&[]`) and
      `deliver_inbound`, `group.rs` `send_group` and
-     `record_outgoing_group_message`, `group/entry.rs`
-     `apply_message_entry`, `transport.rs` `sealed_envelope` (`:211`) and
-     `verify_incoming_envelope` (D-B3b-4).
-   - Every test caller of section 2.2 points 6 and 8: pass `vec![]` /
+     `record_outgoing_group_message`, `group/entry.rs` `apply_message_entry`
+     (raw `INSERT` writes `languages`, P3; `tracing::warn!` on bad tag refusal,
+     P4; withdrawn row stores `''`, P3), `transport.rs` `sealed_envelope`
+     (`:211`) and `verify_incoming_envelope` (D-B3b-4).
+   - Every internal test caller in `crates/conversation`: pass `vec![]` /
      `&[]` unless the test is about tags. New tests of section 7.2 ("host").
-5. `sandbox_wasm`: `capabilities_messaging.rs` (`send`, `map_message`),
+3. `cargo nextest run -p syneroym-conversation`.
+
+### Step 3b — The WIT and both builds
+
+1. WIT (W1, W2): `crates/wit_interfaces/wit/conversation/conversation.wit`
+   `message` and `send`, with a doc line on each: "Language tags of the
+   text, main language first, at most 3, each in canonical form. Empty
+   when not stated."
+2. `syneroym-rpc`: `ConversationMessage.languages`, `ConversationHost::send`
+   (W3).
+3. `crates/conversation`: `host_impl.rs` `send` takes `languages: Vec<String>`,
+   runs `parse_message_languages` (D-B3b-4); tests in `host_impl/tests.rs`.
+4. `sandbox_wasm`: `capabilities_messaging.rs` (`send`, `map_message`),
    `host_capabilities.rs:143`, `engine/auth.rs` (D-B3b-8).
-6. `app_host`: `lib.rs:324`, `guest.rs:241`. `app_host_native`:
+5. `app_host`: `lib.rs:324`, `guest.rs:241`. `app_host_native`:
    `host.rs:399`, `convert/conversation.rs` (`message_out`,
    `rpc_message_to_guest`). `control_plane`:
-   `synsvc_native/conversation.rs:33`. `roym_core`: the two test hosts in
-   `signing.rs`, the `Message` literal in `method/tests.rs:438`.
-7. `roym_conversation` `messages.rs:295`: pass `Vec::new()` for now
+   `synsvc_native/conversation.rs:33`. `roym_core`: the one test host in
+   `signing.rs:516` (P7), the `Message` literal in `method/tests.rs:438`.
+6. `roym_conversation` `messages.rs:295`: pass `Vec::new()` for now
    (Step 4 sends the input's list).
-8. `test-components/dual-build-fixture/src/app/dispatch.rs:194`: pass
+7. `test-components/dual-build-fixture/src/app/dispatch.rs:194`: pass
    `Vec::new()`. `app_host_native/tests/dual_build_parity/conversation.rs`
    (the `DeliveryPayload` literal, `:368` to `:385`).
-9. `mise run build:test-components`, `mise run build:roym`, then
+8. `mise run build:test-components`, `mise run build:roym`, then
    `cargo nextest run -p syneroym-conversation -p syneroym-rpc
    -p syneroym-sandbox-wasm -p syneroym-app-host -p syneroym-app-host-native
    -p syneroym-control-plane -p syneroym-roym-core -p syneroym-roym-web`
@@ -826,8 +872,9 @@ it.
 1. `roym_core`: `SendInput.languages` (D-B3b-6), `MessageView.languages`
    (D-B3b-7), its tests (`conversation.rs:246`,
    `conversation/group/tests.rs:7`, `method/tests.rs:437`).
-2. `roym_conversation` `messages.rs`: the `check_tag_list` call and the
-   list passed to the host (D-B3b-6); the two hand-built views (D-B3b-7).
+2. `roym_conversation` `messages.rs`: the `check_tag_list` call returning
+   `ParamError` with `field = "languages"` (P6), and the list passed to the
+   host (D-B3b-6); the two hand-built views (D-B3b-7).
 3. `roym_transaction` `app.rs:538`, `agreement_ops.rs:482`:
    `languages: Vec::new()` (Q5 (a)).
 4. `roymctl` (D-B3b-9) and its unit test.
@@ -844,9 +891,11 @@ it.
 
 ### Step 5 — Hub
 
-1. `src/i18n/language_list.ts` (D-B3b-10); `screens/profile.ts` uses it.
-   `profile.test.ts` passes unchanged. New `language_list.test.ts`.
-2. `src/chat/message_text.ts` (D-B3b-11) and `chat-text-not-stated`.
+1. `src/i18n/language_list.ts` (D-B3b-10, with `role="group"` and
+   `aria-label`s, P8); `screens/profile.ts` uses it. `profile.test.ts`
+   passes unchanged. New `language_list.test.ts`.
+2. `src/chat/message_text.ts` (D-B3b-11, for `body_encoding === "utf8"`, P5)
+   and `chat-text-not-stated`.
 3. `screens/messages.ts`: the chat box list, `languages` in the send, the
    text through `messageText`, the search snippet `lang`. `screens/groups.ts`:
    the same for the group chat box and `renderMessageRow`.
@@ -904,6 +953,8 @@ it.
   submit it.
 - `set(["ta", "en"])` draws two rows in that order.
 - The class names follow the prefix (`messages-language-row`).
+- Accessibility: root has `role="group"` and `aria-label` matching
+  `groupLabel`; "add" `<select>` has matching `aria-label` (P8).
 
 `src/chat/message_text.test.ts`
 
@@ -922,13 +973,15 @@ it.
 - After a send, the list keeps its rows.
 - An incoming text message with `languages: ["ta"]` has `lang="ta"`; one
   without `languages` shows the note; a card message and a deleted message
-  show no note.
+  show no note; a binary message (`body_encoding: "base64"`) has no note
+  and no `lang` (P5).
 - A search hit with `languages: ["hi"]` has a snippet with `lang="hi"`.
 
 `src/screens/groups.test.ts`
 
 - The same for the group chat box and `renderMessageRow`; a membership row
-  and a group-name row show no note.
+  and a group-name row show no note; a binary message
+  (`body_encoding: "base64"`) has no note and no `lang` (P5).
 - The existing test "retry handler … never calls conversation.send" passes
   unchanged.
 
@@ -965,7 +1018,10 @@ Host (`crates/conversation`)
   `canonical_bytes` for `["ab"]` and for `["a", "b"]` differ, and for
   `["a"]` with body `b"b"` and `["ab"]` with an empty body differ.
 - `dag.rs` tests: `encode_body` / `decode_body` round trip with 0, 1 and 3
-  tags; a count of 4, a truncated tag and a non-canonical tag are `Err`.
+  tags; a count of 4, a truncated tag and a non-canonical tag are `Err`;
+  `decode_body` with `ct_len = u64::MAX`, with `ct_len = usize::MAX - 7`,
+  a tag length of `u64::MAX`, and a count of `u64::MAX` returns `Err` and
+  does not panic (P1).
 - `host_impl/tests.rs`: `send` with `["hi", "en"]` and a body that mixes
   Devanagari and Latin letters; `get_message` and `history` give the same
   body bytes and the same list. `send` with `["HI"]`, with 4 tags and with
@@ -977,7 +1033,9 @@ Host (`crates/conversation`)
   `["HI"]` is refused with `InvalidArgument` and not stored.
 - `group/tests/languages.rs` (new, `mod languages;` in `group/tests.rs`):
   a group message with `["hi", "en"]` reaches a member with the same list;
-  an entry whose plaintext has a non-canonical tag is not applied.
+  reading the stored row from the database (not just the notification)
+  confirms `languages` is stored (P3); an entry whose plaintext has a
+  non-canonical tag is not applied and logs a warning (P4).
 - `store/tests/backup_roundtrip.rs`: the list survives export and import;
   an import with `"languages": ["HI"]` is refused.
 - `store/tests.rs`: a row inserted by hand without the column reads back
@@ -1129,6 +1187,10 @@ In [deferred-backlog.md](../../deferred-backlog.md):
   translate action at the chat hook point. Target M08B B5 (decide there).
   Link `crates/roym_web/ui/src/chat/message_text.ts`. Drop this row if the
   owner picks Q4 (b).
+- **§10, new row "A group entry with a bad language list is retried on
+  every pass"** (P4): an entry whose plaintext has a bad tag stays unapplied
+  and is decrypted on every pass. Target `TBD`. Link
+  `crates/conversation/src/group/entry.rs`.
 - **§11, new row "Chat search does not use the message languages"**: B4b
   builds search keys from the body; the tags are not used to pick a
   transliteration table. Target M08B B4b (decide there). Link
