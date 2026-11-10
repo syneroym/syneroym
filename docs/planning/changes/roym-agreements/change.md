@@ -18,7 +18,7 @@ Related documents:
 
 ## Terms
 
-Terms from the overview (participant, resource, resource kind, commitment, commitment kind, declared value, unit of account, enquiry, bid, quote author, agreement, barter, economic event, event log, statement, EEP) keep their meaning. New terms here:
+Terms from the overview (participant, resource, resource kind, commitment, commitment kind, declared value, unit of account, enquiry, bid, quote author, agreement, economic event, event log, statement, EEP) keep their meaning. This document does not use the overview's term "barter". Every agreement has one shape, with any mix of resources on each side, and an agreement without money follows no special rule. New terms here:
 
 - **Deal:** one enquiry, the quotes that answer it, and the agreement if one forms. A deal is named by its quote id (`quo_…`), which stays the same across quote versions.
 - **Agreement id:** the `record_id` (`rec_…`) of the quote version that both parties accepted. Today's code already uses this value as the agreement id (`payment.agreement`, `fulfilment.agreement`).
@@ -38,7 +38,7 @@ Today a Roym deal has one shape. The counterparty pays money. The quote author d
 
 This has four results:
 
-- **One deal cannot hold several things on each side.** A teacher cannot trade a lesson for a sack of wheat plus ₹100. Barter is not possible.
+- **One deal cannot hold several things on each side.** A teacher cannot trade a lesson for a sack of wheat plus ₹100. The only shape is money for work.
 - **A party cannot show how a deal went without showing what it cost.** Any receipt it shows carries the whole price. Reputation (M08G) needs outcomes without amounts.
 - **There is no record of what a participant gave and received over time.** A participant who needs a statement for tax has to collect it by hand.
 - **The deal core knows about slots.** The booking track, seat claims and slot ids are inside `transaction`. The [Roym extensions](../roym-extensions/change.md) change moves them out. The deal core then needs a generic shape that an extension can attach data to.
@@ -46,7 +46,7 @@ This has four results:
 ## What a participant can do after this change
 
 - Make one agreement with several commitments on each side: a service, money, goods, and later EEPs.
-- Trade with no money at all (barter). Each commitment still has a declared value in one currency.
+- Exchange any mix of services, goods, money and later EEPs, on either side. Money is not required. Each commitment has a declared value in the agreement's one currency, so the two sides can be compared. Before signing, each party sees what it gives, what it receives, and the difference.
 - See the state of each commitment, not only of the whole deal. When something fails, see which commitment failed and whose step is missing.
 - Show a deal to someone else with chosen fields hidden, for example the price. The signatures still verify.
 - Export a statement for a period: every commitment given and received, with its declared value.
@@ -61,7 +61,7 @@ This has four results:
   - The single-writer rule, and how the counterparty's copy stays in step.
   - The agreement side of reserve, confirm and release.
   - Selective disclosure on the quote, the agreement receipt and the settlement records.
-  - Barter.
+  - Mixed exchanges: who writes the declared values, and how the Hub shows a difference between the two sides.
   - The event log and the statement export, with a defined section for EEPs that M08E fills.
   - Every new or changed `transaction` method, and whether it is wire-reachable.
   - What replaces today's quote, receipt and booking records, in place.
@@ -93,7 +93,7 @@ Kinds of test:
 | --- | --- | --- |
 | **Participants and resources** | | |
 | AG-1 | One identity is the quote author of one deal and the counterparty of another, on the same node, at the same time, with no role setting (VX-1). | Two-node: A quotes B, and B quotes A; both agreements reach `agreed`. |
-| AG-2 | Each built resource kind can be given by either party: for every pair (giver, resource kind) the quote validator accepts the commitment (VX-2). M08C builds `service-in-slot`, `goods-or-service` and `currency`. M08E adds `eep` to the same table. | Unit: a table test over giver × resource kind. Two-node: a service-for-service barter that closes. |
+| AG-2 | Each built resource kind can be given by either party: for every pair (giver, resource kind) the quote validator accepts the commitment (VX-2). M08C builds `service-in-slot`, `goods-or-service` and `currency`. M08E adds `eep` to the same table. | Unit: a table test over giver × resource kind. Two-node: a service-for-service agreement with no currency commitment that closes. |
 | AG-3 | A quote that answers a want and a quote that answers an enquiry produce the same agreement receipt and the same progress snapshot. The receipt does not carry the `answers` field (VX-6). M08C builds only enquiries. M08F adds the Want-Bid end-to-end test. | Unit: build both quote forms from the same terms and compare the receipts byte for byte. |
 | **Agreements and commitments** | | |
 | AG-4 | One agreement holds 1 to 16 commitments. Each names its giver, its resource kind, its commitment kind and its declared value. All declared values are in the agreement's one currency (VX-7). | Unit: validation table (0, 1, 16, 17 commitments; missing fields). Two-node: an agreement with a service, a currency commitment and a goods commitment forms and closes. |
@@ -109,7 +109,7 @@ Kinds of test:
 | AG-13 | Every state-changing call is idempotent. A repeated `agreement.accept`, `fulfilment.sign`, `payment.acknowledge` or `deal.decline` returns the record already made (today's `D-C8-6`). | Service. |
 | **Reserve, confirm, release (agreement side)** | | |
 | AG-14 | When the writer owns a reserved resource, it reserves it under its own fence when it files the counterparty's acceptance. Two counterparties who accept quotes for the last seat: one agreement reaches `agreed`, the other ends `not-formed` with reason `slot-taken` (VX-10, EX-6). | Two-node: today's booking race test, moved to the scheduling extension. |
-| AG-15 | When the counterparty owns a reserved resource (barter, or a bid), its node reserves it before it signs its acceptance. If the reserve fails, it signs nothing, and `agreement.accept` answers `reserve-failed` with the extension's reason (VX-10, EX-5). | Service. |
+| AG-15 | When the counterparty owns a reserved resource (for example it gives a service in a booked slot, or it made a bid), its node reserves it before it signs its acceptance. If the reserve fails, it signs nothing, and `agreement.accept` answers `reserve-failed` with the extension's reason (VX-10, EX-5). | Service. |
 | AG-16 | If a non-writer owner's confirm is refused after its reservation expired and the resource was given away, the owner's node sends a signed `commitment-failure`. The writer marks that commitment `failed` with reason `reservation-lost` (EX-22). | Two-node with a controllable clock. |
 | **Selective disclosure** | | |
 | AG-17 | The quote, the agreement receipt and the settlement records carry no hidden value in plain form. A test serialises each signed payload and checks that no hidden value appears in it (VX-11). | Unit. |
@@ -117,9 +117,9 @@ Kinds of test:
 | AG-19 | The encoder and verifier follow SD-JWT: our digest function gives the result of the worked example in the SD-JWT specification. The verifier refuses a disclosure whose digest is not in the record, a digest that appears twice, a name that is not a hidden field of that object, a name that equals a visible field, and a value with a non-integer number. | Unit: test vectors. |
 | AG-20 | Both receipt halves carry a `terms` object that is byte-identical, after canonicalisation, to the quote's `terms`. A half whose `terms` differ is refused when it is filed. | Unit. |
 | AG-21 | Every quote version uses fresh salts. Each salt is 16 bytes. The counterparty's node refuses a quote with a salt of another length or a salt used twice. | Unit. |
-| **Barter and declared values** | | |
-| AG-22 | An agreement with no currency commitment forms and closes. It still names a currency, and every commitment still has a declared value. | Two-node. |
-| AG-23 | A declared value is an integer from 0 to 10^15 minor units. The Hub shows each party, before it signs, the declared value of every commitment it gives. | Unit for the range; E2E for the Hub. |
+| **Mixed exchanges and declared values** | | |
+| AG-22 | An agreement with no currency commitment forms and closes through the same code path as one with money. It still names a currency, and every commitment still has a declared value. No validator, state or card checks whether a currency commitment exists. | Two-node, and a unit test that runs the same quote with and without a currency commitment. |
+| AG-23 | A declared value is an integer from 0 to 10^15 minor units. A `currency` commitment's value is at least 1. Before a party signs, the Hub shows the declared value of every commitment, the total that party gives, the total it receives, and the difference when they are not equal. A difference never blocks signing. No record stores the difference. | Unit for the range; E2E for the Hub, with one agreement whose totals differ. |
 | **EEP rules checked on the agreement side (built in M08E and M08H)** | | |
 | AG-24 | **One node only.** The issuer's node refuses to sign a quote or an acceptance that makes it the giver of an `eep-issue` commitment while it has no published offering (VX-13). The receiving node cannot know the issuer's full offering list. It shows "not checked" unless it found an offering of the issuer that is valid now. | Service, on the issuer's node. Built in M08E. |
 | AG-25 | **One node only.** The issuer's node refuses an `eep-issue` commitment whose face-value currency does not appear in its own published offerings, or whose face value is not an integer in minor units (VX-14). The receiving node checks only the integer rule, and shows the currency rule as "not checked". | Service, on the issuer's node. Built in M08E. |
@@ -127,7 +127,7 @@ Kinds of test:
 | **Event log and statement** | | |
 | AG-27 | Every agreement event this node takes part in is appended to its event log exactly once. Running `transaction.sync` again, or `eventlog.rebuild`, adds no duplicate (VX-45). | Service. |
 | AG-28 | Nothing on the deal path reads the event log. A full deal runs under a test host that records every data-layer read, and no read touches the `event_log` collection (VX-45). | Service. |
-| AG-29 | `statement.export` for a period lists every commitment settled in that period, given and received, with resource kind, commitment kind, counterparty, currency and declared value, and totals per currency. Barter commitments appear like any other (VX-46). | Service, and E2E for the Hub's export. |
+| AG-29 | `statement.export` for a period lists every commitment settled in that period, given and received, with resource kind, commitment kind, counterparty, currency and declared value, and totals per currency. Commitments of agreements with and without money appear the same way (VX-46). | Service, and E2E for the Hub's export. |
 | AG-30 | The statement has an `eeps` section. Before the `obligation` service exists, it says `not-available`. With an `obligation` sibling, it lists the EEPs outstanding (issued and held) at the start and at the end of the period. If the sibling call fails, it says `unavailable` with the reason. It is never left out and never empty in place of an error. | Service, with a fake `obligation` sibling. |
 | **Methods and language** | | |
 | AG-31 | Every `transaction` method answers `-32013` when called from another node. | Service: extend the admission test table. |
@@ -259,7 +259,7 @@ One commitment is one party giving one resource to the other.
 | `after` | list of `commitment_id` | 0 to 15, each in this quote, no cycles | visible. A hint for the Hub ("pay after the work"), never a gate. Replaces `payment_timing`. |
 | `_sd` | list of strings | exactly 10, sorted ascending | the digests of the ten hidden fields below |
 | `description` | `LocalText` | 2048 bytes | hidden. What is given. |
-| `declared_value_minor` | i64 | 0 to 10^15 | hidden |
+| `declared_value_minor` | i64 | 0 to 10^15; at least 1 for `currency` | hidden |
 | `details` | `Details` or null | inside the 64 KiB payload limit | hidden |
 | `window` | `TimeWindow` or null | `latest_secs >= earliest_secs` | hidden. When the work or delivery happens. |
 | `location` | `QuoteLocation` or null | address 512 bytes | hidden. Today's `QuoteLocation`; an `address` only when the work is at the receiver's place. |
@@ -271,7 +271,7 @@ One commitment is one party giving one resource to the other.
 
 **Every commitment has all ten hidden fields,** with `null` for the ones its kind does not use. So the number of digests says nothing about which fields are used. The validator refuses a currency-only field that is not `null` on a non-currency commitment, and an `eep` field that is not `null` on a non-EEP commitment.
 
-**For a `currency` commitment, the declared value is the amount.** There is no separate amount field. `payee` must not be empty. This keeps today's rule that the agreement binds the payee.
+**For a `currency` commitment, the declared value is the amount.** It is at least 1. There is no separate amount field. `payee` must not be empty. This keeps today's rule that the agreement binds the payee.
 
 **Deposits and part payments** become two currency commitments, for example "₹200 before" and "₹800 after". Each settles with its own acknowledgement. Today's rule of one payment per quote (`ONE_PAYMENT_NOTICE`) becomes one payment per currency commitment.
 
@@ -474,12 +474,12 @@ The hooks themselves (their idempotency, expiry and the owner's clean-up) are th
 
 **Each owner reserves its own resource, on its own node, at the moment it signs.** There is no reserve call between nodes.
 
-1. **The counterparty owns a resource** (barter, or a bid where the wanter books its own slot). `agreement.accept` calls the extension's local `reserve` for each such commitment, before it signs. If one fails, it calls `release` on the ones that succeeded, signs nothing, and answers `reserve-failed` with the extension's reason.
+1. **The counterparty owns a resource** (for example it gives a service in a booked slot, or a bid where the wanter books its own slot). `agreement.accept` calls the extension's local `reserve` for each such commitment, before it signs. If one fails, it calls `release` on the ones that succeeded, signs nothing, and answers `reserve-failed` with the extension's reason.
 2. **The writer owns a resource** (the usual List-Search case, today's slot booking). When the writer files the acceptance half, it calls `reserve` for each such commitment, under its fence. If one fails, it releases the others, signs nothing, and sends a snapshot with state `not-formed` and the reason. The counterparty's node then releases its own reservations. The writer forms the agreement on its own node, so it confirms its own reservations at once. They never wait for an expiry.
 3. **Confirm.** When the counterparty's node files the countersigned half, it calls `confirm` for its own reservations. If a confirm is refused (EX-22: expired, and the resource was given to someone else), it sends a `commitment-failure` with `reservation-lost`, and the writer marks that commitment `failed`.
 4. **Release** also happens when the deal ends `expired`, `not-formed`, `declined` or `cancelled`. A lost release is harmless, because each reservation expires on its owner's node (EX-20).
 
-This differs from the extensions change's text, which says the writer "calls reserve … on the resource owner's node". Calling another node would need a new wire-reachable method. Reserving at signing time gives the same result with none. The owner may prefer the extensions change's text. See [Open questions](#open-questions).
+This differs from the extensions change's text, which says the writer "calls reserve … on the resource owner's node". Calling another node would need a new wire-reachable method. Reserving at signing time gives the same result with none. The owner agreed to this (open question 5). The extensions change's text is updated at its close-out.
 
 ### Selective disclosure
 
@@ -550,15 +550,21 @@ Presentation {
 - **What cryptography cannot stop.** Both parties hold every disclosure. Either can show any hidden field. The overview's rule that amounts need the other party's grant is kept by honest clients and judged by reputation. It is not enforced by the format. The M08G disclosure ADR defines the grant.
 - M08G evidence records will embed a presentation. This document fixes only its format.
 
-### Barter
+### Mixed exchanges and declared values
 
-Barter is an agreement with no `currency` commitment. Nothing else is special.
+Every agreement is an exchange of resources for resources. It holds 1 to 16 commitments, and each commitment gives one resource from one party to the other. Either side may hold any mix: services, goods, money, and EEPs from M08E. No rule depends on whether money is in the agreement.
 
-- `terms.currency` is still required. It is the unit of account for every declared value. The Hub fills it from the offering's currency.
-- Every commitment has a declared value. **The quote author writes all of them**, because it is the single writer of the quote. The counterparty agrees to each value by signing its half. So both parties always state the same value for one commitment.
-- **The two sides' totals need not be equal.** A barter can be a gift, a discount or a fair swap. The Hub shows both totals before signing, and a note when they differ by more than a set share. It never blocks. (This is the owner's decision. See [Open questions](#open-questions).)
-- A barter with a booked slot on each side uses both reserve paths (writer and counterparty) from the section above.
-- The statement shows each side's commitments with their declared values, like any other deal.
+- **One unit of account.** `terms.currency` is always required. Every declared value is stated in it, so the two sides can be compared and reported. The Hub fills it from the offering's currency.
+- **One writer for the values.** The quote author writes every declared value, including the values of what the counterparty gives, because it is the single writer of the quote. The counterparty agrees to each value by signing its half. So both parties always report the same value for one commitment.
+- **Ranges.** A declared value is 0 to 10^15 minor units. 0 means "given for free". A `currency` commitment's value is its amount, so it is at least 1. A free service is an agreement with no currency commitment (see open question 9), not a currency commitment of 0.
+- **The two sides' totals need not be equal.** An uneven agreement can be a gift, a discount, or a fair trade that the declared values do not capture well. Before a party signs, and on the agreement screen after, the Hub shows that party:
+  - the total it gives and the total it receives, in the unit of account;
+  - when they differ, the difference and which way it goes, for example "You give ₹100 more than you receive".
+  The difference is shown whenever the totals differ. There is no threshold. It never blocks signing.
+- **The difference is computed, never stored.** It is a sum of values both parties already signed. A stored copy could disagree with them. An author who wants to explain a difference writes it in `scope`, or in the conversation.
+- **What the counterparty may give.** An offering says what its owner accepts in return. In M08C the listing still has only today's `PaymentTerms` (`crates/roym_core/src/listing.rs:77`), which names one currency. So the Hub pre-fills one currency commitment from the counterparty. M08D replaces `PaymentTerms` with the in-return terms (accepted currency methods, goods or services, EEPs), and the Hub pre-fills from them. Either way this is only a starting point. No node checks a quote against the offering: the quote author owns both, and may agree to something its offering does not list.
+- An agreement with a booked slot on each side uses both reserve paths (writer and counterparty) from the section above.
+- The statement lists each commitment with its declared value. Its totals per currency and direction show what the participant gave and received over the period.
 
 ### Event log and statement
 
@@ -630,7 +636,7 @@ Statement {
 }
 ```
 
-- A row is a commitment whose `commitment-settled` event falls in the period. Failed and cancelled commitments are not given or received, so they are not rows. (The owner decides this. See [Open questions](#open-questions).)
+- A row is a commitment whose `commitment-settled` event falls in the period. Failed and cancelled commitments are not given or received, so they are not rows. (The owner agreed to this. See open question 10.)
 - Totals are per currency. Roym never converts between currencies.
 - The Hub offers the statement as a CSV download with one line per row, plus a JSON download of the whole object.
 
@@ -747,17 +753,27 @@ The Hub's quote, agreement and booking screens, `roymctl roym transaction`, the 
 - **One digest over all hidden fields.** Then a party could show all or nothing. Reputation needs to show the scope without the price.
 - **A remote reserve call from the writer to the other owner.** It needs a new wire-reachable method and a call to a node that may be asleep. Reserving at signing time needs neither.
 - **The giver declares its own commitment's value.** Two writers for one quote. The single writer writes, and the other party accepts by signing.
+- **A separate barter mode, record or flag.** Every rule would then need two versions. An agreement without money is the same shape with no `currency` commitment.
+- **Requiring the two sides' totals to be equal.** It forbids gifts and discounts, and it would force parties to adjust declared values to pass a check. The values would then report less truth, not more.
+- **Storing the difference between the two sides in the agreement.** It is computed from signed values, and a stored copy could disagree with them.
+- **Checking a quote against the offering's in-return terms.** The quote author owns both and may agree to more. The overview also says acceptance rules are never published in detail, so another node could not check it fully.
 - **One shared event log for `transaction` and `obligation`.** Two writers, and no atomic append. See [Where the event log lives](#where-the-event-log-lives).
 - **A statement built from a scan of all records at export time, with no log.** Possible, but every later reader (policy hooks, insight extensions) would repeat the scan, and the overview asks for a log.
 - **A per-commitment currency.** It breaks "one currency per agreement", and totals would need a conversion rule.
 
 ## Open questions
 
-Each has a recommendation. The owner decides.
+Each has a recommendation. The owner decides. Questions 3 to 11 are decided. Question 1 is partly decided. Question 2 belongs to a C0 ADR.
 
-1. **Barter declared value: who declares it, and must both sides match?**
-   Recommendation: the quote author writes every declared value. The other party agrees to each one by signing. The two sides' totals do not have to match. The Hub shows both totals and a note when they differ, and never blocks.
-   Reason: one writer for the quote, as everywhere else. Both parties then report the same value for each commitment, which is what a statement needs. Requiring equal totals would forbid gifts, discounts and uneven but fair swaps, and the two parties already agree by signing.
+1. **Declared values in a mixed exchange.** Owner direction: there is no barter special case; an exchange is any mix of goods, services, EEPs and money; the offering says what its owner accepts in return; the totals need not match, and the Hub shows the difference. This document follows that. Two points are still open:
+   - **a. Who writes the value of what the counterparty gives?**
+     - Option A (recommended): the quote author writes every value, and the counterparty agrees by signing. One writer, and both parties report the same value.
+     - Option B: each party also keeps a private value of its own for its statement, on its own node only. It helps a participant whose tax rules value goods differently. But the two statements then disagree about one agreement. Add it later only if a participant needs it.
+   - **b. Where does the difference appear?**
+     - Option A (recommended): only on the Hub's screens, computed from the declared values. Nothing stores it.
+     - Option B: a signed, hidden field in `terms`. It is redundant with the values and could disagree with them.
+     - Option C: an optional free-text reason in `terms` ("discount for a neighbour"). `scope` and the conversation already hold such text.
+   Reason for A in both: one writer and one source of truth for every value.
 
 2. **The forward mode default: `signed` or `not-forwardable`.**
    This belongs to C0's ADR on signed message origins. It is listed here only as a cross-reference. The forwarding change recommends `not-forwardable`.
@@ -765,38 +781,47 @@ Each has a recommendation. The owner decides.
 3. **The extension manifest format, and where installed extensions are recorded.**
    Recommendation: a TOML manifest per extension, in the extension's crate, read at build time. The registry is a fixed list in `roym_core` of the extensions that ship with Roym. There is no runtime record of installed extensions in M8. An offering names its extension by `id` and `version`.
    Reason: M8 runs only extensions that ship with Roym, so a runtime registry would have no writer and nothing to install. A runtime record is added when third-party extensions are allowed.
+   Owner decision (2026-11-10): agreed.
 
 4. **Is a 15-minute reservation expiry (EX-20) acceptable when a phone sleeps right after it reserves?**
    Recommendation: yes, keep 15 minutes as the scheduling extension's value.
    Reason: with "each owner reserves when it signs", the common case (List-Search, the writer owns the slot) confirms on the same node at once and never waits for an expiry. The risk exists only when the counterparty owns a reserved resource and the writer does not countersign within 15 minutes. That case ends with a named `reservation-lost` failure, not a silent one. If it proves common, raise the value per extension. Do not tie it to the quote expiry (up to 90 days), which would block a slot for too long.
+   Owner decision (2026-11-10): agreed.
 
 5. **Reserve at signing time, or the extensions change's remote reserve call?** (New.)
    Recommendation: reserve at signing time, as this document designs, and update the extensions change's text at its close-out.
    Reason: no new wire-reachable method, and no call to a node that may be asleep. EX-5, EX-6 and EX-20 to EX-22 all still hold.
+   Owner decision (2026-11-10): agreed.
 
 6. **Which fields stay visible?** (New.)
    Recommendation: the list in [What is hidden](#what-is-hidden). In particular, keep `extension` visible and hide `listing_id`.
    Reason: a reader of evidence needs the commitment kind and outcome. The extension id ("scheduling") says little, and every node needs it to know who must reserve. The offering says exactly what was bought, which the subject may not want a stranger to see. If reputation later needs a category per commitment, add a visible taxonomy code then.
+   Owner decision (2026-11-10): agreed.
 
 7. **A signed `deal-decline` in place of today's local decline.** (New.)
    Recommendation: yes.
    Reason: VX-3 and VX-5 say each side "accepts or rejects". Today the quote author never learns of a decline, and its deal stays open until the quote expires.
+   Owner decision (2026-11-10): agreed.
 
 8. **Rename the `request` record to `enquiry`.** (New.)
    Recommendation: yes, in C1, together with the other shape changes.
    Reason: the overview's term is "enquiry". C1 changes the record's shape anyway, so the rename costs nothing extra now and more later.
+   Owner decision (2026-11-10): agreed.
 
 9. **May a deal have commitments on one side only?** (New.)
    Recommendation: yes. A quote needs at least one commitment in total, not one per side.
    Reason: today a quote with `amount_minor = 0` is valid (a free service). Requiring a commitment on each side would force a fake zero-value commitment.
+   Owner decision (2026-11-10): agreed.
 
 10. **Which commitments does a statement period contain?** (New.)
     Recommendation: a commitment is in the period when it settled in the period. Commitments agreed but not final at the end are listed apart (`open_at_end`). Failed and cancelled ones are not listed as rows.
     Reason: they were not given or received. The settlement time is the time both parties signed that the resource changed hands. Accountants who need the agreement date have `agreed_at_secs` on every row.
+    Owner decision (2026-11-10): agreed.
 
 11. **Private forwards of a quote with the price shown.** (New.)
     Recommendation: in M08C, a forwarded quote carries no disclosures. The M08G disclosure ADR decides whether a private forward to a contact may show amounts.
     Reason: the overview's rule is that a third party sees amounts only with the other party's grant. A forward is the first place this rule is felt. It is better decided once, in the ADR, than quietly in the forward action.
+    Owner decision (2026-11-10): agreed.
 
 ## What the C0 ADRs must decide
 
@@ -823,7 +848,7 @@ This document does not write the two ADRs. They must decide:
 - [ ] C1: commitment model, records, states, single writer, `deal-decline`, `commitment-failure`, per-commitment settlement records. Replace today's shapes in place.
 - [ ] C2: the disclosure encoder, verifier and presentation; disclosures in the card wrapper and the backup bundle.
 - [ ] C3 (with the extensions change): the reserve, confirm and release calls at the points above.
-- [ ] C6: barter in the Hub, the event log, `eventlog.*`, `statement.export` with the EEP section, the Hub's statement screen.
+- [ ] C6: mixed exchanges in the Hub (totals and difference), the event log, `eventlog.*`, `statement.export` with the EEP section, the Hub's statement screen.
 - [ ] Demo story for enquiry, quote and agreement, as the M08C `task.md` asks.
 
 ## Deviations
