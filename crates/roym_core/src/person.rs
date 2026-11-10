@@ -207,6 +207,39 @@ mod tests {
     }
 
     #[test]
+    fn profile_payload_deserialization_requires_canonical_lang() {
+        let base = r#"{
+            "display_name": "Alice",
+            "conversation_address": "svc-123",
+            "lang": "en"
+        }"#;
+        assert!(serde_json::from_str::<ProfilePayload>(base).is_ok());
+
+        // Missing lang
+        let missing = r#"{
+            "display_name": "Alice",
+            "conversation_address": "svc-123"
+        }"#;
+        assert!(serde_json::from_str::<ProfilePayload>(missing).is_err());
+
+        // Malformed lang
+        let malformed = r#"{
+            "display_name": "Alice",
+            "conversation_address": "svc-123",
+            "lang": "hi_IN"
+        }"#;
+        assert!(serde_json::from_str::<ProfilePayload>(malformed).is_err());
+
+        // Non-canonical lang
+        let non_canonical = r#"{
+            "display_name": "Alice",
+            "conversation_address": "svc-123",
+            "lang": "HI"
+        }"#;
+        assert!(serde_json::from_str::<ProfilePayload>(non_canonical).is_err());
+    }
+
+    #[test]
     fn is_did_key_checks() {
         assert!(is_did_key("did:key:z6M123"));
         assert!(!is_did_key("did:key:"));
