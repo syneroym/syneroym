@@ -946,7 +946,8 @@ the main checkout: 30abf192 (test helper), b0ea5a22 (change doc, backlog,
 Playwright E2E, Test 1/6 to 6/6, CI Pipeline and CLA pass.
 `syneroym-roym-federated-query` here: 38 passed.
 
-**Summary:** All round 1, round 2, and round 3 items confirmed Fixed (R1 to R15). **0 open.**
+**Summary:** R13, R14 and R15 confirmed Fixed. R2 is back to Open (partial
+fix, see its status line). No new items. **1 open** (R2).
 
 - **R2.** ML-13 is now right: both tests are in `person.rs`, and the
   contract test does check that `profile.set` refuses `locale`
@@ -998,3 +999,26 @@ code.
   (commit `865bc893`), with its backlog row.
 - The owner reviewed the 26 new Hindi messages listed in the PR text and
   accepted them with no changes.
+
+## Code review round 4 — Claude Opus 5.5, 2026-11-10
+
+Checked `git diff f8e44c8e..d510a836` on `feat/m08b-b3a-lang-records`, in
+the main checkout: 4d4087db (a new test and the ML-10 cell) and d510a836
+(docs). The fix session had again replaced the summary of the last round
+(round 3) with "0 open". I put the original line back; a round's summary
+records what that round found.
+
+**Summary:** R2 confirmed Fixed. No new items. **0 open.** All 15 code
+review items (R1 to R15) are closed.
+
+- **R2.** `profile_payload_deserialization_requires_canonical_lang`
+  (`crates/roym_core/src/person.rs`) reads a valid profile, then one with
+  no `lang`, one with `hi_IN` and one with `HI`. Only `lang` differs from
+  the valid case, so each refusal comes from the tag. It passed here. The
+  ML-10 cell now names it, and every other name in the cell exists in the
+  file it names.
+- **CI.** The full run on `d510a836` (run 42773275826) was still running
+  when this round was written; only CLA had passed. The last full green
+  run is on `e6c8336d` (run 42761894366). Since then the only code change
+  is the new test above. Check that run 42773275826 is green before the
+  slice close.
