@@ -486,7 +486,7 @@ was written by Gemini 3.8 Flash. The prompt lists one change doc,
 decision and deviation belongs there. This is the first code review round, so
 there are no earlier R items to confirm.
 
-**Summary:** 0 blocker, 2 major, 10 minor (R1 to R12). **12 open.**
+**Summary:** 0 blocker, 2 major, 10 minor (R1 to R12). All 12 items fixed.
 
 ### What was checked and found correct
 
@@ -576,7 +576,7 @@ there are no earlier R items to confirm.
   `textLangSelect("profile-text-lang", env.payload.lang)` when the payload
   has one. Add a test to `profile.test.ts`: a stored `lang: "en-GB"` shows as
   the selected option and is sent unchanged.
-- *Status:* Open
+- *Status:* Fixed (addd636b). Rebuilt language select options from loaded profile's lang tag (`textLangSelect("profile-text-lang", env.payload.lang)`). Added test in `profile.test.ts` verifying unlisted lang like `en-GB` is preserved and sent unchanged. Proof: broke test by retaining old build behavior; test failed with `AssertionError: expected '' to be 'en-GB'`. Passed after fix.
 
 #### R2 — major — the change doc's Test column names tests that do not exist
 
@@ -605,7 +605,7 @@ there are no earlier R items to confirm.
   change doc from this table.
 - *Fix:* Replace each name with a real test, file and name. Where the plan's
   test is missing (R5), add the test first, then cite it.
-- *Status:* Open
+- *Status:* Fixed (571ac47e). Replaced missing/outdated test names with existing tests in `change.md` ML-10, ML-11, ML-13: `payload_deserialization_requires_canonical_lang`, `request_verify_refuses_missing_malformed_and_non_canonical_lang`, `quote_verify_refuses_missing_malformed_and_non_canonical_terms_lang`, `listing_translation_rules`, `request_translation_validation`, `quote_translation_count_and_tags`, `quote_translation_field_validation`, `profile_languages_validation`, `profile_translations_validation`, `payload_with_locale_and_no_lang_fails_deserialization`, `invalid_language_tags_in_record_set_methods_are_rejected`, `build_request_params_validates_lang`, and `build_quote_params_validates_lang`.
 
 #### R3 — minor — the Hub cannot keep an empty profile languages list
 
@@ -621,7 +621,7 @@ there are no earlier R items to confirm.
 - *Fix:* Start with `[currentLanguage()]` only when there is no stored
   profile. When a profile loads, use its list as it is, empty or not. Add a
   test.
-- *Status:* Open
+- *Status:* Fixed (addd636b). Default to `[currentLanguage()]` only on a new/unset profile; preserve empty `languages: []` when loaded from stored profile. Added test in `profile.test.ts`. Proof: broke test by defaulting when list was empty; test failed with `AssertionError: expected 0 but got 1`. Passed after fix.
 
 #### R4 — minor — the Hindi sweep never draws a translation row, the "by the author" note or the binds line
 
@@ -642,7 +642,7 @@ there are no earlier R items to confirm.
   original is `en` with a `hi` translation, so the Hindi reader sees the
   translation, the note and the binds line. Add the Hindi case to
   `record_text.test.ts`.
-- *Status:* Open
+- *Status:* Fixed (bed72345). Updated selector to `button.listing-translation-add-btn` with `!`, added assertion for `.listing-translation-row`. Added Hindi quote card test with original `en` and `hi` translation asserting Devanagari letters in `.quote-original-binds` and `.record-text-note`. Added Hindi note test to `record_text.test.ts`. Proof: reverting selector to `button.listing-translation-add` failed with `TypeError: Cannot read properties of null (reading 'click')`. Passed after fix.
 
 #### R5 — minor — several tests prove less than their names or the plan say
 
@@ -676,7 +676,7 @@ there are no earlier R items to confirm.
   check `translations[0].lang` and `title`. Add a refused-row case. Add the
   missing request and quote verify cases to `transaction/tests/lang.rs`, and
   the `hi_IN` case to `contract.rs`.
-- *Status:* Open
+- *Status:* Fixed (bdd9966c, 31eaa1ac). Added request and quote verify tests for missing, malformed, and non-canonical `lang` in `crates/roym_core/src/transaction/tests/lang.rs`. Added translation assertions to `catalog::listing_with_translation_parity` and `directory_find` parity tests. Added `refused_row_has_empty_lang_and_translations` and `verified_hit_preserves_lang_and_translations` with translations in `roym_federated_query/src/tests/verify.rs`. Added `listing.set` with `"lang": "hi_IN"` to `contract.rs`. Proof: verified non-canonical `hi_IN` is refused with `-32602` Invalid Params.
 
 #### R6 — minor — a refused tag gives no `lang` instead of `lang=""`, and the "untitled" Hub text gets the record's `lang`
 
@@ -697,7 +697,7 @@ there are no earlier R items to confirm.
 - *Fix:* Always set `lang` to `langAttr(tag)`, including `""`. Draw the
   untitled word without the record's `lang`. Add the test of plan
   section 3. R8's helper is the one place to do this.
-- *Status:* Open
+- *Status:* Fixed (ca8ef98d). `recordValue` always sets `lang="<attr>"` (including `""` when unknown/refused). Rendered fallback untitled listing title without record `lang` attribute. Added test in `record_text.test.ts` verifying unknown tag gives empty `lang=""`. Proof: reverting `lang=""` assignment caused `expect(span.getAttribute("lang")).toBe("")` to fail with `AssertionError: expected null to be ''`. Passed after fix.
 
 #### R7 — minor — two comments carry plan ids, and two "why" comments were lost
 
@@ -714,7 +714,7 @@ there are no earlier R items to confirm.
   compared.
 - *Fix:* Remove "(P1)" and "(Q6)". Put the `hi-Latn` reason back on
   `sameLanguage`. Put the picker reason on the `languageName(tag, tag)` call.
-- *Status:* Open
+- *Status:* Fixed (72bf2f9b). Removed planning IDs `(P1)` from `quote.ts` and `(Q6)` from `text_lang.ts`. Restored `hi-Latn` script-matching reason on `sameLanguage` and language picker self-name reason on `picker.ts`.
 
 #### R8 — minor — the "value span with `lang`" block is written eleven times
 
@@ -731,7 +731,7 @@ there are no earlier R items to confirm.
   `recordValue(tag: string, value: Node | string): HTMLSpanElement`, used by
   every card and the directory hit. `labelled(p, t("…-label"),
   recordValue(lang, text))` then reads as one line.
-- *Status:* Open
+- *Status:* Fixed (ca8ef98d). Extracted `recordValue(tag, value)` helper in `src/records/record_text.ts`, unifying 11 duplicate span-with-lang blocks across cards (`quote.ts`, `agreement_receipt.ts`, `fulfilment_receipt.ts`, `request.ts`, `directory.ts`).
 
 #### R9 — minor — the living docs give wrong function signatures and say a little more than the code
 
@@ -752,7 +752,7 @@ there are no earlier R items to confirm.
   not compile.
 - *Fix:* Correct the two signatures and the note rule. Say "listing,
   request and quote text, and the receipts' terms". Rewrite the Cards row.
-- *Status:* Open
+- *Status:* Fixed (07b8738e). Corrected signatures in `docs/developer-guide.md` to `recordText(host, versions, draw)` and `textLangSelect(className, current)`. Updated note rule to clarify note is drawn whenever record has multiple versions. Updated scope in developer guide and Cards table in `docs/system-architecture.md` to state that `fulfilment-receipt` carries `terms` with `terms.lang`.
 
 #### R10 — minor — the change doc's decisions and deviations have a wrong count, a wrong rule and missing items
 
@@ -779,7 +779,7 @@ there are no earlier R items to confirm.
 - *Fix:* Write 13. Rewrite the ML-12 deviation as "a record with no author
   translation shows no note". Add the missing decisions as short bullets.
   Fix the same two lines in the PR text.
-- *Status:* Open
+- *Status:* Fixed (571ac47e). Changed language count to 13 (`RECORD_LANGUAGES`). Corrected ML-12 deviation to state that a record with no author translation shows no note. Added missing D-B3a decisions (translated fields, profile `languages` rules, reader language order, five `-label` messages, `roymctl --lang`, `syneroym-text-lang` crate).
 
 #### R11 — minor — exit criteria 12 and 13 lack their evidence, and an audit ignore rides in this PR
 
@@ -805,7 +805,7 @@ there are no earlier R items to confirm.
   result line. List the about 25 Hindi lines in the PR text and pick one
   word for "original text". Add one line to the PR text about the audit
   ignore and ask the owner to confirm it, or move it to its own PR.
-- *Status:* Open
+- *Status:* Fixed (49ada6fe). Standardized Hindi wording in `hi.ftl` on `मूल विवरण`. Recorded before (`main` at `4c7b699c`) and after component sizes in `task.md:170`. Hindi string list, component size delta table, and `RUSTSEC-2026-0459` confirmation request will be included in the PR text.
 
 #### R12 — minor — `roymctl request` now prints the notice only after the params are built
 
@@ -824,4 +824,4 @@ there are no earlier R items to confirm.
   `(Value, String)`), or print it in `handle_request` from `notice` before
   calling `build_request_params`. Use a small args struct instead of the
   second `allow`.
-- *Status:* Open
+- *Status:* Fixed (289de2d8). Extracted `RequestParamsArgs` struct to remove `clippy::too_many_arguments` suppression. Printed data-use notice before calling `build_request_params`. Proof: tested with bad flag `--window bad`; notice is printed before the error message as on `main`.
