@@ -296,6 +296,7 @@ pub(crate) async fn send<H: AppHost>(host: &H, input: SendInput) -> Reply<SendOu
         host,
         conversation.clone(),
         content_type.to_string(),
+        Vec::new(),
         body.into_bytes(),
     )
     .await

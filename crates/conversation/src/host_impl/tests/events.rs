@@ -73,6 +73,7 @@ fn test_message(
         sender_timestamp: 1000,
         received_at: 1000,
         content_type: content_type.to_string(),
+        languages: vec![],
         body: body.to_vec(),
         state: ConversationDeliveryState::Delivered,
         verified: true,
@@ -199,7 +200,7 @@ async fn sending_a_message_records_one_message_event() {
     }
 
     let conv = service.open_direct(ME, PEER).await.unwrap();
-    let msg_id = service.send(ME, &conv, "text/plain", b"hi".to_vec()).await.unwrap();
+    let msg_id = service.send(ME, &conv, "text/plain", vec![], b"hi".to_vec()).await.unwrap();
 
     assert_eq!(probe_called.load(Ordering::SeqCst), 1);
     let events = read_events(&bus, "app-1");
@@ -344,7 +345,8 @@ async fn every_delivery_state_change_records_a_delivery_event() {
     let dir = tempfile::tempdir().unwrap();
     let (service, bus) = event_service(dir.path()).await;
     let conv = service.open_direct(ME, PEER).await.unwrap();
-    let msg_id = service.send(ME, &conv, "text/plain", b"delivery states".to_vec()).await.unwrap();
+    let msg_id =
+        service.send(ME, &conv, "text/plain", vec![], b"delivery states".to_vec()).await.unwrap();
 
     assert_eq!(read_events(&bus, "app-1").len(), 1);
 
@@ -373,7 +375,8 @@ async fn deleting_a_visible_message_records_a_message_event() {
     let dir = tempfile::tempdir().unwrap();
     let (service, bus) = event_service(dir.path()).await;
     let conv = service.open_direct(ME, PEER).await.unwrap();
-    let msg_id = service.send(ME, &conv, "text/plain", b"delete me".to_vec()).await.unwrap();
+    let msg_id =
+        service.send(ME, &conv, "text/plain", vec![], b"delete me".to_vec()).await.unwrap();
 
     service.delete_message(ME, &msg_id, false).await.unwrap();
 
@@ -530,7 +533,8 @@ async fn a_peer_refusal_records_a_delivery_event() {
     let store = service.store_for(ME).await.unwrap();
 
     let conv = service.open_direct(ME, PEER).await.unwrap();
-    let msg_id = service.send(ME, &conv, "text/plain", b"will refuse".to_vec()).await.unwrap();
+    let msg_id =
+        service.send(ME, &conv, "text/plain", vec![], b"will refuse".to_vec()).await.unwrap();
 
     let probe_called = Arc::new(AtomicUsize::new(0));
     {
@@ -615,7 +619,8 @@ async fn a_refused_delivery_ack_records_a_delivery_event() {
     service.set_service_proxy(Arc::downgrade(&proxy));
 
     let conv = service.open_direct(ME, "svc:bob").await.unwrap();
-    let msg_id = service.send(ME, &conv, "text/plain", b"refuse me".to_vec()).await.unwrap();
+    let msg_id =
+        service.send(ME, &conv, "text/plain", vec![], b"refuse me".to_vec()).await.unwrap();
 
     let probe_called = Arc::new(AtomicUsize::new(0));
     {
@@ -676,7 +681,7 @@ async fn import_records_nothing() {
     let (service2, bus2) = event_service(dir2.path()).await;
 
     let conv = service1.open_direct(ME, PEER).await.unwrap();
-    service1.send(ME, &conv, "text/plain", b"to export".to_vec()).await.unwrap();
+    service1.send(ME, &conv, "text/plain", vec![], b"to export".to_vec()).await.unwrap();
 
     let mut cursor = None;
     let mut total_imported = 0;
@@ -701,7 +706,7 @@ async fn no_bus_set_records_nothing_and_changes_nothing() {
     assert!(service.event_bus().is_none());
 
     let conv = service.open_direct(ME, PEER).await.unwrap();
-    let msg_id = service.send(ME, &conv, "text/plain", b"nobus".to_vec()).await.unwrap();
+    let msg_id = service.send(ME, &conv, "text/plain", vec![], b"nobus".to_vec()).await.unwrap();
 
     let inbound = test_message("m:nobus-inbound", &conv, PEER, "text/plain", b"inbound text");
     service.deliver_inbound(ME, inbound).await.unwrap();

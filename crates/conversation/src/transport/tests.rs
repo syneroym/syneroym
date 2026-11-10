@@ -494,8 +494,10 @@ async fn a_removed_member_catches_up_on_messages_from_before_its_removal() {
         .unwrap();
 
     service.add_member(owner, &group_id, bob).await.unwrap();
-    let msg_id =
-        service.send(owner, &group_id, "text/plain", b"pre-removal".to_vec()).await.unwrap();
+    let msg_id = service
+        .send(owner, &group_id, "text/plain", vec![], b"pre-removal".to_vec())
+        .await
+        .unwrap();
     service.remove_member(owner, &group_id, bob).await.unwrap();
 
     let req = GroupSyncRequest {

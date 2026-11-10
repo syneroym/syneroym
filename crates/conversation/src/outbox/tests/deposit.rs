@@ -207,7 +207,7 @@ impl World {
     /// A 1:1 message to `BOB`, sent but not yet delivered.
     async fn send_direct(&self) -> String {
         let conv = self.service.open_direct(ME, BOB).await.unwrap();
-        self.service.send(ME, &conv, "text/plain", b"hello".to_vec()).await.unwrap()
+        self.service.send(ME, &conv, "text/plain", vec![], b"hello".to_vec()).await.unwrap()
     }
 
     fn state(&self, message: &str) -> ConversationDeliveryState {
@@ -441,8 +441,11 @@ async fn group_with_bob_and_carol(world: &World) -> (String, String) {
     let group = world.service.create_group(ME).await.unwrap();
     world.service.add_member(ME, &group, BOB).await.unwrap();
     world.service.add_member(ME, &group, CAROL).await.unwrap();
-    let message =
-        world.service.send(ME, &group, "text/plain", b"to the group".to_vec()).await.unwrap();
+    let message = world
+        .service
+        .send(ME, &group, "text/plain", vec![], b"to the group".to_vec())
+        .await
+        .unwrap();
     (group, message)
 }
 

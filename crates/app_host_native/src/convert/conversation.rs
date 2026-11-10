@@ -54,6 +54,7 @@ pub(crate) fn message_out(v: HostMessage) -> GuestMessage {
         sender_timestamp: v.sender_timestamp,
         received_at: v.received_at,
         content_type: v.content_type,
+        languages: v.languages,
         body: v.body,
         state: delivery_state_out(v.state),
         verified: v.verified,
@@ -168,6 +169,7 @@ pub(crate) fn rpc_message_to_guest(v: RpcMessage) -> GuestMessage {
         sender_timestamp: v.sender_timestamp,
         received_at: v.received_at,
         content_type: v.content_type,
+        languages: v.languages,
         body: v.body,
         state: rpc_delivery_state_to_guest(v.state),
         verified: v.verified,
@@ -255,6 +257,7 @@ mod tests {
             sender_timestamp: 1_000,
             received_at: 1_001,
             content_type: "text/plain".to_string(),
+            languages: vec!["en".to_string()],
             body: vec![1, 2, 3],
             state: HostDeliveryState::Delivered,
             verified: true,
@@ -267,6 +270,7 @@ mod tests {
         };
         let g = message_out(h);
         assert_eq!(g.id, "msg:1");
+        assert_eq!(g.languages, vec!["en".to_string()]);
         assert_eq!(g.body, vec![1, 2, 3]);
         assert!(matches!(g.state, GuestDeliveryState::Delivered));
         assert!(g.verified);
@@ -284,6 +288,7 @@ mod tests {
                 sender_timestamp: 1,
                 received_at: 1,
                 content_type: "text/plain".to_string(),
+                languages: vec![],
                 body: vec![],
                 state: HostDeliveryState::Pending,
                 verified: true,
@@ -310,6 +315,7 @@ mod tests {
             sender_timestamp: 1,
             received_at: 1,
             content_type: "text/plain".to_string(),
+            languages: vec!["ta".to_string()],
             body: vec![9],
             state: RpcDeliveryState::Failed,
             verified: false,
@@ -321,6 +327,7 @@ mod tests {
             refused: Some("blocked".to_string()),
         };
         let g = rpc_message_to_guest(rpc_msg);
+        assert_eq!(g.languages, vec!["ta".to_string()]);
         assert_eq!(g.body, vec![9]);
         assert!(matches!(g.state, GuestDeliveryState::Failed));
         assert_eq!(g.last_error, Some("gave up".to_string()));

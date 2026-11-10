@@ -325,6 +325,7 @@ pub trait AppConversation {
         &self,
         conversation: String,
         content_type: String,
+        languages: Vec<String>,
         body: Vec<u8>,
     ) -> impl Future<Output = Result<String, ConversationError>> + Send;
     fn history(

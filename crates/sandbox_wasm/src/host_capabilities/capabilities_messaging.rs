@@ -77,6 +77,7 @@ mod conversation_wire {
             sender_timestamp: m.sender_timestamp,
             received_at: m.received_at,
             content_type: m.content_type,
+            languages: m.languages,
             body: m.body,
             state: map_state(m.state),
             verified: m.verified,
@@ -183,13 +184,14 @@ impl wit_conversation::Host for HostState {
         &mut self,
         conversation: String,
         content_type: String,
+        languages: Vec<String>,
         body: Vec<u8>,
     ) -> Result<String, wit_conversation::ConversationError> {
         if self.read_only {
             return Err(conversation_wire::map_error(RpcConversationError::PermissionDenied));
         }
         let conv = self.conversation.upgrade().ok_or_else(conversation_wire::no_capability)?;
-        conv.send(&self.component_id, &conversation, &content_type, body)
+        conv.send(&self.component_id, &conversation, &content_type, languages, body)
             .await
             .map_err(conversation_wire::map_error)
     }

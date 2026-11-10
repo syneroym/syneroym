@@ -621,7 +621,8 @@ async fn a_clock_offset_changes_only_signed_times() {
         .unwrap();
     service.add_member(owner, &group_id, "svc:bob").await.unwrap();
 
-    let msg_id = service.send(owner, &group_id, "text/plain", b"hello".to_vec()).await.unwrap();
+    let msg_id =
+        service.send(owner, &group_id, "text/plain", vec![], b"hello".to_vec()).await.unwrap();
     let msg = service.get_message(owner, &msg_id).await.unwrap();
 
     crate::test_support::clear_clock_offsets();
@@ -722,7 +723,7 @@ async fn an_own_group_message_is_numbered_in_the_feed_and_searchable() {
     service.add_member(owner, &group_id, "svc:bob").await.unwrap();
 
     let id = service
-        .send(owner, &group_id, "text/plain", b"findable group text".to_vec())
+        .send(owner, &group_id, "text/plain", vec![], b"findable group text".to_vec())
         .await
         .unwrap();
 
@@ -752,7 +753,7 @@ async fn an_own_group_message_is_numbered_and_searchable_at_once() {
     service.add_member("svc:owner", &group_id, "svc:bob").await.unwrap();
 
     let id = service
-        .send("svc:owner", &group_id, "text/plain", b"lighthouse keeper".to_vec())
+        .send("svc:owner", &group_id, "text/plain", vec![], b"lighthouse keeper".to_vec())
         .await
         .unwrap();
 

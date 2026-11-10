@@ -195,6 +195,7 @@ pub(super) async fn dispatch<H: AppHost>(
                 host,
                 conversation,
                 "text/plain".to_string(),
+                Vec::new(),
                 body.into_bytes(),
             )
             .await

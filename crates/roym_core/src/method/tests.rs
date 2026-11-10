@@ -442,6 +442,7 @@ fn message_view_writes_the_same_keys_as_the_old_json() {
         outgoing: true,
         sender_timestamp: 1_700_000_000,
         content_type: "text/plain".to_string(),
+        languages: Vec::new(),
         body: b"Hello world".to_vec(),
         state: DeliveryState::Delivered,
         last_error: None,

@@ -65,6 +65,8 @@ interface conversation {
         /// sorted on, never sent.
         received-at: s64,
         content-type: string,
+        /// Language tags of the text, main language first, at most 3, each in canonical form. Empty when not stated.
+        languages: list<string>,
         body: list<u8>,
         state: delivery-state,
         /// The host's own verdict: true for every row this node sent or
@@ -185,6 +187,8 @@ interface conversation {
     send: func(
         conversation: conversation-id,
         content-type: string,
+        /// Language tags of the text, main language first, at most 3, each in canonical form. Empty when not stated.
+        languages: list<string>,
         body: list<u8>,
     ) -> result<message-id, conversation-error>;
 

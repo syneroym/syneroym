@@ -153,6 +153,7 @@ impl StoredMessage {
             sender_timestamp: self.sender_timestamp_ms,
             received_at: self.received_at_ms,
             content_type: self.content_type,
+            languages: self.languages,
             body: self.body,
             state: self.state,
             verified: self.verified,

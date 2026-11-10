@@ -517,6 +517,7 @@ pub(crate) mod tests {
             &self,
             _cid: String,
             _ctype: String,
+            _languages: Vec<String>,
             _body: Vec<u8>,
         ) -> Result<String, ConversationError> {
             unimplemented!()

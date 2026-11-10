@@ -81,6 +81,7 @@ pub struct ConversationMessage {
     pub sender_timestamp: i64,
     pub received_at: i64,
     pub content_type: String,
+    pub languages: Vec<String>,
     pub body: Vec<u8>,
     pub state: ConversationDeliveryState,
     pub verified: bool,
@@ -202,6 +203,7 @@ pub trait ConversationHost: Send + Sync + Debug {
         service_id: &str,
         conversation: &str,
         content_type: &str,
+        languages: Vec<String>,
         body: Vec<u8>,
     ) -> Result<String, ConversationError>;
 

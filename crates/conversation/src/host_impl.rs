@@ -78,8 +78,14 @@ impl ConversationHost for ConversationService {
         service_id: &str,
         conversation: &str,
         content_type: &str,
+        languages: Vec<String>,
         body: Vec<u8>,
     ) -> Result<String, ConversationError> {
+        let canonical_tags = syneroym_text_lang::parse_message_languages(&languages)
+            .map_err(|e| ConversationError::InvalidArgument(format!("message languages: {e}")))?;
+        let canonical_languages: Vec<String> =
+            canonical_tags.into_iter().map(|t| t.to_string()).collect();
+
         // Reject the host's own reserved content types so apps cannot send
         // system messages and have them treated as ordinary visible rows.
         if content_type == DELETION_REQUEST_CONTENT_TYPE
@@ -98,15 +104,25 @@ impl ConversationHost for ConversationService {
             .map_err(internal)?
             .ok_or(ConversationError::NotFound)?;
         if conv.kind == ConversationKind::Group {
-            return self.send_group(service_id, &store, &conv, content_type, &[], &body).await;
+            return self
+                .send_group(service_id, &store, &conv, content_type, &canonical_languages, &body)
+                .await;
         }
         let peer_address = conv.peer_address.ok_or_else(|| {
             ConversationError::Internal(
                 "direct conversation is missing its peer address".to_string(),
             )
         })?;
-        self.enqueue_direct(&store, service_id, &peer_address, content_type, &[], &body, false)
-            .await
+        self.enqueue_direct(
+            &store,
+            service_id,
+            &peer_address,
+            content_type,
+            &canonical_languages,
+            &body,
+            false,
+        )
+        .await
     }
 
     async fn history(

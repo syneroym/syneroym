@@ -1,6 +1,9 @@
 use std::{thread, time::Duration};
 
-use syneroym_rpc::{Admission, ConversationDeliveryState, ConversationError, ConversationHost};
+use syneroym_rpc::{
+    Admission, ConversationDeliveryState, ConversationError, ConversationHistoryItem,
+    ConversationHost,
+};
 
 use crate::{
     dag::{DELETION_REQUEST_CONTENT_TYPE, REFUSAL_NOTICE_CONTENT_TYPE},
@@ -20,7 +23,7 @@ async fn an_app_cannot_send_the_hosts_reserved_content_types() {
     let conv = service.open_direct(ME, PEER).await.unwrap();
 
     for reserved in [DELETION_REQUEST_CONTENT_TYPE, REFUSAL_NOTICE_CONTENT_TYPE] {
-        let err = service.send(ME, &conv, reserved, b"{}".to_vec()).await.unwrap_err();
+        let err = service.send(ME, &conv, reserved, vec![], b"{}".to_vec()).await.unwrap_err();
         assert!(matches!(err, ConversationError::InvalidArgument(_)), "{reserved}: {err:?}");
     }
 }
@@ -64,7 +67,8 @@ async fn deleting_an_unsent_message_stops_it_and_still_asks_the_peer() {
     let dir = tempfile::tempdir().unwrap();
     let service = test_service(dir.path()).await;
     let conv = service.open_direct(ME, PEER).await.unwrap();
-    let id = service.send(ME, &conv, "text/plain", b"not yet delivered".to_vec()).await.unwrap();
+    let id =
+        service.send(ME, &conv, "text/plain", vec![], b"not yet delivered".to_vec()).await.unwrap();
     let store = service.store_for(ME).await.unwrap();
     assert_eq!(store.queue().all().unwrap().len(), 1);
 
@@ -96,7 +100,7 @@ async fn a_system_message_does_not_move_a_chat_up_the_list() {
     let dir = tempfile::tempdir().unwrap();
     let service = test_service(dir.path()).await;
     let conv = service.open_direct(ME, PEER).await.unwrap();
-    let id = service.send(ME, &conv, "text/plain", b"hello".to_vec()).await.unwrap();
+    let id = service.send(ME, &conv, "text/plain", vec![], b"hello".to_vec()).await.unwrap();
     let store = service.store_for(ME).await.unwrap();
     store.set_state(&id, ConversationDeliveryState::Delivered, None).unwrap();
     let before = store.get_conversation(&conv).unwrap().unwrap().last_activity_ms;
@@ -123,7 +127,7 @@ async fn the_transcript_row_count_covers_what_the_digest_covers() {
     let dir = tempfile::tempdir().unwrap();
     let service = test_service(dir.path()).await;
     let conv = service.open_direct(ME, PEER).await.unwrap();
-    service.send(ME, &conv, "text/plain", b"mine".to_vec()).await.unwrap();
+    service.send(ME, &conv, "text/plain", vec![], b"mine".to_vec()).await.unwrap();
     let store = service.store_for(ME).await.unwrap();
     {
         let conn = store.conn().lock().unwrap();
@@ -160,7 +164,8 @@ async fn an_imported_message_that_was_pending_cannot_be_retried() {
     let old_dir = tempfile::tempdir().unwrap();
     let old = test_service(old_dir.path()).await;
     let conv = old.open_direct(ME, PEER).await.unwrap();
-    let pending = old.send(ME, &conv, "text/plain", b"never left this machine".to_vec()).await;
+    let pending =
+        old.send(ME, &conv, "text/plain", vec![], b"never left this machine".to_vec()).await;
     let pending = pending.unwrap();
     let new_dir = tempfile::tempdir().unwrap();
     let fresh = test_service(new_dir.path()).await;
@@ -235,7 +240,8 @@ async fn a_message_deleted_before_delivery_cannot_be_retried() {
     let dir = tempfile::tempdir().unwrap();
     let service = test_service(dir.path()).await;
     let conv = service.open_direct(ME, PEER).await.unwrap();
-    let id = service.send(ME, &conv, "text/plain", b"changed my mind".to_vec()).await.unwrap();
+    let id =
+        service.send(ME, &conv, "text/plain", vec![], b"changed my mind".to_vec()).await.unwrap();
     service.delete_message(ME, &id, false).await.unwrap();
 
     let err = service.retry(ME, &id).await.unwrap_err();
@@ -243,4 +249,60 @@ async fn a_message_deleted_before_delivery_cannot_be_retried() {
     assert!(matches!(err, ConversationError::InvalidArgument(_)), "{err:?}");
     let row = service.store_for(ME).await.unwrap().get_message(&id).unwrap().unwrap();
     assert_eq!(row.state, ConversationDeliveryState::Failed, "it stays settled");
+}
+
+#[tokio::test]
+async fn send_with_valid_languages_is_stored_and_returned_by_get_and_history() {
+    let dir = tempfile::tempdir().unwrap();
+    let service = test_service(dir.path()).await;
+    let conv = service.open_direct(ME, PEER).await.unwrap();
+    let langs = vec!["hi".to_string(), "en".to_string()];
+    let body = "नमस्ते world".as_bytes().to_vec();
+    let id = service.send(ME, &conv, "text/plain", langs.clone(), body.clone()).await.unwrap();
+
+    let store = service.store_for(ME).await.unwrap();
+    let stored = store.get_message(&id).unwrap().unwrap();
+    assert_eq!(stored.languages, langs);
+    assert_eq!(stored.body, body);
+
+    let hist = service.history(ME, &conv, 10, None).await.unwrap();
+    assert_eq!(hist.items.len(), 1);
+    match &hist.items[0] {
+        ConversationHistoryItem::Message(m) => {
+            assert_eq!(m.id, id);
+            assert_eq!(m.languages, langs);
+            assert_eq!(m.body, body);
+        }
+        _ => panic!("expected message item"),
+    }
+}
+
+#[tokio::test]
+async fn send_with_invalid_languages_is_refused_with_invalid_argument_and_stores_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let service = test_service(dir.path()).await;
+    let conv = service.open_direct(ME, PEER).await.unwrap();
+
+    let cases = vec![
+        vec!["HI".to_string()],
+        vec!["en".to_string(), "hi".to_string(), "ta".to_string(), "te".to_string()],
+        vec!["hi".to_string(), "hi".to_string()],
+    ];
+
+    for bad_langs in cases {
+        let err =
+            service.send(ME, &conv, "text/plain", bad_langs, b"hello".to_vec()).await.unwrap_err();
+        match err {
+            ConversationError::InvalidArgument(msg) => {
+                assert!(
+                    msg.starts_with("message languages:"),
+                    "expected error starting with 'message languages:', got: {msg}"
+                );
+            }
+            other => panic!("expected InvalidArgument, got {other:?}"),
+        }
+    }
+
+    let hist = service.history(ME, &conv, 10, None).await.unwrap();
+    assert_eq!(hist.items.len(), 0, "nothing should be stored");
 }

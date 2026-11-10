@@ -35,6 +35,7 @@ impl ConversationHost for NeverConstructed {
         _: &str,
         _: &str,
         _: &str,
+        _: Vec<String>,
         _: Vec<u8>,
     ) -> Result<String, syneroym_rpc::ConversationError> {
         unreachable!("NeverConstructed is only used to type an empty Weak; never upgraded")

@@ -400,10 +400,11 @@ impl AppConversation for NativeAppHost {
         &self,
         conversation: String,
         content_type: String,
+        languages: Vec<String>,
         body: Vec<u8>,
     ) -> Result<String, ConversationError> {
         let mut state = self.0.state_mutex().await.lock().await;
-        HostConversation::send(&mut *state, conversation, content_type, body)
+        HostConversation::send(&mut *state, conversation, content_type, languages, body)
             .await
             .map_err(convert::conversation_error_out)
     }

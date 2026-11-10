@@ -242,9 +242,10 @@ impl AppConversation for GuestHost {
         &self,
         conversation: String,
         content_type: String,
+        languages: Vec<String>,
         body: Vec<u8>,
     ) -> Result<String, ConversationError> {
-        conv::send(&conversation, &content_type, &body)
+        conv::send(&conversation, &content_type, &languages, &body)
     }
 
     async fn history(
