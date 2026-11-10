@@ -9,7 +9,7 @@
 
 import { labelled } from "../../dom";
 import { t } from "../../i18n/i18n";
-import { langAttr } from "../../i18n/text_lang";
+import { recordValue } from "../../records/record_text";
 import { type AgreedTermsData } from "./quote";
 
 export interface FulfilmentReceiptData {
@@ -39,11 +39,7 @@ export function renderFulfilmentReceipt(data?: FulfilmentReceiptData): HTMLEleme
   if (data?.terms?.scope) {
     const scopeP = document.createElement("p");
     scopeP.className = "fulfilment-scope";
-    const valSpan = document.createElement("span");
-    valSpan.textContent = data.terms.scope;
-    const attr = langAttr(data.terms.lang ?? "");
-    if (attr) valSpan.setAttribute("lang", attr);
-    labelled(scopeP, t("terms-scope-label"), valSpan);
+    labelled(scopeP, t("terms-scope-label"), recordValue(data.terms.lang ?? "", data.terms.scope));
     card.appendChild(scopeP);
   }
 

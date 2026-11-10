@@ -16,9 +16,9 @@ import { serviceLocationCardLabel } from "../../listings/labels";
 import { labelled } from "../../dom";
 import { timeElement, formatDateTime } from "../../i18n/format";
 import { t } from "../../i18n/i18n";
-import { langAttr, languageName } from "../../i18n/text_lang";
+import { languageName } from "../../i18n/text_lang";
 import { formatMinor } from "../../money";
-import { recordText, type TextVersion } from "../../records/record_text";
+import { recordText, recordValue, type TextVersion } from "../../records/record_text";
 import { renderLink } from "../link";
 
 export interface QuoteTranslationData {
@@ -147,11 +147,7 @@ export function renderQuote(data?: QuoteData): HTMLElement {
     if (v.fields.scope) {
       const scopeP = document.createElement("p");
       scopeP.className = "quote-scope";
-      const valSpan = document.createElement("span");
-      valSpan.textContent = v.fields.scope;
-      const attr = langAttr(v.lang);
-      if (attr) valSpan.setAttribute("lang", attr);
-      labelled(scopeP, t("terms-scope-label"), valSpan);
+      labelled(scopeP, t("terms-scope-label"), recordValue(v.lang, v.fields.scope));
       nodes.push(scopeP);
     }
 
@@ -223,11 +219,7 @@ export function renderQuote(data?: QuoteData): HTMLElement {
       if (terms.location.address) {
         const addrP = document.createElement("p");
         addrP.className = "quote-address";
-        const valSpan = document.createElement("span");
-        valSpan.textContent = terms.location.address;
-        const attr = langAttr(terms.lang ?? "");
-        if (attr) valSpan.setAttribute("lang", attr);
-        labelled(addrP, t("terms-address-label"), valSpan);
+        labelled(addrP, t("terms-address-label"), recordValue(terms.lang ?? "", terms.location.address));
         nodes.push(addrP);
       }
     }
@@ -236,40 +228,25 @@ export function renderQuote(data?: QuoteData): HTMLElement {
     if (v.fields.cancellation_terms) {
       const cancP = document.createElement("p");
       cancP.className = "quote-cancellation";
-      const valSpan = document.createElement("span");
-      valSpan.textContent = v.fields.cancellation_terms;
-      const attr = langAttr(v.lang);
-      if (attr) valSpan.setAttribute("lang", attr);
-      labelled(cancP, t("terms-cancellation-label"), valSpan);
+      labelled(cancP, t("terms-cancellation-label"), recordValue(v.lang, v.fields.cancellation_terms));
       nodes.push(cancP);
     }
     if (v.fields.refund_terms) {
       const refP = document.createElement("p");
       refP.className = "quote-refund";
-      const valSpan = document.createElement("span");
-      valSpan.textContent = v.fields.refund_terms;
-      const attr = langAttr(v.lang);
-      if (attr) valSpan.setAttribute("lang", attr);
-      labelled(refP, t("terms-refund-label"), valSpan);
+      labelled(refP, t("terms-refund-label"), recordValue(v.lang, v.fields.refund_terms));
       nodes.push(refP);
     }
     if (v.fields.dispute_path) {
       const dispP = document.createElement("p");
       dispP.className = "quote-dispute";
       const isLink = v.fields.dispute_path.startsWith("http://") || v.fields.dispute_path.startsWith("https://");
-      const valSpan = document.createElement("span");
-      const attr = langAttr(v.lang);
-      if (attr) valSpan.setAttribute("lang", attr);
-      if (isLink) {
-        valSpan.appendChild(renderLink(v.fields.dispute_path));
-      } else {
-        valSpan.textContent = v.fields.dispute_path;
-      }
-      labelled(dispP, t("terms-dispute-label"), valSpan);
+      const val = isLink ? renderLink(v.fields.dispute_path) : v.fields.dispute_path;
+      labelled(dispP, t("terms-dispute-label"), recordValue(v.lang, val));
       nodes.push(dispP);
     }
 
-    // Warning line when author translation is shown (P1)
+    // Warning line when author translation is shown
     if (v.byAuthor) {
       const bindsP = document.createElement("p");
       bindsP.className = "quote-original-binds";

@@ -317,7 +317,7 @@ function renderHits(host: HTMLElement, hits: MergedHit[], truncated: boolean, ru
       {
         lang: hit.lang,
         fields: {
-          title: hit.title || t("directory-untitled"),
+          title: hit.title,
           summary: hit.summary,
         },
         byAuthor: false,
@@ -332,13 +332,16 @@ function renderHits(host: HTMLElement, hits: MergedHit[], truncated: boolean, ru
       })),
     ];
     recordText(card, versions, (v) => {
-      const titleEl = text("div", v.fields.title, "hit-title");
-      const titleLang = langAttr(v.lang);
-      if (titleLang) titleEl.setAttribute("lang", titleLang);
+      let titleEl: HTMLElement;
+      if (v.fields.title) {
+        titleEl = text("div", v.fields.title, "hit-title");
+        titleEl.setAttribute("lang", langAttr(v.lang));
+      } else {
+        titleEl = text("div", t("directory-untitled"), "hit-title");
+      }
 
       const summaryEl = text("div", v.fields.summary, "hit-summary");
-      const summaryLang = langAttr(v.lang);
-      if (summaryLang) summaryEl.setAttribute("lang", summaryLang);
+      summaryEl.setAttribute("lang", langAttr(v.lang));
 
       return [titleEl, summaryEl];
     });

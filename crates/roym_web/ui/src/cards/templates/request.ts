@@ -65,8 +65,7 @@ export function renderRequest(data?: RequestData): HTMLElement {
       const descP = document.createElement("p");
       descP.className = "request-description";
       descP.textContent = v.fields.description;
-      const attr = langAttr(v.lang);
-      if (attr) descP.setAttribute("lang", attr);
+      descP.setAttribute("lang", langAttr(v.lang));
       return [descP];
     });
   }

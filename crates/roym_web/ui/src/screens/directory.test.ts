@@ -268,6 +268,14 @@ describe("category search and hit display", () => {
             summary: "Pipe fixing",
             translations: [],
           },
+          {
+            ...HIT,
+            listing_id: "l_untitled",
+            lang: "ta",
+            title: "",
+            summary: "No title service",
+            translations: [],
+          },
         ],
         hits_truncated: false,
         refused: [],
@@ -277,7 +285,7 @@ describe("category search and hit display", () => {
     const host = document.createElement("div");
     await renderDirectory(host);
     host.querySelector<HTMLButtonElement>("button.run-search")!.click();
-    await vi.waitFor(() => expect(host.querySelectorAll(".search-hit")).toHaveLength(2));
+    await vi.waitFor(() => expect(host.querySelectorAll(".search-hit")).toHaveLength(3));
 
     const hits = host.querySelectorAll(".search-hit");
     // Hit 1 with translation, reader in English: shows English title and summary + note
@@ -293,5 +301,10 @@ describe("category search and hit display", () => {
     expect(hits[1].querySelector(".hit-title")?.getAttribute("lang")).toBe("en");
     expect(hits[1].querySelector(".record-text-note")).toBeNull();
     expect(hits[1].querySelector(".record-text-switch")).toBeNull();
+
+    // Hit 3 without title: shows "(untitled)" fallback without record's lang attribute
+    expect(hits[2].querySelector(".hit-title")?.textContent).toBe("(untitled)");
+    expect(hits[2].querySelector(".hit-title")?.hasAttribute("lang")).toBe(false);
+    expect(hits[2].querySelector(".hit-summary")?.getAttribute("lang")).toBe("ta");
   });
 });

@@ -1,5 +1,5 @@
 import { currentLanguage, t } from "../i18n/i18n";
-import { languageName, sameLanguage } from "../i18n/text_lang";
+import { langAttr, languageName, sameLanguage } from "../i18n/text_lang";
 
 export interface TextVersion<F> {
   lang: string;
@@ -91,4 +91,17 @@ export function recordText<F>(
   renderCurrent();
   noteBox.append(noteSpan, switchBtn);
   host.append(contentBox, noteBox);
+}
+
+/// Creates a span with `lang` set to `langAttr(tag)` (unconditionally, so refused tags get lang="").
+/// Inserts `value` as text or child node.
+export function recordValue(tag: string, value: Node | string): HTMLSpanElement {
+  const span = document.createElement("span");
+  span.setAttribute("lang", langAttr(tag));
+  if (typeof value === "string") {
+    span.textContent = value;
+  } else {
+    span.appendChild(value);
+  }
+  return span;
 }

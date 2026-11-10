@@ -4,6 +4,7 @@ import { langAttr } from "../i18n/text_lang";
 import {
   bestVersion,
   recordText,
+  recordValue,
   type TextVersion,
 } from "./record_text";
 
@@ -109,5 +110,28 @@ describe("recordText", () => {
     btn?.click();
     expect(host.querySelector(".title")?.textContent).toBe("Hedge trimming");
     expect(host.querySelector(".title")?.getAttribute("lang")).toBe("en");
+  });
+});
+
+describe("recordValue", () => {
+  it("with canonical tag sets lang attribute and text", () => {
+    const span = recordValue("en", "Hello");
+    expect(span.getAttribute("lang")).toBe("en");
+    expect(span.textContent).toBe("Hello");
+  });
+
+  it("with unknown or refused tag gives an empty lang", () => {
+    const span = recordValue("not_a_valid_bcp47_tag----", "Unset");
+    expect(span.getAttribute("lang")).toBe("");
+    expect(span.textContent).toBe("Unset");
+  });
+
+  it("with Node value appends child", () => {
+    const a = document.createElement("a");
+    a.href = "https://example.com";
+    a.textContent = "Link";
+    const span = recordValue("ta", a);
+    expect(span.getAttribute("lang")).toBe("ta");
+    expect(span.querySelector("a")).toBe(a);
   });
 });

@@ -17,8 +17,8 @@ import { serviceLocationCardLabel } from "../../listings/labels";
 import { labelled } from "../../dom";
 import { timeElement } from "../../i18n/format";
 import { t } from "../../i18n/i18n";
-import { langAttr } from "../../i18n/text_lang";
 import { formatMinor } from "../../money";
+import { recordValue } from "../../records/record_text";
 import { renderLink } from "../link";
 import { type AgreedTermsData } from "./quote";
 
@@ -131,11 +131,7 @@ export function renderAgreementReceipt(data?: AgreementReceiptData): HTMLElement
   if (terms.scope) {
     const scopeP = document.createElement("p");
     scopeP.className = "receipt-scope";
-    const valSpan = document.createElement("span");
-    valSpan.textContent = terms.scope;
-    const attr = langAttr(terms.lang ?? "");
-    if (attr) valSpan.setAttribute("lang", attr);
-    labelled(scopeP, t("terms-scope-label"), valSpan);
+    labelled(scopeP, t("terms-scope-label"), recordValue(terms.lang ?? "", terms.scope));
     card.appendChild(scopeP);
   }
 
@@ -201,11 +197,7 @@ export function renderAgreementReceipt(data?: AgreementReceiptData): HTMLElement
     if (terms.location.address) {
       const addrP = document.createElement("p");
       addrP.className = "receipt-address";
-      const valSpan = document.createElement("span");
-      valSpan.textContent = terms.location.address;
-      const attr = langAttr(terms.lang ?? "");
-      if (attr) valSpan.setAttribute("lang", attr);
-      labelled(addrP, t("terms-address-label"), valSpan);
+      labelled(addrP, t("terms-address-label"), recordValue(terms.lang ?? "", terms.location.address));
       card.appendChild(addrP);
     }
   }
@@ -213,36 +205,21 @@ export function renderAgreementReceipt(data?: AgreementReceiptData): HTMLElement
   if (terms.cancellation_terms) {
     const cancP = document.createElement("p");
     cancP.className = "receipt-cancellation";
-    const valSpan = document.createElement("span");
-    valSpan.textContent = terms.cancellation_terms;
-    const attr = langAttr(terms.lang ?? "");
-    if (attr) valSpan.setAttribute("lang", attr);
-    labelled(cancP, t("terms-cancellation-label"), valSpan);
+    labelled(cancP, t("terms-cancellation-label"), recordValue(terms.lang ?? "", terms.cancellation_terms));
     card.appendChild(cancP);
   }
   if (terms.refund_terms) {
     const refP = document.createElement("p");
     refP.className = "receipt-refund";
-    const valSpan = document.createElement("span");
-    valSpan.textContent = terms.refund_terms;
-    const attr = langAttr(terms.lang ?? "");
-    if (attr) valSpan.setAttribute("lang", attr);
-    labelled(refP, t("terms-refund-label"), valSpan);
+    labelled(refP, t("terms-refund-label"), recordValue(terms.lang ?? "", terms.refund_terms));
     card.appendChild(refP);
   }
   if (terms.dispute_path) {
     const dispP = document.createElement("p");
     dispP.className = "receipt-dispute";
     const isLink = terms.dispute_path.startsWith("http://") || terms.dispute_path.startsWith("https://");
-    const valSpan = document.createElement("span");
-    const attr = langAttr(terms.lang ?? "");
-    if (attr) valSpan.setAttribute("lang", attr);
-    if (isLink) {
-      valSpan.appendChild(renderLink(terms.dispute_path));
-    } else {
-      valSpan.textContent = terms.dispute_path;
-    }
-    labelled(dispP, t("terms-dispute-label"), valSpan);
+    const val = isLink ? renderLink(terms.dispute_path) : terms.dispute_path;
+    labelled(dispP, t("terms-dispute-label"), recordValue(terms.lang ?? "", val));
     card.appendChild(dispP);
   }
 
