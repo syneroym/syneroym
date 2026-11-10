@@ -623,3 +623,98 @@ fix for M08C.
 
 New AG rows: AG-34 to AG-43. Ids were appended, not renumbered, so
 this file's references stay valid.
+
+## Doc review round 2 — Claude Opus 5.5 (Claude Code), 2026-11-10
+
+Checked `change.md` at `d29b7dfc` on
+`claude/m08c-agreements-change-doc-1708e9` (fixes in `f638722b`, slice
+cut in `d29b7dfc`). This round checks the fixes of round 1 only.
+
+**Summary:** P1 to P24 confirmed fixed. 0 blocker, 0 major, 3 new minor
+(P25 to P27), all small gaps that the new text added.
+
+What was checked and found correct:
+
+- **Each fix is in the text.** P1: "The writer's decision" (change.md:580-591)
+  and the Facts row (:158). P2: "Reason codes" (:487-504), AG-12, AG-43,
+  and the version check (:568). P3: "Deal rules" (:506-511), AG-35 and the
+  new "Deal" term (:24). P4: `claimed` (:383), AG-8, AG-36 and the rule at
+  :559. P5: "Complete by derivation" (:709) and the two times (:741). P6:
+  "Who reserves" (:597-606). P7: the differences table (:884-900). P8:
+  `Presentation.records` (:668) and AG-34. P9: open question 12 and Tasks
+  (:981-987, :1011-1013). P10: AG-37 and "Ids" (:214). P11: "Binding to the
+  writer" (:367), AG-38 and `CancelReason` (:390). P12: RFC 9901 (:620), no
+  `_sd_alg` (:628). P13: AG-19. P14: the settlement code blocks
+  (:410-444). P15: Facts (:157, :163-165) and AG-41. P16: AG-39 and :213.
+  P17: AG-40 and :649. P18: AG-3. P19: AG-26. P20: the two transition
+  tables (:539-554) and :525. P21: AG-10 and :358. P22: :857 and AG-21. P23:
+  AG-42, :576 and :742. P24: the differences table (:899).
+- **The removed text is gone.** No `unverified`, `missing_half`, free-text
+  `cancel_reason`, "or it made a bid", "keep a commitment's id" or "same
+  data-layer call" is left. `_sd_alg` appears only where the doc says no
+  record carries it.
+- **The RFC vector in AG-19 is right.** SHA-256 over the US-ASCII bytes of
+  the RFC's disclosure string, base64url with no padding, gives
+  `X9yH0Ajrdm1Oij4tWso9UzzKJvPoDxwmuEcO3XAdRC0` (recomputed here with
+  `openssl`).
+- **The three different routes are accepted.** P13: the RFC's example salt
+  is 23 characters, so the 16-byte rule cannot be a decoder rule; moving it
+  to the record check is correct. P21: an unanswered enquiry holds no
+  reservation, and the counterparty can now withdraw it, so no clock is
+  needed. P22a: dropping the claim is enough, because the product is not
+  released.
+- **The fence is now buildable.** Every step of "The writer's decision" is
+  idempotent or guarded by a unique insert (`decision:<quote_id>`,
+  `countersign:<agreement>`), so a crash or two syncs at the same time end
+  in one result. The only gap is P26.
+
+### Findings
+
+- [ ] **P25 — minor.** *Where:* "The writer's decision" step 1 and step 2
+  (change.md:584-585); "Deal rules" (:509); the `not-formed` row (:479);
+  "Reason codes" (:493-494).
+  *Problem:* a `not-formed` snapshot with `quote-superseded` or
+  `quote-already-agreed` refuses one acceptance, not the deal. But the
+  text treats every `not-formed` as an end of the deal, and "every end of a
+  deal ends its quote id". Two cases go wrong. (a) A late card carries an
+  acceptance of an old version. Step 1 refuses it before the fence, so no
+  decision row is written, and the writer can still form an agreement on the
+  latest version. The counterparty's node files the `not-formed` snapshot
+  and shows the whole deal as ended. (b) For `quote-already-agreed` the deal
+  is `agreed`. A `not-formed` snapshot for the other version must not move
+  it.
+  *Fix:* say that the snapshot's `agreement` is the refused version's
+  `record_id`, and that `quote-superseded` and `quote-already-agreed` end
+  only that acceptance. The deal keeps its state, and the Hub shows the
+  refusal on that version's card. Only `quote-expired` and an extension's
+  reserve reason end the deal (and the quote id). Add the refused-version
+  case to AG-12's two-node test: after the refusal, the latest version can
+  still be accepted.
+  *Status:* Open.
+
+- [ ] **P26 — minor.** *Where:* "Recovery" (change.md:591); step 4
+  (:588); "Commitment failure" (:394); AG-43.
+  *Problem:* recovery runs steps 3 and 4 again, but not step 1. So a writer
+  that crashed in `deciding` and syncs again after the quote's expiry
+  countersigns after the expiry. This breaks AG-43 and :483 ("the writer
+  never countersigns after the expiry by its own clock"). Also, after a long
+  crash the writer's own reservation may have expired and been given away
+  (EX-20, EX-22). Then its `confirm` is refused, and step 4 does not say
+  what happens. :394 says the writer "confirms its own reservations at once,
+  so it never needs" a `commitment-failure`, which is not true after a
+  crash.
+  *Fix:* in "Recovery", when no `countersign:<agreement>` row exists yet:
+  re-check the expiry first (past it → release, `not-formed`,
+  `quote-expired`). In step 4, a refused `confirm` → release the others,
+  `not-formed` with the extension's reason. Because `confirm` comes before
+  the countersign, no agreement has formed yet, so no `commitment-failure`
+  is needed. Reword :394 to "confirms its own reservations before it
+  countersigns". Add both cases to AG-14's crash test.
+  *Status:* Open.
+
+- [ ] **P27 — minor.** *Where:* "Who signs what", the `deal-decline` row
+  (change.md:453).
+  *Problem:* the counterparty column says "declines a quote". Since the P21
+  fix, the counterparty can also withdraw its own enquiry (:358, AG-10).
+  *Fix:* "declines a quote, or withdraws its own enquiry".
+  *Status:* Open.
