@@ -239,10 +239,9 @@ async fn scenario_128_quote_set_against_filed_request_parity() {
 
 fn strip_accept_envelope_fields(v: &mut Value) {
     if let Some(res) = v.get_mut("result").and_then(Value::as_object_mut) {
-        res.remove("message_id");
-        res.remove("agreement_record_id");
-        res.remove("record_id");
-        res.remove("quote_record_id");
+        for k in ["message_id", "agreement_record_id", "record_id", "quote_record_id"] {
+            res.remove(k);
+        }
     }
 }
 
