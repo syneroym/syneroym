@@ -690,7 +690,7 @@ What was checked and found correct:
   reserve reason end the deal (and the quote id). Add the refused-version
   case to AG-12's two-node test: after the refusal, the latest version can
   still be accepted.
-  *Status:* Fixed. Agreed. New "A refused acceptance is not an end" rule in "Deal rules": `quote-superseded` and `quote-already-agreed` name the refused version's `record_id`, end only that acceptance, and the counterparty releases its reservations for it. The deal stays `quoted` or `agreed`. Only `quote-expired` and an extension's reserve or confirm reason make a deal `not-formed`. Steps 1 and 2, the `not-formed` state row and both reason-code rows say so. AG-12's two-node test now accepts the latest version after the refusal.
+  *Status:* Fixed (56dc3a54). Agreed. New "A refused acceptance is not an end" rule in "Deal rules": `quote-superseded` and `quote-already-agreed` name the refused version's `record_id`, end only that acceptance, and the counterparty releases its reservations for it. The deal stays `quoted` or `agreed`. Only `quote-expired` and an extension's reserve or confirm reason make a deal `not-formed`. Steps 1 and 2, the `not-formed` state row and both reason-code rows say so. AG-12's two-node test now accepts the latest version after the refusal.
 
 - [x] **P26 — minor.** *Where:* "Recovery" (change.md:591); step 4
   (:588); "Commitment failure" (:394); AG-43.
@@ -710,17 +710,38 @@ What was checked and found correct:
   the countersign, no agreement has formed yet, so no `commitment-failure`
   is needed. Reword :394 to "confirms its own reservations before it
   countersigns". Add both cases to AG-14's crash test.
-  *Status:* Fixed. Agreed. "Recovery" re-checks the expiry first when no `countersign:<agreement>` row exists (past it: release, `not-formed`, `quote-expired`). Step 4 handles a refused `confirm`: release the others, `not-formed` with the extension's reason, no `commitment-failure` because nothing has formed. "Commitment failure" reworded to "before it countersigns". AG-14 names both cases and adds them to its crash test.
+  *Status:* Fixed (56dc3a54). Agreed. "Recovery" re-checks the expiry first when no `countersign:<agreement>` row exists (past it: release, `not-formed`, `quote-expired`). Step 4 handles a refused `confirm`: release the others, `not-formed` with the extension's reason, no `commitment-failure` because nothing has formed. "Commitment failure" reworded to "before it countersigns". AG-14 names both cases and adds them to its crash test.
 
 - [x] **P27 — minor.** *Where:* "Who signs what", the `deal-decline` row
   (change.md:453).
   *Problem:* the counterparty column says "declines a quote". Since the P21
   fix, the counterparty can also withdraw its own enquiry (:358, AG-10).
   *Fix:* "declines a quote, or withdraws its own enquiry".
-  *Status:* Fixed. Agreed. The row now says "declines a quote, or withdraws its own enquiry".
+  *Status:* Fixed (56dc3a54). Agreed. The row now says "declines a quote, or withdraws its own enquiry".
 
 ## Fix session round 2 — Claude Opus 5.5 (Claude Code), 2026-11-10
 
-P25 to P27 are fixed in the next commit on
+P25 to P27 are fixed in `56dc3a54` on
 `claude/m08c-agreements-change-doc-1708e9`. All three proposed fixes are
 taken as written, with no pushback.
+
+## Doc review round 3 — Claude Opus 5.5 (Claude Code), 2026-11-10
+
+Checked the `56dc3a54` diff of `change.md` against P25 to P27.
+
+**Summary:** P25 to P27 confirmed fixed. No new findings. Every finding
+in this file (P1 to P27) is closed, and this review is complete.
+
+- **P25.** A refusal with `quote-superseded` or `quote-already-agreed` now
+  ends only that acceptance: step 1 writes no fence row, step 2 leaves the
+  row as it is, the snapshot names the refused version, and the deal stays
+  `quoted` or `agreed` ("Deal rules", the `not-formed` row, "Reason
+  codes"). Only `quote-expired` and an extension's reason make a deal
+  `not-formed`. AG-12's two-node test now accepts the latest version after
+  the refusal.
+- **P26.** "Recovery" re-checks the expiry when no countersigned half is
+  stored, and step 4 ends `not-formed` on a refused `confirm`. A recovery
+  with a stored countersigned half still finishes as `agreed`, which is
+  right, because that half was signed before the expiry. AG-14 names both
+  cases and tests them.
+- **P27.** The `deal-decline` row names the withdrawal.
