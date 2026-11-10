@@ -4,9 +4,8 @@
 //! product's own, and this is its one definition: Profile & Contacts
 //! stores it, a `profile` record signs it, and a listing embeds it.
 
-use std::collections::HashSet;
-
 use serde::{Deserialize, Serialize};
+use syneroym_text_lang::{self, TagListError};
 
 use crate::lang::{LangTag, TranslationError, check_text, check_translation_langs};
 
@@ -77,15 +76,12 @@ impl ProfilePayload {
             return Err(PersonError::Address);
         }
 
-        if self.languages.len() > MAX_LANGUAGES {
-            return Err(PersonError::TooManyLanguages);
-        }
-        let mut seen_langs = HashSet::with_capacity(self.languages.len());
-        for lang in &self.languages {
-            if !seen_langs.insert(lang) {
-                return Err(PersonError::DuplicateLanguage(lang.to_string()));
-            }
-        }
+        syneroym_text_lang::check_tag_list(&self.languages, MAX_LANGUAGES).map_err(
+            |e| match e {
+                TagListError::TooMany(_) => PersonError::TooManyLanguages,
+                TagListError::Duplicate(lang) => PersonError::DuplicateLanguage(lang),
+            },
+        )?;
 
         if !self.translations.is_empty() {
             if self.about.as_deref().unwrap_or("").trim().is_empty() {

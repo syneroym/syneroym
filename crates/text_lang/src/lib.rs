@@ -1,6 +1,8 @@
 //! Language tag parsing and validation in canonical syntax form.
 
-use std::{fmt, str::FromStr};
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
+
+use std::{collections::HashSet, fmt, str::FromStr};
 
 use icu_locale_core::Locale;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
@@ -11,6 +13,52 @@ mod tests;
 /// Longest tag a record may carry. RFC 5646 section 4.4.1 asks a reader to
 /// keep at least 35 characters.
 pub const MAX_TAG_LEN: usize = 35;
+
+/// Most language tags a chat message carries, main language first.
+pub const MAX_MESSAGE_LANGUAGES: usize = 3;
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum TagListError {
+    #[error("more than {0} languages")]
+    TooMany(usize),
+    #[error("the language '{0}' is listed twice")]
+    Duplicate(String),
+}
+
+/// An ordered list of tags: at most `max`, no tag twice. Tags are
+/// compared as canonical strings, so `hi` and `hi-IN` are two tags.
+pub fn check_tag_list(tags: &[LangTag], max: usize) -> Result<(), TagListError> {
+    if tags.len() > max {
+        return Err(TagListError::TooMany(max));
+    }
+    let mut seen = HashSet::with_capacity(tags.len());
+    for tag in tags {
+        if !seen.insert(tag) {
+            return Err(TagListError::Duplicate(tag.to_string()));
+        }
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum MessageLanguagesError {
+    #[error(transparent)]
+    Tag(#[from] LangTagError),
+    #[error(transparent)]
+    List(#[from] TagListError),
+}
+
+/// Parses each string with `LangTag::parse_canonical` and checks the list
+/// against MAX_MESSAGE_LANGUAGES. The one check every holder of message
+/// languages calls.
+pub fn parse_message_languages(tags: &[String]) -> Result<Vec<LangTag>, MessageLanguagesError> {
+    let mut parsed = Vec::with_capacity(tags.len());
+    for tag in tags {
+        parsed.push(LangTag::parse_canonical(tag)?);
+    }
+    check_tag_list(&parsed, MAX_MESSAGE_LANGUAGES)?;
+    Ok(parsed)
+}
 
 /// A BCP 47 language tag in canonical syntax form. The CLDR form (`iw` to
 /// `he`) is not used: it needs CLDR data in every guest.
