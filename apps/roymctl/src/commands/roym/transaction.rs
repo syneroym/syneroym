@@ -159,36 +159,38 @@ pub enum TransactionCommands {
     },
 }
 
-#[allow(clippy::too_many_arguments)]
-fn build_request_params(
-    conversation: &str,
-    description: &str,
-    lang: &str,
-    categories: &[String],
-    listing: Option<&str>,
-    near: Option<&str>,
-    window: Option<&str>,
-    notice: Option<&str>,
-) -> Result<Value> {
-    let parsed_lang = LangTag::parse(lang)?;
-    let data_use_notice = notice
+struct RequestParamsArgs<'a> {
+    conversation: &'a str,
+    description: &'a str,
+    lang: &'a str,
+    categories: &'a [String],
+    listing: Option<&'a str>,
+    near: Option<&'a str>,
+    window: Option<&'a str>,
+    notice: Option<&'a str>,
+}
+
+fn build_request_params(args: RequestParamsArgs<'_>) -> Result<Value> {
+    let parsed_lang = LangTag::parse(args.lang)?;
+    let data_use_notice = args
+        .notice
         .map(str::to_string)
         .unwrap_or_else(|| transaction::DEFAULT_DATA_USE_NOTICE.to_string());
 
     let mut params = json!({
-        "conversation": conversation,
-        "description": description,
+        "conversation": args.conversation,
+        "description": args.description,
         "lang": parsed_lang.as_str(),
-        "categories": categories,
+        "categories": args.categories,
         "data_use_notice": data_use_notice,
     });
-    if let Some(l) = listing {
+    if let Some(l) = args.listing {
         params["listing_id"] = json!(l);
     }
-    if let Some(n) = near {
+    if let Some(n) = args.near {
         params["area"] = parse_near(n)?;
     }
-    if let Some(w) = window {
+    if let Some(w) = args.window {
         params["window"] = parse_window(w)?;
     }
 
@@ -209,7 +211,10 @@ async fn handle_request(
     host: Option<&str>,
     ctx: RpcCtx<'_>,
 ) -> Result<()> {
-    let params = build_request_params(
+    let data_use_notice = notice.unwrap_or(transaction::DEFAULT_DATA_USE_NOTICE);
+    println!("{data_use_notice}");
+
+    let params = build_request_params(RequestParamsArgs {
         conversation,
         description,
         lang,
@@ -218,10 +223,7 @@ async fn handle_request(
         near,
         window,
         notice,
-    )?;
-    if let Some(notice_text) = params.get("data_use_notice").and_then(|v| v.as_str()) {
-        println!("{notice_text}");
-    }
+    })?;
 
     call_and_print(ctx, gateway_url, host, "request.set", params).await
 }
@@ -573,13 +575,31 @@ mod tests {
 
     #[test]
     fn build_request_params_validates_lang() {
-        let params = build_request_params("conv1", "desc", "HI-latn", &[], None, None, None, None);
+        let params = build_request_params(RequestParamsArgs {
+            conversation: "conv1",
+            description: "desc",
+            lang: "HI-latn",
+            categories: &[],
+            listing: None,
+            near: None,
+            window: None,
+            notice: None,
+        });
         assert!(params.is_ok());
         if let Ok(p) = params {
             assert_eq!(p["lang"], "hi-Latn");
         }
 
-        let err = build_request_params("conv1", "desc", "hi_IN", &[], None, None, None, None);
+        let err = build_request_params(RequestParamsArgs {
+            conversation: "conv1",
+            description: "desc",
+            lang: "hi_IN",
+            categories: &[],
+            listing: None,
+            near: None,
+            window: None,
+            notice: None,
+        });
         assert!(err.is_err());
         if let Err(e) = err {
             assert!(e.to_string().contains("is not a well-formed BCP 47 tag"));
