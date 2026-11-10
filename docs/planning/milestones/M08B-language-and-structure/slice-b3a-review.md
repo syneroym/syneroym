@@ -605,7 +605,7 @@ there are no earlier R items to confirm.
   change doc from this table.
 - *Fix:* Replace each name with a real test, file and name. Where the plan's
   test is missing (R5), add the test first, then cite it.
-- *Status:* Fixed (571ac47e). Replaced missing/outdated test names with existing tests in `change.md` ML-10, ML-11, ML-13: `payload_deserialization_requires_canonical_lang`, `request_verify_refuses_missing_malformed_and_non_canonical_lang`, `quote_verify_refuses_missing_malformed_and_non_canonical_terms_lang`, `listing_translation_rules`, `request_translation_validation`, `quote_translation_count_and_tags`, `quote_translation_field_validation`, `profile_languages_validation`, `profile_translations_validation`, `payload_with_locale_and_no_lang_fails_deserialization`, `invalid_language_tags_in_record_set_methods_are_rejected`, `build_request_params_validates_lang`, and `build_quote_params_validates_lang`.
+- *Status:* Open (round 2: partial fix). Fixed (571ac47e). Replaced missing/outdated test names with existing tests in `change.md` ML-10, ML-11, ML-13: `payload_deserialization_requires_canonical_lang`, `request_verify_refuses_missing_malformed_and_non_canonical_lang`, `quote_verify_refuses_missing_malformed_and_non_canonical_terms_lang`, `listing_translation_rules`, `request_translation_validation`, `quote_translation_count_and_tags`, `quote_translation_field_validation`, `profile_languages_validation`, `profile_translations_validation`, `payload_with_locale_and_no_lang_fails_deserialization`, `invalid_language_tags_in_record_set_methods_are_rejected`, `build_request_params_validates_lang`, and `build_quote_params_validates_lang`. Round 2: the ML-10 cell still cites `person.rs` (`validate_lang`); no `validate_lang` exists in the workspace. The ML-13 cell puts `payload_with_locale_and_no_lang_fails_deserialization` in `crates/roym_profile/src/app/profile_ops.rs`; it is in `crates/roym_core/src/person.rs:200`.
 
 #### R3 — minor — the Hub cannot keep an empty profile languages list
 
@@ -825,3 +825,115 @@ there are no earlier R items to confirm.
   calling `build_request_params`. Use a small args struct instead of the
   second `allow`.
 - *Status:* Fixed (289de2d8). Extracted `RequestParamsArgs` struct to remove `clippy::too_many_arguments` suppression. Printed data-use notice before calling `build_request_params`. Proof: tested with bad flag `--window bad`; notice is printed before the error message as on `main`.
+
+## Code review round 2 — Claude Opus 5.5, 2026-11-10
+
+Checked `git diff 64593d62..893b82d3` on `feat/m08b-b3a-lang-records`, in
+the main checkout: the eleven fix commits for R1 to R12, and the result
+line in `task.md`. CI on `893b82d3` (run 42749706204): Lints, Playwright
+E2E, Test 1/6 to 6/6, CI Pipeline and CLA pass. Hub unit tests here: 424
+passed in 37 files (matches `status.md`). Targeted nextest over the
+changed `roym_core`, `roym_federated_query` and `roymctl` tests: 17
+passed.
+
+**Summary:** 11 of 12 round 1 items confirmed Fixed. R2 is back to Open
+(partial fix). New: 0 blocker, 1 major (R13), 2 minor (R14, R15).
+**4 open** (R2 and R13 major, R14 and R15 minor).
+
+### Round 1 items confirmed
+
+- **R1.** `profile.ts` now rebuilds the select from the stored tag, so an
+  unlisted tag such as `en-GB` is an option and is sent back unchanged. The
+  new test `profile.test.ts:147` fails on the old code (as the fix note
+  says) and passes now.
+- **R3.** A stored profile keeps its list as it is; `[]` stays `[]`. Test
+  at `profile.test.ts:178`.
+- **R4.** The Hindi sweep clicks `button.listing-translation-add-btn` with
+  `!` and checks that one row is drawn. A new quote card case shows the
+  translation, the note and the binds line, all in Devanagari. A Hindi note
+  case is in `record_text.test.ts`.
+- **R5.** The tautology test is gone. The receipt `terms.lang` is now
+  checked through the real path (`agreement.get`, both halves, both
+  builds). Request and quote verify tests cover a missing, a malformed and a
+  non-canonical tag. Both parity tests and the directory verify test now
+  check `translations[0].lang` and `title`. A refused-row test and the
+  `hi_IN` contract case are added.
+- **R6.** `recordValue` and the request and directory code always set
+  `lang` to `langAttr(tag)`, `""` included. The untitled word is drawn
+  without the record's `lang` (`directory.test.ts`, hit 3).
+- **R7.** "(P1)" and "(Q6)" are gone. The `hi-Latn` reason and the picker
+  reason are back.
+- **R8.** `recordValue(tag, value)` in `record_text.ts` replaces all eleven
+  span blocks. No `if (attr)` block is left in the Hub source.
+- **R9.** The developer guide gives the real signatures of `recordText` and
+  `textLangSelect`. The architecture Cards row is corrected.
+- **R10.** The change doc says 13 tags, states the ML-12 deviation
+  correctly, and lists the missing decisions.
+- **R11.** The before and after sizes are recorded (`main` at the merge
+  base `4c7b699c`). One Hindi word for "original text". The PR text lists
+  the Hindi lines and asks the owner about the `RUSTSEC-2026-0459` ignore.
+  The recorded numbers break the plan's size limit; that is the new item
+  R13.
+- **R12.** The notice is printed in `handle_request` before
+  `build_request_params`, and an args struct replaces the second `allow`.
+
+#### R13 — major — four Roym components grew by more than the plan's 40 KB stop limit
+
+- *Where:* `docs/planning/milestones/M08B-language-and-structure/task.md:170`
+  (B3a result line); PR #354 text, "Component sizes"; plan section 7.6 and
+  exit criterion 12.
+- *Problem:* Plan 7.6 says: if one component grows by more than 40 KB,
+  stop and tell the owner. The recorded growth is profile +76,539 bytes,
+  catalog +87,408, transaction +111,779 and directory +86,887. That is two
+  to almost three times the limit, and four to six times the +17,317 bytes
+  that S0 measured for the tag type. The result line ends "Unit tests …
+  pass", and the PR text lists the numbers without saying the limit is
+  broken. No deviation in the change doc, and no owner decision.
+- *Failure case:* The PR merges with exit criterion 12 failed and the owner
+  not told. Every later slice measures against a larger base, so the extra
+  bytes are never explained.
+- *Fix:* Tell the owner in the PR text, with the four numbers and the
+  limit. Find where the bytes come from before asking for a decision: for
+  example `twiggy top` or `twiggy diff` on `profile.wasm` built on
+  `4c7b699c` and on this branch, so the owner sees how much is
+  `icu_locale_core`, how much is the new serde and validation code and how
+  much is error text. Then either reduce it, or record the owner's
+  acceptance as a deviation in the change doc and say so in the result
+  line.
+- *Status:* Open
+
+#### R14 — minor — the new test helper copies the old one, and the new test uses full paths
+
+- *Where:* `crates/roym_federated_query/src/tests/helpers.rs:84`
+  (`sign_test_listing_with_translation`); `src/tests/verify.rs:310` and
+  `:312`.
+- *Problem:* `sign_test_listing_with_translation` is
+  `sign_test_listing_with_issuer` (`helpers.rs:212`) again, line for line
+  (about 50 lines), except the `translations` value and the key it makes.
+  AGENTS.md: look for an existing helper first. The new refused-row test
+  calls `syneroym_roym_core::listing::verify_envelope` and
+  `crate::verify::build_refused_row` inline, against the import rule.
+- *Failure case:* The next change to the test listing (a new required
+  field) must be made in two places. If one is missed, the translation
+  test signs a different listing from every other test.
+- *Fix:* Give `sign_test_listing_with_issuer` (or a private inner
+  function) a `translations: Vec<ListingTranslation>` argument, and make
+  both public helpers call it. Import `verify_envelope` and
+  `build_refused_row` in the `use` block.
+- *Status:* Open
+
+#### R15 — minor — the PR text does not mention the CI runner pin
+
+- *Where:* `.github/workflows/ci.yml` (commit `3083f0e9`, all seven
+  `runs-on` lines); PR #354 text.
+- *Problem:* The PR changes every CI job from `ubuntu-latest` to
+  `ubuntu-24.04`. The commit gives a good reason (Playwright 1.60.0 does
+  not install on `ubuntu-26.04`). The change is not part of the B3a plan,
+  and it affects every branch once merged. The PR text does not say it is
+  there.
+- *Failure case:* The owner merges a CI change without knowing. Later
+  nobody knows when to remove the pin.
+- *Fix:* Add one line to the PR text about the pin and its reason. Add a
+  backlog row: remove the pin when Playwright supports `ubuntu-26.04`. Or
+  move the commit to its own PR.
+- *Status:* Open
