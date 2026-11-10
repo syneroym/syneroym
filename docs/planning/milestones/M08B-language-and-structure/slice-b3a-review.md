@@ -476,3 +476,352 @@ each fix. I did not run any plan step.
 - **Fix:** Write "about +6 (Step 2, helper methods), then about +35. Limit
   800".
 - *Status:* Fixed (8f8f2085)
+
+## Code review round 1 — Claude Opus 5.5, 2026-11-10
+
+Reviewed `git diff origin/main...HEAD` on `feat/m08b-b3a-lang-records` at
+`ba83c727` (PR #354, draft), in the main checkout (not a worktree). The code
+was written by Gemini 3.8 Flash. The prompt lists one change doc,
+[roym-multilingual](../../changes/roym-multilingual/change.md). Every B3a
+decision and deviation belongs there. This is the first code review round, so
+there are no earlier R items to confirm.
+
+**Summary:** 0 blocker, 2 major, 10 minor (R1 to R12). **12 open.**
+
+### What was checked and found correct
+
+- **CI.** `gh pr checks 354` on `ba83c727`: Lints, Playwright E2E, Test 1/6
+  to 6/6, CI Pipeline and the CLA check pass. Benchmarks and Code Coverage
+  skip. So the full suite, the parity tests (both builds) and the e2e suite
+  pass on this sha.
+- **Run here.** `npm test` in `crates/roym_web/ui`: 37 files, 417 tests
+  passed. This matches status.md. (A run without `TZ=UTC` fails 6 tests on a
+  machine in IST. That is the test set-up, not this slice: `npm test` sets
+  `TZ=UTC`.)
+- **The crate (D-B3a-1).** `crates/text_lang` has the type, the three error
+  variants, `parse`, `parse_canonical`, `Display`, `AsRef`, `FromStr`, and a
+  `Deserialize` that calls `parse_canonical`. The length is checked before
+  the parser runs. The dependency is `icu_locale_core` 2.4 with `alloc` only.
+  The tests hold all 15 inputs of the S0 table, the 36-byte case, the
+  `NotCanonical` case and the serde cases. `syneroym-text-lang` is in the
+  `check-roym-deps` list.
+- **Record rules (D-B3a-2 to D-B3a-5).** `roym_core::lang` has
+  `MAX_TRANSLATIONS = 4`, the five `TranslationError` variants and the two
+  check functions, used by all four records. `lang` sits in `AgreedTerms`
+  and `translations` on `QuotePayload` (Q1). The translated fields are the
+  ones of Q2. Each translated field uses the limit and the "required" rule of
+  its original. `TranslationWithoutAbout`, `TooManyLanguages` and
+  `DuplicateLanguage` exist. No struct got `deny_unknown_fields`. The four
+  input structs take `lang` (required) and `translations` (default), and
+  `locale` is gone. `quote.set` with `terms.lang: "hi-latn"` answers `-32602`
+  with `data.field = "terms.lang"` and the canonical form in the message.
+- **Splits (D-B3a-8).** `TransactionError` in `transaction/error.rs` is the
+  old enum, line for line, plus the new `Translation` variant. The ten verify
+  tests moved to `transaction/tests/verify.rs`. `ListingPayload::validate`
+  keeps its checks in the same order and calls the two new helpers in the old
+  place. `transaction.rs` is 707 lines, `transaction/tests.rs` 438, `listing.rs`
+  584. The capped parity files did not grow (`profile.rs` 1112,
+  `transaction.rs` 846, `directory.rs` 981, `fixtures.rs` 798).
+- **Wire.** The method shape diff holds only `lang` and `translations`
+  keys. The plan expected `contacts_get_found` and `contacts_list_with_rows`
+  to change. They do not hold a profile payload, so it is right that they did
+  not change. W1 to W9 match the code.
+- **Directory hits (D-B3a-6).** `Row` and `MergedHit` carry `lang` and
+  `translations`, copied from the verified payload and from the winning row.
+  The server half (`search_ops.rs`) did not change.
+- **`roymctl` (D-B3a-7).** `--lang` is required on `request` and `quote`.
+  `LangTag::parse` runs before the call. `build_request_params` exists and
+  both builders have unit tests. `docs/demo/demo.md` has `--lang en`.
+- **Security.** Every tag and every translated text from another node goes
+  through `textContent` or `setAttribute("lang", …)` with a tag that already
+  passed `parse_canonical` on the node. No `innerHTML`. A link in a
+  translated `dispute_path` goes through `renderLink`, as the original does.
+- **Hub.** `sameLanguage` and `languageName` exist once, in `text_lang.ts`.
+  `bestVersion` follows D-B3a-10. The five old message ids are gone (the
+  plan's `git grep` finds only the `-label` ids). The request notice has no
+  `lang` (P8). The quote card shows `record-text-original-binds` when it
+  shows a translation (P1). The fulfilment receipt uses `labelled` and
+  `terms.lang` (P2). The listing status list has `.listing-status-select`,
+  and `roym-hub.spec.ts` uses it (P4). The profile buttons have
+  `type="button"` and the profile screen has no new `<p>` (P5). The profile
+  form sends stored `about` and `translations` back (P6).
+- **e2e and story 40.** The new Playwright test finds the hit by listing id,
+  checks the English title with `lang="en"`, the note, the switch to the
+  Hindi original, and the Hindi Hub. Story 40 has the one step of Q7 and does
+  not save.
+- **Backlog.** The seven rows of plan section 8 exist, with a reason, a
+  target and a link. The CLDR row names `LangTag`. The new
+  `RUSTSEC-2026-0459` row exists (see R11).
+
+### Findings
+
+#### R1 — major — the profile form sends `lang: ""` when the stored profile's tag is not in `RECORD_LANGUAGES`
+
+- *Where:* `crates/roym_web/ui/src/screens/profile.ts:30`, `:158`.
+- *Problem:* The text language list is built before the profile loads, with
+  `textLangSelect("profile-text-lang", currentLanguage())`. After the load,
+  the code sets `langSelect.value = env.payload.lang`. When the stored tag is
+  not one of the options, the browser sets the value to `""`. D-B3a-9 and Q6
+  say the list adds "the tag a record already has when it is not in the list
+  (editing the own profile)". `textLangSelect` can do that, but the form
+  never passes the stored tag to it.
+- *Failure case:* A person sets their profile through the API or `roym`
+  with `"lang": "en-GB"` (or `ta-IN`, `sa`). They open the Profile screen and
+  press Save. The form sends `lang: ""` and the node answers `-32602`
+  (`language tag '' is not a well-formed BCP 47 tag`). The person cannot save
+  their profile in the Hub. Proved here with a throw-away vitest file: after
+  the load, `.profile-text-lang` has the value `""`, and `profile.set` gets
+  `lang: ""`.
+- *Fix:* Build the list after the load, or rebuild it with the stored tag:
+  `textLangSelect("profile-text-lang", env.payload.lang)` when the payload
+  has one. Add a test to `profile.test.ts`: a stored `lang: "en-GB"` shows as
+  the selected option and is sent unchanged.
+- *Status:* Open
+
+#### R2 — major — the change doc's Test column names tests that do not exist
+
+- *Where:* `docs/planning/changes/roym-multilingual/change.md:106`, `:107`,
+  `:109` (rows ML-10, ML-11, ML-13).
+- *Problem:* Plan Step 10.2 asks for "the real test names". `git grep` finds
+  none of these: `validate_lang`, `listing_validate_refuses_non_canonical_lang`,
+  `request_verify_refuses_non_canonical_lang`,
+  `quote_verify_refuses_non_canonical_lang`, `request_lang_argument`,
+  `quote_lang_argument`, `validate_languages`. ML-11 cites
+  `crates/roym_core/src/lang.rs` "(table of each `TranslationError`
+  variant)", but `lang.rs` has no tests. ML-13 cites `profile_ops.rs`
+  "(refusal of `locale`)"; that test is in `method_contract/contract.rs`. The
+  real names are `payload_deserialization_requires_canonical_lang`,
+  `listing_translation_rules` (`listing/tests.rs`),
+  `request_translation_validation`, `quote_translation_count_and_tags`,
+  `quote_translation_field_validation` (`transaction/tests/lang.rs`),
+  `profile_languages_validation`, `profile_translations_validation`,
+  `payload_with_locale_and_no_lang_fails_deserialization` (`person.rs`),
+  `build_request_params_validates_lang`, `build_quote_params_validates_lang`
+  (`roymctl`) and `invalid_language_tags_in_record_set_methods_are_rejected`
+  (`method_contract/contract.rs`).
+- *Failure case:* The change doc is the record of what proves each
+  criterion. A reader of ML-10 believes that request and quote verify have
+  their own non-canonical tests. They do not exist (see R5). B6 closes the
+  change doc from this table.
+- *Fix:* Replace each name with a real test, file and name. Where the plan's
+  test is missing (R5), add the test first, then cite it.
+- *Status:* Open
+
+#### R3 — minor — the Hub cannot keep an empty profile languages list
+
+- *Where:* `crates/roym_web/ui/src/screens/profile.ts:37`, `:160`.
+- *Problem:* D-B3a-4 allows an empty list ("the person did not say"). The
+  form starts with `[currentLanguage()]` and replaces it only when the stored
+  list is not empty.
+- *Failure case:* A person removes every language and saves: the record has
+  no `languages`. They come back, change their name and save. The form sends
+  `languages: ["en"]`, a language the person removed. Proved with the same
+  throw-away test: a stored profile with `languages: []` is sent back as
+  `["en"]`.
+- *Fix:* Start with `[currentLanguage()]` only when there is no stored
+  profile. When a profile loads, use its list as it is, empty or not. Add a
+  test.
+- *Status:* Open
+
+#### R4 — minor — the Hindi sweep never draws a translation row, the "by the author" note or the binds line
+
+- *Where:* `crates/roym_web/ui/src/i18n/hindi-screens.test.ts:315`, `:486`;
+  `crates/roym_web/ui/src/records/record_text.test.ts`.
+- *Problem:* The sweep clicks `button.listing-translation-add`, but the
+  button's class is `listing-translation-add-btn` (`listings.ts:247`).
+  `?.click()` on `null` does nothing, so no translation row is drawn and the
+  test still passes. In the quote card case the reader is Hindi and the
+  original is `hi`, so the card shows the original: `record-text-by-author`
+  and `record-text-original-binds` are never drawn in Hindi. Plan 7.1 also
+  asks for a `record_text.test.ts` case "In Hindi, the note and the button
+  have Devanagari letters"; it is missing. Same kind as B2 R3.
+- *Failure case:* A translation row label, or one of the two notes, gets an
+  English word in Hindi. Every test still passes.
+- *Fix:* Use `button.listing-translation-add-btn` with `!` (no `?.`) and
+  check one `.listing-translation-row` exists. Add a quote case whose
+  original is `en` with a `hi` translation, so the Hindi reader sees the
+  translation, the note and the binds line. Add the Hindi case to
+  `record_text.test.ts`.
+- *Status:* Open
+
+#### R5 — minor — several tests prove less than their names or the plan say
+
+- *Where:* `crates/roym_core/src/transaction/tests/lang.rs:223`;
+  `crates/roym_web/tests/dual_build_parity/catalog.rs:344`;
+  `crates/roym_web/tests/dual_build_parity/directory_find.rs`;
+  `crates/roym_federated_query/src/tests/verify.rs:282`;
+  `crates/roym_web/tests/method_contract/contract.rs:445`.
+- *Problem:*
+  - `receipt_built_from_quote_has_quote_terms_lang` builds the receipt by
+    hand with `quote.terms.clone()` and checks that the clone is equal. It
+    does not run the acceptance code that builds a receipt.
+  - `listing_with_translation_parity` compares the two builds' envelopes,
+    but never checks that the translation is in them. Two builds that both
+    drop `translations` pass.
+  - The directory parity check and `verified_hit_preserves_lang_and_translations`
+    use a listing with no translations, so `translations` is always `[]`.
+    The plan (Step 5.2, 7.2) asks that a hit carries the payload's
+    translations, and that a refused row has `lang: ""`.
+  - No test signs a request or a quote with a missing, malformed or
+    non-canonical `lang` and checks that verify refuses it (plan 7.2, "the
+    same rules"). Only the listing has one.
+  - No `method_contract` case sends `"lang": "hi_IN"` to `listing.set`
+    (plan "How a developer can see it work").
+- *Failure case:* A change that drops `translations` on the WASM build, or
+  in `merge.rs`, or that accepts an untagged request on verify, passes the
+  tests.
+- *Fix:* Replace the receipt test with one that goes through the receipt
+  builder (or delete it and cite the parity agreement test). In the two
+  parity tests and the verify test, use a listing with one translation and
+  check `translations[0].lang` and `title`. Add a refused-row case. Add the
+  missing request and quote verify cases to `transaction/tests/lang.rs`, and
+  the `hi_IN` case to `contract.rs`.
+- *Status:* Open
+
+#### R6 — minor — a refused tag gives no `lang` instead of `lang=""`, and the "untitled" Hub text gets the record's `lang`
+
+- *Where:* every `if (attr) ….setAttribute("lang", attr)`
+  (`quote.ts:153`, `:229`, `:242`, `:252`, `:262`; `agreement_receipt.ts:137`,
+  `:207`, `:219`, `:229`, `:239`; `fulfilment_receipt.ts:45`;
+  `request.ts:69`; `directory.ts:337`); `directory.ts:320`.
+- *Problem:* ML-5 in plan section 3 says the text has `lang` set to the tag,
+  "or `""` when `Intl.Locale` refuses the tag", and names a test "an unknown
+  tag gives an empty lang". The code leaves the attribute out, so the text
+  takes the page language. `lang=""` means "language not known"; no
+  attribute means "the page language". The test does not exist. Also, a hit
+  with no title shows `t("directory-untitled")` (Hub text) inside the
+  element that gets the record's `lang`.
+- *Failure case:* A Hindi Hub shows a stranger's quote whose tag the browser
+  refuses. A screen reader reads the text as Hindi. A Tamil listing with no
+  title shows the English or Hindi word "Untitled" marked `lang="ta"`.
+- *Fix:* Always set `lang` to `langAttr(tag)`, including `""`. Draw the
+  untitled word without the record's `lang`. Add the test of plan
+  section 3. R8's helper is the one place to do this.
+- *Status:* Open
+
+#### R7 — minor — two comments carry plan ids, and two "why" comments were lost
+
+- *Where:* `crates/roym_web/ui/src/cards/templates/quote.ts:272` ("(P1)");
+  `crates/roym_web/ui/src/i18n/text_lang.ts:3` ("(Q6)");
+  `text_lang.ts` `sameLanguage` and `picker.ts` (main: `i18n.ts:87`,
+  `picker.ts:4`).
+- *Problem:* AGENTS.md: no planning ids in code comments. The moved
+  `matches` had "so `hi-Latn` does not match the Devanagari `hi` catalog".
+  The old picker `languageName` had "The language's own name, so a person
+  finds theirs in any Hub language." Both reasons were dropped in the move.
+- *Failure case:* The plan is archived, and "(P1)" and "(Q6)" point at
+  nothing. A reader of `sameLanguage` no longer sees why the script is
+  compared.
+- *Fix:* Remove "(P1)" and "(Q6)". Put the `hi-Latn` reason back on
+  `sameLanguage`. Put the picker reason on the `languageName(tag, tag)` call.
+- *Status:* Open
+
+#### R8 — minor — the "value span with `lang`" block is written eleven times
+
+- *Where:* `quote.ts` (4), `agreement_receipt.ts` (5),
+  `fulfilment_receipt.ts` (1), and the same shape in `request.ts` and
+  `directory.ts`.
+- *Problem:* Each copy is: create a `span`, set `textContent` (or a link),
+  call `langAttr`, set the attribute when not empty, call `labelled`. Plan
+  7.8 says "the form control is one function" and B2 R7 had the same kind of
+  finding. R6 then needs eleven edits.
+- *Failure case:* One copy is fixed for R6 and another is not. The dispute
+  link copies already differ from the others.
+- *Fix:* One helper in `records/record_text.ts`, for example
+  `recordValue(tag: string, value: Node | string): HTMLSpanElement`, used by
+  every card and the directory hit. `labelled(p, t("…-label"),
+  recordValue(lang, text))` then reads as one line.
+- *Status:* Open
+
+#### R9 — minor — the living docs give wrong function signatures and say a little more than the code
+
+- *Where:* `docs/developer-guide.md:1781`; `docs/system-architecture.md:1421`,
+  the `fulfilment-receipt` row of the Cards table.
+- *Problem:* The developer guide says
+  `recordText(currentLanguage(), originalLang, originalText, translations)`
+  and `textLangSelect(current)`. The real signatures are
+  `recordText(host, versions, draw)` and `textLangSelect(className, current)`.
+  It says the note shows "when it shows an author translation"; it also shows
+  for the original when the record has a translation. Both docs say every
+  block of record text has `lang`, and list `profile` among the record text
+  the Hub shows. No screen shows another person's profile, and own listing
+  rows have no `lang` (P7 deviation). The Cards row "drawn with labelled
+  fields and `terms.lang`" describes Hub code, not what the card means; it
+  should say the receipt carries `terms` with `terms.lang`.
+- *Failure case:* A developer follows the guide and writes a call that does
+  not compile.
+- *Fix:* Correct the two signatures and the note rule. Say "listing,
+  request and quote text, and the receipts' terms". Rewrite the Cards row.
+- *Status:* Open
+
+#### R10 — minor — the change doc's decisions and deviations have a wrong count, a wrong rule and missing items
+
+- *Where:* `docs/planning/changes/roym-multilingual/change.md:279`, `:494`,
+  `:498`, and the "Decided 2026-11-09" list (`:272`); PR #354 text.
+- *Problem:*
+  - "17 tags" / "17 languages": `RECORD_LANGUAGES` has 13.
+  - The deviation "ML-12 shows a note only when a record has an author
+    translation. An original text does not show a note unless toggled back"
+    is wrong. When a record has a translation and the original is the best
+    version, the original shows with `record-text-original`, with no toggle.
+    The e2e test checks exactly that (`'मूल विवरण, हिन्दी में।'` in the
+    Hindi Hub). The real rule (plan D-B3a-10): a record with one version has
+    no note.
+  - Plan Step 10.2 asks for each D-B3a item in the decisions list. Missing:
+    the translated fields of a profile, a request and a quote (Q2 names all
+    four; the doc names only the listing); the profile `languages` rules (0
+    to 8, no duplicate, empty allowed) and `TranslationWithoutAbout`; the
+    reader-language order (UI language, then `navigator.languages`) and the
+    `bestVersion` rule; the five `-label` messages; `roymctl --lang`; the new
+    crate's API and its place outside `roym_core`.
+- *Failure case:* B6 closes the change doc from these lines and records a
+  wrong count and a wrong rule as permanent history.
+- *Fix:* Write 13. Rewrite the ML-12 deviation as "a record with no author
+  translation shows no note". Add the missing decisions as short bullets.
+  Fix the same two lines in the PR text.
+- *Status:* Open
+
+#### R11 — minor — exit criteria 12 and 13 lack their evidence, and an audit ignore rides in this PR
+
+- *Where:* `docs/planning/milestones/M08B-language-and-structure/task.md:170`
+  (B3a result line); PR #354 text; `.cargo/audit.toml`
+  (`RUSTSEC-2026-0459`, commit `865bc893`); `hi.ftl:77` to `:79`.
+- *Problem:*
+  - Plan Step 10.1 and 7.6 ask for the six component sizes before (on
+    `main`) and after, with a stop at +40 KB. The result line gives only the
+    sizes after, so nobody can check the bound. "growth within bounds" in
+    the PR text has no number behind it.
+  - Plan 7.7 and exit criterion 13: the PR text lists the new Hindi lines
+    for the owner. It does not. The new lines also use two words for
+    "original text": `मूल विवरण` (`record-text-original`,
+    `record-text-show-original`) and `मूल पाठ` (`record-text-original-binds`).
+  - The `RUSTSEC-2026-0459` ignore is not part of the B3a plan. It has a
+    reason and a backlog row, but the PR text does not mention it. An audit
+    ignore is an owner decision.
+- *Failure case:* The PR merges with no proof of the size bound and with
+  Hindi text the owner has not seen. The owner does not learn that this PR
+  turns off an audit finding.
+- *Fix:* Build `main` and write the six sizes before and after into the
+  result line. List the about 25 Hindi lines in the PR text and pick one
+  word for "original text". Add one line to the PR text about the audit
+  ignore and ask the owner to confirm it, or move it to its own PR.
+- *Status:* Open
+
+#### R12 — minor — `roymctl request` now prints the notice only after the params are built
+
+- *Where:* `apps/roymctl/src/commands/roym/transaction.rs:163`, `:222` to
+  `:224`.
+- *Problem:* On `main`, `handle_request` printed the data-use notice first,
+  then parsed `--near` and `--window`. Now it prints the notice only when
+  every flag parses, and it reads the notice back out of the JSON value. The
+  plan asked only to move the code into a function. The new function also
+  adds an `#[allow(clippy::too_many_arguments)]`.
+- *Failure case:* `roymctl roym transaction request … --window bad` used to
+  show the notice the person is about to sign, then the error. Now it shows
+  only the error. Small, but it is a reordered step that the plan did not ask
+  for.
+- *Fix:* Return the notice beside the params (for example
+  `(Value, String)`), or print it in `handle_request` from `notice` before
+  calling `build_request_params`. Use a small args struct instead of the
+  second `allow`.
+- *Status:* Open
