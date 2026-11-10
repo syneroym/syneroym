@@ -12,8 +12,8 @@ use syneroym_roym_core::{
     directory::{AreaMatch, SearchHit},
     lang::LangTag,
     listing::{
-        LISTING_VERSION, ListingPayload, ListingStatus, ListingVerdict, PaymentModel, PaymentTerms,
-        derive_listing_id, verify_envelope,
+        LISTING_VERSION, ListingPayload, ListingStatus, ListingTranslation, ListingVerdict,
+        PaymentModel, PaymentTerms, derive_listing_id, verify_envelope,
     },
     membership::{
         MAX_REASON_LEN, MAX_RULE_LEN, MEMBERSHIP_CREDENTIAL_VERSION, MODERATION_DECISION_VERSION,
@@ -79,6 +79,64 @@ pub fn sign_test_listing(slug: &str, title: &str, now: u64) -> (String, String, 
     let key = Identity::generate().unwrap();
     let issuer = substrate::derive_did_key(&key.public_key());
     sign_test_listing_with_issuer(&key, &issuer, slug, title, now)
+}
+
+pub fn sign_test_listing_with_translation(
+    slug: &str,
+    title: &str,
+    tr_lang: &str,
+    tr_title: &str,
+    now: u64,
+) -> (String, String, String) {
+    let key = Identity::generate().unwrap();
+    let issuer = substrate::derive_did_key(&key.public_key());
+    let listing_id = derive_listing_id(&issuer, slug).unwrap();
+    let payload = ListingPayload {
+        listing_id: listing_id.clone(),
+        slug: slug.to_string(),
+        title: title.to_string(),
+        summary: format!("Summary {slug}"),
+        lang: LangTag::parse_canonical("en").expect("valid tag"),
+        translations: vec![ListingTranslation {
+            lang: LangTag::parse_canonical(tr_lang).expect("valid tr tag"),
+            title: tr_title.to_string(),
+            summary: format!("Summary {tr_title}"),
+        }],
+        categories: vec!["services".to_string()],
+        conversation_address: format!("{issuer}#conv"),
+        status: ListingStatus::Active,
+        booking: None,
+        payment: Some(PaymentTerms {
+            currency: "EUR".to_string(),
+            model: PaymentModel::PerHour,
+            amount_minor: Some(3500),
+            tax_included: true,
+            fees_minor: None,
+            methods: vec!["cash".to_string()],
+            payee: "A. Provider".to_string(),
+        }),
+        product: None,
+        service: None,
+        location: None,
+        relationship: None,
+        service_record: None,
+    };
+    let draft = RecordDraft {
+        version: LISTING_VERSION,
+        record_type: RECORD_LISTING.to_string(),
+        subject: listing_id.clone(),
+        payload: serde_json::to_value(&payload).unwrap(),
+        expires_at_secs: None,
+        supersedes: None,
+    };
+    let (mut env, bytes) = Envelope::unsigned(draft, issuer, None, now).unwrap();
+    let sig = z32::encode(&key.sign(&bytes).to_bytes());
+    env.attach_signature(sig).unwrap();
+    let envelope_json = env.to_json().unwrap();
+    let verdict: ListingVerdict = verify_envelope(&envelope_json, now);
+    assert!(verdict.verified, "{:?}", verdict.reason);
+    let record_id = verdict.record_id.unwrap();
+    (listing_id, record_id, envelope_json)
 }
 
 pub fn max_escaping_summary() -> String {

@@ -353,4 +353,10 @@ async fn listing_with_translation_parity() {
     }]);
     let (_id, gw, gn) = set_and_get(&h, params).await;
     assert_eq!(gw["result"]["envelope"], gn["result"]["envelope"]);
+    let env_str = gw["result"]["envelope"].as_str().unwrap();
+    let env: Value = serde_json::from_str(env_str).unwrap();
+    let trs = env["payload"]["translations"].as_array().expect("translations array");
+    assert_eq!(trs.len(), 1);
+    assert_eq!(trs[0]["lang"], "en");
+    assert_eq!(trs[0]["title"], "Hedge trimming");
 }

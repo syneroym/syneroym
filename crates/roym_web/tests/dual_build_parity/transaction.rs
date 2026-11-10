@@ -237,6 +237,15 @@ async fn scenario_128_quote_set_against_filed_request_parity() {
     );
 }
 
+fn strip_accept_envelope_fields(v: &mut Value) {
+    if let Some(res) = v.get_mut("result").and_then(Value::as_object_mut) {
+        res.remove("message_id");
+        res.remove("agreement_record_id");
+        res.remove("record_id");
+        res.remove("quote_record_id");
+    }
+}
+
 #[tokio::test]
 async fn scenario_129_agreement_accept_quote_author_and_counterparty_halves_parity() {
     let h = harness().await;
@@ -272,23 +281,11 @@ async fn scenario_129_agreement_accept_quote_author_and_counterparty_halves_pari
         one_rpc(&h, true, "agreement.accept", json!({ "quote_record_id": q_rec_id_w })).await;
     let mut an =
         one_rpc(&h, false, "agreement.accept", json!({ "quote_record_id": q_rec_id_n })).await;
-    // agreement.accept mints its own receipt envelope with
-    // clock::now_secs() (unlike a listing's pinned signing clock), so
-    // record_id/quote_record_id -- content hashes over that envelope --
-    // and agreement_record_id/message_id are each build's own values,
-    // never equal to the other build's.
-    if let Some(res) = aw.get_mut("result").and_then(Value::as_object_mut) {
-        res.remove("message_id");
-        res.remove("agreement_record_id");
-        res.remove("record_id");
-        res.remove("quote_record_id");
-    }
-    if let Some(res) = an.get_mut("result").and_then(Value::as_object_mut) {
-        res.remove("message_id");
-        res.remove("agreement_record_id");
-        res.remove("record_id");
-        res.remove("quote_record_id");
-    }
+    // agreement.accept mints its own receipt envelope with clock::now_secs(),
+    // so record_id/quote_record_id and agreement_record_id/message_id are each
+    // build's own values, never equal to the other build's.
+    strip_accept_envelope_fields(&mut aw);
+    strip_accept_envelope_fields(&mut an);
     assert_eq!(stripped(&aw), stripped(&an));
     assert_eq!(aw["result"]["role"], "quote-author");
     assert_eq!(aw["result"]["pair"]["state"], "half");
@@ -297,6 +294,8 @@ async fn scenario_129_agreement_accept_quote_author_and_counterparty_halves_pari
     let gn = one_rpc(&h, false, "agreement.get", json!({ "quote_record_id": q_rec_id_n })).await;
     assert_eq!(gw["result"]["pair"]["state"], "half");
     assert_eq!(gn["result"]["pair"]["state"], "half");
+    assert_eq!(gw["result"]["terms"]["lang"], "en");
+    assert_eq!(gn["result"]["terms"]["lang"], "en");
     assert!(gw["result"]["quote_author"].is_object());
     assert!(gn["result"]["quote_author"].is_object());
     assert!(gw["result"]["counterparty"].is_null());
@@ -351,6 +350,8 @@ async fn scenario_129_agreement_accept_quote_author_and_counterparty_halves_pari
         both_rpc(&h, "agreement.get", json!({ "quote_record_id": peer_q_rec_id })).await;
     assert_eq!(cgw["result"]["pair"]["state"], "half");
     assert_eq!(cgn["result"]["pair"]["state"], "half");
+    assert_eq!(cgw["result"]["terms"]["lang"], "en");
+    assert_eq!(cgn["result"]["terms"]["lang"], "en");
     assert!(cgw["result"]["counterparty"].is_object());
     assert!(cgn["result"]["counterparty"].is_object());
     assert!(cgw["result"]["quote_author"].is_null());

@@ -11,7 +11,7 @@ use syneroym_signed_record::RecordDraft;
 
 use super::helpers::{
     FakeProxy, canned_search_hit, canned_search_response, sign_record, sign_test_listing,
-    sign_test_listing_with_issuer,
+    sign_test_listing_with_issuer, sign_test_listing_with_translation,
 };
 use crate::{Source, find};
 
@@ -280,7 +280,8 @@ async fn page_envelopes_cover_every_source_of_every_hit_once() {
 
 #[tokio::test]
 async fn verified_hit_preserves_lang_and_translations() {
-    let (listing_id, record_id, envelope) = sign_test_listing("slug-lang", "Title", 1000);
+    let (listing_id, record_id, envelope) =
+        sign_test_listing_with_translation("slug-lang", "Title", "hi", "शीर्षक", 1000);
     let hit = canned_search_hit(&listing_id, &record_id, &envelope, Default::default(), 1000);
     let source = Source { did: "did:key:s1".to_string(), pinned_issuer: None };
     let resp = canned_search_response(vec![hit], false);
@@ -289,5 +290,26 @@ async fn verified_hit_preserves_lang_and_translations() {
     let res = find(&proxy, &[source], &SearchQuery::default(), 1000).await.unwrap();
     assert_eq!(res.page.hits.len(), 1);
     assert_eq!(res.page.hits[0].lang, "en");
-    assert!(res.page.hits[0].translations.is_empty());
+    assert_eq!(res.page.hits[0].translations.len(), 1);
+    assert_eq!(res.page.hits[0].translations[0].lang.as_str(), "hi");
+    assert_eq!(res.page.hits[0].translations[0].title, "शीर्षक");
+}
+
+#[test]
+fn refused_row_has_empty_lang_and_translations() {
+    let source = Source { did: "did:key:s1".to_string(), pinned_issuer: None };
+    let hit = SearchHit {
+        listing_id: "l1".to_string(),
+        record_id: "r1".to_string(),
+        envelope: "invalid-envelope".to_string(),
+        membership: Default::default(),
+        issued_at_secs: 1000,
+        received_at_secs: 1000,
+        area_match: AreaMatch::NotQueried,
+    };
+    let verdict = syneroym_roym_core::listing::verify_envelope(&hit.envelope, 1000);
+    assert!(!verdict.verified);
+    let row = crate::verify::build_refused_row(&source, hit, verdict);
+    assert_eq!(row.lang, "");
+    assert!(row.translations.is_empty());
 }

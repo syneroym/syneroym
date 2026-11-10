@@ -471,6 +471,25 @@ async fn invalid_language_tags_in_record_set_methods_are_rejected() {
     assert_eq!(w["error"]["code"], -32602);
     assert_eq!(w["error"]["data"]["field"], "lang");
 
+    // listing.set with malformed lang: hi_IN
+    let (w, _) = post_rpc(
+        &h,
+        "listing.set",
+        Some(json!({
+            "title": "Hedge trimming",
+            "lang": "hi_IN",
+        })),
+    )
+    .await;
+    assert_eq!(w["error"]["code"], -32602);
+    assert_eq!(w["error"]["data"]["field"], "lang");
+    assert!(
+        w["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("language tag 'hi_IN' is not a well-formed BCP 47 tag")
+    );
+
     // quote.set with non-canonical terms.lang
     let mut q_params = super::fixtures::valid_quote_params("c1", "rec_req");
     q_params["terms"]["lang"] = json!("hi-latn");

@@ -157,7 +157,7 @@ fn build_verified_row(
     })
 }
 
-fn build_refused_row(source: &Source, hit: SearchHit, verdict: ListingVerdict) -> Row {
+pub(crate) fn build_refused_row(source: &Source, hit: SearchHit, verdict: ListingVerdict) -> Row {
     Row {
         listing_id: hit.listing_id,
         record_id: hit.record_id,

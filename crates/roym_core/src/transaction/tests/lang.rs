@@ -220,16 +220,137 @@ fn quote_translation_field_validation() {
 }
 
 #[test]
-fn receipt_built_from_quote_has_quote_terms_lang() {
-    let quote = sample_quote("did:key:zAuthor", "did:key:zCounterparty");
-    let receipt = AgreementReceiptPayload {
-        quote_record_id: "rec_quote123".to_string(),
-        counterparty_did: "did:key:zCounterparty".to_string(),
-        quote_author_did: "did:key:zAuthor".to_string(),
-        role: DealRole::Counterparty,
-        terms: quote.terms.clone(),
-    };
-    assert_eq!(receipt.terms.lang, quote.terms.lang);
+fn request_verify_refuses_missing_malformed_and_non_canonical_lang() {
+    let key = Identity::generate().unwrap();
+    let issuer = substrate::derive_did_key(&key.public_key());
+    let req = sample_request(&issuer);
+    let base_val = serde_json::to_value(&req).unwrap();
+
+    // Missing lang
+    let mut missing_lang = base_val.clone();
+    missing_lang.as_object_mut().unwrap().remove("lang");
+    let env_missing = sign_envelope(
+        &key,
+        RECORD_REQUEST,
+        REQUEST_VERSION,
+        &req.request_id,
+        missing_lang,
+        None,
+        1000,
+    );
+    let v_missing = verify_request(&env_missing, 1000);
+    assert!(!v_missing.verified);
+    assert!(
+        v_missing.reason.as_deref().unwrap_or("").contains("payload: missing field `lang`"),
+        "expected missing field lang refusal: {:?}",
+        v_missing.reason
+    );
+
+    // Malformed lang: hi_IN
+    let mut malformed = base_val.clone();
+    malformed["lang"] = serde_json::json!("hi_IN");
+    let env_malformed = sign_envelope(
+        &key,
+        RECORD_REQUEST,
+        REQUEST_VERSION,
+        &req.request_id,
+        malformed,
+        None,
+        1000,
+    );
+    let v_malformed = verify_request(&env_malformed, 1000);
+    assert!(!v_malformed.verified);
+
+    // Non-canonical lang: HI
+    let mut non_canonical = base_val.clone();
+    non_canonical["lang"] = serde_json::json!("HI");
+    let env_non_canonical = sign_envelope(
+        &key,
+        RECORD_REQUEST,
+        REQUEST_VERSION,
+        &req.request_id,
+        non_canonical,
+        None,
+        1000,
+    );
+    let v_non_canonical = verify_request(&env_non_canonical, 1000);
+    assert!(!v_non_canonical.verified);
+    assert!(
+        v_non_canonical
+            .reason
+            .as_deref()
+            .unwrap_or("")
+            .contains("is not in canonical form; send 'hi'"),
+        "expected non-canonical refusal: {:?}",
+        v_non_canonical.reason
+    );
+}
+
+#[test]
+fn quote_verify_refuses_missing_malformed_and_non_canonical_terms_lang() {
+    let key = Identity::generate().unwrap();
+    let issuer = substrate::derive_did_key(&key.public_key());
+    let quote = sample_quote(&issuer, "did:key:zCounterparty");
+    let base_val = serde_json::to_value(&quote).unwrap();
+
+    // Missing terms.lang
+    let mut missing_lang = base_val.clone();
+    missing_lang["terms"].as_object_mut().unwrap().remove("lang");
+    let env_missing = sign_envelope(
+        &key,
+        RECORD_QUOTE,
+        QUOTE_VERSION,
+        &quote.quote_id,
+        missing_lang,
+        Some(quote.terms.quote_expires_at_secs),
+        1000,
+    );
+    let v_missing = verify_quote(&env_missing, 1000);
+    assert!(!v_missing.verified);
+    assert!(
+        v_missing.reason.as_deref().unwrap_or("").contains("missing field `lang`"),
+        "expected missing field lang refusal: {:?}",
+        v_missing.reason
+    );
+
+    // Malformed terms.lang: hi_IN
+    let mut malformed = base_val.clone();
+    malformed["terms"]["lang"] = serde_json::json!("hi_IN");
+    let env_malformed = sign_envelope(
+        &key,
+        RECORD_QUOTE,
+        QUOTE_VERSION,
+        &quote.quote_id,
+        malformed,
+        Some(quote.terms.quote_expires_at_secs),
+        1000,
+    );
+    let v_malformed = verify_quote(&env_malformed, 1000);
+    assert!(!v_malformed.verified);
+
+    // Non-canonical terms.lang: HI
+    let mut non_canonical = base_val.clone();
+    non_canonical["terms"]["lang"] = serde_json::json!("HI");
+    let env_non_canonical = sign_envelope(
+        &key,
+        RECORD_QUOTE,
+        QUOTE_VERSION,
+        &quote.quote_id,
+        non_canonical,
+        Some(quote.terms.quote_expires_at_secs),
+        1000,
+    );
+    let v_non_canonical = verify_quote(&env_non_canonical, 1000);
+    assert!(!v_non_canonical.verified);
+    assert!(
+        v_non_canonical
+            .reason
+            .as_deref()
+            .unwrap_or("")
+            .contains("is not in canonical form; send 'hi'"),
+        "expected non-canonical refusal: {:?}",
+        v_non_canonical.reason
+    );
 }
 
 #[test]
