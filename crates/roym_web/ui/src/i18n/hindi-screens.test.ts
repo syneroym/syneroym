@@ -312,7 +312,8 @@ describe("the listing screen, in Hindi", () => {
     expect(
       host.querySelectorAll('.listing-categories-input .picker-chip[data-code="bicycle-repair"]'),
     ).toHaveLength(1);
-    host.querySelector<HTMLButtonElement>("button.listing-translation-add")?.click();
+    host.querySelector<HTMLButtonElement>("button.listing-translation-add-btn")!.click();
+    expect(host.querySelectorAll(".listing-translation-row")).toHaveLength(1);
     host.querySelector<HTMLButtonElement>("button.save-listing")!.click();
     host.querySelector<HTMLButtonElement>("button.verify-listing")!.click();
     await settle();
@@ -506,6 +507,34 @@ describe("the cards, in Hindi", () => {
         },
       ],
     });
+    expect(english(el)).toEqual([]);
+  });
+
+  it("draws the quote card showing an author translation in Hindi with binds warning", () => {
+    const el = renderQuote({
+      terms: {
+        lang: "en",
+        scope: "Zq-scope",
+        amount_minor: 1000,
+        currency: "INR",
+        location: { where: "at-receiver", address: "Zq-addr" },
+        cancellation_terms: "Zq-canc",
+        refund_terms: "Zq-refund",
+        dispute_path: "Zq-disp",
+        quote_expires_at_secs: NOW + 86400,
+      },
+      translations: [
+        {
+          lang: "hi",
+          scope: "Zq-hi-scope",
+          cancellation_terms: "Zq-hi-canc",
+          refund_terms: "Zq-hi-refund",
+          dispute_path: "Zq-hi-disp",
+        },
+      ],
+    });
+    expect(el.querySelector(".quote-original-binds")?.textContent).toMatch(/[ऀ-ॿ]/);
+    expect(el.querySelector(".record-text-note")?.textContent).toMatch(/[ऀ-ॿ]/);
     expect(english(el)).toEqual([]);
   });
 

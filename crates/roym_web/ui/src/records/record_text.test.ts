@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { text } from "../dom";
+import { activate } from "../i18n/i18n";
 import { langAttr } from "../i18n/text_lang";
 import {
   bestVersion,
@@ -110,6 +111,28 @@ describe("recordText", () => {
     btn?.click();
     expect(host.querySelector(".title")?.textContent).toBe("Hedge trimming");
     expect(host.querySelector(".title")?.getAttribute("lang")).toBe("en");
+  });
+
+  it("in Hindi, the note and the button have Devanagari letters", async () => {
+    await activate("hi");
+    try {
+      const host = document.createElement("div");
+      const versions: TextVersion<{ title: string }>[] = [
+        { lang: "en", fields: { title: "Hedge trimming" }, byAuthor: false },
+        { lang: "hi", fields: { title: "झाड़ी कटाई" }, byAuthor: true },
+      ];
+
+      recordText(host, versions, (v) => [text("div", v.fields.title, "title")]);
+
+      const note = host.querySelector(".record-text-note");
+      const btn = host.querySelector(".record-text-switch");
+      expect(note).not.toBeNull();
+      expect(btn).not.toBeNull();
+      expect(note?.textContent).toMatch(/[ऀ-ॿ]/);
+      expect(btn?.textContent).toMatch(/[ऀ-ॿ]/);
+    } finally {
+      await activate("en");
+    }
   });
 });
 
