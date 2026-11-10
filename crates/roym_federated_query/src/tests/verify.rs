@@ -1,6 +1,7 @@
 use syneroym_identity::{Identity, substrate};
 use syneroym_roym_core::{
     directory::{AreaMatch, SearchHit, SearchQuery},
+    listing::verify_envelope,
     membership::{
         MEMBERSHIP_CREDENTIAL_VERSION, MembershipCredentialPayload, MembershipEvidence,
         MembershipScope, MembershipVerdict,
@@ -13,7 +14,7 @@ use super::helpers::{
     FakeProxy, canned_search_hit, canned_search_response, sign_record, sign_test_listing,
     sign_test_listing_with_issuer, sign_test_listing_with_translation,
 };
-use crate::{Source, find};
+use crate::{Source, find, verify::build_refused_row};
 
 #[tokio::test]
 async fn at_most_ten_hits_are_read_before_checking() {
@@ -307,9 +308,9 @@ fn refused_row_has_empty_lang_and_translations() {
         received_at_secs: 1000,
         area_match: AreaMatch::NotQueried,
     };
-    let verdict = syneroym_roym_core::listing::verify_envelope(&hit.envelope, 1000);
+    let verdict = verify_envelope(&hit.envelope, 1000);
     assert!(!verdict.verified);
-    let row = crate::verify::build_refused_row(&source, hit, verdict);
+    let row = build_refused_row(&source, hit, verdict);
     assert_eq!(row.lang, "");
     assert!(row.translations.is_empty());
 }
