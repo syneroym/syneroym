@@ -23,6 +23,13 @@ M08A is done. Every record and method that this sub-milestone changes already ha
 
 **Where Y3 and Y4 live (owner decision, 2026-11-05).** The change doc puts both in `roym_core`. But the chat store and its search run in the host crate `crates/conversation`, and that crate cannot depend on `roym_core` (`roym_core` depends on `app_host`). Chat search (B4b) needs Y4 in the host, and chat tags (B3b) need Y3 there. So Y3 and Y4 live in one new substrate crate, `crates/text_lang` (package `syneroym-text-lang`). `roym_core`, `data_db` and `crates/conversation` all use it. `data_db` computes the search keys itself for a declared text field, so a guest sends raw text, both when it writes and when it queries. The crate is created by whichever of B3a and B4a merges first. The other slice adds to it. The change doc's `## Deviations` records this.
 
+**Component size limit (owner decision, 2026-11-10).** Each slice that changes a `roym_*` crate reports the six Roym component sizes for `wasm32-wasip2`, before (on `main`) and after, built in the same build folder. Two limits apply:
+
+- **Shared code.** A component that gets no new record code in the slice shows what the shared libraries add (in B3a, conversation). If it grows by more than 40 KB, stop and tell the owner.
+- **Record code.** A component that gets new record fields or methods may grow more, because it pays for that code. If one grows by more than 15% of its size before, stop and tell the owner. If every component gets new record code, only this limit applies.
+
+B3a set this rule. Its four record components grew by 6% to 11% (+76 KB to +112 KB), and the owner accepted that.
+
 ## 2. Facts checked in the code for this plan
 
 Checked on `main` at `76b52fe6` (2026-11-05).
@@ -167,7 +174,7 @@ Change doc: roym-multilingual.
 
 Change doc: roym-multilingual.
 
-**B3a result:** done on the branch `feat/m08b-b3a-lang-records`. Size with `gzip -9`: the main Hub script went from 49,207 to 51,902 bytes (+2,695; limit 5 KB), the Hindi catalog is 14,377 bytes (was 14,053 in B2; +324 bytes, limit 1 KB), and the lazy Hindi taxonomy chunk is 2,539 bytes. The six Roym components build for `wasm32-wasip2` (before on `main` at `4c7b699c` -> after): web 253,711 -> 255,652 bytes (+1,941), conversation 750,997 -> 769,589 bytes (+18,592), profile 690,350 -> 766,889 bytes (+76,539), catalog 840,266 -> 927,674 bytes (+87,408), transaction 1,393,521 -> 1,505,300 bytes (+111,779), directory 1,376,221 -> 1,463,108 bytes (+86,887). Growth in profile, catalog, transaction, and directory exceeds the +40 KB planning limit; recorded as a deviation in `roym-multilingual/change.md` (attributed via twiggy analysis to `icu_locale_core`, serde visitor monomorphization across payload types, and validation rules) pending owner sign-off. Unit tests, dual-build parity tests, Playwright tests and Story 40 pass.
+**B3a result:** done on the branch `feat/m08b-b3a-lang-records`. Size with `gzip -9`: the main Hub script went from 49,207 to 51,902 bytes (+2,695; limit 5 KB), the Hindi catalog is 14,377 bytes (was 14,053 in B2; +324 bytes, limit 1 KB), and the lazy Hindi taxonomy chunk is 2,539 bytes. The six Roym components build for `wasm32-wasip2` (before on `main` at `4c7b699c` -> after): web 253,711 -> 255,652 bytes (+1,941), conversation 750,997 -> 769,589 bytes (+18,592), profile 690,350 -> 766,889 bytes (+76,539), catalog 840,266 -> 927,674 bytes (+87,408), transaction 1,393,521 -> 1,505,300 bytes (+111,779), directory 1,376,221 -> 1,463,108 bytes (+86,887). The growth in profile, catalog, transaction and directory is over the +40 KB stop limit of the slice plan. The owner accepted it on 2026-11-10 (change doc, Deviations). Conversation's +18,592 bytes is the shared cost of the tag type; the rest is the new record code. Unit tests, dual-build parity tests, Playwright tests and Story 40 pass.
 
 ### B3b — Language tags on chat messages (M)
 

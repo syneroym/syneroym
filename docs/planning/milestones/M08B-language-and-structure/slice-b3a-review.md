@@ -973,3 +973,22 @@ fix, see its status line). No new items. **1 open** (R2).
   backlog has a row to remove the pin. Its reason ("glibc mismatches") is
   less exact than the commit ("Playwright 1.60.0 does not recognize
   `ubuntu-26.04`"); this does not change what anyone must do.
+
+### Owner decision on R13, 2026-11-10
+
+The owner accepted the component size growth. Reasons:
+
+- Conversation links the same shared code but gets almost no new record
+  code. It grew by +18,592 bytes, close to S0's +17,317. So the tag type
+  costs what the plan expected.
+- The rest of the growth (profile +11.1%, catalog +10.4%, transaction
+  +8.0%, directory +6.3%) is the new record code itself.
+- Nothing avoidable is linked: `icu_locale_core` with only `alloc`, one
+  new crate (`syneroym-text-lang`), and the release profile already uses
+  `opt-level = "s"`, LTO and `strip = true`.
+
+The change doc's size deviation now records this, with the conversation
+number as the proof instead of the twiggy ranges, which did not say how
+to repeat them. `task.md` section 1 has the new limit for later slices:
++40 KB for the shared code, and +15% for a component that gets new record
+code.
