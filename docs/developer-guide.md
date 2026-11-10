@@ -1780,6 +1780,8 @@ The Hub picks its language from the saved choice (`localStorage` key `roym-hub-l
 
 **Record languages.** Record text (listing, request and quote text, and the receipts' terms) is shown using `recordText(host, versions, draw)` from `src/records/record_text.ts`. It picks the best version for the reader based on the active language and the browser's preferred languages. When the record has multiple versions, it displays a translation note (showing whether the reader is seeing an author translation or the original) and a button to toggle between them. Every place in the Hub that draws listing, request, and quote text, and the receipts' terms sets the HTML `lang` attribute via `langAttr` (`src/i18n/text_lang.ts`). Form controls that choose a record's language use `textLangSelect(className, current)` with options drawn from `RECORD_LANGUAGES`.
 
+**Chat languages.** Chat messages carry 0 to 3 language tags, main language first. The language list in each chat box is drawn using `languageList` (`src/i18n/language_list.ts`). Chat message text is drawn using `messageText(host, message, draw)` from `src/chat/message_text.ts`. It sets the HTML `lang` attribute to the main language, or `lang=""` and a note when the message has no tags. Every new place that draws a chat message uses `messageText`.
+
 ##### Add a Roym method
 
 Every Roym service has a method table in its `api.rs`. `web` lists only its own `session.whoami` and forwards every other method, with its `params` unchanged, to the service that owns it. Methods use typed input and output structs in Rust:
@@ -2437,15 +2439,15 @@ Open a conversation with the other person and send a message:
 ```bash roym-client=open-send
 set -o pipefail
 CONV=$(roym conversation.open "{\"address\":\"$PEER_ADDR\"}" | jq -r .result.conversation_id)
-MESSAGE_ID=$(roym conversation.send "{\"conversation\":\"$CONV\",\"body\":\"Hello from curl\"}" \
+MESSAGE_ID=$(roym conversation.send "{\"conversation\":\"$CONV\",\"body\":\"Hello from curl\",\"languages\":[\"en\"]}" \
   | jq -r .result.message_id)
 [ -n "$CONV" ] && [ "$CONV" != null ] && [ -n "$MESSAGE_ID" ] && [ "$MESSAGE_ID" != null ] \
   || { echo "open or send failed" >&2; false; }
 ```
 
-`conversation.open` returns `{conversation_id, peer_address}`. If you open the same address again, you get the same conversation. `conversation.send` returns `{message_id, state, sender_timestamp_ms}`. The `state` starts as `pending`. It becomes `deposited` when the message waits at the other node, and `delivered` when the other node has it. `failed` means it could not be sent. `conversation.delivery-status` with `{"message_id": "…"}` reads the state again.
+`conversation.open` returns `{conversation_id, peer_address}`. If you open the same address again, you get the same conversation. `conversation.send` takes an optional `languages` list (0 to 3 tags in canonical form, main language first) and returns `{message_id, state, sender_timestamp_ms}`. The `state` starts as `pending`. It becomes `deposited` when the message waits at the other node, and `delivered` when the other node has it. `failed` means it could not be sent. `conversation.delivery-status` with `{"message_id": "…"}` reads the state again.
 
-To read messages, call `conversation.history` (`{conversation, limit?, cursor?}`, with a `next_cursor` for the next page), or `conversation.changes` (`{conversation, after_seq?, limit?}`) to get only what is new after a `visible_seq` you already know. Each message has `id`, `direction`, `state`, `visible_seq`, `content_type`, `body_encoding` and `body`.
+To read messages, call `conversation.history` (`{conversation, limit?, cursor?}`, with a `next_cursor` for the next page), or `conversation.changes` (`{conversation, after_seq?, limit?}`) to get only what is new after a `visible_seq` you already know. Each message has `id`, `direction`, `state`, `visible_seq`, `content_type`, `body_encoding`, `body` and `languages`.
 
 ### 6.5. Follow the event feed
 

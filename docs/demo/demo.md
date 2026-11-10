@@ -1268,7 +1268,10 @@ and pick **हिन्दी**. The page loads again.
 Hindi. Open the **Contacts** tab: its heading and its button are in Hindi. Open **Listings**
 and pick a category in the category picker: type its Hindi label, pick it, and the chosen chip
 shows the Hindi label. Create a Hindi listing with its text language set to Hindi, and add an
-English translation with its title in the translation rows. Money shows with Indian digit
+English translation with its title in the translation rows. In **Messages**,
+open the conversation with bob: the language list defaults to Hindi. Add
+English as a second language, and send a message. The message keeps its
+exact text and carries `lang="hi"` for its main language. Money shows with Indian digit
 grouping (for example `₹1,00,000.50`), and dates show in the Hindi style. Your own data
 (names, listing titles, message text) stays as it was written. Reload the page: it stays in Hindi.
 
@@ -1358,7 +1361,7 @@ roymctl --dir "$S1_DIR" --as owner roym group add --group <GROUP-ID> \
   --address <BOB-CONVERSATION-ADDRESS> --person-did <BOB-PERSON-DID> \
   --gateway-url "http://127.0.0.1:$S1_GW" --host "$ROYM1_HOST"
 roymctl --dir "$S1_DIR" --as owner roym group send --group <GROUP-ID> --body "Hello all" \
-  --gateway-url "http://127.0.0.1:$S1_GW" --host "$ROYM1_HOST"
+  --lang en --gateway-url "http://127.0.0.1:$S1_GW" --host "$ROYM1_HOST"
 roymctl --dir "$S2_DIR" --as owner roym group sync --group <GROUP-ID> \
   --gateway-url "http://127.0.0.1:$S2_GW" --host "$ROYM2_HOST"
 roymctl --dir "$S2_DIR" --as owner roym group history --group <GROUP-ID> \

@@ -184,6 +184,8 @@ Change doc: roym-multilingual.
 
 Change doc: roym-multilingual.
 
+**B3b result:** done on the branch `feat/m08b-b3b-chat-lang-tags`. Size with `gzip -9`: the main Hub script went from 51,902 to 52,297 bytes (+395 bytes; limit 5 KB), the Hindi catalog is 14,447 bytes (was 14,377 in B3a; +70 bytes, limit 1 KB), and the lazy Hindi taxonomy chunk is 2,539 bytes. The six Roym components build for `wasm32-wasip2` (before in B3a -> after): web 255,652 -> 255,652 bytes (+0), conversation 769,589 -> 810,737 bytes (+41,148 bytes, +5.3%; limit 15%), profile 766,889 -> 767,699 bytes (+810 bytes; limit 40 KB), catalog 927,674 -> 927,744 bytes (+70 bytes; limit 40 KB), transaction 1,505,300 -> 1,507,245 bytes (+1,945 bytes; limit 40 KB), directory 1,463,108 -> 1,463,187 bytes (+79 bytes; limit 40 KB). All sizes within limits. Unit tests, dual-build parity tests, Playwright tests and Story 40 pass.
+
 ### B4a — Full-text option in `data-layer` (M)
 
 - Y5, a substrate change only: the `data-layer` WIT gains a text-field declaration on a collection and a text-match filter operator. `data_db` keeps the two FTS5 tables in sync on create, update and delete. It indexes the search key of each declared field, from `syneroym-text-lang`. In B4a the key is NFC and lower case only. B4b adds transliteration and folding, and B4a's tables need no change for it. The native shim and the WASM host behave the same (parity tests).

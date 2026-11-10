@@ -565,7 +565,7 @@ WebSocket is an option for one app. The guest declares an HTTP route with `targe
 
 - `syneroym-identity` holds Ed25519 identities and delegation certificates.
 - `syneroym-data-keystore` holds the key encryption key (KEK) of the node and the data encryption key (DEK) of each service.
-- `syneroym-text-lang` holds the language tag type, used by `roym_core`; `data_db` and `conversation` will use it.
+- `syneroym-text-lang` holds the language tag type, used by `roym_core` and `conversation`; `data_db` will use it.
 - The App Supervisor key vault holds the master key of each managed app instance. The operator must back each key up with `export-master`. A supervisor that is rebuilt without these backups creates new master keys. The `supervisor` interface has 17 verbs. See [LFC-MGT](#lfc-mgt-synapp-lifecycle-management-design).
 
 **Deploy and lifecycle.** Three parts share this work.
@@ -961,7 +961,7 @@ flowchart TD
 
 ### Messaging
 
-Messaging is a substrate capability (`syneroym:conversation`, host crate `syneroym-conversation`). The host owns the history of each conversation: the encrypted log, the outbox, delivery, ordering, search, deletion, and export ([ADR-0025](decisions/0025-conversation-capability-owns-history.md)). For each incoming message, the host asks the Roym `conversation` service to accept, hold or drop it.
+Messaging is a substrate capability (`syneroym:conversation`, host crate `syneroym-conversation`). The host owns the history of each conversation: the encrypted log, the outbox, delivery, ordering, search, deletion, and export ([ADR-0025](decisions/0025-conversation-capability-owns-history.md)). For each incoming message, the host asks the Roym `conversation` service to accept, hold or drop it. Each message carries its language tags inside the signed 1:1 payload or the sealed group entry, and the host checks them on send and on receipt.
 
 ```mermaid
 flowchart TD
