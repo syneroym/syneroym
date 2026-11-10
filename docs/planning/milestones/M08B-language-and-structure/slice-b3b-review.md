@@ -24,7 +24,7 @@ names no other change doc for B3b. The plan also reads
 ML-14 and ML-25 are both in roym-multilingual, so every B3b decision and
 deviation belongs there (plan section 3 says the same).
 
-**Summary:** 0 blocker, 1 major, 8 minor, 9 items. 9 Open.
+**Summary:** 0 blocker, 1 major, 8 minor, 9 items. 9 Fixed (6dbe9dcd), 0 Open.
 
 Limits of this review: I read the plan, the docs, the code and the e2e
 specs. I ran one experiment outside the repository: a copy of `decode_body`
