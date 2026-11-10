@@ -1212,7 +1212,7 @@ A card is a signed record sent as a message with content type `application/vnd.r
 | `booking-progress` | the quote author's service | A snapshot of the booking. The counterparty's node accepts it only when the signer is the one that signed the quote. |
 | `payment-request` | the quote author | The quote author asks to be paid. It carries currency, amount, and an optional note. It is optional. |
 | `payment-acknowledgement` | either party | A statement about a payment made outside Roym, with an optional method (a code from the agreed payment methods) and reference as text. |
-| `fulfilment-receipt` | either party | A statement that the work is done, drawn with labelled fields and `terms.lang`. |
+| `fulfilment-receipt` | either party | A statement that the work is done. It carries `terms` with `terms.lang`. |
 
 The expiry of a quote is set by the quote author. It must be from 5 minutes to 90 days. A request has no expiry. The counterparty can mark a quote as declined with `quote.decline`. This mark stays on the counterparty's own node and sends nothing. It is refused after either half of the agreement is signed. Roym has no method for a quote author to reject a request.
 
@@ -1418,7 +1418,7 @@ The Hub holds little state. It keeps the session token in `sessionStorage` and a
 
 The Hub also keeps the person's UI language in `localStorage` (the key `roym-hub-language`). This is a setting of this browser. It is not part of the profile. The Hub text comes from Fluent string catalogs, one file per language (`en` and `hi` today), with English as the fallback for a missing message. Taxonomy labels are kept in matching per-language files (`src/i18n/taxonomy/<tag>.ftl`) and loaded alongside the string catalogs. The Hub formats money, numbers, dates and times with the browser's `Intl` for the UI language, with region India and Latin digits, so `₹1,00,000.50` shows with Indian digit grouping in every language. Every screen draws its text from these catalogs. The Hub build fails when a source file sets visible text that does not come from a catalog.
 
-For record text (`profile`, `listing`, `request`, `quote`), the Hub selects the best version for the reader based on the active UI language and the reader's preferred browser languages (`navigator.languages`). When showing an author translation, it displays a note and allows switching to the author's original signed text. Every block of record text sets the HTML `lang` attribute to its language tag.
+For record text (listing, request and quote text, and the receipts' terms), the Hub selects the best version for the reader based on the active UI language and the reader's preferred browser languages (`navigator.languages`). When the record has multiple versions, it displays a translation note (showing whether the reader is seeing an author translation or the original) and allows switching between them. Every block of listing, request, and quote text, and the receipts' terms sets the HTML `lang` attribute to its language tag.
 
 The Hub does no message crypto. Message encryption and the key ratchet run in the `conversation` service of the substrate, with `vodozemac` ([ADR-0013](decisions/0013-p2p-messaging-architecture.md)). There is no `libsignal`.
 
