@@ -24,7 +24,7 @@ names no other change doc for B4a. I agree: ML-20 and ML-29 are both in
 roym-multilingual, so every B4a decision and deviation belongs there (plan
 section 3 says the same).
 
-**Summary:** 0 blocker, 4 major, 10 minor, 14 items. All 14 Fixed (e0aab8b8), with the owner's answers to Q1 to Q7 (2026-11-11).
+**Summary:** 0 blocker, 4 major, 10 minor, 14 items. 13 Fixed (e0aab8b8); P13 replaced by P15 (13ce6aa8), with the owner's answers to Q1 to Q7 (2026-11-11).
 
 Limits of this review: I read the plan, the docs and the code, and I ran
 experiments outside the repository with Python's `sqlite3` module (SQLite
@@ -470,7 +470,7 @@ code.
   statements so a watchdog stop is still `QuotaExceeded`. This also removes
   `RETURNING` from behaviour change 2. Keep `RETURNING rowid` for `put`,
   `patch` and `delete` (one row each).
-- *Status:* Fixed (e0aab8b8), as I wrote it. My advice was wrong: the set form breaks a `delete-many` that has a `$search` filter. See P15, which replaces this fix.
+- *Status:* Rejected: replaced by P15 (13ce6aa8); the set form breaks a delete-many with a $search filter.
 
 #### P14 — Small facts to fix in the plan (minor)
 
@@ -614,7 +614,7 @@ the independent plan review that session-strategy.md §1 asks for. It is a
 check of the two earlier rounds by Claude Sonnet 5.5. The status.md row keeps
 Claude Sonnet 5.5 as the plan reviewer.
 
-**Summary:** 0 blocker, 0 major, 2 minor, 3 nit, 5 items (P18 to P22). 5 open.
+**Summary:** 0 blocker, 0 major, 2 minor, 3 nit, 5 items (P18 to P22). All 5 items Fixed (1adcff11). 0 open.
 Every earlier fix that I checked holds, except two details from round 1
 (P18, P19).
 
@@ -666,7 +666,7 @@ Every earlier fix that I checked holds, except two details from round 1
   `_text_index` (that part of P10 is right: SQLite table names ignore case).
   Add a Declare test: `["Title"]` then `["title"]` rebuilds, and a `$search` on
   `title` then works.
-- *Status:* Open
+- *Status:* Fixed (1adcff11). Now in: Q2 owner answer; section 2.1; D-B4a-6 (declare); Step 5 item 2; section 7.2 (Declare).
 
 #### P19 — `drop_index` creates `_text_index` in a service that has no text index (minor)
 
@@ -689,7 +689,7 @@ Every earlier fix that I checked holds, except two details from round 1
   with a non-empty list creates `_text_index`. Change the sentence in D-B4a-4
   to say so, and add to the Declare tests: dropping a collection without
   text fields leaves no `_text_index`.
-- *Status:* Open
+- *Status:* Fixed (1adcff11). Now in: D-B4a-4; D-B4a-6 (drop_index); Step 5 item 2; section 7.2 (Declare).
 
 #### P20 — The P16 fix did not update three places that name only `icu_normalizer` (nit)
 
@@ -705,7 +705,7 @@ Every earlier fix that I checked holds, except two details from round 1
 - **Fix:** Name `icu_properties` in all three places. In 7.6 say that the
   no-growth claim for `icu_properties` is expected (the guests never call
   `query_terms`), not measured, and that Step 8.1 measures it.
-- *Status:* Open
+- *Status:* Fixed (1adcff11). Now in: section 2.2 point 11; Step 3 item 3; section 7.6.
 
 #### P21 — The 10% stop limit of P11 is written as decided, but no owner answer is recorded (nit)
 
@@ -718,7 +718,7 @@ Every earlier fix that I checked holds, except two details from round 1
   never agreed to the number.
 - **Fix:** Either record the owner's answer with a date, or write "10% (plan
   default; tell the owner the numbers in either case)".
-- *Status:* Open
+- *Status:* Fixed (1adcff11). Now in: D-B4a-10; section 7.2 (Performance).
 
 #### P22 — Two status lines do not use the forms of session-strategy.md (nit)
 
@@ -732,4 +732,4 @@ Every earlier fix that I checked holds, except two details from round 1
 - **Fix:** Set P13 to `Rejected: replaced by P15 (13ce6aa8); the set form
   breaks a delete-many with a $search filter`. Change the round 1 summary to
   "13 Fixed (e0aab8b8); P13 replaced by P15".
-- *Status:* Open
+- *Status:* Fixed (1adcff11). Now in: round 1 summary; P13 status.
