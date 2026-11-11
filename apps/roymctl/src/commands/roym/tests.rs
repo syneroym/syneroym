@@ -369,15 +369,12 @@ fn parse_group_send_with_languages() {
 
 #[test]
 fn build_send_params_builds_correct_json_and_normalizes_tags() {
-    let params_empty = super::group::build_send_params("conv:1", "text", &[]).unwrap();
+    let params_empty = group::build_send_params("conv:1", "text", &[]).unwrap();
     assert_eq!(params_empty, json!({ "conversation": "conv:1", "body": "text" }));
 
-    let params_with_lang = super::group::build_send_params(
-        "conv:1",
-        "text",
-        &["HI-latn".to_string(), "en".to_string()],
-    )
-    .unwrap();
+    let params_with_lang =
+        group::build_send_params("conv:1", "text", &["HI-latn".to_string(), "en".to_string()])
+            .unwrap();
     assert_eq!(
         params_with_lang,
         json!({
@@ -387,8 +384,7 @@ fn build_send_params_builds_correct_json_and_normalizes_tags() {
         })
     );
 
-    let err =
-        super::group::build_send_params("conv:1", "text", &["hi_IN".to_string()]).unwrap_err();
+    let err = group::build_send_params("conv:1", "text", &["hi_IN".to_string()]).unwrap_err();
     assert!(err.to_string().contains("not a well-formed BCP 47 tag"));
 }
 
