@@ -25,7 +25,10 @@ static IDENTIFIER_REGEX: LazyLock<Regex> =
 /// The vault table's name is refused: a guest must not create, drop or fill
 /// a collection with that name.
 pub(crate) fn validate_identifier(name: &str) -> Result<(), host_store::DataLayerError> {
-    if IDENTIFIER_REGEX.is_match(name) && !name.eq_ignore_ascii_case(VAULT_TABLE) {
+    if IDENTIFIER_REGEX.is_match(name)
+        && !name.eq_ignore_ascii_case(VAULT_TABLE)
+        && !name.get(..6).is_some_and(|s| s.eq_ignore_ascii_case("_text_"))
+    {
         Ok(())
     } else {
         Err(host_store::DataLayerError::SchemaViolation(format!("invalid identifier: {name}")))
@@ -35,7 +38,7 @@ pub(crate) fn validate_identifier(name: &str) -> Result<(), host_store::DataLaye
 pub const MAX_TEXT_FIELDS: usize = 8;
 
 pub(super) fn do_create_collection(
-    conn: &Connection,
+    conn: &mut Connection,
     schema: &host_store::CollectionSchema,
 ) -> Result<(), host_store::DataLayerError> {
     validate_identifier(&schema.name)?;
@@ -56,7 +59,8 @@ pub(super) fn do_create_collection(
             )));
         }
     }
-    conn.execute(
+    let tx = conn.transaction().map_err(map_rusqlite_error)?;
+    tx.execute(
         &format!(
             "CREATE TABLE IF NOT EXISTS {} (id TEXT PRIMARY KEY, payload JSON NOT NULL, \
              creator_id TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)",
@@ -67,7 +71,7 @@ pub(super) fn do_create_collection(
     .map_err(map_rusqlite_error)?;
     for idx in &schema.indexes {
         let index_name = format!("idx_{}_{}", schema.name, idx.field_name);
-        conn.execute(
+        tx.execute(
             &format!(
                 "CREATE INDEX IF NOT EXISTS {index_name} ON {}(json_extract(payload, '$.{}'))",
                 schema.name, idx.field_name
@@ -76,15 +80,20 @@ pub(super) fn do_create_collection(
         )
         .map_err(map_rusqlite_error)?;
     }
+    super::text_index::declare(&tx, &schema.name, &schema.text_fields)?;
+    tx.commit().map_err(map_rusqlite_error)?;
     Ok(())
 }
 
 pub(super) fn do_drop_collection(
-    conn: &Connection,
+    conn: &mut Connection,
     name: &str,
 ) -> Result<(), host_store::DataLayerError> {
     validate_identifier(name)?;
-    conn.execute(&format!("DROP TABLE IF EXISTS {name}"), []).map_err(map_rusqlite_error)?;
+    let tx = conn.transaction().map_err(map_rusqlite_error)?;
+    tx.execute(&format!("DROP TABLE IF EXISTS {name}"), []).map_err(map_rusqlite_error)?;
+    super::text_index::drop_index(&tx, name)?;
+    tx.commit().map_err(map_rusqlite_error)?;
     Ok(())
 }
 

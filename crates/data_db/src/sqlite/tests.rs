@@ -840,16 +840,16 @@ fn decision_trace_emits_remote_fetch_provenance_for_a_mode_b_query() {
 
 #[test]
 fn fdae_watchdog_interrupts_do_delete_many_on_the_writer_conn() {
-    let conn = Connection::open_in_memory().unwrap();
+    let mut conn = Connection::open_in_memory().unwrap();
     seed_one_row_documents(&conn);
     let sieve = pathological_sieve();
-    let err = do_delete_many(&conn, "documents", None, Some(&sieve)).unwrap_err();
+    let err = do_delete_many(&mut conn, "documents", None, Some(&sieve)).unwrap_err();
     assert!(matches!(err, host_store::DataLayerError::QuotaExceeded));
 
     // The writer connection is persistent (never returned to a pool) --
     // the guard clearing the progress handler on drop is what keeps the
     // *next* command on this same connection unaffected.
-    let deleted = do_delete_many(&conn, "documents", None, None).unwrap();
+    let deleted = do_delete_many(&mut conn, "documents", None, None).unwrap();
     assert_eq!(deleted, 1);
 }
 

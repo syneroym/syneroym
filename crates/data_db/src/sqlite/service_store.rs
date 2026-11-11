@@ -121,10 +121,10 @@ pub(super) fn run_writer_loop(
                 let _ = resp.send(do_delete_secret(&conn, &key));
             }
             DbCommand::CreateCollection { schema, resp } => {
-                let _ = resp.send(do_create_collection(&conn, &schema));
+                let _ = resp.send(do_create_collection(&mut conn, &schema));
             }
             DbCommand::DropCollection { name, resp } => {
-                let _ = resp.send(do_drop_collection(&conn, &name));
+                let _ = resp.send(do_drop_collection(&mut conn, &name));
             }
             DbCommand::ExecuteDdl { sql, resp } => {
                 let _ = resp.send(do_execute_ddl(&conn, &sql));
@@ -153,7 +153,7 @@ pub(super) fn run_writer_loop(
             }
             DbCommand::DeleteMany { collection, filter, sieve, resp } => {
                 let _ = resp.send(do_delete_many(
-                    &conn,
+                    &mut conn,
                     &collection,
                     filter.as_deref(),
                     sieve.as_deref(),

@@ -238,7 +238,8 @@ pub(super) fn do_list_collections(
         .prepare(&format!(
             "SELECT name FROM sqlite_master
              WHERE type = 'table' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\'
-               AND name != '{VAULT_TABLE}'"
+               AND name != '{VAULT_TABLE}'
+               AND name NOT LIKE '\\_text\\_%' ESCAPE '\\'"
         ))
         .map_err(|e| host_store::DataLayerError::Internal(format!("list_collections: {e}")))?;
     let names = stmt

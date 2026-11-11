@@ -8083,6 +8083,7 @@ dependencies = [
  "syneroym-core",
  "syneroym-data-keystore",
  "syneroym-fdae",
+ "syneroym-text-lang",
  "syneroym-ucan",
  "syneroym-wit-interfaces",
  "tempfile",
