@@ -563,8 +563,9 @@ describe("request form category picker reset", () => {
     expect(rows).toHaveLength(1);
 
     // Click on field label text
-    const labelSpan = host.querySelector<HTMLElement>(".messages-languages-list")?.parentElement?.querySelector("span");
-    labelSpan?.click();
+    const labelSpan = host.querySelector<HTMLElement>(".compose-row .field > span")!;
+    expect(labelSpan.textContent).toBe("Message languages");
+    labelSpan.click();
     rows = host.querySelectorAll(".messages-language-row");
     expect(rows).toHaveLength(1);
   });

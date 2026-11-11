@@ -497,8 +497,9 @@ describe("Groups screen rendering", () => {
     expect(rows).toHaveLength(1);
 
     // Click on field label text
-    const labelSpan = host.querySelector<HTMLElement>(".group-languages-list")?.parentElement?.querySelector("span");
-    labelSpan?.click();
+    const labelSpan = host.querySelector<HTMLElement>(".composer-box .field > span")!;
+    expect(labelSpan.textContent).toBe("Message languages");
+    labelSpan.click();
     rows = host.querySelectorAll(".group-language-row");
     expect(rows).toHaveLength(1);
   });
