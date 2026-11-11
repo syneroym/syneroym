@@ -22,12 +22,22 @@ const MAX_FILTER_DEPTH: u32 = 10;
 pub struct CompiledFilter {
     pub where_clause: String,
     pub params: Vec<Value>,
+    pub text_match: bool,
 }
 
 /// Compiles an optional MongoDB-style JSON filter document into a
 /// parameterized SQL WHERE-clause fragment. `None`, an empty string, or an
 /// empty JSON object all compile to `Ok(None)` (no WHERE clause needed).
 pub fn compile_filter(filter_json: Option<&str>) -> Result<Option<CompiledFilter>, DataLayerError> {
+    compile_filter_in(filter_json, None)
+}
+
+/// Compiles an optional MongoDB-style JSON filter document with text index
+/// support into a parameterized SQL WHERE-clause fragment.
+pub fn compile_filter_in(
+    filter_json: Option<&str>,
+    text: Option<&crate::text_match::TextFields<'_>>,
+) -> Result<Option<CompiledFilter>, DataLayerError> {
     let Some(raw) = filter_json else { return Ok(None) };
     if raw.trim().is_empty() {
         return Ok(None);
@@ -47,8 +57,9 @@ pub fn compile_filter(filter_json: Option<&str>) -> Result<Option<CompiledFilter
     }
 
     let mut params = Vec::new();
-    let where_clause = compile_document(&doc, 0, &mut params)?;
-    Ok(Some(CompiledFilter { where_clause, params }))
+    let mut text_match = false;
+    let where_clause = compile_document(&doc, 0, &mut params, text, true, &mut text_match)?;
+    Ok(Some(CompiledFilter { where_clause, params, text_match }))
 }
 
 /// Returns the top-level field names an (optional) MongoDB-style filter
@@ -112,6 +123,9 @@ fn compile_document(
     doc: &serde_json::Map<String, Json>,
     depth: u32,
     params: &mut Vec<Value>,
+    text: Option<&crate::text_match::TextFields<'_>>,
+    is_conjunct: bool,
+    text_match: &mut bool,
 ) -> Result<String, DataLayerError> {
     if depth > MAX_FILTER_DEPTH {
         return Err(DataLayerError::SchemaViolation(
@@ -124,7 +138,7 @@ fn compile_document(
 
     let mut clauses = Vec::with_capacity(doc.len());
     for (key, value) in doc {
-        clauses.push(compile_entry(key, value, depth, params)?);
+        clauses.push(compile_entry(key, value, depth, params, text, is_conjunct, text_match)?);
     }
     Ok(clauses.join(" AND "))
 }
@@ -134,21 +148,26 @@ fn compile_entry(
     value: &Json,
     depth: u32,
     params: &mut Vec<Value>,
+    text: Option<&crate::text_match::TextFields<'_>>,
+    is_conjunct: bool,
+    text_match: &mut bool,
 ) -> Result<String, DataLayerError> {
     match key {
-        "$and" => compile_logical_array(value, depth, params, " AND "),
-        "$or" => compile_logical_array(value, depth, params, " OR "),
+        "$and" => {
+            compile_logical_array(value, depth, params, " AND ", text, is_conjunct, text_match)
+        }
+        "$or" => compile_logical_array(value, depth, params, " OR ", text, false, text_match),
         "$not" => {
             let Json::Object(sub) = value else {
                 return Err(DataLayerError::SchemaViolation("$not requires an object".to_string()));
             };
-            let inner = compile_document(sub, depth + 1, params)?;
+            let inner = compile_document(sub, depth + 1, params, text, false, text_match)?;
             Ok(format!("NOT ({inner})"))
         }
         _ if key.starts_with('$') => {
             Err(DataLayerError::SchemaViolation(format!("unsupported operator: {key}")))
         }
-        _ => compile_field(key, value, depth, params),
+        _ => compile_field(key, value, depth, params, text, is_conjunct, text_match),
     }
 }
 
@@ -157,6 +176,9 @@ fn compile_logical_array(
     depth: u32,
     params: &mut Vec<Value>,
     joiner: &str,
+    text: Option<&crate::text_match::TextFields<'_>>,
+    is_conjunct: bool,
+    text_match: &mut bool,
 ) -> Result<String, DataLayerError> {
     let Json::Array(items) = value else {
         return Err(DataLayerError::SchemaViolation(
@@ -175,7 +197,7 @@ fn compile_logical_array(
                 "$and/$or array elements must be filter documents".to_string(),
             ));
         };
-        parts.push(compile_document(sub, depth + 1, params)?);
+        parts.push(compile_document(sub, depth + 1, params, text, is_conjunct, text_match)?);
     }
     Ok(format!("({})", parts.join(joiner)))
 }
@@ -187,6 +209,9 @@ fn compile_field(
     value: &Json,
     depth: u32,
     params: &mut Vec<Value>,
+    text: Option<&crate::text_match::TextFields<'_>>,
+    is_conjunct: bool,
+    text_match: &mut bool,
 ) -> Result<String, DataLayerError> {
     if depth > MAX_FILTER_DEPTH {
         return Err(DataLayerError::SchemaViolation(
@@ -195,7 +220,7 @@ fn compile_field(
     }
     match value {
         Json::Object(obj) if obj.keys().any(|k| k.starts_with('$')) => {
-            compile_operator_map(path, obj, params)
+            compile_operator_map(path, obj, params, text, is_conjunct, text_match)
         }
         Json::Object(obj) => {
             // Nested document without operator keys: recurse with
@@ -204,7 +229,15 @@ fn compile_field(
             let mut clauses = Vec::with_capacity(obj.len());
             for (sub_key, sub_value) in obj {
                 let nested_path = format!("{path}.{sub_key}");
-                clauses.push(compile_field(&nested_path, sub_value, depth + 1, params)?);
+                clauses.push(compile_field(
+                    &nested_path,
+                    sub_value,
+                    depth + 1,
+                    params,
+                    text,
+                    is_conjunct,
+                    text_match,
+                )?);
             }
             if clauses.is_empty() {
                 Ok("1=1".to_string())
@@ -223,9 +256,22 @@ fn compile_operator_map(
     path: &str,
     obj: &serde_json::Map<String, Json>,
     params: &mut Vec<Value>,
+    text: Option<&crate::text_match::TextFields<'_>>,
+    is_conjunct: bool,
+    text_match: &mut bool,
 ) -> Result<String, DataLayerError> {
     let mut clauses = Vec::with_capacity(obj.len());
     for (op, opval) in obj {
+        if op == "$search" {
+            if !is_conjunct {
+                return Err(DataLayerError::SchemaViolation(
+                    "$search cannot be used inside $or or $not".to_string(),
+                ));
+            }
+            *text_match = true;
+            clauses.push(crate::text_match::compile_search(path, opval, text, params)?);
+            continue;
+        }
         let sql_op = match op.as_str() {
             "$gt" => ">",
             "$gte" => ">=",
@@ -472,5 +518,185 @@ mod tests {
             fields,
             BTreeSet::from(["kind".to_string(), "ssn".to_string(), "region".to_string()])
         );
+    }
+
+    #[test]
+    fn test_search_operator_without_text_index_refused() {
+        let err = compile_filter(Some(r#"{"title": {"$search": "x"}}"#)).unwrap_err();
+        match err {
+            DataLayerError::SchemaViolation(msg) => {
+                assert_eq!(msg, "$search is not available in this filter");
+            }
+            other => panic!("expected SchemaViolation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_search_operator_compilation_and_validation() {
+        let text_fields = ["title".to_string()];
+        let text = crate::text_match::TextFields { collection: "c", fields: &text_fields };
+
+        // Single long term ("plumber")
+        let f1 = compile_filter_in(Some(r#"{"title": {"$search": "plumber"}}"#), Some(&text))
+            .unwrap()
+            .unwrap();
+        assert!(f1.text_match);
+        assert_eq!(
+            f1.where_clause,
+            "(c.rowid IN (SELECT rowid FROM _text_c_tri WHERE _text_c_tri MATCH ?))"
+        );
+        assert_eq!(f1.params, vec![Value::Text("f_title : \"plumber\"".into())]);
+
+        // Long and short term ("ek plumber")
+        let f2 = compile_filter_in(Some(r#"{"title": {"$search": "ek plumber"}}"#), Some(&text))
+            .unwrap()
+            .unwrap();
+        assert!(f2.text_match);
+        assert_eq!(
+            f2.where_clause,
+            "((c.rowid IN (SELECT rowid FROM _text_c_tri WHERE _text_c_tri MATCH ?) AND c.rowid \
+             IN (SELECT rowid FROM _text_c_word WHERE _text_c_word MATCH ?)))"
+        );
+        assert_eq!(
+            f2.params,
+            vec![
+                Value::Text("f_title : \"plumber\"".into()),
+                Value::Text("f_title : \"ek\"*".into()),
+            ]
+        );
+
+        // Field not in text index
+        let err_field =
+            compile_filter_in(Some(r#"{"summary": {"$search": "x"}}"#), Some(&text)).unwrap_err();
+        match err_field {
+            DataLayerError::SchemaViolation(msg) => {
+                assert_eq!(msg, "'summary' is not a text field of collection 'c'");
+            }
+            other => panic!("expected SchemaViolation, got {other:?}"),
+        }
+
+        // Non-string value
+        let err_num =
+            compile_filter_in(Some(r#"{"title": {"$search": 42}}"#), Some(&text)).unwrap_err();
+        match err_num {
+            DataLayerError::SchemaViolation(msg) => {
+                assert_eq!(msg, "$search requires a string for field 'title'");
+            }
+            other => panic!("expected SchemaViolation, got {other:?}"),
+        }
+
+        // NUL byte
+        let err_nul =
+            compile_filter_in(Some("{\"title\": {\"$search\": \"a\\u0000b\"}}"), Some(&text))
+                .unwrap_err();
+        match err_nul {
+            DataLayerError::SchemaViolation(msg) => {
+                assert_eq!(msg, "$search text must not contain NUL");
+            }
+            other => panic!("expected SchemaViolation, got {other:?}"),
+        }
+
+        // More than 1024 bytes
+        let long_bytes = "a".repeat(1025);
+        let err_bytes = compile_filter_in(
+            Some(&format!(r#"{{"title": {{"$search": "{long_bytes}"}}}}"#)),
+            Some(&text),
+        )
+        .unwrap_err();
+        match err_bytes {
+            DataLayerError::SchemaViolation(msg) => {
+                assert_eq!(msg, "$search text is longer than 1024 bytes");
+            }
+            other => panic!("expected SchemaViolation, got {other:?}"),
+        }
+
+        // Zero terms after cleaning
+        let err_empty =
+            compile_filter_in(Some(r#"{"title": {"$search": "-- !"}}"#), Some(&text)).unwrap_err();
+        match err_empty {
+            DataLayerError::SchemaViolation(msg) => {
+                assert_eq!(msg, "$search needs at least one word");
+            }
+            other => panic!("expected SchemaViolation, got {other:?}"),
+        }
+
+        // More than 16 words
+        let seventeen_words = (1..=17).map(|i| format!("word{i}")).collect::<Vec<_>>().join(" ");
+        let err_words = compile_filter_in(
+            Some(&format!(r#"{{"title": {{"$search": "{seventeen_words}"}}}}"#)),
+            Some(&text),
+        )
+        .unwrap_err();
+        match err_words {
+            DataLayerError::SchemaViolation(msg) => {
+                assert_eq!(msg, "$search has more than 16 words");
+            }
+            other => panic!("expected SchemaViolation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_search_inside_or_or_not_refused() {
+        let text_fields = ["title".to_string()];
+        let text = crate::text_match::TextFields { collection: "c", fields: &text_fields };
+
+        let err_or =
+            compile_filter_in(Some(r#"{"$or": [{"title": {"$search": "x"}}]}"#), Some(&text))
+                .unwrap_err();
+        match err_or {
+            DataLayerError::SchemaViolation(msg) => {
+                assert_eq!(msg, "$search cannot be used inside $or or $not");
+            }
+            other => panic!("expected SchemaViolation, got {other:?}"),
+        }
+
+        let err_not =
+            compile_filter_in(Some(r#"{"$not": {"title": {"$search": "x"}}}"#), Some(&text))
+                .unwrap_err();
+        match err_not {
+            DataLayerError::SchemaViolation(msg) => {
+                assert_eq!(msg, "$search cannot be used inside $or or $not");
+            }
+            other => panic!("expected SchemaViolation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_search_quotes_escaped_in_param_not_sql() {
+        let text_fields = ["title".to_string()];
+        let text = crate::text_match::TextFields { collection: "c", fields: &text_fields };
+
+        let f = compile_filter_in(Some(r#"{"title": {"$search": "a\"b"}}"#), Some(&text))
+            .unwrap()
+            .unwrap();
+        assert_eq!(f.params[0], Value::Text(r#"f_title : "a""b""#.into()));
+
+        let f2 = compile_filter_in(
+            Some(r#"{"title": {"$search": "plumber\" OR 1=1 --"}}"#),
+            Some(&text),
+        )
+        .unwrap()
+        .unwrap();
+        assert!(!f2.where_clause.contains("OR 1=1"));
+        assert!(!f2.where_clause.contains("--"));
+    }
+
+    #[test]
+    fn test_referenced_top_level_fields_includes_search_field() {
+        let fields =
+            referenced_top_level_fields(Some(r#"{"title": {"$search": "plumber"}}"#)).unwrap();
+        assert_eq!(fields, BTreeSet::from(["title".to_string()]));
+    }
+
+    #[test]
+    fn test_aggregate_with_search_refused() {
+        let pipeline = r#"{"$match": {"title": {"$search": "x"}}, "$group": {"_id": "$cat"}}"#;
+        let err = crate::aggregate::compile("items", pipeline, None).unwrap_err();
+        match err {
+            DataLayerError::SchemaViolation(msg) => {
+                assert_eq!(msg, "$search is not available in this filter");
+            }
+            other => panic!("expected SchemaViolation, got {other:?}"),
+        }
     }
 }

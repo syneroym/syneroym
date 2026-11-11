@@ -4,6 +4,7 @@ pub mod errors;
 pub mod filter;
 pub mod registry_store;
 pub mod sqlite;
+pub mod text_match;
 pub mod traits;
 pub mod vault_names;
 

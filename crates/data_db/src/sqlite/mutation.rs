@@ -194,7 +194,9 @@ pub(super) fn do_delete_many(
         return Err(host_store::DataLayerError::PermissionDenied);
     }
     emit_mode_b_trace(sieve);
-    let compiled = filter::compile_filter(filter_json)?;
+    let fields = super::text_index::fields(conn, collection)?;
+    let text_fields = crate::text_match::TextFields { collection, fields: &fields };
+    let compiled = filter::compile_filter_in(filter_json, Some(&text_fields))?;
 
     let mut where_clauses = Vec::new();
     let mut bound_params: Vec<SqlValue> = Vec::new();
@@ -212,8 +214,6 @@ pub(super) fn do_delete_many(
     } else {
         format!("WHERE {}", where_clauses.join(" AND "))
     };
-
-    let fields = super::text_index::fields(conn, collection)?;
 
     let tx = conn.transaction().map_err(map_rusqlite_error)?;
     let watchdog = if sieve.is_some() { Some(install_watchdog(&tx)?) } else { None };
