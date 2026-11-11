@@ -98,9 +98,7 @@ export async function renderProfile(container: HTMLElement) {
           langSelect.replaceWith(freshSelect);
           langSelect = freshSelect;
         }
-        if (Array.isArray(env.payload.languages)) {
-          langList.set(env.payload.languages);
-        }
+        langList.set(Array.isArray(env.payload.languages) ? env.payload.languages : []);
       }
     }
   } catch {
