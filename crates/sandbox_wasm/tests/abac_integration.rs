@@ -749,10 +749,8 @@ async fn stage4_missing_export_under_an_opted_in_policy_denies_closed() {
     engine.deploy_wasm(GREETER_SERVICE_ID, &manifest).await.unwrap();
 
     let store = storage_provider.open_service_db(GREETER_SERVICE_ID, &key_store).await.unwrap();
-    store
-        .create_collection(&CollectionSchema { name: "widgets".to_string(), indexes: vec![] })
-        .await
-        .unwrap();
+    let schema = CollectionSchema { name: "widgets".into(), indexes: vec![], text_fields: vec![] };
+    store.create_collection(&schema).await.unwrap();
     store
         .put(
             "widgets",

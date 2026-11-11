@@ -106,6 +106,7 @@ pub(crate) async fn seed_via_store(
         .create_collection(&host_store::CollectionSchema {
             name: collection.to_string(),
             indexes: vec![],
+            text_fields: vec![],
         })
         .await
         .unwrap();
@@ -477,6 +478,7 @@ pub(crate) async fn resolve_relation_service_and_pipeline_with(
         .create_collection(&host_store::CollectionSchema {
             name: "employees".to_string(),
             indexes: vec![],
+            text_fields: vec![],
         })
         .await
         .unwrap();

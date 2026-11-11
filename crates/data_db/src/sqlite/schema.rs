@@ -32,6 +32,8 @@ pub(crate) fn validate_identifier(name: &str) -> Result<(), host_store::DataLaye
     }
 }
 
+pub const MAX_TEXT_FIELDS: usize = 8;
+
 pub(super) fn do_create_collection(
     conn: &Connection,
     schema: &host_store::CollectionSchema,
@@ -39,6 +41,20 @@ pub(super) fn do_create_collection(
     validate_identifier(&schema.name)?;
     for idx in &schema.indexes {
         validate_identifier(&idx.field_name)?;
+    }
+    if schema.text_fields.len() > MAX_TEXT_FIELDS {
+        return Err(host_store::DataLayerError::SchemaViolation(
+            "too many text fields (max 8)".to_string(),
+        ));
+    }
+    let mut seen_text_fields = std::collections::HashSet::with_capacity(schema.text_fields.len());
+    for tf in &schema.text_fields {
+        validate_identifier(tf)?;
+        if !seen_text_fields.insert(tf.to_ascii_lowercase()) {
+            return Err(host_store::DataLayerError::SchemaViolation(format!(
+                "text field '{tf}' is listed twice"
+            )));
+        }
     }
     conn.execute(
         &format!(

@@ -27,7 +27,7 @@ const SERVICE_ID: &str = "fdae-bench-svc";
 const RECORD_COUNT: usize = 100;
 
 fn schema(name: &str) -> CollectionSchema {
-    CollectionSchema { name: name.to_string(), indexes: vec![] }
+    CollectionSchema { name: name.to_string(), indexes: vec![], text_fields: vec![] }
 }
 
 fn write_value(id: &str, json: &str) -> RecordWriteValue {

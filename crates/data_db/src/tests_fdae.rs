@@ -16,9 +16,9 @@ use tempfile::tempdir;
 use crate::{
     QueryAuth, ServiceStore, SqliteStorageProvider, StorageProvider,
     host_store::{
-        CollectionSchema, DataLayerError, Mutation, PatchMutation, QueryOptions, RecordWriteValue,
-        SqlValue,
+        DataLayerError, Mutation, PatchMutation, QueryOptions, RecordWriteValue, SqlValue,
     },
+    test_support::plain_schema,
 };
 
 /// `SqlValue` doesn't derive `PartialEq` (only `Clone`/`Debug`/serde) --
@@ -36,10 +36,6 @@ async fn setup_store() -> Box<dyn ServiceStore> {
     let provider = SqliteStorageProvider::new(dir.path(), false).unwrap();
     let key_store = Arc::new(KeyStore::new());
     provider.open_service_db("fdae-test-svc", &key_store).await.unwrap()
-}
-
-fn plain_schema(name: &str) -> CollectionSchema {
-    CollectionSchema { name: name.to_string(), indexes: vec![] }
 }
 
 fn write_value(id: &str, payload_json: &str) -> RecordWriteValue {

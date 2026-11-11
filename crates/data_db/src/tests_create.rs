@@ -13,7 +13,8 @@ use tempfile::tempdir;
 
 use crate::{
     QueryAuth, ServiceStore, SqliteStorageProvider, StorageProvider,
-    host_store::{CollectionSchema, DataLayerError, RecordWriteValue},
+    host_store::{DataLayerError, RecordWriteValue},
+    test_support::plain_schema,
 };
 
 const SERVICE_ID: &str = "svc-create-test";
@@ -24,10 +25,6 @@ async fn setup_store() -> Arc<dyn ServiceStore> {
     let provider = SqliteStorageProvider::new(dir.path(), false).unwrap();
     let key_store = Arc::new(KeyStore::new());
     Arc::from(provider.open_service_db(SERVICE_ID, &key_store).await.unwrap())
-}
-
-fn plain_schema(name: &str) -> CollectionSchema {
-    CollectionSchema { name: name.to_string(), indexes: vec![] }
 }
 
 fn write_value(id: &str, payload_json: &str) -> RecordWriteValue {

@@ -316,9 +316,13 @@ fn fmt_err<E: fmt::Debug>(e: E) -> String {
 
 /// Ensures `collection` exists, lazily, on first use.
 async fn ensure_collection<H: AppHost>(host: &H, collection: &str) -> Result<(), String> {
-    host.create_collection(CollectionSchema { name: collection.to_string(), indexes: vec![] })
-        .await
-        .map_err(fmt_err)
+    host.create_collection(CollectionSchema {
+        name: collection.to_string(),
+        indexes: vec![],
+        text_fields: vec![],
+    })
+    .await
+    .map_err(fmt_err)
 }
 
 fn delivery_state_str(state: DeliveryState) -> &'static str {

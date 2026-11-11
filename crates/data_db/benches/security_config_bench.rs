@@ -20,7 +20,7 @@ use syneroym_data_keystore::KeyStore;
 use tokio::runtime::Builder;
 
 fn schema(name: &str) -> CollectionSchema {
-    CollectionSchema { name: name.to_string(), indexes: vec![] }
+    CollectionSchema { name: name.to_string(), indexes: vec![], text_fields: vec![] }
 }
 
 fn write_value(id: &str, json: &str) -> RecordWriteValue {

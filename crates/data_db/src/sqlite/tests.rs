@@ -15,7 +15,7 @@ use super::{
     query::{do_check_access, do_get, do_query},
     schema::SUBSTRATE_SCHEMA_VERSION,
 };
-use crate::{host_store, traits::StorageProvider};
+use crate::{host_store, test_support::plain_schema, traits::StorageProvider};
 
 #[test]
 fn test_startup_migrates_previous_substrate_schema_to_m3a() {
@@ -391,30 +391,12 @@ async fn test_list_collections_returns_created_tables_excludes_vault_and_sqlite_
 
     let store = provider.open_service_db("list-collections-svc", &key_store).await.unwrap();
 
-    store
-        .create_collection(&host_store::CollectionSchema {
-            name: "widgets".to_string(),
-            indexes: vec![],
-        })
-        .await
-        .unwrap();
-    store
-        .create_collection(&host_store::CollectionSchema {
-            name: "gadgets".to_string(),
-            indexes: vec![],
-        })
-        .await
-        .unwrap();
+    store.create_collection(&plain_schema("widgets")).await.unwrap();
+    store.create_collection(&plain_schema("gadgets")).await.unwrap();
     // A leading underscore is a legal collection identifier
     // (`IDENTIFIER_REGEX` is `^[a-zA-Z_]...`) and must not be swept up
     // by an overly broad `_%` exclusion meant only for `_vault`.
-    store
-        .create_collection(&host_store::CollectionSchema {
-            name: "_audit".to_string(),
-            indexes: vec![],
-        })
-        .await
-        .unwrap();
+    store.create_collection(&plain_schema("_audit")).await.unwrap();
     // A vault write forces `_vault` to exist alongside the collections.
     store.write_secret("k", b"v").await.unwrap();
 

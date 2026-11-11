@@ -137,3 +137,64 @@ fn upsert_returning_rowid_stability() {
 
     assert_eq!(rowid_1, rowid_2);
 }
+
+#[test]
+fn text_fields_schema_validation() {
+    use crate::{
+        host_store::{CollectionSchema, DataLayerError, IndexDefinition, IndexType},
+        sqlite::schema::do_create_collection,
+    };
+
+    let conn = Connection::open_in_memory().unwrap();
+
+    // 9 text fields is refused
+    let nine_fields: Vec<String> = (0..9).map(|i| format!("f_{i}")).collect();
+    let schema_too_many = CollectionSchema {
+        name: "test_coll".to_string(),
+        indexes: vec![],
+        text_fields: nine_fields,
+    };
+    match do_create_collection(&conn, &schema_too_many) {
+        Err(DataLayerError::SchemaViolation(msg)) => {
+            assert_eq!(msg, "too many text fields (max 8)");
+        }
+        res => panic!("expected SchemaViolation for too many text fields, got {res:?}"),
+    }
+
+    // Case-insensitive duplicate is refused
+    let schema_dup = CollectionSchema {
+        name: "test_coll".to_string(),
+        indexes: vec![],
+        text_fields: vec!["title".to_string(), "Title".to_string()],
+    };
+    match do_create_collection(&conn, &schema_dup) {
+        Err(DataLayerError::SchemaViolation(msg)) => {
+            assert_eq!(msg, "text field 'Title' is listed twice");
+        }
+        res => panic!("expected SchemaViolation for duplicate text field, got {res:?}"),
+    }
+
+    // Invalid identifier is refused
+    let schema_invalid_id = CollectionSchema {
+        name: "test_coll".to_string(),
+        indexes: vec![],
+        text_fields: vec!["a.b".to_string()],
+    };
+    match do_create_collection(&conn, &schema_invalid_id) {
+        Err(DataLayerError::SchemaViolation(msg)) => {
+            assert_eq!(msg, "invalid identifier: a.b");
+        }
+        res => panic!("expected SchemaViolation for invalid identifier, got {res:?}"),
+    }
+
+    // Text field may also be an index field (valid)
+    let schema_valid = CollectionSchema {
+        name: "test_valid".to_string(),
+        indexes: vec![IndexDefinition {
+            field_name: "title".to_string(),
+            type_: IndexType::String,
+        }],
+        text_fields: vec!["title".to_string()],
+    };
+    assert!(do_create_collection(&conn, &schema_valid).is_ok());
+}

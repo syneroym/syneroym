@@ -39,7 +39,7 @@ pub(crate) async fn ensure_coll<H: AppHost>(
 ) -> Result<(), String> {
     AppDataLayer::create_collection(
         host,
-        CollectionSchema { name: name.to_string(), indexes: indexes.to_vec() },
+        CollectionSchema { name: name.to_string(), indexes: indexes.to_vec(), text_fields: vec![] },
     )
     .await
     .map_err(|e| e.to_string())

@@ -18,6 +18,7 @@ pub(crate) fn collection_schema_in(v: GuestCollectionSchema) -> HostCollectionSc
     HostCollectionSchema {
         name: v.name,
         indexes: v.indexes.into_iter().map(index_definition_in).collect(),
+        text_fields: v.text_fields,
     }
 }
 
@@ -118,11 +119,13 @@ mod tests {
                 field_name: "seq".to_string(),
                 type_: GuestIndexType::String,
             }],
+            text_fields: vec!["body".to_string()],
         };
         let h = collection_schema_in(g);
         assert_eq!(h.name, "messages");
         assert_eq!(h.indexes.len(), 1);
         assert_eq!(h.indexes[0].field_name, "seq");
+        assert_eq!(h.text_fields, vec!["body".to_string()]);
     }
 
     #[test]

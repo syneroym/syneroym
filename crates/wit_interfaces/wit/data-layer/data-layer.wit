@@ -15,6 +15,12 @@ interface store {
     record collection-schema {
         name: string,
         indexes: list<index-definition>,
+        /// Top-level payload fields to index for text search with the `$search`
+        /// filter operator. Each value must be a string. The host indexes the
+        /// search key of each value and keeps the index in step with every
+        /// write. An empty list leaves any text index the collection has.
+        /// At most 8 fields; each is an identifier like an index field name.
+        text-fields: list<string>,
     }
 
     record record-write-value {

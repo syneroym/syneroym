@@ -171,6 +171,7 @@ impl bindings::Guest for HttpGuestTestComponent {
         store::create_collection(&store::CollectionSchema {
             name: REQUESTS_COLLECTION.to_string(),
             indexes: vec![],
+            text_fields: vec![],
         })
         .map_err(|e| format!("{e:?}"))
     }

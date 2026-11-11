@@ -247,7 +247,7 @@ pub async fn owner_did<H: AppHost>(host: &H) -> Result<String, CertificateError>
 pub async fn ensure_collection<H: AppHost>(host: &H, name: &str) -> Result<(), String> {
     AppDataLayer::create_collection(
         host,
-        CollectionSchema { name: name.to_string(), indexes: vec![] },
+        CollectionSchema { name: name.to_string(), indexes: vec![], text_fields: vec![] },
     )
     .await
     .map_err(|e| e.to_string())

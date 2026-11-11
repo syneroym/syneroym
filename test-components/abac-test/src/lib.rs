@@ -40,11 +40,16 @@ fn read_mode() -> String {
 
 impl Guest for AbacTestComponent {
     fn init() -> Result<(), String> {
-        store::create_collection(&CollectionSchema { name: "profiles".to_string(), indexes: vec![] })
-            .map_err(|e| format!("{e:?}"))?;
+        store::create_collection(&CollectionSchema {
+            name: "profiles".to_string(),
+            indexes: vec![],
+            text_fields: vec![],
+        })
+        .map_err(|e| format!("{e:?}"))?;
         store::create_collection(&CollectionSchema {
             name: "lookup_targets".to_string(),
             indexes: vec![],
+            text_fields: vec![],
         })
         .map_err(|e| format!("{e:?}"))?;
         // Non-empty payloads (`classification`/`ssn`/`note`) so the same two

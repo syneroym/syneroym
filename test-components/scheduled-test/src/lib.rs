@@ -31,7 +31,11 @@ struct ScheduledTestComponent;
 
 impl Guest for ScheduledTestComponent {
     fn init() -> Result<(), String> {
-        store::create_collection(&CollectionSchema { name: COLLECTION.to_string(), indexes: vec![] })
+        store::create_collection(&CollectionSchema {
+            name: COLLECTION.to_string(),
+            indexes: vec![],
+            text_fields: vec![],
+        })
             .map_err(|e| format!("{e:?}"))
     }
 }

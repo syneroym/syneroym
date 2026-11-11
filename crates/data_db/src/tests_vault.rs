@@ -6,7 +6,7 @@ use std::sync::Arc;
 use syneroym_data_keystore::KeyStore;
 use tempfile::tempdir;
 
-use crate::{SqliteStorageProvider, StorageProvider, vault_names};
+use crate::{SqliteStorageProvider, StorageProvider, test_support::plain_schema, vault_names};
 
 #[tokio::test]
 async fn test_vault_delete_secret() {
@@ -122,8 +122,7 @@ async fn guest_raw_queries_cannot_read_the_vault_table() {
 async fn a_collection_cannot_be_named_after_the_vault_table() {
     let dir = tempdir().unwrap();
     let store = plain_store(dir.path(), "vault-name").await;
-    let schema =
-        crate::host_store::CollectionSchema { name: "_vault".to_string(), indexes: vec![] };
+    let schema = plain_schema("_vault");
     assert!(store.create_collection(&schema).await.is_err());
     assert!(store.drop_collection("_vault").await.is_err());
     store.write_secret("still-here", b"yes").await.unwrap();

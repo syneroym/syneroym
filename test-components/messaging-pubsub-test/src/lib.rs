@@ -74,6 +74,7 @@ impl Guest for MessagingPubsubTestComponent {
         store::create_collection(&CollectionSchema {
             name: RECEIVED_MESSAGES_COLLECTION.to_string(),
             indexes: vec![],
+            text_fields: vec![],
         })
         .map_err(|e| format!("{e:?}"))
     }

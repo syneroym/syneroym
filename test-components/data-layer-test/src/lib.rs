@@ -36,6 +36,7 @@ impl Guest for DataLayerTestComponent {
                 field_name: "age".to_string(),
                 type_: IndexType::Numeric,
             }],
+            text_fields: vec![],
         })
         .map_err(|e| format!("{e:?}"))
     }

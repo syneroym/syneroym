@@ -114,12 +114,14 @@ impl Guest for MiniappDemo1WasmComponent {
         store::create_collection(&store::CollectionSchema {
             name: COMMENTS_COLLECTION.to_string(),
             indexes: vec![],
+            text_fields: vec![],
         })
         .map_err(|e| format!("{e:?}"))?;
 
         store::create_collection(&store::CollectionSchema {
             name: FILES_COLLECTION.to_string(),
             indexes: vec![],
+            text_fields: vec![],
         })
         .map_err(|e| format!("{e:?}"))?;
 

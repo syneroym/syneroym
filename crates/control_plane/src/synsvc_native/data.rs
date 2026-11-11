@@ -260,6 +260,7 @@ impl SynSvcNativeService {
                 .into_iter()
                 .map(|i| IndexDefinition { field_name: i.field_name, type_: i.index_type })
                 .collect(),
+            text_fields: vec![],
         };
         store.create_collection(&schema).await.map_err(|e| internal(e.to_string()))?;
         to_payload(&())
