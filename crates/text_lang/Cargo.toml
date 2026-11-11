@@ -10,6 +10,8 @@ workspace = true
 
 [dependencies]
 icu_locale_core.workspace = true
+icu_normalizer.workspace = true
+icu_properties.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 

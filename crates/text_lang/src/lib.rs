@@ -10,6 +10,12 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 #[cfg(test)]
 mod tests;
 
+mod search_key;
+
+pub use search_key::{
+    QueryTerms, SEARCH_KEY_VERSION, SHORT_TERM_MAX_CHARS, nfc, query_terms, search_key,
+};
+
 /// Longest tag a record may carry. RFC 5646 section 4.4.1 asks a reader to
 /// keep at least 35 characters.
 pub const MAX_TAG_LEN: usize = 35;

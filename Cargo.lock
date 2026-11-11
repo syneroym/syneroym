@@ -8688,6 +8688,8 @@ name = "syneroym-text-lang"
 version = "0.1.0"
 dependencies = [
  "icu_locale_core",
+ "icu_normalizer",
+ "icu_properties",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
