@@ -348,7 +348,7 @@ prompt lists one change doc,
 decision and deviation belongs there. This is the first code review round, so
 there are no earlier R items to confirm.
 
-**Summary:** 0 blocker, 3 major, 5 minor (R1 to R8). 8 Open.
+**Summary:** 0 blocker, 3 major, 5 minor (R1 to R8). 0 Open, 8 Fixed.
 
 ### What was checked and found correct
 
@@ -452,7 +452,7 @@ there are no earlier R items to confirm.
   `aria-label`), or a heading as the profile screen does. Add a test to
   `language_list.test.ts` or to both screen tests: a click on the visible label
   and on a language name does not change `value()`.
-- *Status:* Open
+- *Status:* Fixed (b4ffbb2a). Proof: added click tests in `messages.test.ts` and `groups.test.ts` asserting clicks on visible label and language names do not alter `value()`; broke locally by wrapping in `<label>` and observed both tests fail with value changed, verified both pass after fix.
 
 #### R2 — major — the profile form puts back a language the person removed
 
@@ -475,7 +475,7 @@ there are no earlier R items to confirm.
   env.payload.languages : [])`. Change the fixture of the test at
   `profile.test.ts:178` to leave out `languages` (the form the service
   writes), or add a second case for it.
-- *Status:* Open
+- *Status:* Fixed (29926059). Proof: updated `profile.test.ts:178` fixture to omit the `languages` key as written by `ProfilePayload` serialization; broke locally with old `Array.isArray(env.payload.languages)` check and observed test fail (expected empty array, got `["en"]`), verified passes after fix.
 
 #### R3 — major — the change doc's Test column names tests that do not exist
 
@@ -510,7 +510,7 @@ there are no earlier R items to confirm.
   `conversation.rs`). Add the group send test of R7 and cite it, or remove
   `host_send_languages_group`. Check every name with `git grep` before the
   commit.
-- *Status:* Open
+- *Status:* Fixed (5c53208b)
 
 #### R4 — minor — the change doc and the developer guide state wrong facts
 
@@ -529,7 +529,7 @@ there are no earlier R items to confirm.
   `messageText(body, languages, tag = "span")`, which returns the nodes to
   append. The D-B3b-4 decision can also name the backup import refusal, which
   the code does.
-- *Status:* Open
+- *Status:* Fixed (5c53208b)
 
 #### R5 — minor — the PR text is wrong in three places and leaves out two things the plan asks for
 
@@ -548,7 +548,7 @@ there are no earlier R items to confirm.
   work, and finds no Hindi lines to review (exit criterion 11).
 - *Fix:* Correct the three points. Add a "Not compatible with older nodes"
   paragraph (W4, W5, W7) and the 9 Hindi lines from `hi.ftl`.
-- *Status:* Open
+- *Status:* Fixed (PR #356 description)
 
 #### R6 — minor — the host checks the languages before the reserved-type check, not after it
 
@@ -566,7 +566,7 @@ there are no earlier R items to confirm.
 - *Fix:* Move the `parse_message_languages` call after the reserved-type
   `if`, and pass `&languages` on. Or keep the order and record it under
   Deviations.
-- *Status:* Open
+- *Status:* Fixed (6014dad7)
 
 #### R7 — minor — several tests prove less than their names or the plan say
 
@@ -600,7 +600,7 @@ there are no earlier R items to confirm.
   or record under Deviations that it is not tested. Use `hi_IN` and check the
   error text in the `roymctl` test. In story 40, check two
   `.messages-language-row` after `addMessageLanguage`.
-- *Status:* Open
+- *Status:* Fixed (6014dad7, 076ecacd, 9c3294de, 53757d56, 5c53208b)
 
 #### R8 — minor — new full paths, a length read written four times, and an unused parameter
 
@@ -624,4 +624,4 @@ there are no earlier R items to confirm.
 - *Fix:* Fix the imports. Add one `pub(crate) fn take_u64(bytes: &[u8], at:
   &mut usize) -> Result<u64, String>` in `envelope.rs` and use it in both
   functions. Drop the `_tag` parameter and its argument in story 40, or use it.
-- *Status:* Open
+- *Status:* Fixed (6014dad7, 076ecacd, 238deb83, 53757d56)
