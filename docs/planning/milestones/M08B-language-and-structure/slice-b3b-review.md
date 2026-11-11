@@ -625,3 +625,92 @@ there are no earlier R items to confirm.
   &mut usize) -> Result<u64, String>` in `envelope.rs` and use it in both
   functions. Drop the `_tag` parameter and its argument in story 40, or use it.
 - *Status:* Fixed (6014dad7, 076ecacd, 238deb83, 53757d56)
+
+## Code review round 2 — Claude Opus 5.5, 2026-11-11
+
+Checked on `feat/m08b-b3b-chat-lang-tags` at `fda83d26`, in the main checkout.
+`git pull` said "Already up to date". I read the eight fix commits after
+`b5bc318b` (`b4ffbb2a` to `fda83d26`) and checked each R item of round 1
+against its fix commit.
+
+**Summary:** round 1: 8 Fixed, all confirmed. Round 2: 0 blocker, 0 major,
+1 minor (R9). 1 Open.
+
+### What was checked and found correct
+
+- **CI.** `gh pr checks 356` on `fda83d26`: CI Pipeline, Lints, Playwright
+  E2E, Test 1/6 to 6/6 and the CLA check pass. Benchmarks and Code Coverage
+  skip. So the full suite, both builds and the e2e suite pass on this sha.
+- **Run here.** `npm test` in `crates/roym_web/ui`: 39 files, 445 tests passed
+  (2 new). `cargo nextest run -p syneroym-conversation`: 184 passed, 0
+  skipped. Both match the fix session's numbers.
+- **R1, confirmed.** Both chat boxes now put the list in a `<div
+  class="field">` with a `<span>` for the text, not in a `<label>`. No click
+  is forwarded to a button. The new name-click step in `messages.test.ts`
+  and `groups.test.ts` fails with the old `<label>`. See R9 for the label
+  step.
+- **R2, confirmed.** `langList.set(Array.isArray(...) ? ... : [])` is the
+  `main` behaviour again. The test fixture at `profile.test.ts:178` now leaves
+  out `languages`, as `ProfilePayload` writes it.
+- **R3, confirmed.** Every Rust test name in the ML-14 and ML-25 rows exists
+  (`git grep`, one hit each). The new group send test
+  `host_send_group_with_languages_is_stored_and_returned_by_history` is cited.
+- **R4, confirmed.** The decision says "joined by one space". The developer
+  guide gives `messageText(body, languages, tag = "span")`. D-B3b-4 names the
+  backup import refusal.
+- **R5, confirmed.** The PR text names `encode_body` and `InvalidArgument`,
+  says "move up and remove", has a "Not compatible with older nodes" section
+  (W4, W5, W7, reset of an old `conversation.db`) and lists the 9 Hindi lines.
+  These match `hi.ftl`.
+- **R6, confirmed.** `parse_message_languages` now runs right after the
+  reserved-type check, and the host passes on the `languages` it got. The
+  `to_string()` step is gone.
+- **R7, confirmed.** Scenario 210 ends with `assert_eq!(hw, hn)`. Before that
+  it sorts the two system rows by content type and replaces the group id. The
+  two builds create two groups with different ids, so this is a fair
+  normalization; the message row (index 0) is not reordered. The new host test
+  sends `["hi", "en"]` on a group through `ConversationService::send` and reads
+  the sender's stored row and its history back. The warning is not asserted.
+  The change doc's Deviations say so, with the reason (no
+  `tracing-subscriber` dev-dependency), as the round 1 fix allowed. `roymctl`
+  checks `hi_IN` and the "not a well-formed BCP 47 tag" text. Story 40 checks
+  two rows before it sends.
+- **R8, confirmed.** `std::str`, `crate::envelope`, `LangTag`, `BackupBundle`,
+  `parse_message_languages` and the two limits are imported. One `take_u64`
+  helper does the four 8-byte reads, with the same checks (`checked_add`,
+  `get`, no `+` on a wire length). `addMessageLanguage` lost the unused
+  parameter, and story 40 no longer passes it.
+- **No new problems in the fix commits** other than R9: no planning ids, no
+  file over its limit, no new suppression, no changed behaviour outside the
+  R items.
+
+### Findings
+
+#### R9 — minor — the "click on the label" step of the two new Hub tests clicks a language name
+
+- *Where:* `crates/roym_web/ui/src/screens/messages.test.ts` and
+  `crates/roym_web/ui/src/screens/groups.test.ts`, the new tests "click on
+  (group) language list label or language name does not remove language", the
+  line `host.querySelector(".messages-languages-list")?.parentElement?.querySelector("span")`
+  (and the `group-` form).
+- *Problem:* The parent of `.messages-languages-list` is the list root (`div
+  role="group"`), not the `div.field`. The first `<span>` inside the root is
+  the first row's `.messages-language-name`. So the "label" step clicks the
+  language name a second time, and the visible label text is never clicked.
+  The `?.` also lets the step pass silently if the element is not found. The
+  new group test in `group/tests/languages.rs` also calls
+  `crate::transport::tests::test_service` by its full path, against the
+  import rule.
+- *Failure case:* A later change puts the label text inside something that
+  reacts to a click (for example a `<label>` around only the text and the
+  list). The test still passes, because it never clicks the label.
+- *Fix:* Select the label span directly, for example
+  `host.querySelector(".compose-row .field > span")` (groups:
+  `.composer-box .field > span`), with
+  `!` instead of `?.`, and assert its text is "Message languages" before the
+  click. Import `test_service` with a `use`.
+- *Status:* Open
+
+Note, not a finding: the PR text says "`mise run verify` passed all 16 gates
+in pre-review pass" and gives 445 Hub tests. The pre-review run had 443; 445
+is the count after the fixes. CI on `fda83d26` is the proof now.
