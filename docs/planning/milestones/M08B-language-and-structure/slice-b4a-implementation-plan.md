@@ -221,7 +221,7 @@ Owner answer: (a), 2026-11-11, but $search only as an AND term (P1), so there is
 
 **Q4. When a query has several words, which rows match? (blocks Step 6)**
 
-Owner answer: (a), 2026-11-11, with the term cleaning from P4.
+Owner answer: (a), 2026-11-11, with the term cleaning from P4 and mark preservation from P16.
 
 Today the directory matches the whole folded query as one substring
 (`$regex` becomes `LIKE '%nal wala%'`,
@@ -229,9 +229,10 @@ Today the directory matches the whole folded query as one substring
 
 - (a) **Every word must match (AND), in any order.** `nal wala` finds
   "wala nal" too. Terms are cleaned by trimming leading and trailing
-  non-alphanumeric punctuation, classifying long/short on trimmed length,
-  and dropping empty terms, while keeping interior punctuation (P4).
-  This is what a person expects from a search box, and it
+  punctuation and symbols, stopping at any `char` that is alphanumeric or a
+  Unicode mark (preserving virama, pulli, and nukta; P4, P16), classifying
+  long/short on trimmed length, and dropping empty terms, while keeping interior
+  punctuation. This is what a person expects from a search box, and it
   is what lets B4b find `nal wala` in a key with the spaces removed
   (task.md B4b, "Joined words"). *Decided.*
 - (b) **Any word (OR).** Finds more, ranks nothing, so the page fills with
@@ -474,7 +475,7 @@ service does in B4a, so a Roym node's databases do not change.
 | # | Before | After |
 | --- | --- | --- |
 | 1 | `put`, `patch` and `delete` without a policy run outside a transaction | they run in one transaction with the index update (D-B4a-6). The result and the errors are the same |
-| 2 | `delete-many` runs one `DELETE` | one transaction: set deletion `DELETE FROM _text_c_tri WHERE rowid IN (SELECT rowid FROM c WHERE …)`, same for `_word`, then `DELETE FROM c WHERE …` (D-B4a-6, P13). No `RETURNING` needed. The returned count is the same |
+| 2 | `delete-many` runs one `DELETE` | one transaction: `DELETE FROM c WHERE … RETURNING rowid`, collect rowids, then remove index rows in batch via `DELETE FROM _text_c_tri WHERE rowid IN (SELECT value FROM json_each(?1))` (and the same for `_word`) when the collection has text fields (D-B4a-6, P15). Keeps `map_query_raw_step_error` so watchdog error is `quota-exceeded`. The returned count is the same |
 | 3 | `put` runs `INSERT … ON CONFLICT DO UPDATE` | the same statement with `RETURNING rowid` (D-B4a-6) |
 
 ### Stays the same
@@ -544,7 +545,8 @@ that depend on an owner answer say so.
   }
 
   /// `search_key(query)`, split on Unicode white space. Terms are trimmed
-  /// of leading and trailing non-alphanumeric `char`s (`char::is_alphanumeric`),
+  /// of leading and trailing punctuation and symbol `char`s (stopping at
+  /// alphanumeric chars or Unicode marks, such as virama, pulli, or nukta; P16),
   /// classified into long/short on trimmed length, and empty terms are dropped (P4).
   /// Interior punctuation (`plumber's`, `a-b`) is kept. Empty when nothing is left.
   pub fn query_terms(query: &str) -> QueryTerms;
@@ -555,18 +557,21 @@ that depend on an owner answer say so.
     `icu_normalizer::ComposingNormalizerBorrowed::new_nfc().normalize(text)`
     (the `compiled_data` constructor of 2.4).
   - `Cargo.toml` (workspace): `icu_normalizer = { version = "2.4",
-    default-features = false, features = ["compiled_data"] }` next to
-    `icu_locale_core` (`:127`). `crates/text_lang/Cargo.toml`:
-    `icu_normalizer.workspace = true`.
+    default-features = false, features = ["compiled_data"] }` and
+    `icu_properties = { version = "2.4", default-features = false, features = ["compiled_data"] }`
+    next to `icu_locale_core` (`:127`). `crates/text_lang/Cargo.toml`:
+    `icu_normalizer.workspace = true` and `icu_properties.workspace = true` (P16).
   - No cargo feature splits this from the tag type: S0 measured that a
     guest that does not call `nfc` does not grow (section 2.2 point 11),
     and Step 8 checks it on the six Roym components.
   - Terms are split on white space, then trimmed of leading and trailing
-    non-alphanumeric punctuation (P4). Interior punctuation stays inside a term:
-    `plumber's` and `a-b` are kept as written. `ab"c` has interior quotes and stays.
-    A term of only punctuation is empty after trimming and is dropped. A word with
-    a virama, such as `प्लंबर`, is one term. The rule keeps every Devanagari or
-    Tamil word, because their letters are alphanumeric for `char::is_alphanumeric`.
+    punctuation and symbols, stopping at any character that is alphanumeric or
+    has Unicode general category Mark (`GeneralCategoryGroup::Mark` in `icu_properties` 2.4; P16).
+    Interior punctuation stays inside a term: `plumber's` and `a-b` are kept as written.
+    `ab"c` has interior quotes and stays. A term of only punctuation is empty after trimming
+    and is dropped. Words with combining marks (such as Devanagari virama `प्`, Tamil pulli
+    `நல்`, or nukta) preserve their marks at word boundaries. Danda (`।`) and other punctuation
+    are trimmed.
 
 - **D-B4a-3. The two FTS5 tables.** For collection `c` with text fields
   `f1, …, fn` (in declared order):
@@ -705,13 +710,15 @@ that depend on an owner answer say so.
   - `do_delete`: `DELETE … WHERE id = ?1 RETURNING rowid` (zero or one row;
     zero rows is still `Ok`, the delete stays idempotent); then
     `remove_rows`.
-  - `do_delete_many(conn: &mut Connection, …)`: a transaction; set deletion
-    form (P13): `DELETE FROM _text_c_tri WHERE rowid IN (SELECT rowid FROM c {where})`,
-    the same for `_text_c_word`, then `DELETE FROM c {where}`, taking the deleted
-    count from the collection delete. All three statements use `map_query_raw_step_error`,
-    so a watchdog stop is still `quota-exceeded`. The writer loop passes `&mut conn`
-    ([service_store.rs:155](../../../../crates/data_db/src/sqlite/service_store.rs#L155)
-    to `:160`).
+  - `do_delete_many(conn: &mut Connection, …)`: a transaction;
+    `DELETE FROM c {where} RETURNING rowid` collects deleted rowids into a `Vec<i64>`.
+    If the collection has text fields and `!rowids.is_empty()`, delete index rows with
+    one statement per table: `DELETE FROM _text_c_tri WHERE rowid IN (SELECT value FROM json_each(?1))`
+    and the same for `_text_c_word`, passing the rowids as a JSON array string (P15).
+    This avoids evaluating `{where}` after index rows have already been deleted, which broke
+    queries containing `$search`. All statements use `map_query_raw_step_error`, so a watchdog
+    stop is still `quota-exceeded`. The returned count is `rowids.len()`. The writer loop passes
+    `&mut conn` ([service_store.rs:155](../../../../crates/data_db/src/sqlite/service_store.rs#L155) to `:160`).
   - `do_authorized_put`, `do_authorized_patch`, `do_authorized_delete`: the
     no-policy path opens a transaction too, so one rule holds for every
     write. The comment "the policy-absent hot path pays nothing new"
@@ -881,7 +888,7 @@ Done in the planning session: this file and the B4a row of
 ### Step 3 — Search keys in `syneroym-text-lang`
 
 1. Workspace `Cargo.toml` and `crates/text_lang/Cargo.toml`: `icu_normalizer`
-   (D-B4a-2).
+   and `icu_properties` (D-B4a-2, P16).
 2. `crates/text_lang/src/search_key.rs` and its tests; `lib.rs`:
    `mod search_key; pub use search_key::{…};`.
 3. `cargo nextest run -p syneroym-text-lang`; `cargo deny check licenses`
@@ -909,8 +916,12 @@ Done in the planning session: this file and the B4a row of
    `cargo nextest run -p syneroym-data-db -p syneroym-sandbox-wasm
    -p syneroym-app-host -p syneroym-app-host-native -p syneroym-control-plane
    -p syneroym-router -p syneroym-roym-core -p syneroym-roym-web`.
-   Run the tests that load the updated components: `saga`, `miniapp-demo1-wasm`,
-   and the websocket test in `crates/sandbox_wasm/tests/` (P2).
+   Run the tests that load the updated components:
+   `crates/substrate/tests/saga_e2e.rs`,
+   `crates/substrate/tests/miniapp_demo1_wasm_e2e.rs`, and
+   `crates/sandbox_wasm/tests/websocket_integration.rs` via
+   `cargo nextest run -p syneroym-sandbox-wasm --test websocket_integration` and
+   `cargo nextest run -p syneroym-substrate --test saga_e2e --test miniapp_demo1_wasm_e2e` (P2, P17).
 
 ### Step 5 — The text index and the write paths
 
@@ -926,7 +937,8 @@ Done in the planning session: this file and the B4a row of
    `drop_index`. `service_store.rs` passes `&mut conn`.
 4. `mutation.rs`: the write paths of D-B4a-6, in this order: `payload_to_text`,
    `do_put`, `do_patch` (checking only fields named in the patch; P9),
-   `do_delete`, the three `do_authorized_*`, `do_delete_many` (using set deletion; P13;
+   `do_delete`, the three `do_authorized_*`, `do_delete_many` (collecting rowids via
+   `RETURNING rowid` and batch deleting index rows via `json_each`; P15;
    and its writer-loop call). Update `tests.rs:860` to `:872` (`fdae_watchdog_interrupts_do_delete_many_on_the_writer_conn`)
    with `let mut conn` and `&mut conn` (P7).
 5. Tests of section 7.2 ("declare" and "writes").
@@ -943,7 +955,7 @@ Done in the planning session: this file and the B4a row of
 3. `query.rs`: `query_sql` (D-B4a-12); `do_query` reads
    `text_index::fields` when `opts.filter` is `Some` and calls
    `compile_filter_in`; the `+c.id` form when `text_match` (D-B4a-9).
-   `mutation.rs`: `do_delete_many` set deletion (P13), without the order hint (a
+   `mutation.rs`: `do_delete_many` with `$search` filter test verification (P15), without the order hint (a
    delete has no `ORDER BY`).
 4. WIT: the `query` and `delete-many` paragraphs of D-B4a-1.
 5. Tests of section 7.2 ("search", "plan"); the timing of D-B4a-10; before/after
@@ -1003,9 +1015,11 @@ None. B4a does not change the Hub.
 - `query_terms`: `"  Nal   WALA "` gives long `["nal", "wala"]`, short
   `[]`; `"ek do teen"` gives long `["teen"]`, short `["ek", "do"]`;
   `"नल वाला"` gives short `["नल"]`, long `["वाला"]`; `"--- !!"` gives
-  both empty; `"nal nal"` gives `["nal"]` once; term cleaning tests (P4):
+  both empty; `"nal nal"` gives `["nal"]` once; term cleaning tests (P4, P16):
   `plumber,` gives long `["plumber"]`; `(ek)` gives short `["ek"]`;
-  `"nal"` gives long `["nal"]`; `plumber's` and `a-b` are unchanged.
+  `"nal"` gives long `["nal"]`; `plumber's` and `a-b` are unchanged;
+  `நல்` stays one 3-char long term `["நல்"]`; `प्` stays 2 chars `["प्"]`;
+  `नल।` becomes `नल` (the danda is punctuation and is trimmed).
 - `SHORT_TERM_MAX_CHARS` is 2 and `SEARCH_KEY_VERSION` is 1.
 
 `crates/data_db/src/sqlite/text_index/tests.rs` (split into
@@ -1070,8 +1084,9 @@ Writes (Step 5):
 - Missing `_text_` table in `sync_row` and `remove_rows` maps to
   `DataLayerError::Internal("text index of '<c>' is missing")` and not
   `CollectionNotFound` (P12).
-- `delete-many` with a filter removes exactly the matching rows from both
-  FTS tables and returns the same count as before B4a (P13).
+- `delete-many` with a filter (including a filter with `$search`, and `$search` next to equality)
+  removes exactly the matching rows from the collection and from both FTS tables, and returns
+  the same count as before B4a; a watchdog stop is still `quota-exceeded` (P15).
 - A `batch-mutate` whose last mutation fails rolls back the earlier rows'
   index rows; a `create` that hits an existing id leaves no index rows.
 - `put` with `title: 5` is `schema-violation("text field 'title' must be a
@@ -1130,7 +1145,11 @@ Plan (Step 6):
 
 Step 4.5 component tests:
 - Tests that instantiate the components rebuilt with the symlinked WIT:
-  `saga`, `miniapp-demo1-wasm`, and the websocket test in `crates/sandbox_wasm/tests/` (P2).
+  `crates/substrate/tests/saga_e2e.rs`,
+  `crates/substrate/tests/miniapp_demo1_wasm_e2e.rs`, and
+  `crates/sandbox_wasm/tests/websocket_integration.rs` via
+  `cargo nextest run -p syneroym-sandbox-wasm --test websocket_integration` and
+  `cargo nextest run -p syneroym-substrate --test saga_e2e --test miniapp_demo1_wasm_e2e` (P2, P17).
 
 Performance (Step 6):
 - Before/after run of the `put` bench on a collection without text fields
