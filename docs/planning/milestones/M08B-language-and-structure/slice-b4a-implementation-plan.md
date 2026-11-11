@@ -3,7 +3,7 @@
 *Reader: the developer (or AI) who implements slice B4a. You do not have the
 planning conversation. This plan is meant to stand alone.*
 
-**Status: plan written, 2026-11-11. Not reviewed. Owner questions open.**
+**Status: plan reviewed, 2026-11-11. Owner answers recorded. Review items P1–P14 closed.**
 
 **Size and PR.** M. One PR on `feat/m08b-b4a-full-text`, with the commits
 of section 6 in that order. The branch starts from `main` at `ca9002f3`
@@ -106,7 +106,7 @@ constant `SEARCH_KEY_VERSION`, using `icu_normalizer` 2.4 (D-S0-2). The WIT
 record `collection-schema` gains `text-fields: list<string>` (Q1). Every
 place that builds a `CollectionSchema` adds the field: the WASM host and
 the native shim pass it through unchanged, the native dispatch DTO of
-`control_plane` reads it, and every Roym service and test component sends
+`control_plane` does not accept it (P3), and every Roym service and test component sends
 `[]`. In `data_db`, `create-collection` with text fields creates two FTS5
 tables, `_text_<c>_tri` (trigram) and `_text_<c>_word` (`unicode61` with
 `prefix='1 2'`), and fills them from the rows that exist. Every write path
@@ -115,7 +115,8 @@ them in the same SQLite transaction, keyed by the row's `rowid`. The filter
 compiler gets the operator `{"<field>": {"$search": "<text>"}}`: the host
 turns the text into search-key terms and matches long terms in the trigram
 table and short terms as word prefixes in the word table, all terms
-required. No query falls back to a scan. `drop-collection` removes the
+required. `$search` is allowed only as an `AND` term (conjunct), so no query
+falls back to a scan (P1). `drop-collection` removes the
 text index. Collection names that start with `_text_` are refused, and the
 text tables never show in `list_collections`.
 
@@ -151,7 +152,7 @@ option.
 
 **Q1. How does a collection declare its text fields? (blocks Step 4)**
 
-Owner answer: —
+Owner answer: (a), 2026-11-11. Its cost also includes P2.
 
 `create-collection` takes `collection-schema { name, indexes }`
 ([data-layer.wit:15](../../../../crates/wit_interfaces/wit/data-layer/data-layer.wit#L15)
@@ -162,11 +163,12 @@ has 12 callers in the directory alone).
 
 - (a) **A field `text-fields: list<string>` on `collection-schema`.** The
   schema says everything about a collection in one place. Each of the 45
-  places that build a `CollectionSchema` (32 files: section 2.2 point 4)
-  adds `text_fields: vec![]` once, a mechanical change. The WIT record
+  places that build a `CollectionSchema` (30 files: section 2.2 point 4, P14)
+  adds `text_fields: vec![]` once, a mechanical change. The three vendored
+  WIT copies in test components are replaced with symlinks (P2). The WIT record
   changes shape, so every guest is rebuilt (CI does this already). The
   package stays `syneroym:data-layer@0.1.0`, as with the conversation WIT
-  in B3b (change doc rule 4). No trait gains a method. *Recommended.*
+  in B3b (change doc rule 4). No trait gains a method. *Decided.*
 - (b) **A new function `set-text-fields: func(collection: string, fields:
   list<string>)`.** No existing caller changes, and old guests still link.
   But a guest must make two calls, and `AppDataLayer`, `ServiceStore`,
@@ -175,7 +177,7 @@ has 12 callers in the directory alone).
 **Q2. What does a `text-fields` list mean when the collection already has a
 text index? (blocks Step 5)**
 
-Owner answer: —
+Owner answer: (a), 2026-11-11. Compare the field list as a set, not by order (P10), and do not accept it on the native route (P3).
 
 Roym calls `create-collection` from many places for one collection, and not
 all of them will name the text fields (for example the directory's
@@ -184,27 +186,31 @@ collection).
 
 - (a) **An empty list leaves the text index as it is. A non-empty list that
   differs from the index replaces it** (drop, create, fill from the rows).
+  The field list is compared as a set, ignoring ASCII case (P10). The native
+  route does not accept `text-fields` (P3).
   This matches `indexes` today: `create-collection` never drops an index
   it created before
   ([schema.rs:52](../../../../crates/data_db/src/sqlite/schema.rs#L52) to
   `:62`). A text index is removed only with `drop-collection`.
-  *Recommended.*
+  *Decided.*
 - (b) **The list is the exact state:** an empty list drops the text index.
   Clear, but one call site that forgets the fields drops and later
   rebuilds the whole index, again and again.
 
 **Q3. How does a guest write a text search? (blocks Step 6)**
 
-Owner answer: —
+Owner answer: (a), 2026-11-11, but $search only as an AND term (P1), so there is no two-field search in one call.
 
 - (a) **A field operator `$search`: `{"title": {"$search": "nal wala"}}`.**
-  It sits with the other field operators (`$gt`, `$in`, `$regex`), so it
-  works inside `$and`, `$or` and `$not`, next to other operators, and in
-  `delete-many`. A search over two fields is an `$or`. The CLS check
-  already sees the field name, because `referenced_top_level_fields`
-  collects every key that does not start with `$`
-  ([filter.rs:86](../../../../crates/data_db/src/filter.rs#L86) to `:109`).
-  *Recommended.*
+  It sits with the other field operators (`$gt`, `$in`, `$regex`), and works
+  at the top level or inside `$and`, next to other operators, and in
+  `delete-many`. `$search` is allowed only as an `AND` term (conjunct); inside
+  `$or` and `$not` it is refused because SQLite scans the whole collection
+  (P1). There is no two-field search in one call; a guest indexes one combined
+  field or sends two queries. The CLS check already sees the field name,
+  because `referenced_top_level_fields` collects every key that does not start
+  with `$` ([filter.rs:86](../../../../crates/data_db/src/filter.rs#L86) to `:109`).
+  *Decided.*
 - (b) **The same, named `$text`.** Shorter, but MongoDB's `$text` is a
   top-level operator with a `$search` key; a reader who knows MongoDB
   expects that shape.
@@ -215,16 +221,19 @@ Owner answer: —
 
 **Q4. When a query has several words, which rows match? (blocks Step 6)**
 
-Owner answer: —
+Owner answer: (a), 2026-11-11, with the term cleaning from P4.
 
 Today the directory matches the whole folded query as one substring
 (`$regex` becomes `LIKE '%nal wala%'`,
 [filter.rs:286](../../../../crates/data_db/src/filter.rs#L286) to `:299`).
 
 - (a) **Every word must match (AND), in any order.** `nal wala` finds
-  "wala nal" too. This is what a person expects from a search box, and it
+  "wala nal" too. Terms are cleaned by trimming leading and trailing
+  non-alphanumeric punctuation, classifying long/short on trimmed length,
+  and dropping empty terms, while keeping interior punctuation (P4).
+  This is what a person expects from a search box, and it
   is what lets B4b find `nal wala` in a key with the spaces removed
-  (task.md B4b, "Joined words"). *Recommended.*
+  (task.md B4b, "Joined words"). *Decided.*
 - (b) **Any word (OR).** Finds more, ranks nothing, so the page fills with
   weak matches.
 - (c) **The whole text as one phrase.** The same as today, but a short word
@@ -233,14 +242,16 @@ Today the directory matches the whole folded query as one substring
 **Q5. What does the host do with a text field whose value is not a string?
 (blocks Step 5)**
 
-Owner answer: —
+Owner answer: (a), 2026-11-11, plus P9: a patch must not fail because of an old row’s untouched text field.
 
 - (a) **A write refuses it with `schema-violation("text field 'x' must be
   a string")`. A rebuild skips it (that row is not found for that field)
   and logs one `warn!` per rebuild with the count.** A guest bug shows at
   write time. A rebuild runs inside `create-collection`, so it must not
   fail on rows written before the declaration. A missing field or `null`
-  indexes as empty in both cases. *Recommended.*
+  indexes as empty in both cases. In `do_patch`, only the text fields named in
+  the patch document itself are checked, so an old row's untouched text field
+  does not block unrelated patches (P9). *Decided.*
 - (b) **Skip it always, never refuse.** One rule, but a guest that writes a
   number into a text field never learns why search misses it.
 - (c) **Refuse always**, also in a rebuild. Then one old row stops every
@@ -248,24 +259,25 @@ Owner answer: —
 
 **Q6. How does a text index row point at its record? (blocks Step 5)**
 
-Owner answer: —
+Owner answer: (a), 2026-11-11; execute-ddl caveat in P12.
 
 - (a) **The FTS row has the collection row's `rowid`.** No extra table. The
   chat store already does the same: `messages_fts` uses
   `content_rowid='rowid'` of a table with a text primary key
-  ([store/schema.rs:115](../../../../crates/conversation/src/store/schema.rs#L115)
-  to `:120`). SQLite keeps a row's `rowid` on `UPDATE` and on
+  ([store/schema.rs:116](../../../../crates/conversation/src/store/schema.rs#L116)
+  to `:120`; P14). SQLite keeps a row's `rowid` on `UPDATE` and on
   `ON CONFLICT DO UPDATE`. Only `VACUUM` may give new rowids to a table
   without an `INTEGER PRIMARY KEY`, and no code in `crates/` runs `VACUUM`
   (checked with `git grep -i vacuum`). A backlog row records that a future
-  `VACUUM` must rebuild every text index. *Recommended.*
+  `VACUUM` must rebuild every text index. `execute-ddl` on a text-indexed
+  collection or `_text_` table is not supported and requires a rebuild (P12). *Decided.*
 - (b) **A host table per collection, `(rid INTEGER PRIMARY KEY, id TEXT
   UNIQUE)`,** so the link survives `VACUUM`. One more table and one more
   lookup on every write, for a case that no code has.
 
 **Q7. How is ADR-0007 updated? (blocks Step 8)**
 
-Owner answer: —
+Owner answer: (a), 2026-11-11.
 
 ADR-0007 lists the filter operators and says "The host only implements the
 operators listed above"
@@ -276,7 +288,7 @@ change.
 - (a) **A dated entry in its `## Amendments` section** (`:167`), as M04A B4
   did for `aggregate`. It names `$search`, `text-fields`, the two tables
   and the rule that a text search never scans. The original text stays.
-  *Recommended.*
+  *Decided.*
 - (b) **A new ADR** that ADR-0007 links to. Better if the full-text design
   is expected to grow a lot (ranking, more tokenizers), but it splits the
   filter language over two records.
@@ -311,13 +323,14 @@ change.
    (`:183` to `:188`). `do_batch_mutate` and `do_create` already use a
    transaction (`:205`, `:263`). A write and its index update must commit
    together (D-B4a-6).
-4. **Who builds a `CollectionSchema`** (45 literals in 32 files, from
-   `git grep -n 'CollectionSchema {'`):
+4. **Who builds a `CollectionSchema`** (45 literals in 30 files, from
+   `git grep -n 'CollectionSchema {'`; P14):
    - Host code: the native shim's
      [`collection_schema_in`](../../../../crates/app_host_native/src/convert/data_layer.rs#L17)
-     and its test (`:115`); the native dispatch DTO of `control_plane`
+     and its test (`:115`); the native dispatch route of `control_plane`
      ([data.rs:248](../../../../crates/control_plane/src/synsvc_native/data.rs#L248)
-     to `:263`). The WASM host passes the generated type through
+     to `:263`) does not accept `text_fields` (P3) and sets `text_fields: vec![]`.
+     The WASM host passes the generated type through
      ([capabilities_store.rs:104](../../../../crates/sandbox_wasm/src/host_capabilities/capabilities_store.rs#L104)
      to `:115`): no change.
    - Roym: `roym_catalog/src/app.rs:47`, `roym_conversation/src/app.rs:57`,
@@ -327,11 +340,14 @@ change.
      `mise run build:test-components`): `abac-test` (2),
      `data-layer-test`, `dual-build-fixture/src/app.rs:319`,
      `http-guest-test`, `messaging-pubsub-test`, `miniapp-demo1-wasm` (2),
-     `saga-test`, `scheduled-test`, `stream-test`.
+     `saga-test`, `scheduled-test`, `stream-test`. Three vendored copies of
+     `data-layer.wit` (`saga-test`, `miniapp-demo1-wasm`, `websocket-guest-test`)
+     are replaced with symlinks to `crates/wit_interfaces/wit/data-layer/data-layer.wit` (P2).
    - Tests and benches: `data_db` (`sqlite/tests.rs` 3, `tests_create.rs`,
-     `tests_crud.rs`, `tests_fdae.rs`, `tests_vault.rs`, two benches),
-     `sandbox_wasm` (`tests_store.rs` 3, `abac_integration.rs`, one
-     bench), `router/tests/native_dispatch_identity/helpers.rs` (2),
+     `tests_crud.rs`, `tests_fdae.rs`, `tests_vault.rs`, benches hold 2
+     literals each in `fdae_bench.rs` and `security_config_bench.rs`; P14),
+     `sandbox_wasm` (`tests_store.rs` 3, `abac_integration.rs`, `data_layer_bench.rs` 2; P14),
+     `router/tests/native_dispatch_identity/helpers.rs` (2),
      `app_host_native` parity `host_services.rs:62`,
      `permitted_differences.rs:214`.
    - No `bindings.rs` for the data layer is committed (only
@@ -365,7 +381,7 @@ change.
    ([task.md](task.md) section 2). The `functions` feature (custom SQL
    functions) is off, so the host cannot compute a search key inside SQL or
    in a trigger. The key is computed in Rust (D-B4a-6). `RETURNING`
-   (3.35), the `categories` option of `unicode61` (3.25) and
+   (3.35), the `categories` option of `unicode61` (P14) and
    `pragma_table_info` as a table-valued function are all in 3.50.4. The
    `unicode61` table with `prefix='1 2'` is not checked yet (S0); Step 2
    checks it first.
@@ -391,12 +407,13 @@ change.
     [search.rs:47](../../../../crates/conversation/src/store/search.rs#L47))
     is a separate store in a separate crate. B4a does not touch it. B4b
     moves it onto search keys and a short-word table; it can reuse
-    `query_terms` from `syneroym-text-lang` (D-B4a-2).
+    `query_terms` from `syneroym-text-lang` (D-B4a-2). Its `messages_fts` table
+    is at `crates/conversation/src/store/schema.rs:116` (P14).
 14. **No Hub, `roymctl`, e2e or demo caller.** No Hub screen, `roymctl`
     command, Playwright test or demo story sends a filter with a new
-    operator or a schema with text fields. The native dispatch JSON for
-    `create-collection` gets `text_fields` with `#[serde(default)]`, so its
-    callers (`router/tests/native_dispatch_identity/queries.rs`,
+    operator or a schema with text fields. The native dispatch route for
+    `create-collection` does not accept `text_fields` (P3); it sets
+    `text_fields: vec![]`, so its callers (`router/tests/native_dispatch_identity/queries.rs`,
     `access_control.rs`) do not change.
 15. **No developer-guide section on the data layer exists** (`git grep` of
     `create-collection`, `$gt` and `AppDataLayer` in
@@ -409,7 +426,7 @@ change.
 | Criterion | What B4a does | Test |
 | --- | --- | --- |
 | ML-20 (storage half) | A `$search` for a Devanagari word and for a Tamil word finds the row whose text field holds it. NFC makes two encodings of the same word meet. | `text_index/tests` (`search_finds_devanagari_and_tamil_words`, `search_matches_nfc_equivalent_forms`); parity `data_layer.rs` |
-| ML-29 (storage half) | A query term of 1 or 2 characters is matched as a word or a word prefix in the word table, never in the trigram table. A query of only such terms returns rows. No `$search` query scans the collection table. | `text_index/tests` (`short_terms_match_words_and_word_prefixes`, `search_plan_never_scans_the_collection`); the tokenizer checks of Step 2 |
+| ML-29 (storage half) | A query term of 1 or 2 characters is matched as a word or a word prefix in the word table, never in the trigram table. A query of only such terms returns rows. No `$search` query scans the collection table when `$search` is an `AND` term (P1). | `text_index/tests` (`short_terms_match_words_and_word_prefixes`, `search_plan_never_scans_the_collection`); the tokenizer checks of Step 2 |
 
 B4b finishes both criteria (transliteration, and the directory and chat on
 top). The exact test names go into the change doc's Test column of ML-20
@@ -426,8 +443,9 @@ recommendations: a third host object, `_text_index`, beside the two FTS5
 tables (D-B4a-4); the operator is named `$search` (Q3); the word table
 keeps marks as token characters (D-B4a-3); a text search returns rows in
 `id` order, not by relevance (D-B4a-9); `$search` is refused in
-`aggregate` and in policy caveats (D-B4a-8); the prefix `_text_` is
-reserved (D-B4a-4).
+`aggregate` and in policy caveats (D-B4a-8); `$search` is refused inside
+`$or` or `$not` (P1); the native route does not accept `text_fields` (P3);
+the prefix `_text_` is reserved (D-B4a-4).
 
 ## 4. Behaviour-change audit
 
@@ -439,15 +457,16 @@ No WIT package version, JSON-RPC method, Roym record or Roym method changes.
 | --- | --- | --- | --- |
 | W1 | WIT `syneroym:data-layer@0.1.0`, `collection-schema` | `name, indexes` | also `text-fields: list<string>` (Q1). A guest built against the old WIT does not link to the new host, so all guests are rebuilt |
 | W2 | `create-collection` | creates a table and indexes | also validates `text-fields` (D-B4a-7) and, when non-empty, creates or replaces the text index (Q2) |
-| W3 | Filter language (ADR-0007) of `query` and `delete-many` | `$search` is `schema-violation("unsupported operator: $search")` | `{"<text field>": {"$search": "<text>"}}` matches rows (D-B4a-8). Refusals are `schema-violation` with the texts of D-B4a-8 |
+| W3 | Filter language (ADR-0007) of `query` and `delete-many` | `$search` is `schema-violation("unsupported operator: $search")` | `{"<text field>": {"$search": "<text>"}}` matches rows as an `AND` term (D-B4a-8); refused inside `$or` or `$not` (P1). Refusals are `schema-violation` with the texts of D-B4a-8 |
 | W4 | `put`, `patch`, `batch-mutate`, `create` on a collection with a text index | any JSON accepted | a non-string value in a text field is `schema-violation("text field '<f>' must be a string")` (Q5) |
 | W5 | Collection names | `_vault` refused | also any name that starts with `_text_`, ignoring case: `schema-violation("invalid identifier: <name>")` (D-B4a-4) |
 | W6 | `list_collections` (FDAE `strict:` warning) | every table but `sqlite_%` and `_vault` | also leaves out `_text_%` (D-B4a-4) |
-| W7 | Native dispatch `create-collection` JSON (`control_plane`) | `name`, `indexes?` | also `text_fields?`, a list of strings, default `[]` |
+| W7 | Native dispatch `create-collection` JSON (`control_plane`) | `name`, `indexes?` | omitted: native route does not accept `text_fields` (P3) and sets `text_fields: vec![]` |
 | W8 | Service database | — | new host table `_text_index` and two FTS5 tables per collection with text fields (D-B4a-4) |
 
 W1 means every component is built again; no old component is kept by any
-test. W8 adds tables only when a collection declares text fields. No Roym
+test. W7 is dropped (P3): native dispatch does not accept `text_fields`.
+W8 adds tables only when a collection declares text fields. No Roym
 service does in B4a, so a Roym node's databases do not change.
 
 ### Behaviour changes
@@ -455,7 +474,7 @@ service does in B4a, so a Roym node's databases do not change.
 | # | Before | After |
 | --- | --- | --- |
 | 1 | `put`, `patch` and `delete` without a policy run outside a transaction | they run in one transaction with the index update (D-B4a-6). The result and the errors are the same |
-| 2 | `delete-many` runs one `DELETE` | one transaction: `DELETE … RETURNING rowid`, then the index rows (D-B4a-6). The returned count is the same |
+| 2 | `delete-many` runs one `DELETE` | one transaction: set deletion `DELETE FROM _text_c_tri WHERE rowid IN (SELECT rowid FROM c WHERE …)`, same for `_word`, then `DELETE FROM c WHERE …` (D-B4a-6, P13). No `RETURNING` needed. The returned count is the same |
 | 3 | `put` runs `INSERT … ON CONFLICT DO UPDATE` | the same statement with `RETURNING rowid` (D-B4a-6) |
 
 ### Stays the same
@@ -488,10 +507,13 @@ that depend on an owner answer say so.
   ```
 
   The doc of `query` (`data-layer.wit:115`) gains one paragraph: the filter
-  may use `{"<text field>": {"$search": "<text>"}}`; every word of the text
-  must match; a word of 1 or 2 characters matches a word or the start of a
-  word, a longer word matches anywhere inside the field; rows come in `id`
-  order. `delete-many` gets one line that the same operator works there.
+  may use `{"<text field>": {"$search": "<text>"}}` as an `AND` term (at
+  the top level or inside `$and`; P1); every word of the text must match;
+  a word of 1 or 2 characters matches a word or the start of a word, a longer
+  word matches anywhere inside the field; rows come in `id` order.
+  `delete-many` gets one line that the same operator works there.
+  The docs of `put`, `patch`, `batch-mutate` and `create` gain a note that a
+  non-string value for a declared text field is refused with `schema-violation` (P8).
 
 - **D-B4a-2. `syneroym-text-lang` additions** (file
   `crates/text_lang/src/search_key.rs`, declared `mod search_key;` and
@@ -521,9 +543,10 @@ that depend on an owner answer say so.
       pub short: Vec<String>,
   }
 
-  /// `search_key(query)`, split on Unicode white space. A term with no
-  /// alphanumeric `char` (for example `-` or `!!`) is dropped. Empty when
-  /// nothing is left.
+  /// `search_key(query)`, split on Unicode white space. Terms are trimmed
+  /// of leading and trailing non-alphanumeric `char`s (`char::is_alphanumeric`),
+  /// classified into long/short on trimmed length, and empty terms are dropped (P4).
+  /// Interior punctuation (`plumber's`, `a-b`) is kept. Empty when nothing is left.
   pub fn query_terms(query: &str) -> QueryTerms;
   ```
 
@@ -538,11 +561,12 @@ that depend on an owner answer say so.
   - No cargo feature splits this from the tag type: S0 measured that a
     guest that does not call `nfc` does not grow (section 2.2 point 11),
     and Step 8 checks it on the six Roym components.
-  - Terms are split only on white space. Punctuation stays inside a term:
-    `ab"c` is one term. The key does not remove it in B4a; B4b's folding
-    may. A word with a virama, such as `प्लंबर`, is one term. The drop rule
-    keeps every Devanagari or Tamil word, because their letters are
-    alphanumeric for `char::is_alphanumeric`.
+  - Terms are split on white space, then trimmed of leading and trailing
+    non-alphanumeric punctuation (P4). Interior punctuation stays inside a term:
+    `plumber's` and `a-b` are kept as written. `ab"c` has interior quotes and stays.
+    A term of only punctuation is empty after trimming and is dropped. A word with
+    a virama, such as `प्लंबर`, is one term. The rule keeps every Devanagari or
+    Tamil word, because their letters are alphanumeric for `char::is_alphanumeric`.
 
 - **D-B4a-3. The two FTS5 tables.** For collection `c` with text fields
   `f1, …, fn` (in declared order):
@@ -575,6 +599,8 @@ that depend on an owner answer say so.
   - The two tokenizer strings are the constants `TRI_TOKENIZE` and
     `WORD_TOKENIZE` in `crates/data_db/src/sqlite/text_index.rs`, used by
     the DDL and by the Step 2 tests.
+  - Step 2 checks (a) `sqlite_master.sql` contains `prefix`, and (b) `sum(length(block))`
+    of `<word>_data` is larger with `prefix='1 2'` than without as proof (P6).
 
 - **D-B4a-4. Host names, and what they reserve.**
   - Per collection: `_text_<c>_tri` and `_text_<c>_word`. One host table
@@ -589,6 +615,7 @@ that depend on an owner answer say so.
 
     It is made by the first `declare` or `drop_index` call (D-B4a-5), not
     at database open, so a service with no text index gets no new table.
+    Collection names are stored and looked up in lower case (P10).
   - The type comes last (`_tri`, `_word`), so no name of one collection can
     equal a shadow table of another: a shadow table name ends in `_data`,
     `_idx`, `_content`, `_docsize` or `_config`, never in `_tri` or `_word`
@@ -625,6 +652,7 @@ that depend on an owner answer say so.
 
   ```rust
   /// Create, replace or keep the text index of `collection` (Q2 (a)).
+  /// Compares field list as a set, ignoring ASCII case (P10).
   /// Called by `do_create_collection` inside its transaction.
   pub(super) fn declare(conn: &Connection, collection: &str, wanted: &[String]) -> Result<(), DataLayerError>;
   /// Drop both tables and the `_text_index` row. Called by `do_drop_collection`.
@@ -643,21 +671,23 @@ that depend on an owner answer say so.
   have = fields(conn, c)
   if wanted is empty: return Ok                      // Q2 (a); the common call
   ensure _text_index exists
-  if have == wanted
+  c_lower = c.to_ascii_lowercase()
+  if set_equal_ignore_case(have, wanted)              // P10: compare as sets
      and _text_c_tri exists                           // sqlite_master lookup
-     and key_version(c) == SEARCH_KEY_VERSION: return Ok
+     and key_version(c_lower) == SEARCH_KEY_VERSION: return Ok
   drop both tables if they exist
   create both tables (D-B4a-3)
   for each (rowid, payload) in SELECT rowid, payload FROM c:
       parse payload; on a JSON error count it and skip
       a non-string text value is indexed as empty and counted (Q5 (a))
       sync_row(...)
-  upsert _text_index (c, SEARCH_KEY_VERSION)
+  upsert _text_index (c_lower, SEARCH_KEY_VERSION)
   if skipped > 0: warn!(collection = c, skipped, "text index rebuild skipped values that are not strings")
   ```
 
   A guest that calls `create-collection` with the same fields on every
   request pays one schema read and one primary-key read, and no write.
+  Field comparison as a set prevents thrashing when order differs (P10).
 
   The write paths (`mutation.rs`):
 
@@ -667,16 +697,19 @@ that depend on an owner answer say so.
     `check_values(&fields, &value)?` before any write; the upsert gains
     `RETURNING rowid` and runs with `query_row`; then, when `fields` is not
     empty, `sync_row`.
-  - `do_patch`: the same after the merge: `check_values` on the merged
-    value, `UPDATE … RETURNING rowid`, `sync_row`.
+  - `do_patch`: check only the text fields that the patch document names
+    (top-level keys of the patch; P9). An untouched non-string text field from
+    an old row does not fail the patch (P9). `check_values` on the patch's
+    specified text fields, `UPDATE … RETURNING rowid`, then `sync_row` with
+    the merged value (non-string value in merged value indexed as empty).
   - `do_delete`: `DELETE … WHERE id = ?1 RETURNING rowid` (zero or one row;
     zero rows is still `Ok`, the delete stays idempotent); then
     `remove_rows`.
-  - `do_delete_many(conn: &mut Connection, …)`: a transaction;
-    `DELETE FROM c {where} RETURNING rowid`, collected (an error still goes
-    through `map_query_raw_step_error`, so a watchdog stop is still
-    `quota-exceeded`); `remove_rows`; commit; the count is the number of
-    rowids. The writer loop passes `&mut conn`
+  - `do_delete_many(conn: &mut Connection, …)`: a transaction; set deletion
+    form (P13): `DELETE FROM _text_c_tri WHERE rowid IN (SELECT rowid FROM c {where})`,
+    the same for `_text_c_word`, then `DELETE FROM c {where}`, taking the deleted
+    count from the collection delete. All three statements use `map_query_raw_step_error`,
+    so a watchdog stop is still `quota-exceeded`. The writer loop passes `&mut conn`
     ([service_store.rs:155](../../../../crates/data_db/src/sqlite/service_store.rs#L155)
     to `:160`).
   - `do_authorized_put`, `do_authorized_patch`, `do_authorized_delete`: the
@@ -694,7 +727,11 @@ that depend on an owner answer say so.
   - `sync_row` runs `DELETE FROM _text_c_tri WHERE rowid = ?1`, the same for
     `_text_c_word`, then `INSERT INTO … (rowid, f_f1, …) VALUES (?, ?, …)`
     into each, with `search_key(value)` for a string and `NULL` otherwise.
-    `remove_rows` runs the two `DELETE`s for each rowid.
+    Stored text with NUL `\0` is accepted (P5). If a `_text_` table is missing,
+    map to `DataLayerError::Internal("text index of '<c>' is missing")` rather
+    than `CollectionNotFound` (P12).
+    `remove_rows` runs the two `DELETE`s for each rowid and maps missing
+    `_text_` tables to `Internal` the same way (P12).
 
 - **D-B4a-7. Rules for `text-fields`** (checked in `do_create_collection`
   before any SQL, error `schema-violation`):
@@ -725,9 +762,11 @@ that depend on an owner answer say so.
 
   - `filter.rs`: `compile_filter(json)` stays and calls
     `compile_filter_in(json, None)`. New `pub fn compile_filter_in(json,
-    text: Option<&TextFields<'_>>)`. The five private functions pass `text`
-    down; `compile_operator_map` gets the arm `"$search" =>
-    { clauses.push(text_match::compile_search(path, opval, text, params)?);
+    text: Option<&TextFields<'_>>)`. The private functions pass `text` and a
+    boolean flag `is_conjunct: bool` down (P1). `$or` and `$not` set `is_conjunct = false`;
+    `compile_operator_map` gets the arm `"$search" => {
+    if !is_conjunct { return Err(DataLayerError::SchemaViolation("$search cannot be used inside $or or $not".into())); }
+    clauses.push(text_match::compile_search(path, opval, text, params)?);
     continue; }`. `CompiledFilter` gains `pub text_match: bool`, true when
     any `$search` was compiled (D-B4a-9).
   - Only `do_query` and `do_delete_many` call `compile_filter_in` with
@@ -739,6 +778,7 @@ that depend on an owner answer say so.
       collection '<c>'"` (this also refuses dotted paths);
     - `value` is not a JSON string: `"$search requires a string for field
       '<path>'"`;
+    - `value` contains NUL `'\0'`: `"$search text must not contain NUL"` (P5);
     - more than `MAX_SEARCH_BYTES` bytes: `"$search text is longer than
       1024 bytes"`;
     - `query_terms` is empty: `"$search needs at least one word"`;
@@ -767,7 +807,9 @@ that depend on an owner answer say so.
   using an index for that term). Then the only way in is the `rowid` list
   from FTS5, and SQLite sorts the matched rows. The order of the result and
   the cursor do not change. A text search returns rows in `id` order, not
-  by relevance; ranking is not in B4a (backlog row, section 8).
+  by relevance; ranking is not in B4a (backlog row, section 8). Because
+  `$search` is restricted to `AND` terms (P1), SQLite planner always uses
+  the FTS rowid set and never scans the collection table.
 
 - **D-B4a-10. Limits and cost.** The query is bounded by `MAX_SEARCH_TERMS`
   and `MAX_SEARCH_BYTES` per `$search`, by `MAX_FILTER_DEPTH` (10) and by
@@ -778,7 +820,9 @@ that depend on an owner answer say so.
   and blocks that service's writes while it runs, like a `CREATE INDEX`
   today (architecture doc, "Schema & Indexing"). Step 6 measures a rebuild
   of 10,000 rows and a query on them, and the PR text gives the numbers
-  (not a gate).
+  (not a gate). Step 6 also measures before/after performance of the `put` bench
+  on a collection without text fields (`security_config_bench.rs`; P11); stop limit
+  10%; if exceeded, cache the field list per collection on the writer thread.
 
 - **D-B4a-11. Shared test helpers in `data_db`.** A new `#[cfg(test)] mod
   test_support;` in `crates/data_db/src/lib.rs` (file
@@ -824,7 +868,10 @@ Done in the planning session: this file and the B4a row of
    `mod text_index;` in `crates/data_db/src/sqlite.rs`.
 2. `crates/data_db/src/sqlite/text_index/tests.rs` with the tokenizer tests
    of section 7.2 ("the SQLite build"). They use raw SQL on
-   `Connection::open_in_memory()` and the two constants.
+   `Connection::open_in_memory()` and the two constants. Verify that (a)
+   `sqlite_master.sql` of the word table contains `prefix`, and (b)
+   `sum(length(block))` of `<word>_data` is larger with `prefix='1 2'` than
+   without as proof that the prefix index is created (P6).
 3. `cargo nextest run -p syneroym-data-db text_index`.
 4. **Stop and tell the owner** if a `prefix='1 2'` query, a Devanagari or
    Tamil word in the word table, `RETURNING` on an upsert, or
@@ -848,11 +895,13 @@ Done in the planning session: this file and the B4a row of
    line counts of `sqlite/tests.rs`, `tests_crud.rs` and `tests_fdae.rs` in
    `xtask/oversized-test-files.txt` (AGENTS.md "Mandatory Ratchet Update").
 2. WIT (W1): `text-fields` in `collection-schema`, with the doc of D-B4a-1
-   (the `query` paragraph waits for Step 6).
+   (the `query` paragraph waits for Step 6). Replace the three vendored
+   `data-layer.wit` files (`saga-test`, `miniapp-demo1-wasm`, `websocket-guest-test`)
+   with symlinks to `../../../../../crates/wit_interfaces/wit/data-layer/data-layer.wit` (P2).
 3. Every site of section 2.2 point 4: `text_fields: vec![]` (or
    `Vec::new()`); `collection_schema_in` passes `text_fields: v.text_fields`
-   and its test checks it; the `control_plane` DTO gets
-   `#[serde(default)] text_fields: Vec<String>` (W7); the two
+   and its test checks it; the `control_plane` native dispatch route does not
+   accept `text_fields` (P3) and sets `text_fields: vec![]`; the two
    `test_support` helpers set it.
 4. `data_db`: `do_create_collection` validates `text_fields` (D-B4a-7) and
    does nothing else with them yet. Tests of D-B4a-7.
@@ -860,20 +909,26 @@ Done in the planning session: this file and the B4a row of
    `cargo nextest run -p syneroym-data-db -p syneroym-sandbox-wasm
    -p syneroym-app-host -p syneroym-app-host-native -p syneroym-control-plane
    -p syneroym-router -p syneroym-roym-core -p syneroym-roym-web`.
+   Run the tests that load the updated components: `saga`, `miniapp-demo1-wasm`,
+   and the websocket test in `crates/sandbox_wasm/tests/` (P2).
 
 ### Step 5 — The text index and the write paths
 
 1. `schema.rs`: the `_text_` refusal in `validate_identifier` (D-B4a-4).
    `query.rs`: the `_text_%` exclusion in `do_list_collections`.
 2. `text_index.rs`: `fields`, `declare`, `drop_index`, `check_values`,
-   `sync_row`, `remove_rows` (D-B4a-5, D-B4a-6). It needs
+   `sync_row`, `remove_rows` (D-B4a-5, D-B4a-6). Compare field sets ignoring
+   ASCII case in `declare` (P10); store/lookup collection names in lower case (P10);
+   map missing `_text_` tables to `Internal` (P12). It needs
    `syneroym-text-lang.workspace = true` in `crates/data_db/Cargo.toml`.
 3. `schema.rs`: `do_create_collection` and `do_drop_collection` take
    `&mut Connection`, run in a transaction and call `declare` and
    `drop_index`. `service_store.rs` passes `&mut conn`.
 4. `mutation.rs`: the write paths of D-B4a-6, in this order: `payload_to_text`,
-   `do_put`, `do_patch`, `do_delete`, the three `do_authorized_*`,
-   `do_delete_many` (and its writer-loop call).
+   `do_put`, `do_patch` (checking only fields named in the patch; P9),
+   `do_delete`, the three `do_authorized_*`, `do_delete_many` (using set deletion; P13;
+   and its writer-loop call). Update `tests.rs:860` to `:872` (`fdae_watchdog_interrupts_do_delete_many_on_the_writer_conn`)
+   with `let mut conn` and `&mut conn` (P7).
 5. Tests of section 7.2 ("declare" and "writes").
 6. `cargo nextest run -p syneroym-data-db`.
 
@@ -881,16 +936,18 @@ Done in the planning session: this file and the B4a row of
 
 1. `crates/data_db/src/text_match.rs` (D-B4a-8) and `lib.rs`
    `pub mod text_match;`.
-2. `filter.rs`: `compile_filter_in`, the `text` parameter, the `$search`
-   arm, `CompiledFilter.text_match`. Its existing tests run unchanged; new
-   ones of section 7.2 ("filter").
+2. `filter.rs`: `compile_filter_in`, passing `is_conjunct: bool` down private
+   functions, refusing `$search` inside `$or` or `$not` (P1), refusing NUL `\0` in search
+   text (P5), the `$search` arm, `CompiledFilter.text_match`. Its existing
+   tests run unchanged; new ones of section 7.2 ("filter").
 3. `query.rs`: `query_sql` (D-B4a-12); `do_query` reads
    `text_index::fields` when `opts.filter` is `Some` and calls
    `compile_filter_in`; the `+c.id` form when `text_match` (D-B4a-9).
-   `mutation.rs`: `do_delete_many` the same, without the order hint (a
+   `mutation.rs`: `do_delete_many` set deletion (P13), without the order hint (a
    delete has no `ORDER BY`).
 4. WIT: the `query` and `delete-many` paragraphs of D-B4a-1.
-5. Tests of section 7.2 ("search", "plan"); the timing of D-B4a-10.
+5. Tests of section 7.2 ("search", "plan"); the timing of D-B4a-10; before/after
+   measurement of the `put` bench on a collection without text fields (P11).
 6. `cargo nextest run -p syneroym-data-db`.
 
 ### Step 7 — Both builds
@@ -946,7 +1003,9 @@ None. B4a does not change the Hub.
 - `query_terms`: `"  Nal   WALA "` gives long `["nal", "wala"]`, short
   `[]`; `"ek do teen"` gives long `["teen"]`, short `["ek", "do"]`;
   `"नल वाला"` gives short `["नल"]`, long `["वाला"]`; `"--- !!"` gives
-  both empty; `"nal nal"` gives `["nal"]` once; `ab"c` is one long term.
+  both empty; `"nal nal"` gives `["nal"]` once; term cleaning tests (P4):
+  `plumber,` gives long `["plumber"]`; `(ek)` gives short `["ek"]`;
+  `"nal"` gives long `["nal"]`; `plumber's` and `a-b` are unchanged.
 - `SHORT_TERM_MAX_CHARS` is 2 and `SEARCH_KEY_VERSION` is 1.
 
 `crates/data_db/src/sqlite/text_index/tests.rs` (split into
@@ -963,6 +1022,9 @@ The SQLite build (Step 2), raw SQL, the two constants:
 - A trigram table with `case_sensitive 1`: `MATCH '"umb"'` finds
   `"plumber"`; a 2-character phrase finds nothing (the reason short terms
   go to the word table).
+- Prefix index verification (P6): check that `sqlite_master.sql` of the word table
+  contains `prefix`, and check that `sum(length(block))` of `<word>_data` is larger
+  with `prefix='1 2'` than without as proof.
 - Column filter: `'f_a : "abc"'` matches only a row with `abc` in `f_a`,
   not one with `abc` in `f_b`.
 - `SELECT name FROM pragma_table_info('<fts table>')` lists `f_a, f_b`, and
@@ -978,6 +1040,9 @@ Declare (Step 5):
 - Rows written before the declaration are found after it (backfill).
 - The same call again does not rebuild: a marker row written straight into
   `_text_c_word` by the test is still there.
+- Same fields in different order (`["title", "summary"]` and `["summary", "title"]`)
+  do not rebuild (marker row survives; P10).
+- `Foo` and `foo` share one `_text_index` row (P10).
 - `text_fields: []` on a collection with a text index keeps it (Q2 (a)).
 - `["title", "summary"]` after `["title"]` rebuilds: a search on `summary`
   works.
@@ -999,8 +1064,14 @@ Writes (Step 5):
   makes the old word miss and the new word match; a `patch` that sets
   `title` to `null` makes it miss; `delete` makes it miss and leaves no row
   in either FTS table (counted with raw SQL).
+- Patching an old row with a numeric `title`, changing another field,
+  succeeds; patching `title` to a number is refused (P9).
+- Stored text containing NUL `\0` is accepted in `sync_row` (P5).
+- Missing `_text_` table in `sync_row` and `remove_rows` maps to
+  `DataLayerError::Internal("text index of '<c>' is missing")` and not
+  `CollectionNotFound` (P12).
 - `delete-many` with a filter removes exactly the matching rows from both
-  FTS tables and returns the same count as before B4a.
+  FTS tables and returns the same count as before B4a (P13).
 - A `batch-mutate` whose last mutation fails rolls back the earlier rows'
   index rows; a `create` that hits an existing id leaves no index rows.
 - `put` with `title: 5` is `schema-violation("text field 'title' must be a
@@ -1017,6 +1088,8 @@ Filter (`filter.rs` tests, Step 6):
   `"ek plumber"` gives both conditions joined by `AND`; `text_match` is
   true; a field `"summary"` is refused; a number is refused; 17 words are
   refused; 1025 bytes are refused; `"-- !"` is refused.
+- Text containing NUL `'\0'` is refused with `"$search text must not contain NUL"` (P5).
+- `$search` inside `$or` or `$not` is refused with `"$search cannot be used inside $or or $not"` (P1).
 - `a" OR f_x : *` is bound as the string `f_title : "a"" OR …"` (quotes
   doubled), never in the SQL text.
 - `referenced_top_level_fields` of a `$search` filter contains `title`.
@@ -1033,9 +1106,11 @@ Search (Step 6), through `SqliteServiceStore`:
 - `short_terms_match_words_and_word_prefixes`: `ek` finds `"ek do teen"`
   and `"ekdam"`; `lu` does not find `"plumber"` (a short term matches only
   the start of a word); `ek teen` needs both words.
-- A search on `title` does not match text that is only in `summary`; an
-  `$or` of the two does.
-- `$search` with `$not`, and with an equality on another field.
+- Term cleaning: `{"title": {"$search": "plumber, chennai"}}` finds
+  `"Chennai plumber"` (P4).
+- A search on `title` does not match text that is only in `summary`.
+- `$and` of two searches: `{"$and": [{"title": {"$search": "ek"}}, {"title": {"$search": "teen"}}]}` matches rows with both (P1).
+- `$search` next to a plain equality on another field and next to a sieve clause.
 - Paging: 25 matching rows, `limit: 10`: three pages, ids in order, no row
   twice, `next_cursor` `None` on the last.
 - CLS: a `CompiledSieve` with `masked_fields = ["title"]` (built as
@@ -1047,17 +1122,25 @@ Search (Step 6), through `SqliteServiceStore`:
 Plan (Step 6):
 
 - `search_plan_never_scans_the_collection`: `EXPLAIN QUERY PLAN` of the SQL
-  that `query_sql` builds, for a long term, a short term, both, and both
-  with a cursor, on a collection with 200 rows after `ANALYZE`. No plan line
-  is `SCAN c` or `SCAN c USING …`; there is a line for each FTS table it
-  uses. (The FTS lines start with `SCAN _text_c_… VIRTUAL TABLE`; the test
-  checks the collection name exactly.)
+  that `query_sql` builds, for a long term, a short term, both, both with a cursor,
+  an `$and` of two searches, and a search next to an equality and a sieve clause,
+  run both with and without `ANALYZE` (P1). No plan line is `SCAN c` or
+  `SCAN c USING …`; there is a line for each FTS table it uses. (The FTS lines
+  start with `SCAN _text_c_… VIRTUAL TABLE`; the test checks the collection name exactly.)
+
+Step 4.5 component tests:
+- Tests that instantiate the components rebuilt with the symlinked WIT:
+  `saga`, `miniapp-demo1-wasm`, and the websocket test in `crates/sandbox_wasm/tests/` (P2).
+
+Performance (Step 6):
+- Before/after run of the `put` bench on a collection without text fields
+  (`security_config_bench.rs`; P11). Report both numbers in the PR text.
 
 `crates/app_host_native/src/convert/data_layer.rs` — the existing
 `collection_schema_round_trips` also checks `text_fields`.
 
-`crates/control_plane` — none new: the DTO change is one field with a
-default, and `native_dispatch_identity` runs unchanged.
+`crates/control_plane` — none new: the native route does not accept `text_fields`
+(P3), and `native_dispatch_identity` runs unchanged.
 
 Parity (Step 7):
 
@@ -1074,6 +1157,9 @@ run unchanged inside `mise run verify`.
 ### 7.4 Not tested
 
 - A `VACUUM` of a service database (no code runs one; Q6 (a)).
+- A guest changing its own text fields list forcing a rebuild of its own index
+  (by design, affects only the guest's own service; P3).
+- `execute-ddl` on a text-indexed collection is not supported (P12).
 - The time of a rebuild of a large collection beyond the one measurement of
   D-B4a-10.
 - Transliteration and folding (B4b).
@@ -1082,7 +1168,7 @@ run unchanged inside `mise run verify`.
 
 | File | Today | Risk |
 | --- | --- | --- |
-| `crates/data_db/src/sqlite/tests.rs` | 899 (cap 899) | three 4-line literals become `&plain_schema("…")`: about −9. Lower the cap |
+| `crates/data_db/src/sqlite/tests.rs` | 899 (cap 899) | three 4-line literals become `&plain_schema("…")`: about −9; lines 860-872 use `let mut conn`, `&mut conn` (P7). Lower the cap |
 | `crates/data_db/src/tests_crud.rs` | 819 (cap 819) | its `schema` helper calls `schema_with`: about −2. Lower the cap |
 | `crates/data_db/src/tests_fdae.rs` | 1791 (cap 1791) | its `plain_schema` moves to `test_support`: about −3. Lower the cap |
 | `crates/sandbox_wasm/tests/abac_integration.rs` | 811 (cap 811) | the literal at `:753` passes 100 columns with the new field. Bind it to a `let` on one line so the call chain fits on one line too; do not let the file grow |
@@ -1165,6 +1251,14 @@ In [deferred-backlog.md](../../deferred-backlog.md), §2 "Data layer"
   task.md Y4). Link `crates/data_db/src/text_match.rs`.
 - **New row "`$search` is not available in `aggregate` or in policy
   caveats"** (D-B4a-8). Target `TBD`. Link `crates/data_db/src/filter.rs`.
+- **New row "Multi-field text search"** (P1): `$search` is allowed only
+  as an `AND` term; searching across two or more fields in one query is
+  not supported; a guest indexes a combined field or sends two queries.
+  Target `TBD`. Link `crates/data_db/src/filter.rs`.
+- **New row "`execute-ddl` on text-indexed collection"** (P12):
+  `execute-ddl` can leave the index stale; an admin must rebuild after altering
+  a collection or text tables (set `_text_index.key_version` to 0, then
+  `create-collection`). Target `TBD`. Link `crates/data_db/src/sqlite/text_index.rs`.
 - **New row "A text field holds one string"**: a list of strings (for
   example author translations) cannot be indexed as one field; a guest
   joins them into one string. Target M08B B4b (decide there). Link
@@ -1190,6 +1284,9 @@ recommendation, drop or change the matching row.
   "aggregation pipelines over logical views".
 - **`docs/system-architecture.md:2761`** (Resource Model, "Collection"):
   the schema is a name, a list of indexes and a list of text fields.
+  **`:2765`** (Schema & Indexing; P8): update the sentence that field types
+  are not checked, except for declared text fields (which must be strings);
+  note that a text index rebuild blocks the single writer (D-B4a-10).
   **After `:2768`** (Query & Aggregation Model): a bullet "Text search":
   the two FTS5 tables, the search key from `syneroym-text-lang`, short and
   long terms, every word required, `id` order, no scan, the index kept in
@@ -1202,6 +1299,8 @@ recommendation, drop or change the matching row.
 - **`docs/TERMINOLOGY.md`**: a new row "Search key" after "Language tag"
   (`:72`): the form of a text that search compares, made by
   `syneroym-text-lang`; today NFC and lower case.
+- **`data-layer.wit` docs**: update `put`, `patch`, `batch-mutate`, `create`
+  to note that a non-string value for a declared text field returns `schema-violation` (P8).
 - **ADR-0007**: the amendment (Q7).
 - **`docs/developer-guide.md`**: no change (section 2.2 point 15).
 - **The change doc**, **task.md**, **status.md**: Step 8.
@@ -1222,7 +1321,7 @@ B4a is done when all of these are true:
 4. `$search` finds Devanagari, Tamil and Latin words, NFC-equivalent forms,
    short words by word prefix, and needs every word; it is refused where
    D-B4a-8 says.
-5. No `$search` query plan scans the collection table.
+5. No `$search` query plan scans the collection table when `$search` is an `AND` term (P1).
 6. Both builds give the same `$search` result (parity test).
 7. Every `CollectionSchema` builder sends `text_fields`, every guest is
    rebuilt, and every Roym parity test passes.
@@ -1231,8 +1330,9 @@ B4a is done when all of these are true:
    status.md are updated as in sections 8 and 9.
 10. The capped test files are at or under their caps, and the caps are
     lowered where a file got shorter.
-11. `mise run verify` passes with no `--skip`.
-12. One PR.
+11. `git ls-files -s` shows mode `120000` for every `wit/deps/data-layer/data-layer.wit` (P2).
+12. `mise run verify` passes with no `--skip`.
+13. One PR.
 
 ## 11. What B4a does not do
 
@@ -1245,6 +1345,10 @@ B4a is done when all of these are true:
 - No contact search (B4b).
 - No ranking: rows come in `id` order (backlog row).
 - No `$search` in `aggregate`, in policy caveats or in `query-raw`.
+- No `$search` inside `$or` or `$not` (P1).
+- No multi-field search in one query (P1).
+- No `execute-ddl` on text-indexed collections without a manual index rebuild (P12).
+- No `text_fields` accepted on the native route (P3).
 - No text field that holds a list of strings.
 - No way to remove a text index except `drop-collection` (Q2 (a)).
 - No Hub, `roymctl`, e2e or demo change.
