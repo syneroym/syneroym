@@ -337,3 +337,291 @@ step, the Hub tests or `mise run verify`, and I changed no code.
   the WIT, `syneroym-rpc`, the hosts and converters, the host `send` taking the
   list and checking it (D-B3b-4), and both builds. Both parts stay in one PR.
 - *Status:* Fixed (6dbe9dcd)
+
+## Code review round 1 — Claude Opus 5.5, 2026-11-11
+
+Reviewed `git diff origin/main...HEAD` on `feat/m08b-b3b-chat-lang-tags` at
+`ddd3a73b` (PR #356, draft), in the main checkout (not a worktree). `git pull`
+said "Already up to date". The code was written by Gemini 3.8 Flash. The
+prompt lists one change doc,
+[roym-multilingual](../../changes/roym-multilingual/change.md). Every B3b
+decision and deviation belongs there. This is the first code review round, so
+there are no earlier R items to confirm.
+
+**Summary:** 0 blocker, 3 major, 5 minor (R1 to R8). 8 Open.
+
+### What was checked and found correct
+
+- **CI.** `gh pr checks 356` on `ddd3a73b`: "Lints, licenses & checks" and the
+  CLA check pass. Playwright E2E and Test 1/6 to 6/6 were still pending when
+  this round was written, so CI is **not yet proof** that the full suite passes
+  on this sha. The fix session must read the checks again.
+- **Run here.** `npm test` in `crates/roym_web/ui`: 39 files, 443 tests
+  passed. This matches status.md. `cargo nextest run -p syneroym-text-lang
+  -p syneroym-conversation`: 191 passed, 0 skipped.
+- **The rule (D-B3b-1).** `MAX_MESSAGE_LANGUAGES = 3`, `TagListError`,
+  `check_tag_list`, `MessageLanguagesError` and `parse_message_languages`
+  match the plan. `ProfilePayload::validate` calls `check_tag_list` and maps
+  both errors to the old variants, so the profile's text and order of checks
+  do not change. One copy of the loop.
+- **Wire (D-B3b-2, W1 to W8).** `put_languages` is the one writer of the list,
+  for the 1:1 bytes and the group plaintext. The tag list sits between
+  `content_type` and the body length. `take_languages` and `decode_body` use
+  `checked_add`, `usize::try_from` and `get(..)`, refuse a count over 3 before
+  `Vec::with_capacity`, and refuse a tag longer than `MAX_TAG_LEN` before
+  slicing. The four hostile inputs of plan section 7.2 are tested and return
+  `Err`. The domain string stays `syneroym:conversation:v1`. The sender builds
+  the payload from the stored row (`transport.rs:217`) with the stored list,
+  so signed and sent bytes agree. The message id does not include the tags.
+- **Receive checks (D-B3b-4).** 1:1: in `verify_incoming_envelope`, after the
+  signature, timestamp and conversation checks, `InvalidArgument`; nothing is
+  stored (tested). Group: `decode_body` runs `parse_message_languages`; the
+  entry is not applied and a `tracing::warn!` names the entry id and author,
+  not the body. Backup import: the same check per message, `InvalidInput`.
+  `deliver_inbound` skips it, as the plan says. `ingest_verified` did not grow.
+- **Store (D-B3b-5).** Column `languages TEXT NOT NULL DEFAULT ''` at the end of
+  `messages`, space-separated. `MESSAGE_COLUMNS` is used by the five unaliased
+  `SELECT`s; the two `search.rs` queries append `m.languages` at index 24. All
+  six `INSERT` statements that write a row (three store functions,
+  `record_outgoing_group_message`, `apply_message_entry`, backup import) bind
+  the list; the withdrawn row keeps the default. A hand-inserted row reads
+  back `[]` (tested).
+- **D-B3b-13.** `incoming_group_row` holds the old literal field for field,
+  plus `languages`. `apply_message_entry` got shorter.
+- **Both builds (D-B3b-8).** The WIT field and parameter are in the planned
+  places with the planned doc line. `ConversationHost`, the WASM host, the two
+  never-built stubs, `AppConversation` (guest and native), both converters,
+  the `on-message` JSON and the fixture all carry the list. The converter
+  tests check the field. `post_rpc` asserts WASM and native answers are equal,
+  so the contract cases run on both builds.
+- **Roym side (D-B3b-6, D-B3b-7).** `SendInput.languages` is `Vec<LangTag>`
+  with `skip_serializing_if`, so the two card sends write the same JSON as
+  before (tested). `"languages": ["hi_IN"]` answers `-32602` with
+  `data.field = "languages[0]"`; 4 tags and a repeated tag answer `-32602`
+  with `data.field = "languages"` (tested). `MessageView.languages` is always
+  written. The membership and group-name views set `[]`. The method shape diff
+  holds only `languages` keys.
+- **`roymctl` (D-B3b-9).** `--lang` is repeatable, goes through
+  `LangTag::parse`, and `build_send_params` adds `languages` only when the list
+  is not empty. `docs/demo/demo.md` R6 has `--lang en`.
+- **Two nodes.** `roym_conversation_e2e.rs` sends `["hi", "en"]` from A and
+  reads the same list on A and on B.
+- **Hub.** `languageList` and `messageText` match D-B3b-10 and D-B3b-11:
+  every button has `type="button"`, the root has `role="group"` and an
+  `aria-label`, and the "add" `<select>` has the same label. `messageText` is
+  used only for `body_encoding === "utf8"`; a card, a deleted message, a
+  binary message and a group system row get no note (tested). The search
+  snippet gets `lang`. All text goes through `textContent`, and `lang` through
+  `langAttr`. The nine new message ids exist in `en.ftl` and `hi.ftl`, and the
+  Hindi uses the profile's words for "add a language", "move up" and
+  "remove". The Hindi sweep draws a tagged and an untagged message on both
+  chat screens.
+- **e2e and story 40.** The new Playwright test moves Hindi up, sends a mixed
+  text, checks `lang="hi"` and no note, and checks again after a reload. Story
+  40 has the one step of Q6 and reads `BOB_ADDR` with `requireEnv`.
+- **Rules.** No planning ids in code, comments or test names. Every touched
+  file is under its size limit (`fixtures.rs` 799, `transport/tests.rs` 790,
+  `crypto.rs` 787); no capped file changed. The two
+  `#[allow(clippy::too_many_arguments)]` are the ones P2 asked for. The
+  crate-level `cfg_attr(test, allow(clippy::unwrap_used, …))` in `text_lang`
+  is the workspace pattern. Sizes in task.md are within section 7.6.
+- **Backlog.** The CLDR row has the chat sentence and the
+  `verify_incoming_envelope` link. The four new rows of plan section 8 exist,
+  with a reason, a target and a link.
+
+### Findings
+
+#### R1 — major — a click on the list's label or on a language name removes the main language
+
+- *Where:* `crates/roym_web/ui/src/screens/messages.ts:323`,
+  `crates/roym_web/ui/src/screens/groups.ts:466`; `field()` in
+  `crates/roym_web/ui/src/dom.ts:60`.
+- *Problem:* Both chat boxes put the language list inside `field(...)`, which
+  is a `<label>`. A `<label>` forwards a click on its text, or on any part of it
+  that is not a control, to its first labelable descendant. In the list, that
+  is the first row's "Remove" button (the first row has no "Move up").
+- *Failure case:* Alice's chat box shows "Hindi, English". She clicks the word
+  "Hindi" (to see what it is) or the label "Message languages". Hindi is
+  removed without a word, and her next message goes out as `["en"]`. A second
+  click removes English, and the message goes out with no tag. Proved here with
+  a throw-away vitest file (deleted): `languageList("messages", 3, ["hi",
+  "en"], …)` inside `field()`; a click on `.messages-language-name` of row 1
+  gives `["en"]`, then a click on the label text gives `[]`.
+- *Fix:* Do not wrap the list in a `<label>`. Use a `<div class="field">` with
+  a `<span>` for the visible text (the root already has `role="group"` and
+  `aria-label`), or a heading as the profile screen does. Add a test to
+  `language_list.test.ts` or to both screen tests: a click on the visible label
+  and on a language name does not change `value()`.
+- *Status:* Open
+
+#### R2 — major — the profile form puts back a language the person removed
+
+- *Where:* `crates/roym_web/ui/src/screens/profile.ts:101` to `:103`.
+- *Problem:* On `main`, a loaded profile always replaced the list:
+  `Array.isArray(env.payload.languages) ? [...] : []`. B3b changed this to
+  "call `set` only when `languages` is an array". But
+  `ProfilePayload.languages` has `skip_serializing_if = "Vec::is_empty"`
+  (`crates/roym_core/src/person.rs:37`), so a stored profile with an empty
+  list comes back with **no** `languages` key. The list then keeps its start
+  value `[currentLanguage()]`. This reopens B3a R3. The test
+  `stored profile with empty languages …` (`profile.test.ts:178`) still passes
+  because its fixture sends `languages: []`, which the service never sends.
+- *Failure case:* A person removes every language and saves. Later they
+  change their name and save again. The form sends `languages: ["en"]`, a
+  language they removed. Proved here with a throw-away vitest file (deleted):
+  a `profile.get` payload without `languages` draws 1 row and `profile.set`
+  gets `["en"]`.
+- *Fix:* `langList.set(Array.isArray(env.payload.languages) ?
+  env.payload.languages : [])`. Change the fixture of the test at
+  `profile.test.ts:178` to leave out `languages` (the form the service
+  writes), or add a second case for it.
+- *Status:* Open
+
+#### R3 — major — the change doc's Test column names tests that do not exist
+
+- *Where:* `docs/planning/changes/roym-multilingual/change.md:110` (ML-14),
+  `:125` (ML-25).
+- *Problem:* Plan section 3 and 7.8 say the names are written "from the real
+  files" (the B3a R2 finding). `git grep` finds none of these:
+  `check_tag_list_enforces_limits_and_duplicates`,
+  `parse_message_languages_enforces_rules`, `host_send_languages_direct`,
+  `host_send_languages_group`, `host_send_languages_validation_errors`,
+  `incoming_direct_envelope_validates_languages`,
+  `group_message_entry_validates_languages`,
+  `export_import_message_languages_roundtrip`,
+  `scenario_53_conversation_history_languages_parity`. There is no host test
+  that sends a group message with tags at all (see R7).
+- *Failure case:* A reader who checks ML-14 or ML-25 cannot find 9 of the
+  cited tests, and ML-25 cites a group send test that was never written.
+- *Fix:* Use the real names: `check_tag_list_enforces_count_and_uniqueness`,
+  `parse_message_languages_validates_tags_and_list` (`text_lang`);
+  `payload_with_languages_verifies_and_detects_tampering`,
+  `put_and_take_languages_roundtrip_and_safety` (`envelope.rs`);
+  `encode_and_decode_body_roundtrip_and_safety` (`dag.rs`);
+  `send_with_valid_languages_is_stored_and_returned_by_get_and_history`,
+  `send_with_invalid_languages_is_refused_with_invalid_argument_and_stores_nothing`
+  (`host_impl/tests.rs`);
+  `direct_message_with_languages_is_stored_and_non_canonical_is_refused`
+  (`delivery.rs`); `group_message_with_languages_is_stored_in_db_and_read_back`,
+  `group_message_with_non_canonical_language_tag_is_refused_and_not_stored`
+  (`group/tests/languages.rs`);
+  `backup_roundtrip_preserves_language_tags_and_rejects_non_canonical`;
+  `scenario_53_conversation_send_is_never_optimistic_parity` (parity
+  `conversation.rs`). Add the group send test of R7 and cite it, or remove
+  `host_send_languages_group`. Check every name with `git grep` before the
+  commit.
+- *Status:* Open
+
+#### R4 — minor — the change doc and the developer guide state wrong facts
+
+- *Where:* `docs/planning/changes/roym-multilingual/change.md:293`;
+  `docs/developer-guide.md:1783`.
+- *Problem:* The D-B3b-5 decision says the column holds "comma-separated
+  canonical tags". The code joins with one space and splits with
+  `split_ascii_whitespace` (`store/message.rs:715`). The developer guide gives
+  `messageText(host, message, draw)`; the real function is
+  `messageText(body, languages, tag?)`, and it returns nodes. The same kind
+  as B3a R9.
+- *Failure case:* A developer who writes a migration or a raw query from the
+  change doc splits on `,` and gets one tag `"hi en"`. A developer who follows
+  the guide calls a function that does not exist.
+- *Fix:* Write "joined by one space (a tag has no space)". Write
+  `messageText(body, languages, tag = "span")`, which returns the nodes to
+  append. The D-B3b-4 decision can also name the backup import refusal, which
+  the code does.
+- *Status:* Open
+
+#### R5 — minor — the PR text is wrong in three places and leaves out two things the plan asks for
+
+- *Where:* PR #356 description.
+- *Problem:* (1) It says "`GroupEntryPlaintext` adds `languages`
+  (bincode-encoded with backward-compatible format)". There is no
+  `GroupEntryPlaintext`; the group plaintext is `encode_body`, and the new
+  format is not compatible with an old node (plan section 4, W4/W5). (2) It
+  says a bad 1:1 list fails "with `ProtocolViolation`"; the code answers
+  `InvalidArgument`. (3) It says the list has "move up/down"; it has only
+  "move up". Plan section 4 asks the PR text to say that a node with B3b and a
+  node without it cannot exchange messages, and that an old
+  `conversation.db` must be reset. Plan section 7.7 asks it to list the 9 new
+  Hindi lines for the owner's review. Neither is there.
+- *Failure case:* The owner reviews the PR text, believes old nodes still
+  work, and finds no Hindi lines to review (exit criterion 11).
+- *Fix:* Correct the three points. Add a "Not compatible with older nodes"
+  paragraph (W4, W5, W7) and the 9 Hindi lines from `hi.ftl`.
+- *Status:* Open
+
+#### R6 — minor — the host checks the languages before the reserved-type check, not after it
+
+- *Where:* `crates/conversation/src/host_impl.rs:84` to `:97`.
+- *Problem:* D-B3b-4 says the check runs "first thing after the reserved-type
+  check". The code runs it before. A send with a reserved content type and a
+  bad list now answers "message languages: …" instead of "this content type is
+  reserved". This is a reordered check, and the change doc's Deviations do not
+  name it. The `canonical_tags` → `to_string()` step is also not needed:
+  `parse_canonical` accepts only strings that are already canonical, so the
+  host can pass on the `languages` it got, as the plan says.
+- *Failure case:* An app that sends `DELETION_REQUEST_CONTENT_TYPE` with
+  `["HI"]` gets the language error, and a test that expects the reserved-type
+  error for such a call fails.
+- *Fix:* Move the `parse_message_languages` call after the reserved-type
+  `if`, and pass `&languages` on. Or keep the order and record it under
+  Deviations.
+- *Status:* Open
+
+#### R7 — minor — several tests prove less than their names or the plan say
+
+- *Where:* `crates/roym_web/tests/dual_build_parity/group.rs:509` to `:538`;
+  `crates/conversation/src/group/tests/languages.rs:117`;
+  `apps/roymctl/src/commands/roym/tests.rs:390`;
+  `crates/substrate/tests/e2e/demo/40-roym-languages.spec.ts:72`.
+- *Problem:*
+  - `scenario_210_group_message_with_languages_parity` calls
+    `strip_volatile` and `normalize_message_ids` on both answers and then
+    never compares them. It checks one field on each side. The other parity
+    scenarios end with `assert_eq!(hw, hn)`.
+  - No test sends a group message with tags through the host
+    (`ConversationService::send` on a group, so `send_group`,
+    `encode_body` and `record_outgoing_group_message`). The group tests only
+    insert an entry built by hand on the receiving side. So the sender's stored
+    row for a group message is never checked, and exit criterion 2 ("group …
+    between two nodes") has no test.
+  - `group_message_with_non_canonical_language_tag_is_refused_and_not_stored`
+    does not check the warning that P4 asked for. Its comment says the code
+    "returns Ok(())"; it returns `Ok((false, None, None))`.
+  - The `roymctl` test checks only `is_err()` for `INVALID_TAG!`. The plan asks
+    for `--lang hi_IN` and the `Malformed` text.
+  - Story 40 does not check that English was added (two rows) before it sends.
+- *Failure case:* A WASM-only difference in a group history (any field but
+  `languages`) passes scenario 210. A bug that drops the list in
+  `record_outgoing_group_message` passes every test.
+- *Fix:* End scenario 210 with `assert_eq!(hw, hn)`. Add a host test in
+  `group/tests/languages.rs` that sends with `["hi", "en"]` on a group and
+  reads the sender's row back. Check the warning with the crate's log capture,
+  or record under Deviations that it is not tested. Use `hi_IN` and check the
+  error text in the `roymctl` test. In story 40, check two
+  `.messages-language-row` after `addMessageLanguage`.
+- *Status:* Open
+
+#### R8 — minor — new full paths, a length read written four times, and an unused parameter
+
+- *Where:* `crates/conversation/src/envelope.rs:81`;
+  `crates/conversation/src/dag.rs:296`, `:321`, `:543`;
+  `apps/roymctl/src/commands/roym/group.rs:238`;
+  `crates/roym_core/src/method/tests.rs:515`;
+  `crates/conversation/src/store/tests/backup_roundtrip.rs:255`;
+  `crates/substrate/tests/e2e/hub-helpers.ts:90`.
+- *Problem:* AGENTS.md "Mandatory Import Cleanup": new lines use
+  `std::str::from_utf8`, `crate::envelope::put_languages` /
+  `take_languages`, `syneroym_text_lang::LangTag::parse` and
+  `crate::store::backup::BackupBundle` inline. Import the type (`LangTag`,
+  `BackupBundle`) and the parent module (`std::str`, `crate::envelope`).
+  The block "8 bytes with `checked_add`, `get`, `try_into`,
+  `u64::from_be_bytes`" is written three times in `take_languages` and once
+  in `decode_body`. `addMessageLanguage` takes `_tag` and never uses it.
+- *Failure case:* No wrong behaviour. The next hostile-length fix has to be
+  made in four places, and a reader of `addMessageLanguage(page, 'en', 'hi')`
+  thinks the Hindi tag matters.
+- *Fix:* Fix the imports. Add one `pub(crate) fn take_u64(bytes: &[u8], at:
+  &mut usize) -> Result<u64, String>` in `envelope.rs` and use it in both
+  functions. Drop the `_tag` parameter and its argument in story 40, or use it.
+- *Status:* Open
