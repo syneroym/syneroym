@@ -115,6 +115,8 @@ pub enum Request {
     /// data-layer: drop `SCRATCH`, then recreate it so later scenarios that
     /// reuse it still find it there.
     DropCollection,
+    /// data-layer: text search round trip with multilingual text.
+    TextSearch,
     /// blob-store: one-shot write, then delete it.
     DeleteBlob {
         body: String,

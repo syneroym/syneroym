@@ -172,6 +172,7 @@ pub(super) async fn dispatch<H: AppHost>(
             ensure_collection(host, SCRATCH).await?;
             Ok(json!({ "dropped": true }))
         }
+        Request::TextSearch => handle_text_search(host).await,
         Request::DeleteBlob { body } => {
             let hash = host.put_blob(body.into_bytes()).await.map_err(fmt_err)?;
             host.delete_blob(hash.clone()).await.map_err(fmt_err)?;
@@ -605,4 +606,48 @@ async fn handle_proxy_call_all_seq<H: AppHost>(
         }
     }
     Ok(json!({ "batches": all_batch_results }))
+}
+
+async fn handle_text_search<H: AppHost>(host: &H) -> Result<serde_json::Value, String> {
+    let _ = host.drop_collection("text_scratch".into()).await;
+    host.create_collection(CollectionSchema {
+        name: "text_scratch".to_string(),
+        indexes: vec![],
+        text_fields: vec!["title".to_string()],
+    })
+    .await
+    .map_err(fmt_err)?;
+
+    let rows =
+        [("t1", "नल वाला"), ("t2", "Chennai plumber"), ("t3", "ek do teen"), ("t4", "சென்னை வாலா")];
+    for (id, title) in rows {
+        host.put(
+            "text_scratch".into(),
+            RecordWriteValue {
+                id: id.to_string(),
+                payload: format!(r#"{{"title":"{title}"}}"#).into_bytes(),
+            },
+        )
+        .await
+        .map_err(fmt_err)?;
+    }
+
+    let queries = [
+        r#"{"title": {"$search": "वाला"}}"#,
+        r#"{"title": {"$search": "PLUMB"}}"#,
+        r#"{"title": {"$search": "ek teen"}}"#,
+    ];
+    let mut results = Vec::new();
+    for q in queries {
+        let page = host
+            .query(
+                "text_scratch".into(),
+                QueryOptions { filter: Some(q.to_string()), limit: Some(10), cursor: None },
+            )
+            .await
+            .map_err(fmt_err)?;
+        let ids: Vec<String> = page.records.into_iter().map(|r| r.id).collect();
+        results.push(ids);
+    }
+    Ok(json!(results))
 }

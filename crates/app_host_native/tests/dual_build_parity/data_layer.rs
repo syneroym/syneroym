@@ -128,3 +128,15 @@ async fn both_builds_create_fence_round_trip() {
     assert_eq!(wasm_val["ok"], expected);
     assert_eq!(native_val["ok"], expected);
 }
+
+#[tokio::test]
+async fn both_builds_text_search_round_trip() {
+    let h = harness().await;
+    let wasm_res = h.wasm.run(r#"{"op":"text-search"}"#).await.unwrap();
+    let native_res = h.native.run(r#"{"op":"text-search"}"#).await.unwrap();
+    let expected = serde_json::json!([["t1"], ["t2"], ["t3"]]);
+    let wasm_val: Value = serde_json::from_str(&wasm_res).unwrap();
+    let native_val: Value = serde_json::from_str(&native_res).unwrap();
+    assert_eq!(wasm_val["ok"], expected);
+    assert_eq!(native_val["ok"], expected);
+}
