@@ -387,8 +387,9 @@ fn build_send_params_builds_correct_json_and_normalizes_tags() {
         })
     );
 
-    let err = super::group::build_send_params("conv:1", "text", &["INVALID_TAG!".to_string()]);
-    assert!(err.is_err());
+    let err =
+        super::group::build_send_params("conv:1", "text", &["hi_IN".to_string()]).unwrap_err();
+    assert!(err.to_string().contains("not a well-formed BCP 47 tag"));
 }
 
 #[test]

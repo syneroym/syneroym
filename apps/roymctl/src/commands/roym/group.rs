@@ -5,6 +5,7 @@ use std::path::Path;
 use anyhow::{Result, bail};
 use clap::Subcommand;
 use serde_json::json;
+use syneroym_text_lang::LangTag;
 
 use super::directory::{RpcCtx, call_and_print};
 use crate::DEFAULT_GATEWAY_URL;
@@ -235,7 +236,7 @@ pub(crate) fn build_send_params(
 ) -> Result<serde_json::Value> {
     let mut parsed_langs = Vec::new();
     for l in langs {
-        let tag = syneroym_text_lang::LangTag::parse(l)?;
+        let tag = LangTag::parse(l)?;
         parsed_langs.push(tag.to_string());
     }
     let mut params = json!({
