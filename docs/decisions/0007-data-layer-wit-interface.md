@@ -221,3 +221,23 @@ No signature or gate change to any function this ADR already covers
 (`query`, `execute-ddl`, `query-raw`) — `aggregate` is additive WIT surface,
 requires no capability gate (same trust level as `query`), and ships no
 earlier than M4A.
+
+**2026-11-11 (Full-text option in data-layer).** Added full-text search capability
+to the data layer WIT interface and SQLite storage engine:
+
+- **Schema:** `collection-schema` adds `text-fields: list<string>`. A collection
+  with declared text fields creates and maintains two internal FTS5 virtual tables
+  (`_text_<c>_tri` with trigram tokenizer, and `_text_<c>_word` with `unicode61`
+  and prefix indexing). The tables are updated in the same SQLite transaction as
+  each mutation (`put`, `patch`, `delete`, `delete-many`, `batch-mutate`, `create`).
+- **Filter Operator `$search`:** Added `{"<text field>": {"$search": "<text>"}}`
+  to the filter language of `query` and `delete-many`. The host turns the search
+  text into search-key terms (NFC canonical composition and lowercase), splitting
+  terms into long terms (matched against the trigram table) and short terms
+  (1 or 2 characters, matched as word prefixes against the word table). Every term
+  is required (AND semantics).
+- **No Scan Rule:** `$search` is only permitted as an AND conjunct (at the top
+  level or inside `$and`). Using `$search` inside `$or` or `$not`, in `aggregate`,
+  or in security policy caveats is refused with `schema-violation`. Result ordering
+  applies a unary `+` on `+c.id` to prevent SQLite from walking the primary index
+  and forcing a full collection table scan.

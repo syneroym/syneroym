@@ -1,4 +1,6 @@
-use rusqlite::{Connection, params};
+use std::collections::HashSet;
+
+use rusqlite::{Connection, params, types::Value as SqlValue};
 use serde_json::Value;
 
 use crate::{errors::map_rusqlite_error, host_store::DataLayerError};
@@ -20,7 +22,7 @@ fn set_equal(a: &[String], b: &[String]) -> bool {
     if a.len() != b.len() {
         return false;
     }
-    let set_a: std::collections::HashSet<&str> = a.iter().map(|s| s.as_str()).collect();
+    let set_a: HashSet<&str> = a.iter().map(|s| s.as_str()).collect();
     b.iter().all(|s| set_a.contains(s.as_str()))
 }
 
@@ -235,12 +237,12 @@ pub(super) fn sync_row(
     let word_ins_sql =
         format!("INSERT INTO {word_table} (rowid, {col_names}) VALUES (?1, {placeholders})");
 
-    let mut params_vec: Vec<rusqlite::types::Value> = Vec::with_capacity(fields.len() + 1);
-    params_vec.push(rusqlite::types::Value::Integer(rowid));
+    let mut params_vec: Vec<SqlValue> = Vec::with_capacity(fields.len() + 1);
+    params_vec.push(SqlValue::Integer(rowid));
     for k in keys {
         match k {
-            Some(s) => params_vec.push(rusqlite::types::Value::Text(s)),
-            None => params_vec.push(rusqlite::types::Value::Null),
+            Some(s) => params_vec.push(SqlValue::Text(s)),
+            None => params_vec.push(SqlValue::Null),
         }
     }
 

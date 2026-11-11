@@ -1,8 +1,9 @@
 use rusqlite::Connection;
 
 use crate::{
-    host_store::{CollectionSchema, DataLayerError, IndexDefinition, IndexType},
+    host_store::{CollectionSchema, DataLayerError, IndexDefinition, IndexType, RecordWriteValue},
     sqlite::{
+        mutation::do_authorized_put,
         query::do_list_collections,
         schema::{do_create_collection, do_drop_collection},
         text_index::fields,
@@ -386,17 +387,12 @@ fn declare_two_collections_foo_and_foo_data_keep_own_rows() {
     do_create_collection(&mut conn, &schema_foo).unwrap();
     do_create_collection(&mut conn, &schema_data).unwrap();
 
-    let val_foo = crate::host_store::RecordWriteValue {
-        id: "1".to_string(),
-        payload: br#"{"title": "hello"}"#.to_vec(),
-    };
-    let val_data = crate::host_store::RecordWriteValue {
-        id: "2".to_string(),
-        payload: br#"{"title": "world"}"#.to_vec(),
-    };
-    crate::sqlite::mutation::do_authorized_put(&mut conn, "foo", &val_foo, "user", None).unwrap();
-    crate::sqlite::mutation::do_authorized_put(&mut conn, "foo_data", &val_data, "user", None)
-        .unwrap();
+    let val_foo =
+        RecordWriteValue { id: "1".to_string(), payload: br#"{"title": "hello"}"#.to_vec() };
+    let val_data =
+        RecordWriteValue { id: "2".to_string(), payload: br#"{"title": "world"}"#.to_vec() };
+    do_authorized_put(&mut conn, "foo", &val_foo, "user", None).unwrap();
+    do_authorized_put(&mut conn, "foo_data", &val_data, "user", None).unwrap();
 
     let foo_match: i64 = conn
         .query_row(

@@ -1,6 +1,7 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Instant};
 
 use rusqlite::{Connection, types::Value as SqlValue};
+use serde_json::Map;
 use syneroym_data_keystore::KeyStore;
 use syneroym_fdae::{CompiledSieve, DecisionTrace};
 use syneroym_ucan::SessionContext;
@@ -8,7 +9,7 @@ use syneroym_ucan::SessionContext;
 use crate::{
     QueryAuth, ServiceStore, SqliteStorageProvider, StorageProvider,
     filter::compile_filter_in,
-    host_store::{DataLayerError, QueryOptions, RecordWriteValue},
+    host_store::{DataLayerError, Mutation, QueryOptions, RecordWriteValue},
     sqlite::{
         query::query_sql,
         schema::do_create_collection,
@@ -318,7 +319,7 @@ async fn search_cls_masked_field_refused() {
         subject_did: "did:key:alice".to_string(),
         anchor_did: None,
         capabilities: Vec::new(),
-        claims: serde_json::Map::new(),
+        claims: Map::new(),
         verified_at_secs: 0,
     };
     let auth = QueryAuth {
@@ -474,23 +475,20 @@ async fn measure_rebuild_and_query_10000_rows() {
                 "{{\"title\": \"Chennai plumber {}\", \"status\": \"active\"}}",
                 chunk * 200 + i
             );
-            ops.push(crate::host_store::Mutation::Put(RecordWriteValue {
-                id,
-                payload: payload.into_bytes(),
-            }));
+            ops.push(Mutation::Put(RecordWriteValue { id, payload: payload.into_bytes() }));
         }
         store.batch_mutate("items", &ops, "user", None).await.unwrap();
     }
 
     // Measure rebuild: call create_collection with text_fields to declare and
     // backfill
-    let rebuild_start = std::time::Instant::now();
+    let rebuild_start = Instant::now();
     let schema_text = schema_with("items", vec![], vec!["title".to_string()]);
     store.create_collection(&schema_text).await.unwrap();
     let rebuild_duration = rebuild_start.elapsed();
 
     // Measure query on 10,000 rows
-    let query_start = std::time::Instant::now();
+    let query_start = Instant::now();
     let res = store
         .query(
             "items",
@@ -518,7 +516,7 @@ async fn measure_put_plain_collection() {
     let schema_plain = schema_with("plain", vec![], vec![]);
     store.create_collection(&schema_plain).await.unwrap();
 
-    let start = std::time::Instant::now();
+    let start = Instant::now();
     for i in 0..1000 {
         let id = format!("doc_{i:04}");
         let payload = format!("{{\"field\": \"value {i}\"}}");
