@@ -98,7 +98,8 @@ const TABLE_GROUP_DDL: &[&str] = &[
         refused              TEXT,
         deleted_at           INTEGER,
         restored             INTEGER NOT NULL DEFAULT 0,
-        visible_seq          INTEGER NOT NULL DEFAULT 0
+        visible_seq          INTEGER NOT NULL DEFAULT 0,
+        languages            TEXT NOT NULL DEFAULT ''
      );
      CREATE INDEX IF NOT EXISTS idx_messages_order
          ON messages(conversation_id, sender_timestamp, author, id);

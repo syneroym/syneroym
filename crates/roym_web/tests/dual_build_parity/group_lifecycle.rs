@@ -261,6 +261,7 @@ async fn seed_outgoing_message(h: &Harness, wasm: bool, msg_id: &str, conv_id: &
             &owner_did(),
             25_000,
             "text/plain",
+            &[],
             b"test outgoing message",
             25_000,
             "delivered",

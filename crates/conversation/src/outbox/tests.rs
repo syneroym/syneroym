@@ -85,6 +85,7 @@ fn due_undecided(store: &ConversationStore, id: &str, received_at: i64) {
             PEER,
             received_at,
             "text/plain",
+            &[],
             b"hello",
             &[0u8; 64],
             received_at,

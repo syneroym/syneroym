@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use syneroym_text_lang::LangTag;
 
 pub use crate::conversation::{
     AdmissionState, ConversationGroupItem, ConversationListItem, ConversationRowKind, MessageView,
@@ -11,6 +12,8 @@ pub struct SendInput {
     pub conversation: String,
     pub body: String,
     pub content_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub languages: Vec<LangTag>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

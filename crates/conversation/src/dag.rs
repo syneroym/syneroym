@@ -1,6 +1,8 @@
 //! DAG entry representation, canonical byte encoding, AEAD sealing,
 //! and wire structures for group conversation delivery and synchronization.
 
+use std::str;
+
 use aes_gcm::{
     Aes256Gcm, Key, Nonce,
     aead::{Aead, KeyInit, Payload},
@@ -8,6 +10,9 @@ use aes_gcm::{
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde_json::Value;
 use syneroym_rpc::ConversationError;
+use syneroym_text_lang::parse_message_languages;
+
+use crate::envelope;
 
 pub const MAX_PARENTS: usize = 8;
 pub const GROUP_KEY_CONTENT_TYPE: &str = "application/vnd.syneroym.group-key+json";
@@ -289,30 +294,36 @@ pub fn open(
 }
 
 #[must_use]
-pub fn encode_body(content_type: &str, body: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(8 + content_type.len() + body.len());
+pub fn encode_body(content_type: &str, languages: &[String], body: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(8 + content_type.len() + 8 + body.len());
     out.extend_from_slice(&(content_type.len() as u64).to_be_bytes());
     out.extend_from_slice(content_type.as_bytes());
+    envelope::put_languages(&mut out, languages);
     out.extend_from_slice(body);
     out
 }
 
-pub fn decode_body(encoded: &[u8]) -> Result<(String, Vec<u8>), String> {
-    if encoded.len() < 8 {
-        return Err("encoded body too short".to_string());
-    }
-    let Ok(len_bytes) = encoded[..8].try_into() else {
-        return Err("invalid header bytes".to_string());
-    };
-    let ct_len = u64::from_be_bytes(len_bytes) as usize;
-    if encoded.len() < 8 + ct_len {
-        return Err("encoded body truncated".to_string());
-    }
-    let content_type = std::str::from_utf8(&encoded[8..8 + ct_len])
+pub fn decode_body(encoded: &[u8]) -> Result<(String, Vec<String>, Vec<u8>), String> {
+    let mut at = 0usize;
+    let ct_len_u64 = envelope::take_u64(encoded, &mut at)?;
+
+    let ct_len =
+        usize::try_from(ct_len_u64).map_err(|_| "content_type length overflow".to_string())?;
+    let ct_end = at.checked_add(ct_len).ok_or_else(|| "offset overflow".to_string())?;
+    let ct_bytes = encoded.get(at..ct_end).ok_or_else(|| "encoded body truncated".to_string())?;
+    at = ct_end;
+
+    let content_type = str::from_utf8(ct_bytes)
         .map_err(|e| format!("invalid utf-8 in content_type: {e}"))?
         .to_string();
-    let body = encoded[8 + ct_len..].to_vec();
-    Ok((content_type, body))
+
+    let languages = envelope::take_languages(encoded, &mut at)?;
+    parse_message_languages(&languages).map_err(|e| format!("invalid message languages: {e}"))?;
+
+    let body_bytes = encoded.get(at..).ok_or_else(|| "encoded body truncated".to_string())?;
+    let body = body_bytes.to_vec();
+
+    Ok((content_type, languages, body))
 }
 
 #[must_use]
@@ -480,5 +491,83 @@ mod tests {
         assert!(verify_peer_assertion(&vk, "conv:group1", &assertion));
 
         assert!(!verify_peer_assertion(&vk, "conv:othergroup", &assertion));
+    }
+
+    #[test]
+    fn encode_and_decode_body_roundtrip_and_safety() {
+        // 0 tags
+        let b0 = encode_body("text/plain", &[], b"hello");
+        let (ct, langs, body) = decode_body(&b0).expect("decode 0 tags");
+        assert_eq!(ct, "text/plain");
+        assert!(langs.is_empty());
+        assert_eq!(body, b"hello");
+
+        // 1 tag
+        let l1 = vec!["hi".to_string()];
+        let b1 = encode_body("text/plain", &l1, b"hello");
+        let (ct, langs, body) = decode_body(&b1).expect("decode 1 tag");
+        assert_eq!(ct, "text/plain");
+        assert_eq!(langs, l1);
+        assert_eq!(body, b"hello");
+
+        // 3 tags
+        let l3 = vec!["hi".to_string(), "en".to_string(), "ta".to_string()];
+        let b3 = encode_body("text/plain", &l3, b"hello");
+        let (ct, langs, body) = decode_body(&b3).expect("decode 3 tags");
+        assert_eq!(ct, "text/plain");
+        assert_eq!(langs, l3);
+        assert_eq!(body, b"hello");
+
+        // 4 tags rejected
+        let mut b_four = Vec::new();
+        b_four.extend_from_slice(&(10u64).to_be_bytes());
+        b_four.extend_from_slice(b"text/plain");
+        b_four.extend_from_slice(&4u64.to_be_bytes()); // count = 4
+        assert!(decode_body(&b_four).is_err());
+
+        // truncated tag rejected
+        let mut b_trunc = Vec::new();
+        b_trunc.extend_from_slice(&(10u64).to_be_bytes());
+        b_trunc.extend_from_slice(b"text/plain");
+        b_trunc.extend_from_slice(&1u64.to_be_bytes()); // count = 1
+        b_trunc.extend_from_slice(&10u64.to_be_bytes()); // tag_len = 10
+        b_trunc.extend_from_slice(b"hi"); // only 2 bytes
+        assert!(decode_body(&b_trunc).is_err());
+
+        // non-canonical tag rejected
+        let mut b_non_canon = Vec::new();
+        b_non_canon.extend_from_slice(&(10u64).to_be_bytes());
+        b_non_canon.extend_from_slice(b"text/plain");
+        envelope::put_languages(&mut b_non_canon, &["HI".to_string()]);
+        assert!(decode_body(&b_non_canon).is_err());
+
+        // ct_len = u64::MAX does not panic
+        let mut b_max_ct = Vec::new();
+        b_max_ct.extend_from_slice(&u64::MAX.to_be_bytes());
+        b_max_ct.extend_from_slice(b"extra");
+        assert!(decode_body(&b_max_ct).is_err());
+
+        // ct_len = usize::MAX - 7 does not panic
+        let mut b_overflow_ct = Vec::new();
+        let overflow_len = (usize::MAX - 7) as u64;
+        b_overflow_ct.extend_from_slice(&overflow_len.to_be_bytes());
+        b_overflow_ct.extend_from_slice(b"extra");
+        assert!(decode_body(&b_overflow_ct).is_err());
+
+        // tag length of u64::MAX does not panic
+        let mut b_max_tag_len = Vec::new();
+        b_max_tag_len.extend_from_slice(&(10u64).to_be_bytes());
+        b_max_tag_len.extend_from_slice(b"text/plain");
+        b_max_tag_len.extend_from_slice(&1u64.to_be_bytes()); // count = 1
+        b_max_tag_len.extend_from_slice(&u64::MAX.to_be_bytes()); // tag_len = u64::MAX
+        b_max_tag_len.extend_from_slice(b"extra");
+        assert!(decode_body(&b_max_tag_len).is_err());
+
+        // count of u64::MAX does not panic
+        let mut b_max_count = Vec::new();
+        b_max_count.extend_from_slice(&(10u64).to_be_bytes());
+        b_max_count.extend_from_slice(b"text/plain");
+        b_max_count.extend_from_slice(&u64::MAX.to_be_bytes()); // count = u64::MAX
+        assert!(decode_body(&b_max_count).is_err());
     }
 }

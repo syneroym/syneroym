@@ -372,6 +372,7 @@ async fn assert_signed_delivery_is_verified_and_notifies_the_app<D: Driver>(
             SENDER_ADDRESS,
             1_000,
             "text/plain",
+            &[],
             b"hello from a peer",
         );
         let payload = DeliveryPayload {
@@ -380,6 +381,7 @@ async fn assert_signed_delivery_is_verified_and_notifies_the_app<D: Driver>(
             author: SENDER_ADDRESS.to_string(),
             sender_timestamp_ms: 1_000,
             content_type: "text/plain".to_string(),
+            languages: vec![],
             body: b"hello from a peer".to_vec(),
             signature,
         };

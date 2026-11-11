@@ -12,11 +12,13 @@ use syneroym_app_host::{
 };
 use syneroym_identity::{Identity, substrate::derive_did_key};
 use syneroym_signed_record::{DelegationCertificate, SCOPE_RECORD_SIGNING};
+use syneroym_text_lang::LangTag;
 
 use super::{
     MethodInfo, NoParams, ParamError, Reply, SiblingError, VerifyInput, call_sibling,
     catalog::{ListingGetOutput, SlotRow},
     check::assert_service_table,
+    conversation::SendInput,
     parse_value,
     profile::{
         AdmissionKind, AdmitFirstContactOutput, BlockCheckOutput, BlockedSince, ProfileRecord,
@@ -442,6 +444,7 @@ fn message_view_writes_the_same_keys_as_the_old_json() {
         outgoing: true,
         sender_timestamp: 1_700_000_000,
         content_type: "text/plain".to_string(),
+        languages: Vec::new(),
         body: b"Hello world".to_vec(),
         state: DeliveryState::Delivered,
         last_error: None,
@@ -463,6 +466,7 @@ fn message_view_writes_the_same_keys_as_the_old_json() {
         "direction",
         "sender_timestamp_ms",
         "content_type",
+        "languages",
         "body_encoding",
         "state",
         "last_error",
@@ -481,6 +485,7 @@ fn message_view_writes_the_same_keys_as_the_old_json() {
     assert_eq!(obj["direction"], json!("outgoing"));
     assert_eq!(obj["body_encoding"], json!("utf8"));
     assert_eq!(obj["state"], json!("delivered"));
+    assert_eq!(obj["languages"], json!([]));
     assert_eq!(obj["last_error"], Value::Null);
     assert_eq!(obj["refused"], Value::Null);
 
@@ -491,6 +496,27 @@ fn message_view_writes_the_same_keys_as_the_old_json() {
     assert!(obj_del.contains_key("deleted_at_secs"));
     assert_eq!(obj_del["deleted_at_secs"], json!(1_700_000_100));
     assert!(!obj_del.contains_key("body"));
+}
+
+#[test]
+fn send_input_serializes_without_languages_when_empty() {
+    let input = SendInput {
+        conversation: "conv-1".to_string(),
+        body: "hello".to_string(),
+        content_type: None,
+        languages: Vec::new(),
+    };
+    let val = serde_json::to_value(&input).unwrap();
+    assert!(!val.as_object().unwrap().contains_key("languages"));
+
+    let input_with_lang = SendInput {
+        conversation: "conv-1".to_string(),
+        body: "hello".to_string(),
+        content_type: None,
+        languages: vec![LangTag::parse("hi").unwrap()],
+    };
+    let val_with_lang = serde_json::to_value(&input_with_lang).unwrap();
+    assert_eq!(val_with_lang["languages"], json!(["hi"]));
 }
 
 #[test]

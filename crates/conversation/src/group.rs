@@ -352,6 +352,7 @@ impl ConversationService {
                         service_id,
                         m,
                         GROUP_KEY_CONTENT_TYPE,
+                        &[],
                         &key_msg_bytes,
                         true,
                     )
@@ -370,6 +371,7 @@ impl ConversationService {
         service_id: &str,
         entry: &WireEntry,
         content_type: &str,
+        languages: &[String],
         body: &[u8],
         members: &[String],
         now: i64,
@@ -401,9 +403,9 @@ impl ConversationService {
         let vseq = ConversationStore::next_visible_seq(tx, conv_id)?;
         tx.execute(
             "INSERT INTO messages (id, conversation_id, author, sender_timestamp, received_at, \
-             content_type, body, signature, outgoing, verified, state, last_error, system, \
-             entry_id, admission, visible_seq) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, 1, \
-             'pending', NULL, ?9, ?1, 'accepted', ?10)",
+             content_type, languages, body, signature, outgoing, verified, state, last_error, \
+             system, entry_id, admission, visible_seq) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, \
+             ?9, 1, 1, 'pending', NULL, ?10, ?1, 'accepted', ?11)",
             rusqlite::params![
                 entry.entry_id,
                 conv_id,
@@ -411,6 +413,7 @@ impl ConversationService {
                 signed_at,
                 now,
                 content_type,
+                languages.join(" "),
                 body,
                 entry.signature.as_slice(),
                 system_val,
@@ -449,12 +452,14 @@ impl ConversationService {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn send_group(
         &self,
         service_id: &str,
         store: &ConversationStore,
         conv: &ConversationRow,
         content_type: &str,
+        languages: &[String],
         body: &[u8],
     ) -> Result<String, ConversationError> {
         let members = store.current_members(&conv.id).map_err(internal)?;
@@ -473,7 +478,7 @@ impl ConversationService {
         let heads = store.heads(&conv.id).map_err(internal)?;
         let sk = load_signing_key(store)?;
 
-        let plaintext = encode_body(content_type, body);
+        let plaintext = encode_body(content_type, languages, body);
         let entry = build_message_entry(
             &sk, &conv.id, service_id, signed_at, epoch, heads, &key, &plaintext,
         )
@@ -491,6 +496,7 @@ impl ConversationService {
                     service_id,
                     &entry,
                     content_type,
+                    languages,
                     body,
                     &members,
                     now,
@@ -633,6 +639,7 @@ impl ConversationService {
                                     &svc,
                                     m,
                                     GROUP_KEY_CONTENT_TYPE,
+                                    &[],
                                     &key_msg_bytes,
                                     true,
                                 )

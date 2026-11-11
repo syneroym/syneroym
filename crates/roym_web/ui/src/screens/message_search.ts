@@ -3,11 +3,13 @@
 export interface SearchMatch {
   conversation: string;
   body?: string;
+  languages?: string[];
 }
 
 export interface SearchHit {
   conversation: string;
   snippet: string;
+  languages?: string[];
 }
 
 const BEFORE = 30;
@@ -34,6 +36,7 @@ export function searchHits(matches: SearchMatch[], query: string): SearchHit[] {
     hits.push({
       conversation: m.conversation,
       snippet: snippetAround(m.body, query),
+      languages: m.languages,
     });
   }
   return hits;

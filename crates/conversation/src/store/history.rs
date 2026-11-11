@@ -9,7 +9,10 @@ use syneroym_rpc::{
 };
 use syneroym_signed_record::content_digest;
 
-use super::{ConversationStore, StoredDagEntry, StoredMessage, message::row_to_message};
+use super::{
+    ConversationStore, StoredDagEntry, StoredMessage,
+    message::{MESSAGE_COLUMNS, row_to_message},
+};
 use crate::dag::EntryKind;
 
 pub const TRANSCRIPT_DIGEST_PREFIX: &str = "roym-transcript:";
@@ -27,14 +30,11 @@ impl ConversationStore {
         limit: u32,
     ) -> Result<ConversationChangePage> {
         let conn = self.conn.lock().expect("conversation connection lock poisoned");
-        let mut stmt = conn.prepare(
-            "SELECT id, conversation_id, author, sender_timestamp, received_at, content_type, \
-             body, signature, outgoing, verified, state, last_error, system, entry_id, admission, \
-             admission_reason, admission_changed_at, notify_attempts, next_notify_at, \
-             report_refusal, refused, deleted_at, restored, visible_seq FROM messages WHERE \
-             conversation_id = ?1 AND visible_seq > ?2 AND system = 0 AND (outgoing = 1 OR \
-             admission = 'accepted') ORDER BY visible_seq ASC LIMIT ?3",
-        )?;
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {MESSAGE_COLUMNS} FROM messages WHERE conversation_id = ?1 AND visible_seq > \
+             ?2 AND system = 0 AND (outgoing = 1 OR admission = 'accepted') ORDER BY visible_seq \
+             ASC LIMIT ?3"
+        ))?;
         let mut rows = stmt.query(params![conversation_id, after_seq as i64, limit as i64])?;
         let mut messages = Vec::new();
         while let Some(r) = rows.next()? {
@@ -59,15 +59,11 @@ impl ConversationStore {
         let fetch_limit = i64::from(limit) + 1;
 
         // Fetch messages after cursor
-        let mut m_stmt = conn.prepare(
-            "SELECT id, conversation_id, author, sender_timestamp, received_at, content_type, \
-             body, signature, outgoing, verified, state, last_error, system, entry_id, admission, \
-             admission_reason, admission_changed_at, notify_attempts, next_notify_at, \
-             report_refusal, refused, deleted_at, restored, visible_seq FROM messages WHERE \
-             conversation_id = ?1 AND system = 0 AND (outgoing = 1 OR admission = 'accepted') AND \
-             (sender_timestamp, author, id) > (?2, ?3, ?4) ORDER BY sender_timestamp ASC, author \
-             ASC, id ASC LIMIT ?5",
-        )?;
+        let mut m_stmt = conn.prepare(&format!(
+            "SELECT {MESSAGE_COLUMNS} FROM messages WHERE conversation_id = ?1 AND system = 0 AND \
+             (outgoing = 1 OR admission = 'accepted') AND (sender_timestamp, author, id) > (?2, \
+             ?3, ?4) ORDER BY sender_timestamp ASC, author ASC, id ASC LIMIT ?5"
+        ))?;
         let mut m_rows = m_stmt.query(params![
             conversation_id,
             after_ts,

@@ -31,11 +31,11 @@ impl ConversationStore {
                  m.content_type, m.body, m.signature, m.outgoing, m.verified, m.state, \
                  m.last_error, m.system, m.entry_id, m.admission, m.admission_reason, \
                  m.admission_changed_at, m.notify_attempts, m.next_notify_at, m.report_refusal, \
-                 m.refused, m.deleted_at, m.restored, m.visible_seq FROM messages m JOIN \
-                 messages_fts f ON m.rowid = f.rowid WHERE messages_fts MATCH ?1 AND m.system = 0 \
-                 AND (m.outgoing = 1 OR m.admission = 'accepted') AND m.deleted_at IS NULL AND \
-                 (?2 IS NULL OR m.conversation_id = ?2) ORDER BY m.sender_timestamp DESC, \
-                 m.author DESC, m.id DESC LIMIT ?3",
+                 m.refused, m.deleted_at, m.restored, m.visible_seq, m.languages FROM messages m \
+                 JOIN messages_fts f ON m.rowid = f.rowid WHERE messages_fts MATCH ?1 AND \
+                 m.system = 0 AND (m.outgoing = 1 OR m.admission = 'accepted') AND m.deleted_at \
+                 IS NULL AND (?2 IS NULL OR m.conversation_id = ?2) ORDER BY m.sender_timestamp \
+                 DESC, m.author DESC, m.id DESC LIMIT ?3",
             )?;
             let mut rows = stmt.query(params![escaped, conversation, limit as i64])?;
             let mut out = Vec::new();
@@ -53,12 +53,12 @@ impl ConversationStore {
                  m.content_type, m.body, m.signature, m.outgoing, m.verified, m.state, \
                  m.last_error, m.system, m.entry_id, m.admission, m.admission_reason, \
                  m.admission_changed_at, m.notify_attempts, m.next_notify_at, m.report_refusal, \
-                 m.refused, m.deleted_at, m.restored, m.visible_seq FROM messages m WHERE \
-                 CAST(m.body AS TEXT) LIKE ?1 ESCAPE '\\' AND m.system = 0 AND (m.outgoing = 1 OR \
-                 m.admission = 'accepted') AND m.deleted_at IS NULL AND (m.content_type LIKE \
-                 'text/%' OR m.content_type = 'application/json' OR m.content_type LIKE '%+json') \
-                 AND (?2 IS NULL OR m.conversation_id = ?2) ORDER BY m.sender_timestamp DESC, \
-                 m.author DESC, m.id DESC LIMIT ?3",
+                 m.refused, m.deleted_at, m.restored, m.visible_seq, m.languages FROM messages m \
+                 WHERE CAST(m.body AS TEXT) LIKE ?1 ESCAPE '\\' AND m.system = 0 AND (m.outgoing \
+                 = 1 OR m.admission = 'accepted') AND m.deleted_at IS NULL AND (m.content_type \
+                 LIKE 'text/%' OR m.content_type = 'application/json' OR m.content_type LIKE \
+                 '%+json') AND (?2 IS NULL OR m.conversation_id = ?2) ORDER BY m.sender_timestamp \
+                 DESC, m.author DESC, m.id DESC LIMIT ?3",
             )?;
             let mut rows = stmt.query(params![pattern, conversation, limit as i64])?;
             let mut out = Vec::new();

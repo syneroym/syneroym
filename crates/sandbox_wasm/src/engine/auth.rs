@@ -175,6 +175,7 @@ impl AppSandboxEngine {
             "sender-timestamp": msg.sender_timestamp,
             "received-at": msg.received_at,
             "content-type": msg.content_type,
+            "languages": msg.languages,
             "body": msg.body,
             "state": Self::conversation_state_str(msg.state),
             "verified": msg.verified,

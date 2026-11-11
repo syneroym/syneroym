@@ -324,7 +324,8 @@ async fn conversation_message_shapes(h: &Harness, conv_id: &str) {
         "conversation.send",
         json!({
             "conversation": conv_id,
-            "body": "Hello world"
+            "body": "Hello world",
+            "languages": ["en"]
         }),
     )
     .await;

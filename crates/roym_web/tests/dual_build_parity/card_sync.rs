@@ -31,6 +31,7 @@ async fn stash_unanswered_card(h: &Harness, id: &str, conv: &str, env: &str, ts:
                 &peer_did(),
                 ts,
                 &card.content_type,
+                &[],
                 &card.body,
                 &[0u8; 64],
                 ts,

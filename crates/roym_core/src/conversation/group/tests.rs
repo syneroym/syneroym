@@ -11,6 +11,7 @@ fn make_test_row(id: &str, ts: i64, author: &str) -> MessageView {
         direction: Direction::Incoming,
         sender_timestamp_ms: ts,
         content_type: "text/plain".to_string(),
+        languages: vec![],
         body_encoding: BodyEncoding::Utf8,
         body: Some("hello".to_string()),
         state: StoredState::Delivered,

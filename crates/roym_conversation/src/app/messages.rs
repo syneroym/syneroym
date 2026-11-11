@@ -19,7 +19,7 @@ use syneroym_roym_core::{
     },
     envelope::Response,
     method::{
-        NoParams, Reply, SiblingError, call_sibling,
+        NoParams, ParamError, Reply, SiblingError, call_sibling,
         conversation::{
             AdmissionState, ChangesInput, ChangesOutput, ConversationGroupItem,
             ConversationListItem, ConversationRowKind, MessageView, SendInput, SendOutput,
@@ -260,6 +260,12 @@ pub(crate) async fn list<H: AppHost>(
 }
 
 pub(crate) async fn send<H: AppHost>(host: &H, input: SendInput) -> Reply<SendOutput> {
+    syneroym_text_lang::check_tag_list(&input.languages, syneroym_text_lang::MAX_MESSAGE_LANGUAGES)
+        .map_err(|e| {
+            ParamError { field: Some("languages".into()), message: e.to_string() }.into_response()
+        })?;
+    let languages: Vec<String> = input.languages.into_iter().map(|t| t.to_string()).collect();
+
     let conversation = input.conversation;
     let body = input.body;
     let content_type = input.content_type.as_deref().unwrap_or("text/plain");
@@ -296,6 +302,7 @@ pub(crate) async fn send<H: AppHost>(host: &H, input: SendInput) -> Reply<SendOu
         host,
         conversation.clone(),
         content_type.to_string(),
+        languages,
         body.into_bytes(),
     )
     .await
@@ -324,6 +331,7 @@ fn history_item_to_view(conversation: &str, item: HistoryItem) -> MessageView {
                 direction: Direction::Incoming,
                 sender_timestamp_ms: ev.sender_timestamp,
                 content_type: MEMBERSHIP_EVENT_CONTENT_TYPE.to_string(),
+                languages: Vec::new(),
                 body_encoding: BodyEncoding::Utf8,
                 body: Some(body),
                 state: StoredState::Delivered,
@@ -346,6 +354,7 @@ fn history_item_to_view(conversation: &str, item: HistoryItem) -> MessageView {
                 direction: Direction::Incoming,
                 sender_timestamp_ms: ev.sender_timestamp,
                 content_type: GROUP_PROFILE_CONTENT_TYPE.to_string(),
+                languages: Vec::new(),
                 body_encoding: BodyEncoding::Utf8,
                 body: Some(body),
                 state: StoredState::Delivered,

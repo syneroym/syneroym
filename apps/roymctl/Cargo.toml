@@ -21,6 +21,7 @@ syneroym-signed-record.workspace = true
 syneroym-sdk.workspace = true
 syneroym-core.workspace = true
 syneroym-roym-core.workspace = true
+syneroym-text-lang.workspace = true
 syneroym-ucan.workspace = true
 syneroym-passport.workspace = true
 syneroym-app-orchestration.workspace = true

@@ -181,7 +181,6 @@ describe("profile screen", () => {
       display_name: "Polyglot Who Reset Languages",
       conversation_address: "did:key:alice#conv",
       lang: "en",
-      languages: [],
     };
     stubRpc({
       "profile.get": () => ({

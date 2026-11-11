@@ -59,11 +59,12 @@ impl Sender {
 
     /// Delivers one message and returns the reason the receiver refused it,
     /// if it told the sender.
-    async fn deliver(
+    async fn deliver_with_languages(
         &mut self,
         service: &ConversationService,
         id: &str,
         content_type: &str,
+        languages: &[String],
         body: &[u8],
     ) -> Result<Option<String>, ConversationError> {
         let conversation = self.conversation();
@@ -74,6 +75,7 @@ impl Sender {
             author: self.address.clone(),
             sender_timestamp_ms: ts,
             content_type: content_type.to_string(),
+            languages: languages.to_vec(),
             body: body.to_vec(),
             signature: envelope::sign(
                 &self.key,
@@ -82,6 +84,7 @@ impl Sender {
                 &self.address,
                 ts,
                 content_type,
+                languages,
                 body,
             ),
         };
@@ -90,6 +93,16 @@ impl Sender {
             service.peer_deliver(SVC, &self.address, serde_json::to_vec(&env).unwrap()).await?;
         let ack: DeliveryAck = serde_json::from_slice(&ack).unwrap();
         Ok(ack.refused)
+    }
+
+    async fn deliver(
+        &mut self,
+        service: &ConversationService,
+        id: &str,
+        content_type: &str,
+        body: &[u8],
+    ) -> Result<Option<String>, ConversationError> {
+        self.deliver_with_languages(service, id, content_type, &[], body).await
     }
 }
 
@@ -259,6 +272,7 @@ async fn a_refusal_notice_is_capped_and_only_the_peer_may_send_it() {
             SVC,
             1_000,
             "text/plain",
+            &[],
             b"to peer",
             &[0u8; 64],
             "svc:peer",
@@ -276,4 +290,28 @@ async fn a_refusal_notice_is_capped_and_only_the_peer_may_send_it() {
     let real = refusal_notice_body("m:mine", &long);
     peer.deliver(&service, "m:real", REFUSAL_NOTICE_CONTENT_TYPE, &real).await.unwrap();
     assert_eq!(stored(&service, "m:mine").await.refused.map(|r| r.chars().count()), Some(120));
+}
+
+#[tokio::test]
+async fn direct_message_with_languages_is_stored_and_non_canonical_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let service = test_service(dir.path()).await;
+    let mut peer = Sender::connect(&service, "svc:peer").await;
+
+    let langs = vec!["ta".to_string(), "en".to_string()];
+    peer.deliver_with_languages(&service, "m:langs", "text/plain", &langs, b"vanakkam")
+        .await
+        .unwrap();
+
+    let msg = stored(&service, "m:langs").await;
+    assert_eq!(msg.languages, langs);
+
+    let non_canon = vec!["HI".to_string()];
+    let res = peer
+        .deliver_with_languages(&service, "m:bad-lang", "text/plain", &non_canon, b"hello")
+        .await;
+    assert!(matches!(res, Err(ConversationError::InvalidArgument(_))));
+
+    let store = service.store_for(SVC).await.unwrap();
+    assert!(store.get_message("m:bad-lang").unwrap().is_none());
 }

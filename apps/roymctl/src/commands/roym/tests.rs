@@ -334,12 +334,58 @@ fn parse_group_info() {
 fn parse_group_send() {
     let cmd = parse_group(&["send", "--group", "conv:g1", "--body", "hello members"]).unwrap();
     match cmd {
-        GroupCommands::Send { group, body, .. } => {
+        GroupCommands::Send { group, body, langs, .. } => {
             assert_eq!(group, "conv:g1");
             assert_eq!(body, "hello members");
+            assert!(langs.is_empty());
         }
         other => panic!("expected Send, got {other:?}"),
     }
+}
+
+#[test]
+fn parse_group_send_with_languages() {
+    let cmd = parse_group(&[
+        "send",
+        "--group",
+        "conv:g1",
+        "--body",
+        "hello members",
+        "--lang",
+        "hi",
+        "--lang",
+        "en",
+    ])
+    .unwrap();
+    match cmd {
+        GroupCommands::Send { group, body, langs, .. } => {
+            assert_eq!(group, "conv:g1");
+            assert_eq!(body, "hello members");
+            assert_eq!(langs, vec!["hi", "en"]);
+        }
+        other => panic!("expected Send, got {other:?}"),
+    }
+}
+
+#[test]
+fn build_send_params_builds_correct_json_and_normalizes_tags() {
+    let params_empty = group::build_send_params("conv:1", "text", &[]).unwrap();
+    assert_eq!(params_empty, json!({ "conversation": "conv:1", "body": "text" }));
+
+    let params_with_lang =
+        group::build_send_params("conv:1", "text", &["HI-latn".to_string(), "en".to_string()])
+            .unwrap();
+    assert_eq!(
+        params_with_lang,
+        json!({
+            "conversation": "conv:1",
+            "body": "text",
+            "languages": ["hi-Latn", "en"]
+        })
+    );
+
+    let err = group::build_send_params("conv:1", "text", &["hi_IN".to_string()]).unwrap_err();
+    assert!(err.to_string().contains("not a well-formed BCP 47 tag"));
 }
 
 #[test]

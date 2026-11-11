@@ -451,4 +451,288 @@ describe("request form category picker reset", () => {
     await vi.waitFor(() => expect(sentLang).toBeDefined());
     expect(sentLang).toBe("ta");
   });
+
+  it("chat box language list sends languages, keeps rows after send, and allows move up and remove", async () => {
+    type SendParams = { conversation: string; body: string; languages?: string[] };
+    let lastSendParams: SendParams | undefined;
+    stubRpc({
+      whoami: () => ({ person_did: "did:key:me" }),
+      "conversation.list": () => ({
+        conversations: [{ id: "conv-1", peer_address: "peer-1", message_count: 0 }],
+      }),
+      "transaction.sync": () => ({}),
+      "transaction.thread": () => ({ cards: [] }),
+      "conversation.history": () => ({ messages: [] }),
+      "conversation.send": (params) => {
+        lastSendParams = params as SendParams;
+        return { message_id: "m_new" };
+      },
+    });
+
+    const host = document.createElement("div");
+    await renderMessages(host);
+
+    // Initial language list has 1 row with English
+    let rows = host.querySelectorAll(".messages-language-row");
+    expect(rows).toHaveLength(1);
+    expect(rows[0].querySelector(".messages-language-name")?.textContent).toBe("English");
+
+    // First send with default ["en"]
+    const composeInput = host.querySelector<HTMLInputElement>(".compose-input")!;
+    const sendBtn = Array.from(host.querySelectorAll<HTMLButtonElement>("button")).find(
+      (b) => b.textContent === "Send",
+    )!;
+    composeInput.value = "Hello world";
+    sendBtn.click();
+
+    await vi.waitFor(() => expect(lastSendParams).toBeDefined());
+    expect((lastSendParams as SendParams | undefined)?.languages).toEqual(["en"]);
+    await vi.waitFor(() => expect(sendBtn.disabled).toBe(false));
+
+    // After send, list keeps its rows
+    rows = host.querySelectorAll(".messages-language-row");
+    expect(rows).toHaveLength(1);
+
+    // Add Hindi
+    const addSel = host.querySelector<HTMLSelectElement>(".messages-languages-add")!;
+    addSel.value = "hi";
+    addSel.dispatchEvent(new Event("change"));
+
+    rows = host.querySelectorAll(".messages-language-row");
+    expect(rows).toHaveLength(2);
+    expect(rows[0].querySelector(".messages-language-name")?.textContent).toBe("English");
+    expect(rows[1].querySelector(".messages-language-name")?.textContent).toBe("Hindi");
+
+    // Move Hindi up
+    const upBtn = rows[1].querySelector<HTMLButtonElement>(".messages-language-move-up")!;
+    upBtn.click();
+
+    rows = host.querySelectorAll(".messages-language-row");
+    expect(rows[0].querySelector(".messages-language-name")?.textContent).toBe("Hindi");
+    expect(rows[1].querySelector(".messages-language-name")?.textContent).toBe("English");
+
+    // Send with ["hi", "en"]
+    lastSendParams = undefined;
+    composeInput.value = "नमस्ते";
+    sendBtn.click();
+
+    await vi.waitFor(() => expect(lastSendParams).toBeDefined());
+    expect((lastSendParams as SendParams | undefined)?.languages).toEqual(["hi", "en"]);
+    await vi.waitFor(() => expect(sendBtn.disabled).toBe(false));
+
+    // Remove every row
+    rows = host.querySelectorAll(".messages-language-row");
+    rows[0].querySelector<HTMLButtonElement>(".messages-language-remove")!.click();
+    rows = host.querySelectorAll(".messages-language-row");
+    rows[0].querySelector<HTMLButtonElement>(".messages-language-remove")!.click();
+
+    expect(host.querySelectorAll(".messages-language-row")).toHaveLength(0);
+
+    // Send with empty list
+    lastSendParams = undefined;
+    composeInput.value = "No tag message";
+    sendBtn.click();
+
+    await vi.waitFor(() => expect(lastSendParams).toBeDefined());
+    expect((lastSendParams as SendParams | undefined)?.languages).toEqual([]);
+    await vi.waitFor(() => expect(sendBtn.disabled).toBe(false));
+  });
+
+  it("click on language list label or language name does not remove language", async () => {
+    stubRpc({
+      whoami: () => ({ person_did: "did:key:me" }),
+      "conversation.list": () => ({
+        conversations: [{ id: "conv-1", peer_address: "peer-1", message_count: 0 }],
+      }),
+      "transaction.sync": () => ({}),
+      "transaction.thread": () => ({ cards: [] }),
+      "conversation.history": () => ({ messages: [] }),
+    });
+
+    const host = document.createElement("div");
+    await renderMessages(host);
+
+    let rows = host.querySelectorAll(".messages-language-row");
+    expect(rows).toHaveLength(1);
+    expect(rows[0].querySelector(".messages-language-name")?.textContent).toBe("English");
+
+    // Click on language name
+    const langName = rows[0].querySelector<HTMLElement>(".messages-language-name")!;
+    langName.click();
+    rows = host.querySelectorAll(".messages-language-row");
+    expect(rows).toHaveLength(1);
+
+    // Click on field label text
+    const labelSpan = host.querySelector<HTMLElement>(".compose-row .field > span")!;
+    expect(labelSpan.textContent).toBe("Message languages");
+    labelSpan.click();
+    rows = host.querySelectorAll(".messages-language-row");
+    expect(rows).toHaveLength(1);
+  });
+
+  it("renders lang attribute and note on messages appropriately", async () => {
+    stubRpc({
+      whoami: () => ({ person_did: "did:key:me" }),
+      "conversation.list": () => ({
+        conversations: [{ id: "conv-1", peer_address: "peer-1", message_count: 5 }],
+      }),
+      "transaction.sync": () => ({
+        new_records: [
+          {
+            record_id: "rec_c1",
+            card_type: "request",
+            version: 1,
+            author_did: "peer-1",
+            content: { request_id: "req_1", scope: "repair" },
+          },
+        ],
+      }),
+      "transaction.thread": () => ({
+        cards: [
+          {
+            message_id: "m_card",
+            conversation: "conv-1",
+            direction: "incoming",
+            sender_timestamp_ms: 1000,
+            card_type: "request",
+            version: 1,
+            known: true,
+            verified: true,
+            expired: false,
+            record_id: "rec_c1",
+            data: { request_id: "req_1" },
+            stored_at_secs: 1,
+          },
+        ],
+      }),
+      "conversation.history": () => ({
+        messages: [
+          {
+            id: "m_ta",
+            conversation: "conv-1",
+            author: "peer-1",
+            direction: "incoming",
+            sender_timestamp_ms: 1000,
+            content_type: "text/plain",
+            body_encoding: "utf8",
+            body: "வணக்கம்",
+            languages: ["ta"],
+            state: "delivered",
+          },
+          {
+            id: "m_notag",
+            conversation: "conv-1",
+            author: "peer-1",
+            direction: "incoming",
+            sender_timestamp_ms: 2000,
+            content_type: "text/plain",
+            body_encoding: "utf8",
+            body: "plain text without tag",
+            state: "delivered",
+          },
+          {
+            id: "m_card",
+            conversation: "conv-1",
+            author: "peer-1",
+            direction: "incoming",
+            sender_timestamp_ms: 3000,
+            content_type: "application/vnd.roym.card+json",
+            body_encoding: "utf8",
+            body: "{}",
+            state: "delivered",
+          },
+          {
+            id: "m_del",
+            conversation: "conv-1",
+            author: "peer-1",
+            direction: "incoming",
+            sender_timestamp_ms: 4000,
+            content_type: "text/plain",
+            body_encoding: "utf8",
+            deleted_at_secs: 4000,
+            state: "delivered",
+          },
+          {
+            id: "m_bin",
+            conversation: "conv-1",
+            author: "peer-1",
+            direction: "incoming",
+            sender_timestamp_ms: 5000,
+            content_type: "application/octet-stream",
+            body_encoding: "base64",
+            body: "AAAA",
+            state: "delivered",
+          },
+        ],
+      }),
+    });
+
+    const host = document.createElement("div");
+    await renderMessages(host);
+
+    const msgs = host.querySelectorAll(".message");
+    expect(msgs.length).toBeGreaterThanOrEqual(5);
+
+    // 1. Tagged text message: lang="ta", no note
+    const bodyTa = msgs[0].querySelector(".message-body");
+    expect(bodyTa).not.toBeNull();
+    expect(bodyTa?.getAttribute("lang")).toBe("ta");
+    expect(msgs[0].querySelector(".message-language-note")).toBeNull();
+
+    // 2. Untagged text message: lang="", shows note
+    const bodyNoTag = msgs[1].querySelector(".message-body");
+    expect(bodyNoTag).not.toBeNull();
+    expect(bodyNoTag?.getAttribute("lang")).toBe("");
+    const note = msgs[1].querySelector(".message-language-note");
+    expect(note).not.toBeNull();
+    expect(note?.textContent).toBe("Language not stated");
+
+    // 3. Card message: no note
+    expect(msgs[2].querySelector(".message-language-note")).toBeNull();
+
+    // 4. Deleted message: no note
+    expect(msgs[3].querySelector(".message-language-note")).toBeNull();
+
+    // 5. Binary message: no note, no lang attribute
+    const binBody = msgs[4].querySelector(".message-body");
+    expect(binBody).not.toBeNull();
+    expect(binBody?.hasAttribute("lang")).toBe(false);
+    expect(msgs[4].querySelector(".message-language-note")).toBeNull();
+  });
+
+  it("search hit with languages: ['hi'] has snippet with lang='hi'", async () => {
+    stubRpc({
+      whoami: () => ({ person_did: "did:key:me" }),
+      "conversation.list": () => ({
+        conversations: [{ id: "conv-1", peer_address: "peer-1", message_count: 0 }],
+      }),
+      "transaction.sync": () => ({}),
+      "transaction.thread": () => ({ cards: [] }),
+      "conversation.history": () => ({ messages: [] }),
+      "conversation.search": () => ({
+        matches: [
+          {
+            conversation: "conv-1",
+            body: "कुछ खास शब्द खोजें",
+            languages: ["hi"],
+          },
+        ],
+      }),
+    });
+
+    const host = document.createElement("div");
+    await renderMessages(host);
+
+    const sInput = host.querySelector<HTMLInputElement>(".message-search-input")!;
+    expect(sInput).not.toBeNull();
+    sInput.value = "खास";
+    const sBtn = host.querySelector<HTMLButtonElement>(".message-search button")!;
+    expect(sBtn).not.toBeNull();
+    sBtn.click();
+
+    await vi.waitFor(() => expect(host.querySelector(".search-hit")).not.toBeNull());
+    const snippet = host.querySelector<HTMLElement>(".search-hit .snippet")!;
+    expect(snippet).not.toBeNull();
+    expect(snippet.getAttribute("lang")).toBe("hi");
+  });
 });

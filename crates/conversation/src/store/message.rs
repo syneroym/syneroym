@@ -17,6 +17,13 @@ use crate::dag::{parse_deletion_request, parse_refusal_notice};
 /// How many undecided rows one re-ask pass reads.
 pub(crate) const UNDECIDED_PER_PASS: u32 = 64;
 
+/// Every column `row_to_message` reads, in its order.
+pub(crate) const MESSAGE_COLUMNS: &str =
+    "id, conversation_id, author, sender_timestamp, received_at, content_type, body, signature, \
+     outgoing, verified, state, last_error, system, entry_id, admission, admission_reason, \
+     admission_changed_at, notify_attempts, next_notify_at, report_refusal, refused, deleted_at, \
+     restored, visible_seq, languages";
+
 pub(crate) fn is_searchable_content_type(ct: &str) -> bool {
     ct.starts_with("text/") || ct == "application/json" || ct.ends_with("+json")
 }
@@ -57,6 +64,7 @@ impl ConversationStore {
         author: &str,
         sender_timestamp_ms: i64,
         content_type: &str,
+        languages: &[String],
         body: &[u8],
         signature: &[u8; 64],
         peer_address: &str,
@@ -92,12 +100,12 @@ impl ConversationStore {
             let vseq = Self::next_visible_seq(tx, conversation_id)?;
             tx.execute(
                 "INSERT INTO messages (id, conversation_id, author, sender_timestamp, \
-                 received_at, content_type, body, signature, outgoing, verified, state, \
-                 last_error, system, entry_id, admission, admission_reason, admission_changed_at, \
-                 notify_attempts, next_notify_at, report_refusal, refused, deleted_at, restored, \
-                 visible_seq)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, 1, 'pending', NULL, ?9, NULL, \
-                 'accepted', NULL, ?5, 0, NULL, 0, NULL, NULL, 0, ?10)",
+                 received_at, content_type, languages, body, signature, outgoing, verified, \
+                 state, last_error, system, entry_id, admission, admission_reason, \
+                 admission_changed_at, notify_attempts, next_notify_at, report_refusal, refused, \
+                 deleted_at, restored, visible_seq)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 1, 1, 'pending', NULL, ?10, NULL, \
+                 'accepted', NULL, ?5, 0, NULL, 0, NULL, NULL, 0, ?11)",
                 params![
                     message_id,
                     conversation_id,
@@ -105,6 +113,7 @@ impl ConversationStore {
                     sender_timestamp_ms,
                     now_ms,
                     content_type,
+                    languages.join(" "),
                     body,
                     signature.as_slice(),
                     if system { 1i64 } else { 0i64 },
@@ -140,6 +149,7 @@ impl ConversationStore {
         author: &str,
         sender_timestamp_ms: i64,
         content_type: &str,
+        languages: &[String],
         body: &[u8],
         now_ms: i64,
         state: &str,
@@ -148,11 +158,11 @@ impl ConversationStore {
         let vseq = Self::next_visible_seq(&conn, conversation_id)?;
         conn.execute(
             "INSERT INTO messages (id, conversation_id, author, sender_timestamp, received_at, \
-             content_type, body, signature, outgoing, verified, state, last_error, system, \
-             entry_id, admission, admission_reason, admission_changed_at, notify_attempts, \
-             next_notify_at, report_refusal, refused, deleted_at, restored, visible_seq) VALUES \
-             (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, 1, ?9, NULL, 0, NULL, 'accepted', NULL, ?5, 0, \
-             NULL, 0, NULL, NULL, 0, ?10)",
+             content_type, languages, body, signature, outgoing, verified, state, last_error, \
+             system, entry_id, admission, admission_reason, admission_changed_at, \
+             notify_attempts, next_notify_at, report_refusal, refused, deleted_at, restored, \
+             visible_seq) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 1, 1, ?10, NULL, 0, NULL, \
+             'accepted', NULL, ?5, 0, NULL, 0, NULL, NULL, 0, ?11)",
             params![
                 message_id,
                 conversation_id,
@@ -160,6 +170,7 @@ impl ConversationStore {
                 sender_timestamp_ms,
                 now_ms,
                 content_type,
+                languages.join(" "),
                 body,
                 [0u8; 64].as_slice(),
                 state,
@@ -190,6 +201,7 @@ impl ConversationStore {
         author: &str,
         sender_timestamp_ms: i64,
         content_type: &str,
+        languages: &[String],
         body: &[u8],
         signature: &[u8; 64],
         now_ms: i64,
@@ -223,11 +235,11 @@ impl ConversationStore {
         let claim_ms = now_ms + (self.config.admission_claim_secs as i64 * 1000);
         let inserted = tx.execute(
             "INSERT OR IGNORE INTO messages (id, conversation_id, author, sender_timestamp, \
-             received_at, content_type, body, signature, outgoing, verified, state, last_error, \
-             system, entry_id, admission, admission_reason, admission_changed_at, \
+             received_at, content_type, languages, body, signature, outgoing, verified, state, \
+             last_error, system, entry_id, admission, admission_reason, admission_changed_at, \
              notify_attempts, next_notify_at, report_refusal, refused, deleted_at, restored, \
-             visible_seq) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, 1, 'delivered', NULL, 0, \
-             NULL, 'undecided', NULL, NULL, 0, ?9, 0, NULL, NULL, 0, 0)",
+             visible_seq) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, 1, 'delivered', NULL, 0, \
+             NULL, 'undecided', NULL, NULL, 0, ?10, 0, NULL, NULL, 0, 0)",
             params![
                 message_id,
                 conversation_id,
@@ -235,6 +247,7 @@ impl ConversationStore {
                 sender_timestamp_ms,
                 now_ms,
                 content_type,
+                languages.join(" "),
                 body,
                 signature.as_slice(),
                 claim_ms,
@@ -250,11 +263,7 @@ impl ConversationStore {
 
     fn query_message(conn: &Connection, id: &str) -> Result<Option<StoredMessage>> {
         conn.query_row(
-            "SELECT id, conversation_id, author, sender_timestamp, received_at, content_type, \
-             body, signature, outgoing, verified, state, last_error, system, entry_id, admission, \
-             admission_reason, admission_changed_at, notify_attempts, next_notify_at, \
-             report_refusal, refused, deleted_at, restored, visible_seq FROM messages WHERE id = \
-             ?1",
+            &format!("SELECT {MESSAGE_COLUMNS} FROM messages WHERE id = ?1"),
             params![id],
             row_to_message,
         )
@@ -567,14 +576,11 @@ impl ConversationStore {
 
     pub fn undecided_messages(&self, now_ms: i64) -> Result<Vec<StoredMessage>> {
         let conn = self.conn.lock().expect("conversation connection lock poisoned");
-        let mut stmt = conn.prepare(
-            "SELECT id, conversation_id, author, sender_timestamp, received_at, content_type, \
-             body, signature, outgoing, verified, state, last_error, system, entry_id, admission, \
-             admission_reason, admission_changed_at, notify_attempts, next_notify_at, \
-             report_refusal, refused, deleted_at, restored, visible_seq FROM messages WHERE \
-             admission = 'undecided' AND system = 0 AND (next_notify_at IS NULL OR next_notify_at \
-             <= ?1) ORDER BY next_notify_at ASC LIMIT ?2",
-        )?;
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {MESSAGE_COLUMNS} FROM messages WHERE admission = 'undecided' AND system = 0 \
+             AND (next_notify_at IS NULL OR next_notify_at <= ?1) ORDER BY next_notify_at ASC \
+             LIMIT ?2"
+        ))?;
         let mut rows = stmt.query(params![now_ms, UNDECIDED_PER_PASS])?;
         let mut out = Vec::new();
         while let Some(r) = rows.next()? {
@@ -642,13 +648,10 @@ impl ConversationStore {
 
     pub fn outbox_messages(&self) -> Result<Vec<StoredMessage>> {
         let conn = self.conn.lock().expect("conversation connection lock poisoned");
-        let mut stmt = conn.prepare(
-            "SELECT id, conversation_id, author, sender_timestamp, received_at, content_type, \
-             body, signature, outgoing, verified, state, last_error, system, entry_id, admission, \
-             admission_reason, admission_changed_at, notify_attempts, next_notify_at, \
-             report_refusal, refused, deleted_at, restored, visible_seq FROM messages WHERE state \
-             IN ('pending', 'deposited', 'failed') AND system = 0 ORDER BY sender_timestamp ASC",
-        )?;
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {MESSAGE_COLUMNS} FROM messages WHERE state IN ('pending', 'deposited', \
+             'failed') AND system = 0 ORDER BY sender_timestamp ASC"
+        ))?;
         let mut rows = stmt.query([])?;
         let mut out = Vec::new();
         while let Some(row) = rows.next()? {
@@ -708,6 +711,8 @@ pub(crate) fn row_to_message(row: &Row<'_>) -> rusqlite::Result<StoredMessage> {
     let state_str: String = row.get(10)?;
     let system: i64 = row.get(12)?;
     let entry_id: Option<String> = row.get(13)?;
+    let langs_raw: String = row.get(24)?;
+    let languages = langs_raw.split_ascii_whitespace().map(String::from).collect();
     Ok(StoredMessage {
         id: row.get(0)?,
         conversation_id: row.get(1)?,
@@ -715,6 +720,7 @@ pub(crate) fn row_to_message(row: &Row<'_>) -> rusqlite::Result<StoredMessage> {
         sender_timestamp_ms: row.get(3)?,
         received_at_ms: row.get(4)?,
         content_type: row.get(5)?,
+        languages,
         body,
         signature,
         outgoing: row.get::<_, i64>(8)? != 0,

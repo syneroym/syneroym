@@ -191,7 +191,7 @@ fn an_entry_whose_epoch_key_is_absent_stays_unapplied_and_applies_when_the_key_a
         1,
         vec![],
         &epoch_key,
-        &encode_body("text/plain", b"msg"),
+        &encode_body("text/plain", &[], b"msg"),
     )
     .unwrap();
 
@@ -403,7 +403,7 @@ fn row_7_joiner_cannot_decrypt_pre_join_and_removed_cannot_decrypt_post_removal(
         1,
         vec![],
         &epoch1_key,
-        &encode_body("text/plain", b"epoch 1 secret"),
+        &encode_body("text/plain", &[], b"epoch 1 secret"),
     )
     .unwrap();
     {
@@ -449,7 +449,7 @@ fn row_7_joiner_cannot_decrypt_pre_join_and_removed_cannot_decrypt_post_removal(
         3,
         vec![],
         &epoch3_key,
-        &encode_body("text/plain", b"epoch 3 secret"),
+        &encode_body("text/plain", &[], b"epoch 3 secret"),
     )
     .unwrap();
     let conn = s.conn().lock().unwrap();
@@ -621,7 +621,8 @@ async fn a_clock_offset_changes_only_signed_times() {
         .unwrap();
     service.add_member(owner, &group_id, "svc:bob").await.unwrap();
 
-    let msg_id = service.send(owner, &group_id, "text/plain", b"hello".to_vec()).await.unwrap();
+    let msg_id =
+        service.send(owner, &group_id, "text/plain", vec![], b"hello".to_vec()).await.unwrap();
     let msg = service.get_message(owner, &msg_id).await.unwrap();
 
     crate::test_support::clear_clock_offsets();
@@ -689,6 +690,7 @@ async fn get_message_hides_system_messages_host() {
             owner,
             store::now_ms(),
             "application/vnd.syneroym.group-key+json",
+            &[],
             b"secret-key-material",
             &[0u8; 64],
             "svc:bob",
@@ -721,7 +723,7 @@ async fn an_own_group_message_is_numbered_in_the_feed_and_searchable() {
     service.add_member(owner, &group_id, "svc:bob").await.unwrap();
 
     let id = service
-        .send(owner, &group_id, "text/plain", b"findable group text".to_vec())
+        .send(owner, &group_id, "text/plain", vec![], b"findable group text".to_vec())
         .await
         .unwrap();
 
@@ -751,7 +753,7 @@ async fn an_own_group_message_is_numbered_and_searchable_at_once() {
     service.add_member("svc:owner", &group_id, "svc:bob").await.unwrap();
 
     let id = service
-        .send("svc:owner", &group_id, "text/plain", b"lighthouse keeper".to_vec())
+        .send("svc:owner", &group_id, "text/plain", vec![], b"lighthouse keeper".to_vec())
         .await
         .unwrap();
 
@@ -764,3 +766,4 @@ async fn an_own_group_message_is_numbered_and_searchable_at_once() {
 }
 
 mod deletion;
+mod languages;

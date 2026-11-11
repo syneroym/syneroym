@@ -176,6 +176,7 @@ pub(crate) fn inbound(
         sender_timestamp: ts,
         received_at: ts,
         content_type: "text/plain".to_string(),
+        languages: vec![],
         body: body.as_bytes().to_vec(),
         state: ConversationDeliveryState::Delivered,
         verified: true,

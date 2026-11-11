@@ -171,7 +171,7 @@ describe("the messages screen, in Hindi", () => {
       "transaction.thread": () => ({ cards: [] }),
       "conversation.history": () => ({
         messages: [
-          message("m1", "delivered"),
+          message("m1", "delivered", { languages: ["hi"] }),
           message("m2", "deposited"),
           message("m3", "failed", { last_error: "Zq-error", refused: "rate-limited" }),
           message("m4", "pending", { direction: "incoming", refused: "Zq-reason" }),
@@ -263,7 +263,7 @@ describe("the groups screen, in Hindi", () => {
       "contacts.list": () => [],
       "conversation.history": () => ({
         messages: [
-          message("g-m1", "delivered", { conversation: "g1", direction: "outgoing" }),
+          message("g-m1", "delivered", { conversation: "g1", direction: "outgoing", languages: ["hi"] }),
           message("g-m2", "failed", { conversation: "g1" }),
           message("g-m3", "delivered", { conversation: "g1", deleted_at_secs: 5 }),
           message("g-m4", "delivered", {

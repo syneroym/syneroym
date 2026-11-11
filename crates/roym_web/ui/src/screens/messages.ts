@@ -1,5 +1,7 @@
+import { messageLang, messageText } from "../chat/message_text";
 import { errText, field, refiller, text } from "../dom";
 import { codeWord, currentLanguage, messageId, t } from "../i18n/i18n";
+import { languageList } from "../i18n/language_list";
 import { textLangSelect } from "../i18n/text_lang";
 import { onFeed } from "../events";
 import { call, RpcError } from "../rpc";
@@ -52,6 +54,7 @@ interface MessageRow {
   refused?: string | null;
   restored?: boolean;
   deleted_at_secs?: number;
+  languages?: string[];
 }
 
 export interface CardRow {
@@ -149,7 +152,9 @@ export async function renderMessages(container: HTMLElement, currentDid?: string
       for (const h of hits) {
         const item = document.createElement("div");
         item.className = "search-hit";
-        item.appendChild(text("div", h.snippet, "snippet"));
+        const snip = text("div", h.snippet, "snippet") as HTMLElement;
+        snip.setAttribute("lang", messageLang(h.languages ?? []));
+        item.appendChild(snip);
         item.onclick = () => reloadList(h.conversation);
         into.appendChild(item);
       }
@@ -284,13 +289,30 @@ async function renderThread(
   composeInput.className = "compose-input";
   const sendBtn = text("button", t("messages-send-button"), "button") as HTMLButtonElement;
   const composeErr = text("p", "", "compose-error");
+
+  const langList = languageList(
+    "messages",
+    3,
+    [currentLanguage()],
+    {
+      add: t("messages-languages-add"),
+      moveUp: t("messages-languages-move-up"),
+      remove: t("messages-languages-remove"),
+    },
+    t("messages-languages-label"),
+  );
+
   sendBtn.onclick = async () => {
     composeErr.textContent = "";
     const body = composeInput.value;
     if (!body.trim()) return;
     sendBtn.disabled = true;
     try {
-      await call("conversation.send", { conversation: conv.id, body });
+      await call("conversation.send", {
+        conversation: conv.id,
+        body,
+        languages: langList.value(),
+      });
       composeInput.value = "";
       await fillHistory();
     } catch (err) {
@@ -298,7 +320,10 @@ async function renderThread(
     }
     sendBtn.disabled = false;
   };
-  composeRow.append(composeInput, sendBtn, composeErr);
+  const langField = document.createElement("div");
+  langField.className = "field";
+  langField.append(text("span", t("messages-languages-label")), langList.root);
+  composeRow.append(composeInput, sendBtn, composeErr, langField);
   pane.appendChild(composeRow);
 
   // --- Send a request section -----------------------------------------------
@@ -526,12 +551,13 @@ function messageElement(
     } else {
       wrap.appendChild(renderRefusedCard("card", 1, t("messages-unfiled-card")));
     }
+  } else if (m.deleted_at_secs != null) {
+    wrap.appendChild(text("span", t("messages-message-deleted"), "message-body deleted"));
+  } else if (m.body_encoding === "utf8") {
+    const nodes = messageText(m.body ?? t("messages-no-body"), m.languages ?? [], "span");
+    wrap.append(...nodes);
   } else {
-    if (m.deleted_at_secs != null) {
-      wrap.appendChild(text("span", t("messages-message-deleted"), "message-body deleted"));
-    } else {
-      wrap.appendChild(text("span", m.body ?? t("messages-no-body"), "message-body"));
-    }
+    wrap.appendChild(text("span", m.body ?? t("messages-no-body"), "message-body"));
   }
 
   // The state word is exactly what the API returned -- never inferred, and

@@ -150,7 +150,11 @@ async fn roym_conversation_survives_restarts_blocks_and_round_trips() {
     let sent = node_a
         .rpc_ok(
             "conversation.send",
-            json!({ "conversation": conversation_id, "body": "hello from A" }),
+            json!({
+                "conversation": conversation_id,
+                "body": "hello from A",
+                "languages": ["hi", "en"]
+            }),
         )
         .await;
     let message_id = sent["message_id"].as_str().unwrap().to_string();
@@ -185,6 +189,7 @@ async fn roym_conversation_survives_restarts_blocks_and_round_trips() {
         node_a.rpc_ok("conversation.history", json!({ "conversation": conversation_id })).await;
     assert_eq!(history_messages(&a_hist)[0]["state"], "delivered");
     assert_eq!(history_messages(&a_hist)[0]["body"], "hello from A");
+    assert_eq!(history_messages(&a_hist)[0]["languages"], json!(["hi", "en"]));
 
     let b_conversations = node_b.rpc_ok("conversation.list", json!({})).await;
     let b_conv_id = b_conversations["conversations"][0]["id"].as_str().unwrap().to_string();
@@ -192,6 +197,7 @@ async fn roym_conversation_survives_restarts_blocks_and_round_trips() {
     let b_msgs = history_messages(&b_hist);
     assert_eq!(b_msgs.len(), 1, "B holds exactly the one message: {b_hist}");
     assert_eq!(b_msgs[0]["body"], "hello from A");
+    assert_eq!(b_msgs[0]["languages"], json!(["hi", "en"]));
     assert_eq!(b_msgs[0]["id"], message_id, "the same host message id on both sides");
 
     // --- Step 10: B blocks A's address; A sends again. The host stores and

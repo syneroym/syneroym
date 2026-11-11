@@ -106,6 +106,7 @@ async fn a_mismatched_author_in_the_payload_is_refused() {
         "c-address",
         1_000,
         "text/plain",
+        &[],
         b"hi",
     );
     let forged_payload = DeliveryPayload {
@@ -114,6 +115,7 @@ async fn a_mismatched_author_in_the_payload_is_refused() {
         author: "c-address".to_string(),
         sender_timestamp_ms: 1_000,
         content_type: "text/plain".to_string(),
+        languages: vec![],
         body: b"hi".to_vec(),
         signature: forged_sig,
     };
@@ -158,6 +160,7 @@ async fn self_injection_via_same_service_is_refused() {
         "b-address", // author == receiver
         1_000,
         "text/plain",
+        &[],
         b"hi",
     );
     let self_payload = DeliveryPayload {
@@ -166,6 +169,7 @@ async fn self_injection_via_same_service_is_refused() {
         author: "b-address".to_string(),
         sender_timestamp_ms: 1_000,
         content_type: "text/plain".to_string(),
+        languages: vec![],
         body: b"hi".to_vec(),
         signature: self_sig,
     };
@@ -223,6 +227,7 @@ async fn group_key_payload_claiming_a_different_owner_than_the_signer_is_rejecte
         "attacker",
         1_000,
         crate::dag::GROUP_KEY_CONTENT_TYPE,
+        &[],
         &body,
     );
     let payload = DeliveryPayload {
@@ -231,6 +236,7 @@ async fn group_key_payload_claiming_a_different_owner_than_the_signer_is_rejecte
         author: "attacker".to_string(),
         sender_timestamp_ms: 1_000,
         content_type: crate::dag::GROUP_KEY_CONTENT_TYPE.to_string(),
+        languages: vec![],
         body,
         signature: sig,
     };
@@ -303,6 +309,7 @@ fn pending_message(id: &str, body: &[u8]) -> StoredMessage {
         sender_timestamp_ms: 1_000,
         received_at_ms: 1_000,
         content_type: "text/plain".to_string(),
+        languages: vec![],
         body: body.to_vec(),
         signature: [0u8; 64],
         outgoing: true,
@@ -487,8 +494,10 @@ async fn a_removed_member_catches_up_on_messages_from_before_its_removal() {
         .unwrap();
 
     service.add_member(owner, &group_id, bob).await.unwrap();
-    let msg_id =
-        service.send(owner, &group_id, "text/plain", b"pre-removal".to_vec()).await.unwrap();
+    let msg_id = service
+        .send(owner, &group_id, "text/plain", vec![], b"pre-removal".to_vec())
+        .await
+        .unwrap();
     service.remove_member(owner, &group_id, bob).await.unwrap();
 
     let req = GroupSyncRequest {

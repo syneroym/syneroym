@@ -42,6 +42,7 @@ fn import_rejects_invalid_admission_and_state() {
             sender_timestamp: 1000,
             received_at: 1000,
             content_type: "text/plain".to_string(),
+            languages: vec![],
             body: vec![],
             signature: [0u8; 64],
             outgoing: false,
@@ -75,6 +76,7 @@ fn transcript_digest_changes_when_messages_are_added() {
         "did:key:zMe",
         now,
         "text/plain",
+        &[],
         b"hello transcript",
         &[0u8; 64],
         "did:key:zPeer",
@@ -98,6 +100,7 @@ fn transcript_digest_changes_when_messages_are_added() {
             "did:key:zPeer",
             now + 1,
             "text/plain",
+            &[],
             b"second message",
             &[0u8; 64],
             now + 1,
@@ -142,6 +145,7 @@ fn node_with_history(messages: usize) -> (ConversationStore, String) {
             ME,
             1_000 + i as i64,
             "text/plain",
+            &[],
             format!("message number {i:04} about topic{i:04}").as_bytes(),
             1_000 + i as i64,
             "delivered",
@@ -215,4 +219,43 @@ fn a_reimported_message_is_searchable_under_its_own_row() {
     let found = fresh.search("topic0001", None, 10).unwrap();
     assert_eq!(found.len(), 1);
     assert_eq!(found[0].id, "m:0001");
+}
+
+#[test]
+fn backup_roundtrip_preserves_language_tags_and_rejects_non_canonical() {
+    let s = store();
+    let conv_id = derive_conversation_id(ME, PEER);
+    let conv = s.get_or_create_direct(PEER, &conv_id, 1_000).unwrap();
+    let langs = vec!["hi".to_string(), "en".to_string()];
+    s.insert_outgoing_without_enqueue(
+        &conv,
+        "m:lang_msg",
+        ME,
+        1_000,
+        "text/plain",
+        &langs,
+        b"hello multilingual",
+        1_000,
+        "delivered",
+    )
+    .unwrap();
+
+    let chunks = export_all(&s);
+    assert_eq!(chunks.len(), 2);
+
+    // Import into fresh store
+    let fresh = store();
+    for chunk in &chunks {
+        fresh.import_history(ME, chunk).unwrap();
+    }
+    let restored = fresh.get_message("m:lang_msg").unwrap().unwrap();
+    assert_eq!(restored.languages, langs);
+
+    // Non-canonical tag in backup is rejected on import
+    let mut bad_chunk: BackupBundle = serde_json::from_slice(&chunks[1]).unwrap();
+    assert!(!bad_chunk.messages.is_empty());
+    bad_chunk.messages[0].languages = vec!["INVALID_TAG!".to_string()];
+    let bad_data = serde_json::to_vec(&bad_chunk).unwrap();
+    let err = fresh.import_history(ME, &bad_data);
+    assert!(err.is_err(), "backup with invalid language tags must be rejected");
 }

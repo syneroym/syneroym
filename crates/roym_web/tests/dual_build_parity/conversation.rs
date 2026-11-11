@@ -27,7 +27,7 @@ async fn scenario_53_conversation_send_is_never_optimistic_parity() {
     let (sw, sn) = both_rpc(
         &h,
         "conversation.send",
-        json!({ "conversation": conv_id, "body": "hello there" }),
+        json!({ "conversation": conv_id, "body": "hello there", "languages": ["hi", "en"] }),
     )
     .await;
     assert_eq!(sw["result"]["state"], "pending");
@@ -43,6 +43,7 @@ async fn scenario_53_conversation_send_is_never_optimistic_parity() {
     assert_eq!(cn, 1);
     assert_eq!(hw, hn);
     assert_eq!(hw["result"]["messages"][0]["state"], "pending");
+    assert_eq!(hw["result"]["messages"][0]["languages"], json!(["hi", "en"]));
 }
 
 #[tokio::test]

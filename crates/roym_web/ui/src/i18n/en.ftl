@@ -82,6 +82,7 @@ record-text-original = Original text, in { $language }.
 record-text-original-binds = The original text, in { $language }, is what binds.
 record-text-show-original = Show the original
 record-text-show-translation = Show the author's translation
+chat-text-not-stated = Language not stated
 
 # Cards. A label that is followed by a value of another kind (a link, a
 # time) has no `$value`: the card draws the value after it.
@@ -468,6 +469,10 @@ messages-count = { $count } messages
 messages-compose-placeholder = Write a message
 messages-send-button = Send
 messages-send-failed = Send failed: { $detail }
+messages-languages-label = Message languages
+messages-languages-add = Add a language
+messages-languages-move-up = Move up
+messages-languages-remove = Remove
 request-toggle-button = Send a request
 request-text-language = Text language
 request-description-placeholder = Describe what you need
@@ -555,6 +560,10 @@ group-unhide-button = Unhide
 group-load-failed = Could not load group: { $detail }
 group-compose-placeholder = Write a message...
 group-send-button = Send
+group-languages-label = Message languages
+group-languages-add = Add a language
+group-languages-move-up = Move up
+group-languages-remove = Remove
 group-rename-placeholder = New name
 group-rename-button = Rename
 group-owner-line = Owner: { $owner }

@@ -1,6 +1,9 @@
 import { expect, test } from '@playwright/test';
 import { readDemoEnv } from '../demo-nodes';
-import { addListingTranslation, chooseHubLanguage, hubMessage, loginWithDelegatedKey, pickCategory } from '../hub-helpers';
+import {
+  addListingTranslation, addMessageLanguage, chooseHubLanguage, hubMessage, loginWithDelegatedKey,
+  openConversation, openMessages, pickCategory, sendMessage,
+} from '../hub-helpers';
 import { requireEnv, step } from './steps';
 
 const SCRIPT = '20-roym-setup.sh';
@@ -14,6 +17,7 @@ test('Roym languages story: Alice reads her Hub in Hindi, and it stays Hindi', a
   const env = readDemoEnv();
   const hub = requireEnv(env, 'ALICE_HUB_URL', SCRIPT);
   const key = requireEnv(env, 'ALICE_KEY', SCRIPT);
+  const bobAddr = requireEnv(env, 'BOB_ADDR', SCRIPT);
   const profileTab = page.locator('.tab-button').first();
 
   await step(page, "Alice's screen: sign in", async () => {
@@ -57,5 +61,22 @@ test('Roym languages story: Alice reads her Hub in Hindi, and it stays Hindi', a
     await expect(page.locator('.listing-text-lang')).toHaveValue('hi');
     await addListingTranslation(page, 'en', 'Garden work', 'hi');
     await expect(page.locator('.listing-translation-title').last()).toHaveValue('Garden work');
+  });
+
+  await step(page, "Alice's screen: send Bob a chat message tagged with Hindi and English", async () => {
+    await openMessages(page, 'hi');
+    await openConversation(page, bobAddr, 'hi');
+    const firstRowName = page.locator('.messages-language-row .messages-language-name').first();
+    await expect(firstRowName).toHaveText('हिन्दी');
+
+    await addMessageLanguage(page, 'en');
+    await expect(page.locator('.messages-language-row')).toHaveCount(2);
+    const runTag = Date.now().toString(36);
+    const msg = `नमस्ते Bob, see you at the garden (${runTag})`;
+    await sendMessage(page, msg, 'hi');
+
+    const body = page.locator('.thread-messages .message .message-body', { hasText: msg }).first();
+    await expect(body).toBeVisible({ timeout: 15_000 });
+    await expect(body).toHaveAttribute('lang', 'hi');
   });
 });

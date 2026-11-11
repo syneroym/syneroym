@@ -80,3 +80,67 @@ fn display_and_as_ref_and_from_str() {
     assert_eq!(tag.as_ref().map(LangTag::to_string), Ok("hi-Latn".to_string()));
     assert_eq!(tag.as_ref().map(|t| t.as_ref()), Ok("hi-Latn"));
 }
+
+#[test]
+fn check_tag_list_enforces_count_and_uniqueness() {
+    let empty: [LangTag; 0] = [];
+    assert_eq!(check_tag_list(&empty, MAX_MESSAGE_LANGUAGES), Ok(()));
+
+    let one = [LangTag::parse("hi").expect("valid tag")];
+    assert_eq!(check_tag_list(&one, MAX_MESSAGE_LANGUAGES), Ok(()));
+
+    let three = [
+        LangTag::parse("hi").expect("valid tag"),
+        LangTag::parse("en").expect("valid tag"),
+        LangTag::parse("ta").expect("valid tag"),
+    ];
+    assert_eq!(check_tag_list(&three, MAX_MESSAGE_LANGUAGES), Ok(()));
+
+    let four = [
+        LangTag::parse("hi").expect("valid tag"),
+        LangTag::parse("en").expect("valid tag"),
+        LangTag::parse("ta").expect("valid tag"),
+        LangTag::parse("mr").expect("valid tag"),
+    ];
+    assert_eq!(check_tag_list(&four, MAX_MESSAGE_LANGUAGES), Err(TagListError::TooMany(3)));
+
+    let dup = [LangTag::parse("hi").expect("valid tag"), LangTag::parse("hi").expect("valid tag")];
+    assert_eq!(
+        check_tag_list(&dup, MAX_MESSAGE_LANGUAGES),
+        Err(TagListError::Duplicate("hi".into()))
+    );
+
+    let distinct =
+        [LangTag::parse("hi").expect("valid tag"), LangTag::parse("hi-IN").expect("valid tag")];
+    assert_eq!(check_tag_list(&distinct, MAX_MESSAGE_LANGUAGES), Ok(()));
+}
+
+#[test]
+fn parse_message_languages_validates_tags_and_list() {
+    let two = vec!["hi".to_string(), "en".to_string()];
+    let res = parse_message_languages(&two).expect("valid tags");
+    assert_eq!(res.len(), 2);
+    assert_eq!(res[0].as_str(), "hi");
+    assert_eq!(res[1].as_str(), "en");
+
+    let non_canon = vec!["HI".to_string()];
+    assert_eq!(
+        parse_message_languages(&non_canon),
+        Err(MessageLanguagesError::Tag(LangTagError::NotCanonical {
+            given: "HI".into(),
+            canonical: "hi".into(),
+        }))
+    );
+
+    let malformed = vec!["hi_IN".to_string()];
+    assert_eq!(
+        parse_message_languages(&malformed),
+        Err(MessageLanguagesError::Tag(LangTagError::Malformed("hi_IN".into())))
+    );
+
+    let four = vec!["hi".into(), "en".into(), "ta".into(), "mr".into()];
+    assert_eq!(
+        parse_message_languages(&four),
+        Err(MessageLanguagesError::List(TagListError::TooMany(3)))
+    );
+}
