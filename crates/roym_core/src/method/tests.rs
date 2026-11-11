@@ -12,6 +12,7 @@ use syneroym_app_host::{
 };
 use syneroym_identity::{Identity, substrate::derive_did_key};
 use syneroym_signed_record::{DelegationCertificate, SCOPE_RECORD_SIGNING};
+use syneroym_text_lang::LangTag;
 
 use super::{
     MethodInfo, NoParams, ParamError, Reply, SiblingError, VerifyInput, call_sibling,
@@ -512,7 +513,7 @@ fn send_input_serializes_without_languages_when_empty() {
         conversation: "conv-1".to_string(),
         body: "hello".to_string(),
         content_type: None,
-        languages: vec![syneroym_text_lang::LangTag::parse("hi").unwrap()],
+        languages: vec![LangTag::parse("hi").unwrap()],
     };
     let val_with_lang = serde_json::to_value(&input_with_lang).unwrap();
     assert_eq!(val_with_lang["languages"], json!(["hi"]));
