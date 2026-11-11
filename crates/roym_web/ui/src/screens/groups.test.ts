@@ -453,6 +453,56 @@ describe("Groups screen rendering", () => {
     expect((lastSendParams as SendParams | undefined)?.languages).toEqual([]);
   });
 
+  it("click on group language list label or language name does not remove language", async () => {
+    stubRpc({
+      "conversation.list": () => ({
+        conversations: [
+          {
+            id: "grp-1",
+            kind: "group",
+            message_count: 0,
+            group: { name: "Garden Group", admission: { state: "shown" } },
+          },
+        ],
+      }),
+      "group.info": () => ({
+        id: "grp-1",
+        name: "Garden Group",
+        owner_address: "did:key:zAlice",
+        is_owner: true,
+        is_member: true,
+        restored_only: false,
+        key_epoch: 1,
+        key_stored_at_ms: 0,
+        members: [{ address: "did:key:zAlice", is_owner: true }],
+      }),
+      "conversation.transcript-digest": () => ({ digest: "abcdef123456" }),
+      "contacts.list": () => [],
+      "conversation.history": () => ({ messages: [] }),
+    });
+    const host = document.createElement("div");
+    await renderGroups(host);
+
+    await vi.waitFor(() => {
+      expect(host.querySelectorAll(".group-language-row")).toHaveLength(1);
+    });
+
+    let rows = host.querySelectorAll(".group-language-row");
+    expect(rows[0].querySelector(".group-language-name")?.textContent).toBe("English");
+
+    // Click on language name
+    const langName = rows[0].querySelector<HTMLElement>(".group-language-name")!;
+    langName.click();
+    rows = host.querySelectorAll(".group-language-row");
+    expect(rows).toHaveLength(1);
+
+    // Click on field label text
+    const labelSpan = host.querySelector<HTMLElement>(".group-languages-list")?.parentElement?.querySelector("span");
+    labelSpan?.click();
+    rows = host.querySelectorAll(".group-language-row");
+    expect(rows).toHaveLength(1);
+  });
+
   it("renderMessageRow sets lang attribute and note, and omits note for binary messages", () => {
     // 1. Tagged text message
     const msgTa: GroupMessageRow = {

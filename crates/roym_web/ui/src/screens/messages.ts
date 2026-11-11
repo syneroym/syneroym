@@ -320,7 +320,9 @@ async function renderThread(
     }
     sendBtn.disabled = false;
   };
-  const langField = field(t("messages-languages-label"), langList.root);
+  const langField = document.createElement("div");
+  langField.className = "field";
+  langField.append(text("span", t("messages-languages-label")), langList.root);
   composeRow.append(composeInput, sendBtn, composeErr, langField);
   pane.appendChild(composeRow);
 

@@ -463,7 +463,9 @@ export async function renderGroups(container: HTMLElement) {
       sendInput.onkeydown = (e) => {
         if (e.key === "Enter") doSend();
       };
-      const langField = field(t("group-languages-label"), langList.root);
+      const langField = document.createElement("div");
+      langField.className = "field";
+      langField.append(text("span", t("group-languages-label")), langList.root);
       composerBox.append(sendInput, sendBtn, sendErr, langField);
     }
     threadCol.appendChild(composerBox);

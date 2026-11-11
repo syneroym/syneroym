@@ -538,6 +538,37 @@ describe("request form category picker reset", () => {
     await vi.waitFor(() => expect(sendBtn.disabled).toBe(false));
   });
 
+  it("click on language list label or language name does not remove language", async () => {
+    stubRpc({
+      whoami: () => ({ person_did: "did:key:me" }),
+      "conversation.list": () => ({
+        conversations: [{ id: "conv-1", peer_address: "peer-1", message_count: 0 }],
+      }),
+      "transaction.sync": () => ({}),
+      "transaction.thread": () => ({ cards: [] }),
+      "conversation.history": () => ({ messages: [] }),
+    });
+
+    const host = document.createElement("div");
+    await renderMessages(host);
+
+    let rows = host.querySelectorAll(".messages-language-row");
+    expect(rows).toHaveLength(1);
+    expect(rows[0].querySelector(".messages-language-name")?.textContent).toBe("English");
+
+    // Click on language name
+    const langName = rows[0].querySelector<HTMLElement>(".messages-language-name")!;
+    langName.click();
+    rows = host.querySelectorAll(".messages-language-row");
+    expect(rows).toHaveLength(1);
+
+    // Click on field label text
+    const labelSpan = host.querySelector<HTMLElement>(".messages-languages-list")?.parentElement?.querySelector("span");
+    labelSpan?.click();
+    rows = host.querySelectorAll(".messages-language-row");
+    expect(rows).toHaveLength(1);
+  });
+
   it("renders lang attribute and note on messages appropriately", async () => {
     stubRpc({
       whoami: () => ({ person_did: "did:key:me" }),
