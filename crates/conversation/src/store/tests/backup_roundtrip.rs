@@ -252,8 +252,7 @@ fn backup_roundtrip_preserves_language_tags_and_rejects_non_canonical() {
     assert_eq!(restored.languages, langs);
 
     // Non-canonical tag in backup is rejected on import
-    let mut bad_chunk: crate::store::backup::BackupBundle =
-        serde_json::from_slice(&chunks[1]).unwrap();
+    let mut bad_chunk: BackupBundle = serde_json::from_slice(&chunks[1]).unwrap();
     assert!(!bad_chunk.messages.is_empty());
     bad_chunk.messages[0].languages = vec!["INVALID_TAG!".to_string()];
     let bad_data = serde_json::to_vec(&bad_chunk).unwrap();

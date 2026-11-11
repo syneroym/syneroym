@@ -1,6 +1,8 @@
 //! DAG entry representation, canonical byte encoding, AEAD sealing,
 //! and wire structures for group conversation delivery and synchronization.
 
+use std::str;
+
 use aes_gcm::{
     Aes256Gcm, Key, Nonce,
     aead::{Aead, KeyInit, Payload},
@@ -8,6 +10,9 @@ use aes_gcm::{
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use serde_json::Value;
 use syneroym_rpc::ConversationError;
+use syneroym_text_lang::parse_message_languages;
+
+use crate::envelope;
 
 pub const MAX_PARENTS: usize = 8;
 pub const GROUP_KEY_CONTENT_TYPE: &str = "application/vnd.syneroym.group-key+json";
@@ -293,20 +298,14 @@ pub fn encode_body(content_type: &str, languages: &[String], body: &[u8]) -> Vec
     let mut out = Vec::with_capacity(8 + content_type.len() + 8 + body.len());
     out.extend_from_slice(&(content_type.len() as u64).to_be_bytes());
     out.extend_from_slice(content_type.as_bytes());
-    crate::envelope::put_languages(&mut out, languages);
+    envelope::put_languages(&mut out, languages);
     out.extend_from_slice(body);
     out
 }
 
 pub fn decode_body(encoded: &[u8]) -> Result<(String, Vec<String>, Vec<u8>), String> {
     let mut at = 0usize;
-    let ct_len_end = at.checked_add(8).ok_or_else(|| "offset overflow".to_string())?;
-    let len_bytes =
-        encoded.get(at..ct_len_end).ok_or_else(|| "encoded body too short".to_string())?;
-    let ct_len_u64 = u64::from_be_bytes(
-        len_bytes.try_into().map_err(|_| "slice conversion failed".to_string())?,
-    );
-    at = ct_len_end;
+    let ct_len_u64 = envelope::take_u64(encoded, &mut at)?;
 
     let ct_len =
         usize::try_from(ct_len_u64).map_err(|_| "content_type length overflow".to_string())?;
@@ -314,13 +313,12 @@ pub fn decode_body(encoded: &[u8]) -> Result<(String, Vec<String>, Vec<u8>), Str
     let ct_bytes = encoded.get(at..ct_end).ok_or_else(|| "encoded body truncated".to_string())?;
     at = ct_end;
 
-    let content_type = std::str::from_utf8(ct_bytes)
+    let content_type = str::from_utf8(ct_bytes)
         .map_err(|e| format!("invalid utf-8 in content_type: {e}"))?
         .to_string();
 
-    let languages = crate::envelope::take_languages(encoded, &mut at)?;
-    syneroym_text_lang::parse_message_languages(&languages)
-        .map_err(|e| format!("invalid message languages: {e}"))?;
+    let languages = envelope::take_languages(encoded, &mut at)?;
+    parse_message_languages(&languages).map_err(|e| format!("invalid message languages: {e}"))?;
 
     let body_bytes = encoded.get(at..).ok_or_else(|| "encoded body truncated".to_string())?;
     let body = body_bytes.to_vec();
@@ -540,7 +538,7 @@ mod tests {
         let mut b_non_canon = Vec::new();
         b_non_canon.extend_from_slice(&(10u64).to_be_bytes());
         b_non_canon.extend_from_slice(b"text/plain");
-        crate::envelope::put_languages(&mut b_non_canon, &["HI".to_string()]);
+        envelope::put_languages(&mut b_non_canon, &["HI".to_string()]);
         assert!(decode_body(&b_non_canon).is_err());
 
         // ct_len = u64::MAX does not panic

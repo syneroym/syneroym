@@ -2,7 +2,10 @@
 //! encoding. This is what a ratchet session encrypts and what the receiver
 //! verifies — attribution is signature-based, never transport-based.
 
+use std::str;
+
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use syneroym_text_lang::{MAX_MESSAGE_LANGUAGES, MAX_TAG_LEN};
 
 /// What one ratchet session carries per message, before encryption and
 /// after decryption. Signed as a whole (`sign`/`verify` below) under the
@@ -33,40 +36,35 @@ pub(crate) fn put_languages(out: &mut Vec<u8>, languages: &[String]) {
     }
 }
 
+/// Reads a big-endian `u64` from `bytes[*at..]` and advances `at` by 8.
+pub(crate) fn take_u64(bytes: &[u8], at: &mut usize) -> Result<u64, String> {
+    let end = at.checked_add(8).ok_or_else(|| "offset overflow".to_string())?;
+    let slice = bytes.get(*at..end).ok_or_else(|| "unexpected end of buffer".to_string())?;
+    let val =
+        u64::from_be_bytes(slice.try_into().map_err(|_| "slice conversion failed".to_string())?);
+    *at = end;
+    Ok(val)
+}
+
 /// The reverse of `put_languages`, reading from `bytes[*at..]` and moving
 /// `at`. Fails on a short buffer, a count over MAX_MESSAGE_LANGUAGES,
 /// an offset overflow or a tag that is not UTF-8.
 pub(crate) fn take_languages(bytes: &[u8], at: &mut usize) -> Result<Vec<String>, String> {
-    let count_end = at.checked_add(8).ok_or_else(|| "offset overflow".to_string())?;
-    let count_bytes = bytes
-        .get(*at..count_end)
-        .ok_or_else(|| "unexpected end of buffer reading language count".to_string())?;
-    let count_u64 = u64::from_be_bytes(
-        count_bytes.try_into().map_err(|_| "slice conversion failed".to_string())?,
-    );
-    *at = count_end;
+    let count_u64 = take_u64(bytes, at)?;
 
-    if count_u64 > syneroym_text_lang::MAX_MESSAGE_LANGUAGES as u64 {
+    if count_u64 > MAX_MESSAGE_LANGUAGES as u64 {
         return Err(format!(
             "language count {} exceeds maximum {}",
-            count_u64,
-            syneroym_text_lang::MAX_MESSAGE_LANGUAGES
+            count_u64, MAX_MESSAGE_LANGUAGES
         ));
     }
     let count = usize::try_from(count_u64).map_err(|_| "count overflow".to_string())?;
 
     let mut languages = Vec::with_capacity(count);
     for _ in 0..count {
-        let len_end = at.checked_add(8).ok_or_else(|| "offset overflow".to_string())?;
-        let len_bytes = bytes
-            .get(*at..len_end)
-            .ok_or_else(|| "unexpected end of buffer reading tag length".to_string())?;
-        let tag_len_u64 = u64::from_be_bytes(
-            len_bytes.try_into().map_err(|_| "slice conversion failed".to_string())?,
-        );
-        *at = len_end;
+        let tag_len_u64 = take_u64(bytes, at)?;
 
-        if tag_len_u64 > syneroym_text_lang::MAX_TAG_LEN as u64 {
+        if tag_len_u64 > MAX_TAG_LEN as u64 {
             return Err("tag length exceeds maximum".to_string());
         }
         let tag_len =
@@ -78,7 +76,7 @@ pub(crate) fn take_languages(bytes: &[u8], at: &mut usize) -> Result<Vec<String>
             .ok_or_else(|| "unexpected end of buffer reading tag".to_string())?;
         *at = tag_end;
 
-        let tag = std::str::from_utf8(tag_bytes)
+        let tag = str::from_utf8(tag_bytes)
             .map_err(|_| "invalid UTF-8 in language tag".to_string())?
             .to_string();
         languages.push(tag);

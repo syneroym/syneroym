@@ -5,6 +5,7 @@ use syneroym_rpc::{
     ConversationGroupInfo, ConversationHistoryPage, ConversationHost, ConversationKind,
     ConversationMessage, ConversationSummary, ConversationTranscript,
 };
+use syneroym_text_lang::parse_message_languages;
 use tokio::task;
 
 use crate::{
@@ -81,11 +82,6 @@ impl ConversationHost for ConversationService {
         languages: Vec<String>,
         body: Vec<u8>,
     ) -> Result<String, ConversationError> {
-        let canonical_tags = syneroym_text_lang::parse_message_languages(&languages)
-            .map_err(|e| ConversationError::InvalidArgument(format!("message languages: {e}")))?;
-        let canonical_languages: Vec<String> =
-            canonical_tags.into_iter().map(|t| t.to_string()).collect();
-
         // Reject the host's own reserved content types so apps cannot send
         // system messages and have them treated as ordinary visible rows.
         if content_type == DELETION_REQUEST_CONTENT_TYPE
@@ -95,6 +91,10 @@ impl ConversationHost for ConversationService {
                 "this content type is reserved".to_string(),
             ));
         }
+
+        parse_message_languages(&languages)
+            .map_err(|e| ConversationError::InvalidArgument(format!("message languages: {e}")))?;
+
         let store = self.store_for(service_id).await.map_err(internal)?;
         if body.len() as u32 > store.config().max_body_bytes {
             return Err(ConversationError::QuotaExceeded);
@@ -105,7 +105,7 @@ impl ConversationHost for ConversationService {
             .ok_or(ConversationError::NotFound)?;
         if conv.kind == ConversationKind::Group {
             return self
-                .send_group(service_id, &store, &conv, content_type, &canonical_languages, &body)
+                .send_group(service_id, &store, &conv, content_type, &languages, &body)
                 .await;
         }
         let peer_address = conv.peer_address.ok_or_else(|| {
@@ -118,7 +118,7 @@ impl ConversationHost for ConversationService {
             service_id,
             &peer_address,
             content_type,
-            &canonical_languages,
+            &languages,
             &body,
             false,
         )
