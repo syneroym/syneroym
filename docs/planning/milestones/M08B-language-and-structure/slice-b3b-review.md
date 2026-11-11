@@ -634,7 +634,7 @@ Checked on `feat/m08b-b3b-chat-lang-tags` at `fda83d26`, in the main checkout.
 against its fix commit.
 
 **Summary:** round 1: 8 Fixed, all confirmed. Round 2: 0 blocker, 0 major,
-1 minor (R9). 1 Open.
+1 minor (R9). 0 Open, 1 Fixed.
 
 ### What was checked and found correct
 
@@ -709,7 +709,7 @@ against its fix commit.
   `.composer-box .field > span`), with
   `!` instead of `?.`, and assert its text is "Message languages" before the
   click. Import `test_service` with a `use`.
-- *Status:* Open
+- *Status:* Fixed (9b7ae2d8, 67be046a). Proof: targeted the label span directly via `.compose-row .field > span` (and `.composer-box .field > span`), asserted `textContent === "Message languages"`, and clicked; broke locally by replacing `<div class="field">` with `<label class="field">` in `messages.ts` and observed `AssertionError: expected to have a length of 1 but got 0` on clicking the label; verified passes after restoring `<div class="field">`.
 
 Note, not a finding: the PR text says "`mise run verify` passed all 16 gates
 in pre-review pass" and gives 445 Hub tests. The pre-review run had 443; 445
