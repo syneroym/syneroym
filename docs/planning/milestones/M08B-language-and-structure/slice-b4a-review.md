@@ -604,3 +604,132 @@ but my advice for it was wrong (P15). All 3 new items (P15, P16, P17) Fixed (13c
   miniapp_demo1_wasm_e2e` (sandbox off, as the other e2e tests need) to Step
   4.5.
 - *Status:* Fixed (13ce6aa8). Now in: Step 4 item 5; section 7.2 (Step 4.5 component tests).
+
+## Plan review round 3 (check of rounds 1 and 2 and their closure) — Claude Opus 5.5, 2026-11-11
+
+Checked on `feat/m08b-b4a-full-text` at `e86c370e`, in the main checkout.
+
+**Who reviewed.** Claude Opus 5.5 also wrote the plan. So this round is not
+the independent plan review that session-strategy.md §1 asks for. It is a
+check of the two earlier rounds by Claude Sonnet 5.5. The status.md row keeps
+Claude Sonnet 5.5 as the plan reviewer.
+
+**Summary:** 0 blocker, 0 major, 2 minor, 3 nit, 5 items (P18 to P22). 5 open.
+Every earlier fix that I checked holds, except two details from round 1
+(P18, P19).
+
+### What was checked and found correct
+
+- **P1 also holds with a policy.** `merge_sieve` (`sieve.rs:102` to `:116`)
+  wraps the RLS clause and every caveat in brackets and joins them with
+  `AND`. `do_query` joins the sieve clause, the filter and the cursor with `AND`
+  (`query.rs:117` to `:139`). `compile_document` joins with `AND` and wraps
+  every `$or` and `$not`. So a `$search` that passes the flag is always a
+  top-level `AND` term of the final `WHERE`, also under FDAE. Caveats use
+  `compile_filter`, so `$search` there is refused, as D-B4a-8 says.
+- **P9 can be built as written.** `do_patch` reads the payload and merges in
+  Rust (`mutation.rs:97` to `:119`), so the merged `Value` and the patch's
+  top-level keys are both there for `check_values` and `sync_row`.
+- **D-B4a-6 `do_put`.** The upsert has no `DO UPDATE … WHERE`
+  (`mutation.rs:78` to `:85`), so `RETURNING rowid` always gives one row.
+- **Q6 (a).** `git grep` over `crates` and `apps` finds no `VACUUM`,
+  `sqlcipher_export`, `rekey` or `rusqlite::backup`. Nothing changes a
+  `rowid` today.
+- **P15 and P16 (round 2).** The SQL of P15 and the `icu_properties` 2.4 API
+  of P16 were checked in round 2; I agree with both checks.
+- **Stale text.** The plan no longer mentions the set form of `delete-many`
+  or `char::is_alphanumeric`.
+
+### Findings
+
+#### P18 — The field list must be compared with exact case, because JSON keys are case-sensitive (minor)
+
+- **Where:** Q2 (a) text (`:189`), D-B4a-6 (`declare` doc `:660` and the line
+  `set_equal_ignore_case(have, wanted)`), Step 5 item 2. This comes from the
+  round 1 fix advice for P10.
+- **Problem:** A text field names a payload key, and JSON keys are
+  case-sensitive: `Title` and `title` are two different fields. `fields()`
+  returns the declared names (`f_Title` → `Title`), and `sync_row` reads that
+  key. With a compare that ignores case, `declare(["Title"])` followed by
+  `declare(["title"])` counts as "the same", so nothing is rebuilt. P10 was
+  right to ignore *order*. The reason it gave for ignoring *case* (FTS5 column
+  names ignore case) is the reason for the D-B4a-7 duplicate rule inside one
+  list, not for comparing two calls.
+- **Failure case:** A service renames its field from `Title` to `title` in
+  code and calls `create-collection` with `["title"]`. The index keeps
+  column `f_Title`. New rows are indexed as empty (`payload["Title"]` is
+  absent), and `{"title": {"$search": "…"}}` is refused with "'title' is not
+  a text field", with no rebuild.
+- **Fix:** Compare `have` and `wanted` as sets with exact case. A list with
+  two names that differ only in case is already refused by D-B4a-7, so the
+  sets are well defined. Keep lower case for the *collection* name in
+  `_text_index` (that part of P10 is right: SQLite table names ignore case).
+  Add a Declare test: `["Title"]` then `["title"]` rebuilds, and a `$search` on
+  `title` then works.
+- *Status:* Open
+
+#### P19 — `drop_index` creates `_text_index` in a service that has no text index (minor)
+
+- **Where:** D-B4a-4 (`:621`: "made by the first `declare` or `drop_index`
+  call … so a service with no text index gets no new table"), D-B4a-6
+  (`drop_index`).
+- **Problem:** `do_drop_collection` calls `drop_index` for every collection.
+  If `drop_index` creates `_text_index` before it deletes the row, then the
+  first `drop-collection` of any service makes the table, also when no
+  collection ever had text fields. The sentence in D-B4a-4 is then false.
+  It is harmless for data, but it is an extra table in every service that
+  drops a collection, and a test that checks "`_text_index` does not exist"
+  after a drop would fail.
+- **Failure case:** A service with no text index runs `drop-collection`, and
+  its database now has `_text_index` (it is hidden from `list_collections`
+  by the `_text_%` rule, so only raw SQL sees it).
+- **Fix:** `drop_index` runs `DROP TABLE IF EXISTS` for both FTS tables, and
+  deletes the `_text_index` row only when that table exists (one
+  `sqlite_master` lookup, or treat "no such table" as `Ok`). Only `declare`
+  with a non-empty list creates `_text_index`. Change the sentence in D-B4a-4
+  to say so, and add to the Declare tests: dropping a collection without
+  text fields leaves no `_text_index`.
+- *Status:* Open
+
+#### P20 — The P16 fix did not update three places that name only `icu_normalizer` (nit)
+
+- **Where:** section 2.2 point 11 (`:395`), Step 3 item 3 (`:895`, the
+  licence line), section 7.6 (`:1214`).
+- **Problem:** P16 adds `icu_properties` (with `compiled_data`) to
+  `syneroym-text-lang`, which all six Roym guests link. The three places still
+  say only `icu_normalizer`. The S0 measurement ("a guest that never calls
+  `nfc()` does not grow") covers `icu_normalizer` only; nobody has measured
+  `icu_properties`.
+- **Failure case:** None in code. A reader thinks only one new crate is
+  linked, and the size claim reads as measured when it is not.
+- **Fix:** Name `icu_properties` in all three places. In 7.6 say that the
+  no-growth claim for `icu_properties` is expected (the guests never call
+  `query_terms`), not measured, and that Step 8.1 measures it.
+- *Status:* Open
+
+#### P21 — The 10% stop limit of P11 is written as decided, but no owner answer is recorded (nit)
+
+- **Where:** D-B4a-10 (`:832`), section 7.2 (Performance).
+- **Problem:** Round 1 wrote "The owner sets the stop limit; I suggest 10%."
+  The plan now states "stop limit 10%" as fact, while the owner answers
+  recorded in section 2.1 cover only Q1 to Q7. Earlier slices record owner
+  decisions on limits (B3a: component size growth).
+- **Failure case:** The implementer measures 12%, stops, and the owner
+  never agreed to the number.
+- **Fix:** Either record the owner's answer with a date, or write "10% (plan
+  default; tell the owner the numbers in either case)".
+- *Status:* Open
+
+#### P22 — Two status lines do not use the forms of session-strategy.md (nit)
+
+- **Where:** this file, P13 status and the round 1 **Summary** line.
+- **Problem:** The allowed forms are `Open`, `Fixed (<sha>)`, `Rejected:
+  <reason>` and `Deferred: <link>`. P13's status is a sentence ("Fixed
+  (e0aab8b8), as I wrote it. My advice was wrong…"), and the round 1 summary
+  still says "All 14 Fixed (e0aab8b8)", although P13's fix was undone in
+  `13ce6aa8`. A later reader who counts statuses gets 14 fixes where 13 hold.
+- **Failure case:** None in code.
+- **Fix:** Set P13 to `Rejected: replaced by P15 (13ce6aa8); the set form
+  breaks a delete-many with a $search filter`. Change the round 1 summary to
+  "13 Fixed (e0aab8b8); P13 replaced by P15".
+- *Status:* Open
