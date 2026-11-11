@@ -714,3 +714,33 @@ against its fix commit.
 Note, not a finding: the PR text says "`mise run verify` passed all 16 gates
 in pre-review pass" and gives 445 Hub tests. The pre-review run had 443; 445
 is the count after the fixes. CI on `fda83d26` is the proof now.
+
+## Code review round 3 — Claude Opus 5.5, 2026-11-11
+
+Checked on `feat/m08b-b3b-chat-lang-tags` at `9fd2d4e3`, in the main checkout.
+`git pull` said "Already up to date". I read the fix commits after `bf23a422`
+(`9b7ae2d8`, `67be046a`, `9fd2d4e3`) and checked R9 against them.
+
+**Summary:** round 2: R9 Fixed, confirmed. Round 3: 0 blocker, 0 major,
+0 minor. 0 Open.
+
+### What was checked and found correct
+
+- **R9, confirmed.** Both click tests now select the label with
+  `.compose-row .field > span` and `.composer-box .field > span`, with `!`
+  instead of `?.`, assert the text "Message languages", and then click it.
+  The selector matches the `div.field` that the two screens build
+  (`messages.ts` `compose-row`, `groups.ts` `composer-box`), so the label text
+  is really clicked. `group/tests/languages.rs` imports `test_service` with a
+  `use`. The commits change only these test files and the review docs.
+- **Run here.** `npm test` in `crates/roym_web/ui`: 39 files, 445 tests passed.
+  `cargo nextest run -p syneroym-conversation`: 184 passed, 0 skipped. Both
+  match status.md.
+- **CI.** `gh pr checks 356` on `9fd2d4e3`: CLA, Lints, Playwright E2E and
+  Test 1/6, 2/6, 3/6, 5/6 and 6/6 pass. Test 4/6 was still running when this
+  round was written. Since `fda83d26`, which was fully green, only test files
+  and docs changed. The merge step must still see Test 4/6 pass.
+
+### Findings
+
+None. 0 open.
