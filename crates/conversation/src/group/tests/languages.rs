@@ -3,7 +3,10 @@ use rusqlite::params;
 use syneroym_rpc::{ConversationHistoryItem, ConversationHost};
 
 use super::*;
-use crate::dag::{MembershipPayload, encode_body};
+use crate::{
+    dag::{MembershipPayload, encode_body},
+    transport::tests::test_service,
+};
 
 #[test]
 fn group_message_with_languages_is_stored_in_db_and_read_back() {
@@ -136,7 +139,7 @@ fn group_message_with_non_canonical_language_tag_is_refused_and_not_stored() {
 #[tokio::test]
 async fn host_send_group_with_languages_is_stored_and_returned_by_history() {
     let dir = tempfile::tempdir().unwrap();
-    let service = crate::transport::tests::test_service(dir.path()).await;
+    let service = test_service(dir.path()).await;
     let group = service.create_group_impl("svc:owner").await.unwrap();
     let store = service.store_for("svc:owner").await.unwrap();
 
