@@ -470,7 +470,7 @@ code.
   statements so a watchdog stop is still `QuotaExceeded`. This also removes
   `RETURNING` from behaviour change 2. Keep `RETURNING rowid` for `put`,
   `patch` and `delete` (one row each).
-- *Status:* Fixed (e0aab8b8). Now in: Section 4 behaviour change 2; D-B4a-6 (`do_delete_many`); Step 5 item 4; Step 6 item 3; section 7.2 (Writes).
+- *Status:* Fixed (e0aab8b8), as I wrote it. My advice was wrong: the set form breaks a `delete-many` that has a `$search` filter. See P15, which replaces this fix.
 
 #### P14 — Small facts to fix in the plan (minor)
 
@@ -488,3 +488,119 @@ code.
 - **Failure case:** A reader who counts files finds 30 and doubts the rest.
 - **Fix:** Correct the numbers and the link; remove the unconfirmed version.
 - *Status:* Fixed (e0aab8b8). Now in: Q1 (a); Q6 (a); section 2.2 points 4, 9, 13.
+
+## Plan review round 2 (check of the fixes) — Claude Sonnet 5.5, 2026-11-11
+
+Checked on `feat/m08b-b4a-full-text` at `e0a7b8bf`, in the main checkout. I
+read the new plan and compared it with this file and with the code. I ran two
+small experiments outside the repository (Python `sqlite3`, SQLite 3.50.4, and
+a one-file `rustc` program). I changed no code and did not run `cargo`.
+
+**Summary:** P1 to P12 and P14 are confirmed fixed. P13 is fixed as written,
+but my advice for it was wrong (P15). 3 new items: 1 major, 2 minor. 3 open.
+
+### Confirmed fixed
+
+- **P1.** Section 4 (W3), Q3, D-B4a-8, D-B4a-9, the Filter, Search and Plan
+  tests, exit criterion 5 and the new backlog row all say "`AND` term only".
+  `filter.rs` has exactly five private functions that build SQL
+  (`compile_document`, `compile_entry`, `compile_logical_array`,
+  `compile_field`, `compile_operator_map`), and the only operators that make
+  a branch optional are `$or` and `$not`. There is no `$nor` and no field
+  level `$not`. So the flag covers every case. The plan test now runs with and
+  without `ANALYZE`.
+- **P2.** `git ls-files -s` shows 14 symlinks and exactly the three real
+  files named in the plan (all three have blob `5d91eff1`). Step 4.2 and
+  exit criterion 11 are right. The canonical file is at
+  `wit/data-layer/`, not `wit/deps/data-layer/`, so criterion 11 does not
+  catch it by mistake. See P17 for the tests of Step 4.5.
+- **P3.** W7, Step 4.3, section 2.2 points 4 and 14, section 7.4 and section 11
+  all say the native route sends `text_fields: vec![]`.
+- **P4, P5, P6, P7, P8, P9, P10, P11, P12.** Each is in the places the status
+  lines name (D-B4a-2, -3, -4, -6, -8, -10, Steps 2, 5, 6, section 7.2, 8, 9).
+  P4 has a flaw of its own: see P16.
+- **P14.** The counts are right: `git grep -c 'CollectionSchema {'` gives 45
+  literals in 30 files, and the `schema.rs:116` link and the removed SQLite
+  version are done.
+- **Sha.** `e0aab8b8` is on the branch and holds the plan change.
+
+### Findings
+
+#### P15 — The set form of `delete-many` does not delete when the filter has `$search` (major)
+
+- **Where:** D-B4a-6 (`do_delete_many`), section 4 behaviour change 2, Step 5
+  item 4, Step 6 item 3, section 7.2 ("Writes": "`delete-many` with a filter
+  removes exactly the matching rows"). This comes from my own advice in P13.
+- **Problem:** The plan runs three statements with the same `WHERE`:
+  `DELETE FROM _text_c_tri WHERE rowid IN (SELECT rowid FROM c WHERE W)`, the
+  same for `_word`, then `DELETE FROM c WHERE W`. When `W` contains `$search`,
+  `W` reads the two FTS tables. The first statement removes the trigram rows,
+  so `W` no longer matches in the next two statements. I ran this on SQLite
+  3.50.4 with three rows and the filter "long term `plumber` and short term
+  `ek`" (one row matches). Result: the trigram `DELETE` removed 1 row, the word
+  `DELETE` removed 0 rows, the collection `DELETE` removed 0 rows. All three
+  records stayed, and the matching record lost its trigram row. The order
+  cannot be fixed by swapping the statements, because every order destroys
+  something that a later `W` reads.
+- **Failure case:** `delete-many` with `{"title": {"$search": "plumber"}}`
+  returns `0` and deletes nothing, or deletes part of the index. The index is
+  then out of step with the collection, with no error. A test of "`delete-many`
+  with a filter" that uses a plain equality passes, so the plan's tests do not
+  see it.
+- **Fix:** Go back to the first design, which is correct: `DELETE FROM c WHERE W
+  RETURNING rowid`, collect the rowids, then remove them from the two tables.
+  To avoid 2N statements, remove them with one statement per table:
+  `DELETE FROM _text_c_tri WHERE rowid IN (SELECT value FROM json_each(?1))`,
+  with the rowids as one JSON array (the same for `_word`). Only do this when
+  the collection has text fields. Keep `map_query_raw_step_error` on all
+  statements. Restore `RETURNING rowid` in behaviour change 2. Add these tests:
+  `delete-many` with a `$search` filter (and one with `$search` next to an
+  equality) removes the right rows from the collection and from both FTS
+  tables, and returns the right count; a watchdog stop is still
+  `quota-exceeded`.
+- *Status:* Open
+
+#### P16 — The term trim of P4 removes a trailing virama or nukta, and the plan says it does not (minor)
+
+- **Where:** D-B4a-2 (`query_terms`; "The rule keeps every Devanagari or Tamil
+  word, because their letters are alphanumeric"), section 7.2 (`query_terms`
+  tests).
+- **Problem:** The trim uses `char::is_alphanumeric`. I ran it: U+094D
+  (Devanagari virama) and U+0BCD (Tamil pulli) and U+093C (nukta) are **not**
+  alphanumeric; vowel signs (U+093E, U+0BC6, U+0BC8) and anusvara (U+0902) are.
+  So a word that ends in a virama loses it: `நல்` (3 chars) becomes `நல`
+  (2 chars), changes from a long term to a short term, and a `प्` becomes
+  `प`. The rows that should match still match (the shorter text is a prefix or
+  a substring), so this is not a miss. But it matches more rows than the
+  user asked for, and the sentence in the plan is false. The sentence also
+  says the rule "keeps every" word, which the new tests do not check.
+- **Failure case:** A search for `नल्` also finds a row with `नल`, and the
+  long/short split changes for Tamil words that end in a pulli.
+- **Fix:** Trim only characters that are punctuation or symbols, not marks.
+  The cheapest correct rule is to stop trimming at any `char` that is
+  alphanumeric **or** has the Unicode general category Mark. `icu_properties`
+  2.4 is already in `Cargo.lock` (through `idna`), and
+  `GeneralCategoryGroup::Mark` answers that. Or trim only ASCII punctuation and
+  a fixed list of Unicode quotes and dashes, and say so. Fix the sentence in
+  D-B4a-2 and add tests: `நல்` stays one 3-char long term; `प्` stays 2 chars;
+  `नल।` becomes `नल` (the danda is punctuation).
+- *Status:* Open
+
+#### P17 — The Step 4.5 test list does not name the tests that load `saga` and `miniapp-demo1-wasm` (minor)
+
+- **Where:** Step 4.5 and section 7.2 ("Step 4.5 component tests").
+- **Problem:** The plan says to "run the tests that load the updated
+  components: `saga`, `miniapp-demo1-wasm`, and the websocket test in
+  `crates/sandbox_wasm/tests/`". Only the websocket test is in that folder
+  (`websocket_integration.rs`). The other two are
+  `crates/substrate/tests/saga_e2e.rs` and
+  `crates/substrate/tests/miniapp_demo1_wasm_e2e.rs`. The `-p` list of Step 4.5
+  has no `syneroym-substrate`, so a developer who follows the list does not
+  run them. This matters because P2 is about exactly these two components.
+- **Failure case:** The symlink change is not checked until `mise run verify`,
+  about 20 minutes later.
+- **Fix:** Name the three files, and add
+  `cargo nextest run -p syneroym-substrate --test saga_e2e --test
+  miniapp_demo1_wasm_e2e` (sandbox off, as the other e2e tests need) to Step
+  4.5.
+- *Status:* Open
