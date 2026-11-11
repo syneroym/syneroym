@@ -529,10 +529,28 @@ async fn scenario_210_group_message_with_languages_parity() {
         one_rpc(&h, false, "conversation.history", json!({ "conversation": group_n })).await;
     strip_volatile(&mut hw);
     strip_volatile(&mut hn);
+    let sort_sys_msgs = |val: &mut Value| {
+        if let Some(arr) = val.pointer_mut("/result/messages").and_then(Value::as_array_mut) {
+            arr[1..].sort_by(|a, b| {
+                let ca = a.get("content_type").and_then(Value::as_str).unwrap_or("");
+                let cb = b.get("content_type").and_then(Value::as_str).unwrap_or("");
+                ca.cmp(cb)
+            });
+        }
+    };
+    sort_sys_msgs(&mut hw);
+    sort_sys_msgs(&mut hn);
     normalize_message_ids(&mut hw);
     normalize_message_ids(&mut hn);
+    for m in hw["result"]["messages"].as_array_mut().unwrap() {
+        m["conversation"] = json!("<group>");
+    }
+    for m in hn["result"]["messages"].as_array_mut().unwrap() {
+        m["conversation"] = json!("<group>");
+    }
     assert_eq!(hw["result"]["messages"][0]["languages"], json!(["ta"]));
     assert_eq!(hn["result"]["messages"][0]["languages"], json!(["ta"]));
     assert_eq!(hw["result"]["messages"][1]["languages"], json!([]));
     assert_eq!(hn["result"]["messages"][1]["languages"], json!([]));
+    assert_eq!(hw, hn);
 }
