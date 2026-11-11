@@ -24,7 +24,7 @@ names no other change doc for B4a. I agree: ML-20 and ML-29 are both in
 roym-multilingual, so every B4a decision and deviation belongs there (plan
 section 3 says the same).
 
-**Summary:** 0 blocker, 4 major, 10 minor, 14 items. 0 Fixed, 14 Open.
+**Summary:** 0 blocker, 4 major, 10 minor, 14 items. All 14 Fixed (e0aab8b8), with the owner's answers to Q1 to Q7 (2026-11-11).
 
 Limits of this review: I read the plan, the docs and the code, and I ran
 experiments outside the repository with Python's `sqlite3` module (SQLite
@@ -192,7 +192,7 @@ code.
   sieve clause; run the plan test both with and without `ANALYZE` (production
   databases have no statistics); and change the wording of exit criterion 5
   and the ML-29 row to "when `$search` is an `AND` term".
-- *Status:* Open
+- *Status:* Fixed (e0aab8b8). Now in: Q3 owner answer; section 1; ML-29 row in section 3; W3 in section 4; D-B4a-1, D-B4a-8, D-B4a-9; Step 6 items 2 and 5; section 7.2 (Filter, Search, Plan); section 8 (new backlog row "Multi-field text search"); exit criterion 5; section 11.
 
 #### P2 — Three vendored copies of the data-layer WIT are real files and already out of date; the plan edits only the canonical file (major)
 
@@ -227,7 +227,7 @@ code.
   `crates/sandbox_wasm/tests/`). Add a one-line check to the exit criteria
   that `git ls-files -s` shows mode 120000 for every
   `wit/deps/data-layer/data-layer.wit`.
-- *Status:* Open
+- *Status:* Fixed (e0aab8b8). Now in: Q1 owner answer; section 2.2 point 4; Step 4 items 2 and 5; section 7.2 (Step 4.5 component tests); exit criterion 11.
 
 #### P3 — The native `create-collection` route would let a caller trigger a full index rebuild with one small request (major)
 
@@ -255,7 +255,7 @@ code.
   the "Not tested" or backlog text that a guest can force a rebuild of its
   own index by changing its list (that is by design, and only affects the
   guest's own service).
-- *Status:* Open
+- *Status:* Fixed (e0aab8b8). Now in: Q2 owner answer; section 1; section 2.2 points 4 and 14; section 3 deviations; W7 in section 4; Step 4 item 3; section 7.2 (`control_plane`); section 7.4; section 11.
 
 #### P4 — `query_terms` keeps punctuation at the edge of a word, so a normal typed query misses (major)
 
@@ -285,7 +285,7 @@ code.
   `nal`; `plumber's` unchanged; `a-b` unchanged; and add a `$search` test for
   `plumber, chennai`. Update the "drop rule" sentence of D-B4a-2 (a term of
   only punctuation is now simply empty after trimming).
-- *Status:* Open
+- *Status:* Fixed (e0aab8b8). Now in: Q4 owner answer; D-B4a-2; section 7.2 (`query_terms` and Search).
 
 #### P5 — A NUL character in `$search` text becomes an `Internal` error (minor)
 
@@ -305,7 +305,7 @@ code.
   term through the stored-text path: `sync_row` must accept a NUL in a
   *stored* value (check it with a test; SQLite stores it, but the plan does
   not say so).
-- *Status:* Open
+- *Status:* Fixed (e0aab8b8). Now in: D-B4a-6 (`sync_row`); D-B4a-8 (`compile_search`); Step 6 item 2; section 7.2 (Writes and Filter).
 
 #### P6 — The Step 2 prefix check passes even when the prefix index is missing (minor)
 
@@ -323,7 +323,7 @@ code.
   word table contains `prefix`, using the `WORD_TOKENIZE` text, and (b) a size
   check on the same rows: `sum(length(block))` of `<word>_data` is larger
   with the option than without. Say in the plan that (b) is the proof.
-- *Status:* Open
+- *Status:* Fixed (e0aab8b8). Now in: D-B4a-3; Step 2 item 2; section 7.2 (The SQLite build).
 
 #### P7 — Existing tests call `do_delete_many` with `&conn`, and the plan does not name them (minor)
 
@@ -344,7 +344,7 @@ code.
   change: `let mut conn`, `&mut conn`). State that the test must pass
   unchanged, and that the transaction is dropped (rolled back) on the
   watchdog error before the next call.
-- *Status:* Open
+- *Status:* Fixed (e0aab8b8). Now in: Step 5 item 4; section 7.5 (`sqlite/tests.rs`).
 
 #### P8 — Living docs and WIT docs: one false sentence is not listed, and the write docs do not say a write can now be refused (minor)
 
@@ -364,7 +364,7 @@ code.
 - **Fix:** Add `:2765` to section 9 (change the sentence: field types are not
   checked, except the declared text fields). Put one line in the doc of
   `put`, `patch`, `batch-mutate` and `create`, and in the ADR-0007 amendment.
-- *Status:* Open
+- *Status:* Fixed (e0aab8b8). Now in: D-B4a-1; section 9 (`docs/system-architecture.md:2765`, `data-layer.wit` docs).
 
 #### P9 — An old row with a non-string text field blocks unrelated patches (minor)
 
@@ -384,7 +384,7 @@ code.
   (non-string is indexed as empty). Add a test: patch an old row with a
   numeric `title`, changing another field, succeeds; patching `title` to a
   number is refused.
-- *Status:* Open
+- *Status:* Fixed (e0aab8b8). Now in: Q5 owner answer; D-B4a-6 (`do_patch`); Step 5 item 4; section 7.2 (Writes).
 
 #### P10 — `declare` compares the field list by order and exact case, so two call sites thrash the index (minor)
 
@@ -406,7 +406,7 @@ code.
   in `_text_index` in lower case (and look it up the same way). Add tests:
   same fields in another order do not rebuild (marker row survives); `Foo`
   and `foo` share one `_text_index` row.
-- *Status:* Open
+- *Status:* Fixed (e0aab8b8). Now in: Q2 owner answer; D-B4a-4; D-B4a-6 (`declare`); Step 5 item 2; section 7.2 (Declare).
 
 #### P11 — Every write of every service gets a schema read and a transaction, and nobody measures it (minor)
 
@@ -427,7 +427,7 @@ code.
   done for the rebuild. The owner sets the stop limit; I suggest 10%. If it is
   over, cache the field list per collection on the writer thread (a
   `HashMap`, cleared by `declare`, `drop_index` and `execute-ddl`).
-- *Status:* Open
+- *Status:* Fixed (e0aab8b8). Now in: D-B4a-10; Step 6 item 5; section 7.2 (Performance).
 
 #### P12 — `execute-ddl` can leave a stale index, and the error then looks like "collection not found" (minor)
 
@@ -450,7 +450,7 @@ code.
   `create-collection`). Make `sync_row` and `remove_rows` map a missing
   `_text_` table to `Internal("text index of '<c>' is missing")` and not to
   `CollectionNotFound`. Add one test for that mapping.
-- *Status:* Open
+- *Status:* Fixed (e0aab8b8). Now in: Q6 owner answer; D-B4a-6 (`sync_row`, `remove_rows`); Step 5 items 2 and 4; section 7.2 (Writes); section 7.4; section 8 (new backlog row); section 11.
 
 #### P13 — `delete-many` can use two set statements instead of collecting every `rowid` (minor)
 
@@ -470,7 +470,7 @@ code.
   statements so a watchdog stop is still `QuotaExceeded`. This also removes
   `RETURNING` from behaviour change 2. Keep `RETURNING rowid` for `put`,
   `patch` and `delete` (one row each).
-- *Status:* Open
+- *Status:* Fixed (e0aab8b8). Now in: Section 4 behaviour change 2; D-B4a-6 (`do_delete_many`); Step 5 item 4; Step 6 item 3; section 7.2 (Writes).
 
 #### P14 — Small facts to fix in the plan (minor)
 
@@ -487,4 +487,4 @@ code.
   all that matters, so drop the version.
 - **Failure case:** A reader who counts files finds 30 and doubts the rest.
 - **Fix:** Correct the numbers and the link; remove the unconfirmed version.
-- *Status:* Open
+- *Status:* Fixed (e0aab8b8). Now in: Q1 (a); Q6 (a); section 2.2 points 4, 9, 13.
