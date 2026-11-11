@@ -87,7 +87,7 @@ export async function sendMessage(page: Page, body: string, tag = 'en') {
 }
 
 /** Pick a language in the message composer's language list. */
-export async function addMessageLanguage(page: Page, lang: string, _tag = 'en') {
+export async function addMessageLanguage(page: Page, lang: string) {
   await page.locator('.messages-languages-add').selectOption(lang);
 }
 

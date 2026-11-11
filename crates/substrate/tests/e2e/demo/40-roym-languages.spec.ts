@@ -69,7 +69,8 @@ test('Roym languages story: Alice reads her Hub in Hindi, and it stays Hindi', a
     const firstRowName = page.locator('.messages-language-row .messages-language-name').first();
     await expect(firstRowName).toHaveText('हिन्दी');
 
-    await addMessageLanguage(page, 'en', 'hi');
+    await addMessageLanguage(page, 'en');
+    await expect(page.locator('.messages-language-row')).toHaveCount(2);
     const runTag = Date.now().toString(36);
     const msg = `नमस्ते Bob, see you at the garden (${runTag})`;
     await sendMessage(page, msg, 'hi');
