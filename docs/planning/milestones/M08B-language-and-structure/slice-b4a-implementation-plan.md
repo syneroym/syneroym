@@ -177,7 +177,7 @@ has 12 callers in the directory alone).
 **Q2. What does a `text-fields` list mean when the collection already has a
 text index? (blocks Step 5)**
 
-Owner answer: (a), 2026-11-11. Compare the field list as a set, not by order (P10), and do not accept it on the native route (P3).
+Owner answer: (a), 2026-11-11. Compare the field list as a set with exact case, not by order (P10, P18), and do not accept it on the native route (P3).
 
 Roym calls `create-collection` from many places for one collection, and not
 all of them will name the text fields (for example the directory's
@@ -186,7 +186,7 @@ collection).
 
 - (a) **An empty list leaves the text index as it is. A non-empty list that
   differs from the index replaces it** (drop, create, fill from the rows).
-  The field list is compared as a set, ignoring ASCII case (P10). The native
+  The field list is compared as a set with exact case (P10, P18). The native
   route does not accept `text-fields` (P3).
   This matches `indexes` today: `create-collection` never drops an index
   it created before
@@ -392,11 +392,12 @@ change.
     `व` and `ल`. In B4a the key is not yet Latin, so the word table adds
     `M*` to the categories and keeps the marks (`remove_diacritics 0`).
     Step 2 checks this.
-11. **`icu_normalizer` 2.4.0 is in `Cargo.lock` already** (through `url`
-    and `idna`), but not a workspace dependency. `syneroym-text-lang` is
+11. **`icu_normalizer` 2.4.0 and `icu_properties` 2.4.0 are in `Cargo.lock` already** (through `url`
+    and `idna`; P20), but not workspace dependencies. `syneroym-text-lang` is
     linked into all six Roym guests through `roym_core`. S0 measured that a
     guest that never calls `nfc()` does not grow (93,305 bytes with and
-    without it, task.md S0). No guest calls the new functions in B4a.
+    without it, task.md S0). For `icu_properties`, no growth is expected because
+    guests never call `query_terms` (P20). No guest calls the new functions in B4a.
 12. **The dual-build parity scenario table is capped.**
     `app_host_native/tests/dual_build_parity/helpers.rs` is at its cap of
     842 lines (`xtask/oversized-test-files.txt`), and its `SCENARIOS` table
@@ -618,9 +619,10 @@ that depend on an owner answer say so.
     );
     ```
 
-    It is made by the first `declare` or `drop_index` call (D-B4a-5), not
-    at database open, so a service with no text index gets no new table.
-    Collection names are stored and looked up in lower case (P10).
+    It is made by the first `declare` call with a non-empty list (D-B4a-5),
+    not at database open and not by `drop_index` (P19), so a service with
+    no text index gets no new table. Collection names are stored and looked
+    up in lower case (P10).
   - The type comes last (`_tri`, `_word`), so no name of one collection can
     equal a shadow table of another: a shadow table name ends in `_data`,
     `_idx`, `_content`, `_docsize` or `_config`, never in `_tri` or `_word`
@@ -657,10 +659,11 @@ that depend on an owner answer say so.
 
   ```rust
   /// Create, replace or keep the text index of `collection` (Q2 (a)).
-  /// Compares field list as a set, ignoring ASCII case (P10).
+  /// Compares field list as a set with exact case (P10, P18).
   /// Called by `do_create_collection` inside its transaction.
   pub(super) fn declare(conn: &Connection, collection: &str, wanted: &[String]) -> Result<(), DataLayerError>;
-  /// Drop both tables and the `_text_index` row. Called by `do_drop_collection`.
+  /// Drop both tables and the `_text_index` row (if `_text_index` exists; P19).
+  /// Called by `do_drop_collection`.
   pub(super) fn drop_index(conn: &Connection, collection: &str) -> Result<(), DataLayerError>;
   /// Check that every text field of `payload` is a string, null or absent (Q5 (a)).
   pub(super) fn check_values(fields: &[String], payload: &Value) -> Result<(), DataLayerError>;
@@ -675,11 +678,11 @@ that depend on an owner answer say so.
   ```text
   have = fields(conn, c)
   if wanted is empty: return Ok                      // Q2 (a); the common call
-  ensure _text_index exists
   c_lower = c.to_ascii_lowercase()
-  if set_equal_ignore_case(have, wanted)              // P10: compare as sets
-     and _text_c_tri exists                           // sqlite_master lookup
+  if set_equal(have, wanted)                         // P10, P18: compare as sets with exact case
+     and _text_c_tri exists                          // sqlite_master lookup
      and key_version(c_lower) == SEARCH_KEY_VERSION: return Ok
+  ensure _text_index exists                          // P19: only declare creates _text_index
   drop both tables if they exist
   create both tables (D-B4a-3)
   for each (rowid, payload) in SELECT rowid, payload FROM c:
@@ -690,9 +693,15 @@ that depend on an owner answer say so.
   if skipped > 0: warn!(collection = c, skipped, "text index rebuild skipped values that are not strings")
   ```
 
+  `drop_index(conn, c)` runs `DROP TABLE IF EXISTS` for both FTS tables,
+  and deletes the `_text_index` row only when `_text_index` exists (P19).
+  It never creates `_text_index`.
+
   A guest that calls `create-collection` with the same fields on every
   request pays one schema read and one primary-key read, and no write.
-  Field comparison as a set prevents thrashing when order differs (P10).
+  Field comparison as a set prevents thrashing when order differs, while
+  exact-case comparison ensures that case-sensitive JSON field renames
+  trigger a rebuild (P10, P18).
 
   The write paths (`mutation.rs`):
 
@@ -828,8 +837,9 @@ that depend on an owner answer say so.
   today (architecture doc, "Schema & Indexing"). Step 6 measures a rebuild
   of 10,000 rows and a query on them, and the PR text gives the numbers
   (not a gate). Step 6 also measures before/after performance of the `put` bench
-  on a collection without text fields (`security_config_bench.rs`; P11); stop limit
-  10%; if exceeded, cache the field list per collection on the writer thread.
+  on a collection without text fields (`security_config_bench.rs`; P11); 10%
+  (plan default; report the numbers in the PR text in either case; if exceeded,
+  cache the field list per collection on the writer thread; P21).
 
 - **D-B4a-11. Shared test helpers in `data_db`.** A new `#[cfg(test)] mod
   test_support;` in `crates/data_db/src/lib.rs` (file
@@ -892,7 +902,7 @@ Done in the planning session: this file and the B4a row of
 2. `crates/text_lang/src/search_key.rs` and its tests; `lib.rs`:
    `mod search_key; pub use search_key::{…};`.
 3. `cargo nextest run -p syneroym-text-lang`; `cargo deny check licenses`
-   (`icu_normalizer` is `Unicode-3.0`, already allowed through `idna`).
+   (`icu_normalizer` and `icu_properties` are `Unicode-3.0`, already allowed through `idna`; P20).
 
 ### Step 4 — The WIT field and every builder (no index yet)
 
@@ -928,8 +938,10 @@ Done in the planning session: this file and the B4a row of
 1. `schema.rs`: the `_text_` refusal in `validate_identifier` (D-B4a-4).
    `query.rs`: the `_text_%` exclusion in `do_list_collections`.
 2. `text_index.rs`: `fields`, `declare`, `drop_index`, `check_values`,
-   `sync_row`, `remove_rows` (D-B4a-5, D-B4a-6). Compare field sets ignoring
-   ASCII case in `declare` (P10); store/lookup collection names in lower case (P10);
+   `sync_row`, `remove_rows` (D-B4a-5, D-B4a-6). Compare field sets with
+   exact case in `declare` (P10, P18); store/lookup collection names in
+   lower case (P10); only `declare` with a non-empty list creates `_text_index`,
+   while `drop_index` deletes from `_text_index` only if the table exists (P19);
    map missing `_text_` tables to `Internal` (P12). It needs
    `syneroym-text-lang.workspace = true` in `crates/data_db/Cargo.toml`.
 3. `schema.rs`: `do_create_collection` and `do_drop_collection` take
@@ -1056,6 +1068,7 @@ Declare (Step 5):
   `_text_c_word` by the test is still there.
 - Same fields in different order (`["title", "summary"]` and `["summary", "title"]`)
   do not rebuild (marker row survives; P10).
+- `["Title"]` then `["title"]` rebuilds, and a `$search` on `title` then works (P18).
 - `Foo` and `foo` share one `_text_index` row (P10).
 - `text_fields: []` on a collection with a text index keeps it (Q2 (a)).
 - `["title", "summary"]` after `["title"]` rebuilds: a search on `summary`
@@ -1069,6 +1082,7 @@ Declare (Step 5):
   `["title", "Title"]`; a text field `"a.b"`. Each is `schema-violation`.
 - `drop-collection` removes both tables and the `_text_index` row;
   creating the collection again with no text fields works.
+- Dropping a collection without text fields leaves no `_text_index` (P19).
 - Two collections `foo` and `foo_data`, both with text fields, keep their
   own rows (D-B4a-4).
 
@@ -1153,7 +1167,9 @@ Step 4.5 component tests:
 
 Performance (Step 6):
 - Before/after run of the `put` bench on a collection without text fields
-  (`security_config_bench.rs`; P11). Report both numbers in the PR text.
+  (`security_config_bench.rs`; P11). 10% (plan default; report both numbers in
+  the PR text in either case; if exceeded, cache the field list per collection
+  on the writer thread; P21).
 
 `crates/app_host_native/src/convert/data_layer.rs` — the existing
 `collection_schema_round_trips` also checks `text_fields`.
@@ -1210,10 +1226,12 @@ code adds to the workspace size, so the duplication percent may fall; if
 ### 7.6 Component size
 
 - Every Roym component gets one empty list in a struct literal and the
-  rebuilt WIT record. No Roym component calls `search_key` or `nfc`, so
-  the `icu_normalizer` code is not linked. Each of the six is a
-  shared-code component ([task.md](task.md) "Component size limit"): stop
-  and tell the owner if one grows by more than 40 KB. Expected: a few
+  rebuilt WIT record. No Roym component calls `search_key`, `nfc`, or
+  `query_terms`, so `icu_normalizer` and `icu_properties` code is not
+  linked (P20). The no-growth claim for `icu_properties` is expected (guests
+  never call `query_terms`), not measured, and Step 8.1 measures it. Each
+  of the six is a shared-code component ([task.md](task.md) "Component size limit"):
+  stop and tell the owner if one grows by more than 40 KB. Expected: a few
   hundred bytes. Sizes after B3b: web 255,652, conversation 810,737,
   profile 767,699, catalog 927,744, transaction 1,507,245, directory
   1,463,187 bytes (task.md, B3b result). Measure before and after in the
