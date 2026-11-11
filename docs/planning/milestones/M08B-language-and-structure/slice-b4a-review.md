@@ -497,7 +497,7 @@ small experiments outside the repository (Python `sqlite3`, SQLite 3.50.4, and
 a one-file `rustc` program). I changed no code and did not run `cargo`.
 
 **Summary:** P1 to P12 and P14 are confirmed fixed. P13 is fixed as written,
-but my advice for it was wrong (P15). 3 new items: 1 major, 2 minor. 3 open.
+but my advice for it was wrong (P15). All 3 new items (P15, P16, P17) Fixed (13ce6aa8). 0 open.
 
 ### Confirmed fixed
 
@@ -558,7 +558,7 @@ but my advice for it was wrong (P15). 3 new items: 1 major, 2 minor. 3 open.
   equality) removes the right rows from the collection and from both FTS
   tables, and returns the right count; a watchdog stop is still
   `quota-exceeded`.
-- *Status:* Open
+- *Status:* Fixed (13ce6aa8). Now in: behaviour change 2 in section 4; D-B4a-6 (do_delete_many); Step 5 item 4; Step 6 item 3; section 7.2 (Writes).
 
 #### P16 — The term trim of P4 removes a trailing virama or nukta, and the plan says it does not (minor)
 
@@ -584,7 +584,7 @@ but my advice for it was wrong (P15). 3 new items: 1 major, 2 minor. 3 open.
   a fixed list of Unicode quotes and dashes, and say so. Fix the sentence in
   D-B4a-2 and add tests: `நல்` stays one 3-char long term; `प्` stays 2 chars;
   `नल।` becomes `नल` (the danda is punctuation).
-- *Status:* Open
+- *Status:* Fixed (13ce6aa8). Now in: Q4 owner answer; D-B4a-2; Step 3 item 1; section 7.2 (crates/text_lang/src/search_key/tests.rs).
 
 #### P17 — The Step 4.5 test list does not name the tests that load `saga` and `miniapp-demo1-wasm` (minor)
 
@@ -603,4 +603,4 @@ but my advice for it was wrong (P15). 3 new items: 1 major, 2 minor. 3 open.
   `cargo nextest run -p syneroym-substrate --test saga_e2e --test
   miniapp_demo1_wasm_e2e` (sandbox off, as the other e2e tests need) to Step
   4.5.
-- *Status:* Open
+- *Status:* Fixed (13ce6aa8). Now in: Step 4 item 5; section 7.2 (Step 4.5 component tests).
