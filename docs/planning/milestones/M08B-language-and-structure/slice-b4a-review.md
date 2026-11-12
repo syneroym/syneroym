@@ -1050,7 +1050,7 @@ round 1 against its fix commit, then read the fix commits for new
 problems.
 
 **Summary:** round 1: 8 Fixed, all confirmed. Round 2: 0 blocker, 0 major,
-2 minor (R9, R10). 2 Open.
+2 minor (R9, R10). 2 Fixed. 0 open.
 
 ### What was checked and found correct
 
@@ -1150,7 +1150,7 @@ problems.
   `if is_no_such_table(&err) { DataLayerError::Internal(…) } else { map_query_raw_step_error(err) }`
   (`map_query_raw_step_error` is `pub(super)` in the same `sqlite` module).
   Import `TextFields` in `mutation.rs` and `HashSet` in `search.rs`.
-- *Status:* Open
+- *Status:* Fixed (6e191c76). Deduplicated map_text_index_error by reusing map_query_raw_step_error and is_no_such_table; imported TextFields in mutation.rs and HashSet in search.rs.
 
 #### R10 — minor — two facts in the PR body are wrong
 
@@ -1167,4 +1167,4 @@ problems.
 - *Fix:* Write "246 passed, 2 skipped (the two `measure_*` benchmarks)".
   Point the wire changes to the W table of the plan and say W7 was
   dropped.
-- *Status:* Open
+- *Status:* Fixed (docs commit). Updated PR #357 body: corrected test count to 246 passed, 2 skipped (measure_*); pointed wire changes to the plan's W table and noted W7 was dropped.
