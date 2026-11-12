@@ -454,6 +454,10 @@ fn search_plan_never_scans_the_collection() {
     do_create_collection(&mut conn, &schema).unwrap();
 
     let tf = fields(&conn, "c").unwrap();
+    // The test seeds 150 rows because after ANALYZE, SQLite's cost estimator may
+    // choose a full table scan on very small tables (fewer than ~100 rows) as
+    // cheaper than virtual table lookups. At 150 rows, SQLite always chooses
+    // FTS index lookup and rowid fetch both with and without ANALYZE.
     for i in 1..=150 {
         let payload = format!("{{\"title\": \"ek plumber {i}\", \"status\": \"active\"}}");
         conn.execute(

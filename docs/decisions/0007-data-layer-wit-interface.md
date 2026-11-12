@@ -240,4 +240,5 @@ to the data layer WIT interface and SQLite storage engine:
   level or inside `$and`). Using `$search` inside `$or` or `$not`, in `aggregate`,
   or in security policy caveats is refused with `schema-violation`. Result ordering
   applies a unary `+` on `+c.id` to prevent SQLite from walking the primary index
-  and forcing a full collection table scan.
+  and forcing a full collection table scan (guaranteed on collections without
+  `ANALYZE`, and on collections of more than ~100 rows after `ANALYZE`).

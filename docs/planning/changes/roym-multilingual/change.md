@@ -123,7 +123,7 @@ Most cross-language trade needs only layers A and B. The buyer searches by categ
 | ML-23 | A contact, display name or shop name in any script is stored as written. Contact search finds `राम` with `ram`, and `Ram` with `राम`. | |
 | ML-24 | The Hub sorts names with the browser's collation for the UI language. Names in other scripts are grouped by script, not mixed by byte order. | |
 | ML-25 | A message that mixes Hindi and English words keeps its text as written. Its tags list both languages. The Hub sets `lang` from the first tag. | `crates/conversation/src/host_impl/tests.rs` (`send_with_valid_languages_is_stored_and_returned_by_get_and_history`), `crates/conversation/src/group/tests/languages.rs` (`host_send_group_with_languages_is_stored_and_returned_by_history`), `crates/substrate/tests/roym_conversation_e2e.rs` (`roym_conversation_survives_restarts_blocks_and_round_trips`), `crates/roym_web/tests/dual_build_parity/conversation.rs` (`scenario_53_conversation_send_is_never_optimistic_parity`), `crates/roym_web/ui/src/chat/message_text.test.ts` (`['hi', 'en']: body span has lang='hi' and text byte for byte; no note`), `crates/substrate/tests/e2e/tests/roym-hub.spec.ts` (`messages tab: a message in two languages keeps its text and has its main language`), story 40 (`crates/substrate/tests/e2e/demo/40-roym-languages.spec.ts`) |
-| ML-29 | A query word of 1 or 2 characters (after folding) is matched as a whole word or a word prefix through a second index, not through the trigram index. A query made only of such words still returns results, and never runs a full table scan. | Storage half: crates/data_db/src/sqlite/text_index/tests/search.rs (`short_terms_match_words_and_word_prefixes`, `search_plan_never_scans_the_collection`); sqlite tokenizer checks in crates/data_db/src/sqlite/text_index/tests/sqlite_build.rs; directory integration follows in B4b |
+| ML-29 | A query word of 1 or 2 characters (after folding) is matched as a whole word or a word prefix through a second index, not through the trigram index. A query made only of such words still returns results, and never runs a full table scan. | Storage half: crates/data_db/src/sqlite/text_index/tests/search.rs (`short_terms_match_words_and_word_prefixes`, `search_plan_never_scans_the_collection`; `search_plan_never_scans_the_collection` verifies 150 rows where SQLite avoids scans with and without `ANALYZE`); sqlite tokenizer checks in crates/data_db/src/sqlite/text_index/tests/sqlite_build.rs; directory integration follows in B4b |
 | **Translation hook points** | | |
 | ML-26 | Each hook point in [Translation hook points](#translation-hook-points) calls the translation interface. With the v1 implementation, each call returns `unavailable`, and the flow continues with the original text. A test covers every hook point. | |
 | ML-27 | A translate action appears in the Hub only at a hook point, and only when `supported-targets` is not empty. | |
@@ -393,13 +393,19 @@ Category search is language-neutral after layer B. Text search is not. Today:
 - **Decided 2026-11-11, the full-text option in data-layer:**
   - `collection-schema` WIT record adds `text-fields: list<string>`.
   - The host maintains two FTS5 virtual tables per indexed collection: `_text_<c>_tri` (trigram tokenizer) and `_text_<c>_word` (`unicode61` tokenizer with `prefix='1 2'`).
-  - Text index rows are keyed by the collection row's SQLite `rowid`. Mutations update both FTS tables inside the same SQLite transaction.
-  - Non-string values in declared text fields are rejected with `schema-violation`.
+  - Text index rows are keyed by the collection row's SQLite `rowid`. Mutations update both FTS tables inside the same SQLite transaction. A `VACUUM` would change rowids and requires rebuilding the index (Q6).
+  - Declaring text fields is idempotent: an empty list keeps an existing index; a different set of fields drops and rebuilds it; field lists are compared as sets with exact case (Q2).
+  - Schema limits: at most 8 text fields per collection, and no field name listed twice ignoring ASCII case (D-B4a-7).
+  - Term cleaning: query terms are split on Unicode whitespace, edge punctuation/symbols are trimmed while Unicode marks (virama, pulli, nukta) are kept, and interior punctuation is preserved (Q4).
+  - Operator limits: `$search` accepts at most 16 words, up to 1024 bytes, and rejects NUL `\0` bytes (D-B4a-8).
+  - Write validation: non-string values in declared text fields are rejected on write with `schema-violation`. On rebuild, non-string values are skipped and logged. A patch checks only the text fields it names (Q5).
   - Filter language adds the field operator `{"<field>": {"$search": "<text>"}}` for `query` and `delete-many`. Terms are converted to search keys (NFC canonical composition and lowercase); terms >= 3 characters match against the trigram table; terms of 1 or 2 characters match against the word prefix index. Every word must match (AND semantics).
   - `$search` is allowed only as an `AND` conjunct (at the top level or within `$and`). It is rejected inside `$or`, `$not`, `aggregate`, and policy caveats.
   - Queries with text search order by `+c.id` (unary plus) to prevent SQLite from walking the primary index and forcing a full collection table scan.
   - The prefix `_text_` is reserved for host-managed text tables and cannot be used as a collection name.
-  - An internal metadata table `_text_index` records the key version and field list.
+  - An internal metadata table `_text_index` records the key version. Declared fields are inspected from the word virtual table columns (D-B4a-5).
+  - Rebuilding an index on large collections temporarily blocks the single writer thread for that service (D-B4a-10).
+  - Full-text search and `$search` operator additions are recorded as an amendment to ADR-0007 (Q7).
 - The index shape changes. The product is unreleased, so the index is rebuilt in place.
 
 The same search keys serve the conversation search (`conversation.search`) and the contact list.
@@ -531,7 +537,7 @@ Checked: `@fluent/bundle` 0.19.1 (Apache-2.0, no runtime dependencies) adds 4,20
 - **A receiver refuses a whole message whose tag list breaks the rule (Q1).** 1:1 delivery returns `invalid-argument`, and group entries with invalid tags are not applied.
 - **The conversation WIT version stays `0.1.0` (Q2).** The `message` record and `send` function gain `languages: list<string>` without bumping the package version.
 - **Warning log on invalid group message tag is not asserted in unit tests.** An incoming group entry with non-canonical or invalid language tags logs a warning and returns unapplied (`Ok((false, None, None))`). Because `tracing-subscriber` is not a dev-dependency of `syneroym-conversation`, the log line itself is not captured and asserted in unit tests.
-- **A third host metadata table, `_text_index`, stores text indexing state.** Instead of encoding field names and key version into table names, a table `_text_index (collection TEXT PRIMARY KEY, key_version INTEGER NOT NULL, fields TEXT NOT NULL)` records the version and field list.
+- **A third host metadata table, `_text_index`, stores text key version.** A table `_text_index (collection TEXT PRIMARY KEY, key_version INTEGER NOT NULL)` records the search key version. Declared text fields are read directly from the word table columns via `pragma_table_info`.
 - **Operator named `$search`.** Following standard field operator conventions alongside `$gt`, `$in`, `$regex`.
 - **The word table keeps marks as token characters.** Unicode general category Mark (`Mn`, `Mc`, `Me`) characters are retained in word boundaries rather than treated as token delimiters, preserving Indic combining marks and viramas.
 - **A text search returns rows in `id` order, not by relevance.** Ranking algorithms (e.g. BM25) and relevance scoring are deferred; results come in collection id order.
@@ -539,7 +545,8 @@ Checked: `@fluent/bundle` 0.19.1 (Apache-2.0, no runtime dependencies) adds 4,20
 - **`$search` is refused inside `$or` or `$not`.** To prevent fallback to full table scans, `$search` is only valid as an AND conjunct (top level or within `$and`).
 - **The native route does not accept `text_fields`.** Control plane native dispatch sets `text_fields: vec![]`.
 - **The table prefix `_text_` is reserved.** Collection names beginning with `_text_` are refused by `validate_identifier` to prevent collision with internal FTS tables.
-- **Different from the plan: `both_builds_text_search_round_trip` expected result.** Plan D-B4a-13 expected the test to return `[["t1", "t4"], ["t2"], ["t3"]]` with query `"वाला"`, but `t4` is in Tamil script (`சென்னை வாலா`) and cross-script transliteration is deferred to B4b. Without transliteration, Devanagari query `"वाला"` matches `t1` only, so the test asserts `[["t1"], ["t2"], ["t3"]]`.
+- **Full collection scan on very small tables after `ANALYZE` (R3).** After `ANALYZE` of a table of about 100 rows or fewer, SQLite's cost estimator may choose a full table scan instead of virtual table lookups because scanning ~5-50 rows in memory is judged cheaper than subquery index traversal. On larger tables or on any table without `ANALYZE` (the production default), SQLite always uses the FTS index and rowid search without scanning the collection table.
+- **`both_builds_text_search_round_trip` parity verification with Tamil query.** The dual build fixture tests four queries: `"वाला"` (matches `["t1"]`), `"PLUMB"` (matches `["t2"]`), `"ek teen"` (matches `["t3"]`), and `"வாலா"` (matches `["t4"]`), returning `[["t1"], ["t2"], ["t3"], ["t4"]]`. Cross-script transliteration (e.g. Devanagari query matching Tamil script) is deferred to B4b.
 
 ## Close-out
 
