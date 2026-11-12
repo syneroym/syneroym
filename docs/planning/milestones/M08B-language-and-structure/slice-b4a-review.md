@@ -1167,4 +1167,40 @@ problems.
 - *Fix:* Write "246 passed, 2 skipped (the two `measure_*` benchmarks)".
   Point the wire changes to the W table of the plan and say W7 was
   dropped.
-- *Status:* Fixed (docs commit). Updated PR #357 body: corrected test count to 246 passed, 2 skipped (measure_*); pointed wire changes to the plan's W table and noted W7 was dropped.
+- *Status:* Fixed (PR #357 body, no commit). Updated PR #357 body: corrected test count to 246 passed, 2 skipped (measure_*); pointed wire changes to the plan's W table and noted W7 was dropped.
+
+## Code review round 3 — Claude Opus 5.5, 2026-11-12
+
+Checked on `feat/m08b-b4a-full-text` at `982c0d82`, in the main checkout.
+`git pull` brought two commits after `5e2e1201`: `6e191c76` (code) and
+`982c0d82` (docs). I checked R9 and R10 against their fixes, then read the
+fix commit for new problems.
+
+**Summary:** round 2: 2 Fixed, both confirmed. Round 3: 0 blocker, 0 major,
+0 minor. 0 open.
+
+### What was checked and found correct
+
+- **CI.** `gh pr checks 357` on `982c0d82`: CI Pipeline, Lints, Playwright
+  E2E, Test 1/6 to 6/6 and the CLA check pass. Benchmarks and Code Coverage
+  skip ([run 43157522422](https://github.com/syneroym/syneroym/actions/runs/43157522422)).
+  The router timing test that failed on `6c888450` passes here, so it was
+  a flaky run, as round 2 thought.
+- **Run here.** `cargo nextest run -p syneroym-data-db`: 246 passed, 2
+  skipped. `cargo clippy -p syneroym-data-db --all-targets --all-features
+  -- -D warnings`: clean.
+- **R9, confirmed.** `map_text_index_error` now calls `is_no_such_table`,
+  then `map_query_raw_step_error`. That gives the same result as before:
+  a missing table is `internal`, an interrupt is `quota-exceeded`, and
+  every other error goes through `map_rusqlite_error`. There is one copy
+  of each check now. `TextFields` is imported in `mutation.rs` and
+  `HashSet` in `search.rs`. No inline type paths are left in the changed
+  lines.
+- **R10, confirmed.** The PR body says data_db "246 passed, 2 skipped
+  (the two `measure_*` benchmarks)". It points the wire changes to the
+  W table of the plan (W1 to W6 and W8) and says W7 was dropped. W8 is in
+  the plan. The fix was an edit of the PR body, so it has no commit. I
+  changed the R10 status from "Fixed (docs commit)" to say so.
+- **No new problems.** The fix commit changes three files, imports and
+  one function body. It changes no check order, error text or access
+  path.
