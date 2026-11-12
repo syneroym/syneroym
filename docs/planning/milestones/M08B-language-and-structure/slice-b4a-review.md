@@ -1039,4 +1039,132 @@ there are no earlier R items to confirm.
   on the branch and give both numbers. Write "Playwright e2e 72 + 4 + 6
   passed" in status.md. Build the six components on `main` and on the branch
   in the same folder and write both sizes in task.md.
-- *Status:* Fixed (docs commit). Rewrote PR #357 body with repository links; measured security_config_bench put baseline (~24.1 µs) and branch (~24.17 µs); updated status.md with Playwright 72 + 4 + 6; measured six component sizes on main vs branch in task.md.
+- *Status:* Fixed (6c888450). Rewrote PR #357 body with repository links; measured security_config_bench put baseline (~24.1 µs) and branch (~24.17 µs); updated status.md with Playwright 72 + 4 + 6; measured six component sizes on main vs branch in task.md.
+
+## Code review round 2 — Claude Opus 5.5, 2026-11-12
+
+Checked on `feat/m08b-b4a-full-text` at `6c888450`, in the main checkout.
+`git fetch` showed no new remote commits. I read the seven fix commits
+after `abb90fda` (`7f7e2297` to `6c888450`). I checked each R item of
+round 1 against its fix commit, then read the fix commits for new
+problems.
+
+**Summary:** round 1: 8 Fixed, all confirmed. Round 2: 0 blocker, 0 major,
+2 minor (R9, R10). 2 Open.
+
+### What was checked and found correct
+
+- **CI.** `gh pr checks 357` on `6c888450`: Lints, Playwright E2E, Test 1/6
+  to 4/6, Test 6/6 and the CLA check pass. Benchmarks and Code Coverage skip.
+  Test 5/6 fails one test of 759:
+  `keyed_call_in_batch_timing_out_within_grace_records_dead_letter`
+  (`crates/router/tests/proxy_call_all.rs:200`, "expected 1 dead letter,
+  got: []", [run 43149211764](https://github.com/syneroym/syneroym/actions/runs/43149211764)).
+  It is a timing test of the router's call-all path. B4a changes only two
+  `text_fields: vec![]` lines in another router test file, and the fix
+  commits change no router code. It passed on `eefc21f8`, and it passed 5
+  of 5 runs here (`cargo nextest run -p syneroym-router --test
+  proxy_call_all`). I count it as a flaky test, not a B4a finding, but CI
+  is not green on this sha until the job is run again.
+- **Run here.** `cargo nextest run -p syneroym-data-db`: 246 passed, 2
+  skipped (the two `measure_*` tests, now `#[ignore]`). This matches
+  status.md. `cargo nextest run -p syneroym-text-lang`: 12 passed.
+- **R1, confirmed.** `declare` compares the trigram table name with
+  `COLLATE NOCASE` (`text_index.rs:106`). The test
+  `declare_shares_text_index_row_case_insensitively` writes a marker row
+  into `_text_foo_word`, calls `create-collection` with `foo` and with
+  `Foo`, and asserts the marker is still there and `_text_index` has one
+  row. That is the test round 1 asked for.
+- **R2, confirmed.** The change doc no longer says that `_text_index` has
+  a `fields` column (both places). The missing decisions are now bullets:
+  Q2, Q4, Q5, Q6, Q7, D-B4a-5, D-B4a-7, the D-B4a-8 limits (16 words, 1024
+  bytes, no NUL) and D-B4a-10. Their numbers match the plan.
+- **R3, confirmed (option b).** The test explains why it writes 150 rows.
+  The deviation, the architecture doc, the ADR-0007 amendment (text added
+  by this slice, so the ADR rule does not apply) and the ML-29 Test column
+  now give the limit. No production code runs `ANALYZE`. A guest can run
+  it through `execute-ddl`, so the docs are right to name it. I checked
+  the "more than ~100 rows" claim with a throw-away change: with 101 and
+  with 120 rows the plan test passes after `ANALYZE`. With 50 rows it
+  scans (round 1). The change was reverted.
+- **R4, confirmed.** `delete-many` is now tested with `$search` next to an
+  equality filter and alone, and both FTS tables lose the rows. The paging
+  test asserts page sizes `[10, 10, 5]`, 25 unique ids and no last cursor.
+  The new `search_store_level_with_sieve_clause` passes a sieve
+  `creator_id = 'alice'` through `ServiceStore::query` and gets only row
+  `1`, so the sieve and `$search` are joined. The CLS test now gives the
+  session a read capability, so it is refused by the masked-field check,
+  not by a missing capability. The parity fixture searches `வாலா` and
+  expects `t4`. The two `measure_*` tests are `#[ignore]` with the command
+  in their doc comments.
+- **R5, confirmed.** `do_patch` reads the row, then parses the patch, then
+  runs `fields` and `check_values`. The read and the parse are in the same
+  order as on `main`. The new test proves `record not found` and
+  `collection-not-found` win over a patch that is not JSON.
+- **R6, confirmed.** "P16" and "P4" are gone. `filter.rs`, `schema.rs`,
+  `query.rs` and most of `mutation.rs` use imports. The two `query_sql`
+  comments are back. The `validate_identifier` doc names the `_text_`
+  prefix. Two inline paths are left (see R9).
+- **R7, confirmed.** The key-version read and the `_text_index` check in
+  `drop_index` map only "no row" (and "no such table" for the version
+  read) to `false`, and return other errors. A payload that is not JSON
+  counts in `skipped`. `is_indexable` is shared. `remove_rows` uses one
+  `json_each` statement per table, and `do_delete` and `do_delete_many`
+  both call it. `tri_table` and `word_table` build the names. `do_query`
+  builds the `Option` once. See R9 for the error mapping.
+- **R8, confirmed.** The PR body uses repository links. It has no
+  TypeScript SDK and no `_fts_` table. It gives the put bench numbers on
+  `main` and on the branch. status.md says "Playwright e2e 72 + 4 + 6".
+  task.md gives the six component sizes on `main` and on the branch, all
+  under 1 KB of growth. I changed the R8 status from "Fixed (docs commit)"
+  to `Fixed (6c888450)`, the commit that holds the task.md change, because
+  each status must name a sha. Two smaller errors are left in the PR body
+  (see R10).
+- **No new access path.** The fix commits change no admission, policy or
+  sieve code. `delete-many` still checks the sieve before it reads text
+  fields.
+
+### Findings
+
+#### R9 — minor — `map_text_index_error` copies two existing helpers
+
+- *Where:* `crates/data_db/src/sqlite/text_index.rs:24` to `:34`;
+  `crates/data_db/src/sqlite/query_raw.rs:81` to `:90`;
+  `crates/data_db/src/errors.rs:20`; `crates/data_db/src/sqlite/mutation.rs:199`;
+  `crates/data_db/src/sqlite/text_index/tests/search.rs:299`.
+- *Problem:* The fix for R7(d) added an interrupt check to
+  `map_text_index_error`. The new line 28 is a copy of
+  `is_operation_interrupted` in `query_raw.rs:82`, with the inline paths
+  `rusqlite::Error::SqliteFailure` and `rusqlite::ErrorCode::OperationInterrupted`
+  in one 150-character line. Line 26 tests `msg.contains("no such table")`,
+  which is what `is_no_such_table` does, and this change made that helper
+  `pub(crate)`. So there are now two copies of each check. Two inline
+  paths are also left from R6: `crate::text_match::TextFields` in
+  `mutation.rs:199`, and `std::collections::HashSet` in the new paging
+  test.
+- *Failure case:* Someone changes how an interrupt is detected in
+  `query_raw.rs` (for example to also match the message text). The
+  `delete-many` index cleanup still uses the old copy, so a watchdog stop
+  there maps to `internal` instead of `quota-exceeded`, and nothing fails.
+- *Fix:* Write `map_text_index_error` as
+  `if is_no_such_table(&err) { DataLayerError::Internal(…) } else { map_query_raw_step_error(err) }`
+  (`map_query_raw_step_error` is `pub(super)` in the same `sqlite` module).
+  Import `TextFields` in `mutation.rs` and `HashSet` in `search.rs`.
+- *Status:* Open
+
+#### R10 — minor — two facts in the PR body are wrong
+
+- *Where:* PR #357 body, "How it was tested" and "Wire changes".
+- *Problem:* (a) It says "Unit & integration tests in `crates/data_db`:
+  250 passed". `cargo nextest run -p syneroym-data-db` prints 246 passed,
+  2 skipped, and status.md says the same. (b) It says the change doc has
+  "wire changes W1 through W7". The W table is in the implementation plan,
+  not in the change doc, and W7 was dropped (P3): native dispatch does not
+  accept `text_fields`.
+- *Failure case:* A reader of the PR looks for W1 to W7 in the change doc
+  and does not find them, or thinks four tests were added that do not
+  exist.
+- *Fix:* Write "246 passed, 2 skipped (the two `measure_*` benchmarks)".
+  Point the wire changes to the W table of the plan and say W7 was
+  dropped.
+- *Status:* Open
