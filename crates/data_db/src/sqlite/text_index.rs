@@ -2,6 +2,7 @@ use std::collections::HashSet;
 
 use rusqlite::{Connection, params, types::Value as SqlValue};
 use serde_json::Value;
+use syneroym_text_lang::SEARCH_KEY_VERSION;
 
 use crate::{errors::map_rusqlite_error, host_store::DataLayerError};
 
@@ -98,7 +99,7 @@ pub(super) fn declare(
             params![c_lower],
             |row| row.get::<_, u32>(0),
         )
-        .map(|v| v == syneroym_text_lang::SEARCH_KEY_VERSION)
+        .map(|v| v == SEARCH_KEY_VERSION)
         .unwrap_or(false);
 
     if set_equal(&have, wanted) && tri_exists && version_matches {
@@ -163,7 +164,7 @@ pub(super) fn declare(
     conn.execute(
         "INSERT INTO _text_index (collection, key_version) VALUES (?1, ?2) ON \
          CONFLICT(collection) DO UPDATE SET key_version = excluded.key_version",
-        params![c_lower, syneroym_text_lang::SEARCH_KEY_VERSION],
+        params![c_lower, SEARCH_KEY_VERSION],
     )
     .map_err(map_rusqlite_error)?;
 

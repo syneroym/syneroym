@@ -56,8 +56,8 @@ pub(super) fn do_put(
 ) -> Result<(), host_store::DataLayerError> {
     validate_identifier(collection)?;
     let (payload_text, payload_val) = payload_to_text(&value.payload)?;
-    let fields = super::text_index::fields(conn, collection)?;
-    super::text_index::check_values(&fields, &payload_val)?;
+    let fields = text_index::fields(conn, collection)?;
+    text_index::check_values(&fields, &payload_val)?;
     let now = Utc::now().timestamp_millis();
 
     let existing_created_at: Option<i64> = conn
@@ -91,7 +91,7 @@ pub(super) fn do_put(
         .map_err(map_rusqlite_error)?;
 
     if !fields.is_empty() {
-        super::text_index::sync_row(conn, collection, &fields, rowid, &payload_val)?;
+        text_index::sync_row(conn, collection, &fields, rowid, &payload_val)?;
     }
     Ok(())
 }
@@ -155,7 +155,7 @@ pub(super) fn do_delete(
     id: &str,
 ) -> Result<(), host_store::DataLayerError> {
     validate_identifier(collection)?;
-    let fields = super::text_index::fields(conn, collection)?;
+    let fields = text_index::fields(conn, collection)?;
     let maybe_rowid: Option<i64> = conn
         .query_row(
             &format!("DELETE FROM {collection} WHERE id = ?1 RETURNING rowid"),
@@ -172,7 +172,7 @@ pub(super) fn do_delete(
     if !fields.is_empty()
         && let Some(rowid) = maybe_rowid
     {
-        super::text_index::remove_rows(conn, collection, &[rowid])?;
+        text_index::remove_rows(conn, collection, &[rowid])?;
     }
     Ok(())
 }
@@ -195,7 +195,7 @@ pub(super) fn do_delete_many(
         return Err(host_store::DataLayerError::PermissionDenied);
     }
     emit_mode_b_trace(sieve);
-    let fields = super::text_index::fields(conn, collection)?;
+    let fields = text_index::fields(conn, collection)?;
     let text_fields = crate::text_match::TextFields { collection, fields: &fields };
     let compiled = filter::compile_filter_in(filter_json, Some(&text_fields))?;
 

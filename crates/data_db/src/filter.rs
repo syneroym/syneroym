@@ -12,7 +12,10 @@ use std::collections::BTreeSet;
 use rusqlite::types::Value;
 use serde_json::Value as Json;
 
-use crate::host_store::DataLayerError;
+use crate::{
+    host_store::DataLayerError,
+    text_match::{self, TextFields},
+};
 
 const MAX_FILTER_DEPTH: u32 = 10;
 
@@ -36,7 +39,7 @@ pub fn compile_filter(filter_json: Option<&str>) -> Result<Option<CompiledFilter
 /// support into a parameterized SQL WHERE-clause fragment.
 pub fn compile_filter_in(
     filter_json: Option<&str>,
-    text: Option<&crate::text_match::TextFields<'_>>,
+    text: Option<&TextFields<'_>>,
 ) -> Result<Option<CompiledFilter>, DataLayerError> {
     let Some(raw) = filter_json else { return Ok(None) };
     if raw.trim().is_empty() {
@@ -123,7 +126,7 @@ fn compile_document(
     doc: &serde_json::Map<String, Json>,
     depth: u32,
     params: &mut Vec<Value>,
-    text: Option<&crate::text_match::TextFields<'_>>,
+    text: Option<&TextFields<'_>>,
     is_conjunct: bool,
     text_match: &mut bool,
 ) -> Result<String, DataLayerError> {
@@ -148,7 +151,7 @@ fn compile_entry(
     value: &Json,
     depth: u32,
     params: &mut Vec<Value>,
-    text: Option<&crate::text_match::TextFields<'_>>,
+    text: Option<&TextFields<'_>>,
     is_conjunct: bool,
     text_match: &mut bool,
 ) -> Result<String, DataLayerError> {
@@ -176,7 +179,7 @@ fn compile_logical_array(
     depth: u32,
     params: &mut Vec<Value>,
     joiner: &str,
-    text: Option<&crate::text_match::TextFields<'_>>,
+    text: Option<&TextFields<'_>>,
     is_conjunct: bool,
     text_match: &mut bool,
 ) -> Result<String, DataLayerError> {
@@ -209,7 +212,7 @@ fn compile_field(
     value: &Json,
     depth: u32,
     params: &mut Vec<Value>,
-    text: Option<&crate::text_match::TextFields<'_>>,
+    text: Option<&TextFields<'_>>,
     is_conjunct: bool,
     text_match: &mut bool,
 ) -> Result<String, DataLayerError> {
@@ -256,7 +259,7 @@ fn compile_operator_map(
     path: &str,
     obj: &serde_json::Map<String, Json>,
     params: &mut Vec<Value>,
-    text: Option<&crate::text_match::TextFields<'_>>,
+    text: Option<&TextFields<'_>>,
     is_conjunct: bool,
     text_match: &mut bool,
 ) -> Result<String, DataLayerError> {
@@ -269,7 +272,7 @@ fn compile_operator_map(
                 ));
             }
             *text_match = true;
-            clauses.push(crate::text_match::compile_search(path, opval, text, params)?);
+            clauses.push(text_match::compile_search(path, opval, text, params)?);
             continue;
         }
         let sql_op = match op.as_str() {
@@ -534,7 +537,7 @@ mod tests {
     #[test]
     fn test_search_operator_compilation_and_validation() {
         let text_fields = ["title".to_string()];
-        let text = crate::text_match::TextFields { collection: "c", fields: &text_fields };
+        let text = TextFields { collection: "c", fields: &text_fields };
 
         // Single long term ("plumber")
         let f1 = compile_filter_in(Some(r#"{"title": {"$search": "plumber"}}"#), Some(&text))
@@ -638,7 +641,7 @@ mod tests {
     #[test]
     fn test_search_inside_or_or_not_refused() {
         let text_fields = ["title".to_string()];
-        let text = crate::text_match::TextFields { collection: "c", fields: &text_fields };
+        let text = TextFields { collection: "c", fields: &text_fields };
 
         let err_or =
             compile_filter_in(Some(r#"{"$or": [{"title": {"$search": "x"}}]}"#), Some(&text))
@@ -664,7 +667,7 @@ mod tests {
     #[test]
     fn test_search_quotes_escaped_in_param_not_sql() {
         let text_fields = ["title".to_string()];
-        let text = crate::text_match::TextFields { collection: "c", fields: &text_fields };
+        let text = TextFields { collection: "c", fields: &text_fields };
 
         let f = compile_filter_in(Some(r#"{"title": {"$search": "a\"b"}}"#), Some(&text))
             .unwrap()

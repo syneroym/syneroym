@@ -1,4 +1,4 @@
-use std::sync::LazyLock;
+use std::{collections::HashSet, sync::LazyLock};
 
 use regex::Regex;
 use rusqlite::{
@@ -22,8 +22,8 @@ static IDENTIFIER_REGEX: LazyLock<Regex> =
 /// cannot be bound as SQL parameters, so this allow-list is what stands in
 /// for parameterization at the DDL boundary.
 ///
-/// The vault table's name is refused: a guest must not create, drop or fill
-/// a collection with that name.
+/// The vault table's name and names beginning with `_text_` are refused:
+/// a guest must not create, drop or fill a collection with those names.
 pub(crate) fn validate_identifier(name: &str) -> Result<(), host_store::DataLayerError> {
     if IDENTIFIER_REGEX.is_match(name)
         && !name.eq_ignore_ascii_case(VAULT_TABLE)
@@ -50,7 +50,7 @@ pub(super) fn do_create_collection(
             "too many text fields (max 8)".to_string(),
         ));
     }
-    let mut seen_text_fields = std::collections::HashSet::with_capacity(schema.text_fields.len());
+    let mut seen_text_fields = HashSet::with_capacity(schema.text_fields.len());
     for tf in &schema.text_fields {
         validate_identifier(tf)?;
         if !seen_text_fields.insert(tf.to_ascii_lowercase()) {

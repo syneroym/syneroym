@@ -65,9 +65,9 @@ fn trim_term<'a>(
 
 /// `search_key(query)`, split on Unicode white space. Terms are trimmed
 /// of leading and trailing punctuation and symbol `char`s (stopping at
-/// alphanumeric chars or Unicode marks, such as virama, pulli, or nukta; P16),
-/// classified into long/short on trimmed length, and empty terms are dropped
-/// (P4). Interior punctuation (`plumber's`, `a-b`) is kept. Empty when nothing
+/// alphanumeric chars or Unicode marks, such as virama, pulli, or nukta),
+/// classified into long/short on trimmed length, and empty terms are dropped.
+/// Interior punctuation (`plumber's`, `a-b`) is kept. Empty when nothing
 /// is left.
 pub fn query_terms(query: &str) -> QueryTerms {
     let key = search_key(query);

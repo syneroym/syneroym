@@ -8,8 +8,9 @@ use super::{
     sieve::{
         ModeAOutcome, emit_mode_a_execution_trace, emit_mode_b_trace, install_watchdog, merge_sieve,
     },
+    text_index,
 };
-use crate::{aggregate, errors::map_rusqlite_error, filter, host_store};
+use crate::{aggregate, errors::map_rusqlite_error, filter, host_store, text_match::TextFields};
 
 /// `sieve` is `Some` only for `Mode::PointInTime{id}` (`compile_read` already
 /// appends `... AND {table}.id = ?` to the RLS), so a sieve'd fetch is a
@@ -97,6 +98,7 @@ pub(crate) fn query_sql(
 ) -> (String, Vec<SqlValue>) {
     let mut where_clauses = Vec::new();
     let mut bound_params: Vec<SqlValue> = Vec::new();
+    // Sieve first (RLS ∧ caveats), ahead of the caller's filter/cursor/limit.
     if let Some((clause, params)) = sieve {
         where_clauses.push(clause);
         bound_params.extend(params);
@@ -121,6 +123,8 @@ pub(crate) fn query_sql(
     } else {
         format!("WHERE {}", where_clauses.join(" AND "))
     };
+    // Fetch one extra row past the page limit to determine whether a next-cursor
+    // should be returned.
     bound_params.push(SqlValue::Integer(i64::from(limit) + 1));
 
     let order_by = if text_match {
@@ -156,16 +160,9 @@ pub(super) fn do_query(
         }
     }
 
-    let text_fields_vec = if opts.filter.is_some() {
-        super::text_index::fields(conn, collection)?
-    } else {
-        Vec::new()
-    };
-    let text_fields = if opts.filter.is_some() {
-        Some(crate::text_match::TextFields { collection, fields: &text_fields_vec })
-    } else {
-        None
-    };
+    let text_fields_vec =
+        opts.filter.as_ref().map(|_| text_index::fields(conn, collection)).transpose()?;
+    let text_fields = text_fields_vec.as_deref().map(|fields| TextFields { collection, fields });
 
     let compiled = filter::compile_filter_in(opts.filter.as_deref(), text_fields.as_ref())?;
     let limit = opts.limit.unwrap_or(MAX_QUERY_PAGE_SIZE).min(MAX_QUERY_PAGE_SIZE);
