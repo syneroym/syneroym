@@ -3,9 +3,10 @@
 *Reader: the developer (or AI) who implements slice B4b. You do not have the
 planning conversation. This plan is meant to stand alone.*
 
-**Status: plan written, 2026-11-12. Owner answers pending (section 2.1).
-Implementation must not start until Q1 to Q3 are answered and
-`spelling-pairs.tsv` says `# owner check: done` (Step 2).**
+**Status: plan written, 2026-11-12; plan review round 1 (P1–P15) folded
+in, 2026-11-12. Owner answers pending (section 2.1). Implementation must
+not start until Q1 to Q3 are answered and `spelling-pairs.tsv` says
+`# owner check: done` (Step 2).**
 
 **Size and PR.** L. One PR on `feat/m08b-b4b-search-scripts`, with the
 commits of section 6 in that order. The branch starts from `main` at
@@ -149,7 +150,8 @@ finds a Devanagari title (D-B4b-22).
   Latin letters. He presses Search. Alice's listing is in the results.
 - Bob also tries `naal waala` and `nalwala`. Both find the same listing.
 - In the Contacts screen, Bob types `ram` in the new search box. The
-  contact `राम` shows. The contact list is in alphabetical order, with the
+  contact `राम` shows (Ram wrote his name in Devanagari in his own profile,
+  and Bob added him from it). The contact list is in alphabetical order, with the
   names in Bob's own script first and the other scripts after them.
 - In Messages, Bob searches his chats for `ek` (a 2-letter word). Every
   message with the word `ek` (or `एक`) shows.
@@ -308,6 +310,10 @@ change a row without the owner").
   the NFC and lower-case key, as in B4a. It is found by a query in the
   same script, never by a Latin query. A backlog row records the other
   scripts. *Recommended*: the test data exists only for Hindi and Tamil.
+  Note: Marathi (`mr`, in the Hub's record language list) and Nepali are
+  written in Devanagari, so their text gets the Hindi table and Hindi
+  schwa deletion. That is mostly right for search. Marathi `ऱ` (U+0931)
+  gets the value `r` (D-B4b-3, P9); no Marathi test data exists.
 - (b) Also the seven other Brahmic scripts of India. They share the
   Devanagari structure, so the tables are small. But there is no test
   data, and each table would ship untested.
@@ -321,7 +327,10 @@ ML-24 says "the Hub sorts names". Today no Hub list is sorted
 - (a) **The contact list and the group member list.** These are the two
   lists of person names. Directory hits stay newest first (the help text
   promises this, `en.ftl:667`); the SynOrg roster shows DIDs only
-  (`screens/synorg.ts:185` to `:192`). *Recommended.*
+  (`screens/synorg.ts:185` to `:192`). The Hub has no contact picker today:
+  the group add box takes an address or a DID
+  (`screens/groups.ts:560` to `:575`), so the change doc's "contact picker
+  compares keys" has nothing to change in B4b. *Recommended.*
 - (b) Only the contact list.
 
 **Q6. In which order do the script groups come? (blocks Step 8)**
@@ -346,7 +355,10 @@ The `search_index` rows of a node built before B4b hold ASCII-folded
   `search_index` from the old rows (the key version changed), so ASCII
   searches still work. Listings in other scripts are found after the node
   owner runs `directory.reindex` (it exists: `crates/roym_directory/src/api.rs:60`)
-  or publishes again. The PR text says this. Test nodes, e2e and demo start
+  or publishes again. `directory.reindex` has no `roymctl` command and no
+  Hub button. It is a local-only method, so the owner calls it over
+  JSON-RPC with a signed-in owner session. The developer guide and the PR
+  text give the exact call (D-B4b-13, P14). Test nodes, e2e and demo start
   empty. *Recommended.*
 - (b) The directory stores a projection version and rebuilds
   `search_index` on the first call after an upgrade. Safer for a running
@@ -358,7 +370,11 @@ The `search_index` rows of a node built before B4b hold ASCII-folded
 - (a) **Yes: the `text` field holds the title, summary and categories, and
   the title and summary of every author translation.** This closes the
   backlog row "Directory search does not index author translations"
-  (`deferred-backlog.md:569`, target B4b). *Recommended.*
+  (`deferred-backlog.md:569`, target B4b). *Recommended.* Cost: the
+  index text of one row can reach about 11 KB (title and summary, 160 +
+  2,048 bytes, plus the same for each of up to 4 translations), and one
+  listing has up to 8 rows (one per area), so about 88 KB of index text per
+  listing at most. The PR text states this.
 - (b) No. The row stays open.
 
 ### 2.2 Points found while reading
@@ -447,7 +463,21 @@ The `search_index` rows of a node built before B4b hold ASCII-folded
     `search_case_insensitive_and_substring` (`search.rs:110`) and
     `search_term_cleaning_finds_words` (`:180`) must be read again in
     Step 4: a test that only checks that rows are found keeps passing; a
-    test that asserts a key string changes.
+    test that asserts a key string changes. These tests change for a known
+    reason, and each update names it in the commit:
+    - `search_finds_devanagari_and_tamil_words` (`search.rs:31`, the test
+      ML-20 names): `வாலா` becomes `vala` and now finds the Devanagari row
+      too. The expectation becomes both rows (cross-script search is the
+      point of B4b).
+    - `writes.rs:55` and `:68` run `MATCH 'apple'` on the word table; the
+      key is now `aple`. `declare.rs:75` and `:84` run `MATCH 'world'` and
+      `MATCH 'hello'`; the keys are `vorld` and `helo`. Raw-`MATCH` tests
+      take the word from `fts::index_keys(...)`, so they stay right after a
+      later key change.
+    - `search_escapes_like_special_characters`
+      (`conversation/src/store/tests/search_and_delete.rs:115`): `100%`
+      becomes the long term `100`, a substring of `1000`, so both messages
+      match. This is a real change (W1, W4, behaviour change 1).
 12. **NFC decomposes the Devanagari nukta letters.** `क़`, `ख़`, `ग़`, `ज़`,
     `ड़`, `ढ़`, `फ़`, `य़` (U+0958 to U+095F) are composition exclusions, so
     NFC turns each into the base letter plus U+093C NUKTA. The table must
@@ -501,7 +531,7 @@ The `search_index` rows of a node built before B4b hold ASCII-folded
 | ML-20 | A directory search finds a listing by a word of its title in Devanagari and in Tamil script, on both builds. | parity `scenario_231_directory_finds_titles_in_every_script_parity`; `text_lang` table tests; the B4a storage-half tests stay |
 | ML-21 | `nal wala` finds `नल वाला`, and `नल वाला` finds a `hi-Latn` listing titled `nal wala`, in the directory. | `text_lang` `required_spelling_rows_meet`; parity scenario 231; Playwright "a Latin search finds a Devanagari listing, and the other way"; story 40 |
 | ML-22 | `naal waala` and `nalwala` find `nal wala`. The fold is a fixed table, tested with the 1,083 rows of `spelling-pairs.tsv`. | `text_lang` `spelling_rows_match_the_owner_decisions`, `required_spelling_rows_meet`, `fold_rules_table` |
-| ML-23 | A contact name is stored as written. `contacts.list` with `text` finds `राम` with `ram`, and `Ram` with `राम`. | parity `scenario_234_contacts_list_text_finds_names_across_scripts_parity`; `contacts.test.ts`; Playwright "contact search finds a name in another script" |
+| ML-23 | A contact name and a display name are stored as written (byte for byte, also a name sent in NFD form). `contacts.list` with `text` finds `राम` with `ram`, and `Ram` with `राम`. The Hub has no contact picker today (Q5), so the change doc's "contact picker compares keys" has nothing to change. | parity `scenario_234_contacts_list_text_finds_names_across_scripts_parity` (search and stored-as-written for contacts and for `profile.set`); `contacts.test.ts`; Playwright "contact search finds a name in another script" |
 | ML-24 | The Hub sorts the contact list and the group member list with `Intl.Collator` for the Hub language, grouped by script (Q5, Q6). | `ui/src/names.test.ts`; `contacts.test.ts`; `groups.test.ts` |
 | ML-29 | A chat query word of 1 or 2 characters (after folding) is a word or prefix match in the chat word table; the `LIKE` scan is gone, and the query plan never scans `messages`. The directory's short words go through B4a's word table. | `conversation` `store/tests/search_keys.rs` (`short_terms_use_the_word_table_and_never_scan`); parity `scenario_235_chat_search_short_and_cross_script_parity`; parity scenario 231 (a 2-letter word) |
 
@@ -511,9 +541,14 @@ and only there, at close-out (Step 10): decisions into the section
 "Search" as a new list "Decided <date>, search in every script", after the
 B4a list (`change.md:408`), and into "Names in any script" for D-B4b-18 to
 D-B4b-21; deviations under `## Deviations`. The deviations, if the owner
-takes the recommendations: `च` is written `ch` and `ड़` is `d` in the
-Devanagari table, not ISO 15919 (D-B4b-3, Q3); Tamil stops are voiced by
-position (D-B4b-4, Q2); vowel quality is not folded, so English loanwords
+takes the recommendations: the tables start from ISO 15919 and differ
+from it on purpose, so a stored key is not ISO output: `च` is written `ch`
+and `ड़` is `d` (D-B4b-3, Q3); Hindi schwa deletion (`नल` is `nal`, ISO
+`nala`); dental and retroflex letters are merged and long vowels lose the
+macron, so `ā` meets `a`; `क़` is `q` and the fold makes it `k` (`kila`,
+ISO `qilā`); Tamil `ழ` is `zh` and the fold makes it `l`; Tamil stops are
+voiced by position (D-B4b-4, Q2); the fold runs to a fixed point
+(D-B4b-5, P6); vowel quality is not folded, so English loanwords
 in a native script do not meet their English spelling (Q1); only
 Devanagari and Tamil have tables (Q4); punctuation breaks a word, so a
 query word with inner punctuation becomes two terms (D-B4b-6, a change of
@@ -535,10 +570,10 @@ No WIT package, WIT record, Roym record or method name changes.
 
 | # | Where | Before | After |
 | --- | --- | --- | --- |
-| W1 | `directory.search` (and so `directory.find`) `text` | folded to `[a-z0-9 -]`; the whole folded text is one substring (`$regex` → `LIKE`); a query that folds to nothing is `-32602` "the directory's text index holds only ASCII letters, …" | every word must match, in any order, over search keys (D-B4b-11); a query in any script is accepted; a query with no word after the key (only punctuation) is `-32602` "$search needs at least one word"; more than 16 words is `-32602` "$search has more than 16 words" (D-B4b-12). The 256-byte limit is unchanged |
+| W1 | `directory.search` (and so `directory.find`) `text` | folded to `[a-z0-9 -]`; the whole folded text is one substring (`$regex` → `LIKE`); a query that folds to nothing is `-32602` "the directory's text index holds only ASCII letters, …" | every word must match, in any order, over search keys (D-B4b-11); a query in any script is accepted; a query with no word after the key (only punctuation) is `-32602` "$search needs at least one word"; more than 16 words is `-32602` "$search has more than 16 words" (D-B4b-12). The 256-byte limit is unchanged. A number is a substring like any word: `50%` becomes `50` and finds `500` and `5000` |
 | W2 | `directory.search` results | a listing in Devanagari or Tamil is never found by text; author translations are not searched | it is found by a query in its own script or in Latin letters; author translations are searched (Q8) |
-| W3 | `contacts.list` input | `favourites_only`, `offset`, `limit` | also `text: string?` (D-B4b-18). A wrong type is `-32602`, as for the other fields. Absent means "every contact", as today |
-| W4 | `conversation.search` | 3 or more characters: the query is one case-insensitive substring of the raw body; fewer: a `LIKE` scan | every word must match over search keys; a long word anywhere in the joined key, a short word as a word or word prefix (D-B4b-15); `lo` no longer finds `hello`; more than 16 words is `-32602` (D-B4b-16); a query with no word (only punctuation) gives no matches |
+| W3 | `contacts.list` input | `favourites_only`, `offset`, `limit` | also `text: string?` (D-B4b-18). A wrong type is `-32602`, as for the other fields. Absent or blank means "every contact", as today. A text with no word after the key (`!!!`) is `-32602` "$search needs at least one word", the same answer as the directory and chat (P11) |
+| W4 | `conversation.search` | 3 or more characters: the query is one case-insensitive substring of the raw body; fewer: a `LIKE` scan | every word must match over search keys; a long word anywhere in the joined key, a short word as a word or word prefix (D-B4b-15); `lo` no longer finds `hello`; `100%` finds `1000`; more than 16 words or more than 1,024 bytes is `-32602`; a query with no word after the key (only punctuation, for example `!!!`) is `-32602` "search needs at least one word" (D-B4b-16; before, `!!!` found a literal `!!!`) |
 | W5 | data-layer `$search` (any guest) | key = NFC + lower case; words split on white space with inner punctuation kept | key of D-B4b-2 to D-B4b-6; punctuation breaks a word; the trigram table holds the joined key, so a long word can match across a word break (`lwa` finds `nal wala`) |
 | W6 | `SEARCH_KEY_VERSION` | 1 | 2: every text index rebuilds on its next `create-collection` with text fields (B4a `declare`, `text_index.rs:87`) |
 
@@ -552,7 +587,7 @@ old matching on the old node. The PR text says this (B3b R5).
 
 | # | Before | After |
 | --- | --- | --- |
-| 1 | English text meets only its exact letters (case-folded) | the Latin fold also merges some English words (`sheet`, `seat`, `sit`) (Q1) |
+| 1 | English text meets only its exact letters (case-folded); a number with a `%` or other sign is matched with the sign | the Latin fold also merges some English words (`sheet`, `seat`, `sit`) (Q1); punctuation breaks a word, so `50%` finds `500` (P5) |
 | 2 | `search_index.text` holds folded ASCII | it holds the NFC raw text (title, summary, categories, translations); `data_db` keeps its key |
 | 3 | `conversation.db` has `messages_fts` | it has `messages_tri`, `messages_word` and `text_index_version`; `messages_fts` is dropped on open (D-B4b-17) |
 | 4 | Opening a `conversation.db` | also rebuilds the chat text index when its key version differs (D-B4b-17); one pass over the text messages, on the store's own thread |
@@ -599,21 +634,34 @@ that depend on an owner answer say so.
 
   ```text
   t = nfc(lowercase(text))                       // B4a, unchanged
-  words = []
+  raw_words = []
   for each run of t split on white space, punctuation and symbols:
       // a "word" is a maximal run of chars that are alphanumeric or a
       // Unicode Mark (B4a's is_retained_boundary_char); everything else
       // is a break. ZWJ (U+200D) and ZWNJ (U+200C) are removed, not a break.
-      for each script run inside the word (D-B4b-3 script.rs):
+      for each script run inside the word (script.rs, rules below):
           Devanagari -> devanagari::to_latin(run)    // D-B4b-3
           Tamil      -> tamil::to_latin(run)         // D-B4b-4
-          Latin      -> strip marks from Latin letters (é -> e)
+          Latin      -> latin_base(run)              // rules below
           other      -> run unchanged (NFC, lower case)
-      w = concat of the run outputs
-      w = fold::fold_word(w)                         // D-B4b-5, Latin letters only
-      if w is not empty: words.push(w)
-  return words.join(" ")
+      raw_words.push(concat of the run outputs, and the Tamil end marker of D-B4b-4)
+  words = tamil::sandhi(raw_words)                 // needs the next word, so after the loop
+  words = words.map(fold::fold_word)               // D-B4b-5, Latin letters only
+  return the non-empty words, joined by " "
   ```
+
+  - **Script runs** (`script.rs`). Each `char` has a script by its
+    Unicode block: Devanagari U+0900 to U+097F, Tamil U+0B80 to U+0BFF,
+    Latin = ASCII letters and the Latin-1, Latin Extended-A/B and Latin
+    Extended Additional blocks. A combining mark (general category `M`) or
+    a digit that is not in the Devanagari or Tamil block joins the run
+    before it; at the start of a word it starts an "other" run. Every other
+    `char` is "other". So `é` written as `e` + U+0301 stays one Latin run.
+  - **`latin_base`**: NFD (`icu_normalizer` `DecomposingNormalizerBorrowed::new_nfd()`,
+    already a dependency), then drop every `char` of general category `Mn`,
+    then NFC again. `é`, `ñ`, `ā` become `e`, `n`, `a`. A Latin letter with
+    no decomposition (`ø`, `æ`, `ß`, `ł`) is kept as it is; the fold does
+    not change it.
 
   - Signature unchanged: `pub fn search_key(text: &str) -> String`.
   - Devanagari digits `०`–`९` and Tamil digits `௦`–`௯` become `0`–`9`.
@@ -653,6 +701,11 @@ that depend on an owner answer say so.
        inherent `a` is removed when the unit before it has a vowel and the
        unit after it is a consonant with a vowel (`कमरा` → `kamra`,
        `बिजली` → `bijli`).
+  - Letters that NFC keeps composed and that the table above lacks:
+    `ऩ` (U+0929) → `n`, `ऱ` (U+0931, Marathi) → `r`, `ऴ` (U+0934) → `l`.
+    Avagraha `ऽ` (U+093D) is dropped. `ॐ` → `om`. Any other Devanagari
+    letter with no value (`ॠ`, `ऌ`, `ॲ` and the rest) is kept as it is, so it
+    is found by the same letter and never breaks a word.
   - Danda `।` and double danda `॥` are punctuation (a word break, D-B4b-2).
   - Test cases (from the data and from S0 R1): `नल वाला` → `nal vala`;
     `क़िला` → `kila`; `सड़क` → `sadak`; `दर्ज़ी` → `darji`; `बढ़ई` → `badhai`
@@ -688,8 +741,11 @@ that depend on an owner answer say so.
     `draivar`); `தி` and `சி` are not changed (`திருச்சி` stays `tiruchi`).
   - Sandhi between words: a word that ends in a stop with pulli, followed by
     a word that starts with the same stop, drops that last consonant
-    (`கறிக் கடை` → `kari kadai`). This needs the next word, so it runs in
-    `search_key` after the words are made, before the fold.
+    (`கறிக் கடை` → `kari kadai`). This needs the next word, so
+    `tamil::to_latin` marks a word that ends in a stop with pulli, and
+    `tamil::sandhi` runs over the list of words after the loop and before
+    the fold (D-B4b-2 pseudocode). A Latin or Devanagari word is never
+    changed by it.
   - Test cases: `முருகன்` → `murugan`; `மஞ்சள்` → `manjal`; `பச்சை` →
     `pachai`; `நன்றி` → `nandri`; `சென்னை` → `senai`; `ம்` → `m`.
 
@@ -715,6 +771,14 @@ that depend on an owner answer say so.
   | 12 | `yi`→`i`; `y` at word end → `i`; `ay` not before a vowel → `ai` | `badhayi` → `badhai`, `trichy` → `trichi` |
   | 13 | `er` at word end → `ar`; `ei` or `ey` at word end → `ai`; `iy` before `a`, `e`, `o`, `u` → `i` | `teacher` → `tichar`, `kadei` → `kadai`, `takiya` → `takia` |
 
+  - **The fold runs to a fixed point.** Rules 12 and 13 can make a new
+    doubled letter or a new `ea` after rules 4 and 11 ran (`iyi` → `ii`;
+    `kaey` → `kaei` → `kaai`). So `fold_word` runs the whole list again
+    until the word does not change, at most 4 passes. No rule makes a word
+    longer except rule 2 (`x`), and no rule writes an `x` or a `q`, so the
+    passes end. A test checks that 4 passes are always enough
+    (`fold_reaches_a_fixed_point`, section 7.2). This makes `search_key`
+    idempotent, and makes `kaey` and `kai` meet as the rules mean.
   - The fold runs on the output of the tables too, so a native word and its
     Latin spelling go through the same last steps.
   - Letters outside `a` to `z` (digits, other scripts) are not changed.
@@ -753,13 +817,16 @@ that depend on an owner answer say so.
   `cargo dupes` quiet (B4a R6, R9).
 
   ```rust
-  /// Tokenizer of the trigram table. The key is already lower case.
-  pub const TRI_TOKENIZE: &str = "trigram case_sensitive 1";
-  /// Tokenizer and prefix index of the word table.
-  pub const WORD_TOKENIZE: &str = "unicode61 remove_diacritics 0 categories 'L* N* Co M*'";
-  pub const WORD_PREFIX: &str = "1 2";
+  /// The options of the trigram table, as written inside `fts5(…)`.
+  /// The key is already lower case.
+  pub const TRI_TABLE_OPTIONS: &str = "tokenize = 'trigram case_sensitive 1'";
+  /// The options of the word table: tokenizer and prefix index.
+  pub const WORD_TABLE_OPTIONS: &str =
+      "tokenize = \"unicode61 remove_diacritics 0 categories 'L* N* Co M*'\", prefix = '1 2'";
   /// Most query words one search may have.
   pub const MAX_SEARCH_TERMS: usize = 16;
+  /// Longest search text, in bytes.
+  pub const MAX_SEARCH_BYTES: usize = 1024;
 
   /// What the two tables index for one text.
   #[derive(Debug, Clone, PartialEq, Eq)]
@@ -777,12 +844,18 @@ that depend on an owner answer say so.
   pub fn match_exprs(column: &str, terms: &QueryTerms) -> (Option<String>, Option<String>);
   ```
 
-  - `TRI_TOKENIZE` and `WORD_TOKENIZE` move from
-    `crates/data_db/src/sqlite/text_index.rs:13` to `:15`; `data_db` imports
-    them. The string values do not change, so no table definition changes.
+  - The two constants keep the exact clause strings of
+    `crates/data_db/src/sqlite/text_index.rs:13` to `:15`
+    (`TRI_TOKENIZE`, `WORD_TOKENIZE`), under the new names, so no table
+    definition changes. Their four users change their import:
+    `declare` in `text_index.rs` and the three tests in
+    `text_index/tests/sqlite_build.rs` (`:8`, `:34`, `:54`). The old names
+    are removed from `data_db`, not re-exported.
   - `text_match.rs:66` to `:94` call `match_exprs` instead of building the
-    strings. `MAX_SEARCH_TERMS` moves from `text_match.rs:13`.
-    `MAX_SEARCH_BYTES` stays in `data_db` (it is a data-layer limit).
+    strings. `MAX_SEARCH_TERMS` and `MAX_SEARCH_BYTES` move from
+    `text_match.rs:13` and `:14`; no other file uses them
+    (`git grep -n 'MAX_SEARCH_TERMS\|MAX_SEARCH_BYTES'`). Chat search
+    checks the same two limits (D-B4b-16).
   - The module holds no SQL other than these strings, and no `rusqlite`
     dependency. A guest that does not call it does not grow (section 7.6).
 
@@ -867,7 +940,17 @@ that depend on an owner answer say so.
   `data_db` builds the index from the existing rows. The `text` of rows
   written before B4b is ASCII-folded; it is still found by Latin queries.
   `directory.reindex` (`search_ops.rs:507`) rewrites every row with raw
-  text. The PR text and the developer guide's search section say so.
+  text. It has no `roymctl` command and no Hub button; the node owner calls
+  it with the developer guide's `roym` shell function (the
+  `roym-client=rpc` block, `docs/developer-guide.md:2415` to `:2421`),
+  signed in as the owner:
+
+  ```bash
+  roym directory.reindex | jq .result     # {"rebuilt": <rows>, "standing": <n>}
+  ```
+
+  The PR text and the developer guide's search section give this exact
+  call.
 
 - **D-B4b-14. The chat text index** (new file
   `crates/conversation/src/store/text_index.rs`, declared in
@@ -875,16 +958,23 @@ that depend on an owner answer say so.
 
   ```sql
   CREATE VIRTUAL TABLE IF NOT EXISTS messages_tri USING fts5(
-      body, tokenize = '<fts::TRI_TOKENIZE>');
+      body, <fts::TRI_TABLE_OPTIONS>);
   CREATE VIRTUAL TABLE IF NOT EXISTS messages_word USING fts5(
-      body, tokenize = "<fts::WORD_TOKENIZE>", prefix = '<fts::WORD_PREFIX>');
+      body, <fts::WORD_TABLE_OPTIONS>);
   CREATE TABLE IF NOT EXISTS text_index_version (
       id INTEGER PRIMARY KEY CHECK (id = 1),
       key_version INTEGER NOT NULL);
   ```
 
   - Ordinary FTS5 tables (they keep the key), keyed by the `messages`
-    `rowid`, as in `data_db` (B4a Q6). `messages_fts` goes.
+    `rowid`, as in `data_db` (B4a Q6). `messages_fts` goes. Each ordinary
+    table also keeps a `_content` copy of the key. That is acceptable
+    because `open_connection` sets `PRAGMA secure_delete = ON`
+    (`schema.rs:254`), so a deleted index row is zeroed on disk, and every
+    path that hides a message for good also removes its index rows (the
+    `remove` bullet below). Rejected for now: `content='',
+    contentless_delete=1` (SQLite 3.43 and later) would keep no copy at
+    all, but its rows cannot be read back in a test, as B4a found.
   - Functions, each taking the open `Connection` (the callers already hold
     the store lock or a transaction):
 
@@ -905,17 +995,32 @@ that depend on an owner answer say so.
     harmless.
   - Every write site of 2.2 point 6 calls `sync` or `remove` instead of its
     own SQL: the five inserts call `sync(conn, rowid, body)`; the two
-    `'delete'` commands call `remove(conn, rowid)` (they no longer need the
-    old body). `scrub.rs:100` runs `'optimize'` on both tables.
-  - Which rows are indexed does not change: the same
-    `is_searchable_content_type` gate at each insert site.
+    `'delete'` commands call `remove(conn, rowid)`. `scrub.rs:100` runs
+    `'optimize'` on both tables.
+  - **`remove` has no guard.** Today the drop path removes the index row
+    only when `prior == "accepted"` (`message.rs:350` to `:360`) and
+    `delete_message_conn` only when `admission == "accepted"` and the body
+    is not empty (`:406` to `:416`), because an FTS5 `'delete'` of text that
+    was never indexed corrupts an external-content table (the comments at
+    `:350` and `:406`). With ordinary tables, `DELETE … WHERE rowid = ?` of
+    a missing row is safe. So both paths call `remove(conn, rowid)` for
+    every dropped or deleted row, whatever its admission, and the two
+    comments go. This also covers a row that a rebuild indexed by mistake.
+  - **The live rule.** A row is in the index while it is visible: not a
+    system row, a searchable content type, a UTF-8 body, and `admission =
+    'accepted'` (outgoing rows have `'accepted'` by the column default,
+    `schema.rs:92`; an incoming row gets it from `apply_admission(Accept)`,
+    `message.rs:318` to `:330`), and not deleted. The insert sites keep
+    their gates (`message.rs:124`, `group.rs:423`, the accept path, the
+    backup import). The rebuild uses the same rule (D-B4b-17).
   - The body is the message bytes read as UTF-8; a body that is not UTF-8
     is not indexed (today it is cast to text). `String::from_utf8_lossy` is
     not used, so no replacement character enters the index.
 
 - **D-B4b-15. Chat search** (`crates/conversation/src/store/search.rs`).
   `search(query, conversation, limit)` keeps its signature. It computes
-  `query_terms(query)`; with no term it returns `Ok(vec![])`. It gets the
+  `query_terms(query)`; with no term it returns `Ok(vec![])` (the host
+  refuses that case first, D-B4b-16, so this is only a guard). It gets the
   two MATCH texts from `fts::match_exprs("body", &terms)` and runs one
   query:
 
@@ -946,11 +1051,18 @@ that depend on an owner answer say so.
     t CROSS JOIN messages m ON m.rowid = t.r`, which fixes the order. Write
     which form you used into this plan.
 
-- **D-B4b-16. The term limit in chat search.** `host_impl.rs:411` checks
-  `query_terms(query)` before `spawn_blocking`: more than
-  `fts::MAX_SEARCH_TERMS` terms returns
-  `ConversationError::InvalidArgument("search has more than 16 words")`,
-  which `from_host` maps to `-32602`. The store does not check it again.
+- **D-B4b-16. The limits of chat search.** `host_impl.rs:411` checks, in
+  this order, before `spawn_blocking`: more than `fts::MAX_SEARCH_BYTES`
+  bytes → `ConversationError::InvalidArgument("search text is longer than
+  1024 bytes")`, checked before any key is built, so a 10 MB query costs
+  nothing; then `query_terms(query)`: no term →
+  `InvalidArgument("search needs at least one word")`; more than
+  `fts::MAX_SEARCH_TERMS` → `InvalidArgument("search has more than 16
+  words")`. `from_host` maps `InvalidArgument` to `-32602`. The texts are
+  the `data_db` texts without the `$`, because a chat client never writes
+  `$search`. `roym_conversation`'s own empty-query check
+  (`app/messages.rs:493`) stays. So the directory, `contacts.list` and chat
+  answer a query with no word in the same way: `-32602` (P11).
 
 - **D-B4b-17. Rebuild of the chat index.** `init_schema` (`schema.rs:46`)
   calls `text_index::ensure(conn)` after the table DDL. `ensure`:
@@ -964,14 +1076,16 @@ that depend on an owner answer say so.
   DROP TABLE IF EXISTS messages_fts
   DELETE FROM messages_tri; DELETE FROM messages_word
   for (rowid, content_type, body) in
-      SELECT rowid, content_type, body FROM messages WHERE system = 0 AND deleted_at IS NULL:
+      SELECT rowid, content_type, body FROM messages
+      WHERE system = 0 AND deleted_at IS NULL AND admission = 'accepted':
       if is_searchable_content_type(content_type) and body is UTF-8: sync(rowid, body)
   upsert text_index_version (1, SEARCH_KEY_VERSION)
   COMMIT
   ```
 
   - This is a rebuild of derived data, not a migration: it reads only
-    `messages`, which does not change.
+    `messages`, which does not change. It uses the live rule of D-B4b-14,
+    so an `undecided` or `held` message is not indexed (P1).
   - The `messages_fts` line in `schema.rs:116` to `:121` is removed. The
     file doc (`schema.rs:1` to `:5`) lists the new tables.
   - The rebuild runs while the store opens, before any caller. A test opens
@@ -1034,6 +1148,15 @@ that depend on an owner answer say so.
     `sortByName(info.members, m => <the label of :529-:530>, lang)`.
   - The search uses the existing `refiller` (`contacts.ts:36`), so an old
     reply cannot overwrite a newer one (the e2e test 2b, `roym-hub.spec.ts:122`).
+  - **The add form gets class names.** `addContact` finds its fields as
+    `page.locator('.contacts-screen input')` with `.nth(0)` for the DID and
+    `.nth(1)` for the address (`hub-helpers.ts:58` to `:60`). The new search
+    input above the list would become `nth(0)` and break every test that
+    adds a contact (P3). So the DID and address inputs of the add form
+    (`contacts.ts:50` to `:95`) get the classes `.contacts-did-input` and
+    `.contacts-address-input` (the envelope field `.contacts-envelope-input`),
+    and `addContact` uses them. `contacts.test.ts` and
+    `hindi-screens.test.ts` are checked for index locators in the same way.
 
 - **D-B4b-21. Hub messages** (English and Hindi, in the `contacts-` and
   `directory-` sections of `en.ftl` and `hi.ftl`):
@@ -1056,15 +1179,37 @@ that depend on an owner answer say so.
     "$dir" "member-roym#directory-0")"` next to `:35`.
   - `hub-helpers.ts`: `ensureOwnSynOrg(page, directoryDid, category, lang)`
     and `publishListing(page, title, category, directoryDid, lang)`, moved
-    from `ensureSynOrgWithListing` (`roym-hub.spec.ts:514` to `:568`). Every
-    button and status text is found by `hubMessage(lang, '<id>')`, never by
-    typed English (B1b P8). `roym-hub.spec.ts` calls them with `'en'`; its
-    tests do not change otherwise.
+    from
+    `ensureSynOrgWithListing` (`roym-hub.spec.ts:514` to `:568`).
+    `roym-hub.spec.ts` calls them with `'en'`; its tests do not change
+    otherwise. Every check uses a message id, never typed English (B1b P8):
+
+    | Today (`roym-hub.spec.ts`) | After |
+    | --- | --- |
+    | button `'SynOrg'` | `hubMessage(lang, 'tab-synorg')` |
+    | status contains `'runs no SynOrg'` | contains `hubMessage(lang, 'synorg-status-none')` |
+    | button `'Save settings'` | `hubMessage(lang, 'synorg-save-button')` |
+    | `.synorg-save-status` is `'Saved.'` | `hubMessage(lang, 'common-saved')` (`screens/synorg.ts:106`) |
+    | button `'Save limit'` | `hubMessage(lang, 'synorg-limit-save')` |
+    | `.limit-status` is `'Saved.'` | `hubMessage(lang, 'common-saved')` (`synorg.ts:159`) |
+    | button `'Listings'` | `hubMessage(lang, 'tab-listings')` |
+    | `.listing-save-result` contains `'Saved lst_'` | contains `lst_` (the id is data; `listing-saved` has arguments, `listings.ts:550`) |
+    | `.publish-status` contains `'Published'` | contains `hubMessage(lang, 'listing-published')` (no arguments, `listings.ts:211`) |
+    | button `'Add directory'`, status contains `'Added'` | `hubMessage(lang, 'directory-add-button')`; the status matches `directory-added`, or the part before the first `{` of `directory-added-note` or `directory-added-silent` (`screens/directory.ts:176` to `:196`) |
+
+    The membership credential is issued over `rpcCall` as today, with the
+    category the caller passes.
   - Story 40, a new last step "Alice's screen: a search in Latin letters
-    finds her Devanagari listing": `ensureOwnSynOrg` with
-    `ALICE_DIRECTORY_DID` and `gardening`; `publishListing` with the title
-    `नल वाला ${runTag}`; then in the Directory tab, add her own directory as
-    a source, type `nal wala ${runTag}` and press Search
+    finds her Devanagari listing". A tab click draws its screen again
+    (`show(render)`, `ui/src/main.ts:172`), and the chat step before this
+    one leaves the Listings tab, so the draft of the B2 and B3a steps (the
+    `gardening` chip and the `Garden work` translation) is gone when this
+    step starts. The step does not depend on it: it calls `ensureOwnSynOrg`
+    with `ALICE_DIRECTORY_DID` and `gardening`, then `publishListing` with
+    the title `नल वाला ${runTag}` and `gardening` on a new draft (the text
+    language select starts at `hi` in a Hindi Hub, as the B3a step checks).
+    Then in the Directory tab it adds her own
+    directory as a source, types `nal wala ${runTag}` and presses Search
     (`hubMessage('hi', 'directory-search-button')`). Expect exactly one
     `.search-hit` with the Devanagari title. The `runTag` (base-36 digits
     and letters) keeps the story repeatable on the same nodes; it folds the
@@ -1074,14 +1219,21 @@ that depend on an owner answer say so.
       publish `नल वाला <tag>` and `nal wala <tag2>` (the second tagged
       `hi-Latn` in the text language select); search `nal wala <tag>` →
       the Devanagari listing; search `नल वाला <tag2>` → the Latin one.
-    - "contact search finds a name in another script": add contacts `राम`
-      and `Ram` (`addContact`, `hub-helpers.ts:56`); search `ram` → both
-      rows; search `राम` → both rows; with an empty search the order is
-      Latin names first.
-  - Before you add a row or a control: `git grep -n "\.first()\|nth(" --
+    - "contact search finds a name in another script". The Hub form sends
+      no display name for a plain add (`upsertParams`, `screens/contacts.ts:5`),
+      and the name comes from a verified profile envelope or from the API
+      field `display_name` (`roym_profile/src/app/contacts.rs:155`, `:180`).
+      So the test calls `contacts.upsert` with `display_name` through the
+      existing `rpcCall` helper (`hub-helpers.ts:23`; it already calls
+      local-only methods, `roym-hub.spec.ts:533`), for `राम` and `Ram`, each
+      with its own `person_did` and address (with a run tag, so the test can
+      run twice on one node). Then it opens Contacts, searches `ram` → both
+      rows; searches `राम` → both rows; with an empty search the `Ram` row
+      comes before the `राम` row (Latin first in an English Hub).
+  - Before you add a row or a control: `git grep -n "\.first()\|nth(\|screen input" --
     crates/substrate/tests/e2e` and check each locator on the contact,
-    group and directory screens (B3a P4). The new search box is above the
-    list; no existing locator counts children of `.contacts-screen`.
+    group and directory screens (B3a P4). One is known: `addContact` counts
+    the inputs of `.contacts-screen` (D-B4b-20 gives them class names).
 
 ## 6. Step-by-step changes
 
@@ -1125,8 +1277,10 @@ the first commit that includes Step 3, or commit them together.
 
 ### Step 4 — `data_db` on the new key
 
-1. `text_index.rs`: import `TRI_TOKENIZE`, `WORD_TOKENIZE` from
-   `syneroym_text_lang::fts` (remove `:13` to `:15`); `sync_row` (`:226`)
+1. `text_index.rs`: import `TRI_TABLE_OPTIONS`, `WORD_TABLE_OPTIONS` from
+   `syneroym_text_lang::fts` (remove `TRI_TOKENIZE` and `WORD_TOKENIZE`,
+   `:13` to `:15`, and change their users: `declare` and
+   `text_index/tests/sqlite_build.rs:8`, `:34`, `:54`); `sync_row` (`:226`)
    uses `fts::index_keys(value)`: `joined` for `_tri`, `words` for
    `_word`. The two tables now get different values, so `params_vec`
    (`:263`) becomes two vectors.
@@ -1207,8 +1361,12 @@ the first commit that includes Step 3, or commit them together.
 1. Component size (section 7.6) and the Hub size (section 7.5). Write them
    into task.md (a B4b result line, in the form of the B4a line).
 2. ADR-0007: a dated amendment (D-B4b-23).
-3. Change doc: decisions, deviations and test columns (section 3);
-   `demo:` stays story 40; `status` stays `draft`; add any file of section
+3. Change doc: decisions, deviations and test columns (section 3). In
+   "Search", the bullet "The transliteration table" says "Our tables give
+   the ISO form directly (`kzilā` …, `cheṉṉai` …, `ṁ` …)"; after B4b that is
+   false. Change that sentence to "Our tables start from ISO 15919 and
+   differ from it where search needs it (see Deviations)"; keep the survey
+   part of the bullet as it is. `demo:` stays story 40; `status` stays `draft`; add any file of section
    9 that is not in `living-docs-touched`.
 4. Living docs (section 9), deferred backlog (section 8), status.md.
 5. The import clean-up pass over every Rust file you edited.
@@ -1255,7 +1413,8 @@ the first commit that includes Step 3, or commit them together.
 - `devanagari.rs`: one test per row of the D-B4b-3 tables (a table-driven
   test over every letter, sign and nukta form, by code point, so no letter
   of U+0900 to U+097F that the table maps is untested); schwa deletion
-  (`नल`, `न`, `कमरा`, `बिजली`, `राज मिस्त्री`); the nukta forms after NFC
+  (`नल`, `न`, `कमरा`, `बिजली`, `राज मिस्त्री`); `ऩ`, `ऱ`, `ऴ`, avagraha, `ॐ`
+  and one unmapped letter (`ॠ` kept as it is); the nukta forms after NFC
   (`क़िला` written as U+0958 and as `क` + U+093C give the same key); ZWJ and
   ZWNJ are removed; danda is a break; Devanagari digits.
 - `tamil.rs`: every row of the stop table of D-B4b-4 (one word per cell);
@@ -1264,12 +1423,21 @@ the first commit that includes Step 3, or commit them together.
   vowel signs written decomposed give the same key.
 - `fold.rs`: `fold_rules_table` (one input/output pair per rule of D-B4b-5,
   plus one case where a rule must not fire: `ch` keeps its `h` in rule 9;
-  `c` in `ch` is not rule 7).
+  `c` in `ch` is not rule 7); `fold_reaches_a_fixed_point`: every string of
+  1 to 5 letters over `a e i y h c k s r` (about 66,000 strings, no new
+  dependency) reaches a fixed point within 4 passes, and
+  `fold_word(fold_word(w)) == fold_word(w)`; `kaey` and `kai` give the
+  same word (P6).
 - `search_key/tests.rs`: `search_key_is_idempotent` over every Latin and
   native value of the spelling data; `search_key_breaks_words_at_punctuation`
   (`plumber's` → `plumbar s`, `50%` → `50`, `a-b` → `a b`); mixed script
-  words; a 1 KiB input of each script (no panic, linear time: under 10 ms
-  in a debug build); a NUL inside the text is a break (B4a P5);
+  words; a 1 KiB and a 64 KiB input of each script give a key with no
+  panic (no wall-clock bound in a normal test; the time of a 64 KiB key
+  is measured in an `#[ignore]` test, `measure_search_key_64_kib`, and the
+  number goes into the PR text); a NUL inside the text is a break (B4a P5);
+  one row for each rule of D-B4b-2 on script runs and `latin_base`: `é`
+  written as `e` + U+0301 is one Latin run and gives `e`; `ø` stays `ø`; a
+  digit after a Devanagari letter stays in its word;
   `query_terms` classification on the key (`नल` long, `एक` short, `ek`
   short); `constants_match_specification` with version 2.
 - `spelling.rs`: the three tests of D-B4b-9.
@@ -1297,7 +1465,11 @@ the first commit that includes Step 3, or commit them together.
   three listings, `नल वाला` (`lang: hi`), `nal wala` (`lang: hi-Latn`)
   and `சென்னை பிளம்பர்` (`lang: ta`), with the existing fixtures
   (`ensure_synorg`, `enrol_signing`, `full_listing_params`,
-  `publish_signed_listing`, `fixtures.rs:88`). Queries and the exact
+  `publish_signed_listing`, `fixtures.rs:88`). `full_listing_params` sets
+  `"lang": "en"`, the summary `Neat hedges, fortnightly.` and the
+  categories `gardening, outdoor` for every listing (`fixtures.rs:88` to
+  `:93`), so each listing overrides `lang`, and no query below uses a word
+  of that shared text. Queries and the exact
   `listing_id` sets: `nal wala` → the first two; `नल वाला` → the first
   two; `naal waala` → the first two; `பிளம்பர்` → the third; `senai`
   (the key of `சென்னை`) → the third; `ek` (a short term) → none; a fifth
@@ -1306,11 +1478,15 @@ the first commit that includes Step 3, or commit them together.
 - `scenario_232_directory_accepts_a_query_in_any_script_parity`: a Kannada
   query (`ನಲ್ಲಿ`) answers `result.hits = []`, no error (before B4b it was
   `-32602`).
-- `scenario_233_directory_refuses_more_than_16_words_parity`: 17 words →
-  `-32602` with "more than 16 words" on both builds; a text of only `!!!`
-  → `-32602` "needs at least one word".
+- `scenario_233_directory_refuses_more_than_16_words_parity`: 17 words
+  that stay distinct after the key (`w1 w2 … w17`; `query_terms` drops
+  duplicates, and words like `wala`/`vala` meet) → `-32602` with "more than
+  16 words" on both builds; 16 such words are accepted; a text of only
+  `!!!` → `-32602` "needs at least one word".
 - A translation: in scenario 231, a fourth listing in `hi` with an `en`
-  author translation titled `Garden work`: `garden` finds it (Q8).
+  author translation titled `Lawn mowing`: `lawn` finds it and no other
+  listing (Q8). Not `garden`: every fixture listing has the category
+  `gardening`, so `garden` would find them all (P7).
 - `roym_directory` unit tests: `index_text` joins title, summary,
   categories and translations; `build_search_filter` has a `$search` clause
   and no `$regex` on `text`.
@@ -1330,12 +1506,32 @@ declared in `store/tests.rs`)
   by hand, reopen, search still finds the rows (the index was rebuilt).
 - `sync_twice_keeps_one_row`, `remove_without_row_is_ok`,
   `non_utf8_body_is_not_indexed`.
+- `rebuild_indexes_only_visible_messages` (P1): an outgoing message, an
+  accepted incoming one, a `held` and an `undecided` incoming one; set the
+  key version to 1 and reopen; the index has rows for the first two only
+  (`SELECT rowid FROM messages_tri`).
+- `held_message_dropped_after_a_rebuild_leaves_no_key_on_disk` (in
+  `store/tests/scrub.rs`, P1): a held message, a rebuild as above, a drop,
+  a scrub; the files contain neither the body nor its key needles (next
+  bullet).
+- The scrub tests (`store/tests/scrub.rs`, `deleted_text_is_gone_from_the_files_after_a_scrub`,
+  `dropped_text_is_gone_from_the_files_after_a_scrub`, P2): today they look
+  for `zqxjvk` and `qxj` (`:12` to `:13`). After B4b the index holds
+  `search_key("zqxjvk")` (`jksjvk`), so those needles are never in the
+  index and the tests would pass even if the index kept the deleted key.
+  Each test also looks for `fts::index_keys(WORD).joined` and one trigram
+  of it (both computed in the test, so a later key change keeps it right),
+  and asserts that they are on disk before the delete, as it already does
+  for the body.
+- `host_impl` tests (P11): a text of 1,025 bytes → `InvalidArgument`, and
+  no key is built (a 10 MB text returns at once); `!!!` →
+  `InvalidArgument("search needs at least one word")`.
 - The existing tests of 2.2 point 6 (`search_and_delete.rs:6`, `:76`,
   `:115`; `scrub.rs:92`; `backup_roundtrip.rs:208`; `group/tests.rs:707`,
   `:738`) keep their names and pass. `search_escapes_like_special_characters`
   (`:115`) is renamed `search_treats_like_characters_as_breaks` and asserts
   that `50%` finds `50%` and `5_0` finds nothing extra.
-- `host_impl` test: 17 words → `InvalidArgument`.
+- `host_impl` test: 17 distinct words → `InvalidArgument`.
 - Parity `scenario_235_chat_search_short_and_cross_script_parity` (in
   `search_scripts.rs`): send `ek do teen` and `एक बात`; `conversation.search`
   `{query: "ek"}` → both; `{query: "बात"}` → the second; the same on both
@@ -1347,7 +1543,13 @@ declared in `store/tests.rs`)
   upsert `राम`, `Ram` and `Sita`; `{text: "ram"}` → `राम` and `Ram`;
   `{text: "राम"}` → the same two; `{text: "sita", favourites_only: true}`
   → none when Sita is not a favourite; `{text: " "}` → all three;
-  `{text: 5}` → `-32602`.
+  `{text: "!!!"}` → `-32602`; `{text: 5}` → `-32602`. Stored as written
+  (P13): `contacts.list` returns each `display_name` byte for byte as sent,
+  also a name that NFC would change (`क़` written as the one code point
+  U+0958, which NFC decomposes, and `é` written as `e` + U+0301, which NFC
+  composes); `profile.set` with `display_name: "राम"` and with the U+0301
+  name returns the same bytes from `profile.get`. No such test exists today
+  (`git grep -nP 'display_name.*[^\x00-\x7F]' -- '*.rs'` finds nothing).
 - `method_contract/contract.rs` (602 lines, not capped): one test that
   `contacts.list` accepts `text` and still refuses an unknown field with
   `data.field` (next to `:225` to `:252`).
@@ -1431,7 +1633,12 @@ sweep and the catalog test cover them.
   no second `<p>` in the contact box.
 - **Hindi** (B1b P8): button names through `hubMessage`, not typed.
 - **Tests that prove less than their name** (B3b R7, B4a R4): each parity
-  test compares the full answers of both builds and the exact id sets.
+  test compares the full answers of both builds and the exact id sets. The
+  scrub tests also look for the key on disk, not only the body (plan
+  review P2); the translation query uses a word that no other fixture
+  listing has (P7); the 17-word query has 17 distinct keys (P7).
+- **Tests with a wall-clock bound** (plan review P15): none in a normal
+  test; timing only in `#[ignore]` tests.
 - **Change doc test column** (B3a R2, B3b R3): Step 10.3 checks every name
   with `git grep`.
 
@@ -1485,8 +1692,12 @@ No new `TODO` or `FIXME` marker is written.
   and "transliteration table".
 - `docs/developer-guide.md` §6.6 (`:2512`): one paragraph on `text`: every
   word must match, in any script, and a Latin word finds the same word in
-  Devanagari or Tamil; a query with more than 16 words is `-32602`;
-  `directory.reindex` after an upgrade (Q7). The `roym-client=search` block
+  Devanagari or Tamil; a query with more than 16 words, or with no word
+  (only punctuation), is `-32602`; a number matches as a substring (`50%`
+  finds `500`); after an upgrade the node owner runs
+  `roym directory.reindex | jq .result` (D-B4b-13, Q7). The new sentence
+  about `reindex` is prose with a plain `bash` block, not a
+  `roym-client=` block, so story 30 does not run it. The `roym-client=search` block
   (`:2500` to `:2503`) does not change, so story 30 needs no change.
 - `docs/roym-integrated-experience-spec.md` `### Search` (`:768`): text
   search in every script and across scripts; contact search.
@@ -1510,9 +1721,12 @@ No new `TODO` or `FIXME` marker is written.
 - `mise run verify` passes with no `--skip`.
 - The PR text has: the CLA line; the four Hindi messages for owner review;
   "old nodes still work; an old directory still refuses a non-Latin query"
-  (section 4); "run `directory.reindex` on an existing node" (Q7); the
-  chat index rebuild on first open (no reset needed); the English
-  precision cost (Q1); before and after sizes; test counts.
+  (section 4); the exact call `roym directory.reindex | jq .result` for an
+  existing node (Q7, D-B4b-13); the chat index rebuild on first open (no
+  reset needed); the English precision cost (Q1) and the number cost
+  (`50%` finds `500`, P5); index text of up to about 88 KB per listing
+  (Q8); the 64 KiB key time from `measure_search_key_64_kib`; before and
+  after sizes; test counts.
 
 ## 11. What B4b does not do
 
