@@ -733,3 +733,310 @@ Every earlier fix that I checked holds, except two details from round 1
   breaks a delete-many with a $search filter`. Change the round 1 summary to
   "13 Fixed (e0aab8b8); P13 replaced by P15".
 - *Status:* Fixed (1adcff11). Now in: round 1 summary; P13 status.
+
+## Code review round 1 — Claude Opus 5.5, 2026-11-12
+
+Reviewed `git diff origin/main...HEAD` on `feat/m08b-b4a-full-text` at
+`eefc21f8` (PR #357, draft), in the main checkout (not a worktree). `git pull`
+said "Already up to date". The code was written by Gemini 3.8 Flash. The
+prompt lists one change doc,
+[roym-multilingual](../../changes/roym-multilingual/change.md). Every B4a
+decision and deviation belongs there. This is the first code review round, so
+there are no earlier R items to confirm.
+
+**Summary:** 0 blocker, 1 major, 7 minor (R1 to R8). 8 Open.
+
+### What was checked and found correct
+
+- **CI.** `gh pr checks 357` on `eefc21f8`: Lints, licenses & checks, Test 1/6
+  to 6/6, Playwright E2E and the CLA check all pass (run 43060690860). This is
+  the proof that the full suite passes on this sha.
+- **Counts.** `cargo nextest list`: `syneroym-data-db` has 246 tests and the
+  `dual_build_parity` binary of `syneroym-app-host-native` has 57. Both match
+  status.md. The Playwright count does not (R8).
+- **WIT (D-B4a-1, W1).** `text-fields: list<string>` is after `indexes`, with
+  the planned doc. The `query`, `delete-many`, `put`, `patch`, `batch-mutate`
+  and `create` docs have the planned notes (P8). The package stays `0.1.0`.
+  All ten `wit/deps/data-layer/data-layer.wit` files in `test-components/` are
+  mode `120000` (exit criterion 11).
+- **Builders.** Every `CollectionSchema` literal sets `text_fields`. The
+  native shim passes it through and its test checks it. The WASM host passes
+  the generated type through, unchanged. The `control_plane` native route
+  sets `text_fields: vec![]` and does not read it from JSON (P3, W7).
+- **`syneroym-text-lang` (D-B4a-2).** `nfc`, `search_key` (lower case, then
+  NFC), `QueryTerms`, `query_terms` and the two constants match the plan. The
+  trim keeps alphanumeric chars and marks at the edges (P4, P16). The tests
+  have every case of plan section 7.2, including `नल।`, `प्` and `நல்`.
+  Workspace dependencies are `major.minor` (`2.4`).
+- **Tables (D-B4a-3, D-B4a-4).** `TRI_TOKENIZE` and `WORD_TOKENIZE` are the
+  planned strings. Columns are `f_<field>`. The type comes last in the table
+  names. `_text_index` has `collection` and `key_version` only. It is made only
+  by `declare` with a non-empty list, and `drop_index` never creates it (P19).
+  `validate_identifier` refuses `_text_` in any ASCII case, and
+  `do_list_collections` leaves out `_text_%`.
+- **Write paths (D-B4a-6).** Every statement that writes a collection table
+  is in `mutation.rs` (`git grep` of `INSERT INTO {`, `UPDATE {`, `DELETE FROM
+  {`): `do_put`, `do_patch`, `do_delete`, `do_delete_many`. `do_batch_mutate`
+  and `do_create` call the first three inside their transaction. The three
+  `do_authorized_*` functions now open a transaction also when there is no
+  policy. `do_create_collection` and `do_drop_collection` run in one
+  transaction. `do_patch` checks only the fields that the patch names (P9).
+  `do_delete_many` collects rowids with `RETURNING rowid`, then removes the
+  index rows with `json_each` (P15). The watchdog error stays `quota-exceeded`.
+  I proved here, with a throw-away test (removed), that a `delete-many` with
+  `{"title": {"$search": "apple"}, "s": "a"}` deletes exactly the one matching
+  row and its index rows.
+- **`$search` (D-B4a-8).** The checks come in the planned order with the
+  planned texts. Terms are bound as one FTS5 expression; each term is quoted
+  with `"` doubled; table and column names come only from validated names.
+  `$or` and `$not` pass `is_conjunct = false` down, also through a nested
+  `$and` (P1). `aggregate` and `merge_sieve` keep `compile_filter`, so
+  `$search` there is refused (tested for `aggregate`).
+- **CLS.** The masked-field check of `do_query` runs before the new code and
+  sees the `$search` field. The store test proves it returns
+  `permission-denied`. A note outside B4a: `do_delete_many` has no
+  masked-field check on main either, so a filter on a masked field (`$regex`
+  today, `$search` now) can learn something from the delete count. This is
+  not a B4a change and is not counted. The owner may want a backlog row.
+- **Order hint (D-B4a-9, D-B4a-12).** `query_sql` writes `+c.id` in the cursor
+  term and in `ORDER BY` when `text_match` is true. The plan test calls the
+  same `query_sql` that `do_query` uses. See R3 for the case it misses.
+- **Both builds (D-B4a-13).** The fixture's `TextSearch` and the parity test
+  exist and run in CI. The changed expected value is recorded as a deviation.
+  See R4 for the missing Tamil query.
+- **Sizes.** Every touched file is under its limit. The four capped files got
+  shorter, and `xtask/oversized-test-files.txt` has the new counts (881, 818,
+  1787, 809). The new `text_index` tests are split by topic under
+  `text_index/tests/`. CI's clippy, file-length and duplication gates pass.
+- **Living docs.** The requirements, the architecture doc (crate list,
+  Resource Model, Schema & Indexing, the new "Text Search" bullet), the
+  traceability matrix, TERMINOLOGY ("Search key") and the ADR-0007 amendment
+  are there. All are in `living-docs-touched`. The seven backlog rows of plan
+  section 8 exist, with a reason, a target and a link. No new `TODO`.
+- **Change doc Test column.** The ML-20 and ML-29 rows name tests that exist
+  (`search_finds_devanagari_and_tamil_words`,
+  `search_matches_nfc_equivalent_forms`,
+  `short_terms_match_words_and_word_prefixes`,
+  `search_plan_never_scans_the_collection`,
+  `both_builds_text_search_round_trip`), marked "storage half".
+
+### Findings
+
+#### R1 — major — a create-collection call with another case of the collection name rebuilds the whole text index
+
+- *Where:* `crates/data_db/src/sqlite/text_index.rs:86` to `:93`
+  (`tri_exists`); the test
+  `crates/data_db/src/sqlite/text_index/tests/declare.rs:152`
+  (`declare_shares_text_index_row_case_insensitively`).
+- *Problem:* SQLite table names ignore case, so `Foo` and `foo` are one
+  collection. The plan (P10) says that collection names are looked up in
+  lower case, so that two call sites do not make the index rebuild again and
+  again. `declare` reads the key version with the lower-case name, but it
+  checks that the trigram table exists with `name = ?1` in `sqlite_master`.
+  That comparison is exact case. `sqlite_master` keeps the name in the case of
+  the call that created the table. So a call with the other case finds no
+  table and rebuilds. The rebuild then stores the table in the new case, so a
+  call with the first case rebuilds again. The test with this name creates
+  `Foo` only once and never calls with `foo`, so it does not see this.
+- *Failure case:* A service has a text index on `Listings` and 10,000 rows.
+  One code path calls `create-collection` with `Listings`, another with
+  `listings`. Each call drops both FTS5 tables and fills them again from all
+  rows, on the single writer, and blocks every other write of the service
+  while it runs. Proved here with a throw-away test (removed): create `Foo`
+  with `["title"]`, write a marker row into `_text_foo_word`, call again with
+  `foo`: the marker is gone (`after_lower=0`); write it again, call with
+  `Foo`: gone again (`after_upper=0`).
+- *Fix:* Compare without case: `... AND name = ?1 COLLATE NOCASE` (or
+  `lower(name) = lower(?1)`). Extend the test: after `Foo`, write a marker,
+  call with `foo` and with `Foo`, and assert the marker is still there and
+  `_text_index` has one row.
+- *Status:* Open
+
+#### R2 — minor — the change doc states two false facts and leaves out decisions
+
+- *Where:* `docs/planning/changes/roym-multilingual/change.md:402` (the
+  "Decided 2026-11-11" list) and `:534` (the first new deviation).
+- *Problem:* (a) Both lines say that `_text_index` holds the field list. The
+  deviation even gives the table as `(collection, key_version, fields TEXT NOT
+  NULL)`. The code (`text_index.rs:107` to `:112`) has no `fields` column; the
+  fields are read from the word table (D-B4a-5). (b) Step 8.3 asks for
+  "D-B4a-1 to -10, in short form, and every owner answer". These are missing:
+  Q2 (an empty list keeps the index; a different set replaces it; compared as
+  a set with exact case); Q4's term cleaning (trim of edge punctuation, marks
+  kept); Q5 (a rebuild skips non-string values; a patch checks only the fields
+  it names); Q6 (rows linked by `rowid`; a `VACUUM` must rebuild); Q7 (an
+  amendment to ADR-0007); D-B4a-7 (at most 8 text fields, no name twice
+  ignoring case); D-B4a-8's limits (16 words, 1024 bytes, no NUL); D-B4a-10
+  (a rebuild blocks the writer). (c) The real deviation of R3 is only in the
+  PR text.
+- *Failure case:* A B4b developer reads the change doc, looks for the field
+  list in `_text_index`, and does not find it. Or they do not know that an
+  empty `text-fields` keeps the index, and write code that expects it to drop.
+- *Fix:* Remove "and field list" and the `fields` column from both lines.
+  Add the missing decisions as short bullets. Add the R3 deviation after R3
+  is decided.
+- *Status:* Open
+
+#### R3 — minor — after `ANALYZE`, a `$search` on a small collection scans the collection table, and the docs say "never"
+
+- *Where:* `crates/data_db/src/sqlite/text_index/tests/search.rs:385`
+  (`for i in 1..=150`); `docs/system-architecture.md:2768` ("to guarantee
+  SQLite never scans the full collection table"); the ADR-0007 amendment
+  ("No Scan Rule"); ML-29's Test column.
+- *Problem:* The plan test passes because it writes 150 rows. The PR text
+  says that with fewer than 100 rows SQLite chose a scan. That fact is not in
+  the change doc, the test does not say why it needs 150 rows, and the living
+  docs and the ADR amendment say the scan never happens.
+- *Failure case:* Proved here (test file restored after): with 50 rows, and
+  with 5 rows, the plan test fails at `analyze=true` with the plan
+  `["SCAN c", "LIST SUBQUERY 1", "SCAN _text_c_tri VIRTUAL TABLE INDEX 0:M1",
+  "CREATE BLOOM FILTER", "USE TEMP B-TREE FOR ORDER BY"]`. Without `ANALYZE`
+  it passes. No code in `crates/` runs `ANALYZE` today, but an admin can
+  through `execute-ddl`. The scan reads only a small table, so the cost is
+  small. The problem is that the record says something the code does not do.
+- *Fix:* Choose one. (a) Make the plan certain: read the FTS rowids first
+  with a `CROSS JOIN` (SQLite keeps the join order of a `CROSS JOIN`), for
+  example `FROM (SELECT rowid FROM _text_c_tri WHERE _text_c_tri MATCH ?) AS
+  t CROSS JOIN c ON c.rowid = t.rowid`; then the test passes with any row
+  count. (b) Keep the SQL, say in a test comment why the table has 150 rows,
+  add a deviation ("after `ANALYZE` of a table of about 100 rows or fewer,
+  SQLite may choose a scan, which it judges cheaper"), and write the same
+  limit in the architecture doc, the ADR amendment and the ML-29 Test column.
+  I recommend (a): it keeps the plan's promise and needs no doc change.
+- *Status:* Open
+
+#### R4 — minor — several tests prove less than the plan says
+
+- *Where:* `crates/data_db/src/sqlite/text_index/tests/writes.rs:140`;
+  `tests/search.rs:268`, `:464`, `:514`;
+  `test-components/dual-build-fixture/src/app/dispatch.rs` (`handle_text_search`);
+  `crates/app_host_native/tests/dual_build_parity/data_layer.rs`
+  (`both_builds_text_search_round_trip`).
+- *Problem:*
+  - `writes_delete_many_removes_from_collection_and_fts_tables` uses only
+    `{"status": "active"}`. Plan section 7.2 asks for a filter with
+    `$search`, and `$search` next to an equality. That is the exact case of
+    P15, the major plan finding. The code works (I proved it with a
+    throw-away test), but no test keeps it working.
+  - `search_paging_cursor` checks the total and the order. The plan asks for
+    three pages, no row twice, and `next_cursor` `None` on the last. A
+    duplicated row with a missing row would still pass.
+  - Plan section 7.2 asks for `$search` next to a sieve clause through the
+    store. Only the plan test has a sieve.
+  - The parity fixture writes the Tamil row `t4` but never searches for it,
+    so parity proves Devanagari only. The ML-20 Test column names the parity
+    test as evidence for both scripts.
+  - `measure_rebuild_and_query_10000_rows` and `measure_put_plain_collection`
+    print timings and assert nothing about them (`measure_put…` has no
+    assert at all). They run in every CI run and write 11,000 rows.
+- *Failure case:* A later change breaks `delete-many` with `$search` (for
+  example it goes back to the set form of P13). No test fails.
+- *Fix:* Add the `$search` filters to the `delete-many` test. Assert the page
+  sizes `[10, 10, 5]`, that the ids are unique, and the last cursor. Add one
+  store-level search with a sieve. Add a fourth fixture query
+  `{"title": {"$search": "வாலா"}}` and expect `[["t1"], ["t2"], ["t3"],
+  ["t4"]]`. Move the two `measure_*` functions to a bench, or mark them
+  `#[ignore]` with the command to run them in the doc comment.
+- *Status:* Open
+
+#### R5 — minor — `patch` now checks the patch JSON before it reads the row
+
+- *Where:* `crates/data_db/src/sqlite/mutation.rs:105` to `:125`
+  (`do_patch`); on main the patch is parsed after the row read.
+- *Problem:* The plan asks for no change of check order. The parse of the
+  patch and the new text check moved in front of the row read. Nothing needs
+  this: `check_values` needs only the parsed patch.
+- *Failure case:* `patch` of an id that does not exist, with a patch that is
+  not JSON. On main the answer is `schema-violation("record not found for
+  patch: <id>")`. Now it is `schema-violation("patch-json is not valid JSON:
+  …")`. With a missing collection, the answer changes from
+  `collection-not-found` to `schema-violation`.
+- *Fix:* Keep the main order: read the row, then parse the patch, then
+  `fields` and `check_values`, then merge.
+- *Status:* Open
+
+#### R6 — minor — planning ids in a doc comment, new full paths, and two lost "why" comments
+
+- *Where:* `crates/text_lang/src/search_key.rs:68` and `:70`;
+  `crates/data_db/src/filter.rs:39`, `:126`, `:151` and four more;
+  `crates/data_db/src/sqlite/mutation.rs:58` and about twelve more;
+  `crates/data_db/src/sqlite/schema.rs:25`, `:53`;
+  `crates/data_db/src/sqlite/query.rs:91`.
+- *Problem:* (a) The doc comment of `query_terms` cites the review ids "P16"
+  and "P4" (AGENTS.md: no planning or review ids in code). (b) New inline
+  paths: `crate::text_match::TextFields<'_>` nine times in `filter.rs`,
+  `super::text_index::fields/check_values/sync_row/remove_rows` about 13
+  times in `mutation.rs` and `query.rs`, `std::collections::HashSet` in
+  `schema.rs`, `syneroym_text_lang::SEARCH_KEY_VERSION` in `text_index.rs`
+  (AGENTS.md import rule). (c) Moving the SQL into `query_sql` lost two
+  comments of main's `do_query`: "Sieve first (RLS ∧ caveats), ahead of the
+  caller's filter/cursor/limit" and "Fetch one extra row past the page limit
+  to determine whether a next-cursor should be returned". (d) The doc comment
+  of `validate_identifier` still says only the vault name is refused.
+- *Failure case:* The review ids rot when the plan is archived. A reader of
+  `query_sql` does not know why the limit is `limit + 1`.
+- *Fix:* Remove "P16" and "P4". `use crate::text_match::TextFields;` and
+  `use super::text_index;` (then `text_index::fields(…)`), `use
+  std::collections::HashSet;`. Put the two comments back in `query_sql`. Add
+  the `_text_` prefix to the `validate_identifier` doc.
+- *Status:* Open
+
+#### R7 — minor — `text_index.rs` hides errors and has two ways to remove index rows
+
+- *Where:* `crates/data_db/src/sqlite/text_index.rs:101`, `:146`, `:150` to
+  `:157`, `:194`, `:258`; `crates/data_db/src/sqlite/mutation.rs:236` to
+  `:243`; `crates/data_db/src/sqlite/query.rs:159` to `:168`.
+- *Problem:* (a) The key-version read (`:101`) and the `_text_index`
+  existence check in `drop_index` (`:194`) use `unwrap_or(false)`, so any
+  SQLite error counts as "no row" or "no table". (b) A rebuild skips a row
+  whose payload is not JSON without counting it (`:146`); the plan says to
+  count it in the `warn!`. (c) The skip count repeats the loop of
+  `check_values`. (d) `remove_rows` deletes one rowid at a time and maps a
+  missing table to `Internal` (P12). `do_delete_many` writes its own
+  `json_each` statements with another error mapping. The `_text_{c}_tri` and
+  `_text_{c}_word` names are built with `format!` in three files. (e)
+  `do_query` checks `opts.filter.is_some()` twice to build one `Option`.
+- *Failure case:* (a) A `SQLITE_BUSY` or I/O error on the version read makes
+  `create-collection` rebuild the whole index instead of returning the
+  error. In `drop_index` the same error leaves a stale `_text_index` row.
+- *Fix:* (a) Map only `QueryReturnedNoRows` (and "no such table") to "no
+  row"; return other errors. (b) Count a JSON error in `skipped`. (c) Let one
+  helper say whether a value is indexable, used by both. (d) Make
+  `remove_rows` use one `json_each` statement per table and call it from
+  `do_delete` and `do_delete_many`, with the watchdog mapping where the
+  caller needs it. Add `fn tri_table(c: &str) -> String` and
+  `fn word_table(c: &str) -> String` in `text_index.rs`. (e) Build
+  `Option<Vec<String>>` once.
+- *Status:* Open
+
+#### R8 — minor — the PR text, status.md and the size numbers do not match what was done
+
+- *Where:* the PR #357 description; `status.md` B4a row; `task.md` "B4a
+  result".
+- *Problem:*
+  - The PR text says: "Updated Rust, AssemblyScript, and TypeScript SDK
+    builders" (there are none); one table `_fts_<collection>` (there are two,
+    `_text_<c>_tri` and `_text_<c>_word`); operations `batch_put` and
+    `drop_collection` (it should be `put`, `patch`, `delete`, `delete-many`,
+    `batch-mutate`, `create`); "split by whitespace and punctuation" (it
+    splits on white space and trims punctuation at the edges); "Schema
+    definition JSON encodes optional `text_fields`" (the WIT field is not
+    optional, and the JSON route does not accept it, P3). Its links are
+    `file:///Users/…` paths, which do not work for anyone else.
+  - D-B4a-10 and P11 ask for a before and after run of the `put` bench in
+    `security_config_bench.rs`. The PR gives only one number, from a new
+    test, with no "before".
+  - status.md says "e2e: 6 passed". CI's Playwright job prints 72 passed, 4
+    passed and 6 passed; 6 is the demo stories only.
+  - Step 8.1 asks for the six component sizes "before (on `main`) and after,
+    in the same build folder". task.md uses the B3b numbers as "before". All
+    six components are 1 to 42 KB smaller, which one empty list cannot
+    cause. So the numbers do not show what B4a adds.
+- *Failure case:* A reader of the PR thinks there is a TypeScript SDK change
+  and a table named `_fts_…`. The owner cannot check the P11 10% limit.
+- *Fix:* Rewrite the PR text from the code, with repository links. Run
+  `cargo bench -p syneroym-data-db --bench security_config_bench` on main and
+  on the branch and give both numbers. Write "Playwright e2e 72 + 4 + 6
+  passed" in status.md. Build the six components on `main` and on the branch
+  in the same folder and write both sizes in task.md.
+- *Status:* Open
