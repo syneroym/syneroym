@@ -180,20 +180,49 @@ fn writes_delete_many_removes_from_collection_and_fts_tables() {
         id: "3".to_string(),
         payload: br#"{"title": "banana three", "status": "active"}"#.to_vec(),
     };
+    let r4 = RecordWriteValue {
+        id: "4".to_string(),
+        payload: br#"{"title": "banana four", "status": "inactive"}"#.to_vec(),
+    };
 
     do_authorized_put(&mut conn, "items", &r1, "user", None).unwrap();
     do_authorized_put(&mut conn, "items", &r2, "user", None).unwrap();
     do_authorized_put(&mut conn, "items", &r3, "user", None).unwrap();
+    do_authorized_put(&mut conn, "items", &r4, "user", None).unwrap();
 
-    let deleted =
-        do_delete_many(&mut conn, "items", Some(r#"{"status": "active"}"#), None).unwrap();
-    assert_eq!(deleted, 2);
+    // 1. Delete-many with $search next to an equality filter (P15 regression check)
+    let del1 = do_delete_many(
+        &mut conn,
+        "items",
+        Some(r#"{"$and": [{"title": {"$search": "apple"}}, {"status": "active"}]}"#),
+        None,
+    )
+    .unwrap();
+    assert_eq!(del1, 1);
 
-    let remaining_coll: Vec<String> = {
+    let remaining_after_del1: Vec<String> = {
         let mut stmt = conn.prepare("SELECT id FROM items ORDER BY id").unwrap();
         stmt.query_map([], |row| row.get(0)).unwrap().map(|r| r.unwrap()).collect()
     };
-    assert_eq!(remaining_coll, vec!["2"]);
+    assert_eq!(remaining_after_del1, vec!["2", "3", "4"]);
+    let word_count1: i64 =
+        conn.query_row("SELECT count(*) FROM _text_items_word", [], |row| row.get(0)).unwrap();
+    assert_eq!(word_count1, 3);
+    let tri_count1: i64 =
+        conn.query_row("SELECT count(*) FROM _text_items_tri", [], |row| row.get(0)).unwrap();
+    assert_eq!(tri_count1, 3);
+
+    // 2. Delete-many with pure $search filter
+    let del2 =
+        do_delete_many(&mut conn, "items", Some(r#"{"title": {"$search": "banana"}}"#), None)
+            .unwrap();
+    assert_eq!(del2, 2);
+
+    let remaining_after_del2: Vec<String> = {
+        let mut stmt = conn.prepare("SELECT id FROM items ORDER BY id").unwrap();
+        stmt.query_map([], |row| row.get(0)).unwrap().map(|r| r.unwrap()).collect()
+    };
+    assert_eq!(remaining_after_del2, vec!["2"]);
 
     let remaining_word: i64 =
         conn.query_row("SELECT count(*) FROM _text_items_word", [], |row| row.get(0)).unwrap();

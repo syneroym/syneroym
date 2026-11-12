@@ -4,7 +4,7 @@ use rusqlite::{Connection, types::Value as SqlValue};
 use serde_json::Map;
 use syneroym_data_keystore::KeyStore;
 use syneroym_fdae::{CompiledSieve, DecisionTrace};
-use syneroym_ucan::SessionContext;
+use syneroym_ucan::{Ability, Capability, ResourceUri, SessionContext};
 
 use crate::{
     QueryAuth, ServiceStore, SqliteStorageProvider, StorageProvider,
@@ -280,11 +280,13 @@ async fn search_paging_cursor() {
 
     let filter = Some(r#"{"title": {"$search": "plumber"}}"#.to_string());
     let mut all_ids = Vec::new();
+    let mut page_sizes = Vec::new();
     let mut cursor = None;
 
     loop {
         let opts = QueryOptions { filter: filter.clone(), cursor, limit: Some(10) };
         let res = store.query("items", &opts, None).await.unwrap();
+        page_sizes.push(res.value.records.len());
         all_ids.extend(res.value.records.into_iter().map(|r| r.id));
         cursor = res.value.next_cursor;
         if cursor.is_none() {
@@ -292,10 +294,72 @@ async fn search_paging_cursor() {
         }
     }
 
+    assert_eq!(page_sizes, vec![10, 10, 5]);
     assert_eq!(all_ids.len(), 25);
+    let unique_ids: std::collections::HashSet<_> = all_ids.iter().cloned().collect();
+    assert_eq!(unique_ids.len(), 25);
     let mut sorted = all_ids.clone();
     sorted.sort();
     assert_eq!(all_ids, sorted);
+    assert!(cursor.is_none());
+}
+
+#[tokio::test]
+async fn search_store_level_with_sieve_clause() {
+    let store = setup_store().await;
+    let schema = schema_with("items", vec![], vec!["title".to_string()]);
+    store.create_collection(&schema).await.unwrap();
+
+    let val1 =
+        RecordWriteValue { id: "1".to_string(), payload: br#"{"title": "plumber one"}"#.to_vec() };
+    let val2 =
+        RecordWriteValue { id: "2".to_string(), payload: br#"{"title": "plumber two"}"#.to_vec() };
+    store.put("items", &val1, "alice", None).await.unwrap();
+    store.put("items", &val2, "bob", None).await.unwrap();
+
+    let resolved_sieve = CompiledSieve {
+        where_clause: "creator_id = ?".to_string(),
+        params: vec![SqlValue::Text("alice".to_string())],
+        masked_fields: Vec::new(),
+        where_caveats: Vec::new(),
+        trace: DecisionTrace {
+            operation: Ability::DATA_LAYER_READ.to_string(),
+            ..DecisionTrace::default()
+        },
+        abac_permissions: Vec::new(),
+    };
+    let policy =
+        syneroym_fdae::parse_and_validate(r#"{"version": "fdae/v1", "definitions": {}}"#).unwrap();
+    let cap = Capability {
+        with: ResourceUri(format!(
+            "{}/collection/items",
+            ResourceUri::service("test-svc", "test-svc").0
+        )),
+        can: Ability(Ability::DATA_LAYER_READ.to_string()),
+        caveats: None,
+    };
+    let session = SessionContext {
+        subject_did: "did:key:alice".to_string(),
+        anchor_did: None,
+        capabilities: vec![cap],
+        claims: Map::new(),
+        verified_at_secs: 0,
+    };
+    let auth = QueryAuth {
+        policy: &policy,
+        session: &session,
+        service_id: "test-svc",
+        resolved_sieve: Some(resolved_sieve),
+    };
+
+    let opts = QueryOptions {
+        filter: Some(r#"{"title": {"$search": "plumber"}}"#.to_string()),
+        cursor: None,
+        limit: None,
+    };
+    let res = store.query("items", &opts, Some(&auth)).await.unwrap();
+    assert_eq!(res.value.records.len(), 1);
+    assert_eq!(res.value.records[0].id, "1");
 }
 
 #[tokio::test]
@@ -315,10 +379,18 @@ async fn search_cls_masked_field_refused() {
     };
     let policy =
         syneroym_fdae::parse_and_validate(r#"{"version": "fdae/v1", "definitions": {}}"#).unwrap();
+    let cap = Capability {
+        with: ResourceUri(format!(
+            "{}/collection/items",
+            ResourceUri::service("test-svc", "test-svc").0
+        )),
+        can: Ability(Ability::DATA_LAYER_READ.to_string()),
+        caveats: None,
+    };
     let session = SessionContext {
         subject_did: "did:key:alice".to_string(),
         anchor_did: None,
-        capabilities: Vec::new(),
+        capabilities: vec![cap],
         claims: Map::new(),
         verified_at_secs: 0,
     };
@@ -460,7 +532,12 @@ fn search_plan_never_scans_the_collection() {
     }
 }
 
+/// Benchmark helper: measures rebuild and query latency over 10,000 rows.
+/// Run with:
+/// `cargo test -p syneroym-data-db measure_rebuild_and_query_10000_rows --
+/// --ignored --nocapture`
 #[tokio::test]
+#[ignore = "benchmark timing test: run manually with -- --ignored --nocapture"]
 async fn measure_rebuild_and_query_10000_rows() {
     let store = setup_store().await;
     let schema_plain = schema_with("items", vec![], vec![]);
@@ -510,7 +587,12 @@ async fn measure_rebuild_and_query_10000_rows() {
     );
 }
 
+/// Benchmark helper: measures baseline puts on collection without text fields.
+/// Run with:
+/// `cargo test -p syneroym-data-db measure_put_plain_collection -- --ignored
+/// --nocapture`
 #[tokio::test]
+#[ignore = "benchmark timing test: run manually with -- --ignored --nocapture"]
 async fn measure_put_plain_collection() {
     let store = setup_store().await;
     let schema_plain = schema_with("plain", vec![], vec![]);
