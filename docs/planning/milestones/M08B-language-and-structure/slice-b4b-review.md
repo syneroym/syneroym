@@ -590,3 +590,66 @@ the fix:
 
 Plan commit: `c788e7d2`. Open items: none. The owner questions Q1 to Q8
 and the owner check of `spelling-pairs.tsv` are still open.
+
+## Plan review round 3 (check of the round 2 fixes) — Claude Opus 5.5, 2026-11-13
+
+Checked on `feat/m08b-b4b-search-scripts` at `49834ee6`, in the main
+checkout. I read the plan diff `5bf552a3..49834ee6` and checked it against
+the code on `main`. I changed no code and did not run `cargo`. This check
+was done by the same model as the plan author, so it is not an independent
+review.
+
+**Summary:** P16, P17 and P18 are confirmed fixed. 1 new item (P19, minor),
+Open.
+
+### Confirmed fixed
+
+- **P16.** Section 7.2 now has one version of the test, with the real data
+  (`100% off`, `1000 off`). `_` is a break: `is_retained_boundary_char`
+  (`search_key.rs:39`) keeps only alphanumeric chars and marks. So `100%`
+  and `100_` are both the long term `100`, and both find the two messages.
+  The test now covers the number cost of W4.
+- **P17.** The loop has no fixed limit. I checked the proof rule by rule.
+  No rule writes `x` or `q`. No rule writes `c`, `w`, `z`, `y` or `e`,
+  except rule 5, which writes `c` and makes the word shorter. Every rule
+  that changes a word makes (A, B, C) smaller in that order. So the proof
+  holds. One rule is in the wrong group; see P19. The second test alphabet
+  gives 41,370 strings, so "about 41,000" is right.
+- **P18.** The author is right: my reason was wrong. The tables did write
+  `ā`, `ī` and `ū`. The fix puts plain `a`, `i` and `u` in the tables.
+  Rule 1 used to run first and did the same thing, so the keys do not
+  change. Step 4 item 2 now names both constants.
+
+### Findings
+
+#### P19 — "The tables write only `a` to `z`" conflicts with the kept letters and the digits (minor)
+
+- **Where:** D-B4b-3 (`:699`, "the table writes only the letters `a` to
+  `z`") and D-B4b-4 (`:730`); section 7.2, the new bullet "every output of
+  the table tests has only the letters `a` to `z`"; D-B4b-5, "This needs
+  the input to have no marks" (`:801`) and the rule 3 item of "Why the
+  passes end" (`:793`).
+- **Problem:** The same plan keeps some letters as they are. Any Devanagari
+  letter with no value (`ॠ`, `ऌ`, `ॲ`) is kept (`:712`), and section 7.2
+  has the test row "`ॠ` kept as it is" (`:1448`). The digits of both
+  scripts become `0` to `9` (`:669`). So `to_latin` does not write only
+  `a` to `z`, and the new test fails on those rows. A Devanagari sign with
+  no value, for example `ॄ` (U+0944), is a mark (`Mn`). If it is kept, the
+  fold does get a mark. That does no harm now: rule 1 is gone, and the fold
+  leaves every char outside `a` to `z` alone. But the sentence "This needs
+  the input to have no marks" is then wrong, and it is no longer needed.
+  Also, rule 3 (`sch`→`sk`) makes the word shorter, so it belongs with the
+  rules that lower B, not with the rules that keep the length. The proof
+  still holds.
+- **Failure case:** The implementer writes the test as stated. It fails on
+  the `ॠ` row and on the digit rows. Then the implementer either drops a
+  planned row or changes the kept-letter rule to make the test pass.
+- **Fix:** State the claim for mapped values only: "every value in the
+  letter and sign tables is only `a` to `z`". Test the table entries, not
+  every output of `to_latin`. Say what happens to a kept sign with no
+  value. My view: keep it as it is, like a kept letter. Replace "This
+  needs the input to have no marks" with "The fold changes only the
+  letters `a` to `z`, so a char outside them (a digit, a kept letter or
+  mark, another script) cannot affect the end." Move rule 3 to the list of
+  rules that make the word shorter.
+- *Status:* Open
