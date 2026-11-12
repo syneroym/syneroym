@@ -445,3 +445,129 @@ reviewer's views on Q1 to Q8 are recorded in the plan only as notes: the
 Marathi note in Q4, the missing contact picker in Q5, the exact reindex
 call in Q7 and the index size in Q8. The owner answers are still open.
 Fixed in `9b71050a`.
+
+## Plan review round 2 (check of the fixes) — Claude Opus 5.5, 2026-11-12
+
+Checked on `feat/m08b-b4b-search-scripts` at `537a892e`, in the main
+checkout. I read the plan diff `d304b897..537a892e` and checked each fix
+against the code on `main` (`bc3dd8de`). I changed no code and did not run
+`cargo`. Note: this check was done by the same model as the plan author, so
+it is not an independent review.
+
+**Summary:** P1 to P15 are confirmed fixed. 3 new items (P16, P17, P18),
+all minor, all Open.
+
+### Confirmed fixed
+
+- **P1.** D-B4b-14 and D-B4b-17 now use one rule. I checked every write
+  site of `messages_fts`: the two outgoing inserts write `'accepted'`
+  (`message.rs:165`, `group.rs:408`), the accept path indexes after it sets
+  `'accepted'` (`message.rs:318`), and the backup import checks
+  `m.admission == "accepted"` (`backup.rs:436`). No path moves an
+  `accepted` row back to `held` (`message.rs:310`). So the rebuild query
+  with `admission = 'accepted'` gives the same rows as the live writes, and
+  an unguarded `remove` is safe on ordinary tables.
+- **P2.** Section 7.2 computes the needles from `fts::index_keys` and checks
+  them on disk before the delete, so the test cannot pass empty.
+- **P3.** The add form has two `input`s and one `textarea`
+  (`contacts.ts:54`, `:58`, `:62`); the class names cover all three, and
+  `addContact` (`hub-helpers.ts:56` to `:62`) is the only index locator on
+  `.contacts-screen`.
+- **P4.** `contacts.upsert` takes `display_name` when no envelope is sent
+  (`contacts.rs:180`), and `rpcCall` (`hub-helpers.ts:23`) already calls
+  directory local-only methods in `ensureSynOrgWithListing`.
+- **P5.** The five tests are named with the right reason. See P16 for a
+  contradiction about one of them.
+- **P6.** The fold runs again until nothing changes. See P17 for the pass
+  limit.
+- **P7.** `full_listing_params` sets `lang: "en"`, `Neat hedges,
+  fortnightly.` and `gardening, outdoor` (`fixtures.rs:90` to `:93`). The
+  key of `lawn` (`lavn`) is in no other listing's joined key.
+- **P8.** The deviations are in section 3, and Step 10.3 rewrites the
+  change doc sentence.
+- **P9.** The script-run rule, `latin_base` and the sandhi order are in
+  D-B4b-2; `icu_normalizer` and `icu_properties` are already dependencies
+  of `text_lang`, so the general category check needs no new crate.
+- **P10.** `TRI_TABLE_OPTIONS` and `WORD_TABLE_OPTIONS` are the exact
+  strings of `text_index.rs:13` to `:15`; the users are `declare`
+  (`text_index.rs:139`, `:144`) and `sqlite_build.rs:3`, `:8`, `:34`, `:54`,
+  as the plan says.
+- **P11.** `MAX_SEARCH_BYTES` is 1024 and used only in `text_match.rs`.
+  W1, W3 and W4 now give `-32602` for a query with no word.
+- **P12.** Every message id in the D-B4b-22 table is in `en.ftl`.
+  `synorg-status-none`, `common-saved`, `listing-published`,
+  `directory-added` and `directory-added-silent` have no arguments, so a
+  plain `toContainText` works. No other demo story creates a SynOrg, so
+  `ensureOwnSynOrg` on Alice's node always issues the `gardening`
+  credential on the first run.
+- **P13.** `roym_profile` does not normalize names (no `nfc` or
+  `search_key` in `src/`), so the stored-as-written test passes on today's
+  code, as it should. `profile.set` needs `display_name` and `lang`
+  (`ProfileSetInput`); the test must send both.
+- **P14.** The `roym` function is at `developer-guide.md:2415` to `:2421`;
+  `ReindexOutput` is `{rebuilt, standing}` (`search_ops.rs:29`), which is
+  the shape the plan shows.
+- **P15.** No wall-clock bound is left in a normal test.
+
+### Findings
+
+#### P16 — The plan says two different things about the `100%` chat test (minor)
+
+- **Where:** section 2.2 point 11 (the bullet on
+  `search_escapes_like_special_characters`) and section 7.2 "Chat"
+  (`:1531` to `:1533`).
+- **Problem:** Point 11 says the test keeps its data (`100%` and `1000`) and
+  its expectation becomes "both messages match". Section 7.2 first says the
+  tests of 2.2 point 6 "keep their names and pass", and then renames this
+  one to `search_treats_like_characters_as_breaks` and asserts "`50%` finds
+  `50%` and `5_0` finds nothing extra". The test data has no `50%` and no
+  `5_0` (`search_and_delete.rs:122` to `:154`), and "nothing extra" does not
+  say which rows.
+- **Failure case:** The implementer must guess. If they write the 7.2
+  version, the number cost of W4 (`100%` finds `1000`) is never tested, and
+  W4 and behaviour change 1 have no test behind them.
+- **Fix:** Use one text in section 7.2: rename the test, keep its two
+  messages, and assert that `100%` finds both `m:pct` and `m:other`. If
+  `5_0` stays, give its data and the exact expected ids (`_` is a break, so
+  `5_0` is the two short terms `5` and `0`). Change "keep their names" to
+  say that this one test is renamed.
+- *Status:* Open
+
+#### P17 — The 4-pass limit of the fold is not proved, and the test cannot prove it (minor)
+
+- **Where:** D-B4b-5, "The fold runs to a fixed point" (`:774` to `:781`);
+  section 7.2 `fold_reaches_a_fixed_point` (`:1426`).
+- **Problem:** The plan stops after at most 4 passes. Its reason that the
+  passes end looks only at length ("no rule makes a word longer except rule
+  2"), but rules 3, 7, 8, 12 and 13 rewrite without making the word shorter,
+  so length alone does not show an end. The test runs every string of 1 to
+  5 letters over `a e i y h c k s r`. It cannot show "4 passes are always
+  enough" for longer words, and the set has no `o`, `u`, `w`, `z` or `x`,
+  which rules 2, 8, 10 and 13 need.
+- **Failure case:** A word of 6 or more letters that needs a fifth pass
+  stops while it can still change. Then `search_key` is not idempotent for
+  that word, and no test sees it.
+- **Fix:** Loop until the word does not change, with no fixed limit, and
+  write the full reason it ends: every rule that fires either removes an `x`
+  or `q` (rule 2), or makes the word shorter, or replaces one of `c w z y e`
+  by a letter outside that set; and no rule writes `x`, `q`, `w`, `z`, `y`
+  or `e`, and writes `c` only in `chh`→`ch`, which is shorter. (Rule 1 is
+  the only rule that can write `e`, from `é`, and it fires only in the
+  first pass.) Keep the exhaustive test as a check of idempotence, and add
+  `o u w z x` to its letters for lengths 1 to 4.
+- *Status:* Open
+
+#### P18 — Two small text gaps in the fold and in Step 4 (minor)
+
+- **Where:** D-B4b-5 rule 1 (`:760`) and D-B4b-2 `latin_base`; Step 4 item
+  2 (`:1287`).
+- **Problem:** Rule 1 of the fold ("strip the marks of Latin letters") does
+  the same work as `latin_base`, which now runs first on every Latin run;
+  the tables write no marks. Two functions for one job will drift. Step 4
+  item 2 moves only `MAX_SEARCH_TERMS`, while D-B4b-8 moves
+  `MAX_SEARCH_BYTES` too.
+- **Failure case:** An implementer writes the mark stripping twice, or
+  leaves `MAX_SEARCH_BYTES` in `data_db` while chat imports it from `fts`.
+- **Fix:** Say that rule 1 is `latin_base` (one function), or remove rule 1
+  from the table. In Step 4 item 2, name both constants.
+- *Status:* Open
