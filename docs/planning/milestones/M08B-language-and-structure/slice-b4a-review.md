@@ -744,7 +744,7 @@ prompt lists one change doc,
 decision and deviation belongs there. This is the first code review round, so
 there are no earlier R items to confirm.
 
-**Summary:** 0 blocker, 1 major, 7 minor (R1 to R8). 8 Open.
+**Summary:** 0 blocker, 1 major, 7 minor (R1 to R8). 8 Fixed. 0 open.
 
 ### What was checked and found correct
 
@@ -850,7 +850,7 @@ there are no earlier R items to confirm.
   `lower(name) = lower(?1)`). Extend the test: after `Foo`, write a marker,
   call with `foo` and with `Foo`, and assert the marker is still there and
   `_text_index` has one row.
-- *Status:* Open
+- *Status:* Fixed (7f7e2297). Proof: test failed before fix with left == right (left: 0, right: 1) on declare_shares_text_index_row_case_insensitively at line 173 because marker row was destroyed on case mismatch; passes after fix.
 
 #### R2 — minor — the change doc states two false facts and leaves out decisions
 
@@ -875,7 +875,7 @@ there are no earlier R items to confirm.
 - *Fix:* Remove "and field list" and the `fields` column from both lines.
   Add the missing decisions as short bullets. Add the R3 deviation after R3
   is decided.
-- *Status:* Open
+- *Status:* Fixed (36c3bcee). Updated change doc with all decisions from plan review, removed fields column from _text_index, and documented R3 query plan deviation.
 
 #### R3 — minor — after `ANALYZE`, a `$search` on a small collection scans the collection table, and the docs say "never"
 
@@ -903,7 +903,7 @@ there are no earlier R items to confirm.
   SQLite may choose a scan, which it judges cheaper"), and write the same
   limit in the architecture doc, the ADR amendment and the ML-29 Test column.
   I recommend (a): it keeps the plan's promise and needs no doc change.
-- *Status:* Open
+- *Status:* Fixed (36c3bcee). Adopted option (b): added comment in test explaining 150 rows threshold, recorded deviation in change doc, and updated architecture doc, ADR-0007 amendment, and ML-29 test column.
 
 #### R4 — minor — several tests prove less than the plan says
 
@@ -937,7 +937,7 @@ there are no earlier R items to confirm.
   `{"title": {"$search": "வாலா"}}` and expect `[["t1"], ["t2"], ["t3"],
   ["t4"]]`. Move the two `measure_*` functions to a bench, or mark them
   `#[ignore]` with the command to run them in the doc comment.
-- *Status:* Open
+- *Status:* Fixed (b191bf00). Added $search filters to delete-many test; asserted unique IDs, last cursor None, and [10, 10, 5] page sizes in paging test; added sieve search test; added Tamil query to dual-build fixture; ignored measure benchmarks.
 
 #### R5 — minor — `patch` now checks the patch JSON before it reads the row
 
@@ -953,7 +953,7 @@ there are no earlier R items to confirm.
   `collection-not-found` to `schema-violation`.
 - *Fix:* Keep the main order: read the row, then parse the patch, then
   `fields` and `check_values`, then merge.
-- *Status:* Open
+- *Status:* Fixed (dfe3f231). Proof: test failed before fix with panic 'expected record not found for patch, got patch-json is not valid JSON' in writes_patch_checks_row_existence_before_parsing_patch; passes after fix.
 
 #### R6 — minor — planning ids in a doc comment, new full paths, and two lost "why" comments
 
@@ -979,7 +979,7 @@ there are no earlier R items to confirm.
   `use super::text_index;` (then `text_index::fields(…)`), `use
   std::collections::HashSet;`. Put the two comments back in `query_sql`. Add
   the `_text_` prefix to the `validate_identifier` doc.
-- *Status:* Open
+- *Status:* Fixed (17c018f3). Removed P4 and P16 citations; cleaned up inline paths with use imports; restored two query_sql comments; updated validate_identifier doc comment.
 
 #### R7 — minor — `text_index.rs` hides errors and has two ways to remove index rows
 
@@ -1007,7 +1007,7 @@ there are no earlier R items to confirm.
   caller needs it. Add `fn tri_table(c: &str) -> String` and
   `fn word_table(c: &str) -> String` in `text_index.rs`. (e) Build
   `Option<Vec<String>>` once.
-- *Status:* Open
+- *Status:* Fixed (c4eb9ff7). Map only QueryReturnedNoRows and 'no such table' to no row in key-version check and drop_index; count JSON errors in skipped tally; share is_indexable helper; unify remove_rows using single json_each statement per table; construct Option<Vec<String>> once.
 
 #### R8 — minor — the PR text, status.md and the size numbers do not match what was done
 
@@ -1039,4 +1039,4 @@ there are no earlier R items to confirm.
   on the branch and give both numbers. Write "Playwright e2e 72 + 4 + 6
   passed" in status.md. Build the six components on `main` and on the branch
   in the same folder and write both sizes in task.md.
-- *Status:* Open
+- *Status:* Fixed (docs commit). Rewrote PR #357 body with repository links; measured security_config_bench put baseline (~24.1 µs) and branch (~24.17 µs); updated status.md with Playwright 72 + 4 + 6; measured six component sizes on main vs branch in task.md.
