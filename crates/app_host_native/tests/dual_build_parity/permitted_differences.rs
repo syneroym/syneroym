@@ -214,6 +214,7 @@ async fn a_transient_fdae_policy_load_failure_is_not_memoized() {
             .create_collection(&DbCollectionSchema {
                 name: "profiles".to_string(),
                 indexes: vec![],
+                text_fields: vec![],
             })
             .await
             .unwrap();

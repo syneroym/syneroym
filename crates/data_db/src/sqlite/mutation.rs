@@ -12,8 +12,9 @@ use super::{
     sieve::{
         ModeAOutcome, emit_mode_a_execution_trace, emit_mode_b_trace, install_watchdog, merge_sieve,
     },
+    text_index,
 };
-use crate::{errors::map_rusqlite_error, filter, host_store};
+use crate::{errors::map_rusqlite_error, filter, host_store, text_match::TextFields};
 
 /// Applies an RFC 7396 JSON merge-patch: `patch` values overwrite `target`,
 /// `null` values remove the key, and nested objects merge recursively.
@@ -37,14 +38,14 @@ fn apply_merge_patch(target: &mut Value, patch: &Value) {
     }
 }
 
-fn payload_to_text(payload: &[u8]) -> Result<String, host_store::DataLayerError> {
+fn payload_to_text(payload: &[u8]) -> Result<(String, Value), host_store::DataLayerError> {
     let text = str::from_utf8(payload).map_err(|_| {
         host_store::DataLayerError::SchemaViolation("payload must be valid UTF-8".into())
     })?;
-    serde_json::from_str::<Value>(text).map_err(|e| {
+    let val = serde_json::from_str::<Value>(text).map_err(|e| {
         host_store::DataLayerError::SchemaViolation(format!("payload is not valid JSON: {e}"))
     })?;
-    Ok(text.to_string())
+    Ok((text.to_string(), val))
 }
 
 pub(super) fn do_put(
@@ -54,7 +55,9 @@ pub(super) fn do_put(
     creator_id: &str,
 ) -> Result<(), host_store::DataLayerError> {
     validate_identifier(collection)?;
-    let payload_text = payload_to_text(&value.payload)?;
+    let (payload_text, payload_val) = payload_to_text(&value.payload)?;
+    let fields = text_index::fields(conn, collection)?;
+    text_index::check_values(&fields, &payload_val)?;
     let now = Utc::now().timestamp_millis();
 
     let existing_created_at: Option<i64> = conn
@@ -75,15 +78,21 @@ pub(super) fn do_put(
     // upsert must not let a later writer reassign a row's identity anchor
     // to themselves, which would silently steal ownership out from under a
     // `principal_column: "creator_id"` policy.
-    conn.execute(
-        &format!(
-            "INSERT INTO {collection} ({RECORD_COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5) ON \
-             CONFLICT(id) DO UPDATE SET payload = excluded.payload, updated_at = \
-             excluded.updated_at"
-        ),
-        params![value.id, payload_text, creator_id, created_at, now],
-    )
-    .map_err(map_rusqlite_error)?;
+    let rowid: i64 = conn
+        .query_row(
+            &format!(
+                "INSERT INTO {collection} ({RECORD_COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5) ON \
+                 CONFLICT(id) DO UPDATE SET payload = excluded.payload, updated_at = \
+                 excluded.updated_at RETURNING rowid"
+            ),
+            params![value.id, payload_text, creator_id, created_at, now],
+            |row| row.get(0),
+        )
+        .map_err(map_rusqlite_error)?;
+
+    if !fields.is_empty() {
+        text_index::sync_row(conn, collection, &fields, rowid, &payload_val)?;
+    }
     Ok(())
 }
 
@@ -114,16 +123,29 @@ pub(super) fn do_patch(
     let patch_doc: Value = serde_json::from_str(patch_text).map_err(|e| {
         host_store::DataLayerError::SchemaViolation(format!("patch-json is not valid JSON: {e}"))
     })?;
+
+    let fields = text_index::fields(conn, collection)?;
+    text_index::check_values(&fields, &patch_doc)?;
+
     apply_merge_patch(&mut target, &patch_doc);
     let merged_text = serde_json::to_string(&target)
         .map_err(|e| host_store::DataLayerError::Internal(e.to_string()))?;
 
     let now = Utc::now().timestamp_millis();
-    conn.execute(
-        &format!("UPDATE {collection} SET payload = ?1, updated_at = ?2 WHERE id = ?3"),
-        params![merged_text, now, id],
-    )
-    .map_err(map_rusqlite_error)?;
+    let rowid: i64 = conn
+        .query_row(
+            &format!(
+                "UPDATE {collection} SET payload = ?1, updated_at = ?2 WHERE id = ?3 RETURNING \
+                 rowid"
+            ),
+            params![merged_text, now, id],
+            |row| row.get(0),
+        )
+        .map_err(map_rusqlite_error)?;
+
+    if !fields.is_empty() {
+        text_index::sync_row(conn, collection, &fields, rowid, &target)?;
+    }
     Ok(())
 }
 
@@ -133,15 +155,30 @@ pub(super) fn do_delete(
     id: &str,
 ) -> Result<(), host_store::DataLayerError> {
     validate_identifier(collection)?;
-    // Idempotent: deleting a non-existent id is not an error, only a
-    // non-existent collection is (surfaced via map_rusqlite_error below).
-    conn.execute(&format!("DELETE FROM {collection} WHERE id = ?1"), params![id])
+    let fields = text_index::fields(conn, collection)?;
+    let maybe_rowid: Option<i64> = conn
+        .query_row(
+            &format!("DELETE FROM {collection} WHERE id = ?1 RETURNING rowid"),
+            params![id],
+            |row| row.get(0),
+        )
+        .map(Some)
+        .or_else(|e| match e {
+            SqliteError::QueryReturnedNoRows => Ok(None),
+            other => Err(other),
+        })
         .map_err(map_rusqlite_error)?;
+
+    if !fields.is_empty()
+        && let Some(rowid) = maybe_rowid
+    {
+        text_index::remove_rows(conn, collection, &[rowid])?;
+    }
     Ok(())
 }
 
 pub(super) fn do_delete_many(
-    conn: &Connection,
+    conn: &mut Connection,
     collection: &str,
     filter_json: Option<&str>,
     sieve: Option<&CompiledSieve>,
@@ -158,18 +195,17 @@ pub(super) fn do_delete_many(
         return Err(host_store::DataLayerError::PermissionDenied);
     }
     emit_mode_b_trace(sieve);
-    let compiled = filter::compile_filter(filter_json)?;
+    let fields = text_index::fields(conn, collection)?;
+    let text_fields = TextFields { collection, fields: &fields };
+    let compiled = filter::compile_filter_in(filter_json, Some(&text_fields))?;
 
     let mut where_clauses = Vec::new();
     let mut bound_params: Vec<SqlValue> = Vec::new();
-    let _watchdog = if let Some(s) = sieve {
+    if let Some(s) = sieve {
         let (clause, params) = merge_sieve(s)?;
         where_clauses.push(clause);
         bound_params.extend(params);
-        Some(install_watchdog(conn)?)
-    } else {
-        None
-    };
+    }
     if let Some(cf) = &compiled {
         where_clauses.push(cf.where_clause.clone());
         bound_params.extend(cf.params.iter().cloned());
@@ -180,13 +216,29 @@ pub(super) fn do_delete_many(
         format!("WHERE {}", where_clauses.join(" AND "))
     };
 
-    let affected = conn
-        .execute(
-            &format!("DELETE FROM {collection} {where_sql}"),
-            rusqlite::params_from_iter(bound_params.iter()),
-        )
-        .map_err(map_query_raw_step_error)?;
-    Ok(affected as u64)
+    let tx = conn.transaction().map_err(map_rusqlite_error)?;
+    let watchdog = if sieve.is_some() { Some(install_watchdog(&tx)?) } else { None };
+
+    let rowids: Vec<i64> = {
+        let sql = format!("DELETE FROM {collection} {where_sql} RETURNING rowid");
+        let mut stmt = tx.prepare(&sql).map_err(map_query_raw_step_error)?;
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(bound_params.iter()), |row| row.get(0))
+            .map_err(map_query_raw_step_error)?;
+        let mut collected = Vec::new();
+        for r in rows {
+            collected.push(r.map_err(map_query_raw_step_error)?);
+        }
+        collected
+    };
+
+    if !fields.is_empty() && !rowids.is_empty() {
+        text_index::remove_rows(&tx, collection, &rowids)?;
+    }
+
+    drop(watchdog);
+    tx.commit().map_err(map_rusqlite_error)?;
+    Ok(rowids.len() as u64)
 }
 
 pub(super) fn do_batch_mutate(
@@ -467,8 +519,8 @@ fn authorize_and_mutate(
     Ok(())
 }
 
-/// Transaction wrapper for an authorized `put`. Opens a transaction only
-/// when a sieve is present, so the policy-absent hot path pays nothing new.
+/// Transaction wrapper for a `put`. Every write and its index rows commit
+/// together.
 pub(super) fn do_authorized_put(
     conn: &mut Connection,
     collection: &str,
@@ -476,17 +528,21 @@ pub(super) fn do_authorized_put(
     creator_id: &str,
     sieve: Option<&CompiledSieve>,
 ) -> Result<(), host_store::DataLayerError> {
-    let Some(sieve) = sieve else { return do_put(conn, collection, value, creator_id) };
     validate_identifier(collection)?;
     let tx = conn.transaction().map_err(map_rusqlite_error)?;
-    let existed = row_exists(&tx, collection, &value.id)?;
-    authorize_and_mutate(&tx, collection, &value.id, Some(sieve), existed, true, true, |c| {
-        do_put(c, collection, value, creator_id)
-    })?;
+    if let Some(sieve) = sieve {
+        let existed = row_exists(&tx, collection, &value.id)?;
+        authorize_and_mutate(&tx, collection, &value.id, Some(sieve), existed, true, true, |c| {
+            do_put(c, collection, value, creator_id)
+        })?;
+    } else {
+        do_put(&tx, collection, value, creator_id)?;
+    }
     tx.commit().map_err(map_rusqlite_error)
 }
 
-/// Transaction wrapper for an authorized `patch`. See `do_authorized_put`.
+/// Transaction wrapper for a `patch`. Every write and its index rows commit
+/// together.
 pub(super) fn do_authorized_patch(
     conn: &mut Connection,
     collection: &str,
@@ -494,28 +550,35 @@ pub(super) fn do_authorized_patch(
     patch_json: &[u8],
     sieve: Option<&CompiledSieve>,
 ) -> Result<(), host_store::DataLayerError> {
-    let Some(sieve) = sieve else { return do_patch(conn, collection, id, patch_json) };
     validate_identifier(collection)?;
     let tx = conn.transaction().map_err(map_rusqlite_error)?;
-    authorize_and_mutate(&tx, collection, id, Some(sieve), true, true, true, |c| {
-        do_patch(c, collection, id, patch_json)
-    })?;
+    if let Some(sieve) = sieve {
+        authorize_and_mutate(&tx, collection, id, Some(sieve), true, true, true, |c| {
+            do_patch(c, collection, id, patch_json)
+        })?;
+    } else {
+        do_patch(&tx, collection, id, patch_json)?;
+    }
     tx.commit().map_err(map_rusqlite_error)
 }
 
-/// Transaction wrapper for an authorized `delete`. See `do_authorized_put`.
-/// No `WITH CHECK` half -- a deleted row has no post-image to evaluate.
+/// Transaction wrapper for a `delete`. Every write and its index rows commit
+/// together. No `WITH CHECK` half -- a deleted row has no post-image to
+/// evaluate.
 pub(super) fn do_authorized_delete(
     conn: &mut Connection,
     collection: &str,
     id: &str,
     sieve: Option<&CompiledSieve>,
 ) -> Result<(), host_store::DataLayerError> {
-    let Some(sieve) = sieve else { return do_delete(conn, collection, id) };
     validate_identifier(collection)?;
     let tx = conn.transaction().map_err(map_rusqlite_error)?;
-    authorize_and_mutate(&tx, collection, id, Some(sieve), true, false, true, |c| {
-        do_delete(c, collection, id)
-    })?;
+    if let Some(sieve) = sieve {
+        authorize_and_mutate(&tx, collection, id, Some(sieve), true, false, true, |c| {
+            do_delete(c, collection, id)
+        })?;
+    } else {
+        do_delete(&tx, collection, id)?;
+    }
     tx.commit().map_err(map_rusqlite_error)
 }

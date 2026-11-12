@@ -49,6 +49,7 @@ impl Guest for SagaTestComponent {
         store::create_collection(&CollectionSchema {
             name: LEDGER_COLLECTION.to_string(),
             indexes: vec![],
+            text_fields: vec![],
         })
         .map_err(|e| format!("{e:?}"))
     }

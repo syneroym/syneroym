@@ -62,6 +62,7 @@ async fn a_cached_fdae_policy_can_be_invalidated_and_reloaded() {
             .create_collection(&DbCollectionSchema {
                 name: "profiles".to_string(),
                 indexes: vec![],
+                text_fields: vec![],
             })
             .await
             .unwrap();

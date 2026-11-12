@@ -12,9 +12,9 @@ crates/control_plane/src/service/orchestration/tests/deploy.rs 1240
 crates/control_plane/src/service/orchestration/tests/helpers.rs 862
 crates/control_plane/src/service/orchestration/tests/rollback.rs 887
 crates/control_plane/src/service/tests.rs 1361
-crates/data_db/src/sqlite/tests.rs 899
-crates/data_db/src/tests_crud.rs 819
-crates/data_db/src/tests_fdae.rs 1791
+crates/data_db/src/sqlite/tests.rs 881
+crates/data_db/src/tests_crud.rs 818
+crates/data_db/src/tests_fdae.rs 1787
 crates/router/src/route_handler/io/tests.rs 1115
 crates/router/tests/proxy_dispatch.rs 979
 crates/roym_web/tests/dual_build_parity/directory.rs 981
@@ -22,7 +22,7 @@ crates/roym_web/tests/dual_build_parity/helpers.rs 1290
 crates/roym_web/tests/dual_build_parity/profile.rs 1112
 crates/roym_web/tests/dual_build_parity/transaction.rs 846
 crates/sandbox_wasm/src/engine/tests.rs 821
-crates/sandbox_wasm/tests/abac_integration.rs 811
+crates/sandbox_wasm/tests/abac_integration.rs 809
 crates/substrate/tests/gateway_session_e2e.rs 1419
 crates/substrate/tests/guest_http_e2e.rs 957
 crates/substrate/tests/http_passthrough_e2e.rs 817

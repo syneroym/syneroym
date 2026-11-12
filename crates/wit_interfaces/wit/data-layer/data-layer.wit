@@ -15,6 +15,12 @@ interface store {
     record collection-schema {
         name: string,
         indexes: list<index-definition>,
+        /// Top-level payload fields to index for text search with the `$search`
+        /// filter operator. Each value must be a string. The host indexes the
+        /// search key of each value and keeps the index in step with every
+        /// write. An empty list leaves any text index the collection has.
+        /// At most 8 fields; each is an identifier like an index field name.
+        text-fields: list<string>,
     }
 
     record record-write-value {
@@ -101,6 +107,9 @@ interface store {
     /// as a change and is denied. Use `patch` instead: it merges into the
     /// existing payload, so a masked field the caller never touches simply
     /// isn't part of the merge.
+    ///
+    /// A non-string value for a declared text field is refused with
+    /// `schema-violation`.
     put: func(collection: string, value: record-write-value) -> result<_, data-layer-error>;
 
     /// See `put`'s FDAE doc note. `patch` of a row that does not exist
@@ -108,6 +117,9 @@ interface store {
     /// policy -- the pre-image reachability check cannot distinguish
     /// "absent" from "present but unreachable" without becoming an
     /// existence oracle, which CLS-masking already refuses to provide.
+    ///
+    /// A non-string value for a declared text field named in the patch is
+    /// refused with `schema-violation`.
     patch: func(collection: string, id: string, patch-json: list<u8>) -> result<_, data-layer-error>;
 
     get: func(collection: string, id: string) -> result<option<record-read-value>, data-layer-error>;
@@ -124,6 +136,12 @@ interface store {
     /// shorter than the requested `limit` while `next-cursor` is still
     /// `some` -- a caller must page until `next-cursor` is `none`, never
     /// stop at a short page.
+    ///
+    /// The filter may use `{"<text field>": {"$search": "<text>"}}` as an
+    /// `AND` term (at the top level or inside `$and`). Every word of the text
+    /// must match. A word of 1 or 2 characters matches a word or the start of
+    /// a word; a longer word matches anywhere inside the field. Rows come in
+    /// `id` order.
     query: func(collection: string, opts: query-options) -> result<query-result, data-layer-error>;
 
     /// Runs an aggregation over a collection (ADR-0007). `pipeline` is a
@@ -147,6 +165,8 @@ interface store {
     /// path).
     delete: func(collection: string, id: string) -> result<_, data-layer-error>;
 
+    /// Deletes matching records from a collection. The filter may use the
+    /// `$search` operator under the same rules as `query`.
     delete-many: func(collection: string, filter: string) -> result<u64, data-layer-error>;
 
     /// Mutates multiple records in a single transaction.
@@ -158,6 +178,9 @@ interface store {
     /// authorized individually, in the same transaction as the batch; the
     /// first unauthorized mutation returns `permission-denied` and rolls
     /// back every mutation in the batch, not just the offending one.
+    ///
+    /// A non-string value for a declared text field in a mutation is refused
+    /// with `schema-violation`.
     batch-mutate: func(collection: string, mutations: list<mutation>) -> result<_, data-layer-error>;
 
     /// Creates every row in `values` in one transaction, but only if none
@@ -171,6 +194,9 @@ interface store {
     /// as `batch-mutate`. Under a deployed FDAE policy (ADR-0017 §4) each
     /// row is authorized as a `put` that creates, inside the same
     /// transaction; the first denial rolls back every row.
+    ///
+    /// A non-string value for a declared text field in any record is refused
+    /// with `schema-violation`.
     create: func(collection: string, values: list<record-write-value>)
         -> result<option<string>, data-layer-error>;
 

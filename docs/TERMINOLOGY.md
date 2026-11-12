@@ -70,6 +70,7 @@ neighbourhood.
 | **String catalog (Hub)** | The file of all Hub text for one language, in `crates/roym_web/ui/src/i18n/` (`en.ftl`, `hi.ftl`). A message in it has an id, and the Hub looks up its text by that id. | The `catalog` Roym service (listings). |
 | **Taxonomy (Roym)** | The base lists of category, unit, payment-method and attribute codes in `base.json`; their labels are in the Hub's taxonomy label files. | Free-text categories. |
 | **Language tag** | A BCP 47 language code in canonical syntax form (e.g. `hi`, `en`, `hi-Latn`), parsed and verified by `syneroym-text-lang`. A chat message carries up to 3 language tags, main language first. | Free-form locale strings or non-canonical casing. |
+| **Search key** | The form of a text that search compares, produced by `syneroym-text-lang`; today NFC and lower case. | Raw unnormalized text. |
 | **Author translation** | An alternative translation signed by the author inside the record envelope (up to 4 translations per record). The original text always binds. | Machine translation (MT), which is unsigned software output. |
 
 ## Key phrasings

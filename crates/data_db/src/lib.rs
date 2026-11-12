@@ -4,6 +4,7 @@ pub mod errors;
 pub mod filter;
 pub mod registry_store;
 pub mod sqlite;
+pub mod text_match;
 pub mod traits;
 pub mod vault_names;
 
@@ -17,6 +18,8 @@ pub use syneroym_wit_interfaces::host::syneroym::data_layer::store as host_store
 pub use syneroym_wit_interfaces::vault::syneroym::vault::vault as wit_vault;
 pub use traits::{ServiceStore, StorageProvider};
 
+#[cfg(test)]
+pub(crate) mod test_support;
 #[cfg(test)]
 mod tests_create;
 #[cfg(test)]

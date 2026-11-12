@@ -8,8 +8,9 @@ use super::{
     sieve::{
         ModeAOutcome, emit_mode_a_execution_trace, emit_mode_b_trace, install_watchdog, merge_sieve,
     },
+    text_index,
 };
-use crate::{aggregate, errors::map_rusqlite_error, filter, host_store};
+use crate::{aggregate, errors::map_rusqlite_error, filter, host_store, text_match::TextFields};
 
 /// `sieve` is `Some` only for `Mode::PointInTime{id}` (`compile_read` already
 /// appends `... AND {table}.id = ?` to the RLS), so a sieve'd fetch is a
@@ -88,6 +89,54 @@ fn read_record_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<(String, String,
     ))
 }
 
+pub(crate) fn query_sql(
+    collection: &str,
+    sieve: Option<(String, Vec<SqlValue>)>,
+    compiled: Option<&filter::CompiledFilter>,
+    cursor: Option<&str>,
+    limit: u32,
+) -> (String, Vec<SqlValue>) {
+    let mut where_clauses = Vec::new();
+    let mut bound_params: Vec<SqlValue> = Vec::new();
+    // Sieve first (RLS ∧ caveats), ahead of the caller's filter/cursor/limit.
+    if let Some((clause, params)) = sieve {
+        where_clauses.push(clause);
+        bound_params.extend(params);
+    }
+    if let Some(cf) = compiled {
+        where_clauses.push(cf.where_clause.clone());
+        bound_params.extend(cf.params.iter().cloned());
+    }
+
+    let text_match = compiled.is_some_and(|cf| cf.text_match);
+
+    if let Some(cursor) = cursor {
+        if text_match {
+            where_clauses.push(format!("+{collection}.id > ?"));
+        } else {
+            where_clauses.push("id > ?".to_string());
+        }
+        bound_params.push(SqlValue::Text(cursor.to_string()));
+    }
+    let where_sql = if where_clauses.is_empty() {
+        String::new()
+    } else {
+        format!("WHERE {}", where_clauses.join(" AND "))
+    };
+    // Fetch one extra row past the page limit to determine whether a next-cursor
+    // should be returned.
+    bound_params.push(SqlValue::Integer(i64::from(limit) + 1));
+
+    let order_by = if text_match {
+        format!("ORDER BY +{collection}.id ASC")
+    } else {
+        "ORDER BY id ASC".to_string()
+    };
+
+    let sql = format!("SELECT {RECORD_COLUMNS} FROM {collection} {where_sql} {order_by} LIMIT ?");
+    (sql, bound_params)
+}
+
 pub(super) fn do_query(
     conn: &Connection,
     collection: &str,
@@ -111,40 +160,25 @@ pub(super) fn do_query(
         }
     }
 
-    let compiled = filter::compile_filter(opts.filter.as_deref())?;
+    let text_fields_vec =
+        opts.filter.as_ref().map(|_| text_index::fields(conn, collection)).transpose()?;
+    let text_fields = text_fields_vec.as_deref().map(|fields| TextFields { collection, fields });
+
+    let compiled = filter::compile_filter_in(opts.filter.as_deref(), text_fields.as_ref())?;
     let limit = opts.limit.unwrap_or(MAX_QUERY_PAGE_SIZE).min(MAX_QUERY_PAGE_SIZE);
 
-    let mut where_clauses = Vec::new();
-    let mut bound_params: Vec<SqlValue> = Vec::new();
-
-    // Sieve first (RLS ∧ caveats), ahead of the caller's filter/cursor/limit.
-    let _watchdog = if let Some(s) = sieve {
+    let sieve_data = if let Some(s) = sieve {
         let (clause, sieve_params) = merge_sieve(s)?;
-        where_clauses.push(clause);
-        bound_params.extend(sieve_params);
-        Some(install_watchdog(conn)?)
+        Some((clause, sieve_params))
     } else {
         None
     };
-    if let Some(cf) = &compiled {
-        where_clauses.push(cf.where_clause.clone());
-        bound_params.extend(cf.params.iter().cloned());
-    }
-    if let Some(cursor) = &opts.cursor {
-        where_clauses.push("id > ?".to_string());
-        bound_params.push(SqlValue::Text(cursor.clone()));
-    }
-    let where_sql = if where_clauses.is_empty() {
-        String::new()
-    } else {
-        format!("WHERE {}", where_clauses.join(" AND "))
-    };
-    // Fetch one extra row past the page limit to determine whether a
-    // next-cursor should be returned.
-    bound_params.push(SqlValue::Integer(i64::from(limit) + 1));
 
-    let sql =
-        format!("SELECT {RECORD_COLUMNS} FROM {collection} {where_sql} ORDER BY id ASC LIMIT ?");
+    let _watchdog = if sieve.is_some() { Some(install_watchdog(conn)?) } else { None };
+
+    let (sql, bound_params) =
+        query_sql(collection, sieve_data, compiled.as_ref(), opts.cursor.as_deref(), limit);
+
     let mut stmt = conn.prepare(&sql).map_err(map_rusqlite_error)?;
     let mut records = stmt
         .query_map(rusqlite::params_from_iter(bound_params.iter()), |row| {
@@ -238,7 +272,8 @@ pub(super) fn do_list_collections(
         .prepare(&format!(
             "SELECT name FROM sqlite_master
              WHERE type = 'table' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\'
-               AND name != '{VAULT_TABLE}'"
+               AND name != '{VAULT_TABLE}'
+               AND name NOT LIKE '\\_text\\_%' ESCAPE '\\'"
         ))
         .map_err(|e| host_store::DataLayerError::Internal(format!("list_collections: {e}")))?;
     let names = stmt

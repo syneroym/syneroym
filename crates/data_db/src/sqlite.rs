@@ -5,6 +5,7 @@ mod query_raw;
 mod schema;
 mod service_store;
 mod sieve;
+mod text_index;
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::panic)]

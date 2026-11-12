@@ -15,7 +15,7 @@ use super::{
     query::{do_check_access, do_get, do_query},
     schema::SUBSTRATE_SCHEMA_VERSION,
 };
-use crate::{host_store, traits::StorageProvider};
+use crate::{host_store, test_support::plain_schema, traits::StorageProvider};
 
 #[test]
 fn test_startup_migrates_previous_substrate_schema_to_m3a() {
@@ -391,30 +391,12 @@ async fn test_list_collections_returns_created_tables_excludes_vault_and_sqlite_
 
     let store = provider.open_service_db("list-collections-svc", &key_store).await.unwrap();
 
-    store
-        .create_collection(&host_store::CollectionSchema {
-            name: "widgets".to_string(),
-            indexes: vec![],
-        })
-        .await
-        .unwrap();
-    store
-        .create_collection(&host_store::CollectionSchema {
-            name: "gadgets".to_string(),
-            indexes: vec![],
-        })
-        .await
-        .unwrap();
+    store.create_collection(&plain_schema("widgets")).await.unwrap();
+    store.create_collection(&plain_schema("gadgets")).await.unwrap();
     // A leading underscore is a legal collection identifier
     // (`IDENTIFIER_REGEX` is `^[a-zA-Z_]...`) and must not be swept up
     // by an overly broad `_%` exclusion meant only for `_vault`.
-    store
-        .create_collection(&host_store::CollectionSchema {
-            name: "_audit".to_string(),
-            indexes: vec![],
-        })
-        .await
-        .unwrap();
+    store.create_collection(&plain_schema("_audit")).await.unwrap();
     // A vault write forces `_vault` to exist alongside the collections.
     store.write_secret("k", b"v").await.unwrap();
 
@@ -858,16 +840,16 @@ fn decision_trace_emits_remote_fetch_provenance_for_a_mode_b_query() {
 
 #[test]
 fn fdae_watchdog_interrupts_do_delete_many_on_the_writer_conn() {
-    let conn = Connection::open_in_memory().unwrap();
+    let mut conn = Connection::open_in_memory().unwrap();
     seed_one_row_documents(&conn);
     let sieve = pathological_sieve();
-    let err = do_delete_many(&conn, "documents", None, Some(&sieve)).unwrap_err();
+    let err = do_delete_many(&mut conn, "documents", None, Some(&sieve)).unwrap_err();
     assert!(matches!(err, host_store::DataLayerError::QuotaExceeded));
 
     // The writer connection is persistent (never returned to a pool) --
     // the guard clearing the progress handler on drop is what keeps the
     // *next* command on this same connection unaffected.
-    let deleted = do_delete_many(&conn, "documents", None, None).unwrap();
+    let deleted = do_delete_many(&mut conn, "documents", None, None).unwrap();
     assert_eq!(deleted, 1);
 }
 

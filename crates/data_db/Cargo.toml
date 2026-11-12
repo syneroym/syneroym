@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 syneroym-core.workspace = true
+syneroym-text-lang.workspace = true
 syneroym-wit-interfaces.workspace = true
 syneroym-data-keystore.workspace = true
 syneroym-fdae.workspace = true

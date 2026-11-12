@@ -125,6 +125,8 @@ x509-parser = "0.18"
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
 icu_locale_core = { version = "2.4", default-features = false, features = ["alloc"] }
+icu_normalizer = { version = "2.4", default-features = false, features = ["compiled_data"] }
+icu_properties = { version = "2.4", default-features = false, features = ["compiled_data"] }
 # `float_roundtrip` makes parsing a float give back the exact `f64` that was
 # serialized. Signed JSON (message hashes, signatures) needs it: without it
 # many floats change by one bit, and a signature over them fails.

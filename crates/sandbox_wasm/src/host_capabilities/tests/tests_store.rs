@@ -158,13 +158,13 @@ async fn fdae_seed_documents(storage_provider: Arc<dyn StorageProvider>) {
         fdae_host_state(storage_provider, CallerContext::service_system(FDAE_SERVICE_ID), None);
     store::Host::create_collection(
         &mut seeder,
-        CollectionSchema { name: "users".to_string(), indexes: vec![] },
+        CollectionSchema { name: "users".to_string(), indexes: vec![], text_fields: vec![] },
     )
     .await
     .unwrap();
     store::Host::create_collection(
         &mut seeder,
-        CollectionSchema { name: "documents".to_string(), indexes: vec![] },
+        CollectionSchema { name: "documents".to_string(), indexes: vec![], text_fields: vec![] },
     )
     .await
     .unwrap();
@@ -605,7 +605,7 @@ async fn seed_one_remote_owned_document(storage_provider: Arc<dyn StorageProvide
         fdae_host_state(storage_provider, CallerContext::service_system(FDAE_SERVICE_ID), None);
     store::Host::create_collection(
         &mut seeder,
-        CollectionSchema { name: "documents".to_string(), indexes: vec![] },
+        CollectionSchema { name: "documents".to_string(), indexes: vec![], text_fields: vec![] },
     )
     .await
     .unwrap();

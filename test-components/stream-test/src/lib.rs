@@ -128,6 +128,7 @@ impl Guest for StreamTestComponent {
         store::create_collection(&store::CollectionSchema {
             name: UPLOADS_COLLECTION.to_string(),
             indexes: vec![],
+            text_fields: vec![],
         })
         .map_err(|e| format!("{e:?}"))?;
         host_api::register_stream_protocol(PROTOCOL).map_err(|e| format!("{e:?}"))

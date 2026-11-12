@@ -115,6 +115,8 @@ pub enum Request {
     /// data-layer: drop `SCRATCH`, then recreate it so later scenarios that
     /// reuse it still find it there.
     DropCollection,
+    /// data-layer: text search round trip with multilingual text.
+    TextSearch,
     /// blob-store: one-shot write, then delete it.
     DeleteBlob {
         body: String,
@@ -316,9 +318,13 @@ fn fmt_err<E: fmt::Debug>(e: E) -> String {
 
 /// Ensures `collection` exists, lazily, on first use.
 async fn ensure_collection<H: AppHost>(host: &H, collection: &str) -> Result<(), String> {
-    host.create_collection(CollectionSchema { name: collection.to_string(), indexes: vec![] })
-        .await
-        .map_err(fmt_err)
+    host.create_collection(CollectionSchema {
+        name: collection.to_string(),
+        indexes: vec![],
+        text_fields: vec![],
+    })
+    .await
+    .map_err(fmt_err)
 }
 
 fn delivery_state_str(state: DeliveryState) -> &'static str {

@@ -17,6 +17,7 @@ use crate::{
         QueryOptions, RecordWriteValue, SqlValue,
     },
     sqlite::{MAX_BATCH_SIZE, MAX_QUERY_PAGE_SIZE},
+    test_support::schema_with,
 };
 
 async fn setup_store() -> Box<dyn ServiceStore> {
@@ -30,10 +31,8 @@ async fn setup_store() -> Box<dyn ServiceStore> {
 }
 
 fn schema(name: &str) -> CollectionSchema {
-    CollectionSchema {
-        name: name.to_string(),
-        indexes: vec![IndexDefinition { field_name: "age".to_string(), type_: IndexType::Numeric }],
-    }
+    let idx = vec![IndexDefinition { field_name: "age".to_string(), type_: IndexType::Numeric }];
+    schema_with(name, idx, vec![])
 }
 
 fn write_value(id: &str, json: &str) -> RecordWriteValue {

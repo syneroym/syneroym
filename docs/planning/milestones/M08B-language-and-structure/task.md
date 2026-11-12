@@ -196,6 +196,8 @@ Change doc: roym-multilingual.
 
 Change doc: roym-multilingual.
 
+**B4a result:** done on the branch `feat/m08b-b4a-full-text` (2026-11-11 B4a Implemented Gemini 3.8 Flash). The six Roym components build for `wasm32-wasip2` (before on main at `bf23a422` -> after on branch in the same build folder): web 255,652 -> 255,811 bytes (+159), conversation 810,737 -> 810,779 bytes (+42), profile 767,699 -> 768,511 bytes (+812), catalog 927,744 -> 928,547 bytes (+803), transaction 1,507,245 -> 1,507,226 bytes (-19), directory 1,463,187 -> 1,463,980 bytes (+793). All sizes within limits (+40 KB limit). Unit tests, dual-build parity tests, Playwright tests and Story 40 pass. Code review: 3 rounds (10 items), all closed.
+
 ### B4b — Search in every script (L)
 
 - Y4, in `syneroym-text-lang` (section 1): transliteration tables and Latin folding on top of B4a's NFC and lower-case key. We write our own tables, ISO 15919 as the start (D-S0-3). The test data is `spelling-pairs.tsv` after the owner check.
