@@ -158,6 +158,19 @@ fn declare_shares_text_index_row_case_insensitively() {
         conn.query_row("SELECT collection FROM _text_index", [], |row| row.get(0)).unwrap();
     assert_eq!(coll_in_index, "foo");
 
+    conn.execute("INSERT INTO _text_foo_word (rowid, f_title) VALUES (999, 'marker')", []).unwrap();
+
+    let schema_lower = schema_with("foo", vec![], vec!["title".to_string()]);
+    do_create_collection(&mut conn, &schema_lower).unwrap();
+
+    let schema_upper = schema_with("Foo", vec![], vec!["title".to_string()]);
+    do_create_collection(&mut conn, &schema_upper).unwrap();
+
+    let marker_count: i64 = conn
+        .query_row("SELECT count(*) FROM _text_foo_word WHERE rowid = 999", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(marker_count, 1);
+
     let count: i64 =
         conn.query_row("SELECT count(*) FROM _text_index", [], |row| row.get(0)).unwrap();
     assert_eq!(count, 1);

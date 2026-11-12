@@ -85,7 +85,8 @@ pub(super) fn declare(
 
     let tri_exists: bool = conn
         .query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1 COLLATE \
+             NOCASE)",
             params![tri_table],
             |row| row.get(0),
         )
