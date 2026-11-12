@@ -12,6 +12,7 @@ use super::{
     sieve::{
         ModeAOutcome, emit_mode_a_execution_trace, emit_mode_b_trace, install_watchdog, merge_sieve,
     },
+    text_index,
 };
 use crate::{errors::map_rusqlite_error, filter, host_store};
 
@@ -102,16 +103,6 @@ pub(super) fn do_patch(
     patch_json: &[u8],
 ) -> Result<(), host_store::DataLayerError> {
     validate_identifier(collection)?;
-    let patch_text = str::from_utf8(patch_json).map_err(|_| {
-        host_store::DataLayerError::SchemaViolation("patch-json must be valid UTF-8".into())
-    })?;
-    let patch_doc: Value = serde_json::from_str(patch_text).map_err(|e| {
-        host_store::DataLayerError::SchemaViolation(format!("patch-json is not valid JSON: {e}"))
-    })?;
-
-    let fields = super::text_index::fields(conn, collection)?;
-    super::text_index::check_values(&fields, &patch_doc)?;
-
     let existing_payload: String = conn
         .query_row(&format!("SELECT payload FROM {collection} WHERE id = ?1"), params![id], |row| {
             row.get(0)
@@ -126,6 +117,16 @@ pub(super) fn do_patch(
     let mut target: Value = serde_json::from_str(&existing_payload).map_err(|e| {
         host_store::DataLayerError::Internal(format!("stored payload is not valid JSON: {e}"))
     })?;
+    let patch_text = str::from_utf8(patch_json).map_err(|_| {
+        host_store::DataLayerError::SchemaViolation("patch-json must be valid UTF-8".into())
+    })?;
+    let patch_doc: Value = serde_json::from_str(patch_text).map_err(|e| {
+        host_store::DataLayerError::SchemaViolation(format!("patch-json is not valid JSON: {e}"))
+    })?;
+
+    let fields = text_index::fields(conn, collection)?;
+    text_index::check_values(&fields, &patch_doc)?;
+
     apply_merge_patch(&mut target, &patch_doc);
     let merged_text = serde_json::to_string(&target)
         .map_err(|e| host_store::DataLayerError::Internal(e.to_string()))?;
@@ -143,7 +144,7 @@ pub(super) fn do_patch(
         .map_err(map_rusqlite_error)?;
 
     if !fields.is_empty() {
-        super::text_index::sync_row(conn, collection, &fields, rowid, &target)?;
+        text_index::sync_row(conn, collection, &fields, rowid, &target)?;
     }
     Ok(())
 }

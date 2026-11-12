@@ -15,6 +15,32 @@ use crate::{
 };
 
 #[test]
+fn writes_patch_checks_row_existence_before_parsing_patch() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    let schema = schema_with("items", vec![], vec!["title".to_string()]);
+    do_create_collection(&mut conn, &schema).unwrap();
+
+    let err =
+        do_authorized_patch(&mut conn, "items", "missing_id", b"invalid json", None).unwrap_err();
+    match err {
+        DataLayerError::SchemaViolation(msg) => {
+            assert!(
+                msg.contains("record not found for patch"),
+                "expected 'record not found for patch', got {msg}"
+            );
+        }
+        other => panic!("expected SchemaViolation with record not found, got {other:?}"),
+    }
+
+    let coll_err =
+        do_authorized_patch(&mut conn, "missing_coll", "1", b"invalid json", None).unwrap_err();
+    assert!(
+        matches!(coll_err, DataLayerError::CollectionNotFound),
+        "expected CollectionNotFound, got {coll_err:?}"
+    );
+}
+
+#[test]
 fn writes_put_patch_delete_lifecycle() {
     let mut conn = Connection::open_in_memory().unwrap();
     let schema = schema_with("items", vec![], vec!["title".to_string()]);
