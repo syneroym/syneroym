@@ -4,6 +4,7 @@ use rusqlite::{Connection, Error as SqliteError, params, types::Value as SqlValu
 use serde_json::Value;
 use syneroym_text_lang::SEARCH_KEY_VERSION;
 
+use super::query_raw::map_query_raw_step_error;
 use crate::{
     errors::{is_no_such_table, map_rusqlite_error},
     host_store::DataLayerError,
@@ -21,15 +22,11 @@ pub(crate) fn word_table(collection: &str) -> String {
     format!("_text_{collection}_word")
 }
 
-fn map_text_index_error(err: rusqlite::Error, collection: &str) -> DataLayerError {
-    let msg = err.to_string();
-    if msg.contains("no such table") {
+fn map_text_index_error(err: SqliteError, collection: &str) -> DataLayerError {
+    if is_no_such_table(&err) {
         DataLayerError::Internal(format!("text index of '{collection}' is missing"))
-    } else if matches!(err, rusqlite::Error::SqliteFailure(ffi_err, _) if ffi_err.code == rusqlite::ErrorCode::OperationInterrupted)
-    {
-        DataLayerError::QuotaExceeded
     } else {
-        map_rusqlite_error(err)
+        map_query_raw_step_error(err)
     }
 }
 

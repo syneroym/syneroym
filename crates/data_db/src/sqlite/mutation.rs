@@ -14,7 +14,7 @@ use super::{
     },
     text_index,
 };
-use crate::{errors::map_rusqlite_error, filter, host_store};
+use crate::{errors::map_rusqlite_error, filter, host_store, text_match::TextFields};
 
 /// Applies an RFC 7396 JSON merge-patch: `patch` values overwrite `target`,
 /// `null` values remove the key, and nested objects merge recursively.
@@ -196,7 +196,7 @@ pub(super) fn do_delete_many(
     }
     emit_mode_b_trace(sieve);
     let fields = text_index::fields(conn, collection)?;
-    let text_fields = crate::text_match::TextFields { collection, fields: &fields };
+    let text_fields = TextFields { collection, fields: &fields };
     let compiled = filter::compile_filter_in(filter_json, Some(&text_fields))?;
 
     let mut where_clauses = Vec::new();

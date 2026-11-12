@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Instant};
+use std::{collections::HashSet, sync::Arc, time::Instant};
 
 use rusqlite::{Connection, types::Value as SqlValue};
 use serde_json::Map;
@@ -296,7 +296,7 @@ async fn search_paging_cursor() {
 
     assert_eq!(page_sizes, vec![10, 10, 5]);
     assert_eq!(all_ids.len(), 25);
-    let unique_ids: std::collections::HashSet<_> = all_ids.iter().cloned().collect();
+    let unique_ids: HashSet<_> = all_ids.iter().cloned().collect();
     assert_eq!(unique_ids.len(), 25);
     let mut sorted = all_ids.clone();
     sorted.sort();
