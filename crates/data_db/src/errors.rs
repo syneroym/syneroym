@@ -17,7 +17,7 @@ pub fn map_rusqlite_error(err: SqliteError) -> DataLayerError {
     }
 }
 
-fn is_no_such_table(err: &SqliteError) -> bool {
+pub(crate) fn is_no_such_table(err: &SqliteError) -> bool {
     match err {
         SqliteError::SqliteFailure(_, Some(msg)) => msg.contains("no such table"),
         other => other.to_string().contains("no such table"),

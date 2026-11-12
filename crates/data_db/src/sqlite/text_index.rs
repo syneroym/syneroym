@@ -1,22 +1,40 @@
 use std::collections::HashSet;
 
-use rusqlite::{Connection, params, types::Value as SqlValue};
+use rusqlite::{Connection, Error as SqliteError, params, types::Value as SqlValue};
 use serde_json::Value;
 use syneroym_text_lang::SEARCH_KEY_VERSION;
 
-use crate::{errors::map_rusqlite_error, host_store::DataLayerError};
+use crate::{
+    errors::{is_no_such_table, map_rusqlite_error},
+    host_store::DataLayerError,
+};
 
 pub(crate) const TRI_TOKENIZE: &str = "tokenize = 'trigram case_sensitive 1'";
 pub(crate) const WORD_TOKENIZE: &str =
     "tokenize = \"unicode61 remove_diacritics 0 categories 'L* N* Co M*'\", prefix = '1 2'";
 
+pub(crate) fn tri_table(collection: &str) -> String {
+    format!("_text_{collection}_tri")
+}
+
+pub(crate) fn word_table(collection: &str) -> String {
+    format!("_text_{collection}_word")
+}
+
 fn map_text_index_error(err: rusqlite::Error, collection: &str) -> DataLayerError {
     let msg = err.to_string();
     if msg.contains("no such table") {
         DataLayerError::Internal(format!("text index of '{collection}' is missing"))
+    } else if matches!(err, rusqlite::Error::SqliteFailure(ffi_err, _) if ffi_err.code == rusqlite::ErrorCode::OperationInterrupted)
+    {
+        DataLayerError::QuotaExceeded
     } else {
         map_rusqlite_error(err)
     }
+}
+
+fn is_indexable(v: &Value) -> bool {
+    v.is_string() || v.is_null()
 }
 
 fn set_equal(a: &[String], b: &[String]) -> bool {
@@ -32,7 +50,7 @@ fn set_equal(a: &[String], b: &[String]) -> bool {
 /// `_text_<c>_word` and strips `f_`. A missing table gives no rows, not
 /// an error, so raw test connections need no host table.
 pub(super) fn fields(conn: &Connection, collection: &str) -> Result<Vec<String>, DataLayerError> {
-    let word_table = format!("_text_{collection}_word");
+    let word_table = word_table(collection);
     let mut stmt = conn
         .prepare_cached("SELECT name FROM pragma_table_info(?1)")
         .map_err(map_rusqlite_error)?;
@@ -57,8 +75,7 @@ pub(super) fn check_values(fields: &[String], payload: &Value) -> Result<(), Dat
     if let Some(obj) = payload.as_object() {
         for f in fields {
             if let Some(v) = obj.get(f)
-                && !v.is_string()
-                && !v.is_null()
+                && !is_indexable(v)
             {
                 return Err(DataLayerError::SchemaViolation(format!(
                     "text field '{f}' must be a string"
@@ -81,8 +98,8 @@ pub(super) fn declare(
     let have = fields(conn, collection)?;
     let c_lower = collection.to_ascii_lowercase();
 
-    let tri_table = format!("_text_{collection}_tri");
-    let word_table = format!("_text_{collection}_word");
+    let tri_table = tri_table(collection);
+    let word_table = word_table(collection);
 
     let tri_exists: bool = conn
         .query_row(
@@ -93,14 +110,16 @@ pub(super) fn declare(
         )
         .map_err(map_rusqlite_error)?;
 
-    let version_matches = conn
-        .query_row(
-            "SELECT key_version FROM _text_index WHERE collection = ?1",
-            params![c_lower],
-            |row| row.get::<_, u32>(0),
-        )
-        .map(|v| v == SEARCH_KEY_VERSION)
-        .unwrap_or(false);
+    let version_matches = match conn.query_row(
+        "SELECT key_version FROM _text_index WHERE collection = ?1",
+        params![c_lower],
+        |row| row.get::<_, u32>(0),
+    ) {
+        Ok(v) => v == SEARCH_KEY_VERSION,
+        Err(SqliteError::QueryReturnedNoRows) => false,
+        Err(e) if is_no_such_table(&e) => false,
+        Err(e) => return Err(map_rusqlite_error(e)),
+    };
 
     if set_equal(&have, wanted) && tri_exists && version_matches {
         return Ok(());
@@ -145,14 +164,17 @@ pub(super) fn declare(
 
     let mut skipped = 0usize;
     for (rowid, payload_str) in records {
-        let Ok(val) = serde_json::from_str::<Value>(&payload_str) else {
-            continue;
+        let val = match serde_json::from_str::<Value>(&payload_str) {
+            Ok(v) => v,
+            Err(_) => {
+                skipped += 1;
+                continue;
+            }
         };
         if let Some(obj) = val.as_object() {
             for f in wanted {
                 if let Some(v) = obj.get(f)
-                    && !v.is_string()
-                    && !v.is_null()
+                    && !is_indexable(v)
                 {
                     skipped += 1;
                 }
@@ -181,19 +203,20 @@ pub(super) fn declare(
 
 /// Drop both tables and the `_text_index` row (if `_text_index` exists).
 pub(super) fn drop_index(conn: &Connection, collection: &str) -> Result<(), DataLayerError> {
-    let tri_table = format!("_text_{collection}_tri");
-    let word_table = format!("_text_{collection}_word");
+    let tri_table = tri_table(collection);
+    let word_table = word_table(collection);
     conn.execute(&format!("DROP TABLE IF EXISTS {tri_table}"), []).map_err(map_rusqlite_error)?;
     conn.execute(&format!("DROP TABLE IF EXISTS {word_table}"), []).map_err(map_rusqlite_error)?;
 
-    let has_index_table: bool = conn
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = \
-             '_text_index')",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap_or(false);
+    let has_index_table: bool = match conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '_text_index')",
+        [],
+        |row| row.get(0),
+    ) {
+        Ok(exists) => exists,
+        Err(SqliteError::QueryReturnedNoRows) => false,
+        Err(e) => return Err(map_rusqlite_error(e)),
+    };
     if has_index_table {
         let c_lower = collection.to_ascii_lowercase();
         conn.execute("DELETE FROM _text_index WHERE collection = ?1", params![c_lower])
@@ -213,8 +236,8 @@ pub(super) fn sync_row(
     if fields.is_empty() {
         return Ok(());
     }
-    let tri_table = format!("_text_{collection}_tri");
-    let word_table = format!("_text_{collection}_word");
+    let tri_table = tri_table(collection);
+    let word_table = word_table(collection);
 
     let del_tri_sql = format!("DELETE FROM {tri_table} WHERE rowid = ?1");
     let del_word_sql = format!("DELETE FROM {word_table} WHERE rowid = ?1");
@@ -265,18 +288,20 @@ pub(super) fn remove_rows(
     if rowids.is_empty() {
         return Ok(());
     }
-    let tri_table = format!("_text_{collection}_tri");
-    let word_table = format!("_text_{collection}_word");
+    let tri_table = tri_table(collection);
+    let word_table = word_table(collection);
+    let json_arr =
+        serde_json::to_string(rowids).map_err(|e| DataLayerError::Internal(e.to_string()))?;
 
-    let del_tri_sql = format!("DELETE FROM {tri_table} WHERE rowid = ?1");
-    let del_word_sql = format!("DELETE FROM {word_table} WHERE rowid = ?1");
+    let del_tri_sql =
+        format!("DELETE FROM {tri_table} WHERE rowid IN (SELECT value FROM json_each(?1))");
+    let del_word_sql =
+        format!("DELETE FROM {word_table} WHERE rowid IN (SELECT value FROM json_each(?1))");
 
-    for &rid in rowids {
-        conn.execute(&del_tri_sql, params![rid])
-            .map_err(|e| map_text_index_error(e, collection))?;
-        conn.execute(&del_word_sql, params![rid])
-            .map_err(|e| map_text_index_error(e, collection))?;
-    }
+    conn.execute(&del_tri_sql, params![json_arr])
+        .map_err(|e| map_text_index_error(e, collection))?;
+    conn.execute(&del_word_sql, params![json_arr])
+        .map_err(|e| map_text_index_error(e, collection))?;
     Ok(())
 }
 

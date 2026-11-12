@@ -233,16 +233,7 @@ pub(super) fn do_delete_many(
     };
 
     if !fields.is_empty() && !rowids.is_empty() {
-        let json_arr = serde_json::to_string(&rowids)
-            .map_err(|e| host_store::DataLayerError::Internal(e.to_string()))?;
-        let tri_sql = format!(
-            "DELETE FROM _text_{collection}_tri WHERE rowid IN (SELECT value FROM json_each(?1))"
-        );
-        tx.execute(&tri_sql, params![json_arr]).map_err(map_query_raw_step_error)?;
-        let word_sql = format!(
-            "DELETE FROM _text_{collection}_word WHERE rowid IN (SELECT value FROM json_each(?1))"
-        );
-        tx.execute(&word_sql, params![json_arr]).map_err(map_query_raw_step_error)?;
+        text_index::remove_rows(&tx, collection, &rowids)?;
     }
 
     drop(watchdog);
