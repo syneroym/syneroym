@@ -20,7 +20,8 @@ me so). `status.md` says Claude Opus 5.5 wrote the plan.
 names no other change doc for B4b. I agree: ML-20 to ML-24 and ML-29 are all
 in roym-multilingual, so every B4b decision and deviation belongs there.
 
-**Summary:** 0 blocker, 4 major, 11 minor, 15 items (P1 to P15), all Open.
+**Summary:** 0 blocker, 4 major, 11 minor, 15 items (P1 to P15). After the
+plan fix of 2026-11-12 (Claude Opus 5.5): all 15 Fixed, 0 Open, 0 Rejected.
 
 Limits of this review: I read the plan, `task.md`, `status.md`, the change
 doc, the earlier review files and the code on `main`. I worked out the new
@@ -156,7 +157,7 @@ code.
   P2). Optional: `content='', contentless_delete=1` tables would keep no
   `_content` copy at all (SQLite 3.43 and later); if the owner wants that,
   write it as a decision.
-- *Status:* Open
+- *Status:* Fixed (9b71050a): D-B4b-14 states the live rule and makes `remove` unguarded on both paths (the two corruption comments go); D-B4b-17 rebuilds only `admission = 'accepted'` rows; tests `rebuild_indexes_only_visible_messages` and `held_message_dropped_after_a_rebuild_leaves_no_key_on_disk`. Ordinary tables kept, written as a decision with the reason (`secure_delete = ON`; contentless rows cannot be read back in a test).
 
 #### P2 — The scrub tests stop testing the index, because the index now holds the key, not the body (major)
 
@@ -176,7 +177,7 @@ code.
   the test already does for the body). Computing the needle from
   `fts::index_keys` keeps the test right after a later key change. Add this to
   section 7.2 and to section 7.8 ("Tests that prove less than their name").
-- *Status:* Open
+- *Status:* Fixed (9b71050a): section 7.2 "Chat": both scrub tests also look for `fts::index_keys(WORD).joined` and one of its trigrams, and assert them on disk before the delete; section 7.8 names it.
 
 #### P3 — The new contact search box breaks `addContact` in every e2e test, and the plan says the opposite (major)
 
@@ -196,7 +197,7 @@ code.
   sentence in D-B4b-22, and run the `.first()`/`nth(` grep with `input` as
   well. Check the Hub unit tests (`contacts.test.ts`,
   `hindi-screens.test.ts`) for the same kind of index locator.
-- *Status:* Open
+- *Status:* Fixed (9b71050a): D-B4b-20 gives the add-form inputs class names and `addContact` uses them; the D-B4b-22 sentence is corrected and the grep now includes `screen input`.
 
 #### P4 — The Hub has no way to give a contact a name, so the planned contact-search e2e test cannot be built as written (major)
 
@@ -218,7 +219,7 @@ code.
   the Contacts screen and search. Each contact needs a distinct `person_did`
   and address. In the end-user bullet, say that the name `राम` comes from
   Ram's own profile.
-- *Status:* Open
+- *Status:* Fixed (9b71050a): the Playwright test calls `contacts.upsert` with `display_name` through `rpcCall`, one DID and address each, with a run tag; the end-user bullet says the name comes from Ram's own profile.
 
 #### P5 — Section 2.2 point 11 misses B4a and chat tests that break, and one hides a precision change (minor)
 
@@ -242,7 +243,7 @@ code.
   `MATCH` should take the word from `fts::index_keys`, or use words the fold
   does not change. Add the number case to W1, W4 and behaviour change 1, and
   to the PR text.
-- *Status:* Open
+- *Status:* Fixed (9b71050a): 2.2 point 11 lists the five tests with the reason; raw-`MATCH` tests take the word from `fts::index_keys`; the number cost (`50%` finds `500`) is in W1, W4, behaviour change 1, the developer guide paragraph and the PR text.
 
 #### P6 — The fold is not idempotent, because rules 12 and 13 can make a doubled letter after rule 11 has run (minor)
 
@@ -261,7 +262,7 @@ code.
   after rule 13 and check the examples again). Add an exhaustive idempotence
   test over every string of 1 to 4 letters from a small set that triggers the
   rules (for example `a e i y h c k s`), with no new dependency.
-- *Status:* Open
+- *Status:* Fixed (9b71050a): D-B4b-5 runs the fold to a fixed point (at most 4 passes, with the reason it ends); test `fold_reaches_a_fixed_point` over every string of 1 to 5 letters from `a e i y h c k s r`, plus `kaey`/`kai`.
 
 #### P7 — The planned directory test of author translations cannot pass, and two other cases need care (minor)
 
@@ -282,7 +283,7 @@ code.
   title `Lawn mowing`, query `lawn`), and assert that only that listing
   matches. Build the 17 words as `w1 w2 … w17` or similar. Say in the plan
   that each listing sets `lang`.
-- *Status:* Open
+- *Status:* Fixed (9b71050a): the translation is `Lawn mowing`, query `lawn`, only that listing; the 17-word query is `w1 … w17` (and 16 is accepted); each listing overrides `lang`, and no query uses the shared fixture text.
 
 #### P8 — The deviation list misses several places where the tables differ from ISO 15919, and one change doc sentence becomes false (minor)
 
@@ -302,7 +303,7 @@ code.
 - **Fix:** Add these deviations in section 3, and plan an edit of the change
   doc bullet in Step 10.3: "Our tables start from ISO 15919 and differ where
   search needs it (see Deviations)". Keep the survey part as it is.
-- *Status:* Open
+- *Status:* Fixed (9b71050a): section 3 lists schwa deletion, merged dental/retroflex and long vowels, `क़`→`k`, `ழ`→`l` and the fixed-point fold; Step 10.3 rewrites the change doc sentence "Our tables give the ISO form directly".
 
 #### P9 — The key algorithm leaves four cases open (minor)
 
@@ -332,7 +333,7 @@ code.
   `ऱ`→`r`, `ऴ`→`l`, avagraha is dropped, and any other unmapped Devanagari
   letter is kept as it is; the loop builds all words, then sandhi, then the
   fold. Add one test row for each.
-- *Status:* Open
+- *Status:* Fixed (9b71050a): D-B4b-2 has the script-run rule (marks and other digits join the run before them), `latin_base` (NFD, drop `Mn`, NFC; `ø` kept) and the sandhi order in the pseudocode; D-B4b-3 maps `ऩ`, `ऱ`, `ऴ`, `ॐ`, drops avagraha and keeps other unmapped letters; a test row for each.
 
 #### P10 — The shared tokenizer constants do not keep today's values (minor)
 
@@ -350,7 +351,7 @@ code.
   and one `WORD_TABLE_OPTIONS`, used by both stores), or name the four call
   sites to change. Say whether `data_db` re-exports `MAX_SEARCH_TERMS` or
   drops it.
-- *Status:* Open
+- *Status:* Fixed (9b71050a): `fts` keeps the clause form as `TRI_TABLE_OPTIONS` and `WORD_TABLE_OPTIONS` (same strings); the four users are named in D-B4b-8 and Step 4.1; the old names are removed, not re-exported.
 
 #### P11 — Chat search has no byte limit, and the three search surfaces answer a query with no word in three ways (minor)
 
@@ -369,7 +370,7 @@ code.
   limit in `host_impl.rs` (`InvalidArgument`). Pick one answer for "no word
   after the key" and write it in W1, W3 and W4 (I would use `-32602` in all
   three, as the directory did before B4b).
-- *Status:* Open
+- *Status:* Fixed (9b71050a): `MAX_SEARCH_BYTES` moves to `fts`; chat checks bytes first, then no word, then 16 words (D-B4b-16); a query with no word is `-32602` on all three surfaces (W1, W3, W4); `host_impl` tests added.
 
 #### P12 — The moved e2e helper and the story 40 step are under-specified (minor)
 
@@ -389,7 +390,7 @@ code.
   and match the fixed part of a message with arguments. Say whether the new
   step saves the existing draft (and so also tests the translation) or
   reloads the Listings screen first.
-- *Status:* Open
+- *Status:* Fixed (9b71050a): D-B4b-22 has a table with the message id for every check (arguments: match `lst_` or the part before the first `{`). Checked `ui/src/main.ts:172`: a tab click draws its screen again, and the chat step leaves Listings, so the old draft is gone; the story step publishes a new draft and does not depend on it.
 
 #### P13 — ML-23 is only partly covered (minor)
 
@@ -406,7 +407,7 @@ code.
   Name an existing test that shows `profile.set` keeps the display name as
   written, or add one. Say in section 3 that no contact picker exists, so
   there is nothing to change.
-- *Status:* Open
+- *Status:* Fixed (9b71050a): scenario 234 asserts stored-as-written for contacts and `profile.set` (U+0958 and `e` + U+0301, which NFC would change); the ML-23 row and Q5 say the Hub has no contact picker.
 
 #### P14 — `directory.reindex` has no command or button, so the upgrade step needs the exact call (minor)
 
@@ -421,7 +422,7 @@ code.
 - **Fix:** Put the exact call (the `curl` form that the developer guide's
   section 6 already uses, or `roymctl` if it has a generic call command) into
   the developer guide paragraph and the PR text.
-- *Status:* Open
+- *Status:* Fixed (9b71050a): D-B4b-13, Q7, the developer guide paragraph and the PR text give `roym directory.reindex | jq .result` (the guide's `roym` function, signed in as the owner).
 
 #### P15 — A wall-clock limit in a unit test will be flaky (minor)
 
@@ -433,4 +434,14 @@ code.
 - **Fix:** Keep the 1 KiB no-panic test, and check linear time by a count, not
   by time: for example, the key of a 64 KiB input is computed, and the
   measurement goes into an `#[ignore]` test with the number in the PR text.
-- *Status:* Open
+- *Status:* Fixed (9b71050a): no wall-clock bound in a normal test; a 64 KiB no-panic test, and the time in the `#[ignore]` test `measure_search_key_64_kib`, reported in the PR text.
+
+## Plan fix round 1 — Claude Opus 5.5, 2026-11-12
+
+Every item was checked against the code on `main` (`bc3dd8de`) before it
+was accepted, and all 15 were accepted. One check changed the fix: P12
+(tab clicks draw the Listings screen again, `ui/src/main.ts:172`). The
+reviewer's views on Q1 to Q8 are recorded in the plan only as notes: the
+Marathi note in Q4, the missing contact picker in Q5, the exact reindex
+call in Q7 and the index size in Q8. The owner answers are still open.
+Fixed in `9b71050a`.
