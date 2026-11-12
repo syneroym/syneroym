@@ -455,7 +455,7 @@ against the code on `main` (`bc3dd8de`). I changed no code and did not run
 it is not an independent review.
 
 **Summary:** P1 to P15 are confirmed fixed. 3 new items (P16, P17, P18),
-all minor, all Open.
+all minor, all fixed in `c788e7d2` (see "Plan fix round 2").
 
 ### Confirmed fixed
 
@@ -531,7 +531,7 @@ all minor, all Open.
   `5_0` stays, give its data and the exact expected ids (`_` is a break, so
   `5_0` is the two short terms `5` and `0`). Change "keep their names" to
   say that this one test is renamed.
-- *Status:* Open
+- *Status:* Fixed (c788e7d2): section 7.2 now says the other tests keep their names "except one". The test is renamed, keeps its two messages, and asserts that `100%` and `100_` each find both `m:pct` and `m:other`, compared as a set. `50%` and `5_0` are removed. Section 2.2 point 11 points to 7.2.
 
 #### P17 — The 4-pass limit of the fold is not proved, and the test cannot prove it (minor)
 
@@ -555,7 +555,7 @@ all minor, all Open.
   the only rule that can write `e`, from `é`, and it fires only in the
   first pass.) Keep the exhaustive test as a check of idempotence, and add
   `o u w z x` to its letters for lengths 1 to 4.
-- *Status:* Open
+- *Status:* Fixed (c788e7d2): the loop has no fixed limit. D-B4b-5 gives the full reason it ends, as three numbers that go down in order: the count of `x`/`q`, the length, and the count of `c w z y e`. The reason needs the input to have no marks, which P18 makes true. A plan-time search found no word that needs more than 3 changing passes (`aeiy` → `aeii` → `aai` → `ai`), up to 10 letters over `a e i y`, 8 over `a e i y r c` and 6 over `a e i o u y h c s z x`. The test now also covers `o u w z x` for lengths 1 to 4, and has `aeiy` as a fixed case.
 
 #### P18 — Two small text gaps in the fold and in Step 4 (minor)
 
@@ -570,4 +570,23 @@ all minor, all Open.
   leaves `MAX_SEARCH_BYTES` in `data_db` while chat imports it from `fts`.
 - **Fix:** Say that rule 1 is `latin_base` (one function), or remove rule 1
   from the table. In Step 4 item 2, name both constants.
-- *Status:* Open
+- *Status:* Fixed (c788e7d2), with a different reason for the first gap. The tables did write marks: the Devanagari and Tamil long vowels were `ā`, `ī`, `ū`, so rule 1 still had work to do on table output. The fix: both tables now write plain `a`, `i`, `u`, which is what the change doc deviation "long vowels lose the macron" already says. Then the fold input has no marks. Rule 1 says "none in the fold", and `latin_base` is the one function that removes marks. The number 1 is kept, so the other rules keep their numbers. The table tests check that every output uses only `a` to `z`. Keys do not change, because rule 1 used to run first and did the same thing. Step 4 item 2 now names both constants.
+
+## Plan fix round 2 — Claude Opus 5.5, 2026-11-12
+
+I checked P16 to P18 against the plan and the code on `main`, and accepted
+all three. There is no pushback. One reason was wrong, and that changed
+the fix:
+
+- **P16.** Confirmed: the data at `search_and_delete.rs:122` to `:154` is
+  `100% off` and `1000 off`, so the test can only show the number cost.
+- **P17.** Confirmed: the reason the loop ended looked only at length. I
+  re-ran the prototype fold with the rules of D-B4b-5. The largest number
+  of changing passes found was 3. The loop now has no fixed limit, and the
+  plan proves that it ends.
+- **P18.** The fix is right, but the reason is not. The tables wrote
+  `ā`, `ī` and `ū`. I moved the mark removal into the tables (plain `a`,
+  `i`, `u`), so the fold never gets a mark. The keys stay the same.
+
+Plan commit: `c788e7d2`. Open items: none. The owner questions Q1 to Q8
+and the owner check of `spelling-pairs.tsv` are still open.
