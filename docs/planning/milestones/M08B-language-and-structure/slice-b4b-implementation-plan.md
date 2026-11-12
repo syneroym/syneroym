@@ -477,7 +477,9 @@ The `search_index` rows of a node built before B4b hold ASCII-folded
     - `search_escapes_like_special_characters`
       (`conversation/src/store/tests/search_and_delete.rs:115`): `100%`
       becomes the long term `100`, a substring of `1000`, so both messages
-      match. This is a real change (W1, W4, behaviour change 1).
+      match. This is a real change (W1, W4, behaviour change 1). The test
+      keeps its data, gets a new name and asserts the new result (section
+      7.2, "Chat").
 12. **NFC decomposes the Devanagari nukta letters.** `क़`, `ख़`, `ग़`, `ज़`,
     `ड़`, `ढ़`, `फ़`, `य़` (U+0958 to U+095F) are composition exclusions, so
     NFC turns each into the base letter plus U+093C NUKTA. The table must
@@ -683,16 +685,19 @@ that depend on an owner answer say so.
 
     | Kind | Values |
     | --- | --- |
-    | independent vowels | `अ a, आ ā, इ i, ई ī, उ u, ऊ ū, ऋ ri, ए e, ऐ ai, ओ o, औ au, ऑ o, ऍ e` |
-    | vowel signs | `ा ā, ि i, ी ī, ु u, ू ū, ृ ri, े e, ै ai, ो o, ौ au, ॉ o, ॅ e` |
+    | independent vowels | `अ a, आ a, इ i, ई i, उ u, ऊ u, ऋ ri, ए e, ऐ ai, ओ o, औ au, ऑ o, ऍ e` |
+    | vowel signs | `ा a, ि i, ी i, ु u, ू u, ृ ri, े e, ै ai, ो o, ौ au, ॉ o, ॅ e` |
     | consonants | `क k, ख kh, ग g, घ gh, ङ n, च ch*, छ chh*, ज j, झ jh, ञ n, ट t, ठ th, ड d, ढ dh, ण n, त t, थ th, द d, ध dh, न n, प p, फ ph, ब b, भ bh, म m, य y, र r, ल l, ळ l, व v, श sh, ष sh, स s, ह h` |
     | consonant + nukta | `क़ q, ख़ kh, ग़ g, ज़ z, ड़ d*, ढ़ dh*, फ़ f, य़ y` |
     | signs | anusvara `ं` and candrabindu `ँ` → `n`; visarga `ः` → `h`; nukta alone, virama alone → nothing |
 
     `*` differs from ISO 15919 (`c`, `ch`, `ṛ`, `ṛh`): the fold reads `ch`
     as the "ch" sound (D-B4b-5), and `ड़` is `d` (Q3 (a)). Retroflex and
-    dental letters both map to plain `t`, `d`, `n`: the ISO dots are removed
-    in the table itself, because the Latin side has no dots.
+    dental letters both map to plain `t`, `d`, `n`, and long vowels to
+    plain `a`, `i`, `u` (ISO `ā`, `ī`, `ū`): the ISO dots and macrons are
+    removed in the table itself, because the Latin side has none. So the
+    table writes only the letters `a` to `z`, and the fold never gets a
+    mark from it (D-B4b-5).
   - Schwa deletion (Hindi), applied to the units of one word before they
     are written:
     1. The inherent `a` of the last unit is removed, when the word has two
@@ -717,10 +722,12 @@ that depend on an owner answer say so.
   - Units as in Devanagari, with pulli `்` as the virama. A Tamil consonant
     with no sign has the vowel `a` (no schwa deletion: Tamil marks a dead
     consonant with pulli).
-  - Letter values: vowels `அ a, ஆ ā, இ i, ஈ ī, உ u, ஊ ū, எ e, ஏ e, ஐ ai,
+  - Letter values: vowels `அ a, ஆ a, இ i, ஈ i, உ u, ஊ u, எ e, ஏ e, ஐ ai,
     ஒ o, ஓ o, ஔ au` and the same as signs; consonants `ங n, ஞ n, ண n, ந n,
     ம m, ய y, ர r, ல l, வ v, ழ zh, ள l, ற r, ன n`; Grantha `ஜ j, ஷ sh, ஸ s,
-    ஹ h, ஶ sh`; `ஃ` before `ப` → `f`, else `h`.
+    ஹ h, ஶ sh`; `ஃ` before `ப` → `f`, else `h`. As in Devanagari, long
+    vowels lose the ISO macron (`ஆ` is `a`, ISO `ā`), so the table writes
+    only the letters `a` to `z`.
   - The five stops `க`, `ச`, `ட`, `த`, `ப` take their form by position, for
     a unit that has a vowel:
 
@@ -757,7 +764,7 @@ that depend on an owner answer say so.
 
   | # | Rule | Example |
   | --- | --- | --- |
-  | 1 | strip the marks of Latin letters (`ā`→`a`, `é`→`e`) | `cafè` → `cafe` |
+  | 1 | none in the fold: its input has no marks. `latin_base` (D-B4b-2) removes them from a Latin run, and the tables write only `a` to `z` (D-B4b-3, D-B4b-4). The number is kept so the other rules keep theirs | `cafè` → `cafe` by `latin_base` |
   | 2 | `x`→`ks`, `q`→`k` | `taxi` → `taksi` |
   | 3 | `sch`→`sk` | `school` → `skool` |
   | 4 | `ea`→`i` | `tea` → `ti` |
@@ -773,12 +780,34 @@ that depend on an owner answer say so.
 
   - **The fold runs to a fixed point.** Rules 12 and 13 can make a new
     doubled letter or a new `ea` after rules 4 and 11 ran (`iyi` → `ii`;
-    `kaey` → `kaei` → `kaai`). So `fold_word` runs the whole list again
-    until the word does not change, at most 4 passes. No rule makes a word
-    longer except rule 2 (`x`), and no rule writes an `x` or a `q`, so the
-    passes end. A test checks that 4 passes are always enough
-    (`fold_reaches_a_fixed_point`, section 7.2). This makes `search_key`
-    idempotent, and makes `kaey` and `kai` meet as the rules mean.
+    `kaey` → `kaai`). So `fold_word` runs the whole list again until the
+    word does not change. There is no fixed limit on the passes.
+  - **Why the passes end.** Give a word three numbers: (A) its count of
+    `x` and `q`; (B) its length; (C) its count of `c`, `w`, `z`, `y` and
+    `e`. Every rule that changes the word makes A smaller, or keeps A and
+    makes B smaller, or keeps A and B and makes C smaller:
+    - rule 2 removes an `x` or a `q` (A; the word gets longer, which is
+      allowed because A comes first);
+    - rules 4, 5, 6, 9, 10 and 11, `yi`→`i` in rule 12 and `iy`→`i` in
+      rule 13 make the word shorter (B);
+    - rule 3 (`sch`→`sk`), rule 7, rule 8, the rest of rule 12 (`y`→`i`,
+      `ay`→`ai`) and the rest of rule 13 (`er`→`ar`, `ei`/`ey`→`ai`) keep
+      the length and replace a letter of `c w z y e` by a letter outside
+      that set (C).
+
+    No rule writes `x`, `q`, `w`, `z`, `y` or `e`, and only rule 5 writes a
+    `c` (`chh`→`ch`, which makes the word shorter). So no rule makes an
+    earlier number larger. Each pass that changes the word makes (A, B, C)
+    smaller in this order, so the loop ends. This needs the input to have
+    no marks (rule 1).
+  - **How many passes in practice.** A plan-time search over every word of
+    up to 10 letters over `a e i y`, up to 8 letters over `a e i y r c`,
+    and up to 6 letters over `a e i o u y h c s z x` found no word that
+    needs more than 3 changing passes. The longest is `aeiy` → `aeii` →
+    `aai` → `ai`. So a fixed point costs at most a few passes, and the
+    64 KiB measurement (section 7.2) covers the time.
+  - This makes `search_key` idempotent (`fold_reaches_a_fixed_point`,
+    section 7.2), and makes `kaey` and `kai` meet as the rules mean.
   - The fold runs on the output of the tables too, so a native word and its
     Latin spelling go through the same last steps.
   - Letters outside `a` to `z` (digits, other scripts) are not changed.
@@ -1284,8 +1313,10 @@ the first commit that includes Step 3, or commit them together.
    uses `fts::index_keys(value)`: `joined` for `_tri`, `words` for
    `_word`. The two tables now get different values, so `params_vec`
    (`:263`) becomes two vectors.
-2. `text_match.rs`: `MAX_SEARCH_TERMS` and the expressions from
-   `fts::match_exprs` (D-B4b-8).
+2. `text_match.rs`: remove `MAX_SEARCH_TERMS` and `MAX_SEARCH_BYTES`
+   (`:13`, `:14`) and use `fts::MAX_SEARCH_TERMS` and
+   `fts::MAX_SEARCH_BYTES`; build the expressions with `fts::match_exprs`
+   (D-B4b-8).
 3. Read every test of `text_index/tests/` (2.2 point 11). Update only the
    assertions on key text and on inner punctuation; add the tests of
    section 7.2 ("data_db").
@@ -1421,13 +1452,17 @@ the first commit that includes Step 3, or commit them together.
   `ற்ற`, `ன்ற`, the `-ey` end, the loan clusters, sandhi
   (`கறிக் கடை` → `kari kadai`), `ஃப`; Tamil digits; the composed two-part
   vowel signs written decomposed give the same key.
-- `fold.rs`: `fold_rules_table` (one input/output pair per rule of D-B4b-5,
-  plus one case where a rule must not fire: `ch` keeps its `h` in rule 9;
-  `c` in `ch` is not rule 7); `fold_reaches_a_fixed_point`: every string of
-  1 to 5 letters over `a e i y h c k s r` (about 66,000 strings, no new
-  dependency) reaches a fixed point within 4 passes, and
-  `fold_word(fold_word(w)) == fold_word(w)`; `kaey` and `kai` give the
-  same word (P6).
+- `fold.rs`: `fold_rules_table` (one input/output pair per rule 2 to 13 of
+  D-B4b-5, plus one case where a rule must not fire: `ch` keeps its `h` in
+  rule 9; `c` in `ch` is not rule 7); `fold_reaches_a_fixed_point`:
+  `fold_word(fold_word(w)) == fold_word(w)` for every string of 1 to 5
+  letters over `a e i y h c k s r` (about 66,000 strings) and every string
+  of 1 to 4 letters over `a e i o u y h c k s r w z x` (about 41,000
+  strings; no new dependency). This checks idempotence; the proof that the
+  loop ends is in D-B4b-5. Fixed cases: `aeiy` → `ai` (3 changing
+  passes), and `kaey` and `kai` give the same word (P6).
+- `devanagari.rs` and `tamil.rs`: every output of the table tests has only
+  the letters `a` to `z` (the fold's input has no marks).
 - `search_key/tests.rs`: `search_key_is_idempotent` over every Latin and
   native value of the spelling data; `search_key_breaks_words_at_punctuation`
   (`plumber's` → `plumbar s`, `50%` → `50`, `a-b` → `a b`); mixed script
@@ -1528,9 +1563,14 @@ declared in `store/tests.rs`)
   `InvalidArgument("search needs at least one word")`.
 - The existing tests of 2.2 point 6 (`search_and_delete.rs:6`, `:76`,
   `:115`; `scrub.rs:92`; `backup_roundtrip.rs:208`; `group/tests.rs:707`,
-  `:738`) keep their names and pass. `search_escapes_like_special_characters`
-  (`:115`) is renamed `search_treats_like_characters_as_breaks` and asserts
-  that `50%` finds `50%` and `5_0` finds nothing extra.
+  `:738`) keep their names and pass, except one.
+  `search_escapes_like_special_characters` (`:115`) is renamed
+  `search_treats_like_characters_as_breaks`. It keeps its two messages
+  (`m:pct` with `100% off`, `m:other` with `1000 off`). It asserts that
+  `100%` finds both `m:pct` and `m:other` (compared as a set), and that
+  `100_` finds the same two (`_` is a break too, so both queries are the
+  long term `100`). This is the test of the number cost of W4 and
+  behaviour change 1.
 - `host_impl` test: 17 distinct words → `InvalidArgument`.
 - Parity `scenario_235_chat_search_short_and_cross_script_parity` (in
   `search_scripts.rs`): send `ek do teen` and `एक बात`; `conversation.search`
