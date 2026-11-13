@@ -1,0 +1,982 @@
+# Generated with UPDATE_SPELLING_RESULTS=1. Do not edit manually.
+lang	group	kind	latin	latin	native	false
+hi	nal-wala	pair	nal wala	nal vala	nal vala	true
+hi	nal-wala	variant	naal waala	nal vala	nal vala	true
+hi	nal-wala	variant	nal vala	nal vala	nal vala	true
+hi	nal-wala	joined	nalwala	nalvala	nal vala	true
+hi	bijli-wala	pair	bijli wala	bijli vala	bijli vala	true
+hi	bijli-wala	variant	bijlee waala	bijli vala	bijli vala	true
+hi	bijli-wala	variant	bijli vala	bijli vala	bijli vala	true
+hi	bijli-wala	joined	bijliwala	bijlivala	bijli vala	true
+hi	raj-mistri	pair	raj mistri	raj mistri	raj mistri	true
+hi	raj-mistri	variant	raaj mistry	raj mistri	raj mistri	true
+hi	raj-mistri	variant	raj mistree	raj mistri	raj mistri	true
+hi	raj-mistri	joined	rajmistri	rajmistri	raj mistri	true
+hi	badhai	pair	badhai	badai	badai	true
+hi	badhai	variant	barhai	barai	badai	false
+hi	badhai	variant	badhayi	badai	badai	true
+hi	darzi	pair	darzi	darji	darji	true
+hi	darzi	variant	darji	darji	darji	true
+hi	darzi	variant	darzee	darji	darji	true
+hi	dhobi	pair	dhobi	dobi	dobi	true
+hi	dhobi	variant	dhobee	dobi	dobi	true
+hi	nai	pair	nai	nai	nai	true
+hi	nai	variant	naai	nai	nai	true
+hi	nai	variant	nayee	nai	nai	true
+hi	mali	pair	mali	mali	mali	true
+hi	mali	variant	maali	mali	mali	true
+hi	mali	variant	malee	mali	mali	true
+hi	mochi	pair	mochi	mochi	mochi	true
+hi	mochi	variant	mochee	mochi	mochi	true
+hi	lohar	pair	lohar	lohar	lohar	true
+hi	lohar	variant	lohaar	lohar	lohar	true
+hi	kumhar	pair	kumhar	kumar	kumar	true
+hi	kumhar	variant	kumhaar	kumar	kumar	true
+hi	sunar	pair	sunar	sunar	sunar	true
+hi	sunar	variant	sunaar	sunar	sunar	true
+hi	safai-wala	pair	safai wala	safai vala	safai vala	true
+hi	safai-wala	variant	safaai waala	safai vala	safai vala	true
+hi	safai-wala	variant	safai vala	safai vala	safai vala	true
+hi	safai-wala	joined	safaiwala	safaivala	safai vala	true
+hi	gas-cylinder	pair	gas cylinder	gas sylindar	gais silendar	false
+hi	gas-cylinder	variant	gas silendar	gas silendar	gais silendar	false
+hi	gas-cylinder	variant	gas cylindar	gas sylindar	gais silendar	false
+hi	gas-cylinder	joined	gascylinder	gasylindar	gais silendar	false
+hi	dudh-wala	pair	dudh wala	dud vala	dud vala	true
+hi	dudh-wala	variant	doodh waala	dud vala	dud vala	true
+hi	dudh-wala	variant	dudh vala	dud vala	dud vala	true
+hi	dudh-wala	joined	dudhwala	dudvala	dud vala	true
+hi	sabzi-wala	pair	sabzi wala	sabji vala	sabji vala	true
+hi	sabzi-wala	variant	sabji waala	sabji vala	sabji vala	true
+hi	sabzi-wala	variant	sabzee vala	sabji vala	sabji vala	true
+hi	sabzi-wala	joined	sabziwala	sabjivala	sabji vala	true
+hi	chai-wala	pair	chai wala	chai vala	chai vala	true
+hi	chai-wala	variant	chaay waala	chai vala	chai vala	true
+hi	chai-wala	variant	chai vala	chai vala	chai vala	true
+hi	chai-wala	joined	chaiwala	chaivala	chai vala	true
+hi	kabadi-wala	pair	kabadi wala	kabadi vala	kabadi vala	true
+hi	kabadi-wala	variant	kabaadi waala	kabadi vala	kabadi vala	true
+hi	kabadi-wala	variant	kabari vala	kabari vala	kabadi vala	false
+hi	kabadi-wala	joined	kabadiwala	kabadivala	kabadi vala	true
+hi	pani-wala	pair	pani wala	pani vala	pani vala	true
+hi	pani-wala	variant	paani waala	pani vala	pani vala	true
+hi	pani-wala	variant	pani vala	pani vala	pani vala	true
+hi	pani-wala	joined	paniwala	panivala	pani vala	true
+hi	kirana-dukan	pair	kirana dukan	kirana dukan	kirana dukan	true
+hi	kirana-dukan	variant	kiraana dukaan	kirana dukan	kirana dukan	true
+hi	kirana-dukan	joined	kiranadukan	kiranadukan	kirana dukan	true
+hi	kirana	pair	kirana	kirana	kirana	true
+hi	kirana	variant	kiraana	kirana	kirana	true
+hi	dudh	pair	dudh	dud	dud	true
+hi	dudh	variant	doodh	dud	dud	true
+hi	chawal	pair	chawal	chaval	chaval	true
+hi	chawal	variant	chaawal	chaval	chaval	true
+hi	chawal	variant	chaval	chaval	chaval	true
+hi	ata	pair	ata	ata	ata	true
+hi	ata	variant	aata	ata	ata	true
+hi	ata	variant	atta	ata	ata	true
+hi	dal	pair	dal	dal	dal	true
+hi	dal	variant	daal	dal	dal	true
+hi	dal	variant	dall	dal	dal	true
+hi	chini	pair	chini	chini	chini	true
+hi	chini	variant	cheeni	chini	chini	true
+hi	chini	variant	chinee	chini	chini	true
+hi	namak	pair	namak	namak	namak	true
+hi	tel	pair	tel	tel	tel	true
+hi	tel	variant	tell	tel	tel	true
+hi	ghee	pair	ghee	gi	gi	true
+hi	ghee	variant	ghi	gi	gi	true
+hi	chai	pair	chai	chai	chai	true
+hi	chai	variant	chay	chai	chai	true
+hi	chai	variant	chaay	chai	chai	true
+hi	sabzi	pair	sabzi	sabji	sabji	true
+hi	sabzi	variant	sabji	sabji	sabji	true
+hi	sabzi	variant	sabzee	sabji	sabji	true
+hi	aloo	pair	aloo	alu	alu	true
+hi	aloo	variant	alu	alu	alu	true
+hi	aloo	variant	aaloo	alu	alu	true
+hi	pyaz	pair	pyaz	pyaj	pyaj	true
+hi	pyaz	variant	pyaaz	pyaj	pyaj	true
+hi	pyaz	variant	pyaj	pyaj	pyaj	true
+hi	tamatar	pair	tamatar	tamatar	tamatar	true
+hi	tamatar	variant	tamaatar	tamatar	tamatar	true
+hi	mirch	pair	mirch	mirch	mirch	true
+hi	mirch	variant	mirchi	mirchi	mirch	false
+hi	haldi	pair	haldi	haldi	haldi	true
+hi	haldi	variant	haldee	haldi	haldi	true
+hi	adrak	pair	adrak	adrak	adrak	true
+hi	adrak	variant	adarak	adarak	adrak	false
+hi	lahsun	pair	lahsun	lahsun	lahsun	true
+hi	lahsun	variant	lehsun	lehsun	lahsun	false
+hi	lahsun	variant	lasun	lasun	lahsun	false
+hi	phal	pair	phal	fal	fal	true
+hi	phal	variant	fal	fal	fal	true
+hi	kela	pair	kela	kela	kela	true
+hi	kela	variant	kelaa	kela	kela	true
+hi	aam	pair	aam	am	am	true
+hi	aam	variant	am	am	am	true
+hi	seb	pair	seb	seb	seb	true
+hi	seb	variant	saib	saib	seb	false
+hi	angoor	pair	angoor	angur	angur	true
+hi	angoor	variant	angur	angur	angur	true
+hi	nariyal	pair	nariyal	narial	narial	true
+hi	nariyal	variant	nariyel	nariel	narial	false
+hi	nariyal	variant	naariyal	narial	narial	true
+hi	kapde	pair	kapde	kapde	kapde	true
+hi	kapde	variant	kapre	kapre	kapde	false
+hi	jute	pair	jute	jute	jute	true
+hi	jute	variant	joote	jute	jute	true
+hi	saree	pair	saree	sari	sadi	false
+hi	saree	variant	sari	sari	sadi	false
+hi	saree	variant	saaree	sari	sadi	false
+hi	tala	pair	tala	tala	tala	true
+hi	tala	variant	taala	tala	tala	true
+hi	chabi	pair	chabi	chabi	chabi	true
+hi	chabi	variant	chaabi	chabi	chabi	true
+hi	chabi	variant	chavi	chavi	chabi	false
+hi	balti	pair	balti	balti	balti	true
+hi	balti	variant	baalti	balti	balti	true
+hi	balti	variant	baltee	balti	balti	true
+hi	jharu	pair	jharu	jaru	jadu	false
+hi	jharu	variant	jhadu	jadu	jadu	true
+hi	jharu	variant	jhaadu	jadu	jadu	true
+hi	bartan	pair	bartan	bartan	bartan	true
+hi	bartan	variant	bartaan	bartan	bartan	true
+hi	pankha	pair	pankha	panka	panka	true
+hi	pankha	variant	pankhaa	panka	panka	true
+hi	pankha	variant	panka	panka	panka	true
+hi	bistar	pair	bistar	bistar	bistar	true
+hi	bistar	variant	bistaar	bistar	bistar	true
+hi	takiya	pair	takiya	takia	takia	true
+hi	takiya	variant	takia	takia	takia	true
+hi	takiya	variant	takiyaa	takia	takia	true
+hi	chadar	pair	chadar	chadar	chadar	true
+hi	chadar	variant	chaadar	chadar	chadar	true
+hi	gadda	pair	gadda	gada	gada	true
+hi	gadda	variant	gada	gada	gada	true
+hi	kursi	pair	kursi	kursi	kursi	true
+hi	kursi	variant	kursee	kursi	kursi	true
+hi	kursi	variant	kurssi	kursi	kursi	true
+hi	mez	pair	mez	mej	mej	true
+hi	mez	variant	mej	mej	mej	true
+hi	almari	pair	almari	almari	almari	true
+hi	almari	variant	alamari	alamari	almari	false
+hi	almari	variant	almaari	almari	almari	true
+hi	darwaza	pair	darwaza	darvaja	darvaja	true
+hi	darwaza	variant	darwaja	darvaja	darvaja	true
+hi	darwaza	variant	darvaza	darvaja	darvaja	true
+hi	darwaza	variant	darwaaza	darvaja	darvaja	true
+hi	khidki	pair	khidki	kidki	kidki	true
+hi	khidki	variant	khirki	kirki	kidki	false
+hi	khidki	variant	kidki	kidki	kidki	true
+hi	chhat	pair	chhat	chat	chat	true
+hi	chhat	variant	chat	chat	chat	true
+hi	diwar	pair	diwar	divar	divar	true
+hi	diwar	variant	deewar	divar	divar	true
+hi	diwar	variant	diwaar	divar	divar	true
+hi	eent	pair	eent	int	int	true
+hi	eent	variant	int	int	int	true
+hi	patthar	pair	patthar	patar	patar	true
+hi	patthar	variant	pathar	patar	patar	true
+hi	lakdi	pair	lakdi	lakdi	lakdi	true
+hi	lakdi	variant	lakri	lakri	lakdi	false
+hi	lakdi	variant	lakadi	lakadi	lakdi	false
+hi	rang-rogan	pair	rang rogan	rang rogan	rang rogan	true
+hi	rang-rogan	variant	rung rogan	rung rogan	rang rogan	false
+hi	rang-rogan	variant	rang rogaan	rang rogan	rang rogan	true
+hi	rang-rogan	joined	rangrogan	rangrogan	rang rogan	true
+hi	pani-ki-tanki	pair	pani ki tanki	pani ki tanki	pani ki tanki	true
+hi	pani-ki-tanki	variant	paani ki tanki	pani ki tanki	pani ki tanki	true
+hi	pani-ki-tanki	joined	panikitanki	panikitanki	pani ki tanki	true
+hi	sarson-ka-tel	pair	sarson ka tel	sarson ka tel	sarson ka tel	true
+hi	sarson-ka-tel	variant	sarson ka tell	sarson ka tel	sarson ka tel	true
+hi	sarson-ka-tel	joined	sarsonkatel	sarsonkatel	sarson ka tel	true
+hi	plumber	pair	plumber	plumbar	planbar	false
+hi	plumber	variant	plamber	plambar	planbar	false
+hi	plumber	variant	plumbar	plumbar	planbar	false
+hi	electrician	pair	electrician	elektrisian	ilektrisian	false
+hi	electrician	variant	electrishian	elektrisian	ilektrisian	false
+hi	electrician	variant	electreeshian	elektrisian	ilektrisian	false
+hi	mechanic	pair	mechanic	mechanik	maikenik	false
+hi	mechanic	variant	mekanik	mekanik	maikenik	false
+hi	mechanic	variant	maikenik	maikenik	maikenik	true
+hi	painter	pair	painter	paintar	pentar	false
+hi	painter	variant	pentar	pentar	pentar	true
+hi	painter	variant	penter	pentar	pentar	true
+hi	driver	pair	driver	drivar	draivar	false
+hi	driver	variant	draiwar	draivar	draivar	true
+hi	driver	variant	draivar	draivar	draivar	true
+hi	carpenter	pair	carpenter	karpentar	karpentar	true
+hi	carpenter	variant	karpentar	karpentar	karpentar	true
+hi	carpenter	variant	carpentar	karpentar	karpentar	true
+hi	teacher	pair	teacher	tichar	tichar	true
+hi	teacher	variant	teechar	tichar	tichar	true
+hi	teacher	variant	ticher	tichar	tichar	true
+hi	doctor	pair	doctor	doktor	doktar	false
+hi	doctor	variant	daktar	daktar	doktar	false
+hi	doctor	variant	doktar	doktar	doktar	true
+hi	cement	pair	cement	sement	siment	false
+hi	cement	variant	siment	siment	siment	true
+hi	cement	variant	seement	siment	siment	true
+hi	pipe	pair	pipe	pipe	paip	false
+hi	pipe	variant	paip	paip	paip	true
+hi	pipe	variant	payp	paip	paip	true
+hi	bulb	pair	bulb	bulb	balb	false
+hi	bulb	variant	balb	balb	balb	true
+hi	mobile	pair	mobile	mobile	mobail	false
+hi	mobile	variant	mobail	mobail	mobail	true
+hi	school	pair	school	skul	skul	true
+hi	school	variant	skool	skul	skul	true
+hi	school	variant	iskool	iskul	skul	false
+hi	taxi	pair	taxi	taksi	taiksi	false
+hi	taxi	variant	taiksi	taiksi	taiksi	true
+hi	taxi	variant	taksi	taksi	taiksi	false
+hi	flat	pair	flat	flat	flait	false
+hi	flat	variant	flait	flait	flait	true
+hi	flat	variant	flaat	flat	flait	false
+hi	train	pair	train	train	tren	false
+hi	train	variant	tren	tren	tren	true
+hi	train	variant	trayn	train	tren	false
+hi	fridge	pair	fridge	fridge	frij	false
+hi	fridge	variant	frij	frij	frij	true
+hi	fridge	variant	fridj	fridj	frij	false
+hi	ac	pair	ac	ak	esi	false
+hi	ac	variant	ay see	ai si	esi	false
+hi	tv	pair	tv	tv	tivi	false
+hi	tv	variant	tivi	tivi	tivi	true
+hi	tv	variant	teevee	tivi	tivi	true
+hi	computer	pair	computer	komputar	kanpyutar	false
+hi	computer	variant	kampyutar	kampyutar	kanpyutar	false
+hi	computer	variant	computar	komputar	kanpyutar	false
+hi	ram	pair	ram	ram	ram	true
+hi	ram	variant	raam	ram	ram	true
+hi	shyam	pair	shyam	syam	syam	true
+hi	shyam	variant	syam	syam	syam	true
+hi	shyam	variant	shyaam	syam	syam	true
+hi	mohan	pair	mohan	mohan	mohan	true
+hi	mohan	variant	mohun	mohun	mohan	false
+hi	rajesh	pair	rajesh	rajes	rajes	true
+hi	rajesh	variant	rajeysh	rajeys	rajes	false
+hi	suresh	pair	suresh	sures	sures	true
+hi	suresh	variant	sooresh	sures	sures	true
+hi	ramesh	pair	ramesh	rames	rames	true
+hi	ramesh	variant	rammesh	rames	rames	true
+hi	mahesh	pair	mahesh	mahes	mahes	true
+hi	mahesh	variant	mahaysh	mahais	mahes	false
+hi	dinesh	pair	dinesh	dines	dines	true
+hi	dinesh	variant	deenesh	dines	dines	true
+hi	ajay	pair	ajay	ajai	ajai	true
+hi	ajay	variant	ajai	ajai	ajai	true
+hi	vijay	pair	vijay	vijai	vijai	true
+hi	vijay	variant	vijai	vijai	vijai	true
+hi	vijay	variant	wijay	vijai	vijai	true
+hi	sanjay	pair	sanjay	sanjai	sanjai	true
+hi	sanjay	variant	sanjai	sanjai	sanjai	true
+hi	amit	pair	amit	amit	amit	true
+hi	amit	variant	ameet	amit	amit	true
+hi	sunil	pair	sunil	sunil	sunil	true
+hi	sunil	variant	suneel	sunil	sunil	true
+hi	anil	pair	anil	anil	anil	true
+hi	anil	variant	aneel	anil	anil	true
+hi	prakash	pair	prakash	prakas	prakas	true
+hi	prakash	variant	prakaash	prakas	prakas	true
+hi	anand	pair	anand	anand	anand	true
+hi	anand	variant	aanand	anand	anand	true
+hi	ganesh	pair	ganesh	ganes	ganes	true
+hi	ganesh	variant	ganesha	ganesa	ganes	false
+hi	krishna	pair	krishna	krisna	krisna	true
+hi	krishna	variant	krishnaa	krisna	krisna	true
+hi	krishna	variant	kishna	kisna	krisna	false
+hi	hari	pair	hari	hari	hari	true
+hi	hari	variant	haree	hari	hari	true
+hi	geeta	pair	geeta	gita	gita	true
+hi	geeta	variant	gita	gita	gita	true
+hi	sita	pair	sita	sita	sita	true
+hi	sita	variant	seeta	sita	sita	true
+hi	radha	pair	radha	rada	rada	true
+hi	radha	variant	raadha	rada	rada	true
+hi	sunita	pair	sunita	sunita	sunita	true
+hi	sunita	variant	suneeta	sunita	sunita	true
+hi	sarita	pair	sarita	sarita	sarita	true
+hi	sarita	variant	sareeta	sarita	sarita	true
+hi	kamla	pair	kamla	kamla	kamla	true
+hi	kamla	variant	kamala	kamala	kamla	false
+hi	kamla	variant	kamlaa	kamla	kamla	true
+hi	pooja	pair	pooja	puja	puja	true
+hi	pooja	variant	puja	puja	puja	true
+hi	priya	pair	priya	pria	pria	true
+hi	priya	variant	priyaa	pria	pria	true
+hi	anita	pair	anita	anita	anita	true
+hi	anita	variant	aneeta	anita	anita	true
+hi	meena	pair	meena	mina	mina	true
+hi	meena	variant	mina	mina	mina	true
+hi	rekha	pair	rekha	reka	reka	true
+hi	rekha	variant	raykha	raika	reka	false
+hi	jyoti	pair	jyoti	jyoti	jyoti	true
+hi	jyoti	variant	jyotee	jyoti	jyoti	true
+hi	jyoti	variant	jyothi	jyoti	jyoti	true
+hi	laxmi	pair	laxmi	laksmi	laksmi	true
+hi	laxmi	variant	lakshmi	laksmi	laksmi	true
+hi	laxmi	variant	lakshmee	laksmi	laksmi	true
+hi	sharma	pair	sharma	sarma	sarma	true
+hi	sharma	variant	sarma	sarma	sarma	true
+hi	sharma	variant	sharmaa	sarma	sarma	true
+hi	verma	pair	verma	verma	varma	false
+hi	verma	variant	varma	varma	varma	true
+hi	gupta	pair	gupta	gupta	gupta	true
+hi	gupta	variant	guptaa	gupta	gupta	true
+hi	singh	pair	singh	sing	sin	false
+hi	singh	variant	sinh	sin	sin	true
+hi	singh	variant	sing	sing	sin	false
+hi	yadav	pair	yadav	yadav	yadav	true
+hi	yadav	variant	yaadav	yadav	yadav	true
+hi	kumar	pair	kumar	kumar	kumar	true
+hi	kumar	variant	kumaar	kumar	kumar	true
+hi	ram-kumar	pair	ram kumar	ram kumar	ram kumar	true
+hi	ram-kumar	variant	raam kumaar	ram kumar	ram kumar	true
+hi	ram-kumar	joined	ramkumar	ramkumar	ram kumar	true
+hi	sita-devi	pair	sita devi	sita devi	sita devi	true
+hi	sita-devi	variant	seeta devee	sita devi	sita devi	true
+hi	sita-devi	joined	sitadevi	sitadevi	sita devi	true
+hi	delhi	pair	delhi	deli	dili	false
+hi	delhi	variant	dilli	dili	dili	true
+hi	nai-delhi	pair	nai delhi	nai deli	nai dili	false
+hi	nai-delhi	variant	new delhi	nev deli	nai dili	false
+hi	nai-delhi	variant	nayi dilli	nai dili	nai dili	true
+hi	nai-delhi	joined	naidelhi	naideli	nai dili	false
+hi	mumbai	pair	mumbai	mumbai	munbai	false
+hi	mumbai	variant	bombay	bombai	munbai	false
+hi	mumbai	variant	mumbaee	mumbai	munbai	false
+hi	kolkata	pair	kolkata	kolkata	kolkata	true
+hi	kolkata	variant	calcutta	kalkuta	kolkata	false
+hi	kolkata	variant	kolkatta	kolkata	kolkata	true
+hi	jaipur	pair	jaipur	jaipur	jaipur	true
+hi	jaipur	variant	jaypur	jaipur	jaipur	true
+hi	jaipur	variant	jaipoor	jaipur	jaipur	true
+hi	lucknow	pair	lucknow	luknov	laknau	false
+hi	lucknow	variant	lakhnau	laknau	laknau	true
+hi	lucknow	variant	lakhnow	laknov	laknau	false
+hi	kanpur	pair	kanpur	kanpur	kanpur	true
+hi	kanpur	variant	kaanpur	kanpur	kanpur	true
+hi	patna	pair	patna	patna	patna	true
+hi	patna	variant	patnaa	patna	patna	true
+hi	bhopal	pair	bhopal	bopal	bopal	true
+hi	bhopal	variant	bhopaal	bopal	bopal	true
+hi	indore	pair	indore	indore	indaur	false
+hi	indore	variant	indaur	indaur	indaur	true
+hi	varanasi	pair	varanasi	varanasi	varansi	false
+hi	varanasi	variant	banaras	banaras	varansi	false
+hi	varanasi	variant	waranasi	varanasi	varansi	false
+hi	ahmedabad	pair	ahmedabad	ahmedabad	ahamdabad	false
+hi	ahmedabad	variant	amdavad	amdavad	ahamdabad	false
+hi	ahmedabad	variant	ahmadabad	ahmadabad	ahamdabad	false
+hi	chandigarh	pair	chandigarh	chandigar	chandigad	false
+hi	chandigarh	variant	chandigadh	chandigad	chandigad	true
+hi	agra	pair	agra	agra	agra	true
+hi	agra	variant	aagra	agra	agra	true
+hi	meerut	pair	meerut	mirut	merat	false
+hi	meerut	variant	merath	merat	merat	true
+hi	meerut	variant	merut	merut	merat	false
+hi	noida	pair	noida	noida	noeda	false
+hi	noida	variant	noyda	noyda	noeda	false
+hi	gurugram	pair	gurugram	gurugram	gurugram	true
+hi	gurugram	variant	gurgaon	gurgaon	gurugram	false
+hi	gurugram	variant	gurugraam	gurugram	gurugram	true
+hi	haridwar	pair	haridwar	haridvar	haridvar	true
+hi	haridwar	variant	haridvar	haridvar	haridvar	true
+hi	dehradun	pair	dehradun	dehradun	dehradun	true
+hi	dehradun	variant	dehradoon	dehradun	dehradun	true
+hi	ranchi	pair	ranchi	ranchi	ranchi	true
+hi	ranchi	variant	raanchi	ranchi	ranchi	true
+hi	nagpur	pair	nagpur	nagpur	nagpur	true
+hi	nagpur	variant	naagpur	nagpur	nagpur	true
+hi	pune	pair	pune	pune	pune	true
+hi	pune	variant	poona	puna	pune	false
+hi	surat	pair	surat	surat	surat	true
+hi	surat	variant	soorat	surat	surat	true
+hi	nagar	pair	nagar	nagar	nagar	true
+hi	nagar	variant	nagr	nagr	nagar	false
+hi	ganj	pair	ganj	ganj	ganj	true
+hi	ganj	variant	gunj	gunj	ganj	false
+hi	colony	pair	colony	koloni	koloni	true
+hi	colony	variant	kaloni	kaloni	koloni	false
+hi	colony	variant	colonee	koloni	koloni	true
+hi	mohalla	pair	mohalla	mohala	mohala	true
+hi	mohalla	variant	mohallaa	mohala	mohala	true
+hi	bazar	pair	bazar	bajar	bajar	true
+hi	bazar	variant	bazaar	bajar	bajar	true
+hi	bazar	variant	bajar	bajar	bajar	true
+hi	chowk	pair	chowk	chovk	chauk	false
+hi	chowk	variant	chauk	chauk	chauk	true
+hi	gali	pair	gali	gali	gali	true
+hi	gali	variant	galee	gali	gali	true
+hi	ek	pair	ek	ek	ek	true
+hi	do	pair	do	do	do	true
+hi	na	pair	na	na	na	true
+hi	ka	pair	ka	ka	ka	true
+hi	ki	pair	ki	ki	ki	true
+hi	ki	variant	kee	ki	ki	true
+hi	ke	pair	ke	ke	ke	true
+hi	ko	pair	ko	ko	ko	true
+hi	se	pair	se	se	se	true
+hi	ye	pair	ye	ye	ye	true
+hi	ye	variant	yeh	yeh	ye	false
+hi	wo	pair	wo	vo	vo	true
+hi	wo	variant	woh	voh	vo	false
+hi	wo	variant	vo	vo	vo	true
+hi	ji	pair	ji	ji	ji	true
+hi	ji	variant	jee	ji	ji	true
+hi	ab	pair	ab	ab	ab	true
+hi	hai	pair	hai	hai	hai	true
+hi	haan	pair	haan	han	han	true
+hi	haan	variant	han	han	han	true
+hi	haan	variant	haa	ha	han	true
+hi	nahi	pair	nahi	nahi	nahin	true
+hi	nahi	variant	nahin	nahin	nahin	true
+hi	nahi	variant	nai	nai	nahin	false
+hi	kya	pair	kya	kya	kya	true
+hi	kya	variant	kyaa	kya	kya	true
+hi	kahan	pair	kahan	kahan	kahan	true
+hi	kahan	variant	kaha	kaha	kahan	true
+hi	kahan	variant	kahaan	kahan	kahan	true
+hi	kaise	pair	kaise	kaise	kaise	true
+hi	kaise	variant	kaisay	kaisai	kaise	false
+hi	kitna	pair	kitna	kitna	kitna	true
+hi	kitna	variant	kitnaa	kitna	kitna	true
+hi	kaun	pair	kaun	kaun	kaun	true
+hi	kaun	variant	kon	kon	kaun	false
+hi	kyon	pair	kyon	kyon	kyon	true
+hi	kyon	variant	kyun	kyun	kyon	false
+hi	kyon	variant	kyu	kyu	kyon	false
+hi	theek	pair	theek	tik	tik	true
+hi	theek	variant	thik	tik	tik	true
+hi	accha	pair	accha	akcha	acha	false
+hi	accha	variant	achha	acha	acha	true
+hi	accha	variant	acha	acha	acha	true
+hi	bahut	pair	bahut	bahut	bahut	true
+hi	bahut	variant	bohot	bohot	bahut	false
+hi	bahut	variant	bahot	bahot	bahut	false
+hi	thoda	pair	thoda	toda	toda	true
+hi	thoda	variant	thora	tora	toda	false
+hi	jaldi	pair	jaldi	jaldi	jaldi	true
+hi	jaldi	variant	jaldee	jaldi	jaldi	true
+hi	kal	pair	kal	kal	kal	true
+hi	aaj	pair	aaj	aj	aj	true
+hi	aaj	variant	aj	aj	aj	true
+hi	abhi	pair	abhi	abi	abi	true
+hi	abhi	variant	abhee	abi	abi	true
+hi	phir	pair	phir	fir	fir	true
+hi	phir	variant	fir	fir	fir	true
+hi	bhai	pair	bhai	bai	bai	true
+hi	bhai	variant	bhaii	bai	bai	true
+hi	bhai	variant	bhayi	bai	bai	true
+hi	didi	pair	didi	didi	didi	true
+hi	didi	variant	deedee	didi	didi	true
+hi	shukriya	pair	shukriya	sukria	sukria	true
+hi	shukriya	variant	shukriyaa	sukria	sukria	true
+hi	shukriya	variant	sukriya	sukria	sukria	true
+hi	dhanyavad	pair	dhanyavad	danyavad	danyavad	true
+hi	dhanyavad	variant	dhanyawad	danyavad	danyavad	true
+hi	paise	pair	paise	paise	paise	true
+hi	paise	variant	paisa	paisa	paise	false
+hi	bhav	pair	bhav	bav	bav	true
+hi	bhav	variant	bhaav	bav	bav	true
+hi	bhav	variant	bhaw	bav	bav	true
+hi	kitna-paisa	pair	kitna paisa	kitna paisa	kitna paisa	true
+hi	kitna-paisa	variant	kitnaa paisa	kitna paisa	kitna paisa	true
+hi	kitna-paisa	joined	kitnapaisa	kitnapaisa	kitna paisa	true
+hi	kahan-hai	pair	kahan hai	kahan hai	kahan hai	true
+hi	kahan-hai	variant	kahaan hai	kahan hai	kahan hai	true
+hi	kahan-hai	joined	kahanhai	kahanai	kahan hai	false
+hi	kab-aoge	pair	kab aoge	kab aoge	kab aoge	true
+hi	kab-aoge	variant	kab aaoge	kab aoge	kab aoge	true
+hi	kab-aoge	joined	kabaoge	kabaoge	kab aoge	true
+hi	main	pair	main	main	main	true
+hi	main	variant	mai	mai	main	true
+hi	main	variant	mein	mein	main	false
+ta	thanneer-lorry	pair	thanneer lorry	tanir lori	tanir lari	false
+ta	thanneer-lorry	variant	tanneer lorry	tanir lori	tanir lari	false
+ta	thanneer-lorry	variant	thanni lorry	tani lori	tanir lari	false
+ta	thanneer-lorry	joined	thanneerlorry	tanirlori	tanir lari	false
+ta	pal-kadai	pair	pal kadai	pal kadai	pal kadai	true
+ta	pal-kadai	variant	paal kadai	pal kadai	pal kadai	true
+ta	pal-kadai	joined	palkadai	palkadai	pal kadai	true
+ta	tea-kadai	pair	tea kadai	ti kadai	di kadai	false
+ta	tea-kadai	variant	tee kadai	ti kadai	di kadai	false
+ta	tea-kadai	variant	ti kadai	ti kadai	di kadai	false
+ta	tea-kadai	joined	teakadai	tikadai	di kadai	false
+ta	poo-kadai	pair	poo kadai	pu kadai	pu kadai	true
+ta	poo-kadai	variant	pu kadai	pu kadai	pu kadai	true
+ta	poo-kadai	joined	pookadai	pukadai	pu kadai	true
+ta	thuni-kadai	pair	thuni kadai	tuni kadai	tuni kadai	true
+ta	thuni-kadai	variant	tuni kadai	tuni kadai	tuni kadai	true
+ta	thuni-kadai	joined	thunikadai	tunikadai	tuni kadai	true
+ta	irumbu-kadai	pair	irumbu kadai	irumbu kadai	irumbu kadai	true
+ta	irumbu-kadai	variant	irumbu kadei	irumbu kadai	irumbu kadai	true
+ta	irumbu-kadai	joined	irumbukadai	irumbukadai	irumbu kadai	true
+ta	meen-kadai	pair	meen kadai	min kadai	min kadai	true
+ta	meen-kadai	variant	min kadai	min kadai	min kadai	true
+ta	meen-kadai	joined	meenkadai	minkadai	min kadai	true
+ta	kari-kadai	pair	kari kadai	kari kadai	kari kadai	true
+ta	kari-kadai	variant	kaari kadai	kari kadai	kari kadai	true
+ta	kari-kadai	joined	karikadai	karikadai	kari kadai	true
+ta	pazha-kadai	pair	pazha kadai	pala kadai	pala kadai	true
+ta	pazha-kadai	variant	pala kadai	pala kadai	pala kadai	true
+ta	pazha-kadai	joined	pazhakadai	palakadai	pala kadai	true
+ta	kothanar	pair	kothanar	kotanar	kotanar	true
+ta	kothanar	variant	kothanaar	kotanar	kotanar	true
+ta	kothanar	variant	kottanar	kotanar	kotanar	true
+ta	thachar	pair	thachar	tachar	tachar	true
+ta	thachar	variant	tachar	tachar	tachar	true
+ta	thachar	variant	thachaar	tachar	tachar	true
+ta	thaiyalkaarar	pair	thaiyalkaarar	taialkarar	taialkarar	true
+ta	thaiyalkaarar	variant	thaiyalkarar	taialkarar	taialkarar	true
+ta	thaiyalkaarar	variant	thaiyal karar	taial karar	taialkarar	true
+ta	salavaikkarar	pair	salavaikkarar	salavaikarar	salavaikarar	true
+ta	salavaikkarar	variant	salavaikaarar	salavaikarar	salavaikarar	true
+ta	salavaikkarar	variant	chalavaikarar	chalavaikarar	salavaikarar	false
+ta	navidhar	pair	navidhar	navidar	navidar	true
+ta	navidhar	variant	naavithar	navitar	navidar	false
+ta	navidhar	variant	navithar	navitar	navidar	false
+ta	poo-vyabari	pair	poo vyabari	pu vyabari	pu viabari	false
+ta	poo-vyabari	variant	poo viyabari	pu viabari	pu viabari	true
+ta	poo-vyabari	variant	poo vyapari	pu vyapari	pu viabari	false
+ta	poo-vyabari	joined	poovyabari	puvyabari	pu viabari	false
+ta	malikai-kadai	pair	malikai kadai	malikai kadai	maligai kadai	false
+ta	malikai-kadai	variant	maligai kadai	maligai kadai	maligai kadai	true
+ta	malikai-kadai	variant	malikai kadei	malikai kadai	maligai kadai	false
+ta	malikai-kadai	joined	malikaikadai	malikaikadai	maligai kadai	false
+ta	kaikari-kadai	pair	kaikari kadai	kaikari kadai	kaikari kadai	true
+ta	kaikari-kadai	variant	kaaikari kadai	kaikari kadai	kaikari kadai	true
+ta	kaikari-kadai	joined	kaikarikadai	kaikarikadai	kaikari kadai	true
+ta	palkarar	pair	palkarar	palkarar	palkarar	true
+ta	palkarar	variant	paalkaarar	palkarar	palkarar	true
+ta	palkarar	variant	palkaarar	palkarar	palkarar	true
+ta	pal	pair	pal	pal	pal	true
+ta	pal	variant	paal	pal	pal	true
+ta	arisi	pair	arisi	arisi	arisi	true
+ta	paruppu	pair	paruppu	parupu	parupu	true
+ta	paruppu	variant	parupu	parupu	parupu	true
+ta	ennai	pair	ennai	enai	enai	true
+ta	ennai	variant	ennei	enai	enai	true
+ta	ennai	variant	enney	enai	enai	true
+ta	uppu	pair	uppu	upu	upu	true
+ta	uppu	variant	upu	upu	upu	true
+ta	sakkarai	pair	sakkarai	sakarai	sarkarai	false
+ta	sakkarai	variant	sarkarai	sarkarai	sarkarai	true
+ta	sakkarai	variant	sarkkarai	sarkarai	sarkarai	true
+ta	theneer	pair	theneer	tenir	tenir	true
+ta	theneer	variant	teneer	tenir	tenir	true
+ta	theneer	variant	thenir	tenir	tenir	true
+ta	kaikari	pair	kaikari	kaikari	kaikari	true
+ta	kaikari	variant	kaaikari	kaikari	kaikari	true
+ta	kaikari	variant	kaaykari	kaikari	kaikari	true
+ta	vengayam	pair	vengayam	vengayam	vengayam	true
+ta	vengayam	variant	vengaayam	vengayam	vengayam	true
+ta	vengayam	variant	vengayyam	vengayam	vengayam	true
+ta	thakkali	pair	thakkali	takali	takali	true
+ta	thakkali	variant	takkali	takali	takali	true
+ta	thakkali	variant	thakkaali	takali	takali	true
+ta	urulaikizhangu	pair	urulaikizhangu	urulaikilangu	urulaikilangu	true
+ta	urulaikizhangu	variant	urulai kizhangu	urulai kilangu	urulaikilangu	true
+ta	urulaikizhangu	variant	urulaikilangu	urulaikilangu	urulaikilangu	true
+ta	milagai	pair	milagai	milagai	milagai	true
+ta	milagai	variant	milakai	milakai	milagai	false
+ta	milagai	variant	milagaai	milagai	milagai	true
+ta	manjal	pair	manjal	manjal	manjal	true
+ta	manjal	variant	manjall	manjal	manjal	true
+ta	inji	pair	inji	inji	inji	true
+ta	inji	variant	injee	inji	inji	true
+ta	poondu	pair	poondu	pundu	pundu	true
+ta	poondu	variant	pundu	pundu	pundu	true
+ta	vazhaipazham	pair	vazhaipazham	valaipalam	valaipalam	true
+ta	vazhaipazham	variant	valaipalam	valaipalam	valaipalam	true
+ta	vazhaipazham	variant	vazhaippazham	valaipalam	valaipalam	true
+ta	mambazham	pair	mambazham	mambalam	mambalam	true
+ta	mambazham	variant	maambalam	mambalam	mambalam	true
+ta	mambazham	variant	mambalam	mambalam	mambalam	true
+ta	thengai	pair	thengai	tengai	tengai	true
+ta	thengai	variant	thenkai	tenkai	tengai	false
+ta	thengai	variant	thengaai	tengai	tengai	true
+ta	pazham	pair	pazham	palam	palam	true
+ta	pazham	variant	palam	palam	palam	true
+ta	selai	pair	selai	selai	selai	true
+ta	selai	variant	sealai	silai	selai	false
+ta	selai	variant	selei	selai	selai	true
+ta	vetti	pair	vetti	veti	veti	true
+ta	vetti	variant	veti	veti	veti	true
+ta	seruppu	pair	seruppu	serupu	serupu	true
+ta	seruppu	variant	cheruppu	cherupu	serupu	false
+ta	poottu	pair	poottu	putu	putu	true
+ta	poottu	variant	pootu	putu	putu	true
+ta	poottu	variant	putu	putu	putu	true
+ta	savi	pair	savi	savi	savi	true
+ta	savi	variant	saavi	savi	savi	true
+ta	savi	variant	chaavi	chavi	savi	false
+ta	vali	pair	vali	vali	vali	true
+ta	vali	variant	vaali	vali	vali	true
+ta	vilakkumaru	pair	vilakkumaru	vilakumaru	vilakumaru	true
+ta	vilakkumaru	variant	vilakumaru	vilakumaru	vilakumaru	true
+ta	vilakkumaru	variant	vilakkumaaru	vilakumaru	vilakumaru	true
+ta	pathiram	pair	pathiram	patiram	patiram	true
+ta	pathiram	variant	paathiram	patiram	patiram	true
+ta	pathiram	variant	patthiram	patiram	patiram	true
+ta	minvisiri	pair	minvisiri	minvisiri	minvisiri	true
+ta	minvisiri	variant	min visiri	min visiri	minvisiri	true
+ta	padukkai	pair	padukkai	padukai	padukai	true
+ta	padukkai	variant	padukai	padukai	padukai	true
+ta	thalaiyanai	pair	thalaiyanai	talaianai	talaianai	true
+ta	thalaiyanai	variant	thalayanai	talayanai	talaianai	false
+ta	thalaiyanai	variant	talaiyanai	talaianai	talaianai	true
+ta	narkali	pair	narkali	narkali	narkali	true
+ta	narkali	variant	naarkaali	narkali	narkali	true
+ta	narkali	variant	narkaali	narkali	narkali	true
+ta	mesai	pair	mesai	mesai	mesai	true
+ta	mesai	variant	mesei	mesai	mesai	true
+ta	mesai	variant	maesai	maesai	mesai	false
+ta	alamari	pair	alamari	alamari	alamari	true
+ta	alamari	variant	alamaari	alamari	alamari	true
+ta	kadhavu	pair	kadhavu	kadavu	kadavu	true
+ta	kadhavu	variant	kadavu	kadavu	kadavu	true
+ta	kadhavu	variant	kathavu	katavu	kadavu	false
+ta	jannal	pair	jannal	janal	janal	true
+ta	jannal	variant	janal	janal	janal	true
+ta	jannal	variant	jannel	janel	janal	false
+ta	koorai	pair	koorai	kurai	kurai	true
+ta	koorai	variant	kurai	kurai	kurai	true
+ta	suvar	pair	suvar	suvar	suvar	true
+ta	suvar	variant	chuvar	chuvar	suvar	false
+ta	sengal	pair	sengal	sengal	sengal	true
+ta	sengal	variant	chengal	chengal	sengal	false
+ta	sengal	variant	sengkal	sengkal	sengal	false
+ta	manal	pair	manal	manal	manal	true
+ta	manal	variant	manall	manal	manal	true
+ta	maram	pair	maram	maram	maram	true
+ta	maram	variant	marram	maram	maram	true
+ta	aani	pair	aani	ani	ani	true
+ta	aani	variant	ani	ani	ani	true
+ta	thanneer	pair	thanneer	tanir	tanir	true
+ta	thanneer	variant	tanneer	tanir	tanir	true
+ta	thanneer	variant	thanni	tani	tanir	true
+ta	vilakku	pair	vilakku	vilaku	vilaku	true
+ta	vilakku	variant	vilaku	vilaku	vilaku	true
+ta	mezhuguvarthi	pair	mezhuguvarthi	meluguvarti	meluguvarti	true
+ta	mezhuguvarthi	variant	melugu varthi	melugu varti	meluguvarti	true
+ta	mezhuguvarthi	variant	mezhukuvarthi	melukuvarti	meluguvarti	false
+ta	theepetti	pair	theepetti	tipeti	tipeti	true
+ta	theepetti	variant	thee petti	ti peti	tipeti	true
+ta	theepetti	variant	deepetti	dipeti	tipeti	false
+ta	kudai	pair	kudai	kudai	kudai	true
+ta	kudai	variant	kudei	kudai	kudai	true
+ta	sakku-pai	pair	sakku pai	saku pai	saku pai	true
+ta	sakku-pai	variant	saaku pai	saku pai	saku pai	true
+ta	sakku-pai	joined	sakkupai	sakupai	saku pai	true
+ta	soppu	pair	soppu	sopu	sopu	true
+ta	soppu	variant	sopu	sopu	sopu	true
+ta	soppu	variant	chopu	chopu	sopu	false
+ta	thayir	pair	thayir	tair	tair	true
+ta	thayir	variant	tayir	tair	tair	true
+ta	thayir	variant	thair	tair	tair	true
+ta	vennai	pair	vennai	venai	venai	true
+ta	vennai	variant	venney	venai	venai	true
+ta	vennai	variant	vennei	venai	venai	true
+ta	muttai	pair	muttai	mutai	mutai	true
+ta	muttai	variant	mutta	muta	mutai	true
+ta	muttai	variant	muttei	mutai	mutai	true
+ta	meen	pair	meen	min	min	true
+ta	meen	variant	min	min	min	true
+ta	plumber	pair	plumber	plumbar	plambar	false
+ta	plumber	variant	plumbar	plumbar	plambar	false
+ta	plumber	variant	plampar	plampar	plambar	false
+ta	electrician	pair	electrician	elektrisian	elaktrisian	false
+ta	electrician	variant	electrishan	elektrisan	elaktrisian	false
+ta	electrician	variant	elektrishian	elektrisian	elaktrisian	false
+ta	mechanic	pair	mechanic	mechanik	mekanik	false
+ta	mechanic	variant	mekanik	mekanik	mekanik	true
+ta	mechanic	variant	mechanik	mechanik	mekanik	false
+ta	painter	pair	painter	paintar	peindar	false
+ta	painter	variant	paintar	paintar	peindar	false
+ta	painter	variant	peintar	peintar	peindar	false
+ta	driver	pair	driver	drivar	draivar	false
+ta	driver	variant	draivar	draivar	draivar	true
+ta	driver	variant	drivar	drivar	draivar	false
+ta	carpenter	pair	carpenter	karpentar	karpendar	false
+ta	carpenter	variant	karpentar	karpentar	karpendar	false
+ta	carpenter	variant	carpentar	karpentar	karpendar	false
+ta	teacher	pair	teacher	tichar	dichar	false
+ta	teacher	variant	teechar	tichar	dichar	false
+ta	teacher	variant	ticher	tichar	dichar	false
+ta	doctor	pair	doctor	doktor	daktar	false
+ta	doctor	variant	daktar	daktar	daktar	true
+ta	doctor	variant	doctar	doktar	daktar	false
+ta	cement	pair	cement	sement	siment	false
+ta	cement	variant	siment	siment	siment	true
+ta	cement	variant	cimend	simend	siment	false
+ta	pipe	pair	pipe	pipe	paip	false
+ta	pipe	variant	paip	paip	paip	true
+ta	pipe	variant	payp	paip	paip	true
+ta	bulb	pair	bulb	bulb	palpu	false
+ta	bulb	variant	balb	balb	palpu	false
+ta	bulb	variant	palpu	palpu	palpu	true
+ta	mobile	pair	mobile	mobile	mobail	false
+ta	mobile	variant	mobail	mobail	mobail	true
+ta	repair	pair	repair	repair	ripar	false
+ta	repair	variant	ripair	ripair	ripar	false
+ta	repair	variant	rippair	ripair	ripar	false
+ta	taxi	pair	taxi	taksi	daksi	false
+ta	taxi	variant	taksi	taksi	daksi	false
+ta	taxi	variant	taxee	taksi	daksi	false
+ta	auto	pair	auto	auto	ato	false
+ta	auto	variant	atto	ato	ato	true
+ta	auto	variant	oto	oto	ato	false
+ta	service	pair	service	servise	sarvis	false
+ta	service	variant	servis	servis	sarvis	false
+ta	service	variant	survice	survise	sarvis	false
+ta	fridge	pair	fridge	fridge	fpritj	false
+ta	fridge	variant	frij	frij	fpritj	false
+ta	fridge	variant	fridj	fridj	fpritj	false
+ta	ac	pair	ac	ak	esi	false
+ta	ac	variant	ay see	ai si	esi	false
+ta	tv	pair	tv	tv	divi	false
+ta	tv	variant	tivi	tivi	divi	false
+ta	tv	variant	teevee	tivi	divi	false
+ta	computer	pair	computer	komputar	kampyutar	false
+ta	computer	variant	kampyutar	kampyutar	kampyutar	true
+ta	computer	variant	computar	komputar	kampyutar	false
+ta	murugan	pair	murugan	murugan	murugan	true
+ta	murugan	variant	muruhan	muruhan	murugan	false
+ta	selvam	pair	selvam	selvam	selvam	true
+ta	selvam	variant	selvem	selvem	selvam	false
+ta	kumar	pair	kumar	kumar	kumar	true
+ta	kumar	variant	kumaar	kumar	kumar	true
+ta	ramesh	pair	ramesh	rames	rames	true
+ta	ramesh	variant	rammesh	rames	rames	true
+ta	suresh	pair	suresh	sures	sures	true
+ta	suresh	variant	sooresh	sures	sures	true
+ta	karthik	pair	karthik	kartik	kartik	true
+ta	karthik	variant	karthick	kartik	kartik	true
+ta	karthik	variant	kaarthik	kartik	kartik	true
+ta	anand	pair	anand	anand	anant	false
+ta	anand	variant	aanand	anand	anant	false
+ta	prakash	pair	prakash	prakas	pragas	false
+ta	prakash	variant	prakaash	prakas	pragas	false
+ta	vijay	pair	vijay	vijai	vijai	true
+ta	vijay	variant	vijai	vijai	vijai	true
+ta	ajith	pair	ajith	ajit	ajit	true
+ta	ajith	variant	ajit	ajit	ajit	true
+ta	raja	pair	raja	raja	raja	true
+ta	raja	variant	raaja	raja	raja	true
+ta	ravi	pair	ravi	ravi	ravi	true
+ta	ravi	variant	ravee	ravi	ravi	true
+ta	saravanan	pair	saravanan	saravanan	saravanan	true
+ta	saravanan	variant	saravanen	saravanen	saravanan	false
+ta	ganesh	pair	ganesh	ganes	kanes	false
+ta	ganesh	variant	ganeshan	ganesan	kanes	false
+ta	mani	pair	mani	mani	mani	true
+ta	mani	variant	manee	mani	mani	true
+ta	balu	pair	balu	balu	palu	false
+ta	balu	variant	baalu	balu	palu	false
+ta	shankar	pair	shankar	sankar	sangar	false
+ta	shankar	variant	sankar	sankar	sangar	false
+ta	shankar	variant	shanker	sankar	sangar	false
+ta	lakshmi	pair	lakshmi	laksmi	latsumi	false
+ta	lakshmi	variant	lakshmee	laksmi	latsumi	false
+ta	lakshmi	variant	laxmi	laksmi	latsumi	false
+ta	meena	pair	meena	mina	mina	true
+ta	meena	variant	mina	mina	mina	true
+ta	priya	pair	priya	pria	pria	true
+ta	priya	variant	priyaa	pria	pria	true
+ta	jaya	pair	jaya	jaya	jeya	false
+ta	jaya	variant	jeya	jeya	jeya	true
+ta	kala	pair	kala	kala	kala	true
+ta	kala	variant	kalaa	kala	kala	true
+ta	sudha	pair	sudha	suda	suda	true
+ta	sudha	variant	suda	suda	suda	true
+ta	devi	pair	devi	devi	tevi	false
+ta	devi	variant	thevi	tevi	tevi	true
+ta	kavitha	pair	kavitha	kavita	kavida	false
+ta	kavitha	variant	kavita	kavita	kavida	false
+ta	anbu	pair	anbu	anbu	anbu	true
+ta	anbu	variant	anpu	anpu	anbu	false
+ta	gandhi	pair	gandhi	gandi	kandi	false
+ta	gandhi	variant	kandhi	kandi	kandi	true
+ta	siva	pair	siva	siva	siva	true
+ta	siva	variant	shiva	siva	siva	true
+ta	siva	variant	sivaa	siva	siva	true
+ta	kannan	pair	kannan	kanan	kanan	true
+ta	kannan	variant	kanan	kanan	kanan	true
+ta	raman	pair	raman	raman	raman	true
+ta	raman	variant	raaman	raman	raman	true
+ta	latha	pair	latha	lata	lada	false
+ta	latha	variant	lata	lata	lada	false
+ta	uma	pair	uma	uma	uma	true
+ta	uma	variant	umaa	uma	uma	true
+ta	geetha	pair	geetha	gita	kida	false
+ta	geetha	variant	geeta	gita	kida	false
+ta	geetha	variant	gita	gita	kida	false
+ta	chitra	pair	chitra	chitra	sitra	false
+ta	chitra	variant	sithra	sitra	sitra	true
+ta	vasuki	pair	vasuki	vasuki	vasugi	false
+ta	vasuki	variant	vaasuki	vasuki	vasugi	false
+ta	palani	pair	palani	palani	palani	true
+ta	palani	variant	pazhani	palani	palani	true
+ta	muthu	pair	muthu	mutu	mutu	true
+ta	muthu	variant	mutthu	mutu	mutu	true
+ta	dinesh	pair	dinesh	dines	tines	false
+ta	dinesh	variant	dhinesh	dines	tines	false
+ta	ram-kumar	pair	ram kumar	ram kumar	ram kumar	true
+ta	ram-kumar	variant	raam kumaar	ram kumar	ram kumar	true
+ta	ram-kumar	joined	ramkumar	ramkumar	ram kumar	true
+ta	selva-kumar	pair	selva kumar	selva kumar	selva kumar	true
+ta	selva-kumar	joined	selvakumar	selvakumar	selva kumar	true
+ta	chennai	pair	chennai	chenai	senai	false
+ta	chennai	variant	chenai	chenai	senai	false
+ta	chennai	variant	chennei	chenai	senai	false
+ta	madurai	pair	madurai	madurai	madurai	true
+ta	madurai	variant	madhurai	madurai	madurai	true
+ta	madurai	variant	maduraii	madurai	madurai	true
+ta	coimbatore	pair	coimbatore	koimbatore	koyambutur	false
+ta	coimbatore	variant	koyambuthur	koyambutur	koyambutur	true
+ta	coimbatore	variant	kovai	kovai	koyambutur	false
+ta	trichy	pair	trichy	trichi	tiruchi	false
+ta	trichy	variant	tiruchi	tiruchi	tiruchi	true
+ta	trichy	variant	thiruchi	tiruchi	tiruchi	true
+ta	salem	pair	salem	salem	selam	false
+ta	salem	variant	selam	selam	selam	true
+ta	tirunelveli	pair	tirunelveli	tirunelveli	tirunelveli	true
+ta	tirunelveli	variant	thirunelveli	tirunelveli	tirunelveli	true
+ta	tirunelveli	variant	nellai	nelai	tirunelveli	false
+ta	erode	pair	erode	erode	irodu	false
+ta	erode	variant	eerodu	irodu	irodu	true
+ta	vellore	pair	vellore	velore	velur	false
+ta	vellore	variant	velur	velur	velur	true
+ta	vellore	variant	vellur	velur	velur	true
+ta	thanjavur	pair	thanjavur	tanjavur	tanjavur	true
+ta	thanjavur	variant	tanjore	tanjore	tanjavur	false
+ta	thanjavur	variant	thanjavoor	tanjavur	tanjavur	true
+ta	dindigul	pair	dindigul	dindigul	tindukal	false
+ta	dindigul	variant	dindukal	dindukal	tindukal	false
+ta	nagercoil	pair	nagercoil	nagerkoil	nagarkovil	false
+ta	nagercoil	variant	nagarkovil	nagarkovil	nagarkovil	true
+ta	cuddalore	pair	cuddalore	kudalore	kadalur	false
+ta	cuddalore	variant	kadalur	kadalur	kadalur	true
+ta	puducherry	pair	puducherry	puducheri	puducheri	true
+ta	puducherry	variant	pondicherry	pondicheri	puducheri	false
+ta	puducherry	variant	pudhucheri	puducheri	puducheri	true
+ta	thoothukudi	pair	thoothukudi	tutukudi	tutukudi	true
+ta	thoothukudi	variant	tuticorin	tutikorin	tutukudi	false
+ta	thoothukudi	variant	thuthukudi	tutukudi	tutukudi	true
+ta	tiruppur	pair	tiruppur	tirupur	tirupur	true
+ta	tiruppur	variant	thiruppur	tirupur	tirupur	true
+ta	kanchipuram	pair	kanchipuram	kanchipuram	kanjiburam	false
+ta	kanchipuram	variant	conjeevaram	konjivaram	kanjiburam	false
+ta	rameswaram	pair	rameswaram	ramesvaram	iramesvaram	true
+ta	rameswaram	variant	rameshwaram	ramesvaram	iramesvaram	true
+ta	kanyakumari	pair	kanyakumari	kanyakumari	kaniagumari	false
+ta	kanyakumari	variant	kanniyakumari	kaniakumari	kaniagumari	false
+ta	ooty	pair	ooty	uti	uti	true
+ta	ooty	variant	uty	uti	uti	true
+ta	kodaikanal	pair	kodaikanal	kodaikanal	kodaikanal	true
+ta	kodaikanal	variant	kodaikaanal	kodaikanal	kodaikanal	true
+ta	nagar	pair	nagar	nagar	nagar	true
+ta	puram	pair	puram	puram	puram	true
+ta	palayam	pair	palayam	palayam	palaiam	false
+ta	palayam	variant	paalayam	palayam	palaiam	false
+ta	pettai	pair	pettai	petai	petai	true
+ta	pettai	variant	petai	petai	petai	true
+ta	colony	pair	colony	koloni	kalani	false
+ta	colony	variant	kaalani	kalani	kalani	true
+ta	theru	pair	theru	teru	teru	true
+ta	theru	variant	teru	teru	teru	true
+ta	salai	pair	salai	salai	salai	true
+ta	salai	variant	saalai	salai	salai	true
+ta	kovil	pair	kovil	kovil	kovil	true
+ta	kovil	variant	koil	koil	kovil	false
+ta	anna-nagar	pair	anna nagar	ana nagar	ana nagar	true
+ta	anna-nagar	joined	annanagar	ananagar	ana nagar	true
+ta	t-nagar	pair	t nagar	t nagar	ti nagar	true
+ta	t-nagar	variant	thi nagar	ti nagar	ti nagar	true
+ta	t-nagar	joined	tnagar	tnagar	ti nagar	false
+ta	aamam	pair	aamam	amam	amam	true
+ta	aamam	variant	amam	amam	amam	true
+ta	aamam	variant	aama	ama	amam	true
+ta	illai	pair	illai	ilai	ilai	true
+ta	illai	variant	illa	ila	ilai	true
+ta	illai	variant	illae	ilae	ilai	false
+ta	sari	pair	sari	sari	sari	true
+ta	sari	variant	seri	seri	sari	false
+ta	sari	variant	sarii	sari	sari	true
+ta	nandri	pair	nandri	nandri	nandri	true
+ta	nandri	variant	nanri	nanri	nandri	false
+ta	vanakkam	pair	vanakkam	vanakam	vanakam	true
+ta	vanakkam	variant	vanakam	vanakam	vanakam	true
+ta	eppadi	pair	eppadi	epadi	epadi	true
+ta	eppadi	variant	epdi	epdi	epadi	false
+ta	enna	pair	enna	ena	ena	true
+ta	evvalavu	pair	evvalavu	evalavu	evalavu	true
+ta	evvalavu	variant	evlo	evlo	evalavu	false
+ta	evvalavu	variant	evvalo	evalo	evalavu	false
+ta	enge	pair	enge	enge	enge	true
+ta	enge	variant	enga	enga	enge	false
+ta	eppothu	pair	eppothu	epotu	epodu	false
+ta	eppothu	variant	eppo	epo	epodu	true
+ta	vaa	pair	vaa	va	va	true
+ta	vaa	variant	va	va	va	true
+ta	po	pair	po	po	po	true
+ta	da	pair	da	da	da	true
+ta	di	pair	di	di	di	true
+ta	ma	pair	ma	ma	ma	true
+ta	en	pair	en	en	en	true
+ta	un	pair	un	un	un	true
+ta	o	pair	o	o	o	true
+ta	o	variant	oh	oh	o	false
+ta	naan	pair	naan	nan	nan	true
+ta	naan	variant	nan	nan	nan	true
+ta	nee	pair	nee	ni	ni	true
+ta	nee	variant	ni	ni	ni	true
+ta	idhu	pair	idhu	idu	idu	true
+ta	idhu	variant	ithu	itu	idu	false
+ta	idhu	variant	idu	idu	idu	true
+ta	adhu	pair	adhu	adu	adu	true
+ta	adhu	variant	athu	atu	adu	false
+ta	adhu	variant	adu	adu	adu	true
+ta	inge	pair	inge	inge	inge	true
+ta	inge	variant	inga	inga	inge	false
+ta	ange	pair	ange	ange	ange	true
+ta	ange	variant	anga	anga	ange	false
+ta	indru	pair	indru	indru	indru	true
+ta	indru	variant	inru	inru	indru	false
+ta	naalai	pair	naalai	nalai	nalai	true
+ta	naalai	variant	nalai	nalai	nalai	true
+ta	netru	pair	netru	netru	netru	true
+ta	netru	variant	nettru	netru	netru	true
+ta	panam	pair	panam	panam	panam	true
+ta	vilai	pair	vilai	vilai	vilai	true
+ta	vilai	variant	vilei	vilai	vilai	true
+ta	venum	pair	venum	venum	vendum	false
+ta	venum	variant	vendum	vendum	vendum	true
+ta	vendaam	pair	vendaam	vendam	vendam	true
+ta	vendaam	variant	vendam	vendam	vendam	true
+ta	theriyum	pair	theriyum	terium	terium	true
+ta	theriyum	variant	teriyum	terium	terium	true
+ta	theriyaadhu	pair	theriyaadhu	teriadu	teriadu	true
+ta	theriyaadhu	variant	theriyathu	teriatu	teriadu	false
+ta	theriyaadhu	variant	teriyadhu	teriadu	teriadu	true
+ta	nalladhu	pair	nalladhu	naladu	naladu	true
+ta	nalladhu	variant	nallathu	nalatu	naladu	false
+ta	nalladhu	variant	nalladu	naladu	naladu	true
+ta	migavum	pair	migavum	migavum	migavum	true
+ta	migavum	variant	mikavum	mikavum	migavum	false
+ta	konjam	pair	konjam	konjam	konjam	true
+ta	konjam	variant	konchum	konchum	konjam	false
+ta	thallupadi	pair	thallupadi	talupadi	talubadi	false
+ta	thallupadi	variant	thalluppadi	talupadi	talubadi	false
+ta	evvalavu-vilai	pair	evvalavu vilai	evalavu vilai	evalavu vilai	true
+ta	evvalavu-vilai	variant	evlo vilai	evlo vilai	evalavu vilai	false
+ta	evvalavu-vilai	joined	evvalavuvilai	evalavuvilai	evalavu vilai	true
+ta	eppadi-irukkinga	pair	eppadi irukkinga	epadi irukinga	epadi irukinga	true
+ta	eppadi-irukkinga	variant	epdi irukinga	epdi irukinga	epadi irukinga	false
+ta	eppadi-irukkinga	joined	eppadiirukkinga	epadirukinga	epadi irukinga	false
+ta	nandri-anna	pair	nandri anna	nandri ana	nandri ana	true
+ta	nandri-anna	variant	nanri anna	nanri ana	nandri ana	false
+ta	nandri-anna	joined	nandrianna	nandriana	nandri ana	true
