@@ -572,6 +572,7 @@ Checked: `@fluent/bundle` 0.19.1 (Apache-2.0, no runtime dependencies) adds 4,20
 - **The chat index is two ordinary FTS5 tables**, not an external-content table, because an external-content table cannot hold a key that differs from the body.
 - **An existing directory index is not rebuilt automatically.** The node owner runs `directory.reindex`. No migration code before release.
 - **The chat snippet starts at the beginning of a cross-script hit**, because the Hub cannot find the matched word in another script.
+- **ML-26 is met in M08B for four hook points only.** M08B builds the hook points that exist now: the search query, record display (`listing`, `request`, `quote`), the chat message and agreement review. The widget answer hook point comes with M08C (widgets), the opinion hook point with M08G (opinions), and the display of offerings, wants and storefronts with M08D. Each of those sub-milestones adds its hook point and its test.
 
 ## Close-out
 
