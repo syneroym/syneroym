@@ -545,7 +545,7 @@ flowchart TD
 | `roym` | Links the Roym services into the binary (Cargo feature `roym`). |
 | `mailbox` | Holds sealed messages for sleeping or offline receivers (crate `syneroym-mailbox`). |
 
-Three more parts run inside the substrate. The embedded MQTT broker (`rumqttd`, ADR-0010) backs the `syneroym:messaging` interface. The conversation host (crate `syneroym-conversation`) backs `syneroym:conversation`. The event bus (`syneroym_core::event_bus`, ADR-0027) holds an in-memory ring buffer of change events scoped strictly by app instance.
+Three more parts run inside the substrate. The embedded MQTT broker (`rumqttd`, ADR-0010) backs the `syneroym:messaging` interface. The conversation host (crate `syneroym-conversation`) backs `syneroym:conversation`. The event bus (`syneroym_core::event_bus`, ADR-0027) holds an in-memory ring buffer of change events scoped strictly by app instance. The translation host backs `syneroym:translation` (ADR-0029). It has no engine in this version: it lists no target language and answers `unavailable` to every call. A later engine plugs in here.
 
 **Ingress.** A node accepts streams on two transports: Iroh QUIC (ALPN `syneroym/0.1`) and WebRTC data channels. Each transport hands every stream it accepts to the connection router. A caller connects to a node. A WASM service never accepts connections itself, because the router dispatches each stream to it. Iroh is the peer-to-peer networking library from Layer 1. HTTP/1.1 requests travel inside these streams. The client gateway takes a local HTTP request and sends it to the target node as a stream. Browsers and the CLI send JSON-RPC 2.0 requests this way. The router also answers `GET /_syneroym/events` directly as a Server-Sent Events (SSE) feed for the authenticated owner of the app instance (ADR-0027).
 
@@ -1208,7 +1208,7 @@ A card is a signed record sent as a message with content type `application/vnd.r
 |---|---|---|
 | `request` | the counterparty | The counterparty asks for a service. It carries a description, a required `lang` tag, optional author `translations`, and may name a listing, category codes (from the base taxonomy or custom codes), an area, and a time window. |
 | `quote` | the quote author | An offer. It carries agreed terms (with a required `terms.lang`), optional author `translations`, scope, currency, amount, payment methods as codes, payee, when payment is due, schedule, location, cancellation terms, refund terms, and a dispute path as text. It may name one slot of the listing. It has an expiry. |
-| `agreement-receipt` | each party signs one half | Each side signs the quote terms (including `terms.lang`). A deal exists when both halves exist. |
+| `agreement-receipt` | each party signs one half | Each side signs the quote terms (including `terms.lang`) and says which text it read: `viewed_lang` (a language tag) and `viewed_via_mt` (true when that text was a machine translation). These two fields are outside the terms, so the two halves may differ in them. A deal exists when both halves exist. |
 | `booking-progress` | the quote author's service | A snapshot of the booking. The counterparty's node accepts it only when the signer is the one that signed the quote. |
 | `payment-request` | the quote author | The quote author asks to be paid. It carries currency, amount, and an optional note. It is optional. |
 | `payment-acknowledgement` | either party | A statement about a payment made outside Roym, with an optional method (a code from the agreed payment methods) and reference as text. |
@@ -1316,7 +1316,7 @@ Notes on the flow:
 
 - **Search.** The hit carries the signed listing, so the searcher needs no call to the listing owner's catalog. `catalog` refuses a caller from another node. The searcher's node verifies the listing itself. See [Cross-Substrate Discovery Flow](#cross-substrate-discovery-flow).
 - **Request and quote.** `request.set` signs the request and sends it in one step. The quote author's node files the card when it runs `transaction.sync`, and the quote author answers with `quote.set`.
-- **Agreement.** The counterparty accepts the quote with `agreement.accept`. The quote author's node decides the booking and countersigns. If the slot is full, it does not countersign, and the booking is `conflict`.
+- **Agreement.** The counterparty accepts the quote with `agreement.accept`, which takes what the person read (`viewed_lang`, `viewed_via_mt`; without them the original is meant). The quote author's node decides the booking and countersigns, and its automatic countersignature says the original was read. If the slot is full, it does not countersign, and the booking is `conflict`.
 - **Notices.** Each node shows the card in the conversation. No push notification is sent.
 - **Payment.** The quote author may send a `payment-request`. The counterparty pays outside Roym. Either party then records a `payment-acknowledgement`. The Hub shows a notice that Roym does not see the money move.
 - **Fulfilment.** The booking is complete when the payment track and the fulfilment track are both acknowledged. The counterparty's confirmation acknowledges the fulfilment track at once, even if the quote author has not claimed the work. It takes effect on the quote author's node when the card is filed there.
@@ -1739,7 +1739,7 @@ flowchart TD
     - Instances come from a Wasmtime pooling allocator, and the store caps the memory of one guest.
     - A guest runs under an epoch deadline (wall-clock time). Time spent waiting inside a batched outbound call (`call-all`) is credited toward the deadline up to the configured batch limit, so guest wait time does not exhaust its own computation budget. It also runs under a fuel limit when the service has an instruction quota.
     - The guest's `WasiCtx` is empty: no preopened directories, no environment variables, and no sockets.
-    - The linker holds only WASI and the Syneroym host interfaces. A guest reaches the world through these.
+    - The linker holds only WASI and the Syneroym host interfaces. A guest reaches the world through these. One of them is `syneroym:translation` (ADR-0029). It has no engine in this version, so it answers `unavailable`.
 - **Calls between services.** A guest's outbound call goes through the Universal Proxy.
     - A guest may call a declared interface of another service via single `call` or batched `call-all`. The host runs calls in a batch concurrently up to the configured concurrency cap, returning answers in input order. Each call in a batch is subject to the same target and capability checks as a single call, and every limit is host-configured. The callee decides whether to admit the caller (see Layer 2 [access control](#substrate-internal-architecture)).
     - A guest may call a native capability (`data-layer`, `vault`, `app-config`, `blob-store`, `messaging`, `http-native`, `conversation`, `signing`) only on its own service. The proxy refuses the same call on another service.
