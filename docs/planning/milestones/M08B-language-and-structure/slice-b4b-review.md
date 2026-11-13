@@ -663,3 +663,26 @@ letters into 2, so it lowers B. The proof is unchanged in substance.
 
 Plan commit: `5856d964`. Open items: none. The owner questions Q1 to Q8
 and the owner check of `spelling-pairs.tsv` are still open.
+
+## Plan review round 4 (check of the round 3 fix) — Claude Opus 5.5, 2026-11-13
+
+Checked on `feat/m08b-b4b-search-scripts` at `8f735ec7`, in the main
+checkout. I read the plan diff `2e319946..8f735ec7`. I changed no code and
+did not run `cargo`. This check was done by the same model as the plan
+author, so it is not an independent review.
+
+**Summary:** P19 is confirmed fixed. No new items. 0 open.
+
+### Confirmed fixed
+
+- **P19.** D-B4b-3 and D-B4b-4 claim "only `a` to `z`" for table values
+  only, and say that chars with no value and digits are not table values.
+  A sign with no value (`ॄ`) is kept as it is in both scripts, and section
+  7.2 tests the table entries plus a `ॄ` row. The proof in D-B4b-5 ends
+  with the sentence that chars outside `a` to `z` cannot affect the end,
+  and rule 3 is now with the rules that make the word shorter. A search of
+  the plan finds no leftover "writes only", "no marks", "4 passes", `50%`
+  test or `5_0` text.
+
+All 19 items (P1 to P19) are closed. The owner questions Q1 to Q8 and the
+owner check of `spelling-pairs.tsv` are still open.
