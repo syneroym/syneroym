@@ -11,7 +11,7 @@ use super::{
 };
 use crate::host_capabilities::HostState;
 
-fn test_host_state(
+pub(super) fn test_host_state(
     component_id: &str,
     app_instance_id: Option<String>,
     read_only: bool,

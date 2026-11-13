@@ -33,6 +33,7 @@ use types::{
     messaging::MessagingError,
     proxy::{CallOptions, CallRequest, CallTarget, ProxyError},
     signing::{Principal, RecordDraft, SigningError, SigningIdentity},
+    translation::{Detected, Translated, TranslationError},
     vault::VaultError,
 };
 
@@ -49,6 +50,7 @@ pub trait AppHost:
     + AppInvocation
     + AppWebSocket
     + AppEvents
+    + AppTranslation
     + Send
     + Sync
 {
@@ -65,6 +67,7 @@ impl<T> AppHost for T where
         + AppInvocation
         + AppWebSocket
         + AppEvents
+        + AppTranslation
         + Send
         + Sync
 {
@@ -158,6 +161,21 @@ pub trait AppEvents {
         after: Option<String>,
         limit: u32,
     ) -> impl Future<Output = Result<ReadResult, EventsError>> + Send;
+}
+
+/// Mirrors `syneroym:translation/translation@0.1.0`.
+pub trait AppTranslation {
+    fn supported_targets(&self) -> impl Future<Output = Vec<String>> + Send;
+    fn detect_language(
+        &self,
+        text: String,
+    ) -> impl Future<Output = Result<Vec<Detected>, TranslationError>> + Send;
+    fn translate(
+        &self,
+        text: String,
+        source_lang: Option<String>,
+        target_lang: String,
+    ) -> impl Future<Output = Result<Translated, TranslationError>> + Send;
 }
 
 /// Mirrors `syneroym:data-layer/store@0.1.0`, function for function.

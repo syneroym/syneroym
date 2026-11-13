@@ -56,6 +56,7 @@ use syneroym_wit_interfaces::{
     http_host::syneroym::http::websocket,
     invocation_host::syneroym::invocation::invocation,
     signing_host::syneroym::signing::signing,
+    translation_host::syneroym::translation::translation,
 };
 use tokio::{
     fs as tokio_fs,

@@ -45,6 +45,12 @@ pub mod invocation {
     pub use syneroym_wit_interfaces::invocation::syneroym::invocation::invocation::CallerOrigin;
 }
 
+pub mod translation {
+    pub use syneroym_wit_interfaces::translation::syneroym::translation::translation::{
+        Detected, EngineInfo, Translated, TranslationError,
+    };
+}
+
 pub mod vault {
     pub use syneroym_wit_interfaces::vault::syneroym::vault::vault::VaultError;
 }

@@ -537,6 +537,17 @@ pub(super) async fn dispatch<H: AppHost>(
             };
             Ok(arm)
         }
+        Request::TranslationTargets => Ok(json!({ "targets": host.supported_targets().await })),
+        Request::DetectLanguage { text } => match host.detect_language(text).await {
+            Ok(found) => Ok(json!({ "detected": found })),
+            Err(e) => Ok(json!({ "err": e })),
+        },
+        Request::Translate { text, source_lang, target_lang } => {
+            match host.translate(text, source_lang, target_lang).await {
+                Ok(done) => Ok(json!({ "translated": done })),
+                Err(e) => Ok(json!({ "err": e })),
+            }
+        }
     }
 }
 

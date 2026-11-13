@@ -58,6 +58,7 @@ mod bindings {
             "syneroym:signing/signing@0.1.0": syneroym_wit_interfaces::signing::syneroym::signing::signing,
             "syneroym:invocation/invocation@0.1.0": syneroym_wit_interfaces::invocation::syneroym::invocation::invocation,
             "syneroym:events/events@0.1.0": syneroym_wit_interfaces::events::syneroym::events::events,
+            "syneroym:translation/translation@0.1.0": syneroym_wit_interfaces::translation::syneroym::translation::translation,
             "syneroym:http/websocket@0.1.0": syneroym_wit_interfaces::http_guest::syneroym::http::websocket,
             "syneroym:http/websocket-types@0.1.0": generate,
             "syneroym:http/incoming-handler@0.1.0": generate,

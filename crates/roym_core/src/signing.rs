@@ -262,7 +262,7 @@ pub(crate) mod tests {
 
     use syneroym_app_host::{
         AppAppConfig, AppBlobStore, AppConversation, AppDataLayer, AppEvents, AppInvocation,
-        AppMessaging, AppProxy, AppSigning, AppVault, AppWebSocket,
+        AppMessaging, AppProxy, AppSigning, AppTranslation, AppVault, AppWebSocket,
         types::{
             app_config::ConfigError,
             blob_store::BlobError,
@@ -280,6 +280,7 @@ pub(crate) mod tests {
             messaging::MessagingError,
             proxy::{CallOptions, CallRequest, CallTarget, ProxyError},
             signing::{RecordDraft, SigningError, SigningIdentity},
+            translation::{Detected, Translated, TranslationError},
             vault::VaultError,
         },
     };
@@ -710,6 +711,25 @@ pub(crate) mod tests {
             _limit: u32,
         ) -> Result<ReadResult, EventsError> {
             Ok(ReadResult::Events((Vec::new(), "0000000000000000-1".to_string())))
+        }
+    }
+
+    impl AppTranslation for TestHost {
+        async fn supported_targets(&self) -> Vec<String> {
+            Vec::new()
+        }
+
+        async fn detect_language(&self, _text: String) -> Result<Vec<Detected>, TranslationError> {
+            Err(TranslationError::Unavailable)
+        }
+
+        async fn translate(
+            &self,
+            _text: String,
+            _source_lang: Option<String>,
+            _target_lang: String,
+        ) -> Result<Translated, TranslationError> {
+            Err(TranslationError::Unavailable)
         }
     }
 

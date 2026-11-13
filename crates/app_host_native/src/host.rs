@@ -48,6 +48,8 @@ use wasmtime::component::Resource;
 
 use crate::{convert, factory::NativeHostFactory};
 
+mod translation;
+
 /// One invocation's handle to the host. A cheap `Arc` newtype, so a blob
 /// resource returned by `open_upload` can hold its host without borrowing
 /// it -- which is what keeps the trait methods on `&self` and keeps a
