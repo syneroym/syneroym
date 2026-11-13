@@ -3,8 +3,9 @@
 *Reader: the developer (or AI) who implements slice B5. You do not have the
 planning conversation. This plan is meant to stand alone.*
 
-**Status: plan written, 2026-11-13. Not reviewed. Owner questions Q1 to Q7
-(section 2.1) are open.**
+**Status: plan written, 2026-11-13. Plan review round 1 folded in, 2026-11-13
+(owner answers to Q1 to Q7 are in section 2.1; review items P1 to P11 are
+closed in [slice-b5-review.md](slice-b5-review.md)).**
 
 **Size and PR.** M. One PR on `feat/m08b-b5-translation`, with the commits
 of section 6 in that order. The branch starts from `main` at `6083ddb3`
@@ -213,6 +214,8 @@ Hub or the directory service asks.
   index are unknown), and a translated query that the person never saw
   would change their search results silently.
 
+Owner answer: (a), 2026-11-13. The Hub runs the search hook.
+
 **Q2. Which Roym components import `syneroym:translation`? (blocks
 Step 2)**
 
@@ -237,6 +240,8 @@ encoded into one component).
   five fail to build without the remap. This is a new way of wiring a
   capability that no other capability uses.
 
+Owner answer: (a), 2026-11-13. All six components import the interface.
+
 **Q3. Are the new `agreement.accept` inputs required? (blocks Step 4)**
 
 - (a) **Optional.** `viewed_lang` absent means the quote's original
@@ -249,6 +254,9 @@ encoded into one component).
 - (b) Required. `roymctl` gets `--viewed-lang` and `--viewed-via-mt`; 4
   substrate e2e files, 8 parity call sites and 5 contract call sites
   change (section 2.2, point 9).
+
+Owner answer: (a), 2026-11-13. The new `agreement.accept` inputs are
+optional.
 
 **Q4. Which `viewed_lang` values does `agreement.accept` accept? (blocks
 Step 4)**
@@ -263,6 +271,11 @@ Step 4)**
 - (b) Any canonical tag. Simpler, but a client bug (for example the UI
   language instead of the shown version) is signed for ever with no
   warning.
+
+Owner answer: (a), 2026-11-13. The rule is right, but the Hub must not
+reach a state the node refuses (P4): D-B5-6 `targetFor` skips every
+language of the record, so the Hub never offers a machine translation into
+the quote's own language.
 
 The check runs only in `agreement.accept`, where the quote with its
 translations is at hand. `AgreementReceiptPayload::validate` checks only
@@ -281,6 +294,9 @@ party's claim about what it read.
 - (b) Yes: one line per half, "Read in <language>" and "(machine
   translation)" when true. About +4 messages and one card test.
 
+Owner answer: (a), 2026-11-13. The receipt card does not show what each
+party read.
+
 **Q6. Does the WIT keep `detect-language`? (blocks Step 2)**
 
 No Roym code calls it in B5: every hook point knows the source language
@@ -294,6 +310,8 @@ tag, a search query), and `translate` takes `source-lang: option<string>`.
   it on both builds.
 - (b) Drop it from `0.1.0` until a caller exists.
 
+Owner answer: (a), 2026-11-13. Keep `detect-language`.
+
 **Q7. Is there an ADR for the interface? (blocks Step 7)**
 
 - (a) **A new ADR-0029, "Machine translation host interface"**, like
@@ -304,6 +322,10 @@ tag, a search query), and `translate` takes `source-lang: option<string>`.
   *Recommended*: a new host interface is an architecture decision, and
   M9A builds an engine on these rules.
 - (b) No ADR; the change doc's "D. Machine translation" is the record.
+
+Owner answer: (a), 2026-11-13. Add ADR-0029. It also says that v1 has no
+cost limit and no rate limit on `translation.*`, and that a later engine
+must add both before the node owner can name a remote engine.
 
 ### 2.2 Points found while reading
 
@@ -502,16 +524,20 @@ tag, a search query), and `translate` takes `source-lang: option<string>`.
 | ML-15 | `syneroym:translation@0.1.0` exists; every Roym service can call it through `AppTranslation`; `web` calls it. | `sandbox_wasm` `tests_translation.rs`; app-host parity `translation_answers_unavailable_on_both_builds`; roym-web parity `scenario_236_translation_methods_parity` |
 | ML-16 | The no-op host answers `unavailable` and `[]`. With it the Hub shows no translate action anywhere. | the same Rust tests; Hub `translation.test.ts` ("no target, no action, no translate call"); each hook point test's v1 case (section 7.1); Playwright "no translate action with a v1 node" |
 | ML-17 | No engine and no config exist, so no code path sends text off the node. `engine-info.remote` is in every result for later engines. | `tests_translation.rs` (`no_op_host_makes_no_call`: the no-op answers with no proxy, no network and no state); ADR-0029; section 7.4 says what is not proven |
-| ML-18 | Each acceptance half signs `viewed_lang` and `viewed_via_mt`. The Hub sends the shown version; the countersignature records the original. | `roym_core` `transaction/tests/viewed.rs`; parity `scenario_237_accept_records_what_was_viewed_parity`; `method_contract` `agreement_accept_viewed_fields_contract`; Hub `messages.test.ts` accept tests; Playwright "accepting a quote signs the version the person read" |
+| ML-18 | Each acceptance half signs `viewed_lang` and `viewed_via_mt`. The Hub sends the shown version; the countersignature records the original. | `roym_core` `transaction/tests/viewed.rs`; parity `scenario_237_accept_records_what_was_viewed_parity`; `method_contract` `agreement_accept_viewed_fields_contract`; two-node `roym_transaction_e2e` (accept with an author translation, both halves read back); Hub `messages.test.ts` accept tests (exact params) |
 | ML-19 | Before an acceptance of terms shown through MT, the Hub shows a warning that the original, in its named language, binds, and asks again. | Hub `messages.test.ts` ("accept after a machine translation warns first", stub engine); `templates.test.ts` (binds line on an MT version) |
-| ML-26 | The four M08B hook points call the interface: the Hub asks for targets once and each hook point offers the action from that list; a call that answers `unavailable` leaves the original text. Widget answers (M08C), opinions (M08G), offering, want and storefront display (M08D) are later (task.md section 5). | Hub: `translation.test.ts`, `directory.test.ts`, `record_text.test.ts`, `message_text.test.ts`, `messages.test.ts` (one v1 case and one stub-engine case each, plus an `unavailable` case) |
+| ML-26 | The four M08B hook points use the interface: the Hub asks for targets once (`translation.targets`) and each hook point offers the action from that list, so with v1 no hook point calls `translate`; a `translate` call that answers `unavailable` (stub engine) leaves the original text. Widget answers (M08C), opinions (M08G), offering, want and storefront display (M08D) are later (task.md section 5). | Hub: `translation.test.ts`, `directory.test.ts`, `record_text.test.ts`, `message_text.test.ts`, `messages.test.ts` (one v1 case and one stub-engine case each, plus an `unavailable` case) |
 | ML-27 | A translate action appears only at a hook point and only when `supported-targets` is not empty. | the same Hub tests; `hindi-screens.test.ts` (each action and label drawn in Hindi with the stub engine) |
 
 **Where decisions and deviations are written.** At close-out (Step 7):
 every D-B5-n and every owner answer goes into a new list "Decided <date>,
 translation interface" at the end of the change doc's section "D. Machine
 translation", and the agreement fields into "Agreements across languages".
-Deviations go under `## Deviations`: the search-query hook runs in the Hub
+Deviations go under `## Deviations`: hook points ask `supported-targets`
+once through `translation.targets` and, with an empty list, make no
+`translate` call (ML-26 reads as if each hook point calls the interface and
+gets `unavailable`; the `unavailable` answer is tested with a stub engine
+that answers it, not by v1); the search-query hook runs in the Hub
 (Q1, if (a)); `detect-language` has no Roym method (Q6); every Roym
 component imports the interface (Q2); the `viewed_*` inputs are optional
 (Q3); the deviation at `change.md:546` is rewritten (the binds line now
@@ -534,7 +560,7 @@ that entry (section 9).
 | W3 | `agreement.accept` input | `{quote_record_id}`; any other field `-32602` | also `viewed_lang?: string`, `viewed_via_mt?: bool` (Q3, Q4); unknown fields still `-32602`. `agreement.get` keeps the old input and still refuses `viewed_lang` |
 | W4 | `agreement-receipt` payload (signed) | 5 fields | also `viewed_lang` (canonical tag) and `viewed_via_mt` (bool), both required, outside `terms`. `version` stays 1 (change doc rule 4, D-S0-5) |
 | W5 | Verifying an `agreement-receipt` | a payload without the new fields is valid | it is refused (missing field), on receive (`sync.rs:448`), on `agreement.verify` and on backup import |
-| W6 | `agreement.verify` output (`RecordVerdict<AgreementReceiptPayload>`) | 5 payload keys | 7 keys; golden shape `method_shapes/agreement_verify_good.json` changes |
+| W6 | `agreement.verify` output (`RecordVerdict<AgreementReceiptPayload>`) and the receipt cards (`transaction.thread`, `transaction.export`) | 5 payload keys | 7 keys; golden shapes `method_shapes/agreement_verify_good.json`, `transaction_thread.json` and `transaction_export.json` change (find them all with `git grep -l '"quote_author_did"' crates/roym_web/tests/method_shapes` and check which have an `agreement-receipt` payload with `role` and `terms`) |
 
 **Old and new nodes.** The product is unreleased (change doc rule 4).
 
@@ -731,7 +757,8 @@ that depend on an owner answer say so.
     `texts` has 1 to `MAX_TRANSLATE_TEXTS = 8` entries (`field: "texts"`);
     each entry is at most `MAX_TRANSLATE_TEXT_BYTES = 8_192` bytes and the
     sum at most `MAX_TRANSLATE_TOTAL_BYTES = 32_768` (`field: "texts"`);
-    `target_lang` is a canonical tag (`syneroym_text_lang::LangTag::parse_canonical`,
+    `target_lang` is a canonical tag (`syneroym_roym_core::lang::LangTag::parse_canonical`;
+    `roym_web` does not depend on `syneroym-text-lang`, so no Cargo change,
     `field: "target_lang"`); `source_lang`, when present, is a canonical
     tag (`field: "source_lang"`). Then it calls
     `AppTranslation::translate` once per text, in order, and stops at the
@@ -834,13 +861,25 @@ that depend on an owner answer say so.
   new):
   - `loadTargets(): Promise<void>` calls `translation.targets` once and
     keeps the list in the module; any error keeps `[]` and logs nothing to
-    the person. `main.ts` awaits it after `whoami` and before `renderTabs`
-    (`main.ts:110`), only for a signed-in person.
-  - `targetFor(shownLang: string): string | null` → the first of
-    `readerLanguages()` (`records/record_text.ts:11`) that matches a target
-    with `sameLanguage` (`i18n/text_lang.ts:10`), and that does not match
-    `shownLang`; else `null`. `shownLang` may be `""` (unknown): then any
-    reader target. No target → no action (ML-27).
+    the person. The call is wrapped in a 3-second timeout that gives `[]`,
+    so a node that hangs on `/rpc` cannot delay the first draw. The
+    start-up code is a function `startTranslation(signedIn: boolean)` that
+    `main.ts` calls once, right after the session is known and before the
+    `pending` check (so the setup route and the direct route both have the
+    list). It calls `loadTargets()` only when `signedIn` is true. An
+    anonymous page makes no call.
+  - `targetFor(skipLangs: readonly string[]): string | null` → the first
+    entry **of the target list** (not the reader's tag; it is canonical by
+    contract) for which some tag of `readerLanguages()`
+    (`records/record_text.ts:11`) matches with `sameLanguage`
+    (`i18n/text_lang.ts:10`), and which matches none of `skipLangs`; else
+    `null`. `skipLangs` is every language already on the record: for
+    `recordText` the `lang` of all its versions (original, author
+    translations, machine versions already added); for `messageText` every
+    tag of the message (`[]` when untagged). So the Hub never offers a
+    machine translation into a language the record already has, and an
+    acceptance never sends `viewed_via_mt: true` with `viewed_lang ==
+    terms.lang` (Q4 (a), P4). No target → no action (ML-27).
   - `searchTargets(): string[]` → the target list, for the search box.
   - `translateTexts(texts, sourceLang, targetLang): Promise<MachineText>`
     calls `translation.translate` and returns `{ texts, sourceLang,
@@ -863,8 +902,12 @@ that depend on an owner answer say so.
     callers pass it: listing `[title, summary]`, request `[description]`,
     quote `[scope, cancellation_terms, refund_terms, dispute_path]`
     (empty strings are sent as they are and come back as they are; an
-    absent field is `""`).
-  - When `targetFor(shown.lang)` gives a target, the meta box gets a
+    absent field is `""`). A field whose value starts with `http://` or
+    `https://` is a link: `get` leaves it out of the array and `set` keeps
+    its original value, so the engine never sees it and a machine version
+    never draws a link that the author did not sign (the quote
+    `dispute_path` can be a URL).
+  - When `targetFor(all version langs)` gives a target, the meta box gets a
     button `.record-text-translate` (`translation-translate-button`,
     `$language` = the target's name, `type="button"`). With one version
     and no target, the output is exactly as today (no meta box; B3a
@@ -876,25 +919,52 @@ that depend on an owner answer say so.
     the switch button reads `record-text-show-original`; on failure
     `translation-failed`, and nothing else changes. A second click does
     not call again (the MT version is kept).
-  - `recordText` writes the shown version on its host element after each
-    draw: `data-shown-lang` (the version's `lang`) and `data-shown-via`
-    (`original`, `author` or `machine`). Only these two attributes; no
-    module state.
+  - `recordText` writes the shown version on its host element after every
+    draw and every state change: `data-shown-lang` (the version's `lang`)
+    and `data-shown-via` (`original`, `author` or `machine`). This includes
+    the one-version path, which returns early today (`record_text.ts:43`
+    to `:51`) and draws no meta box: it still writes `data-shown-lang` =
+    that version's `lang` and `data-shown-via` = `original`. The rest of
+    its output stays as today. Only these two attributes; no module state.
+  - **Switch behaviour with three versions** (original `O`, author
+    translation `A`, machine version `M`; the best version at first draw is
+    `A`). The switch button toggles between the original and the version
+    the person looked at last; Translate shows `M`. Table of the new shown
+    version and `data-shown-via`:
+
+    | Button | Shown now | Shown after | `data-shown-via` |
+    | --- | --- | --- | --- |
+    | (first draw) | — | `A` (or `O` when no author translation) | `author` (or `original`) |
+    | Translate | `O` or `A` | `M` (call made once; kept) | `machine` |
+    | Translate | `M` exists | `M` (no call) | `machine` |
+    | Switch | `M` | `O` | `original` |
+    | Switch | `A` | `O` | `original` |
+    | Switch | `O` | the last non-original version shown (`M` after a translation, else `A`) | `machine` or `author` |
+
+    The switch's label follows what it will show next
+    (`record-text-show-original` when the next version is `O`).
   - The quote binds line (`quote.ts:249`) is drawn when `v.byAuthor ||
     v.machine`.
   - `messageText(body, languages, tag, opts?)`: for a text message (the
-    two callers pass `{ translatable: true }` for a non-deleted UTF-8
-    message), when `targetFor(messageLang(languages))` gives a target, a
+    two callers pass `{ translatable: true }` only for a non-deleted UTF-8
+    **incoming** message: in a direct chat `direction === "incoming"`; in a
+    group an author that is not the reader; never the person's own
+    messages), when `targetFor(languages)` (all the message's tags, so a
+    message tagged `["hi","en"]` read by an English reader gets none)
+    gives a target, a
     button `.message-translate` follows the body; a click puts the MT in a
     `<span class="message-translation" lang="<target>">` and a note
     `.message-translation-note` (`machineNote`). The body itself never
     changes. Cards, deleted and binary messages get no button.
 - **D-B5-8. The accept button.** In `renderCardActions` the handler reads
-  `const shown = wrap.querySelector<HTMLElement>("[data-shown-lang]")!`
-  (the quote card always has one after D-B5-7; the `!` is asserted in a
-  test, no `?.`, B3a R4) and sends `{ quote_record_id, viewed_lang:
-  shown.dataset.shownLang, viewed_via_mt: shown.dataset.shownVia ===
-  "machine" }`.
+  `wrap.querySelector<HTMLElement>("[data-shown-lang]")` (the quote card
+  has one after D-B5-7, also with one version). The handler does not
+  assert it: `renderCardActions` is public to tests and tests 30 and 31
+  call it on a bare host with no drawn card. When no element is found, it
+  sends the card's own `data.terms.lang` and `false` (the original). Else
+  it sends `{ quote_record_id, viewed_lang: shown.dataset.shownLang,
+  viewed_via_mt: shown.dataset.shownVia === "machine" }`. (No `?.` in
+  tests, B3a R4; the `!` stays in tests only.)
 - **D-B5-9. The warning (ML-19).** When `shownVia === "machine"`, the
   first click on Accept does not call the node. It draws
   `.accept-mt-warning` (`messages-accept-mt-warning`: "You read a machine
@@ -1001,13 +1071,20 @@ Split as B3b P9 asks: the host first, then the guests.
    `fixtures.rs` is 799 lines: put the two keys on the existing lines, or
    move one helper to `deal_fixtures.rs`, so it stays at most 800.
 4. New parity file `dual_build_parity/agreement_lang.rs`, scenario 237;
-   the contract test; `UPDATE_METHOD_SHAPES=1` for
-   `agreement_verify_good.json` (read the diff: exactly two new keys).
+   the contract test; `UPDATE_METHOD_SHAPES=1` for every golden shape that
+   holds an `agreement-receipt` payload (`agreement_verify_good.json`,
+   `transaction_thread.json`, `transaction_export.json`, and any other that
+   the `git grep` of W6 and a failing `method_contract` shows). Read each
+   diff: exactly two new keys per payload, nothing else. In the Hub, add
+   `viewed_lang` and `viewed_via_mt` to the receipt sample in
+   `ui/src/cards/samples.json` (`:55`).
 5. `mise run build:roym`; `cargo nextest run -p syneroym-roym-core -p
    syneroym-roym-transaction`; `cargo nextest run -p syneroym-roym-web
    --test dual_build_parity --test method_contract`; `cargo nextest run -p
    syneroym-substrate --test roym_transaction_e2e --test roym_booking_e2e
-   --test roym_restore_e2e` (they use the defaults of Q3 (a)).
+   --test roym_restore_e2e` (they use the defaults of Q3 (a)). First extend
+   `roym_transaction_e2e` with the two-node acceptance of an author
+   translation (section 7.2, "Two nodes").
 6. Commit (`feat(transaction): record what each party viewed`).
 
 ### Step 5 — Hub
@@ -1028,16 +1105,19 @@ Split as B3b P9 asks: the host first, then the guests.
 
 ### Step 6 — Playwright
 
-1. `roym-hub.spec.ts`: the two tests of section 7.3.
+1. `roym-hub.spec.ts`: the one test of section 7.3.
 2. `mise run test:e2e` (redirected, AGENTS.md) and `mise run demo` (story
    40 unchanged, still passes).
-3. Commit (`test(e2e): accept records the viewed language`).
+3. Commit (`test(e2e): no translate action with a v1 node`). The two-node
+   proof is in Step 4 (`roym_transaction_e2e`).
 
 ### Step 7 — Sizes, docs and close-out
 
 1. Component size (section 7.6) and the Hub size (section 7.5). Write them
    into task.md as a B5 result line, in the form of the B4b line.
-2. ADR-0029 (Q7 (a)).
+2. ADR-0029 (Q7 (a)). It also says that v1 has no cost limit and no rate
+   limit on `translation.*`, and that a later engine must add both before
+   the node owner can name a remote engine.
 3. Change doc: decisions, deviations and test columns (section 3). `demo:`
    stays story 40; `status` stays `draft` (B6 closes it); add any file of
    section 9 that is not in `living-docs-touched`.
@@ -1062,25 +1142,40 @@ drawn). Every element is found with a non-null assertion; no `?.` and no
 `if (el)` (B2 R3, B3a R4, B3b R9).
 
 - `src/translation/translation.test.ts`: `loadTargets` keeps the list;
-  a `-32601` answer and a network failure both give `[]`;
-  `targetFor` (shown `hi`, reader `["en"]`, targets `["en","hi"]` → `en`;
-  shown `en` → `null`; shown `""` → `en`; `iw`/`he` through
-  `sameLanguage`; a target `constructor` is not inherited, B1a P5);
+  a `-32601` answer, a network failure and a call that does not answer
+  within the timeout all give `[]`; `startTranslation(true)` calls
+  `translation.targets` once, `startTranslation(false)` calls nothing;
+  `targetFor` (skip `["hi"]`, reader `["en"]`, targets `["en","hi"]` →
+  `en`; skip `["en"]` → `null`; skip `[]` → `en`; reader `["en-US"]`,
+  targets `["en"]` → `en`; reader `["en-us"]` → `en` (the returned string
+  is the target-list entry); skip `["hi","en"]`, reader `["hi","en"]`,
+  targets `["hi","en"]` → `null`; `iw`/`he` through `sameLanguage`; a
+  target `constructor` is not inherited, B1a P5);
   `translateTexts` sends `{texts, source_lang, target_lang}` and omits a
   `null` source; `machineNote` for `remote: false` and `true`.
 - `records/record_text.test.ts`: the three cases for a one-version record
-  and for a record with an author translation; after a stub translation,
-  `data-shown-lang` is the target and `data-shown-via` is `machine`;
-  after "Show the original", `original`; with an author translation shown,
-  `author`; a second click on Translate makes no second call.
+  and for a record with an author translation; a one-version record has
+  `data-shown-lang` (its `lang`) and `data-shown-via="original"` with no
+  meta box; one test walks original, author translation, machine version,
+  original and asserts both attributes at each step, following the table
+  in D-B5-7; a second click on Translate makes no second call; original
+  `hi`, author translation `en` shown, reader `["hi","en"]`, targets
+  `["hi","en"]` draws no Translate button.
 - `cards/templates/templates.test.ts`: the quote binds line on an MT
   version; listing hit and request card pass their text fields (assert the
-  exact `texts` array sent).
+  exact `texts` array sent); a quote whose `dispute_path` is a link sends
+  an array with no link, and its machine version keeps the original link.
 - `chat/message_text.test.ts`: the three cases; a message tagged in the
-  reader's language gets no button; an untagged message sends no
+  reader's language gets no button, also when that tag is its second tag
+  (`["hi","en"]`, English reader); an outgoing message and a group message
+  by the reader get no button (through the callers' tests); an untagged message sends no
   `source_lang`; cards, deleted and binary rows get no button (through the
   callers' tests in `messages.test.ts` and `groups.test.ts`).
-- `screens/messages.test.ts`: Accept on the original sends `{
+- `screens/messages.test.ts`: Accept on a quote with one version (no
+  author translation, so no meta box) sends `{ quote_record_id,
+  viewed_lang: "<terms.lang>", viewed_via_mt: false }`; `renderCardActions`
+  on a bare host with no drawn card sends the card's `terms.lang` and
+  `false` and does not throw; Accept on the original sends `{
   quote_record_id, viewed_lang: "<terms.lang>", viewed_via_mt: false }`;
   after "Show the author's translation", the translation's tag and
   `false`; after a stub MT, the first click draws `.accept-mt-warning`
@@ -1167,26 +1262,33 @@ new; registered in `dual_build_parity.rs` next to `:25` to `:26`)
   `agreement_accept_viewed_fields_contract`: `agreement.accept` takes the
   two fields and still refuses an unknown one with `data.field`;
   `agreement.get` refuses `viewed_lang` (its input did not change).
-- `agreement_verify_good.json` has the two new keys.
+- `agreement_verify_good.json`, `transaction_thread.json` and `transaction_export.json` have the two new keys in every receipt payload.
 - Existing tests keep passing unchanged: every caller of section 2.2 point
   9 (the defaults of Q3 (a)).
+
+**Two nodes** (`crates/substrate/tests/roym_transaction_e2e.rs`, extended;
+Alice and Bob already exist there and Bob accepts at `:221`)
+
+- A quote with an author translation: Bob accepts with `viewed_lang` set
+  to that translation's tag and `viewed_via_mt: false`. Read both halves
+  back from `agreement.get` on both nodes: the counterparty half has the
+  translation's tag and `false`; after sync the author's half has the
+  original `terms.lang` and `false`; the pair is complete. Ports come from
+  `alloc_ports` as the file already does.
 
 ### 7.3 Playwright
 
 - `roym-hub.spec.ts`, new test "no translate action with a v1 node": with
-  a listing hit, a quote card and a chat message on screen,
+  a listing hit and a chat message on screen (the one-node set-up has no
+  quote; the quote card is covered by the unit tests),
   `.record-text-translate`, `.message-translate`, `.search-translate` and
   `.search-translate-target` each have count 0, and
   `page.evaluate` of `translation.targets` through `/rpc` answers
   `{"targets": []}`.
-- New test "accepting a quote signs the version the person read": Alice
-  sends Bob a quote in `hi` with an English author translation; Bob's
-  Hub (English) shows the English text; Bob presses Accept; then
-  `agreement.get` on Bob's node gives the counterparty half, and its
-  envelope payload has `viewed_lang: "en"` and `viewed_via_mt: false`.
-  Reuse the quote set-up of tests 30 and 31 (`:1073`, `:1125`); move the
-  shared part into `hub-helpers.ts` if both tests need it. Check before
-  the click that the note `record-text-by-author` is on screen (B3b R7).
+- The signed result is proved on two nodes in Rust, not in Playwright:
+  the one-node Playwright set-up has no quote (tests 30 and 31 call
+  `renderCardActions` on a bare host and never click Accept). See
+  `roym_transaction_e2e` in section 7.2.
 - Story 40 runs unchanged.
 
 ### 7.4 Not tested
@@ -1309,7 +1411,9 @@ No new `TODO` or `FIXME` marker is written.
 - `docs/roym-integrated-experience-spec.md:476` (the `agreement-receipt`
   row: also what each party read).
 - `docs/planning/traceability-matrix.md:68` (`[APP-A11Y]`: the new tests).
-- `docs/decisions/0029-machine-translation-host-interface.md` (new, Q7).
+- `docs/decisions/0029-machine-translation-host-interface.md` (new, Q7;
+  includes the statement that v1 has no cost or rate limit on
+  `translation.*`).
 - `AGENTS.md`: the WIT package list (in "Architecture", the
   `syneroym-wit-interfaces` bullet) adds `translation`.
 - `task.md`: the B5 result line.
