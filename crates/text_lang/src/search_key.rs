@@ -11,6 +11,8 @@ mod fold;
 mod script;
 mod tamil;
 
+use script::Script;
+
 #[cfg(test)]
 mod tests;
 
@@ -84,10 +86,10 @@ fn process_word(
 
     for (sc, rtext) in runs {
         match sc {
-            script::Script::Devanagari => {
+            Script::Devanagari => {
                 word_text.push_str(&devanagari::to_latin(rtext));
             }
-            script::Script::Tamil => {
+            Script::Tamil => {
                 let tw = tamil::to_latin(rtext);
                 word_text.push_str(&tw.text);
                 if starts_with_stop.is_none() {
@@ -95,10 +97,10 @@ fn process_word(
                 }
                 ends_with_pulli_stop = tw.ends_with_pulli_stop;
             }
-            script::Script::Latin => {
+            Script::Latin => {
                 word_text.push_str(&latin_base(rtext));
             }
-            script::Script::Other => {
+            Script::Other => {
                 word_text.push_str(rtext);
             }
         }

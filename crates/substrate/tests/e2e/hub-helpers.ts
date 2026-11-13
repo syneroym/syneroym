@@ -55,11 +55,74 @@ export async function saveProfile(page: Page, displayName: string, conversationA
 /** Add a contact by person DID and conversation address. */
 export async function addContact(page: Page, personDid: string, conversationAddress: string) {
   await page.getByRole('button', { name: 'Contacts' }).click();
-  const inputs = page.locator('.contacts-screen input');
-  await inputs.nth(0).fill(personDid);
-  await inputs.nth(1).fill(conversationAddress);
-  await page.getByRole('button', { name: 'Upsert Contact' }).click();
+  await page.locator('.contacts-screen .contacts-did-input').fill(personDid);
+  await page.locator('.contacts-screen .contacts-address-input').fill(conversationAddress);
+  await page.locator('.contacts-screen .contacts-upsert-button').click();
   await expect(page.locator('.contacts-screen')).toContainText(personDid, { timeout: 15_000 });
+}
+
+/** Ensure the signed-in person's node runs a SynOrg with generous limits. */
+export async function ensureOwnSynOrg(
+  page: Page,
+  directoryDid?: string,
+  category = 'bicycle-repair',
+  lang = 'en',
+) {
+  await page.getByRole('button', { name: hubMessage(lang, 'tab-synorg'), exact: true }).click();
+  const status = await page.locator('.synorg-status').innerText();
+  if (status.includes(hubMessage(lang, 'synorg-status-none'))) {
+    await page.locator('.synorg-name').fill('E2E Trades');
+    await page.locator('.synorg-rules').fill('Be honest. Show up.');
+    await pickCategory(page.locator('.synorg-categories'), category, lang);
+    await page.locator('.synorg-support').fill('help@example.org');
+    await page.locator('.synorg-dispute').fill('Email support.');
+    await page.locator('.synorg-retention-days').fill('30');
+    await page.getByRole('button', { name: hubMessage(lang, 'synorg-save-button') }).click();
+    await expect(page.locator('.synorg-save-status')).toHaveText(hubMessage(lang, 'common-saved'), { timeout: 15_000 });
+    await page.getByRole('button', { name: hubMessage(lang, 'tab-synorg'), exact: true }).click();
+    // A publish now also needs a membership credential from this SynOrg.
+    // The Hub has no screen for issuing one yet, so this grants the
+    // node's own owner one directly, over the wire this test already
+    // authenticates with.
+    const whoami = await rpcCall(page, 'session.whoami', {});
+    const issued = await rpcCall(page, 'credential.issue', {
+      member_did: whoami.result?.did,
+      categories: [category],
+      expires_at_secs: Math.floor(Date.now() / 1000) + 365 * 24 * 3600,
+    });
+    expect(issued.result?.record_id).toBeTruthy();
+  }
+  // Every test shares this one node, so publications from earlier tests
+  // sit in the 24 h ledger. Keep the limit generous so a fresh publish
+  // does not hit it -- the one case that tests the limit lowers it again.
+  await expect(page.locator('.limit-max')).toBeVisible({ timeout: 15_000 });
+  await page.locator('.limit-window').fill('86400');
+  await page.locator('.limit-max').fill('1000'); // the ceiling; 0 would block every publish
+  await page.getByRole('button', { name: hubMessage(lang, 'synorg-limit-save') }).click();
+  await expect(page.locator('.limit-status')).toHaveText(hubMessage(lang, 'common-saved'), { timeout: 15_000 });
+}
+
+/** Publish a listing to the directory under a SynOrg. */
+export async function publishListing(
+  page: Page,
+  title: string,
+  category = 'bicycle-repair',
+  directoryDid = '',
+  lang = 'en',
+) {
+  await page.getByRole('button', { name: hubMessage(lang, 'tab-listings') }).click();
+  await page.locator('.listing-title-input').fill(title);
+  await pickCategory(page.locator('.listing-categories-input'), category, lang);
+  await page.locator('.listing-address-input').fill(directoryDid);
+  await page.locator('.block-payment .block-enabled').check();
+  await page.locator('.payment-amount-input').fill('40');
+  await page.locator('.save-listing').click();
+  await expect(page.locator('.listing-save-result')).toContainText('lst_', { timeout: 15_000 });
+
+  const row = page.locator('.listing-row', { hasText: title }).first();
+  await row.locator('.publish-directory-did').fill(directoryDid);
+  await row.locator('.publish-listing').click();
+  await expect(row.locator('.publish-status')).toContainText(hubMessage(lang, 'listing-published'), { timeout: 15_000 });
 }
 
 /** Open the Messages screen. The Hub fetches the list again each time it is opened. */

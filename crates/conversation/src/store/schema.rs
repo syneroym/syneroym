@@ -15,7 +15,7 @@ use rusqlite::Connection;
 use syneroym_async_queue::{Queue, QueueConfig};
 use zeroize::Zeroizing;
 
-use super::{ConversationConfig, ConversationStore};
+use super::{ConversationConfig, ConversationStore, text_index};
 
 impl ConversationStore {
     pub fn open_encrypted(
@@ -48,7 +48,7 @@ impl ConversationStore {
         for ddl in TABLE_GROUP_DDL {
             conn.execute_batch(ddl)?;
         }
-        super::text_index::ensure(conn)?;
+        text_index::ensure(conn)?;
         Ok(())
     }
 }

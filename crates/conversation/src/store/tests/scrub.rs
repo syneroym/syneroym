@@ -1,6 +1,6 @@
 //! Deleted text must leave the database files, not only the visible tables.
 
-use std::{fs, path::Path};
+use std::{fs, path::Path, str};
 
 use rusqlite::Connection;
 use syneroym_rpc::{Admission, DropAnswer};
@@ -13,7 +13,7 @@ use crate::store::{ConversationConfig, ConversationStore, scrub::PRUNE_DROPPED_S
 const WORD: &[u8] = b"zqxjvk";
 
 fn key_needles() -> (String, String) {
-    let ik = fts::index_keys(std::str::from_utf8(WORD).unwrap());
+    let ik = fts::index_keys(str::from_utf8(WORD).unwrap());
     let joined = ik.joined;
     let trigram = joined.chars().take(3).collect::<String>();
     (joined, trigram)

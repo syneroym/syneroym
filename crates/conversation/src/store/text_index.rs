@@ -1,5 +1,7 @@
 //! Full-text search index over messages using trigram and word tables.
 
+use std::str;
+
 use rusqlite::{Connection, Result, params};
 use syneroym_text_lang::{
     SEARCH_KEY_VERSION,
@@ -76,7 +78,7 @@ pub(crate) fn ensure(conn: &Connection) -> Result<()> {
         for r in rows {
             let (rowid, ct, body_bytes) = r?;
             if is_searchable_content_type(&ct)
-                && let Ok(body_str) = std::str::from_utf8(&body_bytes)
+                && let Ok(body_str) = str::from_utf8(&body_bytes)
             {
                 list.push((rowid, body_str.to_string()));
             }

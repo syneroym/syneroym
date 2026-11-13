@@ -33,6 +33,7 @@ roym_node() {
   run "${ctl[@]}" roym enrol-signing --master owner --gateway-url "http://127.0.0.1:$gw" \
     --host "$host" --registry-url "$REGISTRY"
   demo_set "${upper}_DID" "$(did_of "$dir" owner)"
+  demo_set "${upper}_DIRECTORY_DID" "$(did_of "$dir" "member-roym#directory-0")"
 
   caption "Read $name's conversation address"
   local answer

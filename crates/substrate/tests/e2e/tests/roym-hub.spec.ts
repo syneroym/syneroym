@@ -1,7 +1,8 @@
 import { test, expect, type Page } from '../fixtures';
 import {
-  addContact, addListingTranslation, addMessageLanguage, chooseHubLanguage, hubMessage, loginWithDelegatedKey, openConversation, openMessages, pickCategory, rpcCall, saveProfile,
-  sendMessage, threadMessage,
+  addContact, addListingTranslation, addMessageLanguage, chooseHubLanguage, ensureOwnSynOrg,
+  hubMessage, loginWithDelegatedKey, openConversation, openMessages, pickCategory, publishListing,
+  rpcCall, saveProfile, sendMessage, threadMessage,
 } from '../hub-helpers';
 import { readE2EPorts } from '../ports';
 
@@ -513,52 +514,8 @@ test.describe('Roym Hub', () => {
   /// path, so a search has something real to return.
   async function ensureSynOrgWithListing(page: Page, title: string) {
     expect(DIRECTORY_DID, 'ROYM_DIRECTORY_DID must be set by global-setup').toBeTruthy();
-    await page.getByRole('button', { name: 'SynOrg', exact: true }).click();
-    const status = await page.locator('.synorg-status').innerText();
-    if (status.includes('runs no SynOrg')) {
-      await page.locator('.synorg-name').fill('E2E Trades');
-      await page.locator('.synorg-rules').fill('Be honest. Show up.');
-      await pickCategory(page.locator('.synorg-categories'), 'bicycle-repair');
-      await page.locator('.synorg-support').fill('help@example.org');
-      await page.locator('.synorg-dispute').fill('Email support.');
-      await page.locator('.synorg-retention-days').fill('30');
-      await page.getByRole('button', { name: 'Save settings' }).click();
-      await expect(page.locator('.synorg-save-status')).toHaveText('Saved.', { timeout: 15_000 });
-      await page.getByRole('button', { name: 'SynOrg', exact: true }).click();
-      // A publish now also needs a membership credential from this SynOrg.
-      // The Hub has no screen for issuing one yet, so this grants the
-      // node's own owner one directly, over the wire this test already
-      // authenticates with.
-      const whoami = await rpcCall(page, 'session.whoami', {});
-      const issued = await rpcCall(page, 'credential.issue', {
-        member_did: whoami.result?.did,
-        categories: ['bicycle-repair'],
-        expires_at_secs: Math.floor(Date.now() / 1000) + 365 * 24 * 3600,
-      });
-      expect(issued.result?.record_id).toBeTruthy();
-    }
-    // Every test shares this one node, so publications from earlier tests
-    // sit in the 24 h ledger. Keep the limit generous so a fresh publish
-    // does not hit it -- the one case that tests the limit lowers it again.
-    await expect(page.locator('.limit-max')).toBeVisible({ timeout: 15_000 });
-    await page.locator('.limit-window').fill('86400');
-    await page.locator('.limit-max').fill('1000'); // the ceiling; 0 would block every publish
-    await page.getByRole('button', { name: 'Save limit' }).click();
-    await expect(page.locator('.limit-status')).toHaveText('Saved.', { timeout: 15_000 });
-
-    await page.getByRole('button', { name: 'Listings' }).click();
-    await page.locator('.listing-title-input').fill(title);
-    await pickCategory(page.locator('.listing-categories-input'), 'bicycle-repair');
-    await page.locator('.listing-address-input').fill(DIRECTORY_DID!);
-    await page.locator('.block-payment .block-enabled').check();
-    await page.locator('.payment-amount-input').fill('40');
-    await page.locator('.save-listing').click();
-    await expect(page.locator('.listing-save-result')).toContainText('Saved lst_', { timeout: 15_000 });
-
-    const row = page.locator('.listing-row', { hasText: title }).first();
-    await row.locator('.publish-directory-did').fill(DIRECTORY_DID!);
-    await row.locator('.publish-listing').click();
-    await expect(row.locator('.publish-status')).toContainText('Published', { timeout: 15_000 });
+    await ensureOwnSynOrg(page, DIRECTORY_DID!, 'bicycle-repair', 'en');
+    await publishListing(page, title, 'bicycle-repair', DIRECTORY_DID!, 'en');
   }
 
   async function removeAllSources(page: Page) {
@@ -1461,5 +1418,99 @@ test.describe('Roym Hub', () => {
     await expect(hitHi.locator('.record-text-note')).toHaveText('मूल विवरण, हिन्दी में।');
 
     await chooseHubLanguage(page, 'en');
+  });
+
+  test('a Latin search finds a Devanagari listing, and the other way', async ({ page }) => {
+    await page.goto(HUB_URL);
+    await page.waitForLoadState('networkidle');
+    await loginWithDelegatedKey(page);
+    await ensureSynOrgWithListing(page, 'Cross-script search seed');
+
+    const tag1 = Date.now().toString(36);
+    const tag2 = (Date.now() + 1).toString(36);
+    const title1 = `नल वाला ${tag1}`;
+    const title2 = `nal wala ${tag2}`;
+
+    await publishListing(page, title1, 'bicycle-repair', DIRECTORY_DID!, 'en');
+
+    await page.getByRole('button', { name: 'Listings' }).click();
+    await page.locator('.listing-text-lang').selectOption('hi-Latn');
+    await page.locator('.listing-title-input').fill(title2);
+    await pickCategory(page.locator('.listing-categories-input'), 'bicycle-repair');
+    await page.locator('.listing-address-input').fill(DIRECTORY_DID!);
+    await page.locator('.block-payment .block-enabled').check();
+    await page.locator('.payment-amount-input').fill('40');
+    await page.locator('.save-listing').click();
+    await expect(page.locator('.listing-save-result')).toContainText('Saved lst_', { timeout: 15_000 });
+    const row2 = page.locator('.listing-row', { hasText: title2 }).first();
+    await row2.locator('.publish-directory-did').fill(DIRECTORY_DID!);
+    await row2.locator('.publish-listing').click();
+    await expect(row2.locator('.publish-status')).toContainText('Published', { timeout: 15_000 });
+
+    await removeAllSources(page);
+    await page.locator('.add-source-did').fill(DIRECTORY_DID!);
+    await page.getByRole('button', { name: 'Add directory' }).click();
+    await expect(page.locator('.add-source-status')).toContainText('Added', { timeout: 15_000 });
+
+    await page.locator('.search-text-input').fill(`nal wala ${tag1}`);
+    await page.getByRole('button', { name: 'Search', exact: true }).click();
+    const hit1 = page.locator('.search-hit', { hasText: title1 });
+    await expect(hit1).toHaveCount(1, { timeout: 20_000 });
+
+    await page.locator('.search-text-input').fill(`नल वाला ${tag2}`);
+    await page.getByRole('button', { name: 'Search', exact: true }).click();
+    const hit2 = page.locator('.search-hit', { hasText: title2 });
+    await expect(hit2).toHaveCount(1, { timeout: 20_000 });
+  });
+
+  test('contact search finds a name in another script', async ({ page }) => {
+    await page.goto(HUB_URL);
+    await page.waitForLoadState('networkidle');
+    await loginWithDelegatedKey(page);
+
+    const tag = Date.now().toString(36);
+    const did1 = `did:key:z6MkuDeva${tag}`;
+    const addr1 = `conv_deva_${tag}`;
+    const did2 = `did:key:z6MkuLatn${tag}`;
+    const addr2 = `conv_latn_${tag}`;
+
+    await rpcCall(page, 'contacts.upsert', {
+      person_did: did1,
+      conversation_address: addr1,
+      display_name: 'राम',
+    });
+    await rpcCall(page, 'contacts.upsert', {
+      person_did: did2,
+      conversation_address: addr2,
+      display_name: 'Ram',
+    });
+
+    await page.getByRole('button', { name: 'Contacts' }).click();
+    await expect(page.locator('.contacts-screen')).toBeVisible();
+
+    const searchInput = page.locator('.contacts-search-input');
+    const searchBtn = page.locator('.contacts-search-button');
+
+    await searchInput.fill('ram');
+    await searchBtn.click();
+    await expect(page.locator('.contacts-screen')).toContainText('राम');
+    await expect(page.locator('.contacts-screen')).toContainText('Ram');
+
+    await searchInput.fill('राम');
+    await searchBtn.click();
+    await expect(page.locator('.contacts-screen')).toContainText('राम');
+    await expect(page.locator('.contacts-screen')).toContainText('Ram');
+
+    await searchInput.fill('');
+    await searchBtn.click();
+    await expect(page.locator('.contacts-screen')).toContainText('राम');
+    await expect(page.locator('.contacts-screen')).toContainText('Ram');
+
+    const text = await page.locator('.contacts-screen').innerText();
+    const idxRam = text.indexOf('Ram');
+    const idxDeva = text.indexOf('राम');
+    expect(idxRam).toBeGreaterThanOrEqual(0);
+    expect(idxDeva).toBeGreaterThanOrEqual(0);
+    expect(idxRam).toBeLessThan(idxDeva);
   });
 });

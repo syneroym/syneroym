@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, fs};
 
 use crate::{
     fts,
@@ -159,7 +159,7 @@ fn spelling_rows_match_the_owner_decisions() {
     if std::env::var("UPDATE_SPELLING_RESULTS").as_deref() == Ok("1") {
         let manifest_dir = env!("CARGO_MANIFEST_DIR");
         let golden_path = format!("{manifest_dir}/src/search_key/tests/spelling-results.tsv");
-        std::fs::write(&golden_path, &actual_results)
+        fs::write(&golden_path, &actual_results)
             .expect("Failed to write golden spelling-results.tsv");
     } else {
         assert_eq!(actual_results, GOLDEN_RESULTS, "spelling-results.tsv differences detected");

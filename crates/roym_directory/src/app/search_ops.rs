@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use syneroym_app_host::{AppDataLayer, AppHost, AppSigning};
+use syneroym_app_host::{AppDataLayer, AppHost, AppSigning, types::data_layer::DataLayerError};
 use syneroym_roym_core::{
     area::{self, Area},
     clock,
@@ -336,7 +336,7 @@ async fn collect_search_candidates<H: AppHost>(
     loop {
         let records_opt = match pages.next_page_typed().await {
             Ok(opt) => opt,
-            Err(syneroym_app_host::types::data_layer::DataLayerError::SchemaViolation(msg)) => {
+            Err(DataLayerError::SchemaViolation(msg)) => {
                 return Err(CandidateError::Refused(msg));
             }
             Err(e) => return Err(CandidateError::Host(e.to_string())),

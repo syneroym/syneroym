@@ -1,8 +1,8 @@
 import { expect, test } from '@playwright/test';
 import { readDemoEnv } from '../demo-nodes';
 import {
-  addListingTranslation, addMessageLanguage, chooseHubLanguage, hubMessage, loginWithDelegatedKey,
-  openConversation, openMessages, pickCategory, sendMessage,
+  addListingTranslation, addMessageLanguage, chooseHubLanguage, ensureOwnSynOrg, hubMessage,
+  loginWithDelegatedKey, openConversation, openMessages, pickCategory, publishListing, sendMessage,
 } from '../hub-helpers';
 import { requireEnv, step } from './steps';
 
@@ -18,6 +18,7 @@ test('Roym languages story: Alice reads her Hub in Hindi, and it stays Hindi', a
   const hub = requireEnv(env, 'ALICE_HUB_URL', SCRIPT);
   const key = requireEnv(env, 'ALICE_KEY', SCRIPT);
   const bobAddr = requireEnv(env, 'BOB_ADDR', SCRIPT);
+  const aliceDirectoryDid = requireEnv(env, 'ALICE_DIRECTORY_DID', SCRIPT);
   const profileTab = page.locator('.tab-button').first();
 
   await step(page, "Alice's screen: sign in", async () => {
@@ -78,5 +79,23 @@ test('Roym languages story: Alice reads her Hub in Hindi, and it stays Hindi', a
     const body = page.locator('.thread-messages .message .message-body', { hasText: msg }).first();
     await expect(body).toBeVisible({ timeout: 15_000 });
     await expect(body).toHaveAttribute('lang', 'hi');
+  });
+
+  await step(page, "Alice's screen: a search in Latin letters finds her Devanagari listing", async () => {
+    // The tag keeps the story repeatable on the same nodes. It is base-36 digits and letters,
+    // so it reads the same in both scripts.
+    const runTag = Date.now().toString(36);
+    const title = `नल वाला ${runTag}`;
+    await ensureOwnSynOrg(page, aliceDirectoryDid, 'gardening', 'hi');
+    await publishListing(page, title, 'gardening', aliceDirectoryDid, 'hi');
+
+    await page.getByRole('button', { name: hubMessage('hi', 'tab-directory') }).click();
+    await page.locator('.add-source-did').fill(aliceDirectoryDid);
+    await page.getByRole('button', { name: hubMessage('hi', 'directory-add-button') }).click();
+    await expect(page.locator('.add-source-status')).not.toBeEmpty({ timeout: 15_000 });
+
+    await page.locator('.search-text-input').fill(`nal wala ${runTag}`);
+    await page.getByRole('button', { name: hubMessage('hi', 'directory-search-button'), exact: true }).click();
+    await expect(page.locator('.search-hit', { hasText: title })).toHaveCount(1, { timeout: 20_000 });
   });
 });

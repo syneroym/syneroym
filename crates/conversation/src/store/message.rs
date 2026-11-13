@@ -11,6 +11,7 @@ use syneroym_rpc::{Admission, ConversationDeliveryState};
 
 use super::{
     ConversationStore, OutboxItem, StoreError, StoredMessage, now_ms, state_from_str, state_str,
+    text_index,
 };
 use crate::dag::{parse_deletion_request, parse_refusal_notice};
 
@@ -133,7 +134,7 @@ impl ConversationStore {
                 && is_searchable_content_type(content_type)
                 && let Ok(body_str) = str::from_utf8(body)
             {
-                super::text_index::sync(tx, rowid, body_str)?;
+                text_index::sync(tx, rowid, body_str)?;
             }
 
             if !system {
@@ -186,7 +187,7 @@ impl ConversationStore {
         if is_searchable_content_type(content_type)
             && let Ok(body_str) = str::from_utf8(body)
         {
-            super::text_index::sync(&conn, rowid, body_str)?;
+            text_index::sync(&conn, rowid, body_str)?;
         }
         Self::touch_conversation(&conn, conversation_id, now_ms)?;
         Ok(())
@@ -325,7 +326,7 @@ impl ConversationStore {
                 if is_searchable_content_type(&ct)
                     && let Ok(body_str) = str::from_utf8(&body)
                 {
-                    super::text_index::sync(conn, rowid, body_str)?;
+                    text_index::sync(conn, rowid, body_str)?;
                 }
                 Ok(true)
             }
@@ -346,7 +347,7 @@ impl ConversationStore {
                     )
                     .unwrap_or(false);
                 let report = if is_group { false } else { drop_ans.report };
-                super::text_index::remove(conn, rowid)?;
+                text_index::remove(conn, rowid)?;
                 conn.execute(
                     "UPDATE messages SET admission = 'dropped', admission_reason = ?1, \
                      report_refusal = ?2, admission_changed_at = ?3, body = zeroblob(0) WHERE id \
@@ -391,7 +392,7 @@ impl ConversationStore {
             .optional()?;
         let Some((rowid, admission, outgoing, state)) = info else { return Ok(None) };
         let visible = outgoing != 0 || admission == "accepted";
-        super::text_index::remove(conn, rowid)?;
+        text_index::remove(conn, rowid)?;
         if outgoing != 0 && matches!(state.as_str(), "pending" | "deposited") {
             let _ = conn.execute(
                 "DELETE FROM outbound_envelopes WHERE message_id = ?1",
