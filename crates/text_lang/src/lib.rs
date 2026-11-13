@@ -10,6 +10,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 #[cfg(test)]
 mod tests;
 
+pub mod fts;
 mod search_key;
 
 pub use search_key::{

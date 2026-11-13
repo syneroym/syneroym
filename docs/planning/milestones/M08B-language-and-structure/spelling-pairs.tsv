@@ -1,7 +1,7 @@
 # spelling-pairs.tsv: test data for Roym search keys (Hindi and Tamil typed in Latin letters)
 # Reader: developers who build and test search keys.
 # written by: Claude Sonnet 5.5, 2026-11-05
-# owner check: pending
+# owner check: done 2026-11-13 (owner decisions below; no data row changed)
 # kinds: pair = a word in its script and one common Latin spelling;
 #   variant = another Latin spelling that people expect to match the group's word;
 #   joined = the words of a multi-word group with spaces removed, expected to match;
@@ -11,23 +11,27 @@
 # a distinct row meet in another. The check script lists these conflicts.
 # The owner decides each one below. B4b may not change a row without the owner.
 # conflicts: 17 found by the check script; the owner decides each one (keep the "must meet" side or the "must not meet" side)
-#   edit a→: must meet in hi/aaj, hi/aam, hi/haan, hi/nagar, ta/aamam, ta/aani, ta/naalai, ta/naan, ta/thaiyalkaarar, ta/theriyaadhu, ta/vaa, ta/vendaam; must not meet in ta/madurai; owner decision: pending
-#   edit a→e: must meet in hi/lahsun, hi/main, hi/nariyal, hi/teacher, ta/chennai, ta/ennai, ta/irumbu-kadai, ta/jannal, ta/jaya, ta/kudai, ta/malikai-kadai, ta/mesai, ta/muttai, ta/painter, ta/saravanan, ta/sari, ta/selai, ta/selvam, ta/shankar, ta/tea-kadai, ta/teacher, ta/vennai, ta/vilai; must not meet in hi/darwaza, ta/savi, ta/vali; owner decision: pending
-#   edit a→o: must meet in hi/bahut; must not meet in ta/paruppu; owner decision: pending
-#   edit a→u: must meet in hi/ganj, hi/mohan, hi/rang-rogan, ta/coimbatore; must not meet in hi/gadda, hi/lakdi, ta/malikai-kadai, ta/pal; owner decision: pending
-#   edit e→: must meet in hi/ahmedabad, hi/indore, hi/meerut, hi/mobile, hi/pipe, ta/coimbatore, ta/cuddalore, ta/mobile, ta/pipe, ta/vellore; must not meet in ta/meen; owner decision: pending
-#   edit e→a: must meet in hi/ahmedabad, hi/carpenter, hi/computer, hi/driver, hi/gas-cylinder, hi/painter, hi/paise, hi/plumber, hi/pune, hi/teacher, hi/verma, ta/ange, ta/carpenter, ta/computer, ta/driver, ta/enge, ta/inge, ta/nagercoil, ta/painter, ta/plumber, ta/teacher; must not meet in hi/kapde, hi/kela, hi/seb, ta/salem, ta/selai, ta/thengai; owner decision: pending
-#   edit e→i: must meet in hi/delhi, hi/nai-delhi, ta/cement, ta/repair; must not meet in hi/tel, ta/seruppu, ta/vetti; owner decision: pending
-#   edit h→: must meet in hi/ahmedabad, hi/chhat, hi/khidki, hi/lahsun, hi/nahi, hi/pankha, hi/sharma, hi/shukriya, hi/shyam, hi/singh, ta/adhu, ta/ajith, ta/geetha, ta/idhu, ta/kadhavu, ta/kavitha, ta/latha, ta/nalladhu, ta/shankar, ta/sudha, ta/thachar, ta/thakkali, ta/thalaiyanai, ta/thanjavur, ta/thanneer, ta/thanneer-lorry, ta/thayir, ta/theneer, ta/theriyaadhu, ta/theriyum, ta/theru, ta/thuni-kadai; must not meet in hi/jharu, hi/phal; owner decision: pending
-#   edit i→: must meet in hi/varanasi, ta/illai, ta/muttai, ta/thalaiyanai; must not meet in ta/ennai; owner decision: pending
-#   edit i→u: must meet in ta/trichy; must not meet in ta/arisi, ta/mani, ta/nandri; owner decision: pending
-#   edit o→a: must meet in hi/doctor, ta/colony, ta/doctor; must not meet in hi/lohar, hi/mochi, hi/mohan; owner decision: pending
-#   edit o→u: must meet in hi/kyon, ta/cuddalore, ta/vellore; must not meet in ta/erode, ta/kothanar; owner decision: pending
-#   edit t→d: must meet in ta/cement; must not meet in hi/tala; owner decision: pending
-#   edit u→a: must meet in hi/bulb, hi/meerut, hi/plumber, ta/bulb, ta/plumber; must not meet in hi/dudh, hi/dudh-wala, hi/jute, hi/kursi, hi/lahsun, ta/murugan, ta/uppu; owner decision: pending
-#   edit u→i: must meet in ta/puducherry; must not meet in ta/balu, ta/muttai; owner decision: pending
-#   edit u→o: must meet in hi/bahut; must not meet in hi/sunar; owner decision: pending
-#   edit →i: must meet in hi/bhai, hi/flat, hi/mirch, hi/school, hi/tv, ta/madurai, ta/poo-vyabari, ta/sari, ta/trichy, ta/tv; must not meet in ta/kumar; owner decision: pending
+#   edit a→: must meet in hi/aaj, hi/aam, hi/haan, hi/nagar, ta/aamam, ta/aani, ta/naalai, ta/naan, ta/thaiyalkaarar, ta/theriyaadhu, ta/vaa, ta/vendaam; must not meet in ta/madurai; owner decision: keep "must meet"
+#   edit a→e: must meet in hi/lahsun, hi/main, hi/nariyal, hi/teacher, ta/chennai, ta/ennai, ta/irumbu-kadai, ta/jannal, ta/jaya, ta/kudai, ta/malikai-kadai, ta/mesai, ta/muttai, ta/painter, ta/saravanan, ta/sari, ta/selai, ta/selvam, ta/shankar, ta/tea-kadai, ta/teacher, ta/vennai, ta/vilai; must not meet in hi/darwaza, ta/savi, ta/vali; owner decision: keep "must not meet"
+#   edit a→o: must meet in hi/bahut; must not meet in ta/paruppu; owner decision: keep "must not meet"
+#   edit a→u: must meet in hi/ganj, hi/mohan, hi/rang-rogan, ta/coimbatore; must not meet in hi/gadda, hi/lakdi, ta/malikai-kadai, ta/pal; owner decision: keep "must not meet"
+#   edit e→: must meet in hi/ahmedabad, hi/indore, hi/meerut, hi/mobile, hi/pipe, ta/coimbatore, ta/cuddalore, ta/mobile, ta/pipe, ta/vellore; must not meet in ta/meen; owner decision: keep "must meet"
+#   edit e→a: must meet in hi/ahmedabad, hi/carpenter, hi/computer, hi/driver, hi/gas-cylinder, hi/painter, hi/paise, hi/plumber, hi/pune, hi/teacher, hi/verma, ta/ange, ta/carpenter, ta/computer, ta/driver, ta/enge, ta/inge, ta/nagercoil, ta/painter, ta/plumber, ta/teacher; must not meet in hi/kapde, hi/kela, hi/seb, ta/salem, ta/selai, ta/thengai; owner decision: keep "must not meet"
+#   edit e→i: must meet in hi/delhi, hi/nai-delhi, ta/cement, ta/repair; must not meet in hi/tel, ta/seruppu, ta/vetti; owner decision: keep "must not meet"
+#   edit h→: must meet in hi/ahmedabad, hi/chhat, hi/khidki, hi/lahsun, hi/nahi, hi/pankha, hi/sharma, hi/shukriya, hi/shyam, hi/singh, ta/adhu, ta/ajith, ta/geetha, ta/idhu, ta/kadhavu, ta/kavitha, ta/latha, ta/nalladhu, ta/shankar, ta/sudha, ta/thachar, ta/thakkali, ta/thalaiyanai, ta/thanjavur, ta/thanneer, ta/thanneer-lorry, ta/thayir, ta/theneer, ta/theriyaadhu, ta/theriyum, ta/theru, ta/thuni-kadai; must not meet in hi/jharu, hi/phal; owner decision: keep "must meet"
+#   edit i→: must meet in hi/varanasi, ta/illai, ta/muttai, ta/thalaiyanai; must not meet in ta/ennai; owner decision: keep "must meet"
+#   edit i→u: must meet in ta/trichy; must not meet in ta/arisi, ta/mani, ta/nandri; owner decision: keep "must not meet"
+#   edit o→a: must meet in hi/doctor, ta/colony, ta/doctor; must not meet in hi/lohar, hi/mochi, hi/mohan; owner decision: keep "must not meet"
+#   edit o→u: must meet in hi/kyon, ta/cuddalore, ta/vellore; must not meet in ta/erode, ta/kothanar; owner decision: keep "must not meet"
+#   edit t→d: must meet in ta/cement; must not meet in hi/tala; owner decision: keep "must not meet"
+#   edit u→a: must meet in hi/bulb, hi/meerut, hi/plumber, ta/bulb, ta/plumber; must not meet in hi/dudh, hi/dudh-wala, hi/jute, hi/kursi, hi/lahsun, ta/murugan, ta/uppu; owner decision: keep "must not meet"
+#   edit u→i: must meet in ta/puducherry; must not meet in ta/balu, ta/muttai; owner decision: keep "must not meet"
+#   edit u→o: must meet in hi/bahut; must not meet in hi/sunar; owner decision: keep "must not meet"
+#   edit →i: must meet in hi/bhai, hi/flat, hi/mirch, hi/school, hi/tv, ta/madurai, ta/poo-vyabari, ta/sari, ta/trichy, ta/tv; must not meet in ta/kumar; owner decision: keep "must meet"
+# accepted merges: rows that B4b search makes meet although they are marked distinct (owner, 2026-11-13)
+#   hi/jharu distinct jaru: the "must meet" side of edit h→ drops h after a consonant
+#   hi/saree distinct sadi: ड़ maps to d, as most spellings in the data use
+#   ta/ennai distinct enna: a long query word matches the start of a word (substring search)
 lang	group	kind	native	latin	note
 hi	nal-wala	pair	नल वाला	nal wala	plumber (spoken)
 hi	nal-wala	variant		naal waala	

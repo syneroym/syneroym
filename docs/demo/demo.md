@@ -1275,6 +1275,11 @@ exact text and carries `lang="hi"` for its main language. Money shows with India
 grouping (for example `₹1,00,000.50`), and dates show in the Hindi style. Your own data
 (names, listing titles, message text) stays as it was written. Reload the page: it stays in Hindi.
 
+Then open **Listings** and publish a listing titled `नल वाला` to your own directory. Open
+**Directory**, add your own directory as a source, and search for `nal wala` in Latin letters.
+The Devanagari listing is in the results. A search finds a word in the script it was written
+in, and also the same word written in Latin letters.
+
 **Say:** "Every person reads Roym in their own language. The choice stays on this device."
 
 The script is `crates/substrate/tests/e2e/demo/40-roym-languages.spec.ts`. It is the

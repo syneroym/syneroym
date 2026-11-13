@@ -548,7 +548,7 @@ mod tests {
             f1.where_clause,
             "(c.rowid IN (SELECT rowid FROM _text_c_tri WHERE _text_c_tri MATCH ?))"
         );
-        assert_eq!(f1.params, vec![Value::Text("f_title : \"plumber\"".into())]);
+        assert_eq!(f1.params, vec![Value::Text("f_title : \"plumbar\"".into())]);
 
         // Long and short term ("ek plumber")
         let f2 = compile_filter_in(Some(r#"{"title": {"$search": "ek plumber"}}"#), Some(&text))
@@ -563,7 +563,7 @@ mod tests {
         assert_eq!(
             f2.params,
             vec![
-                Value::Text("f_title : \"plumber\"".into()),
+                Value::Text("f_title : \"plumbar\"".into()),
                 Value::Text("f_title : \"ek\"*".into()),
             ]
         );
@@ -623,8 +623,9 @@ mod tests {
             other => panic!("expected SchemaViolation, got {other:?}"),
         }
 
-        // More than 16 words
-        let seventeen_words = (1..=17).map(|i| format!("word{i}")).collect::<Vec<_>>().join(" ");
+        // More than 16 words (must stay distinct after folding)
+        let seventeen_words = "alpha bravo charlie delta echo foxtrot golf hotel india juliet \
+                               kilo lima mike november oscar papa quebec";
         let err_words = compile_filter_in(
             Some(&format!(r#"{{"title": {{"$search": "{seventeen_words}"}}}}"#)),
             Some(&text),
@@ -672,7 +673,7 @@ mod tests {
         let f = compile_filter_in(Some(r#"{"title": {"$search": "a\"b"}}"#), Some(&text))
             .unwrap()
             .unwrap();
-        assert_eq!(f.params[0], Value::Text(r#"f_title : "a""b""#.into()));
+        assert_eq!(f.params[0], Value::Text(r#"f_title : "a"* AND f_title : "b"*"#.into()));
 
         let f2 = compile_filter_in(
             Some(r#"{"title": {"$search": "plumber\" OR 1=1 --"}}"#),

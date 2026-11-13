@@ -1,6 +1,7 @@
 //! Database connection setup and schema DDL (`CREATE TABLE IF NOT EXISTS`
 //! for all tables: `conversations`, `messages`, `dag_entries`, `group_members`,
-//! `group_epochs`, `sessions`, and `local_identity`). Every other store file
+//! `group_epochs`, `sessions`, `local_identity`, `messages_tri`,
+//! `messages_word`, and `text_index_version`). Every other store file
 //! assumes these tables already exist; this file is always called first via
 //! `ConversationStore::open_encrypted`.
 
@@ -14,7 +15,7 @@ use rusqlite::Connection;
 use syneroym_async_queue::{Queue, QueueConfig};
 use zeroize::Zeroizing;
 
-use super::{ConversationConfig, ConversationStore};
+use super::{ConversationConfig, ConversationStore, text_index};
 
 impl ConversationStore {
     pub fn open_encrypted(
@@ -47,6 +48,7 @@ impl ConversationStore {
         for ddl in TABLE_GROUP_DDL {
             conn.execute_batch(ddl)?;
         }
+        text_index::ensure(conn)?;
         Ok(())
     }
 }
@@ -111,13 +113,6 @@ const TABLE_GROUP_DDL: &[&str] = &[
      CREATE TABLE IF NOT EXISTS conversation_seq (
         conversation_id TEXT PRIMARY KEY,
         last_seq        INTEGER NOT NULL
-     );
-
-     CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
-        body,
-        content='messages',
-        content_rowid='rowid',
-        tokenize='trigram'
      );",
     // sessions, local_identity, prekey_requests
     "CREATE TABLE IF NOT EXISTS sessions (

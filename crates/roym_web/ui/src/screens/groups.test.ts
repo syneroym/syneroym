@@ -590,4 +590,46 @@ describe("Groups screen rendering", () => {
     renderThreadMessages(threadList, msgs, nameOf, () => {}, () => {});
     expect(threadList.querySelector(".message-language-note")).toBeNull();
   });
+
+  it("draws group members in sortByName order", async () => {
+    stubRpc({
+      "conversation.list": () => ({
+        conversations: [
+          {
+            id: "grp-sort",
+            kind: "group",
+            message_count: 0,
+            group: { name: "Sort Group", admission: { state: "shown" } },
+          },
+        ],
+      }),
+      "group.info": () => ({
+        id: "grp-sort",
+        name: "Sort Group",
+        owner_address: "did:key:zOwner",
+        is_owner: true,
+        is_member: true,
+        key_epoch: 1,
+        key_stored_at_ms: 0,
+        members: [
+          { address: "addr-deva", person_did: "did:key:zDeva", is_owner: false },
+          { address: "addr-latn", person_did: "did:key:zLatn", is_owner: true },
+        ],
+      }),
+      "contacts.list": () => [
+        { person_did: "did:key:zDeva", display_name: "राम" },
+        { person_did: "did:key:zLatn", display_name: "Alice" },
+      ],
+      "conversation.transcript-digest": () => ({ digest: "abcdef123456" }),
+      "conversation.history": () => ({ messages: [] }),
+    });
+
+    const host = document.createElement("div");
+    await renderGroups(host);
+
+    await vi.waitFor(() => {
+      const names = Array.from(host.querySelectorAll(".member-name")).map((el) => el.textContent);
+      expect(names).toEqual(["Alice", "राम"]);
+    });
+  });
 });

@@ -4,13 +4,13 @@ use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use syneroym_app_host::{AppDataLayer, AppHost, AppSigning};
+use syneroym_app_host::{AppDataLayer, AppHost, AppSigning, types::data_layer::DataLayerError};
 use syneroym_roym_core::{
     area::{self, Area},
     clock,
     directory::{
         AreaMatch, MAX_CATEGORIES, MAX_HITS_PER_QUERY, MAX_QUERY_TEXT_LEN, SearchHit, SearchQuery,
-        category_tokens, normalize_category, normalize_text,
+        category_tokens, normalize_category,
     },
     envelope::Response,
     listing::{self, ListingStatus},
@@ -20,10 +20,13 @@ use syneroym_roym_core::{
 };
 
 use super::{
-    PUBLICATIONS, SEARCH_INDEX, ensure_coll, get_json, issuer_did,
+    PUBLICATIONS, SEARCH_INDEX, ensure_coll, ensure_search_index, get_json, issuer_did,
     publication_ops::{self, PublicationRow},
-    put_json, search_index_indexes, serde_str, standing, synorg,
+    put_json, serde_str, standing, synorg,
 };
+
+#[cfg(test)]
+mod tests;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct ReindexOutput {
@@ -71,6 +74,30 @@ pub(in crate::app) struct SearchIndexRow {
     listed_until_secs: u64,
 }
 
+pub(in crate::app) fn index_text(payload: &listing::ListingPayload) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    if !payload.title.is_empty() {
+        parts.push(&payload.title);
+    }
+    if !payload.summary.is_empty() {
+        parts.push(&payload.summary);
+    }
+    for cat in &payload.categories {
+        if !cat.is_empty() {
+            parts.push(cat);
+        }
+    }
+    for trans in &payload.translations {
+        if !trans.title.is_empty() {
+            parts.push(&trans.title);
+        }
+        if !trans.summary.is_empty() {
+            parts.push(&trans.summary);
+        }
+    }
+    parts.join(" ")
+}
+
 pub(in crate::app) fn search_index_key(listing_id: &str, area_index: u32) -> String {
     format!("{listing_id}#{area_index}")
 }
@@ -91,12 +118,7 @@ pub(in crate::app) fn build_index_rows(
     }
     .to_string();
     let categories = category_tokens(&payload.categories);
-    let text = normalize_text(&format!(
-        "{} {} {}",
-        payload.title,
-        payload.summary,
-        payload.categories.join(" ")
-    ));
+    let text = index_text(payload);
     let open_to = payload.relationship.as_ref().map(|r| serde_str(&r.open_to));
     let booking_mode = payload.booking.as_ref().map(|b| serde_str(&b.mode));
 
@@ -169,11 +191,8 @@ fn area_match_precedence(m: &AreaMatch) -> u8 {
 }
 
 pub(crate) async fn search<H: AppHost>(host: &H, query: SearchQuery) -> Reply<SearchOutput> {
-    let normalized_text = match validate_search_query(&query) {
-        Ok(v) => v,
-        Err(resp) => return Err(resp),
-    };
-    if let Err(e) = ensure_coll(host, SEARCH_INDEX, &search_index_indexes()).await {
+    validate_search_query(&query)?;
+    if let Err(e) = ensure_search_index(host).await {
         return Err(Response::internal_error(e));
     }
     if let Err(e) = ensure_coll(host, PUBLICATIONS, &[]).await {
@@ -189,7 +208,7 @@ pub(crate) async fn search<H: AppHost>(host: &H, query: SearchQuery) -> Reply<Se
 
     let now = clock::now_secs();
     let own_issuer = issuer_did(host).await;
-    let filter = match build_search_filter(&query, normalized_text.as_deref(), now) {
+    let filter = match build_search_filter(&query, now) {
         Ok(f) => f,
         Err(resp) => return Err(resp),
     };
@@ -200,7 +219,8 @@ pub(crate) async fn search<H: AppHost>(host: &H, query: SearchQuery) -> Reply<Se
     let ceiling = (MAX_HITS_PER_QUERY as usize) * 4;
     let (candidates, truncated) = match collect_search_candidates(host, &filter, ceiling).await {
         Ok(v) => v,
-        Err(e) => return Err(Response::internal_error(e)),
+        Err(CandidateError::Refused(m)) => return Err(Response::invalid_params(m)),
+        Err(CandidateError::Host(e)) => return Err(Response::internal_error(e)),
     };
 
     let by_listing = refine_by_listing(candidates, query.area.as_ref());
@@ -231,9 +251,8 @@ pub(crate) async fn search<H: AppHost>(host: &H, query: SearchQuery) -> Reply<Se
 /// filter document: an unvalidated `Area` can drive `bounding_box`/
 /// `areas_intersect` into overflow, an unbounded category list turns
 /// into an unbounded `$and`, and unbounded text turns into an unbounded
-/// bound-parameter list. Returns the ASCII-folded query text (see
-/// `normalize_text`), so `build_search_filter` never re-derives it.
-fn validate_search_query(query: &SearchQuery) -> Result<Option<String>, Response> {
+/// bound-parameter list.
+fn validate_search_query(query: &SearchQuery) -> Result<(), Response> {
     if let Some(q_area) = &query.area
         && let Err(e) = q_area.validate()
     {
@@ -251,31 +270,10 @@ fn validate_search_query(query: &SearchQuery) -> Result<Option<String>, Response
             "query text is longer than {MAX_QUERY_TEXT_LEN} bytes"
         )));
     }
-    // The text index is ASCII-folded (see `normalize_text`). A query in a
-    // script that folds to nothing -- Kannada, Devanagari, CJK -- must be
-    // refused, not quietly dropped: dropping the clause returns every
-    // active listing, the opposite of what the person asked for. Widening
-    // the index alphabet is a projection change, tracked in the backlog.
-    let normalized_text = query.text.as_deref().map(normalize_text);
-    if let (Some(raw), Some(norm)) = (query.text.as_deref(), normalized_text.as_deref())
-        && !raw.trim().is_empty()
-        && norm.is_empty()
-    {
-        return Err(Response::err(
-            -32602,
-            "the directory's text index holds only ASCII letters, digits, spaces and hyphens; \
-             this query has no searchable characters"
-                .to_string(),
-        ));
-    }
-    Ok(normalized_text)
+    Ok(())
 }
 
-fn build_search_filter(
-    query: &SearchQuery,
-    normalized_text: Option<&str>,
-    now: u64,
-) -> Result<Value, Response> {
+fn build_search_filter(query: &SearchQuery, now: u64) -> Result<Value, Response> {
     let mut and_clauses: Vec<Value> = vec![
         json!({ "status": "active" }),
         json!({ "listed_from_secs": { "$lte": now } }),
@@ -285,8 +283,10 @@ fn build_search_filter(
         let normalized = normalize_category(cat);
         and_clauses.push(json!({ "categories": { "$regex": category_tokens(&[normalized]) } }));
     }
-    if let Some(normalized) = normalized_text.filter(|n| !n.is_empty()) {
-        and_clauses.push(json!({ "text": { "$regex": normalized } }));
+    if let Some(text) = &query.text
+        && !text.trim().is_empty()
+    {
+        and_clauses.push(json!({ "text": { "$search": text } }));
     }
     // The index stores the enum's serde spelling (`past-counterparties`,
     // not `PastCounterparties`).
@@ -316,6 +316,11 @@ fn build_search_filter(
     Ok(json!({ "$and": and_clauses }))
 }
 
+enum CandidateError {
+    Refused(String),
+    Host(String),
+}
+
 /// Pages through `search_index` rows matching `filter` until either the
 /// host runs out of pages or the number of distinct listings seen
 /// reaches `ceiling`.
@@ -323,12 +328,22 @@ async fn collect_search_candidates<H: AppHost>(
     host: &H,
     filter: &Value,
     ceiling: usize,
-) -> Result<(Vec<SearchIndexRow>, bool), String> {
+) -> Result<(Vec<SearchIndexRow>, bool), CandidateError> {
     let mut candidates: Vec<SearchIndexRow> = Vec::new();
     let mut distinct_listings: BTreeSet<String> = BTreeSet::new();
     let mut truncated = false;
     let mut pages = Pages::new(host, SEARCH_INDEX, Some(filter.to_string()));
-    while let Some(records) = pages.next_page().await? {
+    loop {
+        let records_opt = match pages.next_page_typed().await {
+            Ok(opt) => opt,
+            Err(DataLayerError::SchemaViolation(msg)) => {
+                return Err(CandidateError::Refused(msg));
+            }
+            Err(e) => return Err(CandidateError::Host(e.to_string())),
+        };
+        let Some(records) = records_opt else {
+            break;
+        };
         for r in records {
             if let Ok(row) = serde_json::from_slice::<SearchIndexRow>(&r.payload) {
                 distinct_listings.insert(row.listing_id.clone());
@@ -456,7 +471,7 @@ pub(in crate::app) async fn rewrite_listed_windows<H: AppHost>(
     now: u64,
 ) -> Result<(), String> {
     let Some(issuer) = issuer_did(host).await else { return Ok(()) };
-    ensure_coll(host, SEARCH_INDEX, &search_index_indexes()).await?;
+    ensure_search_index(host).await?;
     let filter = json!({ "issuer": member_did }).to_string();
     let rows: Vec<(String, SearchIndexRow)> =
         paging::query_all_with_ids(host, SEARCH_INDEX, Some(filter)).await?;
@@ -522,7 +537,7 @@ pub(crate) async fn reindex<H: AppHost>(host: &H, _input: NoParams) -> Reply<Rei
 /// listings that are demonstrably present until an owner happened to
 /// notice and reindex by hand.
 pub(in crate::app) async fn rebuild_search_index<H: AppHost>(host: &H) -> Result<u64, String> {
-    ensure_coll(host, SEARCH_INDEX, &search_index_indexes()).await?;
+    ensure_search_index(host).await?;
     AppDataLayer::delete_many(host, SEARCH_INDEX.to_string(), json!({}).to_string())
         .await
         .map_err(|e| e.to_string())?;

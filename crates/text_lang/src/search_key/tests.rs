@@ -1,4 +1,11 @@
+use std::time::Instant;
+
 use super::{QueryTerms, SEARCH_KEY_VERSION, SHORT_TERM_MAX_CHARS, nfc, query_terms, search_key};
+
+mod devanagari;
+mod fold;
+mod spelling;
+mod tamil;
 
 #[test]
 fn nfc_normalization_s0_inputs() {
@@ -15,9 +22,9 @@ fn nfc_normalization_s0_inputs() {
 
 #[test]
 fn search_key_case_and_idempotence() {
-    assert_eq!(search_key("Nal WALA"), "nal wala");
-    assert_eq!(search_key("E\u{301}"), "é");
-    assert_eq!(search_key("É"), "é");
+    assert_eq!(search_key("Nal WALA"), "nal vala");
+    assert_eq!(search_key("E\u{301}"), "e");
+    assert_eq!(search_key("É"), "e");
     assert_eq!(search_key("E\u{301}"), search_key("É"));
 
     let qila_composed = "\u{0958}\u{093F}\u{0932}\u{093E}";
@@ -44,23 +51,127 @@ fn search_key_case_and_idempotence() {
 }
 
 #[test]
+fn search_key_is_idempotent_spelling_data() {
+    let data = include_str!("tests/spelling-pairs.tsv");
+    for line in data.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let cols: Vec<&str> = trimmed.split('\t').collect();
+        if cols.len() >= 5 {
+            let native = cols[3];
+            let latin = cols[4];
+            if !native.is_empty() {
+                let k1 = search_key(native);
+                let k2 = search_key(&k1);
+                assert_eq!(k1, k2, "Not idempotent for native: {native}");
+            }
+            if !latin.is_empty() {
+                let k1 = search_key(latin);
+                let k2 = search_key(&k1);
+                assert_eq!(k1, k2, "Not idempotent for latin: {latin}");
+            }
+        }
+    }
+}
+
+#[test]
+fn search_key_breaks_words_at_punctuation() {
+    assert_eq!(search_key("plumber's"), "plumbar s");
+    assert_eq!(search_key("50%"), "50");
+    assert_eq!(search_key("a-b"), "a b");
+}
+
+#[test]
+fn search_key_keeps_doubled_digits_and_unmapped_letters() {
+    assert_eq!(search_key("100"), "100");
+    assert_eq!(search_key("1000"), "1000");
+    assert_eq!(search_key("9988776655"), "9988776655");
+    // Devanagari digits become ASCII digits, and a doubled one stays doubled.
+    assert_eq!(search_key("\u{0967}\u{0966}\u{0966}"), "100");
+    // Scripts without a table keep a doubled letter.
+    assert_eq!(search_key("谢谢"), "谢谢");
+    assert_eq!(search_key("বব"), "বব");
+    // A doubled Latin letter still collapses.
+    assert_eq!(search_key("hello 100"), "helo 100");
+    assert_eq!(query_terms("100%"), QueryTerms { long: vec!["100".to_string()], short: vec![] });
+}
+
+#[test]
+fn search_key_script_runs_and_latin_base() {
+    // é written as e + U+0301 is one Latin run and gives e
+    let e_acute_decomposed = "e\u{0301}";
+    assert_eq!(search_key(e_acute_decomposed), "e");
+
+    // ø stays ø
+    assert_eq!(search_key("ø"), "ø");
+
+    // a digit after a Devanagari letter stays in its word
+    assert_eq!(search_key("नल123"), "nal123");
+
+    // mixed script words
+    assert_eq!(search_key("नलwala"), "nalvala");
+
+    // NUL inside text is a break
+    assert_eq!(search_key("nal\0wala"), "nal vala");
+}
+
+#[test]
+fn search_key_size_safety() {
+    let dev_1kib = "नल वाला ".repeat(128);
+    let tam_1kib = "சென்னை பிளம்பர் ".repeat(50);
+    let lat_1kib = "plumber service ".repeat(64);
+
+    assert!(!search_key(&dev_1kib).is_empty());
+    assert!(!search_key(&tam_1kib).is_empty());
+    assert!(!search_key(&lat_1kib).is_empty());
+
+    let dev_64kib = "नल वाला ".repeat(8192);
+    let tam_64kib = "சென்னை பிளம்பர் ".repeat(3200);
+    let lat_64kib = "plumber service ".repeat(4096);
+
+    assert!(!search_key(&dev_64kib).is_empty());
+    assert!(!search_key(&tam_64kib).is_empty());
+    assert!(!search_key(&lat_64kib).is_empty());
+}
+
+#[test]
+#[ignore = "Performance measurement for pull request text"]
+fn measure_search_key_64_kib() {
+    let lat_64kib = "plumber service ".repeat(4096);
+    let start = Instant::now();
+    let key = search_key(&lat_64kib);
+    let elapsed = start.elapsed();
+    assert!(!key.is_empty());
+    println!("search_key 64 KiB computed in: {elapsed:?}");
+}
+
+#[test]
 fn query_terms_classification_and_cleaning() {
     assert_eq!(
         query_terms("  Nal   WALA "),
-        QueryTerms { long: vec!["nal".to_string(), "wala".to_string()], short: vec![] }
+        QueryTerms { long: vec!["nal".to_string(), "vala".to_string()], short: vec![] }
     );
 
     assert_eq!(
         query_terms("ek do teen"),
         QueryTerms {
-            long: vec!["teen".to_string()],
+            long: vec!["tin".to_string()],
             short: vec!["ek".to_string(), "do".to_string()],
         }
     );
 
+    // नल folds to nal (3 chars) -> long, वाला folds to vala (4 chars) -> long
     assert_eq!(
         query_terms("नल वाला"),
-        QueryTerms { long: vec!["वाला".to_string()], short: vec!["नल".to_string()] }
+        QueryTerms { long: vec!["nal".to_string(), "vala".to_string()], short: vec![] }
+    );
+
+    // एक folds to ek (2 chars) -> short
+    assert_eq!(
+        query_terms("एक नल"),
+        QueryTerms { long: vec!["nal".to_string()], short: vec!["ek".to_string()] }
     );
 
     assert_eq!(query_terms("--- !!"), QueryTerms { long: vec![], short: vec![] });
@@ -69,7 +180,7 @@ fn query_terms_classification_and_cleaning() {
 
     assert_eq!(
         query_terms("plumber,"),
-        QueryTerms { long: vec!["plumber".to_string()], short: vec![] }
+        QueryTerms { long: vec!["plumbar".to_string()], short: vec![] }
     );
 
     assert_eq!(query_terms("(ek)"), QueryTerms { long: vec![], short: vec!["ek".to_string()] });
@@ -78,20 +189,17 @@ fn query_terms_classification_and_cleaning() {
 
     assert_eq!(
         query_terms("plumber's"),
-        QueryTerms { long: vec!["plumber's".to_string()], short: vec![] }
+        QueryTerms { long: vec!["plumbar".to_string()], short: vec!["s".to_string()] }
     );
 
-    assert_eq!(query_terms("a-b"), QueryTerms { long: vec!["a-b".to_string()], short: vec![] });
-
-    assert_eq!(query_terms("நல்"), QueryTerms { long: vec!["நல்".to_string()], short: vec![] });
-
-    assert_eq!(query_terms("प्"), QueryTerms { long: vec![], short: vec!["प्".to_string()] });
-
-    assert_eq!(query_terms("नल।"), QueryTerms { long: vec![], short: vec!["नल".to_string()] });
+    assert_eq!(
+        query_terms("a-b"),
+        QueryTerms { long: vec![], short: vec!["a".to_string(), "b".to_string()] }
+    );
 }
 
 #[test]
 fn constants_match_specification() {
     assert_eq!(SHORT_TERM_MAX_CHARS, 2);
-    assert_eq!(SEARCH_KEY_VERSION, 1);
+    assert_eq!(SEARCH_KEY_VERSION, 2);
 }

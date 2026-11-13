@@ -60,8 +60,103 @@ async fn search_finds_devanagari_and_tamil_words() {
         limit: None,
     };
     let res2 = store.query("items", &opts2, None).await.unwrap();
-    assert_eq!(res2.value.records.len(), 1);
-    assert_eq!(res2.value.records[0].id, "2");
+    assert_eq!(res2.value.records.len(), 2);
+    let ids: Vec<String> = res2.value.records.into_iter().map(|r| r.id).collect();
+    assert_eq!(ids, vec!["1", "2"]);
+}
+
+#[tokio::test]
+async fn search_finds_across_scripts() {
+    let store = setup_store().await;
+
+    let schema = schema_with("items", vec![], vec!["title".to_string()]);
+    store.create_collection(&schema).await.unwrap();
+
+    let val1 = RecordWriteValue {
+        id: "1".to_string(),
+        payload: r#"{"title": "नल वाला"}"#.as_bytes().to_vec(),
+    };
+    let val2 =
+        RecordWriteValue { id: "2".to_string(), payload: br#"{"title": "nal wala"}"#.to_vec() };
+    store.put("items", &val1, "user", None).await.unwrap();
+    store.put("items", &val2, "user", None).await.unwrap();
+
+    for q in ["nal wala", "naal waala", "nalwala", "नल"] {
+        let opts = QueryOptions {
+            filter: Some(format!(r#"{{"title": {{"$search": "{q}"}}}}"#)),
+            cursor: None,
+            limit: None,
+        };
+        let res = store.query("items", &opts, None).await.unwrap();
+        let ids: Vec<String> = res.value.records.into_iter().map(|r| r.id).collect();
+        assert!(ids.contains(&"1".to_string()), "query '{q}' did not find row 1");
+    }
+
+    let opts_dev = QueryOptions {
+        filter: Some(r#"{"title": {"$search": "नल वाला"}}"#.to_string()),
+        cursor: None,
+        limit: None,
+    };
+    let res_dev = store.query("items", &opts_dev, None).await.unwrap();
+    let ids_dev: Vec<String> = res_dev.value.records.into_iter().map(|r| r.id).collect();
+    assert!(ids_dev.contains(&"2".to_string()), "query 'नल वाला' did not find row 2");
+}
+
+#[tokio::test]
+async fn search_joined_key_matches_across_word_breaks() {
+    let store = setup_store().await;
+
+    let schema = schema_with("items", vec![], vec!["title".to_string()]);
+    store.create_collection(&schema).await.unwrap();
+
+    let val =
+        RecordWriteValue { id: "1".to_string(), payload: br#"{"title": "nal wala"}"#.to_vec() };
+    store.put("items", &val, "user", None).await.unwrap();
+
+    for q in ["nalwala", "lwa"] {
+        let opts = QueryOptions {
+            filter: Some(format!(r#"{{"title": {{"$search": "{q}"}}}}"#)),
+            cursor: None,
+            limit: None,
+        };
+        let res = store.query("items", &opts, None).await.unwrap();
+        assert_eq!(res.value.records.len(), 1, "query '{q}' failed to match across word breaks");
+        assert_eq!(res.value.records[0].id, "1");
+    }
+}
+
+#[tokio::test]
+async fn search_punctuation_breaks_words() {
+    let store = setup_store().await;
+
+    let schema = schema_with("items", vec![], vec!["title".to_string()]);
+    store.create_collection(&schema).await.unwrap();
+
+    let val = RecordWriteValue {
+        id: "1".to_string(),
+        payload: br#"{"title": "plumber's shop"}"#.to_vec(),
+    };
+    store.put("items", &val, "user", None).await.unwrap();
+
+    let opts = QueryOptions {
+        filter: Some(r#"{"title": {"$search": "plumber's"}}"#.to_string()),
+        cursor: None,
+        limit: None,
+    };
+    let res = store.query("items", &opts, None).await.unwrap();
+    assert_eq!(res.value.records.len(), 1);
+    assert_eq!(res.value.records[0].id, "1");
+
+    let opts_punct = QueryOptions {
+        filter: Some(r#"{"title": {"$search": "%%"}}"#.to_string()),
+        cursor: None,
+        limit: None,
+    };
+    let err = store.query("items", &opts_punct, None).await.unwrap_err();
+    assert!(
+        err.to_string().contains("needs at least one word"),
+        "expected 'needs at least one word', got {err}"
+    );
 }
 
 #[tokio::test]

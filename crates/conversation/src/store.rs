@@ -38,6 +38,7 @@ mod schema;
 mod scrub;
 mod search;
 mod session;
+pub(crate) mod text_index;
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]

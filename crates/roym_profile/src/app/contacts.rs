@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use syneroym_app_host::{
     AppDataLayer, AppHost,
-    types::data_layer::{IndexDefinition, IndexType, RecordWriteValue},
+    types::data_layer::{DataLayerError, IndexDefinition, IndexType, RecordWriteValue},
 };
 pub use syneroym_roym_core::method::profile::ContactRow;
 use syneroym_roym_core::{
@@ -23,7 +23,7 @@ use syneroym_roym_core::{
     safety::{self, Admission, ContactLimits},
 };
 
-use super::{BLOCKS, CONTACT_ATTEMPTS, CONTACTS, PROFILES, SETTINGS, ensure_coll};
+use super::{BLOCKS, CONTACT_ATTEMPTS, CONTACTS, PROFILES, SETTINGS, ensure_coll, ensure_contacts};
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -66,18 +66,17 @@ pub(crate) async fn load_contact_limits<H: AppHost>(host: &H) -> Result<ContactL
 
 pub(crate) async fn list<H: AppHost>(host: &H, input: ContactsListInput) -> Reply<Vec<ContactRow>> {
     let favourites_only = input.favourites_only.unwrap_or(false);
-    if let Err(e) = ensure_coll(
-        host,
-        CONTACTS,
-        &[IndexDefinition { field_name: "favourite".to_string(), type_: IndexType::Boolean }],
-    )
-    .await
-    {
+    if let Err(e) = ensure_contacts(host).await {
         return Err(Response::internal_error(e));
     }
-    let mut list: Vec<ContactRow> = match paging::query_all(host, CONTACTS, None).await {
+    let filter = match input.text.as_deref().map(str::trim) {
+        Some(t) if !t.is_empty() => Some(json!({ "display_name": { "$search": t } }).to_string()),
+        _ => None,
+    };
+    let mut list: Vec<ContactRow> = match paging::query_all_typed(host, CONTACTS, filter).await {
         Ok(v) => v,
-        Err(e) => return Err(Response::internal_error(e)),
+        Err(DataLayerError::SchemaViolation(m)) => return Err(Response::invalid_params(m)),
+        Err(e) => return Err(Response::internal_error(e.to_string())),
     };
     list.retain(|row| !favourites_only || row.favourite);
     let offset = input.offset.unwrap_or(0) as usize;

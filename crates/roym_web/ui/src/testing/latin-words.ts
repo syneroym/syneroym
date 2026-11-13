@@ -25,6 +25,8 @@ export const ALLOWED_LATIN: ReadonlyArray<{ text: string; why: string }> = [
   { text: "pm", why: "`Intl` writes the 12-hour mark of a Hindi time in Latin letters" },
   { text: "UTC", why: "the time zone name that `Intl` writes when the tests run with TZ=UTC" },
   { text: "Fake service error", why: "the detail text of an error from the fake `/rpc`" },
+  { text: "nal wala", why: "example query in directory search help" },
+  { text: "naal waala", why: "example query in directory search help" },
 ];
 
 /// A value that a person types or another node sends holds this marker in

@@ -1,4 +1,5 @@
 use syneroym_rpc::{Admission, ConversationDeliveryState};
+use syneroym_text_lang::query_terms;
 
 use super::store;
 
@@ -76,8 +77,8 @@ fn delete_pending_outgoing_marks_failed_and_cleans_outbox() {
 fn delete_held_incoming_zeros_body_but_fts_is_not_corrupted() {
     // The host layer (host_impl.rs) blocks deleting held incoming rows before
     // reaching the store. At the store level, delete_message succeeds — it
-    // zeros the body — but does NOT touch the FTS index (there is no FTS
-    // entry for unaccepted rows) so the trigram table stays consistent.
+    // zeros the body. Deleting from ordinary FTS5 tables by rowid is safe even
+    // for rows that were never indexed.
     let s = store();
     let conv = s.get_or_create_direct("did:key:zMe", "did:key:zPeer", 1_000).unwrap();
     let now = 1_000;
@@ -103,8 +104,8 @@ fn delete_held_incoming_zeros_body_but_fts_is_not_corrupted() {
     }
     s.apply_admission("m:held_in", &Admission::Hold("test".into()), now).unwrap();
 
-    // At the store level delete_message succeeds; the FTS guard (admission ==
-    // "accepted") prevents touching the trigram index for this never-indexed row.
+    // At the store level delete_message succeeds; remove(conn, rowid) safely
+    // deletes any index entry without error.
     let deleted = s.delete_message(&conv, "m:held_in", now + 10).unwrap();
     assert_eq!(deleted, Some(false));
     let msg = s.get_message("m:held_in").unwrap().unwrap();
@@ -112,7 +113,7 @@ fn delete_held_incoming_zeros_body_but_fts_is_not_corrupted() {
 }
 
 #[test]
-fn search_escapes_like_special_characters() {
+fn search_treats_like_characters_as_breaks() {
     let s = store();
     let conv = s.get_or_create_direct("did:key:zMe", "did:key:zPeer", 1_000).unwrap();
     let now = 1_000;
@@ -147,9 +148,20 @@ fn search_escapes_like_special_characters() {
     )
     .unwrap();
 
-    // Query is short (< 3 chars for FTS), uses LIKE path with escape.
-    // "%" is a LIKE wildcard; escaped it should only match the literal "%".
+    // "%" is punctuation and breaks words; "100%" becomes the long term "100",
+    // matching both "100% off" and "1000 off" (as "100" is a substring of "1000").
+    assert_eq!(query_terms("100%").long, vec!["100".to_string()]);
+    assert!(query_terms("100%").short.is_empty());
     let hits = s.search("100%", Some(&conv), 10).unwrap();
-    assert_eq!(hits.len(), 1);
-    assert_eq!(hits[0].id, "m:pct");
+    assert_eq!(hits.len(), 2);
+    let mut ids: Vec<_> = hits.into_iter().map(|m| m.id).collect();
+    ids.sort();
+    assert_eq!(ids, vec!["m:other", "m:pct"]);
+
+    // "_" is also punctuation and breaks words; "100_" finds the same two.
+    let hits_underscore = s.search("100_", Some(&conv), 10).unwrap();
+    assert_eq!(hits_underscore.len(), 2);
+    let mut ids_underscore: Vec<_> = hits_underscore.into_iter().map(|m| m.id).collect();
+    ids_underscore.sort();
+    assert_eq!(ids_underscore, vec!["m:other", "m:pct"]);
 }

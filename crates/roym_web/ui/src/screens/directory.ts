@@ -214,7 +214,7 @@ function buildSearch(): HTMLElement {
   wrap.appendChild(text("h3", t("directory-search-heading")));
 
   const textInput = document.createElement("input");
-  textInput.className = "search-text";
+  textInput.className = "search-text search-text-input";
   textInput.placeholder = t("directory-search-text-placeholder");
   const catPicker = categoryPicker({
     className: "search-categories",

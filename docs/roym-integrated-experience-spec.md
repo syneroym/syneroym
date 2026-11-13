@@ -773,6 +773,10 @@ For the first release (D1):
   answers queries by category, area, and filters.
 - A searcher's node queries each directory it has been given, in parallel,
   and merges the answers.
+- Text search works in every script and across scripts. A word in Latin
+  letters finds the same word written in Devanagari or Tamil, and common
+  Latin spellings meet. Every word of the query must match. Chat search and
+  the contact list search work the same way.
 - Results carry their source and their age. The searcher's node verifies every
   signature, credential, expiry, and revocation before showing anything as
   trusted evidence.

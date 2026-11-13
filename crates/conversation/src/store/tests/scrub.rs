@@ -1,16 +1,23 @@
 //! Deleted text must leave the database files, not only the visible tables.
 
-use std::{fs, path::Path};
+use std::{fs, path::Path, str};
 
 use rusqlite::Connection;
 use syneroym_rpc::{Admission, DropAnswer};
+use syneroym_text_lang::fts;
 
 use super::{open_at, store, store_in_dir, store_with_config};
 use crate::store::{ConversationConfig, ConversationStore, scrub::PRUNE_DROPPED_SQL};
 
 /// Unique enough to appear nowhere else: the word and one of its trigrams.
 const WORD: &[u8] = b"zqxjvk";
-const TRIGRAM: &[u8] = b"qxj";
+
+fn key_needles() -> (String, String) {
+    let ik = fts::index_keys(str::from_utf8(WORD).unwrap());
+    let joined = ik.joined;
+    let trigram = joined.chars().take(3).collect::<String>();
+    (joined, trigram)
+}
 
 fn files_contain(dir: &Path, needle: &[u8]) -> bool {
     fs::read_dir(dir).unwrap().flatten().filter(|e| e.path().is_file()).any(|e| {
@@ -47,13 +54,16 @@ fn deleted_text_is_gone_from_the_files_after_a_scrub() {
     let conv = s.get_or_create_direct("did:key:zPeer", "conv:1", 1_000).unwrap();
     accepted_message(&s, &conv, "m:keep", b"an ordinary message that stays");
     accepted_message(&s, &conv, "m:gone", b"a note about zqxjvk to remove");
-    assert!(files_contain(&dir, TRIGRAM), "the test needs the text to be on disk first");
+    let (key_joined, key_tri) = key_needles();
+    assert!(files_contain(&dir, WORD), "the test needs the body on disk first");
+    assert!(files_contain(&dir, key_tri.as_bytes()), "the test needs the key on disk first");
 
     s.delete_message(&conv, "m:gone", 2_000).unwrap();
     assert!(!s.scrub_and_checkpoint(), "nothing holds the log, so one pass finishes");
 
     assert!(!files_contain(&dir, WORD), "the body must be gone");
-    assert!(!files_contain(&dir, TRIGRAM), "the search index must not keep its pieces");
+    assert!(!files_contain(&dir, key_joined.as_bytes()), "the key must be gone");
+    assert!(!files_contain(&dir, key_tri.as_bytes()), "the search index must not keep its pieces");
 }
 
 #[test]
@@ -63,12 +73,17 @@ fn dropped_text_is_gone_from_the_files_after_a_scrub() {
     accepted_message(&s, &conv, "m:keep", b"an ordinary message that stays");
     accepted_message(&s, &conv, "m:gone", b"a note about zqxjvk to remove");
 
+    let (key_joined, key_tri) = key_needles();
+    assert!(files_contain(&dir, WORD));
+    assert!(files_contain(&dir, key_tri.as_bytes()));
+
     let drop = Admission::Drop(DropAnswer { reason: "blocked".into(), report: false });
     s.apply_admission("m:gone", &drop, 2_000).unwrap();
     assert!(!s.scrub_and_checkpoint());
 
     assert!(!files_contain(&dir, WORD));
-    assert!(!files_contain(&dir, TRIGRAM));
+    assert!(!files_contain(&dir, key_joined.as_bytes()));
+    assert!(!files_contain(&dir, key_tri.as_bytes()));
 }
 
 #[test]
@@ -165,12 +180,60 @@ fn a_scrub_cut_short_by_a_restart_runs_after_reopening() {
 
     let reopened = open_at(&dir, ConversationConfig::default());
 
+    let (key_joined, key_tri) = key_needles();
     assert!(reopened.take_wal_checkpoint_flag(), "the needed scrub survives the restart");
     assert!(!reopened.scrub_and_checkpoint());
     assert!(!files_contain(&dir, WORD));
-    assert!(!files_contain(&dir, TRIGRAM));
+    assert!(!files_contain(&dir, key_joined.as_bytes()));
+    assert!(!files_contain(&dir, key_tri.as_bytes()));
     drop(reopened);
     assert!(!open_at(&dir, ConversationConfig::default()).take_wal_checkpoint_flag());
+}
+
+#[test]
+fn held_message_dropped_after_a_rebuild_leaves_no_key_on_disk() {
+    let (s, dir) = store_in_dir();
+    let conv = s.get_or_create_direct("did:key:zPeer", "conv:1", 1_000).unwrap();
+
+    {
+        let conn = s.conn().lock().unwrap();
+        let tx = conn.unchecked_transaction().unwrap();
+        s.insert_incoming_if_absent(
+            &tx,
+            &conv,
+            "m:held",
+            "did:key:zPeer",
+            1_000,
+            "text/plain",
+            &[],
+            b"a note about zqxjvk that is held",
+            &[0u8; 64],
+            1_000,
+            100,
+        )
+        .unwrap();
+        tx.commit().unwrap();
+    }
+    s.apply_admission("m:held", &Admission::Hold("test".into()), 1_000).unwrap();
+
+    // Trigger a rebuild by setting text_index_version.key_version to 1
+    {
+        let conn = s.conn().lock().unwrap();
+        conn.execute("UPDATE text_index_version SET key_version = 1 WHERE id = 1", []).unwrap();
+    }
+    drop(s);
+
+    let s = open_at(&dir, ConversationConfig::default());
+    // The rebuild ran on open; held message was not indexed.
+    // Now drop the held message.
+    let drop = Admission::Drop(DropAnswer { reason: "expired".into(), report: false });
+    s.apply_admission("m:held", &drop, 2_000).unwrap();
+    assert!(!s.scrub_and_checkpoint());
+
+    let (key_joined, key_tri) = key_needles();
+    assert!(!files_contain(&dir, WORD));
+    assert!(!files_contain(&dir, key_joined.as_bytes()));
+    assert!(!files_contain(&dir, key_tri.as_bytes()));
 }
 
 #[test]

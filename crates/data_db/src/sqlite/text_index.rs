@@ -2,17 +2,16 @@ use std::collections::HashSet;
 
 use rusqlite::{Connection, Error as SqliteError, params, types::Value as SqlValue};
 use serde_json::Value;
-use syneroym_text_lang::SEARCH_KEY_VERSION;
+use syneroym_text_lang::{
+    SEARCH_KEY_VERSION,
+    fts::{TRI_TABLE_OPTIONS, WORD_TABLE_OPTIONS, index_keys},
+};
 
 use super::query_raw::map_query_raw_step_error;
 use crate::{
     errors::{is_no_such_table, map_rusqlite_error},
     host_store::DataLayerError,
 };
-
-pub(crate) const TRI_TOKENIZE: &str = "tokenize = 'trigram case_sensitive 1'";
-pub(crate) const WORD_TOKENIZE: &str =
-    "tokenize = \"unicode61 remove_diacritics 0 categories 'L* N* Co M*'\", prefix = '1 2'";
 
 pub(crate) fn tri_table(collection: &str) -> String {
     format!("_text_{collection}_tri")
@@ -136,12 +135,12 @@ pub(super) fn declare(
 
     let cols = wanted.iter().map(|f| format!("f_{f}")).collect::<Vec<_>>().join(", ");
     conn.execute(
-        &format!("CREATE VIRTUAL TABLE {tri_table} USING fts5({cols}, {TRI_TOKENIZE})"),
+        &format!("CREATE VIRTUAL TABLE {tri_table} USING fts5({cols}, {TRI_TABLE_OPTIONS})"),
         [],
     )
     .map_err(map_rusqlite_error)?;
     conn.execute(
-        &format!("CREATE VIRTUAL TABLE {word_table} USING fts5({cols}, {WORD_TOKENIZE})"),
+        &format!("CREATE VIRTUAL TABLE {word_table} USING fts5({cols}, {WORD_TABLE_OPTIONS})"),
         [],
     )
     .map_err(map_rusqlite_error)?;
@@ -243,11 +242,18 @@ pub(super) fn sync_row(
     conn.execute(&del_word_sql, params![rowid]).map_err(|e| map_text_index_error(e, collection))?;
 
     let obj = payload.as_object();
-    let mut keys = Vec::with_capacity(fields.len());
+    let mut tri_keys = Vec::with_capacity(fields.len());
+    let mut word_keys = Vec::with_capacity(fields.len());
     for f in fields {
         let val_opt = obj.and_then(|m| m.get(f)).and_then(|v| v.as_str());
-        let key_opt = val_opt.map(syneroym_text_lang::search_key);
-        keys.push(key_opt);
+        if let Some(s) = val_opt {
+            let ik = index_keys(s);
+            tri_keys.push(Some(ik.joined));
+            word_keys.push(Some(ik.words));
+        } else {
+            tri_keys.push(None);
+            word_keys.push(None);
+        }
     }
 
     let col_names = fields.iter().map(|f| format!("f_{f}")).collect::<Vec<_>>().join(", ");
@@ -259,18 +265,27 @@ pub(super) fn sync_row(
     let word_ins_sql =
         format!("INSERT INTO {word_table} (rowid, {col_names}) VALUES (?1, {placeholders})");
 
-    let mut params_vec: Vec<SqlValue> = Vec::with_capacity(fields.len() + 1);
-    params_vec.push(SqlValue::Integer(rowid));
-    for k in keys {
+    let mut tri_params: Vec<SqlValue> = Vec::with_capacity(fields.len() + 1);
+    tri_params.push(SqlValue::Integer(rowid));
+    for k in tri_keys {
         match k {
-            Some(s) => params_vec.push(SqlValue::Text(s)),
-            None => params_vec.push(SqlValue::Null),
+            Some(s) => tri_params.push(SqlValue::Text(s)),
+            None => tri_params.push(SqlValue::Null),
         }
     }
 
-    conn.execute(&tri_ins_sql, rusqlite::params_from_iter(params_vec.iter()))
+    let mut word_params: Vec<SqlValue> = Vec::with_capacity(fields.len() + 1);
+    word_params.push(SqlValue::Integer(rowid));
+    for k in word_keys {
+        match k {
+            Some(s) => word_params.push(SqlValue::Text(s)),
+            None => word_params.push(SqlValue::Null),
+        }
+    }
+
+    conn.execute(&tri_ins_sql, rusqlite::params_from_iter(tri_params.iter()))
         .map_err(|e| map_text_index_error(e, collection))?;
-    conn.execute(&word_ins_sql, rusqlite::params_from_iter(params_vec.iter()))
+    conn.execute(&word_ins_sql, rusqlite::params_from_iter(word_params.iter()))
         .map_err(|e| map_text_index_error(e, collection))?;
 
     Ok(())

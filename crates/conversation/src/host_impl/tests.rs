@@ -306,3 +306,37 @@ async fn send_with_invalid_languages_is_refused_with_invalid_argument_and_stores
     let hist = service.history(ME, &conv, 10, None).await.unwrap();
     assert_eq!(hist.items.len(), 0, "nothing should be stored");
 }
+
+#[tokio::test]
+async fn search_validates_limits_before_searching() {
+    let dir = tempfile::tempdir().unwrap();
+    let service = test_service(dir.path()).await;
+
+    let long_query = "a".repeat(1025);
+    let err = service.search(ME, &long_query, None, 10).await.unwrap_err();
+    assert_eq!(
+        err,
+        ConversationError::InvalidArgument("search text is longer than 1024 bytes".to_string())
+    );
+
+    let huge_query = "a".repeat(10 * 1024 * 1024);
+    let err = service.search(ME, &huge_query, None, 10).await.unwrap_err();
+    assert_eq!(
+        err,
+        ConversationError::InvalidArgument("search text is longer than 1024 bytes".to_string())
+    );
+
+    let err = service.search(ME, "!!!", None, 10).await.unwrap_err();
+    assert_eq!(
+        err,
+        ConversationError::InvalidArgument("search needs at least one word".to_string())
+    );
+
+    let query_17 = "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike \
+                    november oscar papa quebec";
+    let err = service.search(ME, query_17, None, 10).await.unwrap_err();
+    assert_eq!(
+        err,
+        ConversationError::InvalidArgument("search has more than 16 words".to_string())
+    );
+}

@@ -2,8 +2,9 @@ import { messageText } from "../chat/message_text";
 import { errText, field, refiller, text } from "../dom";
 import { onFeed } from "../events";
 import { formatDateTime, formatTime } from "../i18n/format";
-import { currentLanguage, t } from "../i18n/i18n";
+import { currentLanguage, formatLocale, t } from "../i18n/i18n";
 import { languageList } from "../i18n/language_list";
+import { sortByName } from "../names";
 import { renderRefusedCard } from "../cards/refused";
 import {
   MEMBERSHIP_EVENT_CONTENT_TYPE,
@@ -524,10 +525,13 @@ export async function renderGroups(container: HTMLElement) {
     const membersList = document.createElement("ul");
     membersList.className = "members-list";
 
-    for (const m of info.members) {
+    const memberLabel = (m: (typeof info.members)[number]) =>
+      (m.person_did && contactMap.get(m.person_did)) || m.person_did || shortAddress(m.address);
+    const sortedMembers = sortByName(info.members, memberLabel, formatLocale());
+
+    for (const m of sortedMembers) {
       const li = document.createElement("li");
-      const mLabel =
-        (m.person_did && contactMap.get(m.person_did)) || m.person_did || shortAddress(m.address);
+      const mLabel = memberLabel(m);
       li.appendChild(text("span", mLabel, "member-name"));
       if (m.is_owner) {
         const badge = text("span", "", "member-badge");

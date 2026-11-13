@@ -5,7 +5,7 @@ use syneroym_rpc::{
     ConversationGroupInfo, ConversationHistoryPage, ConversationHost, ConversationKind,
     ConversationMessage, ConversationSummary, ConversationTranscript,
 };
-use syneroym_text_lang::parse_message_languages;
+use syneroym_text_lang::{fts, parse_message_languages, query_terms};
 use tokio::task;
 
 use crate::{
@@ -415,6 +415,23 @@ impl ConversationHost for ConversationService {
         conversation: Option<&str>,
         limit: u32,
     ) -> Result<Vec<ConversationMessage>, ConversationError> {
+        if query.len() > fts::MAX_SEARCH_BYTES {
+            return Err(ConversationError::InvalidArgument(
+                "search text is longer than 1024 bytes".to_string(),
+            ));
+        }
+        let terms = query_terms(query);
+        let total_terms = terms.long.len() + terms.short.len();
+        if total_terms == 0 {
+            return Err(ConversationError::InvalidArgument(
+                "search needs at least one word".to_string(),
+            ));
+        }
+        if total_terms > fts::MAX_SEARCH_TERMS {
+            return Err(ConversationError::InvalidArgument(
+                "search has more than 16 words".to_string(),
+            ));
+        }
         let store = self.store_for(service_id).await.map_err(internal)?;
         let q = query.to_string();
         let c = conversation.map(str::to_string);

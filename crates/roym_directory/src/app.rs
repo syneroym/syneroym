@@ -116,6 +116,23 @@ pub(in crate::app) async fn ensure_coll<H: AppHost>(
     .map_err(|e| e.to_string())
 }
 
+pub(in crate::app) const SEARCH_TEXT_FIELDS: [&str; 1] = ["text"];
+
+/// `search_index` with its text field. Every place that creates the
+/// collection calls this, so the text index exists before the first row.
+pub(in crate::app) async fn ensure_search_index<H: AppHost>(host: &H) -> Result<(), String> {
+    AppDataLayer::create_collection(
+        host,
+        CollectionSchema {
+            name: SEARCH_INDEX.to_string(),
+            indexes: search_index_indexes().to_vec(),
+            text_fields: SEARCH_TEXT_FIELDS.iter().map(|&s| s.to_string()).collect(),
+        },
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
+
 pub(in crate::app) fn idx(field: &str, ty: IndexType) -> IndexDefinition {
     IndexDefinition { field_name: field.to_string(), type_: ty }
 }

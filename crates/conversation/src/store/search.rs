@@ -1,10 +1,14 @@
-//! Full-text search over visible, non-deleted text message bodies using FTS5
-//! with the trigram tokenizer and LIKE fallback for short queries.
+//! Full-text search over visible, non-deleted text message bodies using
+//! trigram and word tables over search keys.
 
 use anyhow::Result;
-use rusqlite::params;
+use rusqlite::{params_from_iter, types::Value};
+use syneroym_text_lang::{fts, query_terms};
 
-use super::{ConversationStore, StoredMessage, message::row_to_message};
+use super::{
+    ConversationStore, StoredMessage,
+    message::{M_MESSAGE_COLUMNS, row_to_message},
+};
 
 /// Maximum rows returned by a single search call.
 const MAX_SEARCH_LIMIT: u32 = 500;
@@ -19,53 +23,61 @@ impl ConversationStore {
         conversation: Option<&str>,
         limit: u32,
     ) -> Result<Vec<StoredMessage>> {
+        let terms = query_terms(query);
+        if terms.long.is_empty() && terms.short.is_empty() {
+            return Ok(Vec::new());
+        }
+
         let conn = self.conn.lock().expect("conversation connection lock poisoned");
         let limit = limit.min(MAX_SEARCH_LIMIT);
-        let char_count = query.chars().count();
-        if char_count >= 3 {
-            // FTS5 phrase query: wrap in double-quotes and double internal quotes.
-            // This searches for the literal string, matching the LIKE path below.
-            let escaped = format!("\"{}\"", query.replace('"', "\"\""));
-            let mut stmt = conn.prepare(
-                "SELECT m.id, m.conversation_id, m.author, m.sender_timestamp, m.received_at, \
-                 m.content_type, m.body, m.signature, m.outgoing, m.verified, m.state, \
-                 m.last_error, m.system, m.entry_id, m.admission, m.admission_reason, \
-                 m.admission_changed_at, m.notify_attempts, m.next_notify_at, m.report_refusal, \
-                 m.refused, m.deleted_at, m.restored, m.visible_seq, m.languages FROM messages m \
-                 JOIN messages_fts f ON m.rowid = f.rowid WHERE messages_fts MATCH ?1 AND \
-                 m.system = 0 AND (m.outgoing = 1 OR m.admission = 'accepted') AND m.deleted_at \
-                 IS NULL AND (?2 IS NULL OR m.conversation_id = ?2) ORDER BY m.sender_timestamp \
-                 DESC, m.author DESC, m.id DESC LIMIT ?3",
-            )?;
-            let mut rows = stmt.query(params![escaped, conversation, limit as i64])?;
-            let mut out = Vec::new();
-            while let Some(r) = rows.next()? {
-                out.push(row_to_message(r)?);
-            }
-            Ok(out)
-        } else {
-            // Short query fallback: LIKE scan over text content types.
-            // Escape LIKE metacharacters so the query is treated literally.
-            let escaped_query = query.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
-            let pattern = format!("%{escaped_query}%");
-            let mut stmt = conn.prepare(
-                "SELECT m.id, m.conversation_id, m.author, m.sender_timestamp, m.received_at, \
-                 m.content_type, m.body, m.signature, m.outgoing, m.verified, m.state, \
-                 m.last_error, m.system, m.entry_id, m.admission, m.admission_reason, \
-                 m.admission_changed_at, m.notify_attempts, m.next_notify_at, m.report_refusal, \
-                 m.refused, m.deleted_at, m.restored, m.visible_seq, m.languages FROM messages m \
-                 WHERE CAST(m.body AS TEXT) LIKE ?1 ESCAPE '\\' AND m.system = 0 AND (m.outgoing \
-                 = 1 OR m.admission = 'accepted') AND m.deleted_at IS NULL AND (m.content_type \
-                 LIKE 'text/%' OR m.content_type = 'application/json' OR m.content_type LIKE \
-                 '%+json') AND (?2 IS NULL OR m.conversation_id = ?2) ORDER BY m.sender_timestamp \
-                 DESC, m.author DESC, m.id DESC LIMIT ?3",
-            )?;
-            let mut rows = stmt.query(params![pattern, conversation, limit as i64])?;
-            let mut out = Vec::new();
-            while let Some(r) = rows.next()? {
-                out.push(row_to_message(r)?);
-            }
-            Ok(out)
+        let (tri_match, word_match) = fts::match_exprs("body", &terms);
+        if tri_match.is_none() && word_match.is_none() {
+            return Ok(Vec::new());
+        }
+
+        let (sql, values) = search_query(tri_match, word_match, conversation, limit);
+        let mut out = Vec::new();
+        let mut stmt = conn.prepare(&sql)?;
+        let mut rows = stmt.query(params_from_iter(values))?;
+        while let Some(r) = rows.next()? {
+            out.push(row_to_message(r)?);
+        }
+        Ok(out)
+    }
+}
+
+/// The one search statement and its positional values. The text clauses are
+/// only those that have a match expression; the rest is the same for every
+/// shape. Each clause selects rowids from its own index table, so the chat
+/// table is searched by rowid and never scanned.
+pub(super) fn search_query(
+    tri_match: Option<String>,
+    word_match: Option<String>,
+    conversation: Option<&str>,
+    limit: u32,
+) -> (String, Vec<Value>) {
+    let mut values = Vec::new();
+    let mut clauses = Vec::new();
+    for (table, expr) in [("messages_tri", tri_match), ("messages_word", word_match)] {
+        if let Some(expr) = expr {
+            values.push(Value::Text(expr));
+            clauses.push(format!(
+                "m.rowid IN (SELECT rowid FROM {table} WHERE {table} MATCH ?{})",
+                values.len()
+            ));
         }
     }
+    values.push(conversation.map_or(Value::Null, |c| Value::Text(c.to_string())));
+    let conv = values.len();
+    values.push(Value::Integer(i64::from(limit)));
+    let limit_at = values.len();
+
+    let sql = format!(
+        "SELECT {M_MESSAGE_COLUMNS} FROM messages m WHERE {} AND m.system = 0 AND (m.outgoing = 1 \
+         OR m.admission = 'accepted') AND m.deleted_at IS NULL AND (?{conv} IS NULL OR \
+         m.conversation_id = ?{conv}) ORDER BY m.sender_timestamp DESC, m.author DESC, m.id DESC \
+         LIMIT ?{limit_at}",
+        clauses.join(" AND ")
+    );
+    (sql, values)
 }

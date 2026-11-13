@@ -1,11 +1,10 @@
 use rusqlite::Connection;
-
-use crate::sqlite::text_index::{TRI_TOKENIZE, WORD_TOKENIZE};
+use syneroym_text_lang::fts::{TRI_TABLE_OPTIONS, WORD_TABLE_OPTIONS};
 
 #[test]
 fn word_table_tokenization_and_indic_marks() {
     let conn = Connection::open_in_memory().unwrap();
-    let sql = format!("CREATE VIRTUAL TABLE test_word USING fts5(f_text, {WORD_TOKENIZE})");
+    let sql = format!("CREATE VIRTUAL TABLE test_word USING fts5(f_text, {WORD_TABLE_OPTIONS})");
     conn.execute(&sql, []).unwrap();
 
     let rows = ["ek", "ekdam", "nal wala", "नल वाला", "சென்னை வாலா"];
@@ -31,7 +30,7 @@ fn word_table_tokenization_and_indic_marks() {
 #[test]
 fn trigram_table_tokenization_and_length_filter() {
     let conn = Connection::open_in_memory().unwrap();
-    let sql = format!("CREATE VIRTUAL TABLE test_tri USING fts5(f_text, {TRI_TOKENIZE})");
+    let sql = format!("CREATE VIRTUAL TABLE test_tri USING fts5(f_text, {TRI_TABLE_OPTIONS})");
     conn.execute(&sql, []).unwrap();
 
     conn.execute("INSERT INTO test_tri(f_text) VALUES (?1)", ["plumber"]).unwrap();
@@ -51,7 +50,7 @@ fn prefix_index_verification() {
     let conn = Connection::open_in_memory().unwrap();
 
     conn.execute(
-        &format!("CREATE VIRTUAL TABLE with_prefix USING fts5(f_text, {WORD_TOKENIZE})"),
+        &format!("CREATE VIRTUAL TABLE with_prefix USING fts5(f_text, {WORD_TABLE_OPTIONS})"),
         [],
     )
     .unwrap();

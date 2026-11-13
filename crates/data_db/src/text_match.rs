@@ -1,5 +1,9 @@
 use rusqlite::types::Value as SqlValue;
 use serde_json::Value as Json;
+use syneroym_text_lang::{
+    fts::{MAX_SEARCH_BYTES, MAX_SEARCH_TERMS, match_exprs},
+    query_terms,
+};
 
 use crate::host_store::DataLayerError;
 
@@ -9,9 +13,6 @@ pub struct TextFields<'a> {
     pub collection: &'a str,
     pub fields: &'a [String],
 }
-
-pub const MAX_SEARCH_TERMS: usize = 16;
-pub const MAX_SEARCH_BYTES: usize = 1024;
 
 /// Compiles `{"<path>": {"$search": <value>}}` to a SQL condition on the
 /// collection's rowid, and pushes its bound parameters.
@@ -52,7 +53,7 @@ pub(crate) fn compile_search(
         ));
     }
 
-    let terms = syneroym_text_lang::query_terms(raw_text);
+    let terms = query_terms(raw_text);
     let total_terms = terms.long.len() + terms.short.len();
     if total_terms == 0 {
         return Err(DataLayerError::SchemaViolation("$search needs at least one word".to_string()));
@@ -62,14 +63,9 @@ pub(crate) fn compile_search(
     }
 
     let coll = text.collection;
+    let (tri_expr, word_expr) = match_exprs(&format!("f_{path}"), &terms);
 
-    let tri_clause = if !terms.long.is_empty() {
-        let expr = terms
-            .long
-            .iter()
-            .map(|t| format!("f_{path} : \"{}\"", t.replace('"', "\"\"")))
-            .collect::<Vec<_>>()
-            .join(" AND ");
+    let tri_clause = if let Some(expr) = tri_expr {
         params.push(SqlValue::Text(expr));
         Some(format!(
             "{coll}.rowid IN (SELECT rowid FROM _text_{coll}_tri WHERE _text_{coll}_tri MATCH ?)"
@@ -78,13 +74,7 @@ pub(crate) fn compile_search(
         None
     };
 
-    let word_clause = if !terms.short.is_empty() {
-        let expr = terms
-            .short
-            .iter()
-            .map(|t| format!("f_{path} : \"{}\"*", t.replace('"', "\"\"")))
-            .collect::<Vec<_>>()
-            .join(" AND ");
+    let word_clause = if let Some(expr) = word_expr {
         params.push(SqlValue::Text(expr));
         Some(format!(
             "{coll}.rowid IN (SELECT rowid FROM _text_{coll}_word WHERE _text_{coll}_word MATCH ?)"

@@ -21,7 +21,7 @@ use syneroym_roym_core::{
 
 use super::{
     NODE_STATE, PUBLICATION_LOG, PUBLICATIONS, SEARCH_INDEX, SETTINGS, SETTINGS_KEY, ensure_coll,
-    get_json, idx, owner_did_or_node, put_json, search_index_indexes, search_ops, standing, synorg,
+    ensure_search_index, get_json, idx, owner_did_or_node, put_json, search_ops, standing, synorg,
 };
 
 /// A listing is admitted only from a member whose credential from this
@@ -125,7 +125,7 @@ async fn publication_secs_in_window<H: AppHost>(
 /// values it holds -- the fix for the stale-row bug a republish with fewer
 /// areas would otherwise leave behind.
 async fn delete_search_index_for<H: AppHost>(host: &H, listing_id: &str) -> Result<(), String> {
-    ensure_coll(host, SEARCH_INDEX, &search_index_indexes()).await?;
+    ensure_search_index(host).await?;
     AppDataLayer::delete_many(
         host,
         SEARCH_INDEX.to_string(),
@@ -177,7 +177,7 @@ pub(crate) async fn publish<H: AppHost>(host: &H, input: PublishInput) -> Reply<
     if let Err(e) = ensure_coll(host, PUBLICATIONS, &[idx("listing_id", IndexType::String)]).await {
         return Err(Response::internal_error(e));
     }
-    if let Err(e) = ensure_coll(host, SEARCH_INDEX, &search_index_indexes()).await {
+    if let Err(e) = ensure_search_index(host).await {
         return Err(Response::internal_error(e));
     }
 
@@ -484,7 +484,7 @@ async fn prune_expired_publications_now<H: AppHost>(
 ) -> Result<(), String> {
     let floor = now.saturating_sub(retention_secs);
     ensure_coll(host, PUBLICATIONS, &[]).await?;
-    ensure_coll(host, SEARCH_INDEX, &search_index_indexes()).await?;
+    ensure_search_index(host).await?;
     AppDataLayer::delete_many(
         host,
         PUBLICATIONS.to_string(),

@@ -1,0 +1,1087 @@
+# spelling-pairs.tsv: test data for Roym search keys (Hindi and Tamil typed in Latin letters)
+# Reader: developers who build and test search keys.
+# written by: Claude Sonnet 5.5, 2026-11-05
+# owner check: done 2026-11-13 (owner decisions below; no data row changed)
+# kinds: pair = a word in its script and one common Latin spelling;
+#   variant = another Latin spelling that people expect to match the group's word;
+#   joined = the words of a multi-word group with spaces removed, expected to match;
+#   distinct = a Latin spelling that must NOT match the group's word.
+# A Latin query has no language, so one set of Latin folding rules serves
+# Hindi and Tamil. A rule that makes a variant meet in one group can make
+# a distinct row meet in another. The check script lists these conflicts.
+# The owner decides each one below. B4b may not change a row without the owner.
+# conflicts: 17 found by the check script; the owner decides each one (keep the "must meet" side or the "must not meet" side)
+#   edit a→: must meet in hi/aaj, hi/aam, hi/haan, hi/nagar, ta/aamam, ta/aani, ta/naalai, ta/naan, ta/thaiyalkaarar, ta/theriyaadhu, ta/vaa, ta/vendaam; must not meet in ta/madurai; owner decision: keep "must meet"
+#   edit a→e: must meet in hi/lahsun, hi/main, hi/nariyal, hi/teacher, ta/chennai, ta/ennai, ta/irumbu-kadai, ta/jannal, ta/jaya, ta/kudai, ta/malikai-kadai, ta/mesai, ta/muttai, ta/painter, ta/saravanan, ta/sari, ta/selai, ta/selvam, ta/shankar, ta/tea-kadai, ta/teacher, ta/vennai, ta/vilai; must not meet in hi/darwaza, ta/savi, ta/vali; owner decision: keep "must not meet"
+#   edit a→o: must meet in hi/bahut; must not meet in ta/paruppu; owner decision: keep "must not meet"
+#   edit a→u: must meet in hi/ganj, hi/mohan, hi/rang-rogan, ta/coimbatore; must not meet in hi/gadda, hi/lakdi, ta/malikai-kadai, ta/pal; owner decision: keep "must not meet"
+#   edit e→: must meet in hi/ahmedabad, hi/indore, hi/meerut, hi/mobile, hi/pipe, ta/coimbatore, ta/cuddalore, ta/mobile, ta/pipe, ta/vellore; must not meet in ta/meen; owner decision: keep "must meet"
+#   edit e→a: must meet in hi/ahmedabad, hi/carpenter, hi/computer, hi/driver, hi/gas-cylinder, hi/painter, hi/paise, hi/plumber, hi/pune, hi/teacher, hi/verma, ta/ange, ta/carpenter, ta/computer, ta/driver, ta/enge, ta/inge, ta/nagercoil, ta/painter, ta/plumber, ta/teacher; must not meet in hi/kapde, hi/kela, hi/seb, ta/salem, ta/selai, ta/thengai; owner decision: keep "must not meet"
+#   edit e→i: must meet in hi/delhi, hi/nai-delhi, ta/cement, ta/repair; must not meet in hi/tel, ta/seruppu, ta/vetti; owner decision: keep "must not meet"
+#   edit h→: must meet in hi/ahmedabad, hi/chhat, hi/khidki, hi/lahsun, hi/nahi, hi/pankha, hi/sharma, hi/shukriya, hi/shyam, hi/singh, ta/adhu, ta/ajith, ta/geetha, ta/idhu, ta/kadhavu, ta/kavitha, ta/latha, ta/nalladhu, ta/shankar, ta/sudha, ta/thachar, ta/thakkali, ta/thalaiyanai, ta/thanjavur, ta/thanneer, ta/thanneer-lorry, ta/thayir, ta/theneer, ta/theriyaadhu, ta/theriyum, ta/theru, ta/thuni-kadai; must not meet in hi/jharu, hi/phal; owner decision: keep "must meet"
+#   edit i→: must meet in hi/varanasi, ta/illai, ta/muttai, ta/thalaiyanai; must not meet in ta/ennai; owner decision: keep "must meet"
+#   edit i→u: must meet in ta/trichy; must not meet in ta/arisi, ta/mani, ta/nandri; owner decision: keep "must not meet"
+#   edit o→a: must meet in hi/doctor, ta/colony, ta/doctor; must not meet in hi/lohar, hi/mochi, hi/mohan; owner decision: keep "must not meet"
+#   edit o→u: must meet in hi/kyon, ta/cuddalore, ta/vellore; must not meet in ta/erode, ta/kothanar; owner decision: keep "must not meet"
+#   edit t→d: must meet in ta/cement; must not meet in hi/tala; owner decision: keep "must not meet"
+#   edit u→a: must meet in hi/bulb, hi/meerut, hi/plumber, ta/bulb, ta/plumber; must not meet in hi/dudh, hi/dudh-wala, hi/jute, hi/kursi, hi/lahsun, ta/murugan, ta/uppu; owner decision: keep "must not meet"
+#   edit u→i: must meet in ta/puducherry; must not meet in ta/balu, ta/muttai; owner decision: keep "must not meet"
+#   edit u→o: must meet in hi/bahut; must not meet in hi/sunar; owner decision: keep "must not meet"
+#   edit →i: must meet in hi/bhai, hi/flat, hi/mirch, hi/school, hi/tv, ta/madurai, ta/poo-vyabari, ta/sari, ta/trichy, ta/tv; must not meet in ta/kumar; owner decision: keep "must meet"
+# accepted merges: rows that B4b search makes meet although they are marked distinct (owner, 2026-11-13)
+#   hi/jharu distinct jaru: the "must meet" side of edit h→ drops h after a consonant
+#   hi/saree distinct sadi: ड़ maps to d, as most spellings in the data use
+#   ta/ennai distinct enna: a long query word matches the start of a word (substring search)
+lang	group	kind	native	latin	note
+hi	nal-wala	pair	नल वाला	nal wala	plumber (spoken)
+hi	nal-wala	variant		naal waala	
+hi	nal-wala	variant		nal vala	
+hi	nal-wala	joined		nalwala	
+hi	nal-wala	distinct		nil wala	keep apart: vowel a/i
+hi	nal-wala	distinct		nal bala	keep apart: consonant w/b
+hi	bijli-wala	pair	बिजली वाला	bijli wala	electrician (spoken)
+hi	bijli-wala	variant		bijlee waala	
+hi	bijli-wala	variant		bijli vala	
+hi	bijli-wala	joined		bijliwala	
+hi	bijli-wala	distinct		bijla wala	keep apart: vowel i/a
+hi	raj-mistri	pair	राज मिस्त्री	raj mistri	mason
+hi	raj-mistri	variant		raaj mistry	
+hi	raj-mistri	variant		raj mistree	
+hi	raj-mistri	joined		rajmistri	
+hi	raj-mistri	distinct		raj mastri	keep apart: vowel i/a
+hi	badhai	pair	बढ़ई	badhai	carpenter
+hi	badhai	variant		barhai	
+hi	badhai	variant		badhayi	
+hi	darzi	pair	दर्ज़ी	darzi	tailor
+hi	darzi	variant		darji	
+hi	darzi	variant		darzee	
+hi	dhobi	pair	धोबी	dhobi	washerman
+hi	dhobi	variant		dhobee	
+hi	dhobi	distinct		dhoba	keep apart: vowel i/a
+hi	nai	pair	नाई	nai	barber
+hi	nai	variant		naai	
+hi	nai	variant		nayee	
+hi	mali	pair	माली	mali	gardener
+hi	mali	variant		maali	
+hi	mali	variant		malee	
+hi	mali	distinct		mala	keep apart: vowel i/a
+hi	mochi	pair	मोची	mochi	cobbler
+hi	mochi	variant		mochee	
+hi	mochi	distinct		machi	keep apart: vowel o/a
+hi	lohar	pair	लोहार	lohar	blacksmith
+hi	lohar	variant		lohaar	
+hi	lohar	distinct		lahar	keep apart: vowel o/a
+hi	kumhar	pair	कुम्हार	kumhar	potter
+hi	kumhar	variant		kumhaar	
+hi	sunar	pair	सुनार	sunar	goldsmith
+hi	sunar	variant		sunaar	
+hi	sunar	distinct		sonar	keep apart: vowel u/o
+hi	safai-wala	pair	सफाई वाला	safai wala	cleaner (spoken)
+hi	safai-wala	variant		safaai waala	
+hi	safai-wala	variant		safai vala	
+hi	safai-wala	joined		safaiwala	
+hi	gas-cylinder	pair	गैस सिलेंडर	gas cylinder	gas cylinder
+hi	gas-cylinder	variant		gas silendar	
+hi	gas-cylinder	variant		gas cylindar	
+hi	gas-cylinder	joined		gascylinder	
+hi	dudh-wala	pair	दूध वाला	dudh wala	milkman (spoken)
+hi	dudh-wala	variant		doodh waala	
+hi	dudh-wala	variant		dudh vala	
+hi	dudh-wala	joined		dudhwala	
+hi	dudh-wala	distinct		dadh wala	keep apart: vowel u/a
+hi	sabzi-wala	pair	सब्ज़ी वाला	sabzi wala	vegetable seller (spoken)
+hi	sabzi-wala	variant		sabji waala	
+hi	sabzi-wala	variant		sabzee vala	
+hi	sabzi-wala	joined		sabziwala	
+hi	chai-wala	pair	चाय वाला	chai wala	tea seller (spoken)
+hi	chai-wala	variant		chaay waala	
+hi	chai-wala	variant		chai vala	
+hi	chai-wala	joined		chaiwala	
+hi	kabadi-wala	pair	कबाड़ी वाला	kabadi wala	scrap dealer (spoken)
+hi	kabadi-wala	variant		kabaadi waala	
+hi	kabadi-wala	variant		kabari vala	
+hi	kabadi-wala	joined		kabadiwala	
+hi	pani-wala	pair	पानी वाला	pani wala	water supplier (spoken)
+hi	pani-wala	variant		paani waala	
+hi	pani-wala	variant		pani vala	
+hi	pani-wala	joined		paniwala	
+hi	kirana-dukan	pair	किराना दुकान	kirana dukan	grocery shop
+hi	kirana-dukan	variant		kiraana dukaan	
+hi	kirana-dukan	joined		kiranadukan	
+hi	kirana-dukan	distinct		karana dukan	keep apart: vowel i/a
+hi	kirana	pair	किराना	kirana	grocery
+hi	kirana	variant		kiraana	
+hi	kirana	distinct		karana	keep apart: vowel i/a
+hi	dudh	pair	दूध	dudh	milk
+hi	dudh	variant		doodh	
+hi	dudh	distinct		dadh	keep apart: vowel u/a
+hi	chawal	pair	चावल	chawal	rice
+hi	chawal	variant		chaawal	
+hi	chawal	variant		chaval	
+hi	ata	pair	आटा	ata	flour
+hi	ata	variant		aata	
+hi	ata	variant		atta	
+hi	dal	pair	दाल	dal	lentils
+hi	dal	variant		daal	
+hi	dal	variant		dall	
+hi	dal	distinct		dil	keep apart: vowel a/i
+hi	chini	pair	चीनी	chini	sugar
+hi	chini	variant		cheeni	
+hi	chini	variant		chinee	
+hi	chini	distinct		chana	keep apart: vowel i/a, vowel i/a
+hi	namak	pair	नमक	namak	salt
+hi	tel	pair	तेल	tel	oil
+hi	tel	variant		tell	
+hi	tel	distinct		til	keep apart: vowel e/i
+hi	ghee	pair	घी	ghee	clarified butter
+hi	ghee	variant		ghi	
+hi	chai	pair	चाय	chai	tea
+hi	chai	variant		chay	
+hi	chai	variant		chaay	
+hi	sabzi	pair	सब्ज़ी	sabzi	vegetable
+hi	sabzi	variant		sabji	
+hi	sabzi	variant		sabzee	
+hi	aloo	pair	आलू	aloo	potato
+hi	aloo	variant		alu	
+hi	aloo	variant		aaloo	
+hi	aloo	distinct		ali	keep apart: vowel oo/i
+hi	pyaz	pair	प्याज़	pyaz	onion
+hi	pyaz	variant		pyaaz	
+hi	pyaz	variant		pyaj	
+hi	pyaz	distinct		pyar	keep apart: consonant z/r
+hi	tamatar	pair	टमाटर	tamatar	tomato
+hi	tamatar	variant		tamaatar	
+hi	mirch	pair	मिर्च	mirch	chilli
+hi	mirch	variant		mirchi	
+hi	mirch	distinct		march	keep apart: vowel i/a
+hi	haldi	pair	हल्दी	haldi	turmeric
+hi	haldi	variant		haldee	
+hi	adrak	pair	अदरक	adrak	ginger
+hi	adrak	variant		adarak	
+hi	adrak	distinct		idrak	keep apart: vowel a/i
+hi	lahsun	pair	लहसुन	lahsun	garlic
+hi	lahsun	variant		lehsun	
+hi	lahsun	variant		lasun	
+hi	lahsun	distinct		lahsan	keep apart: vowel u/a
+hi	phal	pair	फल	phal	fruit
+hi	phal	variant		fal	
+hi	phal	distinct		pal	keep apart: aspiration h/-
+hi	kela	pair	केला	kela	banana
+hi	kela	variant		kelaa	
+hi	kela	distinct		kala	keep apart: vowel e/a
+hi	aam	pair	आम	aam	mango
+hi	aam	variant		am	
+hi	aam	distinct		om	keep apart: vowel aa/o
+hi	seb	pair	सेब	seb	apple
+hi	seb	variant		saib	
+hi	seb	distinct		sab	keep apart: vowel e/a
+hi	angoor	pair	अंगूर	angoor	grapes
+hi	angoor	variant		angur	
+hi	angoor	distinct		angar	keep apart: vowel oo/a
+hi	nariyal	pair	नारियल	nariyal	coconut
+hi	nariyal	variant		nariyel	
+hi	nariyal	variant		naariyal	
+hi	kapde	pair	कपड़े	kapde	clothes
+hi	kapde	variant		kapre	
+hi	kapde	distinct		kapda	keep apart: vowel e/a
+hi	jute	pair	जूते	jute	shoes
+hi	jute	variant		joote	
+hi	jute	distinct		jate	keep apart: vowel u/a
+hi	saree	pair	साड़ी	saree	saree
+hi	saree	variant		sari	
+hi	saree	variant		saaree	
+hi	saree	distinct		sadi	keep apart: consonant ree/di
+hi	tala	pair	ताला	tala	lock
+hi	tala	variant		taala	
+hi	tala	distinct		dala	keep apart: consonant t/d
+hi	chabi	pair	चाबी	chabi	key
+hi	chabi	variant		chaabi	
+hi	chabi	variant		chavi	
+hi	balti	pair	बाल्टी	balti	bucket
+hi	balti	variant		baalti	
+hi	balti	variant		baltee	
+hi	jharu	pair	झाड़ू	jharu	broom
+hi	jharu	variant		jhadu	
+hi	jharu	variant		jhaadu	
+hi	jharu	distinct		jaru	keep apart: aspiration h/-
+hi	bartan	pair	बर्तन	bartan	utensils
+hi	bartan	variant		bartaan	
+hi	pankha	pair	पंखा	pankha	fan
+hi	pankha	variant		pankhaa	
+hi	pankha	variant		panka	
+hi	pankha	distinct		bankha	keep apart: consonant p/b
+hi	bistar	pair	बिस्तर	bistar	bed
+hi	bistar	variant		bistaar	
+hi	bistar	distinct		bastar	keep apart: vowel i/a
+hi	takiya	pair	तकिया	takiya	pillow
+hi	takiya	variant		takia	
+hi	takiya	variant		takiyaa	
+hi	chadar	pair	चादर	chadar	bedsheet
+hi	chadar	variant		chaadar	
+hi	gadda	pair	गद्दा	gadda	mattress
+hi	gadda	variant		gada	
+hi	gadda	distinct		gudda	keep apart: vowel a/u
+hi	kursi	pair	कुर्सी	kursi	chair
+hi	kursi	variant		kursee	
+hi	kursi	variant		kurssi	
+hi	kursi	distinct		karsi	keep apart: vowel u/a
+hi	mez	pair	मेज़	mez	table
+hi	mez	variant		mej	
+hi	mez	distinct		mes	keep apart: consonant z/s
+hi	almari	pair	अलमारी	almari	cupboard
+hi	almari	variant		alamari	
+hi	almari	variant		almaari	
+hi	darwaza	pair	दरवाज़ा	darwaza	door
+hi	darwaza	variant		darwaja	
+hi	darwaza	variant		darvaza	
+hi	darwaza	variant		darwaaza	
+hi	darwaza	distinct		darwaze	keep apart: vowel a/e
+hi	khidki	pair	खिड़की	khidki	window
+hi	khidki	variant		khirki	
+hi	khidki	variant		kidki	
+hi	khidki	distinct		khadki	keep apart: vowel i/a
+hi	chhat	pair	छत	chhat	roof
+hi	chhat	variant		chat	
+hi	chhat	distinct		chit	keep apart: consonant ha/i
+hi	diwar	pair	दीवार	diwar	wall
+hi	diwar	variant		deewar	
+hi	diwar	variant		diwaar	
+hi	eent	pair	ईंट	eent	brick
+hi	eent	variant		int	
+hi	patthar	pair	पत्थर	patthar	stone
+hi	patthar	variant		pathar	
+hi	lakdi	pair	लकड़ी	lakdi	wood
+hi	lakdi	variant		lakri	
+hi	lakdi	variant		lakadi	
+hi	lakdi	distinct		lukdi	keep apart: vowel a/u
+hi	rang-rogan	pair	रंग रोगन	rang rogan	paint work
+hi	rang-rogan	variant		rung rogan	
+hi	rang-rogan	variant		rang rogaan	
+hi	rang-rogan	joined		rangrogan	
+hi	pani-ki-tanki	pair	पानी की टंकी	pani ki tanki	water tank
+hi	pani-ki-tanki	variant		paani ki tanki	
+hi	pani-ki-tanki	joined		panikitanki	
+hi	sarson-ka-tel	pair	सरसों का तेल	sarson ka tel	mustard oil
+hi	sarson-ka-tel	variant		sarson ka tell	
+hi	sarson-ka-tel	joined		sarsonkatel	
+hi	plumber	pair	प्लंबर	plumber	plumber
+hi	plumber	variant		plamber	
+hi	plumber	variant		plumbar	
+hi	electrician	pair	इलेक्ट्रीशियन	electrician	electrician
+hi	electrician	variant		electrishian	
+hi	electrician	variant		electreeshian	
+hi	mechanic	pair	मैकेनिक	mechanic	mechanic
+hi	mechanic	variant		mekanik	
+hi	mechanic	variant		maikenik	
+hi	painter	pair	पेंटर	painter	painter
+hi	painter	variant		pentar	
+hi	painter	variant		penter	
+hi	driver	pair	ड्राइवर	driver	driver
+hi	driver	variant		draiwar	
+hi	driver	variant		draivar	
+hi	carpenter	pair	कारपेंटर	carpenter	carpenter
+hi	carpenter	variant		karpentar	
+hi	carpenter	variant		carpentar	
+hi	teacher	pair	टीचर	teacher	teacher
+hi	teacher	variant		teechar	
+hi	teacher	variant		ticher	
+hi	doctor	pair	डॉक्टर	doctor	doctor
+hi	doctor	variant		daktar	
+hi	doctor	variant		doktar	
+hi	cement	pair	सीमेंट	cement	cement
+hi	cement	variant		siment	
+hi	cement	variant		seement	
+hi	pipe	pair	पाइप	pipe	pipe
+hi	pipe	variant		paip	
+hi	pipe	variant		payp	
+hi	bulb	pair	बल्ब	bulb	light bulb
+hi	bulb	variant		balb	
+hi	mobile	pair	मोबाइल	mobile	mobile phone
+hi	mobile	variant		mobail	
+hi	school	pair	स्‌कूल	school	zwnj
+hi	school	variant		skool	
+hi	school	variant		iskool	
+hi	taxi	pair	टैक्सी	taxi	taxi
+hi	taxi	variant		taiksi	
+hi	taxi	variant		taksi	
+hi	flat	pair	फ्‍लैट	flat	zwj
+hi	flat	variant		flait	
+hi	flat	variant		flaat	
+hi	train	pair	ट्‌रेन	train	zwnj
+hi	train	variant		tren	
+hi	train	variant		trayn	
+hi	fridge	pair	फ्रिज	fridge	refrigerator
+hi	fridge	variant		frij	
+hi	fridge	variant		fridj	
+hi	ac	pair	एसी	ac	air conditioner
+hi	ac	variant		ay see	
+hi	tv	pair	टीवी	tv	television
+hi	tv	variant		tivi	
+hi	tv	variant		teevee	
+hi	computer	pair	कंप्यूटर	computer	computer
+hi	computer	variant		kampyutar	
+hi	computer	variant		computar	
+hi	ram	pair	राम	ram	given name
+hi	ram	variant		raam	
+hi	ram	distinct		rim	keep apart: vowel a/i
+hi	shyam	pair	श्याम	shyam	given name
+hi	shyam	variant		syam	
+hi	shyam	variant		shyaam	
+hi	mohan	pair	मोहन	mohan	given name
+hi	mohan	variant		mohun	
+hi	mohan	distinct		mahan	keep apart: vowel o/a
+hi	rajesh	pair	राजेश	rajesh	given name
+hi	rajesh	variant		rajeysh	
+hi	suresh	pair	सुरेश	suresh	given name
+hi	suresh	variant		sooresh	
+hi	ramesh	pair	रमेश	ramesh	given name
+hi	ramesh	variant		rammesh	
+hi	mahesh	pair	महेश	mahesh	given name
+hi	mahesh	variant		mahaysh	
+hi	dinesh	pair	दिनेश	dinesh	given name
+hi	dinesh	variant		deenesh	
+hi	ajay	pair	अजय	ajay	given name
+hi	ajay	variant		ajai	
+hi	vijay	pair	विजय	vijay	given name
+hi	vijay	variant		vijai	
+hi	vijay	variant		wijay	
+hi	sanjay	pair	संजय	sanjay	given name
+hi	sanjay	variant		sanjai	
+hi	amit	pair	अमित	amit	given name
+hi	amit	variant		ameet	
+hi	sunil	pair	सुनील	sunil	given name
+hi	sunil	variant		suneel	
+hi	anil	pair	अनिल	anil	given name
+hi	anil	variant		aneel	
+hi	prakash	pair	प्रकाश	prakash	given name
+hi	prakash	variant		prakaash	
+hi	anand	pair	आनंद	anand	given name
+hi	anand	variant		aanand	
+hi	ganesh	pair	गणेश	ganesh	given name
+hi	ganesh	variant		ganesha	
+hi	krishna	pair	कृष्णा	krishna	given name
+hi	krishna	variant		krishnaa	
+hi	krishna	variant		kishna	
+hi	hari	pair	हरि	hari	given name
+hi	hari	variant		haree	
+hi	geeta	pair	गीता	geeta	given name
+hi	geeta	variant		gita	
+hi	sita	pair	सीता	sita	given name
+hi	sita	variant		seeta	
+hi	radha	pair	राधा	radha	given name
+hi	radha	variant		raadha	
+hi	sunita	pair	सुनीता	sunita	given name
+hi	sunita	variant		suneeta	
+hi	sarita	pair	सरिता	sarita	given name
+hi	sarita	variant		sareeta	
+hi	kamla	pair	कमला	kamla	given name
+hi	kamla	variant		kamala	
+hi	kamla	variant		kamlaa	
+hi	pooja	pair	पूजा	pooja	given name
+hi	pooja	variant		puja	
+hi	priya	pair	प्रिया	priya	given name
+hi	priya	variant		priyaa	
+hi	anita	pair	अनीता	anita	given name
+hi	anita	variant		aneeta	
+hi	meena	pair	मीना	meena	given name
+hi	meena	variant		mina	
+hi	rekha	pair	रेखा	rekha	given name
+hi	rekha	variant		raykha	
+hi	jyoti	pair	ज्योति	jyoti	given name
+hi	jyoti	variant		jyotee	
+hi	jyoti	variant		jyothi	
+hi	laxmi	pair	लक्ष्मी	laxmi	given name
+hi	laxmi	variant		lakshmi	
+hi	laxmi	variant		lakshmee	
+hi	sharma	pair	शर्मा	sharma	family name
+hi	sharma	variant		sarma	
+hi	sharma	variant		sharmaa	
+hi	verma	pair	वर्मा	verma	family name
+hi	verma	variant		varma	
+hi	gupta	pair	गुप्ता	gupta	family name
+hi	gupta	variant		guptaa	
+hi	singh	pair	सिंह	singh	family name
+hi	singh	variant		sinh	
+hi	singh	variant		sing	
+hi	yadav	pair	यादव	yadav	family name
+hi	yadav	variant		yaadav	
+hi	kumar	pair	कुमार	kumar	family name
+hi	kumar	variant		kumaar	
+hi	ram-kumar	pair	राम कुमार	ram kumar	full name
+hi	ram-kumar	variant		raam kumaar	
+hi	ram-kumar	joined		ramkumar	
+hi	sita-devi	pair	सीता देवी	sita devi	full name
+hi	sita-devi	variant		seeta devee	
+hi	sita-devi	joined		sitadevi	
+hi	delhi	pair	दिल्ली	delhi	city
+hi	delhi	variant		dilli	
+hi	nai-delhi	pair	नई दिल्ली	nai delhi	city
+hi	nai-delhi	variant		new delhi	
+hi	nai-delhi	variant		nayi dilli	
+hi	nai-delhi	joined		naidelhi	
+hi	mumbai	pair	मुंबई	mumbai	city
+hi	mumbai	variant		bombay	
+hi	mumbai	variant		mumbaee	
+hi	kolkata	pair	कोलकाता	kolkata	city
+hi	kolkata	variant		calcutta	
+hi	kolkata	variant		kolkatta	
+hi	jaipur	pair	जयपुर	jaipur	city
+hi	jaipur	variant		jaypur	
+hi	jaipur	variant		jaipoor	
+hi	lucknow	pair	लखनऊ	lucknow	city
+hi	lucknow	variant		lakhnau	
+hi	lucknow	variant		lakhnow	
+hi	kanpur	pair	कानपुर	kanpur	city
+hi	kanpur	variant		kaanpur	
+hi	patna	pair	पटना	patna	city
+hi	patna	variant		patnaa	
+hi	bhopal	pair	भोपाल	bhopal	city
+hi	bhopal	variant		bhopaal	
+hi	indore	pair	इंदौर	indore	city
+hi	indore	variant		indaur	
+hi	varanasi	pair	वाराणसी	varanasi	city
+hi	varanasi	variant		banaras	
+hi	varanasi	variant		waranasi	
+hi	ahmedabad	pair	अहमदाबाद	ahmedabad	city
+hi	ahmedabad	variant		amdavad	
+hi	ahmedabad	variant		ahmadabad	
+hi	chandigarh	pair	चंडीगढ़	chandigarh	city
+hi	chandigarh	variant		chandigadh	
+hi	agra	pair	आगरा	agra	city
+hi	agra	variant		aagra	
+hi	meerut	pair	मेरठ	meerut	city
+hi	meerut	variant		merath	
+hi	meerut	variant		merut	
+hi	noida	pair	नोएडा	noida	city
+hi	noida	variant		noyda	
+hi	gurugram	pair	गुरुग्राम	gurugram	city
+hi	gurugram	variant		gurgaon	
+hi	gurugram	variant		gurugraam	
+hi	haridwar	pair	हरिद्वार	haridwar	city
+hi	haridwar	variant		haridvar	
+hi	dehradun	pair	देहरादून	dehradun	city
+hi	dehradun	variant		dehradoon	
+hi	ranchi	pair	रांची	ranchi	city
+hi	ranchi	variant		raanchi	
+hi	nagpur	pair	नागपुर	nagpur	city
+hi	nagpur	variant		naagpur	
+hi	pune	pair	पुणे	pune	city
+hi	pune	variant		poona	
+hi	surat	pair	सूरत	surat	city
+hi	surat	variant		soorat	
+hi	nagar	pair	नगर	nagar	place part
+hi	nagar	variant		nagr	
+hi	ganj	pair	गंज	ganj	place part
+hi	ganj	variant		gunj	
+hi	colony	pair	कॉलोनी	colony	place part
+hi	colony	variant		kaloni	
+hi	colony	variant		colonee	
+hi	mohalla	pair	मोहल्ला	mohalla	place part
+hi	mohalla	variant		mohallaa	
+hi	bazar	pair	बाज़ार	bazar	place part
+hi	bazar	variant		bazaar	
+hi	bazar	variant		bajar	
+hi	chowk	pair	चौक	chowk	place part
+hi	chowk	variant		chauk	
+hi	gali	pair	गली	gali	place part
+hi	gali	variant		galee	
+hi	ek	pair	एक	ek	one
+hi	do	pair	दो	do	two
+hi	na	pair	ना	na	no (casual)
+hi	ka	pair	का	ka	of
+hi	ki	pair	की	ki	of (feminine)
+hi	ki	variant		kee	
+hi	ki	distinct		ka	keep apart: vowel i/a
+hi	ke	pair	के	ke	of (plural)
+hi	ko	pair	को	ko	to
+hi	se	pair	से	se	from
+hi	ye	pair	ये	ye	this
+hi	ye	variant		yeh	
+hi	wo	pair	वो	wo	that
+hi	wo	variant		woh	
+hi	wo	variant		vo	
+hi	ji	pair	जी	ji	polite yes
+hi	ji	variant		jee	
+hi	ab	pair	अब	ab	now
+hi	hai	pair	है	hai	is
+hi	haan	pair	हाँ	haan	yes
+hi	haan	variant		han	
+hi	haan	variant		haa	
+hi	nahi	pair	नहीं	nahi	no
+hi	nahi	variant		nahin	
+hi	nahi	variant		nai	
+hi	kya	pair	क्या	kya	what
+hi	kya	variant		kyaa	
+hi	kahan	pair	कहाँ	kahan	where
+hi	kahan	variant		kaha	
+hi	kahan	variant		kahaan	
+hi	kaise	pair	कैसे	kaise	how
+hi	kaise	variant		kaisay	
+hi	kitna	pair	कितना	kitna	how much
+hi	kitna	variant		kitnaa	
+hi	kaun	pair	कौन	kaun	who
+hi	kaun	variant		kon	
+hi	kyon	pair	क्यों	kyon	why
+hi	kyon	variant		kyun	
+hi	kyon	variant		kyu	
+hi	theek	pair	ठीक	theek	okay
+hi	theek	variant		thik	
+hi	accha	pair	अच्छा	accha	good
+hi	accha	variant		achha	
+hi	accha	variant		acha	
+hi	bahut	pair	बहुत	bahut	very
+hi	bahut	variant		bohot	
+hi	bahut	variant		bahot	
+hi	thoda	pair	थोड़ा	thoda	a little
+hi	thoda	variant		thora	
+hi	jaldi	pair	जल्दी	jaldi	quick
+hi	jaldi	variant		jaldee	
+hi	kal	pair	कल	kal	yesterday or tomorrow
+hi	aaj	pair	आज	aaj	today
+hi	aaj	variant		aj	
+hi	abhi	pair	अभी	abhi	now
+hi	abhi	variant		abhee	
+hi	phir	pair	फिर	phir	again
+hi	phir	variant		fir	
+hi	bhai	pair	भाई	bhai	brother
+hi	bhai	variant		bhaii	
+hi	bhai	variant		bhayi	
+hi	didi	pair	दीदी	didi	sister
+hi	didi	variant		deedee	
+hi	shukriya	pair	शुक्रिया	shukriya	thanks
+hi	shukriya	variant		shukriyaa	
+hi	shukriya	variant		sukriya	
+hi	dhanyavad	pair	धन्यवाद	dhanyavad	thank you
+hi	dhanyavad	variant		dhanyawad	
+hi	paise	pair	पैसे	paise	money
+hi	paise	variant		paisa	
+hi	bhav	pair	भाव	bhav	price
+hi	bhav	variant		bhaav	
+hi	bhav	variant		bhaw	
+hi	kitna-paisa	pair	कितना पैसा	kitna paisa	how much money
+hi	kitna-paisa	variant		kitnaa paisa	
+hi	kitna-paisa	joined		kitnapaisa	
+hi	kahan-hai	pair	कहाँ है	kahan hai	where is
+hi	kahan-hai	variant		kahaan hai	
+hi	kahan-hai	joined		kahanhai	
+hi	kab-aoge	pair	कब आओगे	kab aoge	when will you come
+hi	kab-aoge	variant		kab aaoge	
+hi	kab-aoge	joined		kabaoge	
+hi	main	pair	मैं	main	I
+hi	main	variant		mai	
+hi	main	variant		mein	
+ta	thanneer-lorry	pair	தண்ணீர் லாரி	thanneer lorry	water lorry
+ta	thanneer-lorry	variant		tanneer lorry	
+ta	thanneer-lorry	variant		thanni lorry	
+ta	thanneer-lorry	joined		thanneerlorry	
+ta	pal-kadai	pair	பால் கடை	pal kadai	milk shop
+ta	pal-kadai	variant		paal kadai	
+ta	pal-kadai	joined		palkadai	
+ta	tea-kadai	pair	டீ கடை	tea kadai	tea shop
+ta	tea-kadai	variant		tee kadai	
+ta	tea-kadai	variant		ti kadai	
+ta	tea-kadai	joined		teakadai	
+ta	poo-kadai	pair	பூ கடை	poo kadai	flower shop
+ta	poo-kadai	variant		pu kadai	
+ta	poo-kadai	joined		pookadai	
+ta	thuni-kadai	pair	துணி கடை	thuni kadai	cloth shop
+ta	thuni-kadai	variant		tuni kadai	
+ta	thuni-kadai	joined		thunikadai	
+ta	irumbu-kadai	pair	இரும்பு கடை	irumbu kadai	hardware shop
+ta	irumbu-kadai	variant		irumbu kadei	
+ta	irumbu-kadai	joined		irumbukadai	
+ta	meen-kadai	pair	மீன் கடை	meen kadai	fish shop
+ta	meen-kadai	variant		min kadai	
+ta	meen-kadai	joined		meenkadai	
+ta	kari-kadai	pair	கறிக் கடை	kari kadai	meat shop
+ta	kari-kadai	variant		kaari kadai	
+ta	kari-kadai	joined		karikadai	
+ta	pazha-kadai	pair	பழக் கடை	pazha kadai	fruit shop
+ta	pazha-kadai	variant		pala kadai	
+ta	pazha-kadai	joined		pazhakadai	
+ta	kothanar	pair	கொத்தனார்	kothanar	mason
+ta	kothanar	variant		kothanaar	
+ta	kothanar	variant		kottanar	
+ta	kothanar	distinct		kuthanar	keep apart: vowel o/u
+ta	thachar	pair	தச்சர்	thachar	carpenter
+ta	thachar	variant		tachar	
+ta	thachar	variant		thachaar	
+ta	thaiyalkaarar	pair	தையல்காரர்	thaiyalkaarar	tailor
+ta	thaiyalkaarar	variant		thaiyalkarar	
+ta	thaiyalkaarar	variant		thaiyal karar	
+ta	salavaikkarar	pair	சலவைக்காரர்	salavaikkarar	washerman
+ta	salavaikkarar	variant		salavaikaarar	
+ta	salavaikkarar	variant		chalavaikarar	
+ta	navidhar	pair	நாவிதர்	navidhar	barber
+ta	navidhar	variant		naavithar	
+ta	navidhar	variant		navithar	
+ta	poo-vyabari	pair	பூ வியாபாரி	poo vyabari	flower seller
+ta	poo-vyabari	variant		poo viyabari	
+ta	poo-vyabari	variant		poo vyapari	
+ta	poo-vyabari	joined		poovyabari	
+ta	malikai-kadai	pair	மளிகைக் கடை	malikai kadai	grocery shop
+ta	malikai-kadai	variant		maligai kadai	
+ta	malikai-kadai	variant		malikai kadei	
+ta	malikai-kadai	joined		malikaikadai	
+ta	malikai-kadai	distinct		malikai kudai	keep apart: vowel a/u
+ta	kaikari-kadai	pair	காய்கறி கடை	kaikari kadai	vegetable shop
+ta	kaikari-kadai	variant		kaaikari kadai	
+ta	kaikari-kadai	joined		kaikarikadai	
+ta	palkarar	pair	பால்காரர்	palkarar	milkman
+ta	palkarar	variant		paalkaarar	
+ta	palkarar	variant		palkaarar	
+ta	palkarar	distinct		balkarar	keep apart: consonant p/b
+ta	pal	pair	பால்	pal	milk
+ta	pal	variant		paal	
+ta	pal	distinct		pul	keep apart: vowel a/u
+ta	arisi	pair	அரிசி	arisi	rice
+ta	arisi	distinct		arusi	keep apart: vowel i/u
+ta	paruppu	pair	பருப்பு	paruppu	lentils
+ta	paruppu	variant		parupu	
+ta	paruppu	distinct		poruppu	keep apart: vowel a/o
+ta	ennai	pair	எண்ணெய்	ennai	oil
+ta	ennai	variant		ennei	
+ta	ennai	variant		enney	
+ta	ennai	distinct		enna	keep apart: vowel i/-
+ta	uppu	pair	உப்பு	uppu	salt
+ta	uppu	variant		upu	
+ta	uppu	distinct		appu	keep apart: vowel u/a
+ta	sakkarai	pair	சர்க்கரை	sakkarai	sugar
+ta	sakkarai	variant		sarkarai	
+ta	sakkarai	variant		sarkkarai	
+ta	theneer	pair	தேநீர்	theneer	tea
+ta	theneer	variant		teneer	
+ta	theneer	variant		thenir	
+ta	kaikari	pair	காய்கறி	kaikari	vegetables
+ta	kaikari	variant		kaaikari	
+ta	kaikari	variant		kaaykari	
+ta	vengayam	pair	வெங்காயம்	vengayam	onion
+ta	vengayam	variant		vengaayam	
+ta	vengayam	variant		vengayyam	
+ta	thakkali	pair	தக்காளி	thakkali	tomato
+ta	thakkali	variant		takkali	
+ta	thakkali	variant		thakkaali	
+ta	urulaikizhangu	pair	உருளைக்கிழங்கு	urulaikizhangu	potato
+ta	urulaikizhangu	variant		urulai kizhangu	
+ta	urulaikizhangu	variant		urulaikilangu	
+ta	milagai	pair	மிளகாய்	milagai	chilli
+ta	milagai	variant		milakai	
+ta	milagai	variant		milagaai	
+ta	manjal	pair	மஞ்சள்	manjal	turmeric
+ta	manjal	variant		manjall	
+ta	inji	pair	இஞ்சி	inji	ginger
+ta	inji	variant		injee	
+ta	poondu	pair	பூண்டு	poondu	garlic
+ta	poondu	variant		pundu	
+ta	vazhaipazham	pair	வாழைப்பழம்	vazhaipazham	banana
+ta	vazhaipazham	variant		valaipalam	
+ta	vazhaipazham	variant		vazhaippazham	
+ta	mambazham	pair	மாம்பழம்	mambazham	mango
+ta	mambazham	variant		maambalam	
+ta	mambazham	variant		mambalam	
+ta	thengai	pair	தேங்காய்	thengai	coconut
+ta	thengai	variant		thenkai	
+ta	thengai	variant		thengaai	
+ta	thengai	distinct		thangai	keep apart: vowel e/a
+ta	pazham	pair	பழம்	pazham	fruit
+ta	pazham	variant		palam	
+ta	selai	pair	சேலை	selai	saree
+ta	selai	variant		sealai	
+ta	selai	variant		selei	
+ta	selai	distinct		salai	keep apart: vowel e/a
+ta	vetti	pair	வேட்டி	vetti	dhoti
+ta	vetti	variant		veti	
+ta	vetti	distinct		vitti	keep apart: vowel e/i
+ta	seruppu	pair	செருப்பு	seruppu	sandals
+ta	seruppu	variant		cheruppu	
+ta	seruppu	distinct		siruppu	keep apart: vowel e/i
+ta	poottu	pair	பூட்டு	poottu	lock
+ta	poottu	variant		pootu	
+ta	poottu	variant		putu	
+ta	poottu	distinct		boottu	keep apart: consonant p/b
+ta	savi	pair	சாவி	savi	key
+ta	savi	variant		saavi	
+ta	savi	variant		chaavi	
+ta	savi	distinct		sevi	keep apart: vowel a/e
+ta	vali	pair	வாளி	vali	bucket
+ta	vali	variant		vaali	
+ta	vali	distinct		veli	keep apart: vowel a/e
+ta	vilakkumaru	pair	விளக்குமாறு	vilakkumaru	broom
+ta	vilakkumaru	variant		vilakumaru	
+ta	vilakkumaru	variant		vilakkumaaru	
+ta	pathiram	pair	பாத்திரம்	pathiram	utensil
+ta	pathiram	variant		paathiram	
+ta	pathiram	variant		patthiram	
+ta	pathiram	distinct		bathiram	keep apart: consonant p/b
+ta	minvisiri	pair	மின்விசிறி	minvisiri	fan
+ta	minvisiri	variant		min visiri	
+ta	padukkai	pair	படுக்கை	padukkai	bed
+ta	padukkai	variant		padukai	
+ta	thalaiyanai	pair	தலையணை	thalaiyanai	pillow
+ta	thalaiyanai	variant		thalayanai	
+ta	thalaiyanai	variant		talaiyanai	
+ta	narkali	pair	நாற்காலி	narkali	chair
+ta	narkali	variant		naarkaali	
+ta	narkali	variant		narkaali	
+ta	mesai	pair	மேசை	mesai	table
+ta	mesai	variant		mesei	
+ta	mesai	variant		maesai	
+ta	alamari	pair	அலமாரி	alamari	cupboard
+ta	alamari	variant		alamaari	
+ta	kadhavu	pair	கதவு	kadhavu	door
+ta	kadhavu	variant		kadavu	
+ta	kadhavu	variant		kathavu	
+ta	jannal	pair	ஜன்னல்	jannal	window
+ta	jannal	variant		janal	
+ta	jannal	variant		jannel	
+ta	koorai	pair	கூரை	koorai	roof
+ta	koorai	variant		kurai	
+ta	koorai	distinct		korai	keep apart: vowel o/-
+ta	suvar	pair	சுவர்	suvar	wall
+ta	suvar	variant		chuvar	
+ta	sengal	pair	செங்கல்	sengal	brick
+ta	sengal	variant		chengal	
+ta	sengal	variant		sengkal	
+ta	manal	pair	மணல்	manal	sand
+ta	manal	variant		manall	
+ta	manal	distinct		minal	keep apart: vowel a/i
+ta	maram	pair	மரம்	maram	tree or wood
+ta	maram	variant		marram	
+ta	aani	pair	ஆணி	aani	nail
+ta	aani	variant		ani	
+ta	thanneer	pair	தண்ணீர்	thanneer	water
+ta	thanneer	variant		tanneer	
+ta	thanneer	variant		thanni	
+ta	vilakku	pair	விளக்கு	vilakku	lamp
+ta	vilakku	variant		vilaku	
+ta	mezhuguvarthi	pair	மெழுகுவர்த்தி	mezhuguvarthi	candle
+ta	mezhuguvarthi	variant		melugu varthi	
+ta	mezhuguvarthi	variant		mezhukuvarthi	
+ta	theepetti	pair	தீப்பெட்டி	theepetti	matchbox
+ta	theepetti	variant		thee petti	
+ta	theepetti	variant		deepetti	
+ta	kudai	pair	குடை	kudai	umbrella
+ta	kudai	variant		kudei	
+ta	sakku-pai	pair	சாக்குப் பை	sakku pai	sack bag
+ta	sakku-pai	variant		saaku pai	
+ta	sakku-pai	joined		sakkupai	
+ta	soppu	pair	சோப்பு	soppu	soap
+ta	soppu	variant		sopu	
+ta	soppu	variant		chopu	
+ta	thayir	pair	தயிர்	thayir	curd
+ta	thayir	variant		tayir	
+ta	thayir	variant		thair	
+ta	vennai	pair	வெண்ணெய்	vennai	butter
+ta	vennai	variant		venney	
+ta	vennai	variant		vennei	
+ta	muttai	pair	முட்டை	muttai	egg
+ta	muttai	variant		mutta	
+ta	muttai	variant		muttei	
+ta	muttai	distinct		mittai	keep apart: vowel u/i
+ta	meen	pair	மீன்	meen	fish
+ta	meen	variant		min	
+ta	meen	distinct		men	keep apart: vowel e/-
+ta	plumber	pair	பிளம்பர்	plumber	plumber
+ta	plumber	variant		plumbar	
+ta	plumber	variant		plampar	
+ta	electrician	pair	எலக்ட்ரீஷியன்	electrician	electrician
+ta	electrician	variant		electrishan	
+ta	electrician	variant		elektrishian	
+ta	mechanic	pair	மெக்கானிக்	mechanic	mechanic
+ta	mechanic	variant		mekanik	
+ta	mechanic	variant		mechanik	
+ta	painter	pair	பெயிண்டர்	painter	painter
+ta	painter	variant		paintar	
+ta	painter	variant		peintar	
+ta	driver	pair	டிரைவர்	driver	driver
+ta	driver	variant		draivar	
+ta	driver	variant		drivar	
+ta	carpenter	pair	கார்பெண்டர்	carpenter	carpenter
+ta	carpenter	variant		karpentar	
+ta	carpenter	variant		carpentar	
+ta	teacher	pair	டீச்சர்	teacher	teacher
+ta	teacher	variant		teechar	
+ta	teacher	variant		ticher	
+ta	doctor	pair	டாக்டர்	doctor	doctor
+ta	doctor	variant		daktar	
+ta	doctor	variant		doctar	
+ta	cement	pair	சிமெண்ட்	cement	cement
+ta	cement	variant		siment	
+ta	cement	variant		cimend	
+ta	pipe	pair	பைப்	pipe	pipe
+ta	pipe	variant		paip	
+ta	pipe	variant		payp	
+ta	bulb	pair	பல்பு	bulb	light bulb
+ta	bulb	variant		balb	
+ta	bulb	variant		palpu	
+ta	mobile	pair	மொபைல்	mobile	mobile phone
+ta	mobile	variant		mobail	
+ta	repair	pair	ரிப்பேர்	repair	repair
+ta	repair	variant		ripair	
+ta	repair	variant		rippair	
+ta	taxi	pair	டாக்ஸி	taxi	taxi
+ta	taxi	variant		taksi	
+ta	taxi	variant		taxee	
+ta	auto	pair	ஆட்டோ	auto	auto rickshaw
+ta	auto	variant		atto	
+ta	auto	variant		oto	
+ta	service	pair	சர்வீஸ்	service	service
+ta	service	variant		servis	
+ta	service	variant		survice	
+ta	fridge	pair	ஃப்ரிட்ஜ்	fridge	refrigerator
+ta	fridge	variant		frij	
+ta	fridge	variant		fridj	
+ta	ac	pair	ஏசி	ac	air conditioner
+ta	ac	variant		ay see	
+ta	tv	pair	டிவி	tv	television
+ta	tv	variant		tivi	
+ta	tv	variant		teevee	
+ta	computer	pair	கம்ப்யூட்டர்	computer	computer
+ta	computer	variant		kampyutar	
+ta	computer	variant		computar	
+ta	murugan	pair	முருகன்	murugan	given name
+ta	murugan	variant		muruhan	
+ta	murugan	distinct		muragan	keep apart: vowel u/a
+ta	selvam	pair	செல்வம்	selvam	given name
+ta	selvam	variant		selvem	
+ta	kumar	pair	குமார்	kumar	given name
+ta	kumar	variant		kumaar	
+ta	kumar	distinct		kumari	keep apart: vowel -/i
+ta	ramesh	pair	ரமேஷ்	ramesh	given name
+ta	ramesh	variant		rammesh	
+ta	suresh	pair	சுரேஷ்	suresh	given name
+ta	suresh	variant		sooresh	
+ta	karthik	pair	கார்த்திக்	karthik	given name
+ta	karthik	variant		karthick	
+ta	karthik	variant		kaarthik	
+ta	anand	pair	ஆனந்த்	anand	given name
+ta	anand	variant		aanand	
+ta	prakash	pair	பிரகாஷ்	prakash	given name
+ta	prakash	variant		prakaash	
+ta	vijay	pair	விஜய்	vijay	given name
+ta	vijay	variant		vijai	
+ta	ajith	pair	அஜித்	ajith	given name
+ta	ajith	variant		ajit	
+ta	raja	pair	ராஜா	raja	given name
+ta	raja	variant		raaja	
+ta	ravi	pair	ரவி	ravi	given name
+ta	ravi	variant		ravee	
+ta	saravanan	pair	சரவணன்	saravanan	given name
+ta	saravanan	variant		saravanen	
+ta	ganesh	pair	கணேஷ்	ganesh	given name
+ta	ganesh	variant		ganeshan	
+ta	mani	pair	மணி	mani	given name
+ta	mani	variant		manee	
+ta	mani	distinct		manu	keep apart: vowel i/u
+ta	balu	pair	பாலு	balu	given name
+ta	balu	variant		baalu	
+ta	balu	distinct		bali	keep apart: vowel u/i
+ta	shankar	pair	சங்கர்	shankar	given name
+ta	shankar	variant		sankar	
+ta	shankar	variant		shanker	
+ta	lakshmi	pair	லட்சுமி	lakshmi	given name
+ta	lakshmi	variant		lakshmee	
+ta	lakshmi	variant		laxmi	
+ta	meena	pair	மீனா	meena	given name
+ta	meena	variant		mina	
+ta	priya	pair	பிரியா	priya	given name
+ta	priya	variant		priyaa	
+ta	jaya	pair	ஜெயா	jaya	given name
+ta	jaya	variant		jeya	
+ta	kala	pair	கலா	kala	given name
+ta	kala	variant		kalaa	
+ta	sudha	pair	சுதா	sudha	given name
+ta	sudha	variant		suda	
+ta	devi	pair	தேவி	devi	given name
+ta	devi	variant		thevi	
+ta	kavitha	pair	கவிதா	kavitha	given name
+ta	kavitha	variant		kavita	
+ta	anbu	pair	அன்பு	anbu	given name
+ta	anbu	variant		anpu	
+ta	gandhi	pair	காந்தி	gandhi	given name
+ta	gandhi	variant		kandhi	
+ta	siva	pair	சிவா	siva	given name
+ta	siva	variant		shiva	
+ta	siva	variant		sivaa	
+ta	kannan	pair	கண்ணன்	kannan	given name
+ta	kannan	variant		kanan	
+ta	raman	pair	ராமன்	raman	given name
+ta	raman	variant		raaman	
+ta	latha	pair	லதா	latha	given name
+ta	latha	variant		lata	
+ta	uma	pair	உமா	uma	given name
+ta	uma	variant		umaa	
+ta	geetha	pair	கீதா	geetha	given name
+ta	geetha	variant		geeta	
+ta	geetha	variant		gita	
+ta	chitra	pair	சித்ரா	chitra	given name
+ta	chitra	variant		sithra	
+ta	vasuki	pair	வாசுகி	vasuki	given name
+ta	vasuki	variant		vaasuki	
+ta	palani	pair	பழனி	palani	given name
+ta	palani	variant		pazhani	
+ta	muthu	pair	முத்து	muthu	given name
+ta	muthu	variant		mutthu	
+ta	dinesh	pair	தினேஷ்	dinesh	given name
+ta	dinesh	variant		dhinesh	
+ta	ram-kumar	pair	ராம் குமார்	ram kumar	full name
+ta	ram-kumar	variant		raam kumaar	
+ta	ram-kumar	joined		ramkumar	
+ta	selva-kumar	pair	செல்வ குமார்	selva kumar	full name
+ta	selva-kumar	joined		selvakumar	
+ta	chennai	pair	சென்னை	chennai	city
+ta	chennai	variant		chenai	
+ta	chennai	variant		chennei	
+ta	madurai	pair	மதுரை	madurai	city
+ta	madurai	variant		madhurai	
+ta	madurai	variant		maduraii	
+ta	madurai	distinct		maduri	keep apart: vowel a/-
+ta	coimbatore	pair	கோயம்புத்தூர்	coimbatore	city
+ta	coimbatore	variant		koyambuthur	
+ta	coimbatore	variant		kovai	
+ta	trichy	pair	திருச்சி	trichy	city
+ta	trichy	variant		tiruchi	
+ta	trichy	variant		thiruchi	
+ta	salem	pair	சேலம்	salem	city
+ta	salem	variant		selam	
+ta	salem	distinct		salam	keep apart: vowel e/a
+ta	tirunelveli	pair	திருநெல்வேலி	tirunelveli	city
+ta	tirunelveli	variant		thirunelveli	
+ta	tirunelveli	variant		nellai	
+ta	erode	pair	ஈரோடு	erode	city
+ta	erode	variant		eerodu	
+ta	erode	distinct		erude	keep apart: vowel o/u
+ta	vellore	pair	வேலூர்	vellore	city
+ta	vellore	variant		velur	
+ta	vellore	variant		vellur	
+ta	thanjavur	pair	தஞ்சாவூர்	thanjavur	city
+ta	thanjavur	variant		tanjore	
+ta	thanjavur	variant		thanjavoor	
+ta	dindigul	pair	திண்டுக்கல்	dindigul	city
+ta	dindigul	variant		dindukal	
+ta	nagercoil	pair	நாகர்கோவில்	nagercoil	city
+ta	nagercoil	variant		nagarkovil	
+ta	cuddalore	pair	கடலூர்	cuddalore	city
+ta	cuddalore	variant		kadalur	
+ta	puducherry	pair	புதுச்சேரி	puducherry	city
+ta	puducherry	variant		pondicherry	
+ta	puducherry	variant		pudhucheri	
+ta	thoothukudi	pair	தூத்துக்குடி	thoothukudi	city
+ta	thoothukudi	variant		tuticorin	
+ta	thoothukudi	variant		thuthukudi	
+ta	tiruppur	pair	திருப்பூர்	tiruppur	city
+ta	tiruppur	variant		thiruppur	
+ta	kanchipuram	pair	காஞ்சிபுரம்	kanchipuram	city
+ta	kanchipuram	variant		conjeevaram	
+ta	rameswaram	pair	இராமேஸ்வரம்	rameswaram	town
+ta	rameswaram	variant		rameshwaram	
+ta	kanyakumari	pair	கன்னியாகுமரி	kanyakumari	town
+ta	kanyakumari	variant		kanniyakumari	
+ta	ooty	pair	ஊட்டி	ooty	town
+ta	ooty	variant		uty	
+ta	kodaikanal	pair	கொடைக்கானல்	kodaikanal	town
+ta	kodaikanal	variant		kodaikaanal	
+ta	nagar	pair	நகர்	nagar	place part
+ta	puram	pair	புரம்	puram	place part
+ta	palayam	pair	பாளையம்	palayam	place part
+ta	palayam	variant		paalayam	
+ta	pettai	pair	பேட்டை	pettai	place part
+ta	pettai	variant		petai	
+ta	colony	pair	காலனி	colony	place part
+ta	colony	variant		kaalani	
+ta	theru	pair	தெரு	theru	place part
+ta	theru	variant		teru	
+ta	salai	pair	சாலை	salai	place part
+ta	salai	variant		saalai	
+ta	kovil	pair	கோவில்	kovil	place part
+ta	kovil	variant		koil	
+ta	anna-nagar	pair	அண்ணா நகர்	anna nagar	city area
+ta	anna-nagar	joined		annanagar	
+ta	t-nagar	pair	தி நகர்	t nagar	city area
+ta	t-nagar	variant		thi nagar	
+ta	t-nagar	joined		tnagar	
+ta	aamam	pair	ஆமாம்	aamam	yes
+ta	aamam	variant		amam	
+ta	aamam	variant		aama	
+ta	illai	pair	இல்லை	illai	no
+ta	illai	variant		illa	
+ta	illai	variant		illae	
+ta	sari	pair	சரி	sari	okay
+ta	sari	variant		seri	
+ta	sari	variant		sarii	
+ta	nandri	pair	நன்றி	nandri	thanks
+ta	nandri	variant		nanri	
+ta	nandri	distinct		nandru	keep apart: vowel i/u
+ta	vanakkam	pair	வணக்கம்	vanakkam	hello
+ta	vanakkam	variant		vanakam	
+ta	eppadi	pair	எப்படி	eppadi	how
+ta	eppadi	variant		epdi	
+ta	enna	pair	என்ன	enna	what
+ta	evvalavu	pair	எவ்வளவு	evvalavu	how much
+ta	evvalavu	variant		evlo	
+ta	evvalavu	variant		evvalo	
+ta	enge	pair	எங்கே	enge	where
+ta	enge	variant		enga	
+ta	eppothu	pair	எப்போது	eppothu	when
+ta	eppothu	variant		eppo	
+ta	vaa	pair	வா	vaa	come
+ta	vaa	variant		va	
+ta	po	pair	போ	po	go
+ta	da	pair	டா	da	casual address
+ta	di	pair	டி	di	casual address
+ta	ma	pair	மா	ma	mother or address
+ta	en	pair	என்	en	my
+ta	un	pair	உன்	un	your
+ta	o	pair	ஓ	o	oh
+ta	o	variant		oh	
+ta	naan	pair	நான்	naan	I
+ta	naan	variant		nan	
+ta	nee	pair	நீ	nee	you
+ta	nee	variant		ni	
+ta	idhu	pair	இது	idhu	this
+ta	idhu	variant		ithu	
+ta	idhu	variant		idu	
+ta	adhu	pair	அது	adhu	that
+ta	adhu	variant		athu	
+ta	adhu	variant		adu	
+ta	inge	pair	இங்கே	inge	here
+ta	inge	variant		inga	
+ta	ange	pair	அங்கே	ange	there
+ta	ange	variant		anga	
+ta	indru	pair	இன்று	indru	today
+ta	indru	variant		inru	
+ta	indru	distinct		andru	keep apart: vowel i/a
+ta	naalai	pair	நாளை	naalai	tomorrow
+ta	naalai	variant		nalai	
+ta	netru	pair	நேற்று	netru	yesterday
+ta	netru	variant		nettru	
+ta	panam	pair	பணம்	panam	money
+ta	vilai	pair	விலை	vilai	price
+ta	vilai	variant		vilei	
+ta	venum	pair	வேண்டும்	venum	want
+ta	venum	variant		vendum	
+ta	vendaam	pair	வேண்டாம்	vendaam	do not want
+ta	vendaam	variant		vendam	
+ta	theriyum	pair	தெரியும்	theriyum	know
+ta	theriyum	variant		teriyum	
+ta	theriyaadhu	pair	தெரியாது	theriyaadhu	do not know
+ta	theriyaadhu	variant		theriyathu	
+ta	theriyaadhu	variant		teriyadhu	
+ta	nalladhu	pair	நல்லது	nalladhu	good
+ta	nalladhu	variant		nallathu	
+ta	nalladhu	variant		nalladu	
+ta	migavum	pair	மிகவும்	migavum	very
+ta	migavum	variant		mikavum	
+ta	konjam	pair	கொஞ்சம்	konjam	a little
+ta	konjam	variant		konchum	
+ta	thallupadi	pair	தள்ளுபடி	thallupadi	discount
+ta	thallupadi	variant		thalluppadi	
+ta	evvalavu-vilai	pair	எவ்வளவு விலை	evvalavu vilai	how much is the price
+ta	evvalavu-vilai	variant		evlo vilai	
+ta	evvalavu-vilai	joined		evvalavuvilai	
+ta	eppadi-irukkinga	pair	எப்படி இருக்கீங்க	eppadi irukkinga	how are you
+ta	eppadi-irukkinga	variant		epdi irukinga	
+ta	eppadi-irukkinga	joined		eppadiirukkinga	
+ta	nandri-anna	pair	நன்றி அண்ணா	nandri anna	thanks brother
+ta	nandri-anna	variant		nanri anna	
+ta	nandri-anna	joined		nandrianna	
