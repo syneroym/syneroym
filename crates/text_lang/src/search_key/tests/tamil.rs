@@ -82,7 +82,9 @@ fn tamil_aytham() {
     assert_eq!(to_latin("அஃது").text, "ahtu");
     assert_eq!(to_latin("அஃப").text, "afa");
     assert_eq!(search_key("ஃபோன்"), "fon");
-    // A search for `phone` meets it: the long term `fon` is inside `fone`.
+    // One direction only. A search for `ஃபோன்` (long term `fon`) finds a text with
+    // `phone` (key `fone`). A search for `phone` (long term `fone`) does not find
+    // `ஃபோன்`: the fold keeps the final `e`.
     assert!(search_key("phone").contains(&search_key("ஃபோன்")));
 }
 
