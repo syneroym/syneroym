@@ -216,30 +216,6 @@ pub enum SourceError {
     Unreadable { reason: String },
 }
 
-/// Normalizes a free-text query the identical way at write time and at
-/// query time, so the two sides cannot drift: lowercased, every character
-/// outside `[a-z0-9 -]` replaced with a space, runs of spaces collapsed.
-/// `compile_regex` emits `LIKE` with no `ESCAPE` clause, so a wildcard can
-/// only be removed, never escaped -- this is the removal.
-#[must_use]
-pub fn normalize_text(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    let mut last_was_space = false;
-    for ch in input.to_lowercase().chars() {
-        let mapped = if ch.is_ascii_alphanumeric() || ch == ' ' || ch == '-' { ch } else { ' ' };
-        if mapped == ' ' {
-            if !last_was_space && !out.is_empty() {
-                out.push(' ');
-            }
-            last_was_space = true;
-        } else {
-            out.push(mapped);
-            last_was_space = false;
-        }
-    }
-    out.trim_end().to_string()
-}
-
 /// Lowercased, `[a-z0-9-]` only, everything else dropped -- the same
 /// alphabet `ListingPayload`'s own categories are constrained to, applied
 /// to a query-supplied category so a wildcard character cannot reach the
@@ -329,20 +305,6 @@ mod tests {
             s.validate(),
             Err(SynOrgSettingsError::Area(AreaError::RadiusTooLarge(_)))
         ));
-    }
-
-    #[test]
-    fn normalize_text_lowercases_and_collapses() {
-        assert_eq!(normalize_text("Emergency  Plumber! 24h"), "emergency plumber 24h");
-        assert_eq!(normalize_text("50% off"), "50 off");
-        assert_eq!(normalize_text("  leading"), "leading");
-    }
-
-    #[test]
-    fn normalize_text_is_idempotent() {
-        let once = normalize_text("Hedge-Trimming & More!!");
-        let twice = normalize_text(&once);
-        assert_eq!(once, twice);
     }
 
     #[test]

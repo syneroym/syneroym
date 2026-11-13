@@ -8,7 +8,7 @@ use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
 use syneroym_app_host::{
     AppDataLayer, AppHost,
-    types::data_layer::{QueryOptions, RecordReadValue},
+    types::data_layer::{DataLayerError, QueryOptions, RecordReadValue},
 };
 
 use crate::record::Envelope;
@@ -35,8 +35,10 @@ impl<'a, H: AppHost> Pages<'a, H> {
         Self { host, collection, filter, cursor: None, done: false }
     }
 
-    /// The next page's rows, or `None` after the last page.
-    pub async fn next_page(&mut self) -> Result<Option<Vec<RecordReadValue>>, String> {
+    /// The next page, with the host's own error.
+    pub async fn next_page_typed(
+        &mut self,
+    ) -> Result<Option<Vec<RecordReadValue>>, DataLayerError> {
         if self.done {
             return Ok(None);
         }
@@ -49,14 +51,18 @@ impl<'a, H: AppHost> Pages<'a, H> {
                 cursor: self.cursor.clone(),
             },
         )
-        .await
-        .map_err(|e| e.to_string())?;
+        .await?;
         if page.next_cursor.is_none() || page.next_cursor == self.cursor {
             self.done = true;
         } else {
             self.cursor = page.next_cursor;
         }
         Ok(Some(page.records))
+    }
+
+    /// The next page's rows, or `None` after the last page.
+    pub async fn next_page(&mut self) -> Result<Option<Vec<RecordReadValue>>, String> {
+        self.next_page_typed().await.map_err(|e| e.to_string())
     }
 }
 
@@ -84,6 +90,22 @@ pub async fn query_all<H: AppHost, T: DeserializeOwned>(
     filter: Option<String>,
 ) -> Result<Vec<T>, String> {
     filter_map(host, collection, filter, |row| serde_json::from_slice(&row.payload).ok()).await
+}
+
+/// Every matching row's payload, decoded as `T`, returning any
+/// [`DataLayerError`] from the query. A row that does not decode is skipped,
+/// not reported as an error.
+pub async fn query_all_typed<H: AppHost, T: DeserializeOwned>(
+    host: &H,
+    collection: &str,
+    filter: Option<String>,
+) -> Result<Vec<T>, DataLayerError> {
+    let mut out = Vec::new();
+    let mut pages = Pages::new(host, collection, filter);
+    while let Some(rows) = pages.next_page_typed().await? {
+        out.extend(rows.into_iter().filter_map(|row| serde_json::from_slice(&row.payload).ok()));
+    }
+    Ok(out)
 }
 
 /// The same rows as [`query_all`], each beside its row id.
