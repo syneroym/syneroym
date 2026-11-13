@@ -826,7 +826,7 @@ there are no earlier R items to confirm. I changed no code. I ran
 - *Fix:* when `ஃ` is followed by `ப`, write `f` and consume both (with the
   vowel sign or pulli of `ப`). Change the test to `afa` and add `ஃபோன்` →
   `fon`, matching `phone`.
-- *Status:* Fixed (1e2aa759): `ஃ` before `ப` is read as one unit, `f` with the vowel sign or pulli of `ப` (`parse_aytham_pa`). Test now `அஃப` → `afa`, and `ஃபோன்` → `fon`, which `phone` (`fone`) meets as a long term inside the joined key (the key of `phone` is `fone`, so the two keys are not equal). The golden spelling file changed in three `fridge` rows (`fpritj` → `fritj`), all still not meeting; the floors hold. Proof: with the old code the test fails (`left: "afpa"`).
+- *Status:* Fixed (1e2aa759): `ஃ` before `ப` is read as one unit, `f` with the vowel sign or pulli of `ப` (`parse_aytham_pa`). Test now `அஃப` → `afa`, and `ஃபோன்` → `fon`. One direction meets: a search for `ஃபோன்` (long term `fon`) finds a text with `phone` (key `fone`); a search for `phone` does not find `ஃபோன்` (corrected in fix round 2, a9b2f688). The golden spelling file changed in three `fridge` rows (`fpritj` → `fritj`), all still not meeting; the floors hold. Proof: with the old code the test fails (`left: "afpa"`).
 
 #### R3 — minor — chat search has three copies of one query, and the plan test checks a fourth copy
 
@@ -874,7 +874,7 @@ there are no earlier R items to confirm. I changed no code. I ran
   In story 40, assert the add status against the three message ids as the
   plan says. Give `publishListing` an optional text language and use it for
   the `hi-Latn` listing.
-- *Status:* Open (reopened in code review round 2). The second search in the
+- *Status:* Fixed (5bfddc7d) in fix round 2; reopened in code review round 2 and fixed again. Before each search the test clears the box, clicks the button and waits until `Sita <tag>` is shown again (`showAll`), so each search starts from the full list and the list changes only when the Hub answers. Proof: with the Hub dropping `text` for a query that starts with a non-ASCII char, the `ram` search still passes and the `राम` search fails (`not.toContainText "Sita …"`); with the fix both changed Hub tests pass. (Round 2 text:) The second search in the
   contact test proves nothing. The loop runs `ram`, then `राम`, with no
   reset between them. After `ram`, the list already lacks `Sita <tag>` and
   shows both `Ram` names. So for `राम`, `not.toContainText(other)`,
@@ -958,7 +958,7 @@ committed) that prints `search_key` and `query_terms`.
 
 **Summary:** 6 confirmed fixed (R1, R2, R3, R5, R6, R7). R4 is partly fixed
 and is open again. 1 new item (R8, minor). 2 open (R4, R8). No blocker, no
-major open.
+major open. After fix round 2 (Claude Sonnet 5.5, 2026-11-13): R4 and R8 Fixed, 0 Open.
 
 ### What was checked
 
@@ -1039,4 +1039,4 @@ major open.
   for `ஃபோன்` (long term `fon`) finds a text with `phone` (key `fone`). A
   search for `phone` does not find `ஃபோன்`; the fold keeps the final `e`
   (Q1)." Correct the R2 status line in the same way. No code change.
-- *Status:* Open
+- *Status:* Fixed (a9b2f688): the comment in `tamil_aytham` now says a search for `ஃபோன்` (long term `fon`) finds a text with `phone`, a search for `phone` does not find `ஃபோன்`, and the fold keeps the final `e`. No code change. The R2 status line in round 1 is corrected the same way.
