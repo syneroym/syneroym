@@ -272,7 +272,7 @@ I changed no code.
   timeout that gives `[]`. Add a unit test that drives that start-up code
   (extract it into a function if `main()` is not testable): signed-in calls
   `translation.targets` once, anonymous calls nothing.
-- *Status:* Open (round 2: partial fix. The start-up function, its place before the `pending` check, the 3-second timeout and its tests are right. But the plan says the timeout means a hanging node "cannot delay the first draw", and it does not say whether `main.ts` awaits `startTranslation`. If it awaits, the first draw is delayed by up to 3 seconds. If it does not, the first draw can miss the list. See Plan review round 2, note on P7.)
+- *Status:* Fixed (0cc3f59c)
 
 #### P8 — The three-version case of `recordText` (original, author translation, machine translation) has no defined switch behaviour (minor)
 
@@ -295,7 +295,7 @@ I changed no code.
   and each current version, the new shown version and the attribute values.
   Add one unit test that walks original, author translation, MT, original and
   asserts both attributes at each step.
-- *Status:* Open (round 2: partial fix. The table exists, but it contradicts the P4 fix: `targetFor` now skips the language of every version, machine versions included, so once a machine version exists there is no Translate button for its language. See Plan review round 2, P8 note.)
+- *Status:* Fixed (0cc3f59c)
 
 #### P9 — The chat hook offers Translate on a person's own messages and on a message tagged in the reader's language as its second tag (minor)
 
@@ -367,7 +367,7 @@ no code.
 
 **Summary:** 0 blocker, 0 major, 1 new minor (P12). Of the 11 round 1 items,
 9 are confirmed Fixed (P1 to P6, P9 to P11) and 2 go back to Open with a note
-(P7, P8). **3 open: P7, P8, P12.**
+(P7, P8). **3 open: P7, P8, P12.** All three Fixed (0cc3f59c).
 
 ### Round 1 items checked
 
@@ -468,4 +468,4 @@ plan.
   argument) and `viewed_lang`/`viewed_via_mt` to a new variant of
   `accept_quote`; do not copy the set-up. Say that the test asserts the two
   halves differ in `viewed_lang` and that the pair is still `complete`.
-- *Status:* Open
+- *Status:* Fixed (0cc3f59c)
