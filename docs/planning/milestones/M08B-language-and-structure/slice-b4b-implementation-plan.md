@@ -3,10 +3,10 @@
 *Reader: the developer (or AI) who implements slice B4b. You do not have the
 planning conversation. This plan is meant to stand alone.*
 
-**Status: plan written, 2026-11-12; plan review round 1 (P1–P15) folded
-in, 2026-11-12. Owner answers pending (section 2.1). Implementation must
-not start until Q1 to Q3 are answered and `spelling-pairs.tsv` says
-`# owner check: done` (Step 2).**
+**Status: plan written, 2026-11-12; plan review rounds 1 to 4 (P1–P19)
+folded in, 0 open. Owner answers Q1 to Q8 recorded, 2026-11-13: all (a)
+(section 2.1). `spelling-pairs.tsv` says `# owner check: done` (Step 2
+done). Implementation can start at Step 3.**
 
 **Size and PR.** L. One PR on `feat/m08b-b4b-search-scripts`, with the
 commits of section 6 in that order. The branch starts from `main` at
@@ -227,6 +227,8 @@ not the Rust code, and Step 3 measures again with the golden file
 
 **Q1. Which Latin fold rules? (blocks Steps 2 and 3)**
 
+*Owner answer, 2026-11-13:* (a). Use the rules of D-B4b-5 and never fold vowel quality, because that merges real words (`kela`/`kala`). This decides the 17 conflicts: 5 keep the "must meet" side, 12 keep the "must not meet" side. Accepted cost: English loanwords (`plumber`/`प्लंबर`) do not meet, and some English words merge (`sheet`, `seat`, `sit`).
+
 The rules are listed in D-B4b-5. The table gives, for each rule that
 changes a result, how many rows it makes meet (gain) and which `distinct`
 rows it merges (cost), from the plan-time model (Hindi + Tamil rows,
@@ -267,6 +269,8 @@ into the PR text and the behaviour audit (section 4).
 
 **Q2. Tamil `ச` at the start of a word, and Tamil `க`. (blocks Step 3)**
 
+*Owner answer, 2026-11-13:* (a). The form is picked by position, with no Latin rule. Typed `chennai` misses `சென்னை`; a `ch`→`s` rule would merge Hindi `च` and `स` words.
+
 Tamil writes one letter, `ச`, for the sounds people type as `s`, `ch` and
 `j`, and one letter, `க`, for `k`, `g` and `h`. The table picks one form by
 position (D-B4b-4). The Latin side cannot know which language a word is.
@@ -283,6 +287,8 @@ position (D-B4b-4). The Latin side cannot know which language a word is.
 
 **Q3. Rows that substring search cannot keep apart, and `ड़`/`ढ़`.
 (blocks Step 2)**
+
+*Owner answer, 2026-11-13:* (a). `ta/ennai distinct enna` is an accepted merge (a query that is the start of a word finds it). `ड़` is `d` and `ढ़` is `dh`; `hi/saree distinct sadi` is an accepted merge.
 
 A long query word matches anywhere inside the joined key (B4a's trigram
 rule). So a query that is the start of the group's word always matches:
@@ -305,6 +311,8 @@ change a row without the owner").
 
 **Q4. Which scripts get a table in B4b? (blocks Step 3)**
 
+*Owner answer, 2026-11-13:* (a). Devanagari and Tamil only. Text in other scripts is found only by a query in the same script, and a backlog row records them.
+
 - (a) **Devanagari and Tamil only** (task.md Y4, the change doc). Text in
   any other script (Bengali, Telugu, Kannada, Gujarati and others) gets
   the NFC and lower-case key, as in B4a. It is found by a query in the
@@ -321,6 +329,8 @@ change a row without the owner").
 **Q5. Which Hub name lists are sorted and grouped by script? (blocks
 Step 8)**
 
+*Owner answer, 2026-11-13:* (a). The contact list and the group member list.
+
 ML-24 says "the Hub sorts names". Today no Hub list is sorted
 (`localeCompare` and `Intl.Collator` appear nowhere in `src`).
 
@@ -335,6 +345,8 @@ ML-24 says "the Hub sorts names". Today no Hub list is sorted
 
 **Q6. In which order do the script groups come? (blocks Step 8)**
 
+*Owner answer, 2026-11-13:* (a). The script of the Hub language first, then Latin, Devanagari, Tamil, then the others.
+
 - (a) **The script of the Hub language first, then Latin, Devanagari,
   Tamil, then every other script in the order of its ISO 15924 code, then
   names with no letter. Inside a group, `Intl.Collator(<Hub language>)`
@@ -346,6 +358,8 @@ ML-24 says "the Hub sorts names". Today no Hub list is sorted
 
 **Q7. What happens to the directory index of an existing node? (blocks
 Step 5)**
+
+*Owner answer, 2026-11-13:* (a). No automatic rebuild. The node owner runs `directory.reindex`, and the PR text says so (no migrations before release).
 
 The `search_index` rows of a node built before B4b hold ASCII-folded
 `text`. After B4b they must hold the raw text.
@@ -366,6 +380,8 @@ The `search_index` rows of a node built before B4b hold ASCII-folded
   build before release.
 
 **Q8. Are author translations indexed by the directory? (blocks Step 5)**
+
+*Owner answer, 2026-11-13:* (a). Yes. The directory indexes author translations, and the backlog row closes.
 
 - (a) **Yes: the `text` field holds the title, summary and categories, and
   the title and summary of every author translation.** This closes the
