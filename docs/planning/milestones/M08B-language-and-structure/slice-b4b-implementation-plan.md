@@ -695,9 +695,9 @@ that depend on an owner answer say so.
     as the "ch" sound (D-B4b-5), and `ड़` is `d` (Q3 (a)). Retroflex and
     dental letters both map to plain `t`, `d`, `n`, and long vowels to
     plain `a`, `i`, `u` (ISO `ā`, `ī`, `ū`): the ISO dots and macrons are
-    removed in the table itself, because the Latin side has none. So the
-    table writes only the letters `a` to `z`, and the fold never gets a
-    mark from it (D-B4b-5).
+    removed in the table itself, because the Latin side has none. So every
+    value in the letter and sign tables is only the letters `a` to `z`.
+    Chars with no value (below) and digits (D-B4b-2) are not table values.
   - Schwa deletion (Hindi), applied to the units of one word before they
     are written:
     1. The inherent `a` of the last unit is removed, when the word has two
@@ -710,7 +710,9 @@ that depend on an owner answer say so.
     `ऩ` (U+0929) → `n`, `ऱ` (U+0931, Marathi) → `r`, `ऴ` (U+0934) → `l`.
     Avagraha `ऽ` (U+093D) is dropped. `ॐ` → `om`. Any other Devanagari
     letter with no value (`ॠ`, `ऌ`, `ॲ` and the rest) is kept as it is, so it
-    is found by the same letter and never breaks a word.
+    is found by the same letter and never breaks a word. A sign with no
+    value (for example `ॄ`, U+0944, a mark of category `Mn`) is kept as it
+    is in the same way, after the unit it follows.
   - Danda `।` and double danda `॥` are punctuation (a word break, D-B4b-2).
   - Test cases (from the data and from S0 R1): `नल वाला` → `nal vala`;
     `क़िला` → `kila`; `सड़क` → `sadak`; `दर्ज़ी` → `darji`; `बढ़ई` → `badhai`
@@ -726,8 +728,9 @@ that depend on an owner answer say so.
     ஒ o, ஓ o, ஔ au` and the same as signs; consonants `ங n, ஞ n, ண n, ந n,
     ம m, ய y, ர r, ல l, வ v, ழ zh, ள l, ற r, ன n`; Grantha `ஜ j, ஷ sh, ஸ s,
     ஹ h, ஶ sh`; `ஃ` before `ப` → `f`, else `h`. As in Devanagari, long
-    vowels lose the ISO macron (`ஆ` is `a`, ISO `ā`), so the table writes
-    only the letters `a` to `z`.
+    vowels lose the ISO macron (`ஆ` is `a`, ISO `ā`), so every value in the
+    table is only the letters `a` to `z`. A Tamil letter or sign with no
+    value is kept as it is, as in Devanagari.
   - The five stops `க`, `ச`, `ட`, `த`, `ப` take their form by position, for
     a unit that has a vowel:
 
@@ -764,7 +767,7 @@ that depend on an owner answer say so.
 
   | # | Rule | Example |
   | --- | --- | --- |
-  | 1 | none in the fold: its input has no marks. `latin_base` (D-B4b-2) removes them from a Latin run, and the tables write only `a` to `z` (D-B4b-3, D-B4b-4). The number is kept so the other rules keep theirs | `cafè` → `cafe` by `latin_base` |
+  | 1 | none in the fold. `latin_base` (D-B4b-2) removes the marks of a Latin run, and every table value is only `a` to `z` (D-B4b-3, D-B4b-4). The number is kept so the other rules keep theirs | `cafè` → `cafe` by `latin_base` |
   | 2 | `x`→`ks`, `q`→`k` | `taxi` → `taksi` |
   | 3 | `sch`→`sk` | `school` → `skool` |
   | 4 | `ea`→`i` | `tea` → `ti` |
@@ -788,18 +791,18 @@ that depend on an owner answer say so.
     makes B smaller, or keeps A and B and makes C smaller:
     - rule 2 removes an `x` or a `q` (A; the word gets longer, which is
       allowed because A comes first);
-    - rules 4, 5, 6, 9, 10 and 11, `yi`→`i` in rule 12 and `iy`→`i` in
-      rule 13 make the word shorter (B);
-    - rule 3 (`sch`→`sk`), rule 7, rule 8, the rest of rule 12 (`y`→`i`,
-      `ay`→`ai`) and the rest of rule 13 (`er`→`ar`, `ei`/`ey`→`ai`) keep
-      the length and replace a letter of `c w z y e` by a letter outside
-      that set (C).
+    - rules 3 (`sch`→`sk`), 4, 5, 6, 9, 10 and 11, `yi`→`i` in rule 12
+      and `iy`→`i` in rule 13 make the word shorter (B);
+    - rule 7, rule 8, the rest of rule 12 (`y`→`i`, `ay`→`ai`) and the
+      rest of rule 13 (`er`→`ar`, `ei`/`ey`→`ai`) keep the length and
+      replace a letter of `c w z y e` by a letter outside that set (C).
 
     No rule writes `x`, `q`, `w`, `z`, `y` or `e`, and only rule 5 writes a
     `c` (`chh`→`ch`, which makes the word shorter). So no rule makes an
     earlier number larger. Each pass that changes the word makes (A, B, C)
-    smaller in this order, so the loop ends. This needs the input to have
-    no marks (rule 1).
+    smaller in this order, so the loop ends. The fold changes only the
+    letters `a` to `z`, so a char outside them (a digit, a kept letter or
+    mark, another script) cannot affect the end.
   - **How many passes in practice.** A plan-time search over every word of
     up to 10 letters over `a e i y`, up to 8 letters over `a e i y r c`,
     and up to 6 letters over `a e i o u y h c s z x` found no word that
@@ -1461,8 +1464,10 @@ the first commit that includes Step 3, or commit them together.
   strings; no new dependency). This checks idempotence; the proof that the
   loop ends is in D-B4b-5. Fixed cases: `aeiy` → `ai` (3 changing
   passes), and `kaey` and `kai` give the same word (P6).
-- `devanagari.rs` and `tamil.rs`: every output of the table tests has only
-  the letters `a` to `z` (the fold's input has no marks).
+- `devanagari.rs` and `tamil.rs`: every value of the letter and sign
+  tables has only the letters `a` to `z` (a test over the table entries,
+  not over every output of `to_latin`, which keeps chars with no value and
+  writes digits); a sign with no value (`ॄ`) is kept as it is.
 - `search_key/tests.rs`: `search_key_is_idempotent` over every Latin and
   native value of the spelling data; `search_key_breaks_words_at_punctuation`
   (`plumber's` → `plumbar s`, `50%` → `50`, `a-b` → `a b`); mixed script
