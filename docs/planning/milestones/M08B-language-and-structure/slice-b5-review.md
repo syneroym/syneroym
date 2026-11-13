@@ -469,3 +469,226 @@ plan.
   `accept_quote`; do not copy the set-up. Say that the test asserts the two
   halves differ in `viewed_lang` and that the pair is still `complete`.
 - *Status:* Fixed (0cc3f59c)
+
+## Code review round 1 — Claude Sonnet 5.5, 2026-11-13
+
+Reviewed `feat/m08b-b5-translation` at `1327538c` (17 commits on top of
+`origin/main`), in the main checkout (not a worktree: `.git` is a
+directory). `git pull` said "Already up to date".
+
+**Who reviewed.** The prompt names Claude Opus 5.5 as the reviewer. This
+session runs on Claude Sonnet 5.5, which is also the tool that implemented B5
+(`status.md`). I write the tool I really am. So this round does not meet the
+cross-tool rule of [session-strategy.md](../../session-strategy.md) section 6.
+The owner should decide: accept this round, or run round 2 with another tool.
+
+**Change docs.** The prompt lists one change doc,
+[roym-multilingual](../../changes/roym-multilingual/change.md). Every B5
+decision and deviation belongs there, and it holds them (see below).
+
+**Summary:** 0 blocker, 0 major, 6 minor, 6 items (R1 to R6). **6 open.**
+No earlier code review round exists, so there are no Fixed or Rejected items
+to re-check. The plan review items P1 to P12 are all Fixed; I confirmed in the
+code that the fixes are in (P1 `shownVersion` fallback, P4 `targetFor(skip)`,
+P5 target-list entry returned, P6 `roym_core::lang::LangTag`, P7
+`startTranslation` awaited before the `pending` check, P8 one machine
+version, P9 `translatable` for incoming messages only, P10 `textFields`
+leaves links out, P12 separate two-node test on shared helpers).
+
+Limits of this review: CI for the PR (`gh pr checks 362`) is fully green
+(lints, 6 test shards, Playwright E2E, CLA). I did not run the full suite or
+`mise run verify`. I ran only the Hub unit tests
+(`npm --prefix crates/roym_web/ui test`: 515 passed in 43 files, as
+`status.md` says). I read the built wasm sizes in `target/wasm32-wasip2/release/`;
+they equal the numbers in `task.md` and the PR (web 310,033, transaction
+1,516,528, and so on). I changed no code.
+
+### What was checked and found correct
+
+- **The code does what the plan says, and no more.** D-B5-1 to D-B5-11 against
+  the diff: the WIT is the plan's text; `AppTranslation` is on all three
+  implementors and no other (`git grep 'impl AppTranslation for'`: `GuestHost`,
+  `NativeAppHost`, `TestHost`); the seven `wit/deps/translation/translation.wit`
+  are symlinks (mode `120000`); the same seven guests that import `events`
+  import `translation` (diff of the two file lists is empty).
+- **One no-op, two builds.** `NativeAppHost` calls the same three `HostState`
+  functions as the WASM host, with no lock, so the builds cannot drift. The
+  host-side `bindgen!` is separate (`translation_host.rs`) and nothing in the
+  runtime, factory, `SubstrateConfig` or manifest changed.
+- **Router and access control.** `WEB_ROUTES` has the prefix `translation.`
+  with `Owner`; `method_auth` reads `PUBLIC_METHODS`, `ROUTES`, then
+  `WEB_ROUTES`; `admit` runs before `answered_by_web` in `rpc`, so a missing
+  session gets `-32010` for `translation.targets`, `translation.translate`
+  and an unknown `translation.x`. On the internal `invoke` path `admit(.., None)`
+  gives `NoSession` (`-32010`) for an `Owner` method, as ADR-0029 says. No
+  `ROUTES` prefix overlaps (`web_routes_do_not_overlap_sibling_routes`).
+- **`translation.translate` input checks** run in the plan's order
+  (count, each text, total, `target_lang`, `source_lang`), each `-32602` with
+  `data.field`; limits equal the change doc and developer guide (8, 8,192,
+  32,768). The engine's own text goes into the message, never into `data`.
+- **Acceptance.** `AgreementReceiptPayload` has the two required fields after
+  `terms`; `validate` refuses `viewed_via_mt` with `viewed_lang == terms.lang`;
+  `verify_agreement_receipt` calls `validate`, so the receive path
+  (`sync.rs`), `agreement.verify` and both backup paths (`backup.rs:449`,
+  `:638`) all use it; `halves_agree` is unchanged. `viewed()` runs after
+  `load_verified_quote_and_role` and before the agreement row is created (the
+  deviation is written). The countersignature signs `terms.lang` and `false`.
+  `agreement.get` keeps `QuoteRecordInput`. Every `AgreementReceiptPayload {`
+  literal in code and tests has the two fields; the three hand-signed parity
+  payloads and four golden shapes are updated.
+- **Hub.** `startTranslation` is awaited once, before the `pending` check.
+  `recordText` writes `data-shown-lang` and `data-shown-via` in the
+  one-version path too. `shownVersion` falls back to the card's `terms.lang`
+  and `false`. The warning, confirm and cancel work as D-B5-9 says. The search
+  box, chat hook (incoming text messages only, all tags skipped) and group
+  hook match D-B5-7 and D-B5-10. `quote.ts` and `textFields` use the same
+  link rule (`http://` or `https://`). Nine new messages exist in both
+  catalogs and the Hindi sweep draws them.
+- **Change doc and plan agree.** The decision numbers cited in the change doc
+  (D-B5-1/2 interface and wiring, D-B5-3/4 `web` methods and routing, D-B5-5
+  acceptance, D-B5-6/7 Hub, D-B5-8/9 accept and warning) are the plan's. The
+  new deviations (hook points ask once, search hook in the Hub, no
+  `detect-language` method, every component imports it, optional `viewed_*`,
+  `web` size, `readerLanguages` moved, check before the row, `viewed_lang`
+  sent only when known, tests in new files) are all in `## Deviations`, and
+  the old "binds line" deviation is rewritten. Every test name in the ML-15 to
+  ML-19, ML-26 and ML-27 rows exists (`git grep 'fn <name>'` found each once).
+- **AGENTS.md rules.** No planning id, line count or rule number in a code
+  comment (grep of the added lines). No new dependency. Files are under the
+  size limits (`fixtures.rs` 799, `agreement_ops.rs` 565, `transaction.rs`
+  715); the new Rust files are small. Backlog has the six new rows and two
+  changed rows of plan section 8, with sources that exist. The traceability
+  row's links all resolve. The ADR is Accepted and states the no-cost,
+  no-rate-limit rule.
+- **Both builds.** The parity tests compare whole answers: scenario 236
+  (methods), 237 (accept) and the app-host test.
+
+### Findings
+
+#### R1 — `system-architecture.md` still says `web` forwards every method and lists only `session.whoami` (minor)
+
+- **Where:** `docs/system-architecture.md:1147` (the `web` row of the Roym
+  services table) and `:1156` ("`web` lists only its own `session.whoami` and
+  forwards every other method").
+- **Problem:** After B5, `web` answers `translation.targets` and
+  `translation.translate` itself, and its method table has three rows
+  (`api.rs`). The developer guide was updated, the architecture doc was not.
+  `:1147` says "It forwards each method" and gives no mention of the two
+  methods; `:1156` is false. The close-out rule asks for living docs that are
+  true after the change.
+- **Failure case:** A developer reads the architecture doc, adds a method
+  prefix and expects `web` to forward it, or looks for `translation.*` in a
+  sibling service and does not find it.
+- **Fix:** In `:1147` add "It answers `session.whoami`, `translation.targets`
+  and `translation.translate` itself (the last two need the node owner)". Change
+  `:1156` to "`web` lists its own three methods (`session.whoami`,
+  `translation.targets`, `translation.translate`) and forwards every other
+  method ...". `:1460` is still true; leave it.
+- *Status:* Open
+
+#### R2 — After a machine version is made, an author translation can no longer be reached with the switch button (minor)
+
+- **Where:** `crates/roym_web/ui/src/records/record_text.ts:101` (`lastOther`),
+  `:157` to `:160` (switch), `:185` (translate sets `lastOther = machineIdx`);
+  the D-B5-7 table row "Switch | `O` | the last non-original version shown".
+- **Problem:** The switch toggles only between the original and `lastOther`.
+  Making the machine version sets `lastOther` to it. So author translation `A`
+  is never reachable again in that card. Trace: versions `[O hi, A ta]`, reader
+  reads `en`, engine target `en`. First draw shows `O` and the switch offers
+  `A`. Press Translate: `M` is shown and `lastOther = 2`. Switch gives `O`,
+  switch again gives `M`. `A` (index 1) is never shown.
+  A worse case: reader UI `hi`, `O ta`, `A hi`, target `en`. The first draw
+  shows `A` (the version the reader reads best). After Translate it cannot
+  come back to `A` without a reload.
+- **Failure case:** With a later engine, a bilingual reader who presses
+  Translate loses the author's own translation that they could read. It also
+  changes `data-shown-via` for a later Accept in a way the person cannot undo.
+- **Fix:** Make the switch cycle through all versions in order (`O`, `A`, `M`),
+  or keep `A` reachable by letting the switch from `M` go to the best version
+  (`initialIdx`) when it is not `0`. Change the D-B5-7 table and the walk test
+  to include `A` after `M`. Alternative: do not offer Translate when the best
+  version is already in a language the reader reads.
+- *Status:* Open
+
+#### R3 — The Playwright test "no translate action with a v1 node" proves less than its name for the hit and the chat message (minor)
+
+- **Where:** `crates/substrate/tests/e2e/tests/roym-hub.spec.ts:1423` to
+  `:1451`; the ML-16 row of the change doc.
+- **Problem:** The only line that depends on the node having no engine is
+  `translation.targets` equal to `{"targets": []}` and the two search-box
+  counts (`.search-translate`, `.search-translate-target`). The message
+  checked is one the test sends (`direction` outgoing, to a peer that never
+  answers), and an outgoing message never gets a translate button, with or
+  without an engine. The listing hit has one version in the Hub's own language
+  in this set-up, so it also gets no action with an engine. These two
+  `toHaveCount(0)` checks would pass if the engine existed.
+- **Failure case:** A change that draws a translate button for the wrong
+  messages with an engine would pass this test; the ML-16 row lists the test
+  as evidence for "no translate action anywhere".
+- **Fix:** Either drop the chat and hit assertions and say in the test comment
+  that the unit tests cover them, or make them real: stub `/rpc` with
+  `page.route` so `translation.targets` answers `["hi"]` for one case and check
+  that a Hindi listing hit gets `.record-text-translate` (and with `[]` it does
+  not). Reword the ML-16 row to name only what the test proves.
+- *Status:* Open
+
+#### R4 — The `web` error mapping and the multi-text loop have no test for the three refusals v1 cannot produce (minor)
+
+- **Where:** `crates/roym_web/src/app/translation.rs:88` to `:120` (`translate`)
+  and `:154` (`translation_error`); the change doc and the developer guide both
+  list `unsupported-pair`, `too-long` and `engine-failed` with their `data`.
+- **Problem:** With the v1 host only `unavailable` can happen, so parity test
+  236 covers one of four arms. `unsupported-pair` (`data.source`, `data.target`),
+  `too-long` (`data.limit`), `engine-failed` (message with the engine text, `data`
+  with only `kind`) and the loop (one call per text, in order, stop at the first
+  error) are never run. `translation_error` is a pure function and the loop
+  needs only a host with an engine, which `TestHost` can be made to be.
+- **Failure case:** A wrong `data` key name or a swapped source and target is
+  found only when M9A adds an engine, after the Hub (which reads `data.kind`
+  through `errText`) is built on it. The documented wire shape has no test.
+- **Fix:** Add a unit test in `translation.rs` (or beside it) for the four arms
+  of `translation_error` (exact `code`, `message`, `data`), and one for the loop
+  with a host whose `translate` answers by text (assert order, and that an error
+  on the second of three texts stops the loop and returns that error).
+- *Status:* Open
+
+#### R5 — Two behaviours the PR text and ADR state have no test: a repeated `agreement.accept` with bad `viewed_*`, and `translation.*` on the internal `invoke` path (minor)
+
+- **Where:** `crates/roym_transaction/src/app/agreement_ops.rs:124` (`viewed`
+  runs before `already_accepted_response` at `:135`); `crates/roym_web/src/app.rs:295`
+  to `:297` (`invoke` refuses an `Owner` method with `-32010`); ADR-0029
+  decision 9 ("on the HTTP path only"); PR text, "agreement.accept now refuses
+  bad `viewed_*` values even on a repeated call".
+- **Problem:** Scenario 237 starts every refusal case on a quote that is not
+  yet accepted ("these are refused before anything is signed, so one quote
+  serves all"). No test accepts a quote and then repeats the call with bad
+  values. No test calls `web`'s `invoke` with `translation.targets`. Both are
+  stated as behaviour (and the first is called out as a new refusal), but both
+  hold only because of the order of two statements.
+- **Failure case:** Someone moves `viewed()` below `already_accepted_response`
+  (it looks like a cheap tidy-up) and a bad repeat is silently answered as
+  "already accepted"; nothing fails. The same for a change that routes
+  `translation.*` in `invoke`.
+- **Fix:** In scenario 237 (or a new small parity case) accept once, then repeat
+  with `viewed_lang: "ta"` and assert `-32602` `data.field = "viewed_lang"`. Add
+  a unit test in `roym_web` for `invoke` with `translation.targets` on a
+  `TestHost` (expect `-32010`).
+- *Status:* Open
+
+#### R6 — `status.md` does not say that the owner review of the nine new Hindi messages is still open, and `hi.ftl` still says "owner review: done 2026-11-07" (minor)
+
+- **Where:** `docs/planning/milestones/M08B-language-and-structure/status.md`
+  (B5 row), `crates/roym_web/ui/src/i18n/hi.ftl:7`, plan section 7.7 and the PR
+  text ("Hindi text for owner review").
+- **Problem:** The PR text asks for the owner's read of nine messages, two of
+  them with legal weight (`messages-accept-mt-warning`,
+  `messages-accept-mt-confirm`). The status row, which is the record the next
+  session reads, says only "owner answers Q1–Q7 recorded in the plan, owner to
+  confirm". The Hindi review is not listed as open there, and the file header
+  still reads as if the whole file was reviewed.
+- **Failure case:** The slice close step merges with the Hindi text not
+  reviewed, because the only place that says so is the PR text.
+- **Fix:** Add to the B5 row: "owner review of nine Hindi messages (two with
+  legal weight) open". At close-out, after the owner has read them, put the
+  date in the status row (as B3a did), not in the `hi.ftl` header.
+- *Status:* Open
