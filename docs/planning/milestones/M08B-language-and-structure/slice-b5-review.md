@@ -22,7 +22,7 @@ are all in roym-multilingual, so every B5 decision and deviation belongs
 there. The plan is also right to treat roym-agreements AG-32 as M08C's: B5
 only uses the same field names and types.
 
-**Summary:** 0 blocker, 2 major, 9 minor, 11 items (P1 to P11). All Open.
+**Summary:** 0 blocker, 2 major, 9 minor, 11 items (P1 to P11). All Fixed (7806e411).
 
 Limits of this review: I read the plan, `task.md`, `status.md`, the change
 doc, the B4b review (for the format and kinds of findings) and the code on
@@ -145,7 +145,7 @@ I changed no code.
   the card's own `data.terms.lang` and `false` (the original). Add a unit test
   for Accept on a quote with one version (sends `terms.lang` and `false`), and
   one for a bare host with no drawn card. Keep the `!` only in tests.
-- *Status:* Open
+- *Status:* Fixed (7806e411)
 
 #### P2 — The Playwright test "accepting a quote signs the version the person read" has no set-up to reuse and cannot run on the one-node e2e (major)
 
@@ -170,7 +170,7 @@ I changed no code.
   `agreement.get`. Keep the Hub half as unit tests (exact params, P1). Keep
   only the "no translate action with a v1 node" Playwright test, which needs
   one node. Update section 3, section 7.3 and Step 6.
-- *Status:* Open
+- *Status:* Fixed (7806e411)
 
 #### P3 — A second golden shape changes: `transaction_thread.json` has the agreement-receipt payload (minor)
 
@@ -192,7 +192,7 @@ I changed no code.
   crates/roym_web/tests/method_shapes` then check which have a `role` and
   `terms` with `quote_record_id`). Add the two keys to `samples.json`'s
   receipt sample.
-- *Status:* Open
+- *Status:* Fixed (7806e411)
 
 #### P4 — The Hub can make a machine translation into the quote's own language, and then Accept is refused (minor)
 
@@ -216,7 +216,7 @@ I changed no code.
   the shown one: pass the list of version languages. The person already has
   the original one click away. Test: original `hi`, translation `en`, shown
   `en`, reader `["hi","en"]`, targets `["hi","en"]` gives no action.
-- *Status:* Open
+- *Status:* Fixed (7806e411)
 
 #### P5 — `targetFor` does not say which string it returns, and a reader tag like `en-US` would be sent as the target (minor)
 
@@ -235,7 +235,7 @@ I changed no code.
 - **Fix:** Return the matching entry of the target list (it is canonical by
   contract). Add the case to `translation.test.ts`: reader `["en-US"]`,
   targets `["en"]` gives `en`; reader `["en-us"]` gives `en`.
-- *Status:* Open
+- *Status:* Fixed (7806e411)
 
 #### P6 — `translation.rs` in `roym_web` names a crate that `roym_web` does not depend on (minor)
 
@@ -247,7 +247,7 @@ I changed no code.
   a dependency that `cargo shear` and the component size note do not expect.
 - **Fix:** Write `syneroym_roym_core::lang::LangTag::parse_canonical` in the
   plan. No Cargo change.
-- *Status:* Open
+- *Status:* Fixed (7806e411)
 
 #### P7 — Where `loadTargets` runs is ambiguous, nothing tests that it runs, and it blocks the first draw (minor)
 
@@ -272,7 +272,7 @@ I changed no code.
   timeout that gives `[]`. Add a unit test that drives that start-up code
   (extract it into a function if `main()` is not testable): signed-in calls
   `translation.targets` once, anonymous calls nothing.
-- *Status:* Open
+- *Status:* Fixed (7806e411)
 
 #### P8 — The three-version case of `recordText` (original, author translation, machine translation) has no defined switch behaviour (minor)
 
@@ -295,7 +295,7 @@ I changed no code.
   and each current version, the new shown version and the attribute values.
   Add one unit test that walks original, author translation, MT, original and
   asserts both attributes at each step.
-- *Status:* Open
+- *Status:* Fixed (7806e411)
 
 #### P9 — The chat hook offers Translate on a person's own messages and on a message tagged in the reader's language as its second tag (minor)
 
@@ -314,7 +314,7 @@ I changed no code.
   check skip when any tag in `languages` matches a reader language. Add both
   cases to `message_text.test.ts` and the callers' tests. If the owner wants
   translate on own messages, say so in the plan.
-- *Status:* Open
+- *Status:* Fixed (7806e411)
 
 #### P10 — Machine translation of a quote's `dispute_path` can turn a link into different text, and the card draws it as a link (minor)
 
@@ -333,7 +333,7 @@ I changed no code.
   `http://` or `https://`): `texts.get` omits it and `texts.set` keeps the
   original value. Or draw it as plain text in a machine version. Add a unit
   test with a link `dispute_path` (the exact `texts` array sent has no link).
-- *Status:* Open
+- *Status:* Fixed (7806e411)
 
 #### P11 — ML-26 says each hook point calls the interface and gets `unavailable`; the plan's v1 hook points call only `translation.targets`, and the deviation list does not say so (minor)
 
@@ -354,4 +354,4 @@ I changed no code.
   once through `translation.targets`; with an empty list they make no
   `translate` call. The `unavailable` answer is tested with a stub engine that
   answers it." Reword the ML-26 test-column text the same way.
-- *Status:* Open
+- *Status:* Fixed (7806e411)
