@@ -862,8 +862,10 @@ that depend on an owner answer say so.
   - `loadTargets(): Promise<void>` calls `translation.targets` once and
     keeps the list in the module; any error keeps `[]` and logs nothing to
     the person. The call is wrapped in a 3-second timeout that gives `[]`,
-    so a node that hangs on `/rpc` cannot delay the first draw. The
-    start-up code is a function `startTranslation(signedIn: boolean)` that
+    so a node that hangs on `/rpc` delays the first draw by at most 3
+    seconds. `main.ts` **awaits** `startTranslation`, so every hook point
+    sees the list at its first draw (v1 answers at once, so the cost is
+    nothing; the worst case is 3 seconds). The start-up code is a function `startTranslation(signedIn: boolean)` that
     `main.ts` calls once, right after the session is known and before the
     `pending` check (so the setup route and the direct route both have the
     list). It calls `loadTargets()` only when `signedIn` is true. An
@@ -917,8 +919,10 @@ that depend on an owner answer say so.
     texts.set(shown.fields, out.texts), byAuthor: false, machine:
     out.engine }` is appended and shown, the note is `machineNote(..)`, and
     the switch button reads `record-text-show-original`; on failure
-    `translation-failed`, and nothing else changes. A second click does
-    not call again (the MT version is kept).
+    `translation-failed`, and nothing else changes. **At most one machine
+    version per record.** Once it exists, the Translate button is not drawn
+    (not even for another target language); the switch button is the only
+    way back to it.
   - `recordText` writes the shown version on its host element after every
     draw and every state change: `data-shown-lang` (the version's `lang`)
     and `data-shown-via` (`original`, `author` or `machine`). This includes
@@ -929,14 +933,14 @@ that depend on an owner answer say so.
   - **Switch behaviour with three versions** (original `O`, author
     translation `A`, machine version `M`; the best version at first draw is
     `A`). The switch button toggles between the original and the version
-    the person looked at last; Translate shows `M`. Table of the new shown
+    the person looked at last; Translate shows `M` and is drawn only while
+    no machine version exists. Table of the new shown
     version and `data-shown-via`:
 
     | Button | Shown now | Shown after | `data-shown-via` |
     | --- | --- | --- | --- |
     | (first draw) | — | `A` (or `O` when no author translation) | `author` (or `original`) |
     | Translate | `O` or `A` | `M` (call made once; kept) | `machine` |
-    | Translate | `M` exists | `M` (no call) | `machine` |
     | Switch | `M` | `O` | `original` |
     | Switch | `A` | `O` | `original` |
     | Switch | `O` | the last non-original version shown (`M` after a translation, else `A`) | `machine` or `author` |
@@ -1083,8 +1087,8 @@ Split as B3b P9 asks: the host first, then the guests.
    --test dual_build_parity --test method_contract`; `cargo nextest run -p
    syneroym-substrate --test roym_transaction_e2e --test roym_booking_e2e
    --test roym_restore_e2e` (they use the defaults of Q3 (a)). First extend
-   `roym_transaction_e2e` with the two-node acceptance of an author
-   translation (section 7.2, "Two nodes").
+   `roym_transaction_e2e` with a new two-node test for the acceptance of
+   an author translation (section 7.2, "Two nodes").
 6. Commit (`feat(transaction): record what each party viewed`).
 
 ### Step 5 — Hub
@@ -1158,7 +1162,8 @@ drawn). Every element is found with a non-null assertion; no `?.` and no
   `data-shown-lang` (its `lang`) and `data-shown-via="original"` with no
   meta box; one test walks original, author translation, machine version,
   original and asserts both attributes at each step, following the table
-  in D-B5-7; a second click on Translate makes no second call; original
+  in D-B5-7; after one translation there is no Translate button (also with
+  a second supported language), and the switch returns to `M`; original
   `hi`, author translation `en` shown, reader `["hi","en"]`, targets
   `["hi","en"]` draws no Translate button.
 - `cards/templates/templates.test.ts`: the quote binds line on an MT
@@ -1266,14 +1271,22 @@ new; registered in `dual_build_parity.rs` next to `:25` to `:26`)
 - Existing tests keep passing unchanged: every caller of section 2.2 point
   9 (the defaults of Q3 (a)).
 
-**Two nodes** (`crates/substrate/tests/roym_transaction_e2e.rs`, extended;
-Alice and Bob already exist there and Bob accepts at `:221`)
+**Two nodes** (`crates/substrate/tests/roym_transaction_e2e.rs`). A new,
+separate `#[tokio::test]`. The existing test
+`an_offer_is_agreed_across_two_installations` stays as it is: it keeps
+asserting equal payloads with the defaults of Q3 (a). Build the new test on
+the helpers in `common/roym_flow.rs`: add `translations` to a new variant
+of `send_quote` (or an optional argument) and `viewed_lang` and
+`viewed_via_mt` to a new variant of `accept_quote`. Do not copy their
+set-up.
 
 - A quote with an author translation: Bob accepts with `viewed_lang` set
   to that translation's tag and `viewed_via_mt: false`. Read both halves
   back from `agreement.get` on both nodes: the counterparty half has the
   translation's tag and `false`; after sync the author's half has the
-  original `terms.lang` and `false`; the pair is complete. Ports come from
+  original `terms.lang` and `false`; the test asserts that the two halves
+  differ in `viewed_lang` (AG-32) and that the pair is still `complete`.
+  Ports come from
   `alloc_ports` as the file already does.
 
 ### 7.3 Playwright
