@@ -22,7 +22,7 @@ are all in roym-multilingual, so every B5 decision and deviation belongs
 there. The plan is also right to treat roym-agreements AG-32 as M08C's: B5
 only uses the same field names and types.
 
-**Summary:** 0 blocker, 2 major, 9 minor, 11 items (P1 to P11). All Fixed (7806e411).
+**Summary:** 0 blocker, 2 major, 9 minor, 11 items (P1 to P11). After the plan fix (7806e411): 9 Fixed, 2 back to Open in round 2 (P7, P8). See round 2 below.
 
 Limits of this review: I read the plan, `task.md`, `status.md`, the change
 doc, the B4b review (for the format and kinds of findings) and the code on
@@ -272,7 +272,7 @@ I changed no code.
   timeout that gives `[]`. Add a unit test that drives that start-up code
   (extract it into a function if `main()` is not testable): signed-in calls
   `translation.targets` once, anonymous calls nothing.
-- *Status:* Fixed (7806e411)
+- *Status:* Open (round 2: partial fix. The start-up function, its place before the `pending` check, the 3-second timeout and its tests are right. But the plan says the timeout means a hanging node "cannot delay the first draw", and it does not say whether `main.ts` awaits `startTranslation`. If it awaits, the first draw is delayed by up to 3 seconds. If it does not, the first draw can miss the list. See Plan review round 2, note on P7.)
 
 #### P8 — The three-version case of `recordText` (original, author translation, machine translation) has no defined switch behaviour (minor)
 
@@ -295,7 +295,7 @@ I changed no code.
   and each current version, the new shown version and the attribute values.
   Add one unit test that walks original, author translation, MT, original and
   asserts both attributes at each step.
-- *Status:* Fixed (7806e411)
+- *Status:* Open (round 2: partial fix. The table exists, but it contradicts the P4 fix: `targetFor` now skips the language of every version, machine versions included, so once a machine version exists there is no Translate button for its language. See Plan review round 2, P8 note.)
 
 #### P9 — The chat hook offers Translate on a person's own messages and on a message tagged in the reader's language as its second tag (minor)
 
@@ -355,3 +355,117 @@ I changed no code.
   `translate` call. The `unavailable` answer is tested with a stub engine that
   answers it." Reword the ML-26 test-column text the same way.
 - *Status:* Fixed (7806e411)
+
+## Plan review round 2 (check of the round 1 fixes) — Claude Sonnet 5.5, 2026-11-13
+
+Checked on `feat/m08b-b5-translation` at `ad7f6fb7` (the fix commits
+`7806e411` and `ad7f6fb7`, on top of `5b36bca9`), in the main checkout.
+`git pull` said "Already up to date". I read the full diff of the plan, the
+review file and `status.md` since my round 1, and I checked the new claims
+against the code on `main`. I ran no `cargo`, `npm` or `mise` step and changed
+no code.
+
+**Summary:** 0 blocker, 0 major, 1 new minor (P12). Of the 11 round 1 items,
+9 are confirmed Fixed (P1 to P6, P9 to P11) and 2 go back to Open with a note
+(P7, P8). **3 open: P7, P8, P12.**
+
+### Round 1 items checked
+
+- **P1 (Fixed, confirmed).** D-B5-7 now says `recordText` writes
+  `data-shown-lang` and `data-shown-via="original"` in the one-version
+  early-return path (`record_text.ts:43` to `:51`) with no meta box. D-B5-8
+  no longer asserts: with no element it sends the card's `data.terms.lang` and
+  `false`. Section 7.1 has both tests (one version; bare host with no drawn
+  card).
+- **P2 (Fixed, confirmed, with P12 for the detail).** The Playwright
+  accept test is gone (section 7.3, Step 6, ML-18 row). The proof moves to
+  `roym_transaction_e2e` (it has two nodes, `quote.set` accepts
+  `translations` (`quote_ops.rs:94`), and the file is 445 lines, not in the
+  oversized list). How to write it is still thin: see P12.
+- **P3 (Fixed, confirmed).** W6 and Step 4.4 now name
+  `agreement_verify_good.json`, `transaction_thread.json` and
+  `transaction_export.json`. I checked `transaction_export.json`: it holds two
+  `agreement-receipt` card payloads (`:136` to `:143`, `:181` to `:187`), so
+  naming it is right. The `git grep` recipe and the `samples.json:55` change
+  are in.
+- **P4 (Fixed, confirmed).** `targetFor(skipLangs)` skips every language of
+  the record, and the test `skip ["hi","en"] … → null` is in section 7.1. Its
+  interaction with machine versions is the cause of the P8 note.
+- **P5 (Fixed, confirmed).** `targetFor` returns the target-list entry, and
+  the `en-US` and `en-us` cases are in section 7.1.
+- **P6 (Fixed, confirmed).** `syneroym_roym_core::lang::LangTag::parse_canonical`,
+  no Cargo change.
+- **P7 (back to Open).** See the note below.
+- **P8 (back to Open).** See the note below.
+- **P9 (Fixed, confirmed).** `translatable` is for incoming messages only
+  (direct chat `direction`, group author not the reader), and
+  `targetFor(languages)` takes all tags. Both cases are in section 7.1.
+  `groups.ts` has `msg.direction` (line 108 area), so the group check can be
+  written.
+- **P10 (Fixed, confirmed).** A link-valued field is left out of the array and
+  its original value is kept by `set`; the test asserts the array has no link.
+  The implementer must keep the position mapping between `get` and `set` when
+  an entry is left out; the exact-array test covers it.
+- **P11 (Fixed, confirmed).** The ML-26 row and the deviation text in section 3
+  say hook points ask `translation.targets` once and make no `translate` call
+  with v1.
+
+**Owner answers.** The plan now records "Owner answer: (a), 2026-11-13" for
+Q1 to Q7, and each equals the view I gave in round 1. I cannot check that the
+owner gave these answers; the owner should confirm them when they read the
+plan.
+
+### Notes on items sent back to Open
+
+- **P7.** The fix adds `startTranslation(signedIn)`, called once before the
+  `pending` check, a 3-second timeout that gives `[]`, and tests. What is
+  missing is one sentence: does `main.ts` `await` it? The text says the
+  timeout means a hanging node "cannot delay the first draw". With `await`
+  the delay is at most 3 seconds, not zero. Without `await` the tabs can draw
+  before the list arrives, and every hook point that has already drawn misses
+  the translate action until the next draw. *Fix:* say that `main.ts` awaits
+  `startTranslation` (v1 answers at once, so the cost is nothing; the worst
+  case is 3 seconds), and change "cannot delay" to "delays by at most 3
+  seconds".
+- **P8.** The table assumes one machine version `M`, and a row
+  "Translate | `M` exists | `M` (no call)". But D-B5-6 says `skipLangs`
+  includes "machine versions already added", so after the first translation
+  into `en`, `targetFor` no longer returns `en`. Then the Translate button
+  either disappears, or, when the reader has a second supported language
+  (`["en","ta"]`), it offers "Translate into Tamil" and a second call adds a
+  second machine version. The table has no row for that, `data-shown-via` is
+  the same for both, and the test "a second click on Translate makes no second
+  call" cannot be written as it stands. *Fix:* decide one rule and write it
+  in D-B5-7. The simplest: at most one machine version per record; once it
+  exists the Translate button is not drawn, and the switch button is the only
+  way back to it (the table's last row already does that). Remove the row
+  "Translate | `M` exists", and change the test to "after one translation
+  there is no Translate button, and the switch returns to `M`".
+
+### New findings
+
+#### P12 — The two-node e2e proof for ML-18 is described as an "extension" of one long test, and the existing test has an assertion that the new case breaks (minor)
+
+- **Where:** Section 7.2 "Two nodes", Step 4.5, `crates/substrate/tests/roym_transaction_e2e.rs`
+  (`an_offer_is_agreed_across_two_installations`, `:43` on, with
+  `#[expect(clippy::too_many_lines)]`), `common/roym_flow.rs` (`send_quote`
+  `:183`, `accept_quote` `:209`).
+- **Problem:** The existing test is one function of about 400 lines. It has
+  no author translation, no `viewed_lang`, and (Step 10) asserts that the two
+  halves' payloads are equal after the role is replaced
+  (`assert_eq!(c_payload, p_payload)`). With the plan's case (Bob accepts the
+  translation tag, the author counter-signs `terms.lang`) the halves differ,
+  as AG-32 allows, and that assertion fails. The shared helpers `send_quote`
+  and `accept_quote` take no `translations` and no `viewed_*`, and both need a
+  listing and a slot.
+- **Failure case:** The implementer adds the case inside the existing test and
+  breaks its equality check, or copies about 150 lines of set-up into a second
+  test, which `cargo dupes` flags.
+- **Fix:** Say in section 7.2 that the new case is a separate
+  `#[tokio::test]` (the existing one stays as it is and keeps asserting equal
+  payloads with the defaults of Q3 (a)). Build it on the `common/roym_flow.rs`
+  helpers: add `translations` to a new variant of `send_quote` (or an optional
+  argument) and `viewed_lang`/`viewed_via_mt` to a new variant of
+  `accept_quote`; do not copy the set-up. Say that the test asserts the two
+  halves differ in `viewed_lang` and that the pair is still `complete`.
+- *Status:* Open
