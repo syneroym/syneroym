@@ -408,17 +408,15 @@ Category search is language-neutral after layer B. Text search is not. Today:
   - An internal metadata table `_text_index` records the key version. Declared fields are inspected from the word virtual table columns (D-B4a-5).
   - Rebuilding an index on large collections temporarily blocks the single writer thread for that service (D-B4a-10).
   - Full-text search and `$search` operator additions are recorded as an amendment to ADR-0007 (Q7).
-- - **Decided 2026-11-13, search in every script:**
-  - The key has four steps (`syneroym_text_lang::search_key`, key version 2): NFC and lower case; a Latin transliteration of Devanagari and Tamil letters; then the Latin fold. Text in any other script keeps its NFC and lower-case form, so only a query in the same script finds it.
-  - The Latin fold is a fixed, ordered list of rules (`w`→`v`, `ee`→`i`, a doubled letter → one, `h` after a consonant dropped, and others). It runs until the word stops changing. It does not fold vowel quality, so English loanwords in a native script do not meet their English spelling (owner answer Q1).
-  - Tamil stops (`க ச ட த ப`) take their Latin form by position in the word, with no Latin rule for them (Q2). Hindi `ड़` is `d` and `ढ़` is `dh` (Q3). `ta/ennai` and `enna`, `hi/saree` and `sadi`, and `hi/jharu` and `jaru` are accepted merges.
-  - A word break is any character that is not a letter, a digit or a mark. A query word with inner punctuation becomes two terms.
-  - The trigram table holds the key with spaces removed (the joined key), so a long term matches across a word break. The word table holds the key words. Both tokenizer strings, the joined key and the match builder live in `syneroym_text_lang::fts`, shared by `data_db` and the chat store.
-  - The directory declares `text` as a text field and sends raw text: title, summary, categories and the title and summary of each author translation. It searches with `$search`. A `$search` refusal is `-32602`.
-  - Chat search keeps two FTS5 tables over search keys (`messages_tri`, `messages_word`), has no `LIKE` scan, and rebuilds them when it opens a database whose key version differs. Query limits: 1,024 bytes, 16 words, and at least one word.
-  - `contacts.list` takes an optional `text` that searches the display name. A contact name is stored as written.
-  - The Hub sorts the contact list and the group member list with `Intl.Collator` for the Hub language, grouped by script: the script of the Hub language first, then Latin, Devanagari, Tamil, then the others (Q5, Q6). The Hub has no contact picker today, so nothing else compares keys.
-  - An existing directory index is not rebuilt automatically. The node owner runs `directory.reindex` (Q7).
+- **Decided 2026-11-13, search in every script:**
+  - The key has four steps (`syneroym_text_lang::search_key`, key version 2): NFC and lower case; a Latin transliteration of Devanagari and Tamil letters; then the Latin fold (D-B4b-2, D-B4b-7). Text in any other script keeps its NFC and lower-case form, so only a query in the same script finds it.
+  - The Latin fold is a fixed, ordered list of rules (`w`→`v`, `ee`→`i`, a doubled letter → one, `h` after a consonant dropped, and others). It runs until the word stops changing. It does not fold vowel quality, so English loanwords in a native script do not meet their English spelling (owner answer Q1, D-B4b-5). Only Latin letters are folded: a doubled digit or a doubled letter of another script is kept.
+  - Tamil stops (`க ச ட த ப`) take their Latin form by position in the word, with no Latin rule for them (Q2, D-B4b-4). Hindi `ड़` is `d` and `ढ़` is `dh` (Q3, D-B4b-3). Tamil `ஃப` is `f`. `ta/ennai` and `enna`, `hi/saree` and `sadi`, and `hi/jharu` and `jaru` are accepted merges.
+  - A word break is any character that is not a letter, a digit or a mark. A query word with inner punctuation becomes two terms (D-B4b-2, D-B4b-6).
+  - The trigram table holds the key with spaces removed (the joined key), so a long term matches across a word break. The word table holds the key words. Both tokenizer strings, the joined key and the match builder live in `syneroym_text_lang::fts`, shared by `data_db` and the chat store (D-B4b-8).
+  - The directory declares `text` as a text field and sends raw text: title, summary, categories and the title and summary of each author translation. It searches with `$search`. A `$search` refusal is `-32602` (D-B4b-10 to D-B4b-12).
+  - Chat search keeps two FTS5 tables over search keys (`messages_tri`, `messages_word`), has no `LIKE` scan, and rebuilds them when it opens a database whose key version differs. Query limits: 1,024 bytes, 16 words, and at least one word (D-B4b-14 to D-B4b-17).
+  - An existing directory index is not rebuilt automatically. The node owner runs `directory.reindex` (Q7, D-B4b-13).
 - The index shape changes. The product is unreleased, so the index is rebuilt in place.
 
 The same search keys serve the conversation search (`conversation.search`) and the contact list.
@@ -426,6 +424,11 @@ The same search keys serve the conversation search (`conversation.search`) and t
 ### Names in any script
 
 A name (contact, display name, shop name) is stored exactly as written, in any script. Next to it, the node stores its search key (see [Search](#search)). Contact search and the contact picker compare keys, so `ram` finds `राम` (ML-23). The Hub sorts names with `Intl.Collator` for the UI language, and groups names by script (ML-24). A name is never translated. The reader's node may show a transliteration next to a name in a script the reader does not read. This is a display choice, not a signed field.
+
+- **Decided 2026-11-13, names in any script:**
+  - `contacts.list` takes an optional `text` that searches the display name. A blank text sends no filter. A contact name is stored as written (D-B4b-18).
+  - The Hub sorts the contact list and the group member list with `Intl.Collator` for the Hub language, grouped by script: the script of the Hub language first, then Latin, Devanagari, Tamil, then the others (Q5, Q6, D-B4b-19). The Hub has no contact picker today, so nothing else compares keys.
+  - The contact screen has a search box and button. Its messages are in the English and Hindi catalogs (D-B4b-20, D-B4b-21).
 
 ### Translation hook points
 
@@ -495,7 +498,7 @@ Checked: `@fluent/bundle` 0.19.1 (Apache-2.0, no runtime dependencies) adds 4,20
 - [ ] Conversation: add up to 3 optional language tags to the `message` WIT record and the stored row.
 - [ ] `roym_core`: search keys (NFC, transliteration tables for Devanagari and Tamil, Latin folding) and their tests with real samples.
 - [ ] FTS5 index over search keys for the directory (and later the exchange), conversation search and contacts.
-- [ ] Names in any script: search keys on contacts, collation and grouping in the Hub.
+- [x] Names in any script: search keys on contacts, collation and grouping in the Hub.
 - [ ] Taxonomy attribute definitions with `en` and `hi` labels.
 - [ ] Call the translation interface at every hook point. A test for each.
 - [ ] Add the `syneroym:translation` WIT package and the host implementation that answers `unavailable`. Link it for native and WASM builds.
