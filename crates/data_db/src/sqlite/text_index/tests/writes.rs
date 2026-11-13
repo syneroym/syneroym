@@ -1,5 +1,6 @@
 use rusqlite::Connection;
 use serde_json::json;
+use syneroym_text_lang::fts;
 
 use crate::{
     host_store::{DataLayerError, Mutation, RecordWriteValue},
@@ -50,7 +51,7 @@ fn writes_put_patch_delete_lifecycle() {
         RecordWriteValue { id: "1".to_string(), payload: br#"{"title": "apple orange"}"#.to_vec() };
     do_authorized_put(&mut conn, "items", &val1, "user", None).unwrap();
 
-    let apple_key = syneroym_text_lang::fts::index_keys("apple").words;
+    let apple_key = fts::index_keys("apple").words;
     let match_apple: i64 = conn
         .query_row(
             &format!(

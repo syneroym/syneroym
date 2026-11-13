@@ -18,7 +18,7 @@ use crate::{
     ids::{derive_entry_id, derive_group_id},
     store::{
         self, ConversationConfig, ConversationRow, ConversationStore, OutboxItem, StoreError,
-        now_ms,
+        now_ms, text_index,
     },
 };
 
@@ -425,7 +425,7 @@ impl ConversationService {
             && let Ok(body_str) = str::from_utf8(body)
         {
             let rowid = tx.last_insert_rowid();
-            store::text_index::sync(tx, rowid, body_str)?;
+            text_index::sync(tx, rowid, body_str)?;
         }
 
         for m in members {

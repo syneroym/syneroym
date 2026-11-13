@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fs};
+use std::{collections::HashMap, env, fs};
 
 use crate::{
     fts,
@@ -156,7 +156,7 @@ fn spelling_rows_match_the_owner_decisions() {
         "Tamil pairs floor failed: fwd={ta_pairs_fwd}, rev={ta_pairs_rev} (min 140)"
     );
 
-    if std::env::var("UPDATE_SPELLING_RESULTS").as_deref() == Ok("1") {
+    if env::var("UPDATE_SPELLING_RESULTS").as_deref() == Ok("1") {
         let manifest_dir = env!("CARGO_MANIFEST_DIR");
         let golden_path = format!("{manifest_dir}/src/search_key/tests/spelling-results.tsv");
         fs::write(&golden_path, &actual_results)

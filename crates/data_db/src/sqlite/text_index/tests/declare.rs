@@ -1,4 +1,5 @@
 use rusqlite::Connection;
+use syneroym_text_lang::fts;
 
 use crate::{
     host_store::{CollectionSchema, DataLayerError, IndexDefinition, IndexType, RecordWriteValue},
@@ -70,7 +71,7 @@ fn declare_backfills_pre_existing_rows() {
     let schema_indexed = schema_with("items", vec![], vec!["title".to_string()]);
     do_create_collection(&mut conn, &schema_indexed).unwrap();
 
-    let world_key = syneroym_text_lang::fts::index_keys("world").joined;
+    let world_key = fts::index_keys("world").joined;
     let tri_matches: i64 = conn
         .query_row(
             &format!(
@@ -82,7 +83,7 @@ fn declare_backfills_pre_existing_rows() {
         .unwrap();
     assert_eq!(tri_matches, 1);
 
-    let hello_key = syneroym_text_lang::fts::index_keys("hello").words;
+    let hello_key = fts::index_keys("hello").words;
     let word_matches: i64 = conn
         .query_row(
             &format!(
@@ -246,7 +247,7 @@ fn declare_key_version_mismatch_rebuilds() {
         .unwrap();
     assert_eq!(key_ver, syneroym_text_lang::SEARCH_KEY_VERSION);
 
-    let nal_key = syneroym_text_lang::fts::index_keys("nal").words;
+    let nal_key = fts::index_keys("nal").words;
     let match_nal: i64 = conn
         .query_row(
             &format!(
@@ -431,8 +432,8 @@ fn declare_two_collections_foo_and_foo_data_keep_own_rows() {
     do_authorized_put(&mut conn, "foo", &val_foo, "user", None).unwrap();
     do_authorized_put(&mut conn, "foo_data", &val_data, "user", None).unwrap();
 
-    let hello_key = syneroym_text_lang::fts::index_keys("hello").joined;
-    let world_key = syneroym_text_lang::fts::index_keys("world").joined;
+    let hello_key = fts::index_keys("hello").joined;
+    let world_key = fts::index_keys("world").joined;
 
     let foo_match: i64 = conn
         .query_row(

@@ -16,7 +16,8 @@ use script::Script;
 #[cfg(test)]
 mod tests;
 
-/// Changes whenever `search_key` gives a different output for some input.
+/// Changes whenever `search_key`, `query_terms` or the joined key
+/// (`fts::index_keys`) gives a different output for some input.
 /// A stored text index records the version it was built with; a
 /// different version makes the next `create-collection` rebuild it.
 pub const SEARCH_KEY_VERSION: u32 = 2;
