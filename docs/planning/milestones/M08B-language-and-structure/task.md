@@ -212,6 +212,8 @@ Change doc: roym-multilingual.
 
 Change doc: roym-multilingual.
 
+**B4b result:** done on the branch `feat/m08b-b4b-search-scripts` (2026-11-13, B4b implemented by Claude Sonnet 5.5, after a first part by another agent). The six Roym components build for `wasm32-wasip2` (before on main at `bc3dd8de` -> after on branch, same build folder): web 255,811 -> 255,811 bytes (+0), conversation 810,779 -> 811,144 (+365), profile 768,511 -> 770,848 (+2,337), catalog 928,547 -> 928,879 (+332), transaction 1,507,226 -> 1,507,640 (+414), directory 1,463,980 -> 1,466,394 (+2,414). All within the +40 KB limit: no guest links the tables. The Hub main script (`gzip -9`) went 52,297 -> 53,216 bytes (+919, limit +5 KB). The Hindi catalog went 14,447 -> 14,548 bytes (+101, limit +1 KB). Unit tests, dual-build parity tests, Playwright tests (74 passed) and story 40 pass.
+
 ### B5 — Translation interface, hook points, agreements (M)
 
 - Y6 and the host implementation that answers `unavailable`, linked for both builds. The local-only Roym method the Hub calls (the change doc suggests `web`).

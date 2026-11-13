@@ -2511,6 +2511,14 @@ roym directory.find '{"query":{"text":"plumber"}}' | jq '.result | {outcomes, hi
 
 A source with no listings that match gives `error: null` and adds no hit. The query fields are `text`, `categories`, `area`, `open_to`, `booking_mode` and `limit`. All are optional.
 
+`text` must have every word in the title, the summary, the categories or an author translation, in any order. It works in every script. A word in Latin letters also finds the same word written in Devanagari or Tamil, and common Latin spellings meet (`nal wala` finds `naal waala` and `नल वाला`). A word matches anywhere inside the text. Punctuation breaks a word, so a number matches as a substring (`50%` finds `500`). A `text` with no word (only punctuation), or with more than 16 words, is `-32602`.
+
+A directory that held listings before this search existed keeps their old text until the node owner rebuilds it. Run this once on that node, signed in as the owner:
+
+```bash
+roym directory.reindex | jq .result     # {"rebuilt": <rows>, "standing": <n>}
+```
+
 ### 6.7. Show cards
 
 A card is a message with the content type `application/vnd.roym.card+json`. Deals between two people are cards: a request, a quote and so on. A conversation holds them together with the normal messages.

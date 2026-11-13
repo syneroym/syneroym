@@ -242,3 +242,20 @@ to the data layer WIT interface and SQLite storage engine:
   applies a unary `+` on `+c.id` to prevent SQLite from walking the primary index
   and forcing a full collection table scan (guaranteed on collections without
   `ANALYZE`, and on collections of more than ~100 rows after `ANALYZE`).
+
+**2026-11-13 (Search in every script).** The search key of a text field changed
+(key version 2, in `syneroym-text-lang`). The WIT and the filter language do not
+change.
+
+- **Key:** NFC and lower case, then a Latin transliteration of Devanagari and
+  Tamil letters (a fixed table per script), then a fixed set of Latin fold rules.
+  Text in any other script keeps its NFC and lower-case form.
+- **Words:** a word break is any character that is not a letter, a digit or a
+  mark. Punctuation inside a query word makes two terms.
+- **Trigram table:** it holds the key with the spaces removed (the joined key), so
+  a long term can match across a word break. The word table holds the key words
+  with one space between them.
+- **Rebuild:** because the key version changed, each text index is rebuilt on the
+  next `create-collection` that declares text fields.
+
+The 2026-11-11 text above stays as written.

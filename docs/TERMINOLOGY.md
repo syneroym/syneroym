@@ -70,7 +70,9 @@ neighbourhood.
 | **String catalog (Hub)** | The file of all Hub text for one language, in `crates/roym_web/ui/src/i18n/` (`en.ftl`, `hi.ftl`). A message in it has an id, and the Hub looks up its text by that id. | The `catalog` Roym service (listings). |
 | **Taxonomy (Roym)** | The base lists of category, unit, payment-method and attribute codes in `base.json`; their labels are in the Hub's taxonomy label files. | Free-text categories. |
 | **Language tag** | A BCP 47 language code in canonical syntax form (e.g. `hi`, `en`, `hi-Latn`), parsed and verified by `syneroym-text-lang`. A chat message carries up to 3 language tags, main language first. | Free-form locale strings or non-canonical casing. |
-| **Search key** | The form of a text that search compares, produced by `syneroym-text-lang`; today NFC and lower case. | Raw unnormalized text. |
+| **Search key** | The form of a text that search compares, produced by `syneroym-text-lang`. Four steps: Unicode NFC, lower case, a Latin transliteration of Devanagari and Tamil letters, then the Latin fold. | Raw unnormalized text. |
+| **Transliteration table** | A fixed table in `syneroym-text-lang` that turns the letters of one script (Devanagari or Tamil) into Latin letters, by sound. It is lossy on purpose: two spellings of one word must meet, nothing more. | ISO 15919 output (our tables start from it but differ). |
+| **Latin fold** | A fixed, ordered list of rewrite rules over Latin letters (for example `w` becomes `v`, a doubled letter becomes one). It runs on typed Latin text and on the output of a transliteration table. | A language-specific spelling rule. |
 | **Author translation** | An alternative translation signed by the author inside the record envelope (up to 4 translations per record). The original text always binds. | Machine translation (MT), which is unsigned software output. |
 
 ## Key phrasings
