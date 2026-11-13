@@ -29,6 +29,8 @@ pub struct ContactsListInput {
     pub favourites_only: Option<bool>,
     pub offset: Option<u64>,
     pub limit: Option<u64>,
+    #[serde(default)]
+    pub text: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]

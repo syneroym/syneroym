@@ -287,6 +287,44 @@ async fn invalid_field_types_and_unknown_fields_are_rejected() {
 }
 
 #[tokio::test]
+async fn contacts_list_text_parameter_contract() {
+    let h = harness().await;
+
+    let (w, _) = post_rpc(
+        &h,
+        "contacts.list",
+        Some(json!({
+            "text": "alice",
+        })),
+    )
+    .await;
+    assert!(w.get("error").is_none(), "unexpected error: {w}");
+    assert!(w["result"].is_array());
+
+    let (w_type, _) = post_rpc(
+        &h,
+        "contacts.list",
+        Some(json!({
+            "text": 5,
+        })),
+    )
+    .await;
+    assert_eq!(w_type["error"]["code"], -32602);
+    assert_eq!(w_type["error"]["data"]["field"], "text");
+
+    let (w_unk, _) = post_rpc(
+        &h,
+        "contacts.list",
+        Some(json!({
+            "unknown_filter": "foo",
+        })),
+    )
+    .await;
+    assert_eq!(w_unk["error"]["code"], -32602);
+    assert_eq!(w_unk["error"]["data"]["field"], "unknown_filter");
+}
+
+#[tokio::test]
 async fn conversation_send_languages_contract() {
     let h = harness().await;
     let (open_w, _) =

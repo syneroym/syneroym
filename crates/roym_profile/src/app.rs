@@ -9,7 +9,7 @@ pub use moderation::{BlockRow, ReportRow};
 use serde_json::json;
 use syneroym_app_host::{
     AppDataLayer, AppHost,
-    types::data_layer::{CollectionSchema, IndexDefinition},
+    types::data_layer::{CollectionSchema, IndexDefinition, IndexType},
 };
 pub use syneroym_roym_core::method::profile::ContactRow;
 use syneroym_roym_core::{
@@ -40,6 +40,22 @@ pub(crate) async fn ensure_coll<H: AppHost>(
     AppDataLayer::create_collection(
         host,
         CollectionSchema { name: name.to_string(), indexes: indexes.to_vec(), text_fields: vec![] },
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
+
+pub(crate) async fn ensure_contacts<H: AppHost>(host: &H) -> Result<(), String> {
+    AppDataLayer::create_collection(
+        host,
+        CollectionSchema {
+            name: CONTACTS.to_string(),
+            indexes: vec![IndexDefinition {
+                field_name: "favourite".to_string(),
+                type_: IndexType::Boolean,
+            }],
+            text_fields: vec!["display_name".into()],
+        },
     )
     .await
     .map_err(|e| e.to_string())

@@ -203,3 +203,122 @@ async fn scenario_235_chat_search_short_and_cross_script_parity() {
     assert_eq!(matches_baat.len(), 1);
     assert_eq!(matches_baat[0]["body"], "एक बात");
 }
+
+#[tokio::test]
+async fn scenario_234_contacts_list_text_finds_names_across_scripts_parity() {
+    let h = harness().await;
+    enrol_signing(&h, "profile").await;
+
+    let c1 = json!({
+        "person_did": "did:key:zRamDeva",
+        "display_name": "राम",
+        "conversation_address": "syneroym://addr/ram-deva",
+        "favourite": false
+    });
+    let c2 = json!({
+        "person_did": "did:key:zRamLatn",
+        "display_name": "Ram",
+        "conversation_address": "syneroym://addr/ram-latn",
+        "favourite": false
+    });
+    let c3 = json!({
+        "person_did": "did:key:zSita",
+        "display_name": "Sita",
+        "conversation_address": "syneroym://addr/sita",
+        "favourite": false
+    });
+    let c4_name = "\u{0958}adir";
+    let c4 = json!({
+        "person_did": "did:key:zNfcDecomp",
+        "display_name": c4_name,
+        "conversation_address": "syneroym://addr/qadir"
+    });
+    let c5_name = "e\u{0301}lodie";
+    let c5 = json!({
+        "person_did": "did:key:zNfcComp",
+        "display_name": c5_name,
+        "conversation_address": "syneroym://addr/elodie"
+    });
+
+    for c in [&c1, &c2, &c3, &c4, &c5] {
+        let (uw, un) = both_rpc(&h, "contacts.upsert", c.clone()).await;
+        assert_eq!(uw, un);
+        assert!(uw.get("error").is_none(), "contacts.upsert failed: {uw}");
+    }
+
+    // Search for "ram" -> Ram and राम
+    let (sw_ram, sn_ram) = both_rpc(&h, "contacts.list", json!({ "text": "ram" })).await;
+    assert_eq!(sw_ram, sn_ram);
+    let mut names_ram: Vec<_> = sw_ram["result"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["display_name"].as_str().unwrap())
+        .collect();
+    names_ram.sort();
+    assert_eq!(names_ram, vec!["Ram", "राम"]);
+
+    // Search for "राम" -> Ram and राम
+    let (sw_deva, sn_deva) = both_rpc(&h, "contacts.list", json!({ "text": "राम" })).await;
+    assert_eq!(sw_deva, sn_deva);
+    let mut names_deva: Vec<_> = sw_deva["result"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["display_name"].as_str().unwrap())
+        .collect();
+    names_deva.sort();
+    assert_eq!(names_deva, vec!["Ram", "राम"]);
+
+    // Favourites filter combined with text
+    let (sw_fav, sn_fav) =
+        both_rpc(&h, "contacts.list", json!({ "text": "sita", "favourites_only": true })).await;
+    assert_eq!(sw_fav, sn_fav);
+    assert_eq!(sw_fav["result"].as_array().unwrap().len(), 0);
+
+    // Blank text returns all contacts
+    let (sw_blank, sn_blank) = both_rpc(&h, "contacts.list", json!({ "text": " " })).await;
+    assert_eq!(sw_blank, sn_blank);
+    assert_eq!(sw_blank["result"].as_array().unwrap().len(), 5);
+
+    // Refusal on punctuation only
+    let (sw_punct, sn_punct) = both_rpc(&h, "contacts.list", json!({ "text": "!!!" })).await;
+    assert_eq!(sw_punct, sn_punct);
+    assert_eq!(sw_punct["error"]["code"], -32602);
+    assert!(sw_punct["error"]["message"].as_str().unwrap().contains("needs at least one word"));
+
+    // Refusal on invalid type
+    let (sw_num, sn_num) = both_rpc(&h, "contacts.list", json!({ "text": 5 })).await;
+    assert_eq!(sw_num, sn_num);
+    assert_eq!(sw_num["error"]["code"], -32602);
+
+    // Stored as written: contacts.list returns exact byte sequences
+    let (sw_all, sn_all) = both_rpc(&h, "contacts.list", json!({})).await;
+    assert_eq!(sw_all, sn_all);
+    let all_contacts = sw_all["result"].as_array().unwrap();
+    let c4_res = all_contacts.iter().find(|c| c["person_did"] == "did:key:zNfcDecomp").unwrap();
+    assert_eq!(c4_res["display_name"], c4_name);
+    let c5_res = all_contacts.iter().find(|c| c["person_did"] == "did:key:zNfcComp").unwrap();
+    assert_eq!(c5_res["display_name"], c5_name);
+
+    // profile.set / profile.get preserves exact byte sequences
+    for name in ["राम", c5_name] {
+        let (pw, pn) = both_rpc(
+            &h,
+            "profile.set",
+            json!({
+                "display_name": name,
+                "conversation_address": "syneroym://addr/1",
+                "lang": "en"
+            }),
+        )
+        .await;
+        assert_eq!(pw, pn);
+
+        let (gw, gn) = both_rpc(&h, "profile.get", json!({})).await;
+        assert_eq!(gw, gn);
+        let env_str = gw["result"]["envelope"].as_str().unwrap();
+        let env_val: Value = serde_json::from_str(env_str).unwrap();
+        assert_eq!(env_val["payload"]["display_name"], name);
+    }
+}
