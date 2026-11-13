@@ -1,11 +1,7 @@
 use serde_json::Value;
 use syneroym_identity::{Identity, substrate};
 
-use super::*;
-
-fn tag(s: &str) -> LangTag {
-    LangTag::parse(s).expect("valid tag")
-}
+use super::{lang::sample_tag, *};
 
 /// A receipt payload for a quote whose original language is `en`.
 fn receipt(counterparty_did: &str, role: DealRole, lang: &str, via_mt: bool) -> Value {
@@ -51,12 +47,12 @@ fn receipt_refuses_mt_of_the_original() {
         quote_author_did: "did:key:zQuoteAuthorViewed".to_string(),
         role: DealRole::Counterparty,
         terms: sample_terms(),
-        viewed_lang: tag("en"),
+        viewed_lang: sample_tag("en"),
         viewed_via_mt: true,
     };
     assert_eq!(payload.validate(), Err(TransactionError::ViewedMtOfOriginal));
 
-    payload.viewed_lang = tag("hi");
+    payload.viewed_lang = sample_tag("hi");
     assert_eq!(payload.validate(), Ok(()));
 }
 
@@ -68,7 +64,7 @@ fn halves_differing_in_viewed_fields_still_agree() {
         quote_author_did: "did:key:zQuoteAuthorViewed".to_string(),
         role,
         terms: sample_terms(),
-        viewed_lang: tag(lang),
+        viewed_lang: sample_tag(lang),
         viewed_via_mt: via_mt,
     };
     let counterparty = half(DealRole::Counterparty, "hi", true);
@@ -94,6 +90,6 @@ fn verify_round_trips_viewed_fields() {
     let verdict = verify_agreement_receipt(&env, 1000);
     assert!(verdict.verified, "{:?}", verdict.reason);
     let read = verdict.payload.unwrap();
-    assert_eq!(read.viewed_lang, tag("hi"));
+    assert_eq!(read.viewed_lang, sample_tag("hi"));
     assert!(read.viewed_via_mt);
 }

@@ -17,7 +17,7 @@
 //! countersigns and both parties reach a completed agreement pair with
 //! identical terms. Also proves tampered cards are refused and never verified.
 
-use std::time::Duration;
+use std::{path::Path, time::Duration};
 
 use rustls::crypto::ring;
 use serde_json::{Value, json};
@@ -453,10 +453,7 @@ async fn a_tampered_card_is_filed_refused_and_never_verified() {
 
 /// Boots a counterparty node and a quote author node that share a registry,
 /// each with a profile.
-async fn boot_counterparty_and_author(
-    dirs: [&std::path::Path; 2],
-    owners: [&Identity; 2],
-) -> (Node, Node) {
+async fn boot_counterparty_and_author(dirs: [&Path; 2], owners: [&Identity; 2]) -> (Node, Node) {
     let mut counterparty = Node::boot(
         "node-x",
         dirs[0].to_path_buf(),

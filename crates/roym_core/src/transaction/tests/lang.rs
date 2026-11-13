@@ -3,7 +3,7 @@ use syneroym_identity::{Identity, substrate};
 use super::*;
 use crate::lang::TranslationError;
 
-fn sample_tag(s: &str) -> LangTag {
+pub(super) fn sample_tag(s: &str) -> LangTag {
     LangTag::parse(s).expect("valid tag")
 }
 
