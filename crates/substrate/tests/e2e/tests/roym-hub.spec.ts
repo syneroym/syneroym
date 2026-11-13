@@ -1420,6 +1420,36 @@ test.describe('Roym Hub', () => {
     await chooseHubLanguage(page, 'en');
   });
 
+  test('no translate action with a v1 node', async ({ page }) => {
+    await page.goto(HUB_URL);
+    await page.waitForLoadState('networkidle');
+    await loginWithDelegatedKey(page);
+    await ensureSynOrgWithListing(page, 'No translation seed');
+
+    // The node has no translation engine, so it says it can translate into nothing.
+    const targets = await rpcCall(page, 'translation.targets', {});
+    expect(targets.result).toEqual({ targets: [] });
+
+    // A listing hit on screen, and the search box.
+    await removeAllSources(page);
+    await page.locator('.add-source-did').fill(DIRECTORY_DID!);
+    await page.getByRole('button', { name: 'Add directory' }).click();
+    await expect(page.locator('.add-source-status')).toContainText('Added', { timeout: 15_000 });
+    await page.getByRole('button', { name: 'Search', exact: true }).click();
+    await expect(page.locator('.search-hit').first()).toBeVisible({ timeout: 20_000 });
+    await expect(page.locator('.record-text-translate')).toHaveCount(0);
+    await expect(page.locator('.search-translate')).toHaveCount(0);
+    await expect(page.locator('.search-translate-target')).toHaveCount(0);
+
+    // A chat message on screen.
+    await openMessages(page);
+    await openConversation(page, 'did:key:z6MkhubE2ePeerAddressNeverAnswers00000000000050');
+    const body = `no translate action ${Date.now()}`;
+    await sendMessage(page, body);
+    await expect(threadMessage(page, body)).toBeVisible({ timeout: 15_000 });
+    await expect(page.locator('.message-translate')).toHaveCount(0);
+  });
+
   test('a Latin search finds a Devanagari listing, and the other way', async ({ page }) => {
     await page.goto(HUB_URL);
     await page.waitForLoadState('networkidle');
