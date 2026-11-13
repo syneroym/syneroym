@@ -1479,7 +1479,18 @@ test.describe('Roym Hub', () => {
     const searchInput = page.locator('.contacts-search-input');
     const searchBtn = page.locator('.contacts-search-button');
 
+    // Show the whole list again and wait for it, so each search starts from a list that can
+    // only change when the Hub gets the answer.
+    const showAll = async () => {
+      await searchInput.fill('');
+      await searchBtn.click();
+      await expect(screen).toContainText(other, { timeout: 15_000 });
+      await expect(screen).toContainText(deva);
+      await expect(screen).toContainText(latn);
+    };
+
     for (const query of ['ram', 'राम']) {
+      await showAll();
       await searchInput.fill(query);
       await searchBtn.click();
       await expect(screen).not.toContainText(other, { timeout: 15_000 });
@@ -1487,11 +1498,7 @@ test.describe('Roym Hub', () => {
       await expect(screen).toContainText(latn);
     }
 
-    await searchInput.fill('');
-    await searchBtn.click();
-    await expect(screen).toContainText(other, { timeout: 15_000 });
-    await expect(screen).toContainText(deva);
-    await expect(screen).toContainText(latn);
+    await showAll();
 
     // With no search, the names in the Hub's own script (Latin in English) come first.
     const text = await screen.innerText();
