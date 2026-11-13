@@ -700,7 +700,7 @@ there are no earlier R items to confirm. I changed no code. I ran
 `#[ignore]` timing test) and a throw-away probe crate in the scratch folder
 (not committed) that prints `search_key` and `query_terms` for given inputs.
 
-**Summary:** 0 blocker, 1 major, 6 minor (R1 to R7). After the fix round of 2026-11-13 (Claude Sonnet 5.5): 7 Fixed, 0 Open, 0 Rejected.
+**Summary:** 0 blocker, 1 major, 6 minor (R1 to R7). After the fix round of 2026-11-13 (Claude Sonnet 5.5): 7 Fixed, 0 Open, 0 Rejected. Code review round 2: 6 confirmed, R4 reopened, 1 new (R8).
 
 ### What was checked and found correct
 
@@ -874,7 +874,19 @@ there are no earlier R items to confirm. I changed no code. I ran
   In story 40, assert the add status against the three message ids as the
   plan says. Give `publishListing` an optional text language and use it for
   the `hi-Latn` listing.
-- *Status:* Fixed (486ae3d3): the contact test adds `Sita <tag>`, checks it is shown first, and after the `ram` and `राम` searches waits until it is gone; names carry the run tag. Story 40 checks the add status with `directoryAddedStatus('hi')` (the three message ids, the note up to its first `{`). `publishListing` takes an optional text language and the cross-script test uses it for the `hi-Latn` listing. Proof: with the Hub sending a blank `text` on a search, the contact test fails (`not.toContainText "Sita …"`); with the fix both changed Hub tests and `mise run demo` (6 passed) pass.
+- *Status:* Open (reopened in code review round 2). The second search in the
+  contact test proves nothing. The loop runs `ram`, then `राम`, with no
+  reset between them. After `ram`, the list already lacks `Sita <tag>` and
+  shows both `Ram` names. So for `राम`, `not.toContainText(other)`,
+  `toContainText(deva)` and `toContainText(latn)` all pass at once on the
+  old list, before the Hub answers (`contacts.ts:47` refills the list only
+  when `contacts.list` returns). A `राम` search that returned every contact,
+  or none, keeps the test green. So the Devanagari-query direction of
+  ML-23 has no e2e proof. *Fix:* before each search, clear the box, click
+  the button and wait until `Sita <tag>` is shown again; then search and
+  wait until it is gone. Or check the row count of `.contacts-screen` after
+  each search. The story 40 and `publishListing` parts below are confirmed.
+  Fix round 1 note: Fixed (486ae3d3): the contact test adds `Sita <tag>`, checks it is shown first, and after the `ram` and `राम` searches waits until it is gone; names carry the run tag. Story 40 checks the add status with `directoryAddedStatus('hi')` (the three message ids, the note up to its first `{`). `publishListing` takes an optional text language and the cross-script test uses it for the `hi-Latn` listing. Proof: with the Hub sending a blank `text` on a search, the contact test fails (`not.toContainText "Sita …"`); with the fix both changed Hub tests and `mise run demo` (6 passed) pass.
 
 #### R5 — minor — change doc close-out is incomplete
 
@@ -932,3 +944,99 @@ there are no earlier R items to confirm. I changed no code. I ran
   the doc comment that the version changes when `search_key`, `query_terms`
   or the joined key gives a different output.
 - *Status:* Fixed (619245a1): `use syneroym_text_lang::fts;` in the two data_db test files, `use std::env;` in the spelling test, `text_index` imported in `group.rs`. The `SEARCH_KEY_VERSION` doc names `search_key`, `query_terms` and the joined key (`fts::index_keys`).
+
+## Code review round 2 (check of the round 1 fixes) — Claude Opus 5.5, 2026-11-13
+
+Checked on `feat/m08b-b4b-search-scripts` at `c9579c1f` (PR #361, draft), in
+the main checkout (not a worktree). `git pull` said "Already up to date". I
+read each fix commit (`84ddfd3e`, `1e2aa759`, `39e4f701`, `486ae3d3`,
+`ee7d71aa`, `dd42c42d`, `619245a1`, `1250aff5`, `c9579c1f`) against its R
+item. I changed no code. I ran `cargo nextest run -p syneroym-text-lang -p
+syneroym-conversation` (234 passed, 2 skipped, the two `#[ignore]`
+measurements) and the throw-away probe crate in the scratch folder (not
+committed) that prints `search_key` and `query_terms`.
+
+**Summary:** 6 confirmed fixed (R1, R2, R3, R5, R6, R7). R4 is partly fixed
+and is open again. 1 new item (R8, minor). 2 open (R4, R8). No blocker, no
+major open.
+
+### What was checked
+
+- **CI.** `gh pr checks 361`: run 43396104765 on `c9579c1f` (the head) is
+  green. Lints, licenses & checks, Test 1/6 to 6/6, Playwright E2E and the
+  CLA check pass. Benchmarks and Code Coverage are skipped, as usual for a
+  PR. The fix commits after round 1 are all inside this run.
+- **Probe on `c9579c1f`.** `100` → `100`, `谢谢` → `谢谢` (a short term),
+  `hello` → `helo`, `coffee` → `kofi`, `ஃபோன்` → `fon`, `ஃப்ரிட்ஜ்` →
+  `fritj`, `phone` → `fone`.
+
+### Confirmed fixed
+
+- **R1.** Rule 11 (`fold.rs:94`) now collapses only `a` to `z` and the `ch`
+  marker. No other rule removes a doubled char, so this is the only place.
+  The new test `search_key_keeps_doubled_digits_and_unmapped_letters` covers
+  ASCII and Devanagari digits, Chinese and Bengali letters, and checks that
+  `hello` still gives `helo`. The chat test now asserts that `100%` is the
+  long term `100`. This matches the plan sentence "the fold changes only the
+  letters `a` to `z`" (D-B4b-5). The golden spelling file did not change, so
+  no owner-checked pair moved. The key version stays 2, which is right: 2 is
+  new in this unreleased slice.
+- **R2.** `parse_aytham_pa` (`tamil.rs:243`) reads `ஃ` + `ப` as one unit,
+  `f` with the vowel sign or pulli of `ப`. `stop_by_position` always writes
+  one char for `ப` (`p` or `b`), so `skip(1)` drops exactly that char.
+  `அஃப` → `afa`, `ஃபோன்` → `fon`. The three `fridge` rows in the golden file
+  change from `fpritj` to `fritj` and still do not meet; the floors hold. The
+  comment next to the new test is wrong in one direction; see R8.
+- **R3.** `search_query` (`search.rs:52`) builds the one statement and its
+  values for the three shapes, and `search` runs it with one row loop. The
+  plan test calls `search_query` itself, so it can no longer check a copy.
+  It checks word only, trigram only and both, with and without `ANALYZE`.
+  D-B4b-15 records the plain `IN` form.
+- **R5.** The bullet is fixed. Each B4b decision in the change doc carries its
+  D-B4b ids, and I checked them against the plan: D-B4b-2 to D-B4b-8 and
+  D-B4b-10 to D-B4b-21 point to the right decisions. The contacts and Hub
+  decisions are in a new list under "Names in any script". The checklist
+  item is ticked. The change doc now also states the R1 and R2 results.
+- **R6.** `measure_rebuild_of_10000_messages_on_open` writes 10,000
+  messages, sets the key version to 1, reopens and times the open. It also
+  checks that a search after the rebuild finds 500 rows (the limit). The PR
+  text gives both numbers (64 KiB key 72 ms, rebuild 671 ms) and the test
+  counts.
+- **R7.** All the listed inline paths are gone (`fts::index_keys`,
+  `env::var`, `text_index::sync`). The `SEARCH_KEY_VERSION` doc comment names
+  `search_key`, `query_terms` and the joined key. A grep finds no other
+  `syneroym_text_lang::fts::`, `std::env::var` or `store::text_index::`
+  path in the touched crates.
+- **`1250aff5`.** The duplication ceiling goes from 7.2 to 7.1, as the
+  ratchet asks after R3 removed the copies. CI's lint job passes with it.
+
+### Reopened
+
+- **R4 — partly fixed.** The story 40 part and the `publishListing` part of
+  `486ae3d3` are right. The contact test is right for the first search
+  (`ram`) only. See the status line of R4 for the detail.
+
+### Findings
+
+#### R8 — minor — the new Tamil test says `phone` finds `ஃபோன்`; it does not
+
+- *Where:* `crates/text_lang/src/search_key/tests/tamil.rs:85` (the comment
+  above the `contains` assert in `tamil_aytham`); the R2 status line in
+  round 1, which says the same.
+- *Problem:* the comment says "A search for `phone` meets it: the long term
+  `fon` is inside `fone`." The long term `fon` comes from the query
+  `ஃபோன்`, not from `phone`. A query `phone` gives the long term `fone`
+  (probe), and `fone` is not inside the key `fon` of a message `ஃபோன்`. So
+  only one direction meets: a search for `ஃபோன்` finds a text with `phone`,
+  and a search for `phone` does not find a text with `ஃபோன்`. The assert
+  itself is true; only the sentence is reversed. This is the Q1 decision at
+  work (the fold does not touch vowel quality or a final `e`), not a code
+  bug.
+- *Failure case:* a reader trusts the comment and believes an English query
+  finds the Tamil word. A later change that "keeps" this property, or a bug
+  report about it, starts from a wrong fact.
+- *Fix:* write the comment for the direction the assert checks: "A search
+  for `ஃபோன்` (long term `fon`) finds a text with `phone` (key `fone`). A
+  search for `phone` does not find `ஃபோன்`; the fold keeps the final `e`
+  (Q1)." Correct the R2 status line in the same way. No code change.
+- *Status:* Open
