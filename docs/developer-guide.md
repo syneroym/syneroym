@@ -1787,6 +1787,8 @@ The Hub picks its language from the saved choice (`localStorage` key `roym-hub-l
 
 **Chat languages.** Chat messages carry 0 to 3 language tags, main language first. The language list in each chat box is drawn using `languageList` (`src/i18n/language_list.ts`). Chat message text is drawn using `messageText(body, languages, tag = "span")` from `src/chat/message_text.ts`, which returns the nodes to append. It sets the HTML `lang` attribute to the main language, or `lang=""` and a note when the message has no tags. Every new place that draws a chat message uses `messageText`.
 
+**Translation.** `src/translation/translation.ts` asks the node once after sign-in which languages it can translate into (`translation.targets`, with a 3-second limit that gives an empty list). The Hub draws a translate action only when `targetFor(languages)` finds a language in that list that the reader reads and the text is not already in. `recordText(host, versions, draw, texts)` and `messageText(body, languages, tag, { translatable: true })` offer the action. A record has at most one machine version, and its element says what is on screen in `data-shown-lang` and `data-shown-via` (`original`, `author` or `machine`), so the Accept button of a quote can sign what the person read. A machine translation is labelled with its engine and is never signed. A node with no engine draws none of this. Unit tests use a fake engine from `src/testing/translation.ts`.
+
 ##### Add a Roym method
 
 Every Roym service has a method table in its `api.rs`. `web` lists its own `session.whoami`, `translation.targets` and `translation.translate`, and forwards every other method, with its `params` unchanged, to the service that owns it. Methods use typed input and output structs in Rust:
