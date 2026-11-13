@@ -692,3 +692,157 @@ they equal the numbers in `task.md` and the PR (web 310,033, transaction
   legal weight) open". At close-out, after the owner has read them, put the
   date in the status row (as B3a did), not in the `hi.ftl` header.
 - *Status:* Open
+
+## Code review round 2 (independent pass) — Claude Opus 5.5, 2026-11-13
+
+Reviewed `feat/m08b-b5-translation` at `6fa0586f` (the code is the same as at
+`1327538c`; `6fa0586f` adds only round 1). Main checkout, `git pull` said
+"Already up to date". The owner asked for this round because round 1 was run
+by Claude Sonnet 5.5, the tool that implemented B5. This round is by a
+different tool, so the cross-tool rule of
+[session-strategy.md](../../session-strategy.md) section 6 is now met.
+
+**Summary:** 0 blocker, 0 major, 3 new minor (R7 to R9). The round 1 items
+were not fixed (no fix commit exists); I re-checked each against the code and
+all six stand, with a note on R3. **9 open: R1 to R9.**
+
+Limits: CI on the PR is green (`gh pr checks 362`, unchanged since round 1).
+I did not run the full suite. To prove R9 I ran one throw-away Vitest file
+(written, run and deleted; the tree is clean afterwards). I changed no code.
+
+### Round 1 items checked
+
+- **R1 (Open, confirmed).** `system-architecture.md:1147` and `:1156` are as
+  round 1 says. `:1460` is still true.
+- **R2 (Open, confirmed).** The walk test in `records/record_text.test.ts:262`
+  to `:287` even locks the behaviour in: the reader reads `en`, the English
+  author translation is shown, Translate into Tamil, and after that the
+  switch goes only between the Hindi original and the Tamil machine version.
+  The English version the reader reads is not reachable again. The fix must
+  change this test too. See also R8, which changes what Translate starts from.
+- **R3 (Open, confirmed, with a note).** The chat half is vacuous as round 1
+  says (an outgoing message never gets a button). For the hit half: the
+  Playwright browser reads `en`, so the only possible target is `en`. The
+  listings on screen at that point are the `en` seed listing and the Hindi
+  listing with an English author translation from the test at `:1360`. Neither
+  would get an action from an engine with target `en`. So the hit assertion
+  also cannot fail. Only the `translation.targets` call and the two search-box
+  counts prove anything.
+- **R4, R5 (Open, confirmed).** No test runs the three other refusal kinds or
+  the loop; no test repeats `agreement.accept` with bad values or calls
+  `invoke` with `translation.*`.
+- **R6 (Open, confirmed).**
+
+### What else was checked and found correct
+
+On top of round 1's list:
+
+- The four golden shape files gain exactly the two keys per receipt payload
+  (`"viewed_lang": "string"`, `"viewed_via_mt": "boolean"`), and the new
+  `translation_targets.json` is `{"targets": []}`. `samples.json` has the two
+  keys in the receipt sample. `wire_words.rs` builds its receipt with
+  `terms(place).lang` and `false`.
+- `sameLanguage` compares language and maximized script, so `hi-Latn` text is
+  not skipped for a `hi` target: a Hinglish message can be offered "Translate
+  into Hindi". That is a reasonable reading of ML-27.
+- `loadTargets`: `Promise.race` subscribes to both promises, so a `call` that
+  rejects after the timeout is not an unhandled rejection; the timer is
+  cleared in `finally`.
+- `HostState` has inherent functions with the same names as the `Host` trait
+  methods (`detect_language`, `translate`). `Self::translate(..)` inside the
+  trait impl resolves to the inherent function (inherent items win, and the
+  signatures differ), so there is no recursion.
+- Every `AgreementReceiptPayload` verify path goes through
+  `verify_agreement_receipt`, which calls `validate` (receive, `agreement.verify`,
+  two backup paths). The MT-of-the-original rule therefore holds on receipt too.
+
+### New findings
+
+#### R7 — Every feed event in the open chat or group redraws the thread and drops each machine translation and an open Accept warning (minor)
+
+- **Where:** `crates/roym_web/ui/src/screens/messages.ts:235` to `:260`
+  (`onFeed` calls `activeFillHistory()` for any event on the open
+  conversation) and `:402` (`fillHistory` rebuilds every message and card);
+  the same in `screens/groups.ts:701` to `:716` (`activeGroupReload()`).
+  Backlog row "A machine translation is not kept; a reload translates again".
+- **Problem:** A machine version lives only in the DOM of the card or the
+  message (`recordText` keeps `all` in a closure; `messageText` appends a span).
+  Any event on the open conversation (a new incoming message, a delivery state
+  change of a sent message, a card filed by sync) redraws the whole thread. The
+  translated text, the `machine` state of the quote and an open
+  `.accept-mt-box` all disappear. The backlog row speaks only of a reload,
+  which hides how often this happens: in a live chat it is every few seconds.
+- **Failure case:** With an engine, Bob translates Alice's message. Alice sends
+  the next message, the thread redraws, and the translation is gone; Bob must
+  press Translate again (another engine call, which ADR-0029 says may cost
+  money). The same on a quote: Bob reads the machine version, a delivery event
+  redraws the card, it shows the original again, and his open MT warning box
+  vanishes before he confirms.
+- **Fix:** Keep machine versions for the life of the page in the translation
+  module, keyed by `(message_id or record_id, target)`. `messageText` and
+  `recordText` take the key, reuse a kept result without a call, and
+  `recordText` shows it again if it was on screen. Test: draw a message, translate,
+  draw it again with the same key, and assert one `translation.translate`
+  call and the translation present. If this is left for M9A, change the
+  backlog row to say "a redraw of the thread (every new event in the open
+  conversation) or a reload translates again", so the cost is visible.
+- *Status:* Open
+
+#### R8 — Translate on a quote starts from the version on screen, so a machine version can be a translation of the author's translation, not of the text that binds (minor)
+
+- **Where:** `crates/roym_web/ui/src/records/record_text.ts:175` (`const shown
+  = all[currentIdx]`, then `texts.get(shown.fields)` and `shown.lang`);
+  D-B5-7 ("Click: `translateTexts(texts.get(shown.fields), shown.lang || null,
+  target)`"); the walk test at `record_text.test.ts:277` to `:279` (Tamil made
+  from "Plumber", the English author translation).
+- **Problem:** When the best version is an author translation, Translate sends
+  that translation to the engine. The result is two translations away from
+  the original. For a quote this is the agreement review hook point, where the
+  change doc says the original binds and ML-19 warns about exactly that text.
+  The machine note says only "Machine translation into Tamil by X", so the
+  person cannot tell that it was made from the author's English version. The
+  plan wrote it this way and no review caught it, so it is a plan gap rather
+  than an implementation error.
+- **Failure case:** Quote original `hi`, author translation `en`, reader reads
+  `en` and `ta`, engine target `ta`. Bob translates into Tamil, reads it,
+  accepts. His half says `viewed_lang: "ta"`, `viewed_via_mt: true`. The Tamil
+  text came from the English translation, so any error in the author's English
+  is carried into what Bob read, and nothing on screen or in the record shows it.
+- **Fix:** Always translate the original: `texts.get(all[0].fields)` with
+  `all[0].lang` as the source. This also makes R2 simpler (the machine version is
+  then a third view of the original, and the switch can cycle `O`, `A`, `M`).
+  Change D-B5-7 in the change doc ("Decided 2026-11-13, translation interface")
+  and the walk test (`T:नल वाला`, source `hi`). If the owner prefers the current
+  behaviour, record it as a decision there instead and make the machine note
+  name the source language.
+- *Status:* Open
+
+#### R9 — Every translation refusal is shown as "Translation is not available", nested inside "Could not translate", also for `too-long` and `unsupported-pair` (minor)
+
+- **Where:** `crates/roym_web/ui/src/dom.ts:22` (`[-32020, messageId("error-translation")]`),
+  `i18n/en.ftl` and `hi.ftl` (`error-translation`, `translation-failed`), and
+  the three callers that wrap it: `record_text.ts` (`t("translation-failed",
+  { detail: errText(err) })`), `chat/message_text.ts`, `screens/directory.ts`.
+- **Problem:** `errText` maps every `-32020` to `error-translation` ("Translation
+  is not available. { $detail }") and ignores `data.kind`. The callers then put
+  that inside `translation-failed` ("Could not translate. { $detail }"). Proved
+  with a throw-away test (a `too-long` refusal on a chat message):
+  - English: `Could not translate. Translation is not available. text too long for the engine`
+  - Hindi: `अनुवाद नहीं हो सका। विवरण: अनुवाद उपलब्ध नहीं है। विवरण: text too long for the engine`
+
+  For `too-long` and `unsupported-pair` "not available" is false: the engine is
+  there. The Hindi line has two `विवरण:` labels. The tests only check
+  `toContain("Could not translate")`, so they pass.
+- **Failure case:** With an engine, a person who translates a long quote is
+  told translation is not available, and tries again or gives up, when the real
+  cause is the length (which they could fix by translating less).
+- **Fix:** Show the refusal by `data.kind`: four messages
+  (`translation-unavailable`, `translation-unsupported-pair` with the two
+  language names, `translation-too-long`, `translation-engine-failed` with the
+  detail), chosen in one helper in `translation.ts` and drawn directly, not
+  wrapped in `translation-failed`. Keep `error-translation` for other places
+  that call `errText`, worded so it is true for all kinds ("The translation
+  service refused. { $detail }"). Add one test per kind with the exact text in
+  English, and the Hindi sweep for the four. The new Hindi text joins the owner
+  review of R6.
+- *Status:* Open
