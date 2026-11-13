@@ -1098,6 +1098,12 @@ that depend on an owner answer say so.
     `CROSS JOIN` order: `FROM (SELECT rowid AS r FROM messages_tri WHERE …)
     t CROSS JOIN messages m ON m.rowid = t.r`, which fixes the order. Write
     which form you used into this plan.
+  - **Form used:** the plain `m.rowid IN (SELECT rowid FROM <table> WHERE
+    <table> MATCH ?)` form, no `CROSS JOIN` needed. One function,
+    `search_query`, builds the statement for the three shapes (word only,
+    trigram only, both). `search` runs it, and the plan test runs
+    `EXPLAIN QUERY PLAN` on the same text for all three shapes, with and
+    without `ANALYZE`.
 
 - **D-B4b-16. The limits of chat search.** `host_impl.rs:411` checks, in
   this order, before `spawn_blocking`: more than `fts::MAX_SEARCH_BYTES`

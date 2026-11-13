@@ -1,10 +1,11 @@
-use rusqlite::params;
+use rusqlite::params_from_iter;
 use syneroym_rpc::Admission;
 
 use super::{open_at, store, store_in_dir};
 use crate::store::{
     ConversationConfig, ConversationStore,
     message::{M_MESSAGE_COLUMNS, MESSAGE_COLUMNS},
+    search::search_query,
     text_index,
 };
 
@@ -114,28 +115,31 @@ fn short_terms_use_the_word_table_and_never_scan() {
 
     let conn = s.conn().lock().unwrap();
     let check_plan = |label: &str| {
-        let sql = format!(
-            "EXPLAIN QUERY PLAN SELECT {M_MESSAGE_COLUMNS} FROM messages m WHERE m.rowid IN \
-             (SELECT rowid FROM messages_word WHERE messages_word MATCH ?1) AND m.system = 0 AND \
-             (m.outgoing = 1 OR m.admission = 'accepted') AND m.deleted_at IS NULL AND (?2 IS \
-             NULL OR m.conversation_id = ?2) ORDER BY m.sender_timestamp DESC, m.author DESC, \
-             m.id DESC LIMIT ?3"
-        );
-        let mut stmt = conn.prepare(&sql).unwrap();
-        let plan: Vec<String> = stmt
-            .query_map(params!["ek*", conv, 10], |r| r.get::<_, String>(3))
-            .unwrap()
-            .map(Result::unwrap)
-            .collect();
-        let full = plan.join("\n");
-        assert!(
-            !full.lines().any(|l| l.contains("SCAN m ") || l.ends_with("SCAN m")),
-            "[{label}] plan must never scan m table, got:\n{full}"
-        );
-        assert!(
-            full.contains("SEARCH m USING INTEGER PRIMARY KEY"),
-            "[{label}] plan must use rowid search, got:\n{full}"
-        );
+        // The three shapes of the statement `search` runs: word only, trigram
+        // only, and both.
+        let shapes = [
+            (None, Some("ek*".to_string())),
+            (Some("\"hello\"".to_string()), None),
+            (Some("\"hello\"".to_string()), Some("ek*".to_string())),
+        ];
+        for (tri, word) in shapes {
+            let (sql, values) = search_query(tri.clone(), word.clone(), Some(&conv), 10);
+            let mut stmt = conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+            let plan: Vec<String> = stmt
+                .query_map(params_from_iter(values), |r| r.get::<_, String>(3))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect();
+            let full = plan.join("\n");
+            assert!(
+                !full.lines().any(|l| l.contains("SCAN m ") || l.ends_with("SCAN m")),
+                "[{label} {tri:?} {word:?}] plan must never scan m table, got:\n{full}"
+            );
+            assert!(
+                full.contains("SEARCH m USING INTEGER PRIMARY KEY"),
+                "[{label} {tri:?} {word:?}] plan must use rowid search, got:\n{full}"
+            );
+        }
     };
 
     check_plan("without ANALYZE");
