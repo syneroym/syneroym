@@ -97,7 +97,12 @@ impl ConversationStore {
     }
 
     fn merge_and_truncate(conn: &Connection) -> bool {
-        if conn.execute_batch("INSERT INTO messages_fts(messages_fts) VALUES('optimize');").is_err()
+        if conn
+            .execute_batch(
+                "INSERT INTO messages_tri(messages_tri) VALUES('optimize'); INSERT INTO \
+                 messages_word(messages_word) VALUES('optimize');",
+            )
+            .is_err()
         {
             return true;
         }

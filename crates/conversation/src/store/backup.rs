@@ -438,10 +438,7 @@ impl ConversationStore {
                 && let Ok(body_str) = str::from_utf8(&m.body)
             {
                 let rowid = tx.last_insert_rowid();
-                let _ = tx.execute(
-                    "INSERT OR IGNORE INTO messages_fts (rowid, body) VALUES (?1, ?2)",
-                    params![rowid, body_str],
-                );
+                let _ = super::text_index::sync(tx, rowid, body_str);
             }
         }
         Ok(count)

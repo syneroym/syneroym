@@ -24,6 +24,14 @@ pub(crate) const MESSAGE_COLUMNS: &str =
      admission_changed_at, notify_attempts, next_notify_at, report_refusal, refused, deleted_at, \
      restored, visible_seq, languages";
 
+/// Every column `row_to_message` reads, prefixed with `m.`.
+pub(crate) const M_MESSAGE_COLUMNS: &str =
+    "m.id, m.conversation_id, m.author, m.sender_timestamp, m.received_at, m.content_type, \
+     m.body, m.signature, m.outgoing, m.verified, m.state, m.last_error, m.system, m.entry_id, \
+     m.admission, m.admission_reason, m.admission_changed_at, m.notify_attempts, \
+     m.next_notify_at, m.report_refusal, m.refused, m.deleted_at, m.restored, m.visible_seq, \
+     m.languages";
+
 pub(crate) fn is_searchable_content_type(ct: &str) -> bool {
     ct.starts_with("text/") || ct == "application/json" || ct.ends_with("+json")
 }
@@ -125,10 +133,7 @@ impl ConversationStore {
                 && is_searchable_content_type(content_type)
                 && let Ok(body_str) = str::from_utf8(body)
             {
-                tx.execute(
-                    "INSERT INTO messages_fts (rowid, body) VALUES (?1, ?2)",
-                    params![rowid, body_str],
-                )?;
+                super::text_index::sync(tx, rowid, body_str)?;
             }
 
             if !system {
@@ -181,10 +186,7 @@ impl ConversationStore {
         if is_searchable_content_type(content_type)
             && let Ok(body_str) = str::from_utf8(body)
         {
-            let _ = conn.execute(
-                "INSERT INTO messages_fts (rowid, body) VALUES (?1, ?2)",
-                params![rowid, body_str],
-            );
+            super::text_index::sync(&conn, rowid, body_str)?;
         }
         Self::touch_conversation(&conn, conversation_id, now_ms)?;
         Ok(())
@@ -323,10 +325,7 @@ impl ConversationStore {
                 if is_searchable_content_type(&ct)
                     && let Ok(body_str) = str::from_utf8(&body)
                 {
-                    conn.execute(
-                        "INSERT OR IGNORE INTO messages_fts (rowid, body) VALUES (?1, ?2)",
-                        params![rowid, body_str],
-                    )?;
+                    super::text_index::sync(conn, rowid, body_str)?;
                 }
                 Ok(true)
             }
@@ -347,18 +346,7 @@ impl ConversationStore {
                     )
                     .unwrap_or(false);
                 let report = if is_group { false } else { drop_ans.report };
-                // Only an accepted row is in the index. An FTS5 'delete' for
-                // text that was never indexed corrupts an external-content table.
-                if prior == "accepted"
-                    && is_searchable_content_type(&ct)
-                    && let Ok(body_str) = str::from_utf8(&body)
-                {
-                    conn.execute(
-                        "INSERT INTO messages_fts (messages_fts, rowid, body) VALUES ('delete', \
-                         ?1, ?2)",
-                        params![rowid, body_str],
-                    )?;
-                }
+                super::text_index::remove(conn, rowid)?;
                 conn.execute(
                     "UPDATE messages SET admission = 'dropped', admission_reason = ?1, \
                      report_refusal = ?2, admission_changed_at = ?3, body = zeroblob(0) WHERE id \
@@ -393,28 +381,17 @@ impl ConversationStore {
         message_id: &str,
         now_ms: i64,
     ) -> Result<Option<bool>> {
-        let info: Option<(i64, String, Vec<u8>, String, i64, String)> = conn
+        let info: Option<(i64, String, i64, String)> = conn
             .query_row(
-                "SELECT rowid, content_type, body, admission, outgoing, state FROM messages WHERE \
-                 id = ?1 AND conversation_id = ?2",
+                "SELECT rowid, admission, outgoing, state FROM messages WHERE id = ?1 AND \
+                 conversation_id = ?2",
                 params![message_id, conversation_id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
             )
             .optional()?;
-        let Some((rowid, ct, body, admission, outgoing, state)) = info else { return Ok(None) };
+        let Some((rowid, admission, outgoing, state)) = info else { return Ok(None) };
         let visible = outgoing != 0 || admission == "accepted";
-        // FTS delete only for rows that were indexed (accepted, non-empty body).
-        // Issuing 'delete' for a never-indexed row corrupts the FTS table.
-        if admission == "accepted"
-            && !body.is_empty()
-            && is_searchable_content_type(&ct)
-            && let Ok(body_str) = str::from_utf8(&body)
-        {
-            let _ = conn.execute(
-                "INSERT INTO messages_fts (messages_fts, rowid, body) VALUES ('delete', ?1, ?2)",
-                params![rowid, body_str],
-            );
-        }
+        super::text_index::remove(conn, rowid)?;
         if outgoing != 0 && matches!(state.as_str(), "pending" | "deposited") {
             let _ = conn.execute(
                 "DELETE FROM outbound_envelopes WHERE message_id = ?1",

@@ -425,10 +425,7 @@ impl ConversationService {
             && let Ok(body_str) = str::from_utf8(body)
         {
             let rowid = tx.last_insert_rowid();
-            tx.execute(
-                "INSERT INTO messages_fts (rowid, body) VALUES (?1, ?2)",
-                rusqlite::params![rowid, body_str],
-            )?;
+            store::text_index::sync(tx, rowid, body_str)?;
         }
 
         for m in members {

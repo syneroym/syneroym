@@ -748,3 +748,4 @@ mod backup_roundtrip;
 mod deposit;
 mod scrub;
 mod search_and_delete;
+mod search_keys;

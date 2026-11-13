@@ -169,3 +169,37 @@ async fn scenario_233_directory_refuses_more_than_16_words_parity() {
         "expected 'needs at least one word', got {sw_punct}"
     );
 }
+
+#[tokio::test]
+async fn scenario_235_chat_search_short_and_cross_script_parity() {
+    let h = harness().await;
+    let conv_id = open_conv(&h, "did:key:zPeer235").await;
+
+    both_rpc(&h, "conversation.send", json!({ "conversation": conv_id, "body": "ek do teen" }))
+        .await;
+
+    both_rpc(&h, "conversation.send", json!({ "conversation": conv_id, "body": "एक बात" })).await;
+
+    // Search for "ek" (short term) -> both messages match
+    let (mut sw_ek, mut sn_ek) =
+        both_rpc(&h, "conversation.search", json!({ "query": "ek" })).await;
+    strip_volatile(&mut sw_ek);
+    strip_volatile(&mut sn_ek);
+    normalize_message_ids(&mut sw_ek);
+    normalize_message_ids(&mut sn_ek);
+    assert_eq!(sw_ek, sn_ek);
+    let matches_ek = sw_ek["result"]["matches"].as_array().unwrap();
+    assert_eq!(matches_ek.len(), 2);
+
+    // Search for "बात" (cross-script long term) -> only second message matches
+    let (mut sw_baat, mut sn_baat) =
+        both_rpc(&h, "conversation.search", json!({ "query": "बात" })).await;
+    strip_volatile(&mut sw_baat);
+    strip_volatile(&mut sn_baat);
+    normalize_message_ids(&mut sw_baat);
+    normalize_message_ids(&mut sn_baat);
+    assert_eq!(sw_baat, sn_baat);
+    let matches_baat = sw_baat["result"]["matches"].as_array().unwrap();
+    assert_eq!(matches_baat.len(), 1);
+    assert_eq!(matches_baat[0]["body"], "एक बात");
+}
