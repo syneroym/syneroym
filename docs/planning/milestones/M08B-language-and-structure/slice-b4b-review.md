@@ -686,3 +686,249 @@ author, so it is not an independent review.
 
 All 19 items (P1 to P19) are closed. The owner questions Q1 to Q8 and the
 owner check of `spelling-pairs.tsv` are still open.
+
+## Code review round 1 — Claude Opus 5.5, 2026-11-13
+
+Reviewed `git diff origin/main...HEAD` on `feat/m08b-b4b-search-scripts` at
+`640bd8bc` (PR #361, draft), in the main checkout (not a worktree). `git pull`
+said "Already up to date". The code was written by Gemini 3.8 Flash. The
+prompt lists one change doc,
+[roym-multilingual](../../changes/roym-multilingual/change.md). Every B4b
+decision and deviation belongs there. This is the first code review round, so
+there are no earlier R items to confirm. I changed no code. I ran
+`cargo nextest run -p syneroym-text-lang` (38 passed, 1 skipped, the
+`#[ignore]` timing test) and a throw-away probe crate in the scratch folder
+(not committed) that prints `search_key` and `query_terms` for given inputs.
+
+**Summary:** 0 blocker, 1 major, 6 minor (R1 to R7). 7 open.
+
+### What was checked and found correct
+
+- **CI.** `gh pr checks 361` on `640bd8bc`, at the time of this review:
+  Lints, licenses & checks, Test 3/6, 4/6, 5/6, Playwright E2E and the CLA
+  check pass. Test 1/6, 2/6 and 6/6 were still running. So CI is not yet
+  proof that the full suite passes; the fix round must see it green.
+- **The key (D-B4b-2).** `search_key` lowers, applies NFC, removes ZWJ and
+  ZWNJ, splits on any char that is not alphanumeric or a mark, splits each
+  word into script runs, converts each run, runs Tamil sandhi over the word
+  list, then folds each word. `latin_base` is NFD, drop `Mn`, NFC. A mark or
+  digit joins the run before it. `query_terms` splits the key and drops
+  duplicates. `SEARCH_KEY_VERSION` is 2. The signature is unchanged.
+- **Tables (D-B4b-3, D-B4b-4).** Every Devanagari and Tamil value in the
+  planned tables is there, with only `a` to `z`; the nukta forms read base +
+  U+093C; `ऩ ऱ ऴ`, avagraha, `ॐ`, digits and kept letters behave as planned.
+  Both schwa rules, the five-row Tamil stop table, `ற்ற`, `ன்ற`, the `-ey`
+  end, the loan clusters and sandhi match the plan, except `ஃப` (R2).
+- **Fold (D-B4b-5).** The rules run in the planned order and to a fixed
+  point. `ch` is held as one unit through rules 6 to 9. Rule 11 is wrong for
+  chars outside `a` to `z` (R1).
+- **`fts` module (D-B4b-8).** The two option strings are byte for byte the
+  old `TRI_TOKENIZE` and `WORD_TOKENIZE`; the old names are gone from
+  `data_db`. `index_keys`, `match_exprs`, `MAX_SEARCH_TERMS` and
+  `MAX_SEARCH_BYTES` match the plan. No `rusqlite` dependency.
+- **Spelling test (D-B4b-9).** The crate copy of `spelling-pairs.tsv` is
+  identical to the planning copy (`cmp`). The match rule in the test is the
+  real one (long term in `joined`, short term as a word prefix). The golden
+  file is written only with `UPDATE_SPELLING_RESULTS=1`. The floor holds:
+  from `spelling-results.tsv`, Hindi pairs 166/200 and Tamil 144/200 meet
+  (forward), the same numbers as the plan-time model.
+- **`data_db` (Step 4).** `sync_row` writes `joined` into `_tri` and `words`
+  into `_word`. `text_match.rs` builds both MATCH texts with `match_exprs`;
+  the check order and texts are unchanged.
+- **Directory (D-B4b-10 to D-B4b-13).** All six `search_index` creators call
+  `ensure_search_index`; `ensure_coll` still sends no text fields.
+  `index_text` joins title, summary, categories and every translation's title
+  and summary, raw. The `-32602` ASCII refusal and `normalize_text` are gone.
+  `collect_search_candidates` maps `SchemaViolation` to `-32602` and every
+  other host error to `-32603`. No guest calls `search_key` (component growth
+  at most +2,414 bytes, task.md).
+- **Chat (D-B4b-14 to D-B4b-17).** `messages_fts` is gone from the DDL and is
+  dropped on open; `ensure` rebuilds with the live rule (`system = 0`, not
+  deleted, `admission = 'accepted'`, searchable type, UTF-8 body) when the
+  version differs or the old table exists. All five insert sites call `sync`,
+  both hide paths call `remove` with no guard, and the scrub optimizes both
+  tables. I checked every `INSERT … INTO messages` in the crate: the incoming
+  paths insert `undecided` rows and index only on accept; the withdrawn path
+  inserts a dropped row with no body. The three limits are checked in
+  `host_impl.rs` before `spawn_blocking`, in the planned order with the
+  planned texts. Two `let _ =` calls became `?` (`delete_message_conn` and the
+  test-only insert); a `DELETE … WHERE rowid` of an ordinary table cannot fail
+  in practice, so this is not counted.
+- **Contacts (D-B4b-18).** `ContactsListInput.text` has `#[serde(default)]`;
+  `ensure_contacts` keeps the `favourite` index and adds `display_name`; a
+  blank text sends no filter; `query_all_typed` maps `SchemaViolation` to
+  `-32602`. The contract test checks `text: 5` and an unknown field.
+- **Hub (D-B4b-19 to D-B4b-21).** `scriptOf`, the group order and the cached
+  `numeric` collator match the plan. The contact screen has the input, the
+  `type="button"` button, Enter, the empty message and `refiller`. The add
+  form inputs have class names, and `addContact` uses them. The group member
+  list sorts by the same label it shows. The four messages are in both
+  catalogs.
+- **Parity (section 7.2).** Scenarios 231 to 235 exist in the new file
+  `search_scripts.rs` and compare the full answers of both builds, with exact
+  id sets for the directory. Scenario 231 has the translation listing
+  (`lawn`) and the `एक नल` listing for `ek`. The B4a fixture has the fifth
+  query `nal` and the new expectation.
+- **Living docs and backlog.** Architecture (crate list, chat search, Text
+  Search bullet), requirements, TERMINOLOGY (three terms), developer guide
+  (the `reindex` call is a plain `bash` block, so story 30 does not run it),
+  the integrated spec, the traceability matrix, ADR-0007 (a new dated entry;
+  the old text is not rewritten) and demo.md are updated, and all are in
+  `living-docs-touched`. The four backlog rows of plan section 8 moved to
+  "Recently resolved", `$search` ranking now targets M08F, and the eight new
+  rows exist. No new `TODO`.
+- **Rules.** No planning id in any changed `.rs`, `.ts`, `.ftl` or `.sh`
+  line. CI's file-length, clippy and duplication gates pass. status.md says
+  74 Playwright tests passed; that is B4a's 72 plus the two new tests.
+
+### Findings
+
+#### R1 — major — the fold collapses repeated digits and non-Latin letters, so `100` becomes the short term `10`
+
+- *Where:* `crates/text_lang/src/search_key/fold.rs:92` (rule 11 in
+  `apply_rules_10_and_11`).
+- *Problem:* rule 11 removes a char when the previous char is the same, for
+  every char, not only for `a` to `z`. The plan says the fold changes only
+  the letters `a` to `z` and that digits and other scripts are not changed
+  (D-B4b-5, "Letters outside `a` to `z` … are not changed"; the proof that
+  the loop ends also relies on it).
+- *Failure case:* the probe gives `search_key("100") = "10"`,
+  `search_key("1000") = "10"`, `search_key("9988776655") = "98765"` and
+  `search_key("谢谢") = "谢"`. `query_terms("100")` is the **short** term `10`,
+  so it goes to the word table as a prefix: a directory or chat search for
+  `100` finds `10`, `105`, `10th` and `1000`, and a search for a phone number
+  finds a different number. The test `search_treats_like_characters_as_breaks`
+  (`conversation/src/store/tests/search_and_delete.rs:150`) says `100%`
+  "becomes long term `100`"; it is really the short term `10`, and the test
+  passes only by chance. No test checks the key of a number with a doubled
+  digit.
+- *Fix:* in rule 11, collapse a run only when the char is in `a` to `z` (keep
+  the `ch` marker case as it is). Check the other rules touch only `a` to `z`
+  too. Add rows to `search_key/tests.rs`: `100`, `1000`, `9988776655`, a
+  doubled Devanagari digit `१००`, and a doubled letter of a script with no
+  table (`谢谢` or Bengali) keep their chars. Fix the comment in
+  `search_treats_like_characters_as_breaks` and assert there that
+  `query_terms("100%")` is the long term `100`. The key version stays 2
+  (nothing is released). Re-run `UPDATE_SPELLING_RESULTS=1` only if the
+  golden file changes.
+- *Status:* Open
+
+#### R2 — minor — Tamil `ஃப` gives `fp`, not `f`
+
+- *Where:* `crates/text_lang/src/search_key/tamil.rs:261` to `:267`; the test
+  `crates/text_lang/src/search_key/tests/tamil.rs:83` pins the wrong value.
+- *Problem:* D-B4b-4 says "`ஃ` before `ப` → `f`". The code writes `f` for `ஃ`
+  and then still writes `ப` as `p` (the `else` row of the stop table, because
+  the unit before it has kind `Other`). The test asserts `to_latin("அஃப")` is
+  `afpa`.
+- *Failure case:* `ஃபோன்` (phone) has the key `fpon`; the Latin `phone` has
+  `fone`. They never meet, and no Latin spelling gives `fp`.
+- *Fix:* when `ஃ` is followed by `ப`, write `f` and consume both (with the
+  vowel sign or pulli of `ப`). Change the test to `afa` and add `ஃபோன்` →
+  `fon`, matching `phone`.
+- *Status:* Open
+
+#### R3 — minor — chat search has three copies of one query, and the plan test checks a fourth copy
+
+- *Where:* `crates/conversation/src/store/search.rs:36` to `:80`;
+  `crates/conversation/src/store/tests/search_keys.rs:118`.
+- *Problem:* D-B4b-15 says one query whose `<text clauses>` holds only the
+  clauses that exist, joined by `AND`. The code has three match arms, each
+  with its own copy of the SQL and its own row loop. The `EXPLAIN QUERY PLAN`
+  test writes the SQL a fourth time, and only the word-table shape. So the
+  ML-29 "never scans" test does not test the SQL that `search` runs, and does
+  not test the trigram or the combined shape. The plan also asks to write
+  into the plan which form (plain or `CROSS JOIN`) was used; that is not
+  written.
+- *Failure case:* a later change to the `WHERE` or `ORDER BY` in `search.rs`
+  (for example a new filter that makes SQLite pick `SCAN m`) keeps the plan
+  test green.
+- *Fix:* one private function `search_sql(has_long: bool, has_short: bool) ->
+  String` that builds the clause list and the full SQL, used by `search` with
+  one row loop and positional parameters, and by the plan test for all three
+  shapes, with and without `ANALYZE`. Write "plain `IN` form, no `CROSS JOIN`
+  needed" (or what is used) into D-B4b-15 of the plan.
+- *Status:* Open
+
+#### R4 — minor — two e2e checks prove less than planned
+
+- *Where:* `crates/substrate/tests/e2e/tests/roym-hub.spec.ts:1466` ("contact
+  search finds a name in another script");
+  `crates/substrate/tests/e2e/demo/40-roym-languages.spec.ts:95`.
+- *Problem:* the contact test only checks that the screen contains `राम` and
+  `Ram` after each search. The list already shows both before any search, and
+  `toContainText` passes at once, so the test passes even if the Hub sent no
+  `text` or the service ignored it. Story 40 checks only that
+  `.add-source-status` is not empty, which an error text also satisfies; the
+  plan (D-B4b-22) says to match `directory-added` or the part before `{` of
+  `directory-added-note` / `directory-added-silent`. The cross-script
+  directory test also copies the body of `publishListing` for the `hi-Latn`
+  listing and checks English texts (`'Saved lst_'`, `'Published'`, `'Added'`)
+  instead of extending the helper.
+- *Failure case:* a Hub change that drops `params` from the
+  `contacts.list` call keeps the e2e test green. A story 40 run where the add
+  fails shows a failure only at the search step, with a misleading message.
+- *Fix:* add a third contact with a name that does not match (`Sita <tag>`),
+  and after the `ram` and `राम` searches assert that `.contacts-screen` does
+  not contain it; scope the name checks to rows with the run tag in the DID.
+  In story 40, assert the add status against the three message ids as the
+  plan says. Give `publishListing` an optional text language and use it for
+  the `hi-Latn` listing.
+- *Status:* Open
+
+#### R5 — minor — change doc close-out is incomplete
+
+- *Where:* `docs/planning/changes/roym-multilingual/change.md:411` and
+  `:498`.
+- *Problem:* (a) the new list starts with `- - **Decided 2026-11-13 …`, a
+  broken bullet. (b) The B4a list carries its decision ids (`D-B4a-5`); the
+  B4b list carries none, so a reader cannot match it to the plan. (c) Plan
+  section 3 puts D-B4b-18 to D-B4b-21 (contacts, Hub sort, Hub search, Hub
+  messages) into "Names in any script"; they are in "Search", and "Names in
+  any script" (`:426`) says nothing about `contacts.list` `text` or the Hub
+  sort. (d) The checklist item `:498` "Names in any script: search keys on
+  contacts, collation and grouping in the Hub" is still `[ ]`, though B4b
+  did it.
+- *Failure case:* the milestone close reads "Names in any script" and the
+  checklist and concludes that contact search and collation are not done.
+- *Fix:* fix the bullet; add the D-B4b ids to each decision; move the
+  contacts and Hub decisions to "Names in any script"; tick `:498`.
+- *Status:* Open
+
+#### R6 — minor — two promised measurements are missing from the PR text and the tests
+
+- *Where:* PR #361 description; plan section 7.4 and section 10.
+- *Problem:* section 10 asks the PR text for "the 64 KiB key time from
+  `measure_search_key_64_kib`" and test counts; the PR gives neither number.
+  Section 7.4 asks for one `#[ignore]` measurement of the chat rebuild with
+  10,000 messages, for the PR text; no such test exists
+  (`git grep -n '#\[ignore' crates/conversation` finds nothing). The backlog
+  row "The chat text index is rebuilt on open" says "measure first", and
+  that measurement is the one that was planned.
+- *Failure case:* the owner cannot judge the open-time cost of the first
+  start after the upgrade on a large chat store.
+- *Fix:* add an `#[ignore]` test in `store/tests/search_keys.rs` that builds
+  10,000 messages, sets the key version to 1, reopens and prints the time.
+  Run it and `measure_search_key_64_kib` once, and put both numbers and the
+  test counts into the PR text.
+- *Status:* Open
+
+#### R7 — minor — import rule and one doc comment
+
+- *Where:* `crates/data_db/src/sqlite/text_index/tests/declare.rs:73`, `:85`,
+  `:249`, `:434`, `:435` and `writes.rs:53`
+  (`syneroym_text_lang::fts::index_keys(…)` written inline);
+  `crates/text_lang/src/search_key/tests/spelling.rs:159` (`std::env::var`);
+  `crates/conversation/src/group.rs:428` (`store::text_index::sync`);
+  `crates/text_lang/src/search_key.rs:19`.
+- *Problem:* AGENTS.md "Mandatory Import Cleanup": functions are qualified by
+  their parent module only, with no inline multi-`::` paths. D-B4b-7 says the
+  `SEARCH_KEY_VERSION` doc names `search_key`, `query_terms` and
+  `fts::joined`; it names only `search_key`.
+- *Failure case:* none at run time; a later change to `query_terms` alone may
+  not bump the version.
+- *Fix:* `use syneroym_text_lang::fts;` and `fts::index_keys(…)`;
+  `use std::env;` and `env::var(…)`; import `text_index` in `group.rs`. Say in
+  the doc comment that the version changes when `search_key`, `query_terms`
+  or the joined key gives a different output.
+- *Status:* Open
