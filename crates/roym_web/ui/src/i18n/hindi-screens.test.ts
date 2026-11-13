@@ -16,7 +16,11 @@ import { renderSafety } from "../screens/safety";
 import { renderSetup } from "../screens/setup";
 import { renderSynOrg } from "../screens/synorg";
 import { leftoverLatin } from "../testing/latin-words";
+import { messageText } from "../chat/message_text";
 import { stubRpc } from "../testing/stub-rpc";
+import { fakeEngine, readerReads, unavailableEngine } from "../testing/translation";
+import { setTargetsForTest } from "../translation/translation";
+import { renderCardActions } from "../screens/messages";
 import { activate, t } from "./i18n";
 
 // Draws each screen in Hindi with a fake `/rpc` and fails when an English
@@ -608,6 +612,92 @@ describe("the cards, in Hindi", () => {
       },
     });
     expect(english(el)).toEqual([]);
+  });
+});
+
+describe("translation, in Hindi", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    setTargetsForTest([]);
+  });
+
+  const QUOTE = {
+    counterparty_did: ME,
+    terms: {
+      lang: "en",
+      scope: "Zq-scope",
+      cancellation_terms: "Zq-canc",
+      refund_terms: "Zq-refund",
+      dispute_path: "Zq-disp",
+    },
+  };
+
+  async function machineQuote(): Promise<HTMLElement> {
+    readerReads(["hi"]);
+    setTargetsForTest(["hi"]);
+    stubRpc({
+      "agreement.accept": () => ({}),
+      "translation.translate": fakeEngine([]),
+    });
+    const wrap = document.createElement("div");
+    wrap.appendChild(renderQuote(QUOTE));
+    renderCardActions(
+      wrap,
+      { card_type: "quote", verified: true, record_id: "rec_q", data: QUOTE } as unknown as CardRow,
+      "conv-1",
+      ME,
+      async () => {},
+    );
+    return wrap;
+  }
+
+  it("draws the translate action, the machine note and the warning before acceptance", async () => {
+    const wrap = await machineQuote();
+    expect(wrap.querySelector(".record-text-translate")).not.toBeNull();
+    expect(english(wrap)).toEqual([]);
+
+    wrap.querySelector<HTMLButtonElement>(".record-text-translate")!.click();
+    await vi.waitFor(() => expect(wrap.querySelector(".quote-original-binds")).not.toBeNull());
+    wrap.querySelector<HTMLButtonElement>(".accept-quote-button")!.click();
+    expect(wrap.querySelector(".accept-mt-warning")).not.toBeNull();
+    expect(wrap.querySelector(".accept-mt-confirm")).not.toBeNull();
+    expect(english(wrap)).toEqual([]);
+  });
+
+  it("draws the failure of a translation", async () => {
+    const wrap = await machineQuote();
+    stubRpc({ "translation.translate": unavailableEngine });
+    wrap.querySelector<HTMLButtonElement>(".record-text-translate")!.click();
+    await vi.waitFor(() => expect(wrap.querySelector(".record-text-error")).not.toBeNull());
+    expect(english(wrap)).toEqual([]);
+  });
+
+  it("draws the translate button and the note of a chat message", async () => {
+    readerReads(["hi"]);
+    setTargetsForTest(["hi"]);
+    stubRpc({ "translation.translate": fakeEngine([]) });
+    const host = document.createElement("div");
+    host.append(...messageText("Zq-hello", ["en"], "span", { translatable: true }));
+    expect(host.querySelector(".message-translate")).not.toBeNull();
+    host.querySelector<HTMLButtonElement>(".message-translate")!.click();
+    await vi.waitFor(() => expect(host.querySelector(".message-translation-note")).not.toBeNull());
+    expect(english(host)).toEqual([]);
+  });
+
+  it("draws the language choice and the button of the search box", async () => {
+    readerReads(["hi"]);
+    setTargetsForTest(["hi", "en"]);
+    stubRpc({
+      "directory.sources": () => ({ sources: [] }),
+      "translation.translate": fakeEngine([]),
+    });
+    const host = document.createElement("div");
+    await renderDirectory(host);
+    expect(host.querySelector(".search-translate")).not.toBeNull();
+    host.querySelector<HTMLInputElement>(".search-text-input")!.value = "Zq-words";
+    host.querySelector<HTMLButtonElement>(".search-translate")!.click();
+    await vi.waitFor(() => expect(host.querySelector(".search-translate-note")!.textContent).not.toBe(""));
+    expect(english(host)).toEqual([]);
   });
 });
 

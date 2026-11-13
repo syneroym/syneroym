@@ -2,7 +2,7 @@ import { messageLang, messageText } from "../chat/message_text";
 import { errText, field, refiller, text } from "../dom";
 import { codeWord, currentLanguage, messageId, t } from "../i18n/i18n";
 import { languageList } from "../i18n/language_list";
-import { textLangSelect } from "../i18n/text_lang";
+import { languageName, textLangSelect } from "../i18n/text_lang";
 import { onFeed } from "../events";
 import { call, RpcError } from "../rpc";
 import { whoami } from "../session/login";
@@ -76,6 +76,7 @@ export interface CardRow {
     sequence?: number;
     counterparty_did?: string;
     terms?: {
+      lang?: string;
       quote_expires_at_secs?: number;
     };
     quote_expires_at_secs?: number;
@@ -554,7 +555,9 @@ function messageElement(
   } else if (m.deleted_at_secs != null) {
     wrap.appendChild(text("span", t("messages-message-deleted"), "message-body deleted"));
   } else if (m.body_encoding === "utf8") {
-    const nodes = messageText(m.body ?? t("messages-no-body"), m.languages ?? [], "span");
+    const nodes = messageText(m.body ?? t("messages-no-body"), m.languages ?? [], "span", {
+      translatable: m.direction === "incoming",
+    });
     wrap.append(...nodes);
   } else {
     wrap.appendChild(text("span", m.body ?? t("messages-no-body"), "message-body"));
@@ -604,6 +607,39 @@ function messageElement(
   return wrap;
 }
 
+/// What the person has on screen for a quote card: the language of the
+/// version, and whether it is a machine translation. The card's text
+/// element says so (`recordText`); a card with none drawn is read as its
+/// original.
+function shownVersion(wrap: HTMLElement, card: CardRow): { lang: string; viaMt: boolean } {
+  const shown = wrap.querySelector<HTMLElement>("[data-shown-lang]");
+  if (shown === null) return { lang: card.data?.terms?.lang ?? "", viaMt: false };
+  return { lang: shown.dataset.shownLang ?? "", viaMt: shown.dataset.shownVia === "machine" };
+}
+
+/// The warning before an acceptance of terms the person read through
+/// machine translation, with a button to go on and one to stop.
+function mtWarning(card: CardRow, accept: () => Promise<void>): HTMLElement {
+  const box = document.createElement("div");
+  box.className = "accept-mt-box";
+  box.appendChild(
+    text(
+      "p",
+      t("messages-accept-mt-warning", { language: languageName(card.data?.terms?.lang ?? "") }),
+      "accept-mt-warning",
+    ),
+  );
+  const confirmBtn = text("button", t("messages-accept-mt-confirm"), "button accept-mt-confirm") as HTMLButtonElement;
+  confirmBtn.onclick = () => {
+    box.remove();
+    void accept();
+  };
+  const cancelBtn = text("button", t("common-cancel"), "button accept-mt-cancel") as HTMLButtonElement;
+  cancelBtn.onclick = () => box.remove();
+  box.append(confirmBtn, cancelBtn);
+  return box;
+}
+
 export function renderCardActions(
   wrap: HTMLElement,
   card: CardRow,
@@ -636,11 +672,16 @@ export function renderCardActions(
       const acceptBtn = text("button", t("messages-accept-button"), "button accept-quote-button") as HTMLButtonElement;
       const acceptErr = text("p", "", "accept-quote-error");
 
-      acceptBtn.onclick = async () => {
+      const sendAccept = async () => {
         acceptBtn.disabled = true;
         acceptErr.textContent = "";
+        const viewed = shownVersion(wrap, card);
         try {
-          await call("agreement.accept", { quote_record_id: card.record_id });
+          await call("agreement.accept", {
+            quote_record_id: card.record_id,
+            ...(viewed.lang ? { viewed_lang: viewed.lang } : {}),
+            viewed_via_mt: viewed.viaMt,
+          });
           await refresh();
         } catch (err) {
           acceptBtn.disabled = false;
@@ -651,6 +692,17 @@ export function renderCardActions(
             acceptErr.textContent = t("messages-accept-failed", { detail: errText(err) });
           }
         }
+      };
+
+      // A machine translation is not what binds: say so, and ask again,
+      // before anything is signed.
+      acceptBtn.onclick = () => {
+        if (!shownVersion(wrap, card).viaMt) {
+          void sendAccept();
+          return;
+        }
+        if (actionsDiv.querySelector(".accept-mt-box")) return;
+        actionsDiv.appendChild(mtWarning(card, sendAccept));
       };
 
       const declineBtn = text("button", t("messages-decline-button"), "button decline-quote-button") as HTMLButtonElement;

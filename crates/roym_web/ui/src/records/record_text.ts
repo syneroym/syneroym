@@ -1,20 +1,45 @@
-import { currentLanguage, t } from "../i18n/i18n";
-import { langAttr, languageName, sameLanguage } from "../i18n/text_lang";
+import { errText } from "../dom";
+import { t } from "../i18n/i18n";
+import { langAttr, languageName, readerLanguages, sameLanguage } from "../i18n/text_lang";
+import { type Engine, machineNote, targetFor, translateTexts } from "../translation/translation";
 
 export interface TextVersion<F> {
   lang: string;
   fields: F;
   byAuthor: boolean;
+  /// Set on a machine translation made on this device. It is for display
+  /// only: it is never signed, and the original is what binds.
+  machine?: Engine;
 }
 
-/// The UI language, then navigator.languages.
-export function readerLanguages(): string[] {
-  const ui = currentLanguage();
-  const nav: readonly string[] =
-    typeof navigator !== "undefined" && Array.isArray(navigator.languages)
-      ? navigator.languages
-      : [];
-  return Array.from(new Set([ui, ...nav]));
+/// The translatable strings of a record's fields in a fixed order, and the
+/// way back from the translated strings to the fields.
+export interface TranslatableText<F> {
+  get: (fields: F) => string[];
+  set: (fields: F, texts: string[]) => F;
+}
+
+function isLink(value: string): boolean {
+  return value.startsWith("http://") || value.startsWith("https://");
+}
+
+/// The `TranslatableText` for the named text fields of `F`. A field whose
+/// value is a link is left out of `get` and kept as it is by `set`: the
+/// engine never sees a link, so a machine version cannot show a link the
+/// author did not sign. An empty or absent field is sent as "".
+export function textFields<F extends object>(keys: readonly (keyof F & string)[]): TranslatableText<F> {
+  const sent = (fields: F) =>
+    keys.filter((key) => !isLink(String((fields as Record<string, unknown>)[key] ?? "")));
+  return {
+    get: (fields) => sent(fields).map((key) => String((fields as Record<string, unknown>)[key] ?? "")),
+    set: (fields, texts) => {
+      const out: Record<string, unknown> = { ...(fields as Record<string, unknown>) };
+      sent(fields).forEach((key, i) => {
+        out[key] = texts[i];
+      });
+      return out as F;
+    },
+  };
 }
 
 /// Index into `versions` (0 is the original): for each reader language in
@@ -39,23 +64,43 @@ export function bestVersion<F>(versions: TextVersion<F>[], reader: readonly stri
 
 /// Draws `draw(version)` for the best version into `host`. When there is
 /// more than one version, adds a note and a button that switches between
-/// the shown version and the original.
+/// the original and the other version the person looked at last. When the
+/// node can translate (`texts` names the strings to send) and the record is
+/// in no language the reader reads, adds a button that makes one machine
+/// version; a record has at most one.
+///
+/// `host` records what is on screen in `data-shown-lang` (the version's
+/// language) and `data-shown-via` (`original`, `author` or `machine`), so a
+/// button that signs something can say what the person read.
 export function recordText<F>(
   host: HTMLElement,
   versions: TextVersion<F>[],
   draw: (v: TextVersion<F>) => Node[],
+  texts?: TranslatableText<F>,
 ): void {
   if (versions.length === 0) return;
-  if (versions.length === 1) {
-    for (const node of draw(versions[0])) {
+  const all = [...versions];
+  const target = texts ? targetFor(all.map((v) => v.lang)) : null;
+
+  const markShown = (idx: number) => {
+    const v = all[idx];
+    host.dataset.shownLang = v.lang;
+    host.dataset.shownVia = v.machine ? "machine" : idx === 0 ? "original" : "author";
+  };
+
+  if (all.length === 1 && target === null) {
+    markShown(0);
+    for (const node of draw(all[0])) {
       host.appendChild(node);
     }
     return;
   }
 
-  const initialIdx = bestVersion(versions, readerLanguages());
-  let currentIdx = initialIdx;
-  const alternateIdx = initialIdx === 0 ? 1 : 0;
+  let currentIdx = all.length > 1 ? bestVersion(all, readerLanguages()) : 0;
+  // The version the switch button shows when the original is on screen.
+  let lastOther: number | null = all.length > 1 ? (currentIdx !== 0 ? currentIdx : 1) : null;
+  let machineIdx: number | null = null;
+  let failure = "";
 
   const contentBox = document.createElement("div");
   contentBox.className = "record-text-content";
@@ -70,26 +115,85 @@ export function recordText<F>(
   switchBtn.type = "button";
   switchBtn.className = "button record-text-switch";
 
-  const originalLangName = languageName(versions[0].lang);
+  const originalLangName = languageName(all[0].lang);
+
+  const switchLabel = (next: number): string => {
+    if (next === 0) return t("record-text-show-original");
+    if (all[next].machine) {
+      return t("translation-translate-button", { language: languageName(all[next].lang) });
+    }
+    return t("record-text-show-translation");
+  };
 
   function renderCurrent() {
-    contentBox.replaceChildren(...draw(versions[currentIdx]));
-    if (currentIdx !== 0) {
+    const v = all[currentIdx];
+    contentBox.replaceChildren(...draw(v));
+    markShown(currentIdx);
+    if (v.machine) {
+      noteSpan.textContent = machineNote(v.lang, v.machine);
+    } else if (currentIdx !== 0) {
       noteSpan.textContent = t("record-text-by-author", { language: originalLangName });
-      switchBtn.textContent = t("record-text-show-original");
     } else {
       noteSpan.textContent = t("record-text-original", { language: originalLangName });
-      switchBtn.textContent = t("record-text-show-translation");
     }
+
+    const parts: HTMLElement[] = [noteSpan];
+    const next = currentIdx === 0 ? lastOther : 0;
+    if (next !== null) {
+      switchBtn.textContent = switchLabel(next);
+      parts.push(switchBtn);
+    }
+    if (translateBtn && machineIdx === null) parts.push(translateBtn);
+    if (failure) {
+      const failureEl = document.createElement("p");
+      failureEl.className = "record-text-error";
+      failureEl.textContent = failure;
+      parts.push(failureEl);
+    }
+    noteBox.replaceChildren(...parts);
   }
 
   switchBtn.onclick = () => {
-    currentIdx = currentIdx === initialIdx ? alternateIdx : initialIdx;
+    const next = currentIdx === 0 ? lastOther : 0;
+    if (next === null) return;
+    currentIdx = next;
+    if (next !== 0) lastOther = next;
     renderCurrent();
   };
 
+  let translateBtn: HTMLButtonElement | null = null;
+  if (texts && target !== null) {
+    translateBtn = document.createElement("button");
+    translateBtn.type = "button";
+    translateBtn.className = "button record-text-translate";
+    translateBtn.textContent = t("translation-translate-button", {
+      language: languageName(target),
+    });
+    const button = translateBtn;
+    button.onclick = async () => {
+      button.disabled = true;
+      const shown = all[currentIdx];
+      try {
+        const out = await translateTexts(texts.get(shown.fields), shown.lang || null, target);
+        all.push({
+          lang: target,
+          fields: texts.set(shown.fields, out.texts),
+          byAuthor: false,
+          machine: out.engine,
+        });
+        machineIdx = all.length - 1;
+        lastOther = machineIdx;
+        currentIdx = machineIdx;
+        failure = "";
+      } catch (err) {
+        failure = t("translation-failed", { detail: errText(err) });
+      }
+      button.disabled = false;
+      renderCurrent();
+    };
+  }
+
   renderCurrent();
-  noteBox.append(noteSpan, switchBtn);
   host.append(contentBox, noteBox);
 }
 

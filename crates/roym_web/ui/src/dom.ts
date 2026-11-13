@@ -19,6 +19,7 @@ const ERROR_MESSAGES = new Map<number, string>([
   [-32002, messageId("error-service-timeout")],
   [-32003, messageId("error-permission")],
   [-32004, messageId("error-quota")],
+  [-32020, messageId("error-translation")],
   [-32010, messageId("error-not-signed-in")],
   [-32011, messageId("error-not-owner")],
   [-32012, messageId("error-no-owner")],

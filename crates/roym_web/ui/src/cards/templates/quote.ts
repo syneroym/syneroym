@@ -18,7 +18,12 @@ import { timeElement, formatDateTime } from "../../i18n/format";
 import { t } from "../../i18n/i18n";
 import { languageName } from "../../i18n/text_lang";
 import { formatMinor } from "../../money";
-import { recordText, recordValue, type TextVersion } from "../../records/record_text";
+import {
+  recordText,
+  recordValue,
+  textFields,
+  type TextVersion,
+} from "../../records/record_text";
 import { renderLink } from "../link";
 
 export interface QuoteTranslationData {
@@ -246,8 +251,8 @@ export function renderQuote(data?: QuoteData): HTMLElement {
       nodes.push(dispP);
     }
 
-    // Warning line when author translation is shown
-    if (v.byAuthor) {
+    // The original binds, whoever made the version on screen
+    if (v.byAuthor || v.machine) {
       const bindsP = document.createElement("p");
       bindsP.className = "quote-original-binds";
       bindsP.textContent = t("record-text-original-binds", {
@@ -278,7 +283,7 @@ export function renderQuote(data?: QuoteData): HTMLElement {
     }
 
     return nodes;
-  });
+  }, textFields<QuoteTextFields>(["scope", "cancellation_terms", "refund_terms", "dispute_path"]));
 
   return card;
 }

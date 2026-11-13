@@ -55,3 +55,13 @@ export function textLangSelect(className: string, current: string): HTMLSelectEl
   select.value = current;
   return select;
 }
+
+/// The UI language, then navigator.languages.
+export function readerLanguages(): string[] {
+  const ui = currentLanguage();
+  const nav: readonly string[] =
+    typeof navigator !== "undefined" && Array.isArray(navigator.languages)
+      ? navigator.languages
+      : [];
+  return Array.from(new Set([ui, ...nav]));
+}
