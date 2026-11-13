@@ -637,6 +637,7 @@ async fn handle_text_search<H: AppHost>(host: &H) -> Result<serde_json::Value, S
         r#"{"title": {"$search": "PLUMB"}}"#,
         r#"{"title": {"$search": "ek teen"}}"#,
         r#"{"title": {"$search": "வாலா"}}"#,
+        r#"{"title": {"$search": "nal"}}"#,
     ];
     let mut results = Vec::new();
     for q in queries {

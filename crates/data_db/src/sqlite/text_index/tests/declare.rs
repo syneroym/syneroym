@@ -42,7 +42,7 @@ fn declare_creates_tables_and_excludes_from_list_collections() {
             row.get(0)
         })
         .unwrap();
-    assert_eq!(key_ver, 1);
+    assert_eq!(key_ver, syneroym_text_lang::SEARCH_KEY_VERSION);
 
     let collections = do_list_collections(&mut conn).unwrap();
     assert_eq!(collections, vec!["items"]);
@@ -70,18 +70,24 @@ fn declare_backfills_pre_existing_rows() {
     let schema_indexed = schema_with("items", vec![], vec!["title".to_string()]);
     do_create_collection(&mut conn, &schema_indexed).unwrap();
 
+    let world_key = syneroym_text_lang::fts::index_keys("world").joined;
     let tri_matches: i64 = conn
         .query_row(
-            "SELECT count(*) FROM _text_items_tri WHERE _text_items_tri MATCH 'world'",
+            &format!(
+                "SELECT count(*) FROM _text_items_tri WHERE _text_items_tri MATCH '{world_key}'"
+            ),
             [],
             |row| row.get(0),
         )
         .unwrap();
     assert_eq!(tri_matches, 1);
 
+    let hello_key = syneroym_text_lang::fts::index_keys("hello").words;
     let word_matches: i64 = conn
         .query_row(
-            "SELECT count(*) FROM _text_items_word WHERE _text_items_word MATCH 'hello'",
+            &format!(
+                "SELECT count(*) FROM _text_items_word WHERE _text_items_word MATCH '{hello_key}'"
+            ),
             [],
             |row| row.get(0),
         )
@@ -216,6 +222,12 @@ fn declare_key_version_mismatch_rebuilds() {
     let schema = schema_with("items", vec![], vec!["title".to_string()]);
     do_create_collection(&mut conn, &schema).unwrap();
 
+    let val = RecordWriteValue {
+        id: "1".to_string(),
+        payload: r#"{"title": "नल वाला"}"#.as_bytes().to_vec(),
+    };
+    do_authorized_put(&mut conn, "items", &val, "user", None).unwrap();
+
     conn.execute("INSERT INTO _text_items_word (rowid, f_title) VALUES (999, 'marker')", [])
         .unwrap();
     conn.execute("UPDATE _text_index SET key_version = 0 WHERE collection = 'items'", []).unwrap();
@@ -232,7 +244,19 @@ fn declare_key_version_mismatch_rebuilds() {
             row.get(0)
         })
         .unwrap();
-    assert_eq!(key_ver, 1);
+    assert_eq!(key_ver, syneroym_text_lang::SEARCH_KEY_VERSION);
+
+    let nal_key = syneroym_text_lang::fts::index_keys("nal").words;
+    let match_nal: i64 = conn
+        .query_row(
+            &format!(
+                "SELECT count(*) FROM _text_items_word WHERE _text_items_word MATCH '{nal_key}'"
+            ),
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(match_nal, 1);
 }
 
 #[test]
@@ -407,9 +431,12 @@ fn declare_two_collections_foo_and_foo_data_keep_own_rows() {
     do_authorized_put(&mut conn, "foo", &val_foo, "user", None).unwrap();
     do_authorized_put(&mut conn, "foo_data", &val_data, "user", None).unwrap();
 
+    let hello_key = syneroym_text_lang::fts::index_keys("hello").joined;
+    let world_key = syneroym_text_lang::fts::index_keys("world").joined;
+
     let foo_match: i64 = conn
         .query_row(
-            "SELECT count(*) FROM _text_foo_tri WHERE _text_foo_tri MATCH 'hello'",
+            &format!("SELECT count(*) FROM _text_foo_tri WHERE _text_foo_tri MATCH '{hello_key}'"),
             [],
             |row| row.get(0),
         )
@@ -418,7 +445,10 @@ fn declare_two_collections_foo_and_foo_data_keep_own_rows() {
 
     let data_match: i64 = conn
         .query_row(
-            "SELECT count(*) FROM _text_foo_data_tri WHERE _text_foo_data_tri MATCH 'world'",
+            &format!(
+                "SELECT count(*) FROM _text_foo_data_tri WHERE _text_foo_data_tri MATCH \
+                 '{world_key}'"
+            ),
             [],
             |row| row.get(0),
         )
@@ -427,7 +457,7 @@ fn declare_two_collections_foo_and_foo_data_keep_own_rows() {
 
     let foo_wrong: i64 = conn
         .query_row(
-            "SELECT count(*) FROM _text_foo_tri WHERE _text_foo_tri MATCH 'world'",
+            &format!("SELECT count(*) FROM _text_foo_tri WHERE _text_foo_tri MATCH '{world_key}'"),
             [],
             |row| row.get(0),
         )

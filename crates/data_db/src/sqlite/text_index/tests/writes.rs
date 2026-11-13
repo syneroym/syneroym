@@ -50,9 +50,12 @@ fn writes_put_patch_delete_lifecycle() {
         RecordWriteValue { id: "1".to_string(), payload: br#"{"title": "apple orange"}"#.to_vec() };
     do_authorized_put(&mut conn, "items", &val1, "user", None).unwrap();
 
+    let apple_key = syneroym_text_lang::fts::index_keys("apple").words;
     let match_apple: i64 = conn
         .query_row(
-            "SELECT count(*) FROM _text_items_word WHERE _text_items_word MATCH 'apple'",
+            &format!(
+                "SELECT count(*) FROM _text_items_word WHERE _text_items_word MATCH '{apple_key}'"
+            ),
             [],
             |row| row.get(0),
         )
@@ -65,7 +68,9 @@ fn writes_put_patch_delete_lifecycle() {
 
     let match_apple_after: i64 = conn
         .query_row(
-            "SELECT count(*) FROM _text_items_word WHERE _text_items_word MATCH 'apple'",
+            &format!(
+                "SELECT count(*) FROM _text_items_word WHERE _text_items_word MATCH '{apple_key}'"
+            ),
             [],
             |row| row.get(0),
         )
