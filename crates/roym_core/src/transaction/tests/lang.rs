@@ -364,6 +364,8 @@ fn halves_agree_differs_on_terms_lang() {
         counterparty_did: "did:key:zCounterparty".to_string(),
         quote_author_did: "did:key:zAuthor".to_string(),
         role: DealRole::Counterparty,
+        viewed_lang: base_terms.lang.clone(),
+        viewed_via_mt: false,
         terms: base_terms,
     };
     let half_a = AgreementReceiptPayload {
@@ -371,6 +373,8 @@ fn halves_agree_differs_on_terms_lang() {
         counterparty_did: "did:key:zCounterparty".to_string(),
         quote_author_did: "did:key:zAuthor".to_string(),
         role: DealRole::QuoteAuthor,
+        viewed_lang: terms_hi.lang.clone(),
+        viewed_via_mt: false,
         terms: terms_hi,
     };
     assert!(!halves_agree(&half_c, &half_a));

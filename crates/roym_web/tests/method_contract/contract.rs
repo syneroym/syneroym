@@ -85,6 +85,27 @@ fn every_directory_method_has_typed_input_and_output() {
 }
 
 #[test]
+fn agreement_accept_viewed_fields_contract() {
+    let table = transaction_api::method_table();
+    let probe = |method: &str, params: Value| {
+        let row = table.iter().find(|row| row.name == method).unwrap();
+        (row.probe)(&params)
+    };
+    let quote = json!({ "quote_record_id": "rec_x" });
+
+    assert!(probe("agreement.accept", quote.clone()).is_ok());
+    let both = json!({ "quote_record_id": "rec_x", "viewed_lang": "hi", "viewed_via_mt": true });
+    assert!(probe("agreement.accept", both.clone()).is_ok());
+    let unknown = probe("agreement.accept", json!({ "quote_record_id": "rec_x", "other": 1 }));
+    assert_eq!(unknown.unwrap_err().field.as_deref(), Some("other"));
+
+    // `agreement.get` shares no input with `accept`: it did not change.
+    assert!(probe("agreement.get", quote).is_ok());
+    let refused = probe("agreement.get", both).unwrap_err();
+    assert!(refused.message.contains("unknown field"), "{refused:?}");
+}
+
+#[test]
 fn web_answers_three_typed_methods_of_its_own() {
     let table = web_api::method_table();
     let names: Vec<&str> = table.iter().map(|row| row.name.as_str()).collect();

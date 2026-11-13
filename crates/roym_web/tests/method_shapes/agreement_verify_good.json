@@ -31,7 +31,9 @@
       },
       "scope": "string",
       "tax_minor": "number"
-    }
+    },
+    "viewed_lang": "string",
+    "viewed_via_mt": "boolean"
   },
   "record_id": "string",
   "revocation_status": "unknown",

@@ -31,8 +31,15 @@ use syneroym_signed_record::Envelope;
 
 mod common;
 
-use common::roym::{
-    RoymNode as Node, fast_conversation_role, roym_artifacts_present, wait_delivered, wait_until,
+use common::{
+    roym::{
+        RoymNode as Node, fast_conversation_role, roym_artifacts_present, wait_delivered,
+        wait_until,
+    },
+    roym_flow::{
+        accept_quote_with, open_request_conv, quote_author_conv_for, quote_terms,
+        request_record_on_quote_author, send_quote_with,
+    },
 };
 
 #[tokio::test]
@@ -439,6 +446,128 @@ async fn a_tampered_card_is_filed_refused_and_never_verified() {
     let y_req_list = node_y.rpc_ok("request.list", json!({ "conversation": y_conv_id })).await;
     let y_requests = y_req_list["requests"].as_array().unwrap();
     assert!(y_requests.iter().all(|r| r["envelope"] != tampered_env_str));
+
+    node_x.teardown().await;
+    node_y.teardown().await;
+}
+
+/// Boots a counterparty node and a quote author node that share a registry,
+/// each with a profile.
+async fn boot_counterparty_and_author(
+    dirs: [&std::path::Path; 2],
+    owners: [&Identity; 2],
+) -> (Node, Node) {
+    let mut counterparty = Node::boot(
+        "node-x",
+        dirs[0].to_path_buf(),
+        None,
+        Identity::from_bytes(&owners[0].to_bytes()),
+        fast_conversation_role(3600),
+    )
+    .await;
+    let registry = counterparty.registry_url.clone();
+    counterparty.full_bring_up().await;
+    let mut author = Node::boot(
+        "node-y",
+        dirs[1].to_path_buf(),
+        Some(registry),
+        Identity::from_bytes(&owners[1].to_bytes()),
+        fast_conversation_role(3600),
+    )
+    .await;
+    author.full_bring_up().await;
+    for (node, name) in [(&counterparty, "X"), (&author, "Y")] {
+        let address = node.dids["conversation"].clone();
+        node.rpc_ok(
+            "profile.set",
+            json!({ "display_name": name, "conversation_address": address, "lang": "en" }),
+        )
+        .await;
+    }
+    (counterparty, author)
+}
+
+/// `(viewed_lang, viewed_via_mt)` that one signed half of an agreement says.
+fn viewed_in(half: &Value) -> (String, bool) {
+    let payload = Envelope::from_json(half["envelope"].as_str().unwrap()).unwrap().payload;
+    (payload["viewed_lang"].as_str().unwrap().to_string(), payload["viewed_via_mt"] == true)
+}
+
+/// A quote in Hindi with an English author translation. The counterparty
+/// reads the English text and accepts. Its half says English; the author's
+/// automatic countersignature says Hindi (the original); the pair is
+/// complete on both nodes although the halves differ in this.
+#[tokio::test]
+async fn accepting_an_author_translation_is_signed_and_the_pair_completes() {
+    let _guard = common::serial_guard().await;
+    let _ = ring::default_provider().install_default();
+    if !roym_artifacts_present() {
+        eprintln!("skipping: Roym wasm/UI artifacts not built (`mise run build:roym`)");
+        return;
+    }
+
+    let dir_x = tempfile::tempdir().unwrap();
+    let dir_y = tempfile::tempdir().unwrap();
+    let owner_x = Identity::generate().unwrap();
+    let owner_y = Identity::generate().unwrap();
+    let owner_y_did = substrate::derive_did_key(&owner_y.public_key());
+    let (node_x, node_y) =
+        boot_counterparty_and_author([dir_x.path(), dir_y.path()], [&owner_x, &owner_y]).await;
+    let (x_address, y_address) =
+        (node_x.dids["conversation"].clone(), node_y.dids["conversation"].clone());
+
+    let (x_conv_id, _) = open_request_conv(&node_x, &y_address, "Fix my brake", &["cycling"]).await;
+    let y_conv_id = quote_author_conv_for(&node_y, &x_address).await;
+    let request_record_id = request_record_on_quote_author(&node_y, &y_conv_id).await;
+
+    let mut terms = quote_terms("Y Repairs", 4500);
+    terms["lang"] = json!("hi");
+    let quote_record_id = send_quote_with(
+        &node_y,
+        json!({
+            "request_record_id": request_record_id,
+            "expires_in_secs": 3600,
+            "terms": terms,
+            "translations": [{
+                "lang": "en",
+                "scope": "Clear garden waste and green bin collection",
+                "cancellation_terms": "24 hours notice required",
+                "refund_terms": "Full refund if work not completed",
+                "dispute_path": "Informal mediation",
+            }],
+        }),
+    )
+    .await;
+
+    accept_quote_with(
+        &node_x,
+        &x_conv_id,
+        json!({ "quote_record_id": quote_record_id, "viewed_lang": "en", "viewed_via_mt": false }),
+    )
+    .await;
+
+    let y_sync = node_y.rpc_ok("transaction.sync", json!({ "conversation": y_conv_id })).await;
+    assert_eq!(y_sync["countersigned"], 1);
+    let y_thread = node_y.rpc_ok("transaction.thread", json!({ "conversation": y_conv_id })).await;
+    let countersigned = y_thread["cards"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["card_type"] == "agreement-receipt" && c["issuer"] == owner_y_did)
+        .expect("the author's receipt is in its thread");
+    assert!(
+        wait_delivered(&node_y, countersigned["message_id"].as_str().unwrap()).await,
+        "the countersigned receipt is delivered to the counterparty"
+    );
+    node_x.rpc_ok("transaction.sync", json!({ "conversation": x_conv_id })).await;
+
+    for node in [&node_x, &node_y] {
+        let agreement =
+            node.rpc_ok("agreement.get", json!({ "quote_record_id": quote_record_id })).await;
+        assert_eq!(agreement["pair"]["state"], "complete", "{}", node.label);
+        assert_eq!(viewed_in(&agreement["counterparty"]), ("en".to_string(), false));
+        assert_eq!(viewed_in(&agreement["quote_author"]), ("hi".to_string(), false));
+    }
 
     node_x.teardown().await;
     node_y.teardown().await;

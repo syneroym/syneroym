@@ -344,6 +344,8 @@ fn an_agreement_and_its_receipts_say_no_old_word() {
                 counterparty_did: COUNTERPARTY.to_string(),
                 quote_author_did: QUOTE_AUTHOR.to_string(),
                 role,
+                viewed_lang: terms(place).lang,
+                viewed_via_mt: false,
                 terms: terms(place),
             };
             assert_no_old_words("agreement-receipt", &agreement);

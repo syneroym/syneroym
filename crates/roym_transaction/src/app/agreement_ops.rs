@@ -12,8 +12,9 @@ use syneroym_roym_core::{
     card::{self, CARD_CONTENT_TYPE},
     clock,
     envelope::Response,
+    lang::LangTag,
     method::{
-        self, Reply, VerifyInput,
+        self, ParamError, Reply, VerifyInput,
         conversation::{SendInput, SendOutput},
     },
     paging,
@@ -36,6 +37,19 @@ use super::{
 #[serde(deny_unknown_fields)]
 pub struct QuoteRecordInput {
     pub quote_record_id: String,
+}
+
+/// What a party read before it accepted. Both fields are optional: a caller
+/// that shows the original says nothing, and the signed record then says the
+/// quote's own language and that it was not a machine translation.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgreementAcceptInput {
+    pub quote_record_id: String,
+    #[serde(default)]
+    pub viewed_lang: Option<String>,
+    #[serde(default)]
+    pub viewed_via_mt: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -98,7 +112,7 @@ pub struct AgreementListOutput {
 
 pub(crate) async fn accept<H: AppHost>(
     host: &H,
-    input: QuoteRecordInput,
+    input: AgreementAcceptInput,
 ) -> Reply<AgreementAcceptOutput> {
     let now = clock::now_secs();
     let (principal, owner) = resolve_principal_and_owner(host, now).await?;
@@ -107,6 +121,7 @@ pub(crate) async fn accept<H: AppHost>(
 
     let (quote_payload, quote_author_did, role) =
         load_verified_quote_and_role(host, &input.quote_record_id, now, &owner).await?;
+    let viewed = viewed(&input, &quote_payload)?;
 
     let mut row = load_or_init_agreement_row(
         host,
@@ -128,7 +143,8 @@ pub(crate) async fn accept<H: AppHost>(
     };
 
     let half =
-        sign_agreement_receipt(host, principal, &input.quote_record_id, &row, &owner, role).await?;
+        sign_agreement_receipt(host, principal, &input.quote_record_id, &row, &owner, role, viewed)
+            .await?;
 
     let envelope_json = half.envelope.clone();
     let record_id = half.record_id.clone();
@@ -160,6 +176,36 @@ pub(crate) async fn accept<H: AppHost>(
         state,
         send_error,
     })
+}
+
+fn viewed_error(field: &str, message: impl Into<String>) -> Response {
+    ParamError { field: Some(field.to_string()), message: message.into() }.into_response()
+}
+
+/// What this party says it read: the language and whether it was a machine
+/// translation. Without an engine, "not a machine translation" means a
+/// version the quote author signed, so the tag must name one. A machine
+/// translation into the original's own language is not a translation.
+fn viewed(input: &AgreementAcceptInput, quote: &QuotePayload) -> Result<(LangTag, bool), Response> {
+    let original = &quote.terms.lang;
+    let via_mt = input.viewed_via_mt.unwrap_or(false);
+    let lang = match input.viewed_lang.as_deref() {
+        None => original.clone(),
+        Some(text) => LangTag::parse_canonical(text).map_err(|e| {
+            viewed_error("viewed_lang", format!("invalid params: viewed_lang: {e}"))
+        })?,
+    };
+    if via_mt {
+        if lang == *original {
+            return Err(viewed_error(
+                "viewed_via_mt",
+                "viewed_via_mt is true, but viewed_lang is the language of the original terms",
+            ));
+        }
+    } else if lang != *original && !quote.translations.iter().any(|t| t.lang == lang) {
+        return Err(viewed_error("viewed_lang", "viewed_lang names no version of this quote"));
+    }
+    Ok((lang, via_mt))
 }
 
 /// Fetches and verifies the quote a caller wants to accept, and works out
@@ -269,6 +315,7 @@ async fn sign_agreement_receipt<H: AppHost>(
     row: &AgreementRow,
     owner: &str,
     role: DealRole,
+    (viewed_lang, viewed_via_mt): (LangTag, bool),
 ) -> Result<ReceiptHalf, Response> {
     let payload = AgreementReceiptPayload {
         quote_record_id: quote_record_id.to_string(),
@@ -276,6 +323,8 @@ async fn sign_agreement_receipt<H: AppHost>(
         quote_author_did: row.quote_author_did.clone(),
         role,
         terms: row.terms.clone(),
+        viewed_lang,
+        viewed_via_mt,
     };
     if let Err(e) = payload.validate() {
         return Err(Response::invalid_params(e.to_string()));
@@ -439,6 +488,10 @@ pub(crate) async fn maybe_countersign<H: AppHost>(
         quote_author_did: row.quote_author_did.clone(),
         role: DealRole::QuoteAuthor,
         terms: q_payload.terms.clone(),
+        // The quote author wrote the original, and no person read anything
+        // when the countersignature is made.
+        viewed_lang: q_payload.terms.lang.clone(),
+        viewed_via_mt: false,
     };
     if payload.validate().is_err() {
         return Ok(false);

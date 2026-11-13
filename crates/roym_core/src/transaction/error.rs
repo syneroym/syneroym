@@ -121,6 +121,9 @@ pub enum TransactionError {
     #[error("slot_id does not match the id derived from listing_id and terms.schedule")]
     SlotIdMismatch,
 
+    #[error("viewed_via_mt is true, but viewed_lang is the language of the original terms")]
+    ViewedMtOfOriginal,
+
     #[error(transparent)]
     Translation(#[from] TranslationError),
 }

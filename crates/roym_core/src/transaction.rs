@@ -240,6 +240,11 @@ pub struct AgreementReceiptPayload {
     /// The only field the two halves of a complete pair differ in.
     pub role: DealRole,
     pub terms: AgreedTerms,
+    /// The language of the text this party read before it signed. It is
+    /// outside `terms`, so the two halves may differ in it.
+    pub viewed_lang: LangTag,
+    /// True when that text was a machine translation.
+    pub viewed_via_mt: bool,
 }
 
 /// One party's attestation, as it is stored.
@@ -502,6 +507,9 @@ impl AgreementReceiptPayload {
             return Err(TransactionError::SamePartyDid);
         }
         self.terms.validate()?;
+        if self.viewed_via_mt && self.viewed_lang == self.terms.lang {
+            return Err(TransactionError::ViewedMtOfOriginal);
+        }
         Ok(())
     }
 }

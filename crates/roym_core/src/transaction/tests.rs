@@ -7,6 +7,7 @@ use super::*;
 
 mod lang;
 mod verify;
+mod viewed;
 
 pub(super) fn sample_terms() -> AgreedTerms {
     AgreedTerms {
@@ -294,6 +295,8 @@ fn agreement_receipt_payload_validate_rules() {
         quote_author_did: quote_author_did.clone(),
         role: DealRole::Counterparty,
         terms: sample_terms(),
+        viewed_lang: sample_terms().lang,
+        viewed_via_mt: false,
     };
     assert!(a.validate().is_ok());
 
@@ -350,6 +353,8 @@ fn halves_agree_table_test() {
         quote_author_did: quote_author_did.clone(),
         role: DealRole::Counterparty,
         terms: terms.clone(),
+        viewed_lang: terms.lang.clone(),
+        viewed_via_mt: false,
     };
     let base_quote_author = AgreementReceiptPayload {
         quote_record_id: "rec_quo123".to_string(),
@@ -357,6 +362,8 @@ fn halves_agree_table_test() {
         quote_author_did: quote_author_did.clone(),
         role: DealRole::QuoteAuthor,
         terms: terms.clone(),
+        viewed_lang: terms.lang.clone(),
+        viewed_via_mt: false,
     };
 
     // Identical except role -> true
