@@ -1432,20 +1432,7 @@ test.describe('Roym Hub', () => {
     const title2 = `nal wala ${tag2}`;
 
     await publishListing(page, title1, 'bicycle-repair', DIRECTORY_DID!, 'en');
-
-    await page.getByRole('button', { name: 'Listings' }).click();
-    await page.locator('.listing-text-lang').selectOption('hi-Latn');
-    await page.locator('.listing-title-input').fill(title2);
-    await pickCategory(page.locator('.listing-categories-input'), 'bicycle-repair');
-    await page.locator('.listing-address-input').fill(DIRECTORY_DID!);
-    await page.locator('.block-payment .block-enabled').check();
-    await page.locator('.payment-amount-input').fill('40');
-    await page.locator('.save-listing').click();
-    await expect(page.locator('.listing-save-result')).toContainText('Saved lst_', { timeout: 15_000 });
-    const row2 = page.locator('.listing-row', { hasText: title2 }).first();
-    await row2.locator('.publish-directory-did').fill(DIRECTORY_DID!);
-    await row2.locator('.publish-listing').click();
-    await expect(row2.locator('.publish-status')).toContainText('Published', { timeout: 15_000 });
+    await publishListing(page, title2, 'bicycle-repair', DIRECTORY_DID!, 'en', 'hi-Latn');
 
     await removeAllSources(page);
     await page.locator('.add-source-did').fill(DIRECTORY_DID!);
@@ -1469,48 +1456,49 @@ test.describe('Roym Hub', () => {
     await loginWithDelegatedKey(page);
 
     const tag = Date.now().toString(36);
-    const did1 = `did:key:z6MkuDeva${tag}`;
-    const addr1 = `conv_deva_${tag}`;
-    const did2 = `did:key:z6MkuLatn${tag}`;
-    const addr2 = `conv_latn_${tag}`;
-
-    await rpcCall(page, 'contacts.upsert', {
-      person_did: did1,
-      conversation_address: addr1,
-      display_name: 'राम',
-    });
-    await rpcCall(page, 'contacts.upsert', {
-      person_did: did2,
-      conversation_address: addr2,
-      display_name: 'Ram',
-    });
+    const people = [
+      { did: `did:key:z6MkuDeva${tag}`, addr: `conv_deva_${tag}`, name: `राम ${tag}` },
+      { did: `did:key:z6MkuLatn${tag}`, addr: `conv_latn_${tag}`, name: `Ram ${tag}` },
+      { did: `did:key:z6MkuOther${tag}`, addr: `conv_other_${tag}`, name: `Sita ${tag}` },
+    ];
+    for (const p of people) {
+      await rpcCall(page, 'contacts.upsert', {
+        person_did: p.did,
+        conversation_address: p.addr,
+        display_name: p.name,
+      });
+    }
+    const [deva, latn, other] = people.map((p) => p.name);
 
     await page.getByRole('button', { name: 'Contacts' }).click();
-    await expect(page.locator('.contacts-screen')).toBeVisible();
+    const screen = page.locator('.contacts-screen');
+    await expect(screen).toBeVisible();
+    // Before any search all three rows show, so a row that is gone later was filtered out.
+    await expect(screen).toContainText(other);
 
     const searchInput = page.locator('.contacts-search-input');
     const searchBtn = page.locator('.contacts-search-button');
 
-    await searchInput.fill('ram');
-    await searchBtn.click();
-    await expect(page.locator('.contacts-screen')).toContainText('राम');
-    await expect(page.locator('.contacts-screen')).toContainText('Ram');
-
-    await searchInput.fill('राम');
-    await searchBtn.click();
-    await expect(page.locator('.contacts-screen')).toContainText('राम');
-    await expect(page.locator('.contacts-screen')).toContainText('Ram');
+    for (const query of ['ram', 'राम']) {
+      await searchInput.fill(query);
+      await searchBtn.click();
+      await expect(screen).not.toContainText(other, { timeout: 15_000 });
+      await expect(screen).toContainText(deva);
+      await expect(screen).toContainText(latn);
+    }
 
     await searchInput.fill('');
     await searchBtn.click();
-    await expect(page.locator('.contacts-screen')).toContainText('राम');
-    await expect(page.locator('.contacts-screen')).toContainText('Ram');
+    await expect(screen).toContainText(other, { timeout: 15_000 });
+    await expect(screen).toContainText(deva);
+    await expect(screen).toContainText(latn);
 
-    const text = await page.locator('.contacts-screen').innerText();
-    const idxRam = text.indexOf('Ram');
-    const idxDeva = text.indexOf('राम');
-    expect(idxRam).toBeGreaterThanOrEqual(0);
+    // With no search, the names in the Hub's own script (Latin in English) come first.
+    const text = await screen.innerText();
+    const idxLatn = text.indexOf(latn);
+    const idxDeva = text.indexOf(deva);
+    expect(idxLatn).toBeGreaterThanOrEqual(0);
     expect(idxDeva).toBeGreaterThanOrEqual(0);
-    expect(idxRam).toBeLessThan(idxDeva);
+    expect(idxLatn).toBeLessThan(idxDeva);
   });
 });

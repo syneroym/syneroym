@@ -1,8 +1,9 @@
 import { expect, test } from '@playwright/test';
 import { readDemoEnv } from '../demo-nodes';
 import {
-  addListingTranslation, addMessageLanguage, chooseHubLanguage, ensureOwnSynOrg, hubMessage,
-  loginWithDelegatedKey, openConversation, openMessages, pickCategory, publishListing, sendMessage,
+  addListingTranslation, addMessageLanguage, chooseHubLanguage, directoryAddedStatus, ensureOwnSynOrg,
+  hubMessage, loginWithDelegatedKey, openConversation, openMessages, pickCategory, publishListing,
+  sendMessage,
 } from '../hub-helpers';
 import { requireEnv, step } from './steps';
 
@@ -92,7 +93,9 @@ test('Roym languages story: Alice reads her Hub in Hindi, and it stays Hindi', a
     await page.getByRole('button', { name: hubMessage('hi', 'tab-directory') }).click();
     await page.locator('.add-source-did').fill(aliceDirectoryDid);
     await page.getByRole('button', { name: hubMessage('hi', 'directory-add-button') }).click();
-    await expect(page.locator('.add-source-status')).not.toBeEmpty({ timeout: 15_000 });
+    await expect(page.locator('.add-source-status')).toHaveText(directoryAddedStatus('hi'), {
+      timeout: 15_000,
+    });
 
     await page.locator('.search-text-input').fill(`nal wala ${runTag}`);
     await page.getByRole('button', { name: hubMessage('hi', 'directory-search-button'), exact: true }).click();

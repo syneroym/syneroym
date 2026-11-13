@@ -109,8 +109,11 @@ export async function publishListing(
   category = 'bicycle-repair',
   directoryDid = '',
   lang = 'en',
+  textLang?: string,
 ) {
   await page.getByRole('button', { name: hubMessage(lang, 'tab-listings') }).click();
+  // The text language of the listing. Without it the select keeps the Hub's own language.
+  if (textLang) await page.locator('.listing-text-lang').selectOption(textLang);
   await page.locator('.listing-title-input').fill(title);
   await pickCategory(page.locator('.listing-categories-input'), category, lang);
   await page.locator('.listing-address-input').fill(directoryDid);
@@ -157,6 +160,22 @@ export async function addMessageLanguage(page: Page, lang: string) {
 /** The message in the open thread that holds this text. */
 export function threadMessage(page: Page, text: string) {
   return page.locator('.thread-messages .message', { hasText: text });
+}
+
+/**
+ * The text of the status line after "Add directory" succeeds, in the Hub language `tag`: `Added`,
+ * `Added` with the probe note, or `Added` with the silent note. The note has an argument, so only
+ * the text before the first `{` is known.
+ */
+export function directoryAddedStatus(tag: string): RegExp {
+  const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const note = hubMessage(tag, 'directory-added-note').split('{')[0].trim();
+  const alternatives = [
+    hubMessage(tag, 'directory-added'),
+    hubMessage(tag, 'directory-added-silent'),
+    note,
+  ];
+  return new RegExp(`^(?:${alternatives.map(escape).join('|')})`);
 }
 
 /**
