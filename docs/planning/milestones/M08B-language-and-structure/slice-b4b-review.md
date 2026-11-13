@@ -1040,3 +1040,45 @@ major open. After fix round 2 (Claude Sonnet 5.5, 2026-11-13): R4 and R8 Fixed, 
   search for `phone` does not find `ஃபோன்`; the fold keeps the final `e`
   (Q1)." Correct the R2 status line in the same way. No code change.
 - *Status:* Fixed (a9b2f688): the comment in `tamil_aytham` now says a search for `ஃபோன்` (long term `fon`) finds a text with `phone`, a search for `phone` does not find `ஃபோன்`, and the fold keeps the final `e`. No code change. The R2 status line in round 1 is corrected the same way.
+
+## Code review round 3 (check of the round 2 fixes) — Claude Opus 5.5, 2026-11-13
+
+Checked on `feat/m08b-b4b-search-scripts` at `57659ffc` (PR #361), in the
+main checkout (not a worktree). `git pull` said "Already up to date". I read
+`a9b2f688`, `5bfddc7d` and `57659ffc` against R4 and R8. I changed no code.
+I ran `cargo nextest run -p syneroym-text-lang tamil` (8 passed) and
+`npx tsc --noEmit` in `crates/substrate/tests/e2e`. The only `tsc` error is
+`hub-helpers.ts:3` (`Locator` is not exported from `./fixtures`). That line
+is the same on `main` (from B2) and Playwright does not type-check, so it is
+not a B4b item. The changed spec has no type error.
+
+**Summary:** R4 and R8 are confirmed fixed. No new items. All 8 items (R1 to
+R8) are closed, 0 open.
+
+### What was checked
+
+- **CI.** `gh pr checks 361` on `57659ffc`, at the time of this check: Lints,
+  licenses & checks and the CLA check pass. Test 1/6 to 6/6 and Playwright
+  E2E are still running. The last full green run is 43396104765 on
+  `c9579c1f`. Since then only one e2e test, one test comment and docs
+  changed. So the Rust suite is proven by that run, and the new contact test
+  is proven only when Playwright E2E on `57659ffc` passes. The merge must
+  wait for it.
+- The PR is no longer a draft. I did not change that.
+
+### Confirmed fixed
+
+- **R4.** `showAll` clears the box, clicks the button and waits until
+  `Sita <tag>`, `राम <tag>` and `Ram <tag>` are all shown. The loop calls it
+  before each search. So before `राम`, the list again holds Sita, and
+  `not.toContainText(other)` can pass only after the Hub has answered the
+  `राम` search. A `राम` search that returns every contact fails on that
+  line. One that returns none fails on `toContainText(deva)`. The end of the
+  test reuses `showAll` before the sort check. The fix round's proof (the
+  Hub dropping `text` for a query that starts with a non-ASCII char fails
+  the `राम` search only) matches this.
+- **R8.** The comment in `tamil_aytham` (`tamil.rs:85`) now states one
+  direction: `ஃபோன்` (long term `fon`) finds `phone` (key `fone`), and
+  `phone` (long term `fone`) does not find `ஃபோன்`, because the fold keeps
+  the final `e`. This matches the probe from round 2. The R2 status line in
+  round 1 is corrected the same way.
