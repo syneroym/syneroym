@@ -242,6 +242,9 @@ profile-saved = Saved record { $record } (issuer: { $issuer })
 ## Contacts
 
 contacts-title = Contacts
+contacts-search-placeholder = name to look for
+contacts-search-button = Search
+contacts-search-empty = No contact has this name.
 contacts-load-failed = Could not load contacts.
 contacts-add-heading = Add / Import Contact
 contacts-did-placeholder = Person DID
@@ -664,7 +667,7 @@ directory-added = Added.
 directory-add-failed = Could not add: { $detail }
 directory-search-heading = Search your directories
 directory-search-text-placeholder = words to look for (optional)
-directory-search-help = Matching is on whole words in the title, summary and categories. Punctuation is ignored, so searching for 50% finds 50. There is no ranking and no paid placement -- results are shown newest first.
+directory-search-help = Every word must appear in the title, summary, categories or an author translation, in any order. A word in Latin letters also finds the same word written in Devanagari or Tamil, and common spellings meet: "nal wala" finds "naal waala". There is no ranking and no paid placement -- results are shown newest first.
 directory-search-button = Search
 directory-searching = Searching...
 directory-no-sources = You have not added any directories. Add one above, or reach a listing owner by a direct link.

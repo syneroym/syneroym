@@ -1,5 +1,12 @@
-import { describe, expect, it } from "vitest";
-import { upsertParams } from "./contacts.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import { t } from "../i18n/i18n";
+import { stubRpc } from "../testing/stub-rpc";
+import { renderContacts, upsertParams } from "./contacts.js";
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 describe("contacts upsertParams", () => {
   it("sends text as the same string and never sends a parsed object", () => {
@@ -27,5 +34,80 @@ describe("contacts upsertParams", () => {
 
     const wsAddr = upsertParams("did:key:zAlice", "   ", "");
     expect("conversation_address" in wsAddr).toBe(false);
+  });
+});
+
+describe("renderContacts search", () => {
+  it("has button with type=button and performs search lifecycle", async () => {
+    const calls: unknown[] = [];
+    stubRpc({
+      "contacts.list": (params: unknown) => {
+        calls.push(params);
+        if (
+          params &&
+          typeof params === "object" &&
+          "text" in params &&
+          (params as { text: string }).text === "Ram"
+        ) {
+          return [{ person_did: "did:key:zRam", display_name: "Ram" }];
+        }
+        if (
+          params &&
+          typeof params === "object" &&
+          "text" in params &&
+          (params as { text: string }).text === "Nobody"
+        ) {
+          return [];
+        }
+        return [
+          { person_did: "did:key:zRam", display_name: "Ram" },
+          { person_did: "did:key:zSita", display_name: "Sita" },
+        ];
+      },
+    });
+
+    const host = document.createElement("div");
+    await renderContacts(host);
+
+    const searchBtn = host.querySelector<HTMLButtonElement>(".contacts-search-button")!;
+    expect(searchBtn).not.toBeNull();
+    expect(searchBtn.type).toBe("button");
+
+    const searchInput = host.querySelector<HTMLInputElement>(".contacts-search-input")!;
+    expect(searchInput).not.toBeNull();
+
+    // Initial load calls contacts.list with {}
+    expect(calls[0]).toEqual({});
+
+    // 1. Search reloads with { text }
+    searchInput.value = "Ram";
+    searchBtn.click();
+    await vi.waitFor(() => {
+      expect(calls).toContainEqual({ text: "Ram" });
+      expect(host.textContent).toContain("Ram");
+    });
+
+    // 2. Enter triggers search
+    searchInput.value = "Nobody";
+    searchInput.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    await vi.waitFor(() => {
+      expect(calls).toContainEqual({ text: "Nobody" });
+      // 3. An empty answer shows contacts-search-empty
+      expect(host.textContent).toContain(t("contacts-search-empty"));
+    });
+
+    // 4. Clearing search reloads with {}
+    searchInput.value = "";
+    searchBtn.click();
+    await vi.waitFor(() => {
+      expect(calls[calls.length - 1]).toEqual({});
+      expect(host.textContent).toContain("Sita");
+    });
+
+    // 5. Add form has distinct class names
+    expect(host.querySelector(".contacts-did-input")).not.toBeNull();
+    expect(host.querySelector(".contacts-address-input")).not.toBeNull();
+    expect(host.querySelector(".contacts-envelope-input")).not.toBeNull();
+    expect(host.querySelector(".contacts-upsert-button")).not.toBeNull();
   });
 });

@@ -17,7 +17,7 @@ import { renderSetup } from "../screens/setup";
 import { renderSynOrg } from "../screens/synorg";
 import { leftoverLatin } from "../testing/latin-words";
 import { stubRpc } from "../testing/stub-rpc";
-import { activate } from "./i18n";
+import { activate, t } from "./i18n";
 
 // Draws each screen in Hindi with a fake `/rpc` and fails when an English
 // word is left. A value that a person types or another node sends holds the
@@ -128,8 +128,47 @@ describe("the small screens, in Hindi", () => {
     const host = document.createElement("div");
     await renderContacts(host);
     host.querySelector("textarea")!.value = "Zq-not-json";
-    host.querySelector<HTMLButtonElement>("button.button")!.click();
+    host.querySelector<HTMLButtonElement>("button.contacts-upsert-button")!.click();
     await settle();
+    expect(english(host)).toEqual([]);
+  });
+
+  it("draws the contacts screen with a search result and empty message", async () => {
+    stubRpc({
+      "contacts.list": (params: unknown) => {
+        if (
+          params &&
+          typeof params === "object" &&
+          "text" in params &&
+          (params as { text: string }).text === "Zq-query"
+        ) {
+          return [{ person_did: PEER, display_name: "Zq-Bob", favourite: true }];
+        }
+        if (
+          params &&
+          typeof params === "object" &&
+          "text" in params &&
+          (params as { text: string }).text === "Zq-none"
+        ) {
+          return [];
+        }
+        return [{ person_did: PEER, display_name: "Zq-Bob", favourite: true }];
+      },
+    });
+    const host = document.createElement("div");
+    await renderContacts(host);
+    const searchInput = host.querySelector<HTMLInputElement>(".contacts-search-input")!;
+    const searchBtn = host.querySelector<HTMLButtonElement>(".contacts-search-button")!;
+
+    searchInput.value = "Zq-query";
+    searchBtn.click();
+    await settle();
+    expect(english(host)).toEqual([]);
+
+    searchInput.value = "Zq-none";
+    searchBtn.click();
+    await settle();
+    expect(host.textContent).toContain(t("contacts-search-empty"));
     expect(english(host)).toEqual([]);
   });
 

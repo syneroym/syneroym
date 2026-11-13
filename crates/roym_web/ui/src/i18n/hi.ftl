@@ -231,6 +231,9 @@ profile-saved = रिकॉर्ड { $record } सहेजा गया (ज
 ## Contacts
 
 contacts-title = संपर्क
+contacts-search-placeholder = खोजने का नाम
+contacts-search-button = खोजें
+contacts-search-empty = इस नाम का कोई संपर्क नहीं है।
 contacts-load-failed = संपर्क लोड नहीं हो सके।
 contacts-add-heading = संपर्क जोड़ें / इम्पोर्ट करें
 contacts-did-placeholder = व्यक्ति का DID
@@ -641,7 +644,7 @@ directory-added = जोड़ दी गई।
 directory-add-failed = जोड़ी नहीं जा सकी: { $detail }
 directory-search-heading = अपनी डायरेक्टरी में खोजें
 directory-search-text-placeholder = खोजने के शब्द (ज़रूरी नहीं)
-directory-search-help = मिलान शीर्षक, सार और श्रेणियों के पूरे शब्दों पर होता है। विराम-चिह्न छोड़ दिए जाते हैं, इसलिए 50% खोजने पर 50 मिलता है। कोई रैंकिंग नहीं है और पैसे देकर ऊपर आने की सुविधा नहीं है -- नतीजे सबसे नए पहले दिखते हैं।
+directory-search-help = हर शब्द किसी भी क्रम में शीर्षक, सार, श्रेणियों या लेखक के अनुवाद में होना चाहिए। लैटिन अक्षरों का शब्द देवनागरी या तमिल में लिखा वही शब्द भी ढूँढ लेता है, और आम वर्तनियाँ मिल जाती हैं: "nal wala" से "naal waala" मिल जाता है। कोई रैंकिंग नहीं है और पैसे देकर ऊपर आने की सुविधा नहीं है -- नतीजे सबसे नए पहले दिखते हैं।
 directory-search-button = खोजें
 directory-searching = खोज रहे हैं...
 directory-no-sources = आपने कोई डायरेक्टरी नहीं जोड़ी है। ऊपर एक जोड़ें, या लिस्टिंग के मालिक तक सीधे लिंक से पहुँचें।
