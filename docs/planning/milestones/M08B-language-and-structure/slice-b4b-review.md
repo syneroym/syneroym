@@ -700,7 +700,7 @@ there are no earlier R items to confirm. I changed no code. I ran
 `#[ignore]` timing test) and a throw-away probe crate in the scratch folder
 (not committed) that prints `search_key` and `query_terms` for given inputs.
 
-**Summary:** 0 blocker, 1 major, 6 minor (R1 to R7). 7 open.
+**Summary:** 0 blocker, 1 major, 6 minor (R1 to R7). After the fix round of 2026-11-13 (Claude Sonnet 5.5): 7 Fixed, 0 Open, 0 Rejected.
 
 ### What was checked and found correct
 
@@ -811,7 +811,7 @@ there are no earlier R items to confirm. I changed no code. I ran
   `query_terms("100%")` is the long term `100`. The key version stays 2
   (nothing is released). Re-run `UPDATE_SPELLING_RESULTS=1` only if the
   golden file changes.
-- *Status:* Open
+- *Status:* Fixed (84ddfd3e): rule 11 collapses only `a` to `z` and the `ch` marker; the other rules write or match only Latin letters, so they need no change. New test `search_key_keeps_doubled_digits_and_unmapped_letters` (`100`, `1000`, `9988776655`, `१००`, `谢谢`, `বব` keep their chars; `hello` still gives `helo`); the chat test now asserts `query_terms("100%")` is the long term `100`. The golden spelling file did not change. Proof: with the old rule 11 the new test fails (`left: "10"`); with the fix it passes.
 
 #### R2 — minor — Tamil `ஃப` gives `fp`, not `f`
 
@@ -826,7 +826,7 @@ there are no earlier R items to confirm. I changed no code. I ran
 - *Fix:* when `ஃ` is followed by `ப`, write `f` and consume both (with the
   vowel sign or pulli of `ப`). Change the test to `afa` and add `ஃபோன்` →
   `fon`, matching `phone`.
-- *Status:* Open
+- *Status:* Fixed (1e2aa759): `ஃ` before `ப` is read as one unit, `f` with the vowel sign or pulli of `ப` (`parse_aytham_pa`). Test now `அஃப` → `afa`, and `ஃபோன்` → `fon`, which `phone` (`fone`) meets as a long term inside the joined key (the key of `phone` is `fone`, so the two keys are not equal). The golden spelling file changed in three `fridge` rows (`fpritj` → `fritj`), all still not meeting; the floors hold. Proof: with the old code the test fails (`left: "afpa"`).
 
 #### R3 — minor — chat search has three copies of one query, and the plan test checks a fourth copy
 
@@ -848,7 +848,7 @@ there are no earlier R items to confirm. I changed no code. I ran
   one row loop and positional parameters, and by the plan test for all three
   shapes, with and without `ANALYZE`. Write "plain `IN` form, no `CROSS JOIN`
   needed" (or what is used) into D-B4b-15 of the plan.
-- *Status:* Open
+- *Status:* Fixed (39e4f701): `search_query(tri, word, conversation, limit)` builds the one statement and its values for all three shapes. `search` runs it with one row loop, and the plan test runs `EXPLAIN QUERY PLAN` on the same text for word only, trigram only and both, with and without `ANALYZE`. The plain `IN` form is enough, no `CROSS JOIN`; the plan (D-B4b-15) says so. Proof: with `+m.rowid IN (…)` in `search_query` (forces a scan) the plan test fails (`SCAN m`); with the fix it passes.
 
 #### R4 — minor — two e2e checks prove less than planned
 
@@ -874,7 +874,7 @@ there are no earlier R items to confirm. I changed no code. I ran
   In story 40, assert the add status against the three message ids as the
   plan says. Give `publishListing` an optional text language and use it for
   the `hi-Latn` listing.
-- *Status:* Open
+- *Status:* Fixed (486ae3d3): the contact test adds `Sita <tag>`, checks it is shown first, and after the `ram` and `राम` searches waits until it is gone; names carry the run tag. Story 40 checks the add status with `directoryAddedStatus('hi')` (the three message ids, the note up to its first `{`). `publishListing` takes an optional text language and the cross-script test uses it for the `hi-Latn` listing. Proof: with the Hub sending a blank `text` on a search, the contact test fails (`not.toContainText "Sita …"`); with the fix both changed Hub tests and `mise run demo` (6 passed) pass.
 
 #### R5 — minor — change doc close-out is incomplete
 
@@ -893,7 +893,7 @@ there are no earlier R items to confirm. I changed no code. I ran
   checklist and concludes that contact search and collation are not done.
 - *Fix:* fix the bullet; add the D-B4b ids to each decision; move the
   contacts and Hub decisions to "Names in any script"; tick `:498`.
-- *Status:* Open
+- *Status:* Fixed (ee7d71aa): the bullet is fixed, each B4b decision has its D-B4b ids, the contacts and Hub decisions are in a new "Names in any script" list, the checklist item is ticked.
 
 #### R6 — minor — two promised measurements are missing from the PR text and the tests
 
@@ -911,7 +911,7 @@ there are no earlier R items to confirm. I changed no code. I ran
   10,000 messages, sets the key version to 1, reopens and prints the time.
   Run it and `measure_search_key_64_kib` once, and put both numbers and the
   test counts into the PR text.
-- *Status:* Open
+- *Status:* Fixed (dd42c42d): `#[ignore]` test `measure_rebuild_of_10000_messages_on_open` (raises the two per-conversation caps for the test). Measured once: the 64 KiB key 72 ms, the rebuild of 10,000 messages on open 671 ms. Both numbers and the test counts are in the PR text.
 
 #### R7 — minor — import rule and one doc comment
 
@@ -931,4 +931,4 @@ there are no earlier R items to confirm. I changed no code. I ran
   `use std::env;` and `env::var(…)`; import `text_index` in `group.rs`. Say in
   the doc comment that the version changes when `search_key`, `query_terms`
   or the joined key gives a different output.
-- *Status:* Open
+- *Status:* Fixed (619245a1): `use syneroym_text_lang::fts;` in the two data_db test files, `use std::env;` in the spelling test, `text_index` imported in `group.rs`. The `SEARCH_KEY_VERSION` doc names `search_key`, `query_terms` and the joined key (`fts::index_keys`).
