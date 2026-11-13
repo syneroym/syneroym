@@ -89,7 +89,10 @@ pub fn apply_rules_10_and_11(w: &str) -> String {
 
     let mut res = String::with_capacity(s.len());
     for ch in s.chars() {
-        if !res.ends_with(ch) {
+        // Only Latin letters (and the `ch` marker) are spelling variants.
+        // A doubled digit or a doubled letter of another script is data.
+        let collapsible = ch.is_ascii_lowercase() || ch == CH_MARKER;
+        if !(collapsible && res.ends_with(ch)) {
             res.push(ch);
         }
     }

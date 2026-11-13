@@ -84,6 +84,21 @@ fn search_key_breaks_words_at_punctuation() {
 }
 
 #[test]
+fn search_key_keeps_doubled_digits_and_unmapped_letters() {
+    assert_eq!(search_key("100"), "100");
+    assert_eq!(search_key("1000"), "1000");
+    assert_eq!(search_key("9988776655"), "9988776655");
+    // Devanagari digits become ASCII digits, and a doubled one stays doubled.
+    assert_eq!(search_key("\u{0967}\u{0966}\u{0966}"), "100");
+    // Scripts without a table keep a doubled letter.
+    assert_eq!(search_key("谢谢"), "谢谢");
+    assert_eq!(search_key("বব"), "বব");
+    // A doubled Latin letter still collapses.
+    assert_eq!(search_key("hello 100"), "helo 100");
+    assert_eq!(query_terms("100%"), QueryTerms { long: vec!["100".to_string()], short: vec![] });
+}
+
+#[test]
 fn search_key_script_runs_and_latin_base() {
     // é written as e + U+0301 is one Latin run and gives e
     let e_acute_decomposed = "e\u{0301}";

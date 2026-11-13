@@ -1,4 +1,5 @@
 use syneroym_rpc::{Admission, ConversationDeliveryState};
+use syneroym_text_lang::search_key;
 
 use super::store;
 
@@ -147,8 +148,10 @@ fn search_treats_like_characters_as_breaks() {
     )
     .unwrap();
 
-    // "%" is punctuation and breaks words; "100%" becomes long term "100",
+    // "%" is punctuation and breaks words; "100%" becomes the long term "100",
     // matching both "100% off" and "1000 off" (as "100" is a substring of "1000").
+    assert_eq!(search_key::query_terms("100%").long, vec!["100".to_string()]);
+    assert!(search_key::query_terms("100%").short.is_empty());
     let hits = s.search("100%", Some(&conv), 10).unwrap();
     assert_eq!(hits.len(), 2);
     let mut ids: Vec<_> = hits.into_iter().map(|m| m.id).collect();
