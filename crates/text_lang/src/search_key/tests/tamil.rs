@@ -80,7 +80,10 @@ fn tamil_sandhi() {
 #[test]
 fn tamil_aytham() {
     assert_eq!(to_latin("அஃது").text, "ahtu");
-    assert_eq!(to_latin("அஃப").text, "afpa");
+    assert_eq!(to_latin("அஃப").text, "afa");
+    assert_eq!(search_key("ஃபோன்"), "fon");
+    // A search for `phone` meets it: the long term `fon` is inside `fone`.
+    assert!(search_key("phone").contains(&search_key("ஃபோன்")));
 }
 
 #[test]

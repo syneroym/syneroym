@@ -732,9 +732,9 @@ ta	auto	variant	oto	oto	ato	false
 ta	service	pair	service	servise	sarvis	false
 ta	service	variant	servis	servis	sarvis	false
 ta	service	variant	survice	survise	sarvis	false
-ta	fridge	pair	fridge	fridge	fpritj	false
-ta	fridge	variant	frij	frij	fpritj	false
-ta	fridge	variant	fridj	fridj	fpritj	false
+ta	fridge	pair	fridge	fridge	fritj	false
+ta	fridge	variant	frij	frij	fritj	false
+ta	fridge	variant	fridj	fridj	fritj	false
 ta	ac	pair	ac	ak	esi	false
 ta	ac	variant	ay see	ai si	esi	false
 ta	tv	pair	tv	tv	divi	false

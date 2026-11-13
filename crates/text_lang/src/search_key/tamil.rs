@@ -238,6 +238,15 @@ fn parse_stop_unit(
     }
 }
 
+/// `ஃப` is one sound, `f`: the stop after the aytham is read as `f` with the
+/// vowel sign or pulli that follows it. `i` starts on the aytham.
+fn parse_aytham_pa(chars: &[char], i: &mut usize, unit_idx: usize, units: &[Unit]) -> Unit {
+    *i += 1;
+    let stop = parse_stop_unit(chars, i, '\u{0BAA}', unit_idx + 1, false, units);
+    let rest = stop.latin.chars().skip(1).collect::<String>();
+    Unit { latin: format!("f{rest}"), kind: stop.kind, char_base: stop.char_base }
+}
+
 fn parse_units(chars: &[char]) -> Vec<Unit> {
     let loan_drop_i = chars.len() >= 3
         && matches!(chars[0], '\u{0BAA}' | '\u{0B9F}' | '\u{0B95}')
@@ -259,9 +268,12 @@ fn parse_units(chars: &[char]) -> Vec<Unit> {
             continue;
         }
         if c == '\u{0B83}' {
-            let val = if i + 1 < n && chars[i + 1] == '\u{0BAA}' { "f" } else { "h" };
-            units.push(Unit { latin: val.to_string(), kind: UnitKind::Other, char_base: c });
-            i += 1;
+            if i + 1 < n && chars[i + 1] == '\u{0BAA}' {
+                units.push(parse_aytham_pa(chars, &mut i, unit_idx, &units));
+            } else {
+                units.push(Unit { latin: "h".to_string(), kind: UnitKind::Other, char_base: c });
+                i += 1;
+            }
             unit_idx += 1;
             continue;
         }
