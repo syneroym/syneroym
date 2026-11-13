@@ -1,7 +1,9 @@
+use std::time::Instant;
+
 use rusqlite::params_from_iter;
 use syneroym_rpc::Admission;
 
-use super::{open_at, store, store_in_dir};
+use super::{open_at, store, store_in_dir, store_with_config};
 use crate::store::{
     ConversationConfig, ConversationStore,
     message::{M_MESSAGE_COLUMNS, MESSAGE_COLUMNS},
@@ -318,4 +320,30 @@ fn rebuild_indexes_only_visible_messages() {
 
     // Only outgoing (rowid 1) and accepted incoming (rowid 2) must be indexed.
     assert_eq!(rowids.len(), 2);
+}
+
+#[test]
+#[ignore = "Performance measurement for pull request text"]
+fn measure_rebuild_of_10000_messages_on_open() {
+    let config = ConversationConfig {
+        max_pending_per_conversation: 20_000,
+        max_messages_per_conversation: 20_000,
+        ..ConversationConfig::default()
+    };
+    let (s, dir) = store_with_config(config);
+    let conv = s.get_or_create_direct("did:key:zMe", "did:key:zPeer", 1_000).unwrap();
+    for i in 0..10_000 {
+        send_msg(&s, &conv, &format!("m:{i}"), format!("message {i} नल वाला plumber").as_bytes());
+    }
+    {
+        let conn = s.conn().lock().unwrap();
+        conn.execute("UPDATE text_index_version SET key_version = 1 WHERE id = 1", []).unwrap();
+    }
+    drop(s);
+
+    let start = Instant::now();
+    let reopened = open_at(&dir, ConversationConfig::default());
+    let elapsed = start.elapsed();
+    assert_eq!(reopened.search("plumber", None, 500).unwrap().len(), 500);
+    println!("rebuild of 10000 messages on open took: {elapsed:?}");
 }
