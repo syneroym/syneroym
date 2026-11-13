@@ -600,7 +600,7 @@ was done by the same model as the plan author, so it is not an independent
 review.
 
 **Summary:** P16, P17 and P18 are confirmed fixed. 1 new item (P19, minor),
-Open.
+fixed in `5856d964` (see "Plan fix round 3").
 
 ### Confirmed fixed
 
@@ -652,4 +652,14 @@ Open.
   letters `a` to `z`, so a char outside them (a digit, a kept letter or
   mark, another script) cannot affect the end." Move rule 3 to the list of
   rules that make the word shorter.
-- *Status:* Open
+- *Status:* Fixed (5856d964): D-B4b-3 and D-B4b-4 now say "every value in the letter and sign tables is only `a` to `z`", and that chars with no value and digits are not table values. A sign with no value (`ॄ`) is kept as it is, like a kept letter, in both scripts. The section 7.2 test checks the table entries, not every output of `to_latin`, and adds a `ॄ` row. "This needs the input to have no marks" is replaced by the sentence you proposed. Rule 3 moved to the rules that make the word shorter. Rule 1 says "every table value", not "the tables write".
+
+## Plan fix round 3 — Claude Opus 5.5, 2026-11-13
+
+I checked P19 against the plan and accepted it. There is no pushback.
+The kept letters (`ॠ`) and the digits are outputs of `to_latin` that are
+not `a` to `z`, so the round 2 claim was too wide. `sch`→`sk` turns 3
+letters into 2, so it lowers B. The proof is unchanged in substance.
+
+Plan commit: `5856d964`. Open items: none. The owner questions Q1 to Q8
+and the owner check of `spelling-pairs.tsv` are still open.
