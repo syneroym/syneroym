@@ -16,9 +16,13 @@ use syneroym_roym_core::{
     router, services,
 };
 
+mod translation;
+pub use translation::{TARGETS, TRANSLATE, TargetsOutput, TranslateInput, TranslateOutput};
+
 pub const SCHEMA_VERSION: u32 = 1;
 
-/// The one method `web` answers itself; every other method is forwarded.
+/// `web` answers this method itself. It also answers `translation.*` (see
+/// `translation`); every other method is forwarded.
 pub const WHOAMI: &str = "session.whoami";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -172,6 +176,11 @@ pub async fn rpc<H: AppHost>(host: &H, request: HttpRequest) -> Result<HttpRespo
     let admitted = admit(host, &method, request.caller.as_ref()).await;
     if !matches!(admitted, Admitted::Yes) {
         return Ok(admittance_error_response(admitted, id));
+    }
+
+    if router::answered_by_web(&method) {
+        let answer = translation::dispatch(host, &method, rpc_req.params, id).await;
+        return Ok(json_http_response(&answer));
     }
 
     let service = match router::route(&method) {

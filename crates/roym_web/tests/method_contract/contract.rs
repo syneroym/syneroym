@@ -85,20 +85,22 @@ fn every_directory_method_has_typed_input_and_output() {
 }
 
 #[test]
-fn web_has_one_typed_method_of_its_own() {
+fn web_answers_three_typed_methods_of_its_own() {
     let table = web_api::method_table();
-    assert_eq!(table.len(), 1);
-    let row = &table[0];
-    assert_eq!(row.name, "session.whoami");
-    assert!(router::route("session.whoami").is_none());
-    assert!(!row.input.contains("serde_json::value::Value"));
-    assert!(!row.output.contains("serde_json::value::Value"));
-    let probe_res = (row.probe)(&json!({ "__probe__": 1 }));
-    assert!(
-        probe_res.as_ref().err().map(|e| e.message.contains("unknown field")).unwrap_or(false),
-        "probe should refuse unknown fields: {probe_res:?}"
-    );
-    // Web is not checked with assert_service_table: its one method is answered
+    let names: Vec<&str> = table.iter().map(|row| row.name.as_str()).collect();
+    assert_eq!(names, ["session.whoami", "translation.targets", "translation.translate"]);
+    for row in &table {
+        assert!(router::route(&row.name).is_none(), "{} is not routed to a sibling", row.name);
+        assert!(!row.input.contains("serde_json::value::Value"));
+        assert!(!row.output.contains("serde_json::value::Value"));
+        let probe_res = (row.probe)(&json!({ "__probe__": 1 }));
+        assert!(
+            probe_res.as_ref().err().map(|e| e.message.contains("unknown field")).unwrap_or(false),
+            "{}: probe should refuse unknown fields: {probe_res:?}",
+            row.name
+        );
+    }
+    // Web is not checked with assert_service_table: its methods are answered
     // directly rather than routed to a sibling, and its forwarder inspects
     // req.method.
 }
