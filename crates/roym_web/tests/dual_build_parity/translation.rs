@@ -2,8 +2,12 @@
 //! node has no engine, so the answers are an empty list and `unavailable`.
 
 use serde_json::{Value, json};
+use syneroym_roym_core::services;
 
-use super::{fixtures::both_rpc, helpers::*};
+use super::{
+    fixtures::{both_rpc, env},
+    helpers::*,
+};
 
 /// One method on both builds, which must answer alike.
 async fn same_on_both(h: &Harness, method: &str, params: Value) -> Value {
@@ -59,5 +63,17 @@ async fn translation_methods_need_a_signed_in_owner() {
         assert_eq!(wasm.body, native.body, "{method}");
         let answer: Value = serde_json::from_slice(&wasm.body).unwrap();
         assert_eq!(answer["error"]["code"], -32010, "{method}");
+    }
+}
+
+/// `web`'s own `invoke` export has no session, so the owner-only methods
+/// answer "not signed in" there: they run on the HTTP path only.
+#[tokio::test]
+async fn translation_methods_are_not_served_on_the_internal_invoke_path() {
+    let h = harness().await;
+    for method in ["translation.targets", "translation.translate"] {
+        let (wasm, native) = h.local_invoke(services::WEB, &env(method, json!({}))).await;
+        assert_eq!(wasm, native, "{method}");
+        assert_eq!(wasm["error"]["code"], -32010, "{method}: {wasm}");
     }
 }

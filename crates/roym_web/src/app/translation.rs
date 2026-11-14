@@ -77,7 +77,7 @@ pub async fn dispatch<H: AppHost>(
     }
 }
 
-async fn targets<H: AppHost>(host: &H, params: &Value) -> Response {
+async fn targets<H: AppTranslation>(host: &H, params: &Value) -> Response {
     if let Err(err) = method::parse_value::<NoParams>(params) {
         return err.into_response();
     }
@@ -85,7 +85,7 @@ async fn targets<H: AppHost>(host: &H, params: &Value) -> Response {
     Response::ok(json!(TargetsOutput { targets }))
 }
 
-async fn translate<H: AppHost>(host: &H, params: &Value) -> Response {
+async fn translate<H: AppTranslation>(host: &H, params: &Value) -> Response {
     let input = match method::parse_value::<TranslateInput>(params) {
         Ok(input) => input,
         Err(err) => return err.into_response(),
@@ -170,3 +170,6 @@ fn translation_error(e: TranslationError) -> Response {
     };
     Response::err(TRANSLATION_ERROR, message).with_data(data)
 }
+
+#[cfg(test)]
+mod tests;

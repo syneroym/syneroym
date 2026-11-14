@@ -156,6 +156,17 @@ async fn scenario_237_accept_records_what_was_viewed_parity() {
     let error = refused(&h, &quote, json!({ "viewed_lang": "HI" })).await;
     assert_eq!(error["data"], json!({ "field": "viewed_lang" }));
     assert!(error["message"].as_str().unwrap().contains("hi"), "{error}");
+
+    // A repeated accept is checked too: bad values are refused, and not
+    // answered as "already accepted".
+    let accepted = synced_quote(&h, "repeat").await;
+    let (first, _) = both_rpc(&h, "agreement.accept", json!({ "quote_record_id": accepted })).await;
+    assert_eq!(first["result"]["role"], "counterparty", "{first}");
+    let error = refused(&h, &accepted, json!({ "viewed_lang": "ta" })).await;
+    assert_eq!(
+        (error["code"].as_i64(), &error["data"]),
+        (Some(-32602), &json!({ "field": "viewed_lang" }))
+    );
 }
 
 /// The quote author's node countersigns with the original language, and the
