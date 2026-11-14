@@ -173,9 +173,9 @@ function drawTitle(v: TextVersion<Title>): Node[] {
   return [el];
 }
 
-function draw(versions: TextVersion<Title>[]): HTMLElement {
+function draw(versions: TextVersion<Title>[], cardKey?: string): HTMLElement {
   const host = document.createElement("div");
-  recordText(host, versions, drawTitle, TITLE_TEXTS);
+  recordText(host, versions, drawTitle, TITLE_TEXTS, cardKey);
   return host;
 }
 
@@ -300,12 +300,12 @@ describe("recordText with a translation engine", () => {
     setTargetsForTest(["en"]);
     const seen: Record<string, unknown>[] = [];
     stubRpc({ "translation.translate": fakeEngine(seen) });
-    const first = draw(HINDI_ONLY);
+    const first = draw(HINDI_ONLY, "quote:1");
     first.querySelector<HTMLButtonElement>(".record-text-translate")!.click();
     await vi.waitFor(() => expect(shownOf(first)).toEqual(["en", "machine"]));
 
     // The thread is drawn again.
-    const second = draw(HINDI_ONLY);
+    const second = draw(HINDI_ONLY, "quote:1");
     expect(shownOf(second)).toEqual(["en", "machine"]);
     expect(second.querySelector(".title")!.textContent).toBe("T:नल वाला");
     expect(second.querySelector(".record-text-translate")).toBeNull();
@@ -313,10 +313,29 @@ describe("recordText with a translation engine", () => {
     // The person goes back to the original and the thread is drawn again:
     // the original stays on screen, and the machine version is one click away.
     second.querySelector<HTMLButtonElement>(".record-text-switch")!.click();
-    const third = draw(HINDI_ONLY);
+    const third = draw(HINDI_ONLY, "quote:1");
     expect(shownOf(third)).toEqual(["hi", "original"]);
     third.querySelector<HTMLButtonElement>(".record-text-switch")!.click();
     expect(shownOf(third)).toEqual(["en", "machine"]);
+    expect(seen).toHaveLength(1);
+  });
+
+  it("opens another card with the same text in its best version, the machine version one click away", async () => {
+    readerReads([]);
+    setTargetsForTest(["en"]);
+    const seen: Record<string, unknown>[] = [];
+    stubRpc({ "translation.translate": fakeEngine(seen) });
+    const first = draw(HINDI_ONLY, "quote:1");
+    first.querySelector<HTMLButtonElement>(".record-text-translate")!.click();
+    await vi.waitFor(() => expect(shownOf(first)).toEqual(["en", "machine"]));
+
+    for (const cardKey of ["quote:2", undefined]) {
+      const other = draw(HINDI_ONLY, cardKey);
+      expect(shownOf(other), String(cardKey)).toEqual(["hi", "original"]);
+      expect(other.querySelector(".record-text-translate")).toBeNull();
+      other.querySelector<HTMLButtonElement>(".record-text-switch")!.click();
+      expect(shownOf(other), String(cardKey)).toEqual(["en", "machine"]);
+    }
     expect(seen).toHaveLength(1);
   });
 

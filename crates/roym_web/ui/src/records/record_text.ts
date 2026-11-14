@@ -8,6 +8,7 @@ import {
   targetFor,
   translateTexts,
   translationFailure,
+  wasShown,
 } from "../translation/translation";
 
 export interface TextVersion<F> {
@@ -77,7 +78,9 @@ export function bestVersion<F>(versions: TextVersion<F>[], reader: readonly stri
 /// makes one machine version; a record has at most one. The machine version
 /// is always made from the original, never from a translation of it. A
 /// machine version this page already made for the same text is drawn
-/// again without a second call, and on screen if it was on screen.
+/// again without a second call. It is on screen only if the person had it
+/// on screen on this card: `cardKey` names the card, and a card with no key
+/// always opens in its best version.
 ///
 /// `host` records what is on screen in `data-shown-lang` (the version's
 /// language) and `data-shown-via` (`original`, `author` or `machine`), so a
@@ -87,6 +90,7 @@ export function recordText<F>(
   versions: TextVersion<F>[],
   draw: (v: TextVersion<F>) => Node[],
   texts?: TranslatableText<F>,
+  cardKey?: string,
 ): void {
   if (versions.length === 0) return;
   const all = [...versions];
@@ -127,8 +131,10 @@ export function recordText<F>(
   };
   const earlier = machine && keptTranslation(machine.sent, machine.sourceLang, machine.target);
   if (machine && earlier) {
-    machineIdx = addMachine(machine, earlier.out.texts, earlier.out.engine);
-    if (earlier.shown) currentIdx = machineIdx;
+    machineIdx = addMachine(machine, earlier.texts, earlier.engine);
+    if (cardKey !== undefined && wasShown(cardKey, machine.sent, machine.sourceLang, machine.target)) {
+      currentIdx = machineIdx;
+    }
   }
 
   const contentBox = document.createElement("div");
@@ -158,8 +164,8 @@ export function recordText<F>(
     const v = all[currentIdx];
     contentBox.replaceChildren(...draw(v));
     markShown(currentIdx);
-    if (machine && machineIdx !== null) {
-      keepShown(machine.sent, machine.sourceLang, machine.target, currentIdx === machineIdx);
+    if (machine && cardKey !== undefined && machineIdx !== null) {
+      keepShown(cardKey, machine.sent, machine.sourceLang, machine.target, currentIdx === machineIdx);
     }
     if (v.machine) {
       noteSpan.textContent = machineNote(v.lang, v.machine);

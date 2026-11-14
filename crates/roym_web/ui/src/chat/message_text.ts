@@ -65,7 +65,7 @@ function translateButton(body: string, languages: readonly string[], target: str
   const sourceLang = languages[0] ?? null;
   const earlier = keptTranslation([body], sourceLang, target);
   if (earlier) {
-    showTranslation(box, earlier.out.texts[0] ?? "", earlier.out.engine, target);
+    showTranslation(box, earlier.texts[0] ?? "", earlier.engine, target);
     return box;
   }
   const button = document.createElement("button");

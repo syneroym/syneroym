@@ -14,6 +14,7 @@ import {
   targetFor,
   translateTexts,
   translationFailure,
+  wasShown,
 } from "./translation";
 
 afterEach(async () => {
@@ -163,9 +164,10 @@ describe("translationFailure", () => {
     expect(translationFailure(refusal({ kind: "too-long", limit: 100 }))).toBe(
       "The text is too long for the translation service.",
     );
-    expect(translationFailure(refusal({ kind: "engine-failed" }, "engine said no"))).toBe(
-      "The translation service failed. engine said no",
-    );
+    // The node's own message starts with the fact the Hub already says.
+    expect(
+      translationFailure(refusal({ kind: "engine-failed" }, "translation engine failed: engine said no")),
+    ).toBe("The translation service failed. engine said no");
   });
 
   it("does not nest a refusal inside another sentence", () => {
@@ -198,7 +200,7 @@ describe("kept translations", () => {
     stubRpc({ "translation.translate": reply });
     expect(keptTranslation(["x"], "hi", "en")).toBeUndefined();
     await translateTexts(["x"], "hi", "en");
-    expect(keptTranslation(["x"], "hi", "en")?.out.texts).toEqual(["a"]);
+    expect(keptTranslation(["x"], "hi", "en")?.texts).toEqual(["a"]);
     expect(keptTranslation(["x"], "hi", "ta")).toBeUndefined();
     expect(keptTranslation(["x"], null, "en")).toBeUndefined();
     expect(keptTranslation(["y"], "hi", "en")).toBeUndefined();
@@ -208,12 +210,13 @@ describe("kept translations", () => {
     expect(keptTranslation(["z"], "hi", "en")).toBeUndefined();
   });
 
-  it("remembers whether the translation was on screen", async () => {
-    stubRpc({ "translation.translate": reply });
-    await translateTexts(["x"], "hi", "en");
-    expect(keptTranslation(["x"], "hi", "en")?.shown).toBe(false);
-    keepShown(["x"], "hi", "en", true);
-    expect(keptTranslation(["x"], "hi", "en")?.shown).toBe(true);
+  it("remembers on which card the translation was on screen", () => {
+    expect(wasShown("quote:1", ["x"], "hi", "en")).toBe(false);
+    keepShown("quote:1", ["x"], "hi", "en", true);
+    expect(wasShown("quote:1", ["x"], "hi", "en")).toBe(true);
+    expect(wasShown("quote:2", ["x"], "hi", "en")).toBe(false);
+    keepShown("quote:1", ["x"], "hi", "en", false);
+    expect(wasShown("quote:1", ["x"], "hi", "en")).toBe(false);
   });
 
   it("forgets the oldest results beyond its limit", async () => {

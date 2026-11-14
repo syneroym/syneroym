@@ -38,18 +38,16 @@ interface TranslateReply {
 /// answers, and for a node with no translation engine.
 let targets: string[] = [];
 
-/// A machine translation made on this page, and whether the person had it on
-/// screen when it was last drawn.
-export interface Kept {
-  out: MachineText;
-  shown: boolean;
-}
-
 /// The machine translations of this page, by the text that was sent. A
 /// thread is drawn again on every new event, and a translation drawn again
 /// from here costs no second call to the engine. Nothing is stored on the
 /// device: a reload starts empty.
-const kept = new Map<string, Kept>();
+const kept = new Map<string, MachineText>();
+
+/// The cards on which the person chose to read a kept translation, each
+/// as the card's key joined to the key of the translation. The choice is
+/// about one card: another card with the same text does not inherit it.
+const shownOn = new Set<string>();
 
 function keptKey(texts: readonly string[], sourceLang: string | null, targetLang: string): string {
   return JSON.stringify([sourceLang, targetLang, texts]);
@@ -61,25 +59,52 @@ export function keptTranslation(
   texts: readonly string[],
   sourceLang: string | null,
   targetLang: string,
-): Kept | undefined {
+): MachineText | undefined {
   return kept.get(keptKey(texts, sourceLang, targetLang));
 }
 
-/// Records whether the translation of these texts is on screen, so a draw
-/// of the same record shows it again.
+function shownKey(
+  cardKey: string,
+  texts: readonly string[],
+  sourceLang: string | null,
+  targetLang: string,
+): string {
+  return JSON.stringify([cardKey, keptKey(texts, sourceLang, targetLang)]);
+}
+
+/// Records whether the person has the translation of these texts on screen
+/// on the card `cardKey`, so a draw of the same card shows it again.
 export function keepShown(
+  cardKey: string,
   texts: readonly string[],
   sourceLang: string | null,
   targetLang: string,
   shown: boolean,
 ): void {
-  const entry = kept.get(keptKey(texts, sourceLang, targetLang));
-  if (entry) entry.shown = shown;
+  const key = shownKey(cardKey, texts, sourceLang, targetLang);
+  shownOn.delete(key);
+  if (!shown) return;
+  shownOn.add(key);
+  if (shownOn.size > KEPT_LIMIT) {
+    const oldest = shownOn.values().next().value;
+    if (oldest !== undefined) shownOn.delete(oldest);
+  }
+}
+
+/// Whether the person had this translation on screen on the card
+/// `cardKey` when it was last drawn.
+export function wasShown(
+  cardKey: string,
+  texts: readonly string[],
+  sourceLang: string | null,
+  targetLang: string,
+): boolean {
+  return shownOn.has(shownKey(cardKey, texts, sourceLang, targetLang));
 }
 
 function keep(key: string, out: MachineText): void {
   kept.delete(key);
-  kept.set(key, { out, shown: false });
+  kept.set(key, out);
   if (kept.size > KEPT_LIMIT) {
     const oldest = kept.keys().next().value;
     if (oldest !== undefined) kept.delete(oldest);
@@ -150,6 +175,14 @@ export async function translateTexts(
   return out;
 }
 
+/// The node starts its `engine-failed` message with this, then adds the
+/// engine's own text. The Hub says the first part in the reader's language.
+const ENGINE_FAILED_PREFIX = /^translation engine failed: /;
+
+function engineText(message: string): string {
+  return message.replace(ENGINE_FAILED_PREFIX, "");
+}
+
 /// The text to show when a translation did not happen. A refusal by the
 /// translation host is told by its kind, so the person learns what they can
 /// change (a text that is too long, for example). Any other failure is
@@ -168,7 +201,7 @@ export function translationFailure(err: unknown): string {
       case "too-long":
         return t("translation-too-long");
       case "engine-failed":
-        return t("translation-engine-failed", { detail: err.message });
+        return t("translation-engine-failed", { detail: engineText(err.message) });
       default:
         return errText(err);
     }
@@ -189,4 +222,5 @@ export function machineNote(targetLang: string, engine: Engine): string {
 export function setTargetsForTest(list: string[]): void {
   targets = [...list];
   kept.clear();
+  shownOn.clear();
 }

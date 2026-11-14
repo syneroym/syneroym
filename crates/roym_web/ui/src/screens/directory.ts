@@ -390,7 +390,7 @@ function renderHits(host: HTMLElement, hits: MergedHit[], truncated: boolean, ru
       summaryEl.setAttribute("lang", langAttr(v.lang));
 
       return [titleEl, summaryEl];
-    }, textFields<HitTextFields>(["title", "summary"]));
+    }, textFields<HitTextFields>(["title", "summary"]), `hit:${hit.listing_id}`);
     if (hit.categories.length) {
       const labels = hit.categories.map((c) => categoryLabel(c)).join(", ");
       card.appendChild(

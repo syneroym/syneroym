@@ -283,7 +283,8 @@ export function renderQuote(data?: QuoteData): HTMLElement {
     }
 
     return nodes;
-  }, textFields<QuoteTextFields>(["scope", "cancellation_terms", "refund_terms", "dispute_path"]));
+  }, textFields<QuoteTextFields>(["scope", "cancellation_terms", "refund_terms", "dispute_path"]),
+  data?.quote_id !== undefined ? `quote:${data.quote_id}` : undefined);
 
   return card;
 }

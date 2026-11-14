@@ -67,7 +67,8 @@ export function renderRequest(data?: RequestData): HTMLElement {
       descP.textContent = v.fields.description;
       descP.setAttribute("lang", langAttr(v.lang));
       return [descP];
-    }, textFields<{ description: string }>(["description"]));
+    }, textFields<{ description: string }>(["description"]),
+    data?.request_id !== undefined ? `request:${data.request_id}` : undefined);
   }
 
   if (data?.categories && data.categories.length > 0) {
