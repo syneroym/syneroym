@@ -1472,7 +1472,7 @@ This appendix defines envisioned extensions to substrate and application contrac
 
 - **Accessibility:**
 
-> **Envisioned.** Not built yet. The Roym Hub UI has no ARIA markup, no screen reader testing, and no WCAG 2.1 AA audit.
+> **Envisioned.** Not built yet. The Hub sets `lang` and a few ARIA labels (the language list, the category picker, the search translate list). It has no screen reader test and no WCAG 2.1 AA audit.
 >
 > Base substrate capability flows (onboarding, recovery, Hub UI) must target WCAG 2.1 AA. This standard ensures that disabled users can operate the system independently.
 
