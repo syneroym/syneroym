@@ -3,8 +3,8 @@
 *Reader: the developer (or AI) who implements slice B6. You do not have the
 planning conversation. This plan is meant to stand alone.*
 
-**Status: plan written, 2026-11-14. Owner questions Q1 to Q8 are open
-(section 2.1).**
+**Status: plan written, 2026-11-14. Owner questions Q1 to Q8 answered
+2026-11-14 (section 2.1). Plan review round 1 (P1 to P7) folded in.**
 
 **Size and PR.** S. One PR on `feat/m08b-b6-close-out`, with the commits of
 section 6 in that order. The branch starts from `main` at `22331a3f` (B5 is
@@ -13,8 +13,10 @@ already holds the plan commit.
 
 B6 ends the roym-multilingual change. It adds one browser test on the two
 demo nodes: Alice uses the Hub in Hindi, finds Bob's English listing by its
-category, asks Bob for the work, gets his quote and accepts it. Both nodes
-then hold a signed agreement. B6 also checks every `ML-*` row of the change
+category, sends Bob a request in that category, gets his quote and accepts
+it. Both nodes then hold a signed agreement. The test ends at the signed
+agreement. It has no time slot, and the request does not name the listing
+(Q2, Q3). B6 also checks every `ML-*` row of the change
 doc against the code: each row must name tests that exist and that prove
 what the row says, or name the later sub-milestone that finishes it. It
 fixes the living docs that are now false or incomplete, moves the
@@ -73,7 +75,9 @@ deviation is written there, and only there.
   the M08B demo story. Today it has one test (`:17`).
 - **Booking (in this plan):** the Hub path that ends in a signed agreement:
   a request card, a quote card, Accept, and both halves of the
-  `agreement-receipt` (Q2). The Hub quote form has no slot field
+  `agreement-receipt` (Q2). It does not include a time slot. The demo text,
+  the test title and the PR text say "ends at the signed agreement" and do
+  not use "books". The Hub quote form has no slot field
   (`crates/roym_web/ui/src/screens/messages.ts:752` to `:968`), so a slot
   booking with `booking-progress` is not part of it.
 - **Acceptance half:** one party's signed `agreement-receipt`. The stored
@@ -88,14 +92,15 @@ deviation is written there, and only there.
 ## 1. What B6 builds, in one paragraph
 
 A second test in story 40 (Q1): Bob, in an English Hub on his node,
-publishes an English listing in category `gardening` to his own directory.
-Alice, in a Hindi Hub on her node, adds Bob's directory, searches by the
-Hindi label of `gardening`, finds Bob's listing, presses "Message this
-listing owner" and reads Bob's address, sends Bob a request in Hindi, and
-accepts Bob's quote in rupees. The test checks that Alice's half signs
-`viewed_lang = "en"` and `viewed_via_mt = false`, and that the pair becomes
-`complete` on both nodes. Three small test helpers support it in
-`hub-helpers.ts`. One Hub unit test closes a gap in ML-24 (the contact list
+publishes an English listing in category `gardening` to his own directory,
+with his conversation address on it. Alice, in a Hindi Hub on her node, adds
+Bob's directory, searches by the Hindi label of `gardening`, finds Bob's
+listing, presses "Message this listing owner" and reads Bob's address, sends
+Bob a request in Hindi (category only, Q3), and accepts Bob's quote in
+rupees. The test checks that Alice's half signs `viewed_lang = "en"` and
+`viewed_via_mt = false`, and that the pair becomes `complete` on both nodes.
+It ends there (Q2). Test helpers support it in `hub-helpers.ts`: a changed
+`publishListing` and three new helpers. One Hub unit test closes a gap in ML-24 (the contact list
 sort). Then the close-out: every `ML-*` row of the change doc gets correct
 test names and full paths, the missing deviations are added, the living
 docs say what M08B built, the backlog is updated, and the change doc gets
@@ -109,12 +114,13 @@ docs say what M08B built, the backlog is updated, and the change doc gets
   English, as Bob wrote it, and the category shows in Hindi.
 - She presses "इस लिस्टिंग के मालिक को संदेश भेजें" (message this listing
   owner) and sees Bob's address. She opens a chat with Bob and sends him a
-  request, written in Hindi.
+  request in the same category, written in Hindi. The request does not name
+  the listing.
 - Bob uses his Hub in English. He sees Alice's request and sends a quote of
   ₹1,00,000.50.
 - Alice sees the quote with "कुल: ₹1,00,000.50" (Indian digit grouping) and
   presses "ये शर्तें स्वीकार करें" (accept these terms). Both Hubs show the
-  signed agreement.
+  signed agreement. The story ends here. There is no time slot.
 
 Nothing in this story is new for the person. B1a to B5 built each part. B6
 shows them working together, across two nodes, in one story.
@@ -122,8 +128,9 @@ shows them working together, across two nodes, in one story.
 How a developer can see it work:
 
 - `mise run demo` runs story 40. The new test is "Roym languages story:
-  Alice, in Hindi, books Bob's English listing". `DEMO_MODE=present mise
-  run demo` shows it in a headed browser, step by step.
+  Alice, in Hindi, finds an English listing and accepts a quote from its
+  owner". `DEMO_MODE=present mise run demo` shows it in a headed browser,
+  step by step.
 - `cd crates/roym_web/ui && npx vitest run src/screens/contacts.test.ts`
   runs the new contact sort test.
 - `cargo xtask check-change-docs` passes with the change doc at
@@ -161,6 +168,11 @@ nodes with a Hub each, and story 20 already drives two pages
 - (d) Rust only (`roym_transaction_e2e`). It has no Hub, so it proves
   nothing about the Hindi Hub.
 
+Owner answer: (a), 2026-11-14. A second test in story 40. Note: this is the
+first browser run of the quote form and Accept across two nodes. Tests 26,
+29 and 30 of `roym-hub.spec.ts` draw them only against a dummy address or a
+fake card (P7, D-B6-7).
+
 **Q2. What does "books" mean in this test? (blocks Step 4)**
 
 task.md B6 says "finds and books an English listing". The Hub quote form
@@ -174,6 +186,10 @@ has no slot (`messages.ts:752` to `:968`). A slot booking with
   `docs/roym-integrated-experience-spec.md:391` to `:399`).
 - (b) Also schedule a slot through `roymctl`. It leaves the Hub, and the
   slot path has nothing to do with languages.
+
+Owner answer: (a), 2026-11-14. The test ends at the signed agreement. The
+demo text (Step 5) and the PR text say so, so nobody reads "books" as "has
+a time slot".
 
 **Q3. The request does not name the listing. (blocks Step 4)**
 
@@ -194,6 +210,10 @@ element (`directory.ts:356`).
 - (c) The test copies `data-listing-id` into the box. Rejected: no person
   can do this, so the test would show a path that does not exist.
 
+Owner answer: (a), 2026-11-14. Category only, plus the backlog row of
+section 8. The demo text and the step captions must not say the request is
+"for" the listing. They say the request names the category.
+
 **Q4. The Latin-letter search half of task.md B6. (blocks Step 4)**
 
 task.md B6 also asks for "a Latin-letter search finds a Devanagari title".
@@ -205,6 +225,10 @@ finds a Devanagari listing, and the other way" (both directions).
   **Recommended.**
 - (b) Repeat the search in the booking test. It adds time to a story that
   is already the longest, and proves nothing new.
+
+Owner answer: (a), 2026-11-14. The ML-21 row names both tests: story 40
+(Latin to Devanagari) and `roym-hub.spec.ts:1447` (both directions) (Step
+7.2).
 
 **Q5. How do the requirements and the matrix show a half-built
 `[APP-A11Y]`? (blocks Step 6)**
@@ -235,6 +259,9 @@ evidence says the bundles exist. The matrix uses only two status values,
   built. This is the form of `[PRD-CUX]`. A reader who reads only the
   status column thinks localisation is not built.
 
+Owner answer: (a), 2026-11-14, with the placement of P3: `[APP-L10N]` goes
+in Phase 6, not in the appendix (Step 6.1, 6.2).
+
 **Q6. The open owner review of the B5 Hindi text. (blocks Step 7)**
 
 status.md says the owner review of the 13 new Hindi messages of B5 is
@@ -249,6 +276,10 @@ not in the `hi.ftl` header (B5 R6).
   "every criterion is met" includes Hindi text that the owner has read,
   and the two legal messages bind a person.
 - (b) Set `status: done` now and keep the review as a backlog row.
+
+Owner answer: (a), 2026-11-14. `status: done` only after the owner has read
+the 13 B5 Hindi messages. The rest of B6 can be built while the review is
+open; only the last commit (Step 7.9) waits.
 
 **Q7. Criteria with a part that a later sub-milestone builds. (blocks
 Step 7)**
@@ -276,6 +307,9 @@ The options:
 - (b) Keep `status: draft` until M08C, M08D and M08G are done. The change
   doc then stays open for months for parts that other change docs build.
 
+Owner answer: (a), 2026-11-14, with one deviation and one backlog row for
+each later part: ML-26, ML-28, ML-9 and ML-23 (section 8, Step 7.3).
+
 This plan commit adds the missing ML-28 deviation now, because task.md
 section 5 says to record it "when its slice is planned" (section 9). The
 ML-23 deviation is added in Step 7.
@@ -287,6 +321,8 @@ ML-23 deviation is added in Step 7.
   every plan and review file) is a separate session after B6 merges.
   **Recommended:** T8 asks for a fresh audit by another tool.
 - (b) Yes, in the same PR.
+
+Owner answer: (a), 2026-11-14. No milestone close in B6.
 
 ### 2.2 Points found while reading
 
@@ -380,8 +416,9 @@ ML-23 deviation is added in Step 7.
      source of record is now the crate copy,
      `crates/text_lang/src/search_key/tests/spelling-pairs.tsv`; the copy
      in this folder is the same file (`diff` is empty).
-   - `change.md:512` to `:534`: 14 of 19 tasks are unticked, though their
-     work is done.
+   - `change.md:512` to `:534`: 16 of 21 tasks are unticked (5 are ticked),
+     though their work is done. Two task texts name a place that is not
+     where the work went (Step 7.6).
    - `task.md:5`: "No slice is planned yet." (False since S0.) The
      milestone status line itself belongs to T8 (Q8); B6 only removes the
      false sentence.
@@ -431,7 +468,7 @@ three of them in a browser, on two nodes:
 | --- | --- | --- |
 | ML-7, ML-8 | A Hindi reader finds another node's English listing by the Hindi label of its category, and the hit shows the category in Hindi. | story 40, new test (Step 4) |
 | ML-4 | The quote total shows `₹1,00,000.50` in a Hindi Hub, from real records. | story 40, new test |
-| ML-18 | Alice's signed half says `viewed_lang = "en"`, `viewed_via_mt = false`, read back through `agreement.verify`; the pair is `complete`. | story 40, new test |
+| ML-18 | Alice's signed half says `viewed_lang = "en"`, `viewed_via_mt = false`, read back through `agreement.verify`; the pair is `complete` on both nodes. The story runs the build the demo nodes deploy (the WASM components from the manifest, `20-roym-setup.sh:17`). The native build is covered by `scenario_237_accept_records_what_was_viewed_parity` in `crates/roym_web/tests/dual_build_parity/agreement_lang.rs:124`. | story 40, new test |
 | ML-24 | The contact list is sorted by script, with the Hub's own script first. | `screens/contacts.test.ts` (Step 2) |
 
 All other rows: B6 corrects the Test column (section 2.2, points 1 to 3)
@@ -457,7 +494,8 @@ data.
 | --- | --- | --- |
 | 1 | `fixtures.ts` exports the types `Browser` and `Page` | also `Locator` (test code only) |
 | 2 | `publishListing` returns nothing | it returns the listing id it saved (test code only; the old callers ignore it) |
-| 3 | Story 40 has one test | two tests; the demo takes longer (section 7.5) |
+| 3 | `publishListing` always puts the directory DID in the listing's conversation address | a new last optional parameter `conversationAddress`, default `directoryDid`: the old callers keep today's behaviour; Bob's call passes `bob.addr` (test code only) |
+| 4 | Story 40 has one test | two tests; the demo takes longer (section 7.5) |
 
 ### Stays the same
 
@@ -470,8 +508,9 @@ data.
 ## 5. Decisions this plan makes
 
 **D-B6-1. The booking test is a second test in story 40 (Q1 (a)).** Its
-title is "Roym languages story: Alice, in Hindi, books Bob's English
-listing". It uses `test.describe.configure({ mode: 'serial' })`, which the
+title is "Roym languages story: Alice, in Hindi, finds an English listing
+and accepts a quote from its owner". The title does not say "books" or
+that the request is for the listing (Q2, Q3). It uses `test.describe.configure({ mode: 'serial' })`, which the
 file already has (`40-roym-languages.spec.ts:12`). It opens Bob's page with
 `newSession(browser, testInfo)` (`demo/steps.ts:78`), as story 20 does, and
 closes it in `finally`. Each step is a `step(page, "Alice's screen: ...")`
@@ -514,7 +553,13 @@ in the file. A Rust test as `` `fn_name` ``. A later part as "Later:
 
 **D-B6-7. No product change.** If a test of Step 4 shows a product bug,
 stop and tell the owner. Do not fix it in B6 without an owner answer; a fix
-may need its own slice.
+may need its own slice. The booking test is the first browser run of the
+quote form and Accept across two nodes (Q1), so a bug is possible. If the
+booking test finds a product bug, the PR keeps Steps 2, 3, 5, 6 and 7 and
+the unit test. The owner then chooses between a fix slice and a backlog
+row, and `status: done` waits for that answer. Step 4's test is not left in
+the PR failing: do not commit it until it passes, or the owner has said how
+to proceed.
 
 ## 6. Step-by-step changes
 
@@ -536,10 +581,23 @@ Done in the planning session: this file, the B6 row of
    `राम`, `Ram`.
    - "lists Latin names first in an English Hub": the drawn rows are
      `Ram`, `Sita`, `राम`.
-   - "lists Devanagari names first in a Hindi Hub": activate Hindi as the
-     other screen tests do (find the helper with
-     `git grep -n "activateWith\|initLanguageWith" crates/roym_web/ui/src/screens/*.test.ts`);
-     the rows are `राम`, `Ram`, `Sita`.
+   - "lists Devanagari names first in a Hindi Hub": activate Hindi with
+     `activateWith` (see the next bullet); the rows are `राम`, `Ram`,
+     `Sita`.
+   - Find the rows like this: the list is the last element child of the
+     `.contacts-screen` box that `renderContacts` draws into the host, and
+     each row is a bare `div` child of it (`contacts.ts:45` to `:46`,
+     `:64` to `:68`). A row's text is `${name} ${favourite ? "★" : ""}`, so an
+     unfavourited row ends with a space. Compare `textContent!.trim()`, not
+     the raw text.
+   - Set the language in the test, not by chance. `contacts.test.ts` resets
+     only the stubbed globals in `afterEach`, so a Hindi case would leave
+     Hindi on for the next test. Call `await activate("en")` at the start of
+     the English case and the Hindi case uses
+     `await activateWith("hi", { hi: async () => HINDI })` (import `HINDI`
+     from `../i18n/hi.ftl?raw`, as `directory.test.ts:144` does). Add
+     `await activate("en")` to the file's `afterEach`, so no test sees
+     Hindi from an earlier one.
    - Assert each row's text with `!`, never `?.` (B2 R3).
    - Prove the test can fail: change `sortByName` at `contacts.ts:64` to
      keep the input order, run the test, see both cases fail, and undo.
@@ -552,8 +610,19 @@ All in `crates/substrate/tests/e2e/`.
 
 1. `fixtures.ts:4`: `export type { Browser, Locator, Page } from '@playwright/test';`
    (section 2.2, point 7).
-2. `hub-helpers.ts`, `publishListing` (`:106`): return the listing id. It
-   is the `lst_...` text that `.listing-save-result` already shows (`:123`).
+2. `hub-helpers.ts`, `publishListing` (`:106`): two changes, both needed
+   by Step 4.
+   - **A new last optional parameter `conversationAddress = directoryDid`.**
+     The helper fills `.listing-address-input` with `directoryDid` today
+     (`:122`). That input is the listing's `conversation_address`
+     (`screens/listings.ts:324`, sent at `:471`), and a directory hit shows
+     it after "Message this listing owner" (`directory.ts:445`). With the
+     directory DID there, Bob's hit would show his directory DID, not
+     `bob.addr`, and no person could use it to open a chat. Fill the input
+     with `conversationAddress`. The old callers pass nothing and keep
+     today's behaviour. Bob's call in Step 4 passes `bob.addr`.
+   - **Return the listing id.** It
+     is the `lst_...` text that `.listing-save-result` already shows (`:123`).
    The id is `content_digest("lst_", ...)` (`derive_listing_id`,
    `crates/roym_core/src/listing.rs:419`); read the digest alphabet in
    `content_digest` and write the regular expression from it (for example
@@ -601,8 +670,10 @@ with `requireEnv(env, key, SCRIPT)` for `ALICE_HUB_URL`, `ALICE_KEY`,
 2. **Bob's screen: publish an English listing about garden work.**
    `ensureOwnSynOrg(bobPage, bob.directoryDid, 'gardening', 'en')`, then
    `issueOwnCredential(bobPage, 'gardening')`, then
-   `const listingId = await publishListing(bobPage, \`Hedge trimming ${runTag}\`, 'gardening', bob.directoryDid, 'en')`.
-   The text language select keeps `en`.
+   `const listingId = await publishListing(bobPage, \`Hedge trimming ${runTag}\`, 'gardening', bob.directoryDid, 'en', undefined, bob.addr)`.
+   The last argument is Bob's conversation address (Step 3.2), so the
+   listing's hit shows an address a person can open. The text language
+   select keeps `en`.
 3. **Alice's screen: sign in and switch the Hub to Hindi.**
    `loginWithDelegatedKey(page, alice.key)`, `chooseHubLanguage(page,
    'hi')`. A new browser context starts in English (the comment at
@@ -622,11 +693,15 @@ with `requireEnv(env, key, SCRIPT)` for `ALICE_HUB_URL`, `ALICE_KEY`,
    - its `.hit-categories` contains `hubMessage('hi',
      'taxonomy-category-gardening')`.
 5. **Alice's screen: ask how to reach the listing owner.** In that hit,
-   click `.hit-engage`. `.hit-engage-out` contains `bob.addr`.
-6. **Alice's screen: send Bob a request in Hindi.** `openMessages(page,
-   'hi')`, `openConversation(page, bob.addr, 'hi')`, then
+   click `.hit-engage`. `.hit-engage-out` contains `bob.addr`: it shows the
+   listing's conversation address, which Step 2 set to `bob.addr`.
+6. **Alice's screen: send Bob a request in Hindi, in the same category.**
+   `openMessages(page, 'hi')`, `openConversation(page, bob.addr, 'hi')`,
+   then
    `sendRequest(page, \`बगीचे की बाड़ काटनी है ${runTag}\`, 'gardening', 'hi')`.
-   The request card (`.thread-messages .card-request`) with that
+   The request names the category only; the listing id box stays empty
+   (Q3). The step caption says so and does not say "for the listing". The
+   request card (`.thread-messages .card-request`) with that
    description is visible.
 7. **Bob's screen: read the request and send a quote in rupees.**
    `openMessages(bobPage)`, `openConversation(bobPage, alice.addr)`. Wait
@@ -644,28 +719,50 @@ with `requireEnv(env, key, SCRIPT)` for `ALICE_HUB_URL`, `ALICE_KEY`,
    `.accept-mt-box` appears (she reads the original). A
    `.card-agreement-receipt` (`cards/templates/agreement_receipt.ts:57`)
    appears in her thread.
-10. **Both screens: the agreement is complete.** Bob keeps his thread
-    open; wait for a `.card-agreement-receipt` there (60 s). Then poll
-    `agreement.list` on Alice's page with `expect.poll` (60 s) until the
-    agreement with the run tag has `pair.state == "complete"`. Then the
-    D-B6-5 check of `viewed_lang` and `viewed_via_mt`.
+10. **Both screens: the agreement is complete on both nodes.** A receiver
+    files the other party's half inside `transaction.sync`
+    (`sync.rs:274`, `:527`); `agreement.list` only reads. So the check must
+    run the sync itself and not rely on the Hub redrawing. Add a small
+    local helper in the test, `pairState(page, conversation)`, that calls
+    `rpcCall(page, 'transaction.sync', { conversation })`, then
+    `rpcCall(page, 'agreement.list', { conversation })`, and returns the
+    `pair.state` of the agreement whose `terms.scope` holds the run tag (or
+    `undefined` when there is none yet). The `conversation` of each page is
+    the `conversation_id` that `conversation.open` returns for the other
+    person's address (`messages.ts:124`, the call `openConversation`
+    already makes through the Hub): call
+    `rpcCall(page, 'conversation.open', { address })` once per page, with
+    `bob.addr` on Alice's page and `alice.addr` on Bob's, and check that it
+    returns the id of the thread that is already open. Then:
+    - Wait for a `.card-agreement-receipt` on Bob's open thread (60 s).
+    - `expect.poll(() => pairState(page, aliceConversation), { timeout:
+      60_000 }).toBe('complete')`, and the same for Bob's page. Assert
+      `complete` on both. (If the owner later wants one node only, change
+      section 1 and the ML-18 row to say "on Alice's node".)
+    - Then the D-B6-5 check of `viewed_lang` and `viewed_via_mt`.
 
 Then:
 
-- Run `mise run demo` (redirected) and confirm all stories pass. Write the
-  run time of story 40 before and after into the PR text.
+- Run `mise run demo` (redirected) and confirm all stories pass. Record the
+  time of the whole `mise run demo` run before the new test (on `main`, or
+  with the test skipped) and after it, and write both in the PR text, with
+  the 900 s `globalTimeout` (`playwright-demo.config.ts:17`) (section 7.5).
+  Also write the run time of story 40 before and after.
 - If step 10 fails because Bob's node does not countersign, stop and tell
   the owner (D-B6-7).
-- Commit (`test(demo): a Hindi reader books an English listing`).
+- Commit (`test(demo): a Hindi reader accepts an English owner's quote`).
 
 ### Step 5 — Demo doc
 
-`docs/demo/demo.md`, section "R3b The Hub in Hindi" (starts at `:1262`):
-add one paragraph after the search part (`:1279` to `:1281`), in the style
-of the section: Bob publishes an English garden listing; Alice, in Hindi,
-finds it by category, messages Bob, sends a request, and accepts his quote
-in rupees; both Hubs show the agreement. Add a **Say:** line. Keep the
-script line at `:1285`. Commit with Step 6.
+`docs/demo/demo.md`, section "R3b The Hub in Hindi" (heading at `:1260`;
+`:1262` is the "Automated:" line): add one paragraph after the search part
+(`:1279` to `:1281`), in the style of the section: Bob publishes an English
+garden listing; Alice, in Hindi, finds it by category, messages Bob, sends a
+request in the same category, and accepts his quote in rupees; both Hubs
+show the signed agreement. Say that the story ends at the signed agreement
+and has no time slot (Q2). Do not say the request is "for" the listing: it
+names the category only (Q3). Add a **Say:** line with the same care. Keep
+the script line at `:1285`. Commit with Step 6.
 
 ### Step 6 — Living docs
 
@@ -677,18 +774,25 @@ ids and no milestone names (docs/README.md rule 1).
    `:1461` to `:1464` plus one sentence on search in every script (a Latin
    word finds the same word in Devanagari or Tamil; contact search; the
    Hub sorts names by script), and an Envisioned block for the engine
-   only. `[APP-A11Y]` keeps only "Accessibility". Delete the stale i18n
-   sentence (`:1468`). Use the exact title form of the other `### [APP-*]`
+   only. **Place it in "Phase 6: High-Level Applications (SynApps) —
+   [APP-ROY]" (`:1355`), after the `[APP-ROY]` text.** Read that phase
+   first and keep its heading form. Built requirements belong with the
+   built ones; the appendix "Later-Phase Additions" (`:1453`) is for
+   envisioned items, and `[APP-DUL]` is likewise a `###` inside its own
+   phase (`:1162`). The appendix `[APP-A11Y]` keeps only "Accessibility"
+   (WCAG 2.1 AA, screen reader tests). Delete the stale i18n sentence
+   (`:1468`). Use the exact title form of the other `### [APP-*]`
    headings.
 2. `docs/planning/traceability-matrix.md:68`, by Q5. With (a): two rows.
    The `[APP-L10N]` row is `Implemented`; its evidence keeps the links of
    today's row and adds `crates/substrate/tests/e2e/tests/roym-hub.spec.ts`,
    `crates/substrate/tests/e2e/demo/40-roym-languages.spec.ts`,
    `crates/data_db/src/sqlite/text_index/tests/search.rs` and
-   `crates/roym_web/ui/src/names.test.ts`. Its target milestone is the
-   one the matrix uses for other M8 rows (check how `[PRD-FED]` writes
-   it). The `[APP-A11Y]` row stays `Envisioned`, with no localisation
-   evidence.
+   `crates/roym_web/ui/src/names.test.ts`. **Put it next to the
+   `[APP-ROY]` row (`:58`), with the same target milestone as that row
+   (`M6`)**, so the row order follows the requirements order. The
+   `[APP-A11Y]` row stays where it is (`:68`), `Envisioned`, with no
+   localisation evidence.
 3. `docs/system-architecture.md:921`: "must strictly be valid codes"
    becomes "must be well-formed codes of `[a-z0-9-]`; no field is checked
    against the taxonomy, so a node accepts a code that a newer taxonomy
@@ -719,7 +823,13 @@ ids and no milestone names (docs/README.md rule 1).
    PR text (B3a R2, B3b R3).
 2. **ML-24** names the new `contacts.test.ts` cases and
    `roym-hub.spec.ts` "contact search finds a name in another script".
-   **ML-7, ML-8, ML-18** add the new story 40 test.
+   **ML-7, ML-8, ML-18** add the new story 40 test. **ML-21** names two
+   tests: story 40 `40-roym-languages.spec.ts` (Latin to Devanagari only)
+   and `roym-hub.spec.ts:1447` "a Latin search finds a Devanagari listing,
+   and the other way" (both directions) (Q4). The **ML-18** Test cell says
+   which build story 40 proves: the build the demo nodes deploy (WASM, from
+   the manifest). It names `scenario_237_accept_records_what_was_viewed_parity`
+   (`agreement_lang.rs`) for the native build.
 3. **Deviations**: add (a) ML-23: "shop name" has no record before the
    shop (M08D); a contact name is stored as written
    (`scenario_234_contacts_list_text_finds_names_across_scripts_parity`
@@ -727,22 +837,39 @@ ids and no milestone names (docs/README.md rule 1).
    free text in a signed record and is not searched; (b) the booking test
    ends at the agreement, with no slot (Q2); (c) the request from a
    directory hit does not name the listing (Q3). The ML-28 entry is in
-   from Step 1.
+   from Step 1. The ML-26 and ML-9 entries already exist (the ML-26 entry
+   in the same list, and `change.md:561` for ML-9). With them, each of the
+   four later parts (ML-26, ML-28, ML-9, ML-23) has one deviation and one
+   backlog row (Q7).
 4. **Decided <date>, close-out**: D-B6-1 to D-B6-7 and the owner answers.
 5. **Open questions** (`:503`): the spelling line says the owner check was
    done on 2026-11-13 and that the data is
    `crates/text_lang/src/search_key/tests/spelling-pairs.tsv`. "Named area
    codes" and "Font size" stay open and name their backlog rows.
-6. **Tasks** (`:512` to `:534`): tick each task whose work is merged.
-   Leave none unticked; if one is not done, it is a deviation and a
-   backlog row.
+6. **Tasks** (`:512` to `:534`, 21 tasks, 16 unticked): tick each task
+   whose work is merged. Leave none unticked; if one is not done, it is a
+   deviation and a backlog row. When you tick, edit the text of the tasks
+   whose words are no longer true:
+   - "`roym_core`: search keys ..." became "`syneroym-text-lang`: search
+     keys ..." (the work is in that crate, a recorded deviation).
+   - "Write the M08B slice plans ..." stays true only because B6's own plan
+     is written; say "all slice plans are written".
+   - "Playwright e2e: a Hindi Hub user finds and books a listing written in
+     English, by category" becomes "... finds a listing written in English
+     by category, sends a request and accepts the quote (ends at the signed
+     agreement)" (Q2, Q3).
+   - "Update `[APP-A11Y]` in the requirements ..." names `[APP-L10N]` too
+     (Q5).
 7. **Front matter**: add every file of section 9 that is not in
    `living-docs-touched`. `demo:` stays story 40.
 8. **Q6**: when the owner has reviewed the 13 B5 Hindi messages, put the
    date in the B5 row of status.md (Evidence column). Make any change the
    owner asks for in `hi.ftl`, run `npm test` in `crates/roym_web/ui`.
-9. **`status: done`** last, after Q6 and Q7 are answered and every row is
-   checked. Run `cargo xtask check-change-docs`.
+9. **`status: done`** last, after Q6 (the owner has read the 13 B5 Hindi
+   messages; Q6 (a)) and Q7 are answered, the booking test passes (D-B6-7)
+   and every row is checked. If the owner review is late, build and commit
+   everything else; only this commit waits. Run
+   `cargo xtask check-change-docs`.
 10. **task.md**: remove "No slice is planned yet." (`:5`); fix the S0 line
     (`:122`, "the owner checked it on 2026-11-13"); move the B5 result
     (`:217`) under the B5 bullets; add a short "B6 result" line under B6
@@ -786,9 +913,9 @@ B6, and its later part):
 | ML-7, ML-8 | plus story 40 booking (a Hindi reader finds another node's listing by category) | — |
 | ML-9 | `screens/listings.test.ts:88`, `taxonomy.test.ts:23`, `hindi-screens.test.ts:329`, `listing/tests.rs` `unit_code_rules` | a reader's view of another node's unit (M08D) |
 | ML-12 | `record_text.test.ts`, `roym-hub.spec.ts:1360`; story 40 removed | — |
-| ML-18 | as today; plus story 40 booking (Alice's half, read back) | — |
+| ML-18 | as today; plus story 40 booking (Alice's half, read back; the WASM build the demo nodes deploy); the native build is `scenario_237_accept_records_what_was_viewed_parity` in `agreement_lang.rs` | — |
 | ML-20, ML-29 | as today, with full paths | — |
-| ML-21 | as today; story 40 named as "Latin to Devanagari only" | — |
+| ML-21 | as today; two tests named (Q4): story 40 "Latin to Devanagari only", and `roym-hub.spec.ts:1447` for both directions | — |
 | ML-23 | as today, plus `roym-hub.spec.ts:1477` with its full path | shop name (M08D) |
 | ML-24 | `names.test.ts`, `screens/contacts.test.ts` (new), `screens/groups.test.ts:596`, `roym-hub.spec.ts:1477` | — |
 | ML-26 | as today, with the per-file cases of section 2.2 point 2 | widget answer (M08C C4), opinion (M08G), offering, want and storefront display (M08D) |
@@ -803,7 +930,7 @@ B6, and its later part):
 
 | What | Now | Risk |
 | --- | --- | --- |
-| Demo run time | `playwright-demo.config.ts:17` `globalTimeout: 900_000`, `:18` `timeout: 180_000` per test | The new test has three cross-node deliveries and one countersignature. On the demo's 1-second outbox tick each takes seconds, but a slow CI machine may need more. If the test takes more than 120 s, report it in the PR text; do not raise a timeout without an owner answer. |
+| Demo run time | `playwright-demo.config.ts:17` `globalTimeout: 900_000`, `:18` `timeout: 180_000` per test | The new test has three cross-node deliveries and one countersignature. On the demo's 1-second outbox tick each takes seconds, but a slow CI machine may need more. If the test takes more than 120 s, report it in the PR text; do not raise a timeout without an owner answer. The 900 s limit is for all stories together and the 180 s limit is for each test, so measure the whole `mise run demo` run before and after the new test (Step 4), not only story 40. If the four stories already use most of 900 s, the new test can push the run over, and the failure then shows as a global timeout in whichever story is running. |
 | `40-roym-languages.spec.ts` | 104 lines | +120. TypeScript is not under the file-length check (`xtask/src/file_lengths.rs:398` lists only `*.rs`). |
 | `hub-helpers.ts` | 227 lines | +50 |
 | Hub bundle, Roym components | — | unchanged: no Hub source and no Rust change |
@@ -847,7 +974,8 @@ Changes to [deferred-backlog.md](../../deferred-backlog.md):
   Hub has English and Hindi catalogs, local formats, codes with labels,
   language-tagged records and chat messages, and search in every script").
   The accessibility part stays, with its target "later phase" and the
-  requirement id of Q5.
+  requirement id `[APP-A11Y]` (the row at `:516` keeps this id for the WCAG
+  audit; Q5).
 - `:547` "Fluent bidi isolation is off in the Hub": add that the Hub
   layout is not checked for a right-to-left language either
   (`change.md:89`).
@@ -872,12 +1000,16 @@ marker is written.
 
 ## 9. Living docs to update at close-out
 
-- `docs/system-requirements-spec.md:1459` to `:1473` (Q5).
-- `docs/planning/traceability-matrix.md:68` (Q5).
+- `docs/system-requirements-spec.md:1459` to `:1473` (Q5): the new
+  `[APP-L10N]` goes in Phase 6, after the `[APP-ROY]` text (`:1355`); the
+  appendix `[APP-A11Y]` keeps accessibility only.
+- `docs/planning/traceability-matrix.md:68` (Q5): the new `[APP-L10N]` row
+  goes next to `[APP-ROY]` (`:58`). The backlog row at
+  `deferred-backlog.md:516` keeps naming `[APP-A11Y]` for the WCAG audit.
 - `docs/system-architecture.md:921`, `:1362`.
 - `docs/roym-integrated-experience-spec.md`: new `### Languages` after
   `:795`.
-- `docs/demo/demo.md`, "R3b The Hub in Hindi" (`:1262`).
+- `docs/demo/demo.md`, "R3b The Hub in Hindi" (heading at `:1260`).
 - `docs/planning/deferred-backlog.md` (section 8).
 - Check only: `docs/developer-guide.md:1760` to `:1792`,
   `docs/TERMINOLOGY.md:70` to `:78`.
@@ -903,10 +1035,14 @@ marker is written.
   nothing; the stale i18n sentence of the requirements is gone.
 - The backlog of section 8 is updated.
 - `mise run verify` passes with no `--skip`.
-- The PR text has: the CLA line; "no product code changes"; the story 40
-  run time before and after; the `git grep` list of Step 7.1; the owner's
-  Hindi review date (Q6); any `tsc` error found in Step 3.5 and left
-  alone; test counts.
+- The PR text has: the CLA line; "no product code changes"; that the new
+  story ends at the signed agreement, with no time slot, and that the
+  request names the category and not the listing (Q2, Q3); that the story
+  is the first browser run of the quote form and Accept across two nodes
+  (Q1); the time of the whole `mise run demo` run before and after the new
+  test, with the 900 s limit, and the story 40 time before and after (P7);
+  the `git grep` list of Step 7.1; the owner's Hindi review date (Q6); any
+  `tsc` error found in Step 3.5 and left alone; test counts.
 
 ## 11. What B6 does not do
 
