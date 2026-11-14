@@ -1,7 +1,13 @@
-import { errText } from "../dom";
 import { t } from "../i18n/i18n";
 import { langAttr, languageName } from "../i18n/text_lang";
-import { machineNote, targetFor, translateTexts } from "../translation/translation";
+import {
+  type Engine,
+  keptTranslation,
+  machineNote,
+  targetFor,
+  translateTexts,
+  translationFailure,
+} from "../translation/translation";
 
 export interface MessageTextOptions {
   /// True for a text message from someone else. Only then, and only when the
@@ -50,9 +56,18 @@ export function messageText(
 /// A button that translates `body` once. The translation is drawn after the
 /// button, in its own span with its own `lang`, with a note naming the
 /// engine. When the node refuses, the reason is drawn and the body stays.
+/// A translation this page already made of the same text is drawn at once,
+/// with no button, so a redraw of the thread does not lose it or ask the
+/// engine again.
 function translateButton(body: string, languages: readonly string[], target: string): HTMLElement {
   const box = document.createElement("span");
   box.className = "message-translate-box";
+  const sourceLang = languages[0] ?? null;
+  const earlier = keptTranslation([body], sourceLang, target);
+  if (earlier) {
+    showTranslation(box, earlier.out.texts[0] ?? "", earlier.out.engine, target);
+    return box;
+  }
   const button = document.createElement("button");
   button.type = "button";
   button.className = "button message-translate";
@@ -61,24 +76,28 @@ function translateButton(body: string, languages: readonly string[], target: str
     button.disabled = true;
     box.querySelector(".message-translation-error")?.remove();
     try {
-      const out = await translateTexts([body], languages[0] ?? null, target);
-      const translated = document.createElement("span");
-      translated.className = "message-translation";
-      translated.setAttribute("lang", langAttr(target));
-      translated.textContent = out.texts[0] ?? "";
-      const note = document.createElement("span");
-      note.className = "message-translation-note";
-      note.textContent = machineNote(target, out.engine);
+      const out = await translateTexts([body], sourceLang, target);
       button.remove();
-      box.append(translated, note);
+      showTranslation(box, out.texts[0] ?? "", out.engine, target);
     } catch (err) {
       const failure = document.createElement("span");
       failure.className = "message-translation-error";
-      failure.textContent = t("translation-failed", { detail: errText(err) });
+      failure.textContent = translationFailure(err);
       box.appendChild(failure);
       button.disabled = false;
     }
   };
   box.appendChild(button);
   return box;
+}
+
+function showTranslation(box: HTMLElement, text: string, engine: Engine, target: string): void {
+  const translated = document.createElement("span");
+  translated.className = "message-translation";
+  translated.setAttribute("lang", langAttr(target));
+  translated.textContent = text;
+  const note = document.createElement("span");
+  note.className = "message-translation-note";
+  note.textContent = machineNote(target, engine);
+  box.append(translated, note);
 }

@@ -4,6 +4,8 @@ import { RpcError } from "../rpc";
 import { ENGINE, readerReads } from "../testing/translation";
 import { stubRpc } from "../testing/stub-rpc";
 import {
+  keepShown,
+  keptTranslation,
   loadTargets,
   machineNote,
   searchTargets,
@@ -11,6 +13,7 @@ import {
   startTranslation,
   targetFor,
   translateTexts,
+  translationFailure,
 } from "./translation";
 
 afterEach(async () => {
@@ -145,5 +148,79 @@ describe("machineNote", () => {
     expect(machineNote("hi", { name: ENGINE, remote: true })).toBe(
       `Machine translation into Hindi by ${ENGINE}, sent off this device.`,
     );
+  });
+});
+
+describe("translationFailure", () => {
+  const refusal = (data: Record<string, unknown>, message = "service text") =>
+    new RpcError(-32020, message, "Other", data);
+
+  it("tells each kind of refusal in its own words", () => {
+    expect(translationFailure(refusal({ kind: "unavailable" }))).toBe("Translation is not available.");
+    expect(translationFailure(refusal({ kind: "unsupported-pair", source: "hi", target: "ta" }))).toBe(
+      "The translation service cannot translate from Hindi to Tamil.",
+    );
+    expect(translationFailure(refusal({ kind: "too-long", limit: 100 }))).toBe(
+      "The text is too long for the translation service.",
+    );
+    expect(translationFailure(refusal({ kind: "engine-failed" }, "engine said no"))).toBe(
+      "The translation service failed. engine said no",
+    );
+  });
+
+  it("does not nest a refusal inside another sentence", () => {
+    for (const kind of ["unavailable", "unsupported-pair", "too-long", "engine-failed"]) {
+      expect(translationFailure(refusal({ kind }))).not.toContain("Could not translate");
+    }
+  });
+
+  it("shows a refusal of a kind it does not know as a service refusal", () => {
+    expect(translationFailure(refusal({ kind: "new-kind" }, "why"))).toBe(
+      "The translation service refused. why",
+    );
+    expect(translationFailure(new RpcError(-32020, "why", "Other"))).toBe(
+      "The translation service refused. why",
+    );
+  });
+
+  it("puts any other failure inside Could not translate", () => {
+    expect(translationFailure(new RpcError(0, "offline", "Other"))).toMatch(/^Could not translate\. /);
+    expect(translationFailure(new Error("boom"))).toMatch(/^Could not translate\. /);
+  });
+});
+
+describe("kept translations", () => {
+  const reply = () => ({
+    items: [{ text: "a", source_lang: "hi", engine: { name: ENGINE, remote: false } }],
+  });
+
+  it("keeps a result for the same texts, source and target, and nothing for a refusal", async () => {
+    stubRpc({ "translation.translate": reply });
+    expect(keptTranslation(["x"], "hi", "en")).toBeUndefined();
+    await translateTexts(["x"], "hi", "en");
+    expect(keptTranslation(["x"], "hi", "en")?.out.texts).toEqual(["a"]);
+    expect(keptTranslation(["x"], "hi", "ta")).toBeUndefined();
+    expect(keptTranslation(["x"], null, "en")).toBeUndefined();
+    expect(keptTranslation(["y"], "hi", "en")).toBeUndefined();
+
+    stubRpc({ "translation.translate": () => new RpcError(-32020, "no", "Other") });
+    await expect(translateTexts(["z"], "hi", "en")).rejects.toBeInstanceOf(RpcError);
+    expect(keptTranslation(["z"], "hi", "en")).toBeUndefined();
+  });
+
+  it("remembers whether the translation was on screen", async () => {
+    stubRpc({ "translation.translate": reply });
+    await translateTexts(["x"], "hi", "en");
+    expect(keptTranslation(["x"], "hi", "en")?.shown).toBe(false);
+    keepShown(["x"], "hi", "en", true);
+    expect(keptTranslation(["x"], "hi", "en")?.shown).toBe(true);
+  });
+
+  it("forgets the oldest results beyond its limit", async () => {
+    stubRpc({ "translation.translate": reply });
+    for (let i = 0; i < 201; i++) await translateTexts([`t${i}`], null, "en");
+    expect(keptTranslation(["t0"], null, "en")).toBeUndefined();
+    expect(keptTranslation(["t1"], null, "en")).toBeDefined();
+    expect(keptTranslation(["t200"], null, "en")).toBeDefined();
   });
 });

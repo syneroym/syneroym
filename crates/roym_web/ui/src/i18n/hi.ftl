@@ -26,7 +26,7 @@ error-method-not-found = यह अनुरोध इस इंस्टॉल�
 error-invalid-input = दी गई जानकारी सही नहीं है। विवरण: { $detail }
 error-internal = सेवा में गड़बड़ी हुई। विवरण: { $detail }
 error-service = अनुरोध पूरा नहीं हो सका। विवरण: { $detail }
-error-translation = अनुवाद उपलब्ध नहीं है। विवरण: { $detail }
+error-translation = अनुवाद सेवा ने अनुवाद करने से मना कर दिया। विवरण: { $detail }
 error-network = इस इंस्टॉलेशन तक नहीं पहुँच सके। विवरण: { $detail }
 error-http = सर्वर से त्रुटि मिली (HTTP { $code })
 
@@ -83,6 +83,10 @@ translation-translate-button = { $language } में अनुवाद कर
 translation-machine-note = मशीन अनुवाद, { $language } में, { $engine } द्वारा।
 translation-machine-note-remote = मशीन अनुवाद, { $language } में, { $engine } द्वारा, इस डिवाइस से बाहर भेजा गया।
 translation-failed = अनुवाद नहीं हो सका। विवरण: { $detail }
+translation-unavailable = अनुवाद उपलब्ध नहीं है।
+translation-unsupported-pair = अनुवाद सेवा { $source } से { $target } में अनुवाद नहीं कर सकती।
+translation-too-long = पाठ अनुवाद सेवा के लिए बहुत लंबा है।
+translation-engine-failed = अनुवाद सेवा विफल रही। विवरण: { $detail }
 chat-text-not-stated = भाषा नहीं बताई गई
 
 card-unknown-title = अज्ञात कार्ड ({ $type } v{ $version })

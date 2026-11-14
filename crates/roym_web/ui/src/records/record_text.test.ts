@@ -253,16 +253,17 @@ describe("recordText with a translation engine", () => {
     const host = draw(HINDI_ONLY);
     host.querySelector<HTMLButtonElement>(".record-text-translate")!.click();
     await vi.waitFor(() => expect(host.querySelector(".record-text-error")).not.toBeNull());
-    expect(host.querySelector(".record-text-error")!.textContent).toContain("Could not translate");
+    expect(host.querySelector(".record-text-error")!.textContent).toBe("Translation is not available.");
     expect(host.querySelector(".title")!.textContent).toBe("नल वाला");
     expect(shownOf(host)).toEqual(["hi", "original"]);
     expect(host.querySelector<HTMLButtonElement>(".record-text-translate")!.disabled).toBe(false);
   });
 
-  it("walks original, author translation, machine version and back, saying what is shown", async () => {
+  it("walks original, author translation and machine version in order, saying what is shown", async () => {
     readerReads(["en", "ta"]);
     setTargetsForTest(["ta"]);
-    stubRpc({ "translation.translate": fakeEngine([]) });
+    const seen: Record<string, unknown>[] = [];
+    stubRpc({ "translation.translate": fakeEngine(seen) });
     const host = draw(HINDI_WITH_ENGLISH);
     const switchBtn = () => host.querySelector<HTMLButtonElement>(".record-text-switch")!;
     const title = () => host.querySelector(".title")!.textContent;
@@ -274,16 +275,63 @@ describe("recordText with a translation engine", () => {
     switchBtn().click();
     expect([shownOf(host), title()]).toEqual([["en", "author"], "Plumber"]);
 
+    // The machine version is made from the original, not from the English
+    // translation the person was reading.
     host.querySelector<HTMLButtonElement>(".record-text-translate")!.click();
     await vi.waitFor(() => expect(shownOf(host)).toEqual(["ta", "machine"]));
-    expect(title()).toBe("T:Plumber");
+    expect(seen).toEqual([{ texts: ["नल वाला"], source_lang: "hi", target_lang: "ta" }]);
+    expect(title()).toBe("T:नल वाला");
     expect(host.querySelector(".record-text-translate")).toBeNull();
 
+    // The switch visits every version, so the author translation stays reachable.
+    expect(switchBtn().textContent).toBe("Show the original");
     switchBtn().click();
     expect([shownOf(host), title()]).toEqual([["hi", "original"], "नल वाला"]);
+    expect(switchBtn().textContent).toBe("Show the author's translation");
+    switchBtn().click();
+    expect([shownOf(host), title()]).toEqual([["en", "author"], "Plumber"]);
     expect(switchBtn().textContent).toBe("Translate into Tamil");
     switchBtn().click();
-    expect([shownOf(host), title()]).toEqual([["ta", "machine"], "T:Plumber"]);
+    expect([shownOf(host), title()]).toEqual([["ta", "machine"], "T:नल वाला"]);
+  });
+
+  it("draws a translation made earlier again, on screen if it was, with no second call", async () => {
+    readerReads([]);
+    setTargetsForTest(["en"]);
+    const seen: Record<string, unknown>[] = [];
+    stubRpc({ "translation.translate": fakeEngine(seen) });
+    const first = draw(HINDI_ONLY);
+    first.querySelector<HTMLButtonElement>(".record-text-translate")!.click();
+    await vi.waitFor(() => expect(shownOf(first)).toEqual(["en", "machine"]));
+
+    // The thread is drawn again.
+    const second = draw(HINDI_ONLY);
+    expect(shownOf(second)).toEqual(["en", "machine"]);
+    expect(second.querySelector(".title")!.textContent).toBe("T:नल वाला");
+    expect(second.querySelector(".record-text-translate")).toBeNull();
+
+    // The person goes back to the original and the thread is drawn again:
+    // the original stays on screen, and the machine version is one click away.
+    second.querySelector<HTMLButtonElement>(".record-text-switch")!.click();
+    const third = draw(HINDI_ONLY);
+    expect(shownOf(third)).toEqual(["hi", "original"]);
+    third.querySelector<HTMLButtonElement>(".record-text-switch")!.click();
+    expect(shownOf(third)).toEqual(["en", "machine"]);
+    expect(seen).toHaveLength(1);
+  });
+
+  it("does not reuse a translation for a different text", async () => {
+    readerReads([]);
+    setTargetsForTest(["en"]);
+    const seen: Record<string, unknown>[] = [];
+    stubRpc({ "translation.translate": fakeEngine(seen) });
+    const first = draw(HINDI_ONLY);
+    first.querySelector<HTMLButtonElement>(".record-text-translate")!.click();
+    await vi.waitFor(() => expect(shownOf(first)).toEqual(["en", "machine"]));
+
+    const other = draw([{ lang: "hi", fields: { title: "बिजली वाला" }, byAuthor: false }]);
+    expect(shownOf(other)).toEqual(["hi", "original"]);
+    expect(other.querySelector(".record-text-translate")).not.toBeNull();
   });
 
   it("draws no second translate action after one translation, also for another language", async () => {

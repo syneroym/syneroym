@@ -672,6 +672,27 @@ describe("translation, in Hindi", () => {
     expect(english(wrap)).toEqual([]);
   });
 
+  it("draws every kind of refusal in Hindi", async () => {
+    readerReads(["hi"]);
+    setTargetsForTest(["hi"]);
+    const kinds = [
+      { kind: "unavailable" },
+      { kind: "unsupported-pair", source: "en", target: "hi" },
+      { kind: "too-long", limit: 10 },
+      { kind: "engine-failed" },
+    ];
+    for (const data of kinds) {
+      stubRpc({
+        "translation.translate": () => new RpcError(-32020, "Zq-engine-text", "Other", data),
+      });
+      const host = document.createElement("div");
+      host.append(...messageText("Zq-hello", ["en"], "span", { translatable: true }));
+      host.querySelector<HTMLButtonElement>(".message-translate")!.click();
+      await vi.waitFor(() => expect(host.querySelector(".message-translation-error")).not.toBeNull());
+      expect(english(host), data.kind).toEqual([]);
+    }
+  });
+
   it("draws the translate button and the note of a chat message", async () => {
     readerReads(["hi"]);
     setTargetsForTest(["hi"]);

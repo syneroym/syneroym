@@ -1,6 +1,14 @@
+import { errText } from "../dom";
 import { t } from "../i18n/i18n";
 import { languageName, readerLanguages, sameLanguage } from "../i18n/text_lang";
-import { call } from "../rpc";
+import { call, RpcError } from "../rpc";
+
+/// The error code of every refusal by the node's translation host.
+const TRANSLATION_ERROR = -32020;
+
+/// A page keeps at most this many machine translations. The oldest goes
+/// first.
+const KEPT_LIMIT = 200;
 
 /// How long the Hub waits for the list of target languages before it
 /// goes on with none.
@@ -29,6 +37,54 @@ interface TranslateReply {
 /// The languages the node can translate into. Empty until `loadTargets`
 /// answers, and for a node with no translation engine.
 let targets: string[] = [];
+
+/// A machine translation made on this page, and whether the person had it on
+/// screen when it was last drawn.
+export interface Kept {
+  out: MachineText;
+  shown: boolean;
+}
+
+/// The machine translations of this page, by the text that was sent. A
+/// thread is drawn again on every new event, and a translation drawn again
+/// from here costs no second call to the engine. Nothing is stored on the
+/// device: a reload starts empty.
+const kept = new Map<string, Kept>();
+
+function keptKey(texts: readonly string[], sourceLang: string | null, targetLang: string): string {
+  return JSON.stringify([sourceLang, targetLang, texts]);
+}
+
+/// The translation of exactly these texts into `targetLang`, if this page
+/// made one.
+export function keptTranslation(
+  texts: readonly string[],
+  sourceLang: string | null,
+  targetLang: string,
+): Kept | undefined {
+  return kept.get(keptKey(texts, sourceLang, targetLang));
+}
+
+/// Records whether the translation of these texts is on screen, so a draw
+/// of the same record shows it again.
+export function keepShown(
+  texts: readonly string[],
+  sourceLang: string | null,
+  targetLang: string,
+  shown: boolean,
+): void {
+  const entry = kept.get(keptKey(texts, sourceLang, targetLang));
+  if (entry) entry.shown = shown;
+}
+
+function keep(key: string, out: MachineText): void {
+  kept.delete(key);
+  kept.set(key, { out, shown: false });
+  if (kept.size > KEPT_LIMIT) {
+    const oldest = kept.keys().next().value;
+    if (oldest !== undefined) kept.delete(oldest);
+  }
+}
 
 /// Asks the node once which languages it can translate into. A node that
 /// cannot answer, is older, or has no engine leaves the list empty; the
@@ -85,11 +141,39 @@ export async function translateTexts(
   const params: Record<string, unknown> = { texts, target_lang: targetLang };
   if (sourceLang) params.source_lang = sourceLang;
   const reply = await call<TranslateReply>("translation.translate", params);
-  return {
+  const out = {
     texts: reply.items.map((item) => item.text),
     sourceLang: reply.items[0]?.source_lang ?? "",
     engine: reply.items[0]?.engine ?? { name: "", remote: false },
   };
+  keep(keptKey(texts, sourceLang, targetLang), out);
+  return out;
+}
+
+/// The text to show when a translation did not happen. A refusal by the
+/// translation host is told by its kind, so the person learns what they can
+/// change (a text that is too long, for example). Any other failure is
+/// shown inside "Could not translate".
+export function translationFailure(err: unknown): string {
+  if (err instanceof RpcError && err.code === TRANSLATION_ERROR) {
+    const data = (err.data ?? {}) as Record<string, unknown>;
+    switch (data.kind) {
+      case "unavailable":
+        return t("translation-unavailable");
+      case "unsupported-pair":
+        return t("translation-unsupported-pair", {
+          source: languageName(String(data.source ?? "")),
+          target: languageName(String(data.target ?? "")),
+        });
+      case "too-long":
+        return t("translation-too-long");
+      case "engine-failed":
+        return t("translation-engine-failed", { detail: err.message });
+      default:
+        return errText(err);
+    }
+  }
+  return t("translation-failed", { detail: errText(err) });
 }
 
 /// The label under a machine translation: its language and its engine, and
@@ -101,7 +185,8 @@ export function machineNote(targetLang: string, engine: Engine): string {
     : t("translation-machine-note", args);
 }
 
-/// For unit tests: the one piece of state this module keeps.
+/// For unit tests: sets the target list and forgets every kept translation.
 export function setTargetsForTest(list: string[]): void {
   targets = [...list];
+  kept.clear();
 }

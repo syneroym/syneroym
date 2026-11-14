@@ -1,7 +1,14 @@
-import { errText } from "../dom";
 import { t } from "../i18n/i18n";
 import { langAttr, languageName, readerLanguages, sameLanguage } from "../i18n/text_lang";
-import { type Engine, machineNote, targetFor, translateTexts } from "../translation/translation";
+import {
+  type Engine,
+  keepShown,
+  keptTranslation,
+  machineNote,
+  targetFor,
+  translateTexts,
+  translationFailure,
+} from "../translation/translation";
 
 export interface TextVersion<F> {
   lang: string;
@@ -63,11 +70,14 @@ export function bestVersion<F>(versions: TextVersion<F>[], reader: readonly stri
 }
 
 /// Draws `draw(version)` for the best version into `host`. When there is
-/// more than one version, adds a note and a button that switches between
-/// the original and the other version the person looked at last. When the
-/// node can translate (`texts` names the strings to send) and the record is
-/// in no language the reader reads, adds a button that makes one machine
-/// version; a record has at most one.
+/// more than one version, adds a note and a button that switches to the next
+/// version, in order: the original, the author's translations, the machine
+/// version. When the node can translate (`texts` names the strings to send)
+/// and the record is in no language the reader reads, adds a button that
+/// makes one machine version; a record has at most one. The machine version
+/// is always made from the original, never from a translation of it. A
+/// machine version this page already made for the same text is drawn
+/// again without a second call, and on screen if it was on screen.
 ///
 /// `host` records what is on screen in `data-shown-lang` (the version's
 /// language) and `data-shown-via` (`original`, `author` or `machine`), so a
@@ -81,6 +91,11 @@ export function recordText<F>(
   if (versions.length === 0) return;
   const all = [...versions];
   const target = texts ? targetFor(all.map((v) => v.lang)) : null;
+  // What the engine is given: the text that binds, in its own language.
+  const machine =
+    texts && target !== null
+      ? { texts, target, sent: texts.get(all[0].fields), sourceLang: all[0].lang || null }
+      : null;
 
   const markShown = (idx: number) => {
     const v = all[idx];
@@ -97,10 +112,24 @@ export function recordText<F>(
   }
 
   let currentIdx = all.length > 1 ? bestVersion(all, readerLanguages()) : 0;
-  // The version the switch button shows when the original is on screen.
-  let lastOther: number | null = all.length > 1 ? (currentIdx !== 0 ? currentIdx : 1) : null;
   let machineIdx: number | null = null;
   let failure = "";
+
+  // Adds the machine version and returns its index.
+  const addMachine = (m: NonNullable<typeof machine>, translated: string[], engine: Engine): number => {
+    all.push({
+      lang: m.target,
+      fields: m.texts.set(all[0].fields, translated),
+      byAuthor: false,
+      machine: engine,
+    });
+    return all.length - 1;
+  };
+  const earlier = machine && keptTranslation(machine.sent, machine.sourceLang, machine.target);
+  if (machine && earlier) {
+    machineIdx = addMachine(machine, earlier.out.texts, earlier.out.engine);
+    if (earlier.shown) currentIdx = machineIdx;
+  }
 
   const contentBox = document.createElement("div");
   contentBox.className = "record-text-content";
@@ -129,6 +158,9 @@ export function recordText<F>(
     const v = all[currentIdx];
     contentBox.replaceChildren(...draw(v));
     markShown(currentIdx);
+    if (machine && machineIdx !== null) {
+      keepShown(machine.sent, machine.sourceLang, machine.target, currentIdx === machineIdx);
+    }
     if (v.machine) {
       noteSpan.textContent = machineNote(v.lang, v.machine);
     } else if (currentIdx !== 0) {
@@ -138,9 +170,8 @@ export function recordText<F>(
     }
 
     const parts: HTMLElement[] = [noteSpan];
-    const next = currentIdx === 0 ? lastOther : 0;
-    if (next !== null) {
-      switchBtn.textContent = switchLabel(next);
+    if (all.length > 1) {
+      switchBtn.textContent = switchLabel((currentIdx + 1) % all.length);
       parts.push(switchBtn);
     }
     if (translateBtn && machineIdx === null) parts.push(translateBtn);
@@ -154,39 +185,28 @@ export function recordText<F>(
   }
 
   switchBtn.onclick = () => {
-    const next = currentIdx === 0 ? lastOther : 0;
-    if (next === null) return;
-    currentIdx = next;
-    if (next !== 0) lastOther = next;
+    currentIdx = (currentIdx + 1) % all.length;
     renderCurrent();
   };
 
   let translateBtn: HTMLButtonElement | null = null;
-  if (texts && target !== null) {
+  if (machine) {
     translateBtn = document.createElement("button");
     translateBtn.type = "button";
     translateBtn.className = "button record-text-translate";
     translateBtn.textContent = t("translation-translate-button", {
-      language: languageName(target),
+      language: languageName(machine.target),
     });
     const button = translateBtn;
     button.onclick = async () => {
       button.disabled = true;
-      const shown = all[currentIdx];
       try {
-        const out = await translateTexts(texts.get(shown.fields), shown.lang || null, target);
-        all.push({
-          lang: target,
-          fields: texts.set(shown.fields, out.texts),
-          byAuthor: false,
-          machine: out.engine,
-        });
-        machineIdx = all.length - 1;
-        lastOther = machineIdx;
+        const out = await translateTexts(machine.sent, machine.sourceLang, machine.target);
+        machineIdx = addMachine(machine, out.texts, out.engine);
         currentIdx = machineIdx;
         failure = "";
       } catch (err) {
-        failure = t("translation-failed", { detail: errText(err) });
+        failure = translationFailure(err);
       }
       button.disabled = false;
       renderCurrent();

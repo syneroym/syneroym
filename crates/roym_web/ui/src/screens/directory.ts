@@ -19,7 +19,12 @@ import { recordText, textFields, type TextVersion } from "../records/record_text
 import { call } from "../rpc";
 import { categoryPicker } from "../taxonomy/category_picker";
 import { categoryLabel } from "../taxonomy/taxonomy";
-import { machineNote, searchTargets, translateTexts } from "../translation/translation";
+import {
+  machineNote,
+  searchTargets,
+  translateTexts,
+  translationFailure,
+} from "../translation/translation";
 
 /// The word for a revocation status. A status this table does not know is
 /// shown as it came.
@@ -312,7 +317,7 @@ function searchTranslateControls(textInput: HTMLInputElement): HTMLElement[] {
       textInput.value = out.texts[0] ?? words;
       note.textContent = machineNote(select.value, out.engine);
     } catch (err) {
-      note.textContent = t("translation-failed", { detail: errText(err) });
+      note.textContent = translationFailure(err);
     } finally {
       button.disabled = false;
     }

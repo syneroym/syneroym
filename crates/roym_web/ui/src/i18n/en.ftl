@@ -27,7 +27,7 @@ error-method-not-found = { $detail }
 error-invalid-input = { $detail }
 error-internal = { $detail }
 error-service = { $detail }
-error-translation = Translation is not available. { $detail }
+error-translation = The translation service refused. { $detail }
 error-network = Could not reach this installation: { $detail }
 error-http = HTTP error { $code }
 
@@ -87,6 +87,10 @@ translation-translate-button = Translate into { $language }
 translation-machine-note = Machine translation into { $language } by { $engine }.
 translation-machine-note-remote = Machine translation into { $language } by { $engine }, sent off this device.
 translation-failed = Could not translate. { $detail }
+translation-unavailable = Translation is not available.
+translation-unsupported-pair = The translation service cannot translate from { $source } to { $target }.
+translation-too-long = The text is too long for the translation service.
+translation-engine-failed = The translation service failed. { $detail }
 chat-text-not-stated = Language not stated
 
 # Cards. A label that is followed by a value of another kind (a link, a

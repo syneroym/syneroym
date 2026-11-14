@@ -103,7 +103,7 @@ describe("the search box with a translation engine", () => {
     box(host).value = "नल वाला";
     host.querySelector<HTMLButtonElement>(".search-translate")!.click();
     await vi.waitFor(() =>
-      expect(host.querySelector(".search-translate-note")!.textContent).toContain("Could not translate"),
+      expect(host.querySelector(".search-translate-note")!.textContent).toBe("Translation is not available."),
     );
     expect(box(host).value).toBe("नल वाला");
   });
