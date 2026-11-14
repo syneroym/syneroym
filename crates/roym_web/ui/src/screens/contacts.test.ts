@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { t } from "../i18n/i18n";
+import HINDI from "../i18n/hi.ftl?raw";
+import { activate, activateWith, t } from "../i18n/i18n";
 import { stubRpc } from "../testing/stub-rpc";
 import { renderContacts, upsertParams } from "./contacts.js";
 
-afterEach(() => {
+afterEach(async () => {
   vi.unstubAllGlobals();
+  await activate("en");
 });
 
 describe("contacts upsertParams", () => {
@@ -109,5 +111,31 @@ describe("renderContacts search", () => {
     expect(host.querySelector(".contacts-address-input")).not.toBeNull();
     expect(host.querySelector(".contacts-envelope-input")).not.toBeNull();
     expect(host.querySelector(".contacts-upsert-button")).not.toBeNull();
+  });
+});
+
+describe("renderContacts order", () => {
+  async function drawnNames(): Promise<string[]> {
+    stubRpc({
+      "contacts.list": () => [
+        { person_did: "did:key:zSita", display_name: "Sita" },
+        { person_did: "did:key:zRamDeva", display_name: "राम" },
+        { person_did: "did:key:zRamLatin", display_name: "Ram" },
+      ],
+    });
+    const host = document.createElement("div");
+    await renderContacts(host);
+    const list = host.querySelector<HTMLElement>(".contacts-screen > div")!;
+    return Array.from(list.children).map((row) => row.textContent!.trim());
+  }
+
+  it("lists Latin names first in an English Hub", async () => {
+    await activate("en");
+    expect(await drawnNames()).toEqual(["Ram", "Sita", "राम"]);
+  });
+
+  it("lists Devanagari names first in a Hindi Hub", async () => {
+    await activateWith("hi", { hi: async () => HINDI });
+    expect(await drawnNames()).toEqual(["राम", "Ram", "Sita"]);
   });
 });

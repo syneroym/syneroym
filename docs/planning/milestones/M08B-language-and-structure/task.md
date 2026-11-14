@@ -2,7 +2,7 @@
 
 *Reader: developers who build this sub-milestone.*
 
-**Status: started (2026-11-05). No slice is planned yet.** Progress is in [status.md](status.md). Milestone overview and order: [M08-overview.md](../M08-overview.md).
+**Status: started (2026-11-05).** Progress is in [status.md](status.md). Milestone overview and order: [M08-overview.md](../M08-overview.md).
 
 This sub-milestone lets people use Roym in their own language and script. It also gives Roym the shared codes (categories, attributes, units, payment methods) that the shop and matching need. It builds one change doc. Read it first: [roym-multilingual](../../changes/roym-multilingual/change.md) (criteria `ML-*`). Every slice below builds part of that change doc, and no other.
 
@@ -119,7 +119,7 @@ Every slice is one PR that passes `mise run verify`. Sizes are S, M and L, as in
 - Record the results in this file and in the change doc. The FTS5 and trigram check is done (section 2).
   - **Result:** done. The change doc's `unverified` notes for the four checks, the trigram tokenizer and the record version rule are replaced by the results above. The `unicode61` table with `prefix='1 2'` is not checked yet; B4a checks it first. The old code facts in the change doc were corrected. One backlog row was added ("Language tags are not CLDR-canonicalised").
 
-**S0 result:** done, docs only ([PR #348](https://github.com/syneroym/syneroym/pull/348)). D-S0-1 to D-S0-5 are recorded, and `spelling-pairs.tsv` is drafted. The owner check of the spelling file and its 17 conflicts is still to do, before the B4b plan. No end user sees a change.
+**S0 result:** done, docs only ([PR #348](https://github.com/syneroym/syneroym/pull/348)). D-S0-1 to D-S0-5 are recorded, and `spelling-pairs.tsv` is drafted. The owner checked the spelling file and its 17 conflicts on 2026-11-13. No end user sees a change.
 
 Change doc: roym-multilingual.
 
@@ -214,8 +214,6 @@ Change doc: roym-multilingual.
 
 **B4b result:** done on the branch `feat/m08b-b4b-search-scripts` (2026-11-13, B4b implemented by Claude Sonnet 5.5, after a first part by another agent). The six Roym components build for `wasm32-wasip2` (before on main at `bc3dd8de` -> after on branch, same build folder): web 255,811 -> 255,811 bytes (+0), conversation 810,779 -> 811,144 (+365), profile 768,511 -> 770,848 (+2,337), catalog 928,547 -> 928,879 (+332), transaction 1,507,226 -> 1,507,640 (+414), directory 1,463,980 -> 1,466,394 (+2,414). All within the +40 KB limit: no guest links the tables. The Hub main script (`gzip -9`) went 52,297 -> 53,216 bytes (+919, limit +5 KB). The Hindi catalog went 14,447 -> 14,548 bytes (+101, limit +1 KB). Unit tests, dual-build parity tests, Playwright tests (74 passed) and story 40 pass.
 
-**B5 result:** done on the branch `feat/m08b-b5-translation` (2026-11-13, implemented by Claude Sonnet 5.5). The six Roym components build for `wasm32-wasip2` (before on main at `6083ddb3` -> after on branch, same build folder): web 256,742 -> 310,033 bytes (+53,291), conversation 811,898 -> 811,880 (-18), profile 771,796 -> 771,718 (-78), catalog 929,637 -> 929,558 (-79), transaction 1,508,349 -> 1,516,528 (+8,179, +0.5%), directory 1,467,405 -> 1,467,413 (+8). `web` is over the +40 KB limit. About 29 KB of its growth is the canonical language-tag check that `translation.translate` runs. The owner accepted this on 2026-11-13 (recorded in the change doc). Transaction is far under its +15% limit. The Hub main script (`gzip -9`) went 53,216 -> 55,147 bytes (+1,931, limit +5 KB). The Hindi catalog went 14,548 -> 14,700 bytes (+152, limit +1 KB). After the code review fixes (2026-11-14), the Hub main script is 55,792 bytes (+2,576) and the Hindi catalog 14,796 bytes (+248), both within their limits; the fixes changed no Rust code that is built into a component. Unit tests, dual-build parity tests, two-node e2e tests, Playwright tests (75 passed) and story 40 pass. Code review: 4 rounds, 11 items (R1 to R11, all minor), all closed. Closed 2026-11-14 ([PR #362](https://github.com/syneroym/syneroym/pull/362)).
-
 ### B5 — Translation interface, hook points, agreements (M)
 
 - Y6 and the host implementation that answers `unavailable`, linked for both builds. The local-only Roym method the Hub calls (the change doc suggests `web`).
@@ -226,13 +224,17 @@ Change doc: roym-multilingual.
 
 Change doc: roym-multilingual.
 
+**B5 result:** done on the branch `feat/m08b-b5-translation` (2026-11-13, implemented by Claude Sonnet 5.5). The six Roym components build for `wasm32-wasip2` (before on main at `6083ddb3` -> after on branch, same build folder): web 256,742 -> 310,033 bytes (+53,291), conversation 811,898 -> 811,880 (-18), profile 771,796 -> 771,718 (-78), catalog 929,637 -> 929,558 (-79), transaction 1,508,349 -> 1,516,528 (+8,179, +0.5%), directory 1,467,405 -> 1,467,413 (+8). `web` is over the +40 KB limit. About 29 KB of its growth is the canonical language-tag check that `translation.translate` runs. The owner accepted this on 2026-11-13 (recorded in the change doc). Transaction is far under its +15% limit. The Hub main script (`gzip -9`) went 53,216 -> 55,147 bytes (+1,931, limit +5 KB). The Hindi catalog went 14,548 -> 14,700 bytes (+152, limit +1 KB). After the code review fixes (2026-11-14), the Hub main script is 55,792 bytes (+2,576) and the Hindi catalog 14,796 bytes (+248), both within their limits; the fixes changed no Rust code that is built into a component. Unit tests, dual-build parity tests, two-node e2e tests, Playwright tests (75 passed) and story 40 pass. Code review: 4 rounds, 11 items (R1 to R11, all minor), all closed. Closed 2026-11-14 ([PR #362](https://github.com/syneroym/syneroym/pull/362)).
+
 ### B6 — Close-out (S)
 
-- Playwright e2e: a Hindi Hub user finds and books an English listing by category, and a Latin-letter search finds a Devanagari title.
+- Playwright e2e: a Hindi Hub user finds an English listing by category, sends a request and accepts the quote. The test ends at the signed agreement. A Latin-letter search that finds a Devanagari title is already shown by story 40 and by `roym-hub.spec.ts`.
 - Check that every `ML-*` row has a test, or a named later sub-milestone (section 5).
 - Living docs updated (`[APP-A11Y]` in the requirements, the integrated spec, the architecture doc). Change doc `status: done`.
 
 Change doc: roym-multilingual.
+
+**B6 result:** implemented on the branch `feat/m08b-b6-close-out` (2026-11-14, by Claude Sonnet 5.5). No Rust or string-catalog change. One Hub fix: the Messages screen keeps an open quote form or dialog when the event feed asks for a redraw (the booking test found the bug). Hub unit tests 537 passed in 45 files (2 new in `contacts.test.ts`, 5 in `thread_redraw.test.ts`, 3 in `messages_feed.test.ts`). Playwright `test:e2e`: main suite 75 passed, multi-hop 4 passed, demo 7 passed (the new story 40 test included). The demo run took 42.9 s with the new test failing after 2.4 s (so about 40 s without it), and 1.2 min with it passing in 4.4 s; the limit is 900 s. Story 40 took 2.3 s before and 6.7 s after. Code review: 2 rounds, 5 items (R1 to R5, all minor), all closed. The owner read the 13 Hindi messages of B5 on 2026-11-14, with no changes. The close-out check found the Hub bug (review R6); the owner decided to fix it in B6.
 
 ## 4. Order and parallel work
 
@@ -256,6 +258,8 @@ Some `ML-*` criteria name things that do not exist until later. M08B builds the 
 | --- | --- | --- |
 | ML-26 | Hook points: search query, record display, chat message, agreement review (B5) | Widget answer: M08C C4. Opinion: M08G. Offering, want and storefront display: M08D. |
 | ML-28 | Taxonomy attribute names and choice values (B2) | Widget labels and extension step names: M08C C4 |
+| ML-9 | The unit label in the listing editor (B2) | A reader's view of another node's product unit: M08D |
+| ML-23 | Contact names in any script, with search (B4b) | A shop name: M08D |
 
 ## 6. Open questions for the owner
 
