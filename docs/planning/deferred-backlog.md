@@ -560,7 +560,7 @@ Target notation: `M05`, `M07`, `M10+`, `Phase 6` = a sequenced milestone/phase; 
 | **The receipt card does not show what each party read** | Nothing in v1 makes `viewed_via_mt` true, so a line "Read in ..." would carry no use yet. | M08C (receipt card redraw) | `crates/roym_web/ui/src/cards/templates/agreement_receipt.ts` |
 | **`detect-language` has no Roym method** | Every hook point knows the source language of its text or sends none, so no caller exists in v1. | M9A | `crates/roym_web/src/app/translation.rs` |
 | **Chat search, contact search and profile text have no translation hook** | They are not in the hook point list of the multilingual change. | TBD | [roym-multilingual](./changes/roym-multilingual/change.md) ("Translation hook points") |
-| **A machine translation is not kept; a reload translates again** | There is no engine in v1, so there is nothing to cache. A cache would need a rule for how long a person's text may stay on the node. | M9A | `crates/roym_web/ui/src/translation/translation.ts` |
+| **A machine translation is kept for the page only; a reload translates again** | The Hub keeps up to 200 results in page memory, so a redraw of a thread needs no second call. There is no engine in v1, so nothing is stored. A store that survives a reload would need a rule for how long a person's text may stay on the node. An open warning before acceptance still closes on a redraw. | M9A | `crates/roym_web/ui/src/translation/translation.ts` |
 
 
 ## 11. Roym Directory (search, discovery, and what M06C C6 left open)
