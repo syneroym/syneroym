@@ -61,6 +61,21 @@ export async function addContact(page: Page, personDid: string, conversationAddr
   await expect(page.locator('.contacts-screen')).toContainText(personDid, { timeout: 15_000 });
 }
 
+/**
+ * Grant the signed-in person a membership credential for a category from the SynOrg on their own
+ * node. A publish needs one. The Hub has no screen for issuing one yet, so this calls the node
+ * directly, over the wire the test already authenticates with.
+ */
+export async function issueOwnCredential(page: Page, category: string) {
+  const whoami = await rpcCall(page, 'session.whoami', {});
+  const issued = await rpcCall(page, 'credential.issue', {
+    member_did: whoami.result?.did,
+    categories: [category],
+    expires_at_secs: Math.floor(Date.now() / 1000) + 365 * 24 * 3600,
+  });
+  expect(issued.result?.record_id).toBeTruthy();
+}
+
 /** Ensure the signed-in person's node runs a SynOrg with generous limits. */
 export async function ensureOwnSynOrg(
   page: Page,
@@ -80,17 +95,7 @@ export async function ensureOwnSynOrg(
     await page.getByRole('button', { name: hubMessage(lang, 'synorg-save-button') }).click();
     await expect(page.locator('.synorg-save-status')).toHaveText(hubMessage(lang, 'common-saved'), { timeout: 15_000 });
     await page.getByRole('button', { name: hubMessage(lang, 'tab-synorg'), exact: true }).click();
-    // A publish now also needs a membership credential from this SynOrg.
-    // The Hub has no screen for issuing one yet, so this grants the
-    // node's own owner one directly, over the wire this test already
-    // authenticates with.
-    const whoami = await rpcCall(page, 'session.whoami', {});
-    const issued = await rpcCall(page, 'credential.issue', {
-      member_did: whoami.result?.did,
-      categories: [category],
-      expires_at_secs: Math.floor(Date.now() / 1000) + 365 * 24 * 3600,
-    });
-    expect(issued.result?.record_id).toBeTruthy();
+    await issueOwnCredential(page, category);
   }
   // Every test shares this one node, so publications from earlier tests
   // sit in the 24 h ledger. Keep the limit generous so a fresh publish
@@ -102,7 +107,11 @@ export async function ensureOwnSynOrg(
   await expect(page.locator('.limit-status')).toHaveText(hubMessage(lang, 'common-saved'), { timeout: 15_000 });
 }
 
-/** Publish a listing to the directory under a SynOrg. */
+/**
+ * Publish a listing to the directory under a SynOrg, and return its id. The listing's
+ * conversation address is `conversationAddress`; it defaults to the directory DID, which is
+ * enough when no test opens a chat from the listing.
+ */
 export async function publishListing(
   page: Page,
   title: string,
@@ -110,27 +119,34 @@ export async function publishListing(
   directoryDid = '',
   lang = 'en',
   textLang?: string,
-) {
+  conversationAddress = directoryDid,
+): Promise<string> {
   await page.getByRole('button', { name: hubMessage(lang, 'tab-listings') }).click();
   // The text language of the listing. Without it the select keeps the Hub's own language.
   if (textLang) await page.locator('.listing-text-lang').selectOption(textLang);
   await page.locator('.listing-title-input').fill(title);
   await pickCategory(page.locator('.listing-categories-input'), category, lang);
-  await page.locator('.listing-address-input').fill(directoryDid);
+  await page.locator('.listing-address-input').fill(conversationAddress);
   await page.locator('.block-payment .block-enabled').check();
   await page.locator('.payment-amount-input').fill('40');
   await page.locator('.save-listing').click();
   await expect(page.locator('.listing-save-result')).toContainText('lst_', { timeout: 15_000 });
+  // The id is `lst_` and the z-base-32 digest of the issuer and the slug.
+  const saved = await page.locator('.listing-save-result').innerText();
+  const listingId = saved.match(/lst_[a-z0-9]+/)?.[0];
+  expect(listingId, 'the save result shows the listing id').toBeTruthy();
 
   const row = page.locator('.listing-row', { hasText: title }).first();
   await row.locator('.publish-directory-did').fill(directoryDid);
   await row.locator('.publish-listing').click();
   await expect(row.locator('.publish-status')).toContainText(hubMessage(lang, 'listing-published'), { timeout: 15_000 });
+  return listingId!;
 }
 
 /** Open the Messages screen. The Hub fetches the list again each time it is opened. */
 export async function openMessages(page: Page, tag = 'en') {
-  await page.getByRole('button', { name: hubMessage(tag, 'tab-messages') }).click();
+  // Exact: the Hindi tab name is also part of the "Message this listing owner" button of a hit.
+  await page.getByRole('button', { name: hubMessage(tag, 'tab-messages'), exact: true }).click();
   await expect(page.locator('.messages-screen')).toBeVisible();
 }
 
@@ -160,6 +176,41 @@ export async function addMessageLanguage(page: Page, lang: string) {
 /** The message in the open thread that holds this text. */
 export function threadMessage(page: Page, text: string) {
   return page.locator('.thread-messages .message', { hasText: text });
+}
+
+/**
+ * Send a request in the open thread: a description and one category. `tag` is the Hub language,
+ * which names the category in the picker. The request form closes when the send works.
+ */
+export async function sendRequest(page: Page, description: string, category: string, tag = 'en') {
+  await page.locator('.toggle-request-form').click();
+  await expect(page.locator('.request-form')).toBeVisible();
+  await page.locator('.request-desc-input').fill(description);
+  await pickCategory(page.locator('.request-cats-input'), category, tag);
+  await page.locator('.send-request-button').click();
+  await expect(page.locator('.request-form')).not.toBeVisible({ timeout: 15_000 });
+}
+
+/**
+ * Answer the request card that holds `requestText` with a quote that is carried out at the
+ * giver's place, so the form asks for no address. The quote form closes when the send works.
+ */
+export async function sendQuote(
+  page: Page,
+  requestText: string,
+  quote: { scope: string; currency: string; amount: string; payee: string },
+) {
+  const card = threadMessage(page, requestText).first();
+  await card.locator('.quote-request-button').click();
+  const form = page.locator('.quote-form');
+  await expect(form).toBeVisible();
+  await form.locator('.quote-scope-input').fill(quote.scope);
+  await form.locator('.quote-currency-input').fill(quote.currency);
+  await form.locator('.quote-amount-input').fill(quote.amount);
+  await form.locator('.quote-payee-input').fill(quote.payee);
+  await form.locator('.quote-where-select').selectOption('at-giver');
+  await form.locator('.submit-quote-button').click();
+  await expect(form).toHaveCount(0, { timeout: 15_000 });
 }
 
 /**
