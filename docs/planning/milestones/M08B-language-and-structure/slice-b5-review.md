@@ -846,3 +846,119 @@ On top of round 1's list:
   English, and the Hindi sweep for the four. The new Hindi text joins the owner
   review of R6.
 - *Status:* Fixed (4abdbba4). `translationFailure` in `translation.ts` gives one message for each of the four kinds and is drawn directly; `error-translation` is reworded for all kinds. Four new messages in both catalogs, one test per kind in English and the Hindi sweep for the four. Proof: the exact-text tests for the unavailable case fail on the old callers.
+
+## Code review round 3 (check of the fixes) — Claude Opus 5.5, 2026-11-14
+
+Checked `feat/m08b-b5-translation` at `5421ddee`, in the main checkout. `git
+pull` said "Already up to date". The fix commits are `fc4051ce` (Rust tests),
+`4abdbba4` (Hub), `25473957` (Playwright and docs), `f7ef9490` (status) and
+`5421ddee` (review statuses). I read the full diff `4426b8a3..5421ddee`.
+
+**Summary:** all 9 items of rounds 1 and 2 are confirmed Fixed. 0 blocker,
+0 major, 2 new minor (R10, R11), both found in the new Hub code. **2 open: R10,
+R11.**
+
+Evidence: CI on the PR is fully green on `5421ddee` (`gh run view
+43550858363`: lints, 6 test shards, Playwright E2E, CLA). I ran the Hub unit
+tests (526 passed in 43 files, as `status.md` says) and
+`cargo nextest run -p syneroym-roym-web --lib translation` (6 passed). To prove
+R10 and R11 I ran one throw-away Vitest file (written, run and deleted; the tree
+is clean afterwards). I changed no code.
+
+### Items checked
+
+- **R1 (Fixed, confirmed).** `system-architecture.md:1147` now says `web`
+  answers the three methods itself and that the two translation methods need
+  the owner; `:1156` lists the three methods.
+- **R2 (Fixed, confirmed).** The switch goes to `(currentIdx + 1) % all.length`,
+  so every version is reached in order. The walk test now goes original, author
+  translation, machine version and checks each label.
+- **R3 (Fixed, confirmed).** The two assertions that could not fail are gone,
+  the test is renamed to what it proves, and its comment says why the record
+  and chat hook points are left to the unit tests. The ML-16 row was changed to
+  match.
+- **R4 (Fixed, confirmed).** `app/translation/tests.rs` checks the four
+  refusals (exact code, message and `data`), the loop order, that the first
+  refusal stops the loop (the third text is never sent), the order of source
+  and target, and that engine text stays out of `data`. The bounds of `targets`
+  and `translate` were narrowed from `AppHost` to `AppTranslation` so a scripted
+  engine can stand in; `dispatch` still takes `AppHost`. Ran: 6 passed.
+- **R5 (Fixed, confirmed).** Scenario 237 now accepts once and repeats with
+  `viewed_lang: "ta"`, expecting `-32602` with `data.field = "viewed_lang"`, on
+  both builds. A new parity test calls `web`'s `invoke` with both methods and
+  expects `-32010` on both builds.
+- **R6 (Fixed, confirmed).** The status row says the owner review of the Hindi
+  messages is open, now including the four refusal messages.
+- **R7 (Fixed, confirmed, see R11).** The translation module keeps up to 200
+  results by source, target and texts; `recordText` and `messageText` reuse them
+  with no call, and `recordText` shows the machine version again if it was on
+  screen. A refusal is not kept. The backlog row and the change doc say what is
+  kept and that an open warning still closes on a redraw.
+- **R8 (Fixed, confirmed).** `recordText` sends `texts.get(all[0].fields)` with
+  `all[0].lang`, and builds the machine version on the original's fields. The
+  walk test checks the exact params (`["नल वाला"]`, `hi`). The change doc's
+  decision and a Deviations entry say so.
+- **R9 (Fixed, confirmed, see R10).** `translationFailure` gives one message for
+  each of the four kinds, drawn on its own; an unknown kind falls back to
+  `error-translation`, which is now true for every kind; any other failure is
+  still inside "Could not translate". Four new messages in both catalogs, exact
+  English tests, and the Hindi sweep draws them.
+
+### New findings
+
+#### R10 — An engine failure still says it twice: "The translation service failed. translation engine failed: boom" (minor)
+
+- **Where:** `crates/roym_web/ui/src/translation/translation.ts`
+  (`translationFailure`, case `engine-failed`: `detail: err.message`);
+  `crates/roym_web/src/app/translation.rs:154` (the node's message is
+  `translation engine failed: <engine text>`); the test in
+  `translation/translation.test.ts` ("tells each kind of refusal in its own
+  words").
+- **Problem:** The node's message for `engine-failed` already starts with
+  "translation engine failed: ". The Hub puts the whole message after its own
+  sentence. Proved with the node's real message: English
+  `The translation service failed. translation engine failed: boom`; in Hindi
+  the English prefix also stays after `विवरण:`. The unit test passes only
+  because its stub message is `engine said no`, not the text the node sends, so
+  it does not test what a person would see.
+- **Failure case:** With an engine, every engine failure shows the same fact
+  twice, once in the person's language and once in English. This is the
+  repetition R9 asked to remove.
+- **Fix:** In `translationFailure`, drop the node's fixed prefix
+  (`translation engine failed: `) when it is there and pass only the engine's
+  own text as `$detail`. Change the test to use the node's real message
+  (`translation engine failed: engine said no`) and expect
+  `The translation service failed. engine said no`. No wire change.
+- *Status:* Open
+
+#### R11 — "On screen" is kept per text, not per card, so another card with the same text opens in its machine version without a click (minor)
+
+- **Where:** `crates/roym_web/ui/src/translation/translation.ts` (`Kept.shown`,
+  `keepShown`, keyed by source, target and texts) and
+  `crates/roym_web/ui/src/records/record_text.ts` (`if (earlier.shown)
+  currentIdx = machineIdx`); the change doc's new decision ("A card or message
+  drawn again with the same text shows the kept result, on screen if it was on
+  screen").
+- **Problem:** Reusing the translated *text* for any card with the same text
+  is fine: it saves a call. But whether it is *on screen* is a choice the person
+  made about one card, and it is stored under the text too. Proved: translate
+  one record, then draw a second record with the same text. The second one
+  draws with `data-shown-via="machine"` and no Translate button, though the person
+  never pressed anything on it.
+- **Failure case:** With an engine, Alice sends a revised quote that keeps the
+  scope and terms text and changes only the price. Bob had read the first quote
+  in its machine version. The new quote card opens in the machine version too.
+  If Bob presses Accept he gets the warning and signs `viewed_via_mt: true` for
+  a quote on which he never chose machine translation. The screen and the
+  signed record agree, and the warning still shows, so nothing false is signed;
+  but the choice was not his, and the change doc's sentence reads as if only the
+  same card is drawn again.
+- **Fix:** Keep the result by text, as now, but keep "on screen" by card: let
+  `recordText` take an optional key (`record_id` for a card, the hit's record id
+  in the directory) and store `shown` under that key. A card with no key, or a
+  different key, draws the kept machine version one click away (no call), with
+  the original or best version on screen. Add a test: two records with the same
+  text and different keys; translate the first; the second is drawn with its
+  best version on screen and the machine version reachable with no call. Change
+  the change doc sentence to say "the same card".
+- *Status:* Open
