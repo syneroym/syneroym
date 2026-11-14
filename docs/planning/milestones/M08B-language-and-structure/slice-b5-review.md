@@ -584,7 +584,7 @@ they equal the numbers in `task.md` and the PR (web 310,033, transaction
   `:1156` to "`web` lists its own three methods (`session.whoami`,
   `translation.targets`, `translation.translate`) and forwards every other
   method ...". `:1460` is still true; leave it.
-- *Status:* Open
+- *Status:* Fixed (25473957)
 
 #### R2 — After a machine version is made, an author translation can no longer be reached with the switch button (minor)
 
@@ -608,7 +608,7 @@ they equal the numbers in `task.md` and the PR (web 310,033, transaction
   (`initialIdx`) when it is not `0`. Change the D-B5-7 table and the walk test
   to include `A` after `M`. Alternative: do not offer Translate when the best
   version is already in a language the reader reads.
-- *Status:* Open
+- *Status:* Fixed (4abdbba4). The switch now visits every version in order. The walk test checks that the English author translation is reachable after the machine version is made. Proof: the new walk test fails on the old `record_text.ts`.
 
 #### R3 — The Playwright test "no translate action with a v1 node" proves less than its name for the hit and the chat message (minor)
 
@@ -630,7 +630,7 @@ they equal the numbers in `task.md` and the PR (web 310,033, transaction
   `page.route` so `translation.targets` answers `["hi"]` for one case and check
   that a Hindi listing hit gets `.record-text-translate` (and with `[]` it does
   not). Reword the ML-16 row to name only what the test proves.
-- *Status:* Open
+- *Status:* Fixed (25473957). The two assertions that could not fail are removed and the test is renamed to what it proves; the ML-16 row names the test's real claim. Proof: with `translation.targets` stubbed to answer `["hi"]`, the test fails at the `.search-translate` count (expected 0, received 1). Then undone. The changed test passes (1 passed).
 
 #### R4 — The `web` error mapping and the multi-text loop have no test for the three refusals v1 cannot produce (minor)
 
@@ -650,7 +650,7 @@ they equal the numbers in `task.md` and the PR (web 310,033, transaction
   of `translation_error` (exact `code`, `message`, `data`), and one for the loop
   with a host whose `translate` answers by text (assert order, and that an error
   on the second of three texts stops the loop and returns that error).
-- *Status:* Open
+- *Status:* Fixed (fc4051ce). Unit tests for the four refusals and the loop. Proof: with source and target swapped in `translation_error` and the loop changed to continue after a refusal, 4 of the 6 new tests fail. Then undone.
 
 #### R5 — Two behaviours the PR text and ADR state have no test: a repeated `agreement.accept` with bad `viewed_*`, and `translation.*` on the internal `invoke` path (minor)
 
@@ -673,7 +673,7 @@ they equal the numbers in `task.md` and the PR (web 310,033, transaction
   with `viewed_lang: "ta"` and assert `-32602` `data.field = "viewed_lang"`. Add
   a unit test in `roym_web` for `invoke` with `translation.targets` on a
   `TestHost` (expect `-32010`).
-- *Status:* Open
+- *Status:* Fixed (fc4051ce). Proof: with `viewed()` moved below the already-accepted answer, scenario 237 fails ("already-accepted" instead of `-32602`); with `invoke` letting `translation.*` pass without a session, the new invoke test fails (`-32601` on one build, `-32010` on the other). Both undone.
 
 #### R6 — `status.md` does not say that the owner review of the nine new Hindi messages is still open, and `hi.ftl` still says "owner review: done 2026-11-07" (minor)
 
@@ -691,7 +691,7 @@ they equal the numbers in `task.md` and the PR (web 310,033, transaction
 - **Fix:** Add to the B5 row: "owner review of nine Hindi messages (two with
   legal weight) open". At close-out, after the owner has read them, put the
   date in the status row (as B3a did), not in the `hi.ftl` header.
-- *Status:* Open
+- *Status:* Fixed (f7ef9490). The status row lists the open owner review, including the four refusal messages added by these fixes. `hi.ftl` is left as it is.
 
 ## Code review round 2 (independent pass) — Claude Opus 5.5, 2026-11-13
 
@@ -786,7 +786,7 @@ On top of round 1's list:
   call and the translation present. If this is left for M9A, change the
   backlog row to say "a redraw of the thread (every new event in the open
   conversation) or a reload translates again", so the cost is visible.
-- *Status:* Open
+- *Status:* Fixed (4abdbba4). The translation module keeps up to 200 results by source, target and texts, and `recordText` and `messageText` use them. Chosen: key by the text sent, so no caller needed a new argument. An open warning before acceptance still closes on a redraw (pressing Accept again shows it again); the backlog row and the change doc say so. Proof: the new kept tests fail on the old code.
 
 #### R8 — Translate on a quote starts from the version on screen, so a machine version can be a translation of the author's translation, not of the text that binds (minor)
 
@@ -815,7 +815,7 @@ On top of round 1's list:
   and the walk test (`T:नल वाला`, source `hi`). If the owner prefers the current
   behaviour, record it as a decision there instead and make the machine note
   name the source language.
-- *Status:* Open
+- *Status:* Fixed (4abdbba4). Translate always sends the original and its language. The change doc and its Deviations section say so. Proof: the walk test (`T:नल वाला`, source `hi`) fails on the old code.
 
 #### R9 — Every translation refusal is shown as "Translation is not available", nested inside "Could not translate", also for `too-long` and `unsupported-pair` (minor)
 
@@ -845,4 +845,4 @@ On top of round 1's list:
   service refused. { $detail }"). Add one test per kind with the exact text in
   English, and the Hindi sweep for the four. The new Hindi text joins the owner
   review of R6.
-- *Status:* Open
+- *Status:* Fixed (4abdbba4). `translationFailure` in `translation.ts` gives one message for each of the four kinds and is drawn directly; `error-translation` is reworded for all kinds. Four new messages in both catalogs, one test per kind in English and the Hindi sweep for the four. Proof: the exact-text tests for the unavailable case fail on the old callers.
