@@ -336,7 +336,7 @@ Claude Sonnet 5.5 implemented B6 (`status.md`), so the cross-tool rule holds.
 [roym-multilingual](../../changes/roym-multilingual/change.md). Every B6
 decision and deviation belongs there, and it holds them.
 
-**Summary:** 0 blocker, 0 major, 5 minor, 5 items (R1 to R5). **5 open.** No
+**Summary:** 0 blocker, 0 major, 5 minor, 5 items (R1 to R5). **0 open:** 5 fixed in `6445ed52`, `165e157a` and `5c1b36e3`. No
 earlier code review round exists, so there are no Fixed or Rejected items to
 re-check. The plan review items P1 to P7 are all Fixed, and the code follows
 their fixes (P4 row reading and language reset, P6 the build named in the ML-18
@@ -452,7 +452,7 @@ changed no code.
   (`agreement_receipt.ts:131` to `:135`), so use
   `page.locator('.thread-messages .card-agreement-receipt', { hasText: runTag })`
   with `toHaveCount(1)`, and the same on `bobPage`.
-- *Status:* Open.
+- *Status:* Fixed (6445ed52). Both receipt checks now use `runReceiptCard`, which matches the run tag. It keeps `.first()` and does not use `toHaveCount(1)`: each half is its own card, so a thread can hold two cards of one run. Proof: with the tag changed to a wrong one, `mise run demo` fails the Alice card check ("element(s) not found", 6 of 7 passed). Restored; the demo passes (7 passed).
 
 #### R2 — The test cannot tell Alice's signed half from Bob's (minor)
 
@@ -473,7 +473,7 @@ changed no code.
   `expect(verdict.result.issuer).toBe(alice.did)`. Also check
   `verdict.result.payload.role` is `"counterparty"` (`DealRole`, kebab-case,
   `crates/roym_core/src/transaction.rs:92`).
-- *Status:* Open.
+- *Status:* Fixed (6445ed52). The test reads `ALICE_DID` and checks `issuer` is `alice.did` and `payload.role` is `counterparty`. Proof: with the expected issuer changed to `bob.did`, `mise run demo` fails at that line (expected Bob's DID, received Alice's; 6 of 7 passed). Restored; the demo passes (7 passed).
 
 #### R3 — "The Hub has no ARIA markup" is false, and B6 copied it to two more places (minor)
 
@@ -493,7 +493,7 @@ changed no code.
 - **Fix:** in all three places say what is true: "The Hub sets `lang` and a few
   ARIA labels (the language list, the category picker, the search translate
   list). It has no screen reader test and no WCAG 2.1 AA audit."
-- *Status:* Open.
+- *Status:* Fixed (165e157a). The matrix row, the requirements spec and the backlog row now say the Hub sets `lang` and a few ARIA labels, and has no screen reader test and no WCAG 2.1 AA audit.
 
 #### R4 — ML-26 and ML-16 say every no-engine case checks that no call is made; three do not (minor)
 
@@ -518,7 +518,7 @@ changed no code.
   three cases (a test-only change), or reword both cells: "checks no action is
   drawn; the search box, record text, chat message and card cases also check
   that no call is made". The first is better, because ML-16 is about the call.
-- *Status:* Open.
+- *Status:* Fixed (5c1b36e3). The three cases now also check that no `translation.translate` call is made (first option), so the ML-16 and ML-26 cells are true as written and need no edit. Proof: with a stray `translation.translate` call added to `renderMessageRow`, `renderMessages` and `renderDirectory`, the three cases fail (7 tests failed in the 3 files, the 3 changed cases among them). Restored; the 3 files pass (33 tests).
 
 #### R5 — `DELIVERY_WAIT_MS` and its comment are copied from story 20 (minor)
 
@@ -533,4 +533,4 @@ changed no code.
   story keeps the old value and the old comment.
 - **Fix:** move `DELIVERY_WAIT_MS` with its comment to `demo/steps.ts`, export
   it, and import it in stories 20 and 40.
-- *Status:* Open.
+- *Status:* Fixed (6445ed52). `DELIVERY_WAIT_MS` and its comment are in `demo/steps.ts`; stories 20 and 40 import it.
