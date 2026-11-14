@@ -1,11 +1,11 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Locator, type Page } from '@playwright/test';
 import { readDemoEnv } from '../demo-nodes';
 import {
   addListingTranslation, addMessageLanguage, chooseHubLanguage, directoryAddedStatus, ensureOwnSynOrg,
   hubMessage, issueOwnCredential, loginWithDelegatedKey, openConversation, openMessages, pickCategory,
   publishListing, rpcCall, sendMessage, sendQuote, sendRequest, threadMessage,
 } from '../hub-helpers';
-import { newSession, requireEnv, step } from './steps';
+import { DELIVERY_WAIT_MS, newSession, requireEnv, step } from './steps';
 
 const SCRIPT = '20-roym-setup.sh';
 
@@ -103,9 +103,10 @@ test('Roym languages story: Alice reads her Hub in Hindi, and it stays Hindi', a
   });
 });
 
-// A message crosses from one node to the other on the sender's outbox tick, which the demo nodes
-// set to one second. The wait is far longer, for a slow machine.
-const DELIVERY_WAIT_MS = 60_000;
+/** The receipt cards of this run in the open thread. The scope on a card holds the run tag. */
+function runReceiptCard(page: Page, runTag: string): Locator {
+  return page.locator('.thread-messages .card-agreement-receipt', { hasText: runTag });
+}
 
 /** The state of the agreement of this run in one conversation, after the node has synced it. */
 async function pairState(page: Page, conversation: string, runTag: string): Promise<string | undefined> {
@@ -130,7 +131,7 @@ async function conversationWith(page: Page, address: string): Promise<string> {
 test('Roym languages story: Alice, in Hindi, finds an English listing and accepts a quote from its owner', async ({ browser, page }, testInfo) => {
   const env = readDemoEnv();
   const need = (key: string) => requireEnv(env, key, SCRIPT);
-  const alice = { hub: need('ALICE_HUB_URL'), key: need('ALICE_KEY'), addr: need('ALICE_ADDR') };
+  const alice = { hub: need('ALICE_HUB_URL'), key: need('ALICE_KEY'), did: need('ALICE_DID'), addr: need('ALICE_ADDR') };
   const bob = {
     hub: need('BOB_HUB_URL'), key: need('BOB_KEY'), did: need('BOB_DID'), addr: need('BOB_ADDR'),
     directoryDid: need('BOB_DIRECTORY_DID'),
@@ -233,16 +234,12 @@ test('Roym languages story: Alice, in Hindi, finds an English listing and accept
       await quote.getByRole('button', { name: hubMessage('hi', 'messages-accept-button') }).click();
       // She read the original, so no warning about a machine translation comes first.
       await expect(page.locator('.accept-mt-box')).toHaveCount(0);
-      await expect(page.locator('.thread-messages .card-agreement-receipt').first()).toBeVisible({
-        timeout: 15_000,
-      });
+      await expect(runReceiptCard(page, runTag).first()).toBeVisible({ timeout: 15_000 });
     });
 
     await step(bobPage, "Bob's screen: his Hub shows the agreement, and both nodes hold both halves", async () => {
       await bobPage.bringToFront();
-      await expect(bobPage.locator('.thread-messages .card-agreement-receipt').first()).toBeVisible({
-        timeout: DELIVERY_WAIT_MS,
-      });
+      await expect(runReceiptCard(bobPage, runTag).first()).toBeVisible({ timeout: DELIVERY_WAIT_MS });
       const aliceConversation = await conversationWith(page, bob.addr);
       const bobConversation = await conversationWith(bobPage, alice.addr);
       await expect
@@ -262,6 +259,9 @@ test('Roym languages story: Alice, in Hindi, finds an English listing and accept
       }>).find((a) => a.terms.scope.includes(runTag))!;
       const verdict = await rpcCall(page, 'agreement.verify', { envelope: agreement.counterparty.envelope });
       expect(verdict.result.verified).toBe(true);
+      // Bob's countersigned half says the same about the language, so the signer is checked too.
+      expect(verdict.result.issuer).toBe(alice.did);
+      expect(verdict.result.payload.role).toBe('counterparty');
       expect(verdict.result.payload.viewed_lang).toBe('en');
       expect(verdict.result.payload.viewed_via_mt).toBe(false);
     });

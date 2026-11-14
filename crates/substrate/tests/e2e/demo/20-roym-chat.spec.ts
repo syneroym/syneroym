@@ -4,12 +4,9 @@ import {
   addContact, loginWithDelegatedKey, openConversation, openMessages, saveProfile, sendMessage,
   threadMessage,
 } from '../hub-helpers';
-import { requireEnv, runScript, step, newSession } from './steps';
+import { DELIVERY_WAIT_MS, requireEnv, runScript, step, newSession } from './steps';
 
 const SCRIPT = '20-roym-setup.sh';
-// A message crosses from one node to the other on the sender's outbox tick, which the demo
-// nodes set to one second. The wait is far longer, for a slow machine.
-const DELIVERY_WAIT_MS = 60_000;
 // In attach mode the story can run again on the same nodes. A new tag in each message keeps the
 // old messages from matching.
 const RUN_TAG = Date.now().toString(36);
