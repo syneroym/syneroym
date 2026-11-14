@@ -565,6 +565,11 @@ unfiltered — every row and column reachable exactly as before FDAE existed
 [ADR-0017](decisions/0017-fdae-policy-schema-and-compilation.md) for the
 policy schema itself.
 
+#### Translating Text from a Roym Service (`syneroym:translation`)
+A component can ask the host to translate a text through the `syneroym:translation` WIT import (`crates/wit_interfaces/wit/translation/translation.wit`). In Rust, an app written against `syneroym-app-host` calls the `AppTranslation` trait on its host handle: `supported_targets()`, `detect_language(text)` and `translate(text, source_lang, target_lang)`. The WASM build and the native build call the same host functions, so they answer the same. The node has no engine in this version: `supported_targets()` is empty, and the other two calls fail with `unavailable`. A translation is for display only. Never put one into a record that is signed. See [ADR-0029](decisions/0029-machine-translation-host-interface.md).
+
+Every Roym component imports the interface, and a component that imports it needs a substrate that provides it. A new component copies the pattern of the existing six: the `import` in its `world.wit`, a link `wit/deps/translation/translation.wit` to the shared file, the `translation` feature of `syneroym-wit-interfaces`, and the `with:` entry in its `generate!`.
+
 #### Calling Another Service from a WASM Component (Universal Proxy)
 A deployed WASM component reaches another service — local or on another node —
 through the `syneroym:proxy/proxy` WIT import, without knowing where the target
@@ -1782,9 +1787,11 @@ The Hub picks its language from the saved choice (`localStorage` key `roym-hub-l
 
 **Chat languages.** Chat messages carry 0 to 3 language tags, main language first. The language list in each chat box is drawn using `languageList` (`src/i18n/language_list.ts`). Chat message text is drawn using `messageText(body, languages, tag = "span")` from `src/chat/message_text.ts`, which returns the nodes to append. It sets the HTML `lang` attribute to the main language, or `lang=""` and a note when the message has no tags. Every new place that draws a chat message uses `messageText`.
 
+**Translation.** `src/translation/translation.ts` asks the node once after sign-in which languages it can translate into (`translation.targets`, with a 3-second limit that gives an empty list). The Hub draws a translate action only when `targetFor(languages)` finds a language in that list that the reader reads and the text is not already in. `recordText(host, versions, draw, texts)` and `messageText(body, languages, tag, { translatable: true })` offer the action. A record has at most one machine version, and its element says what is on screen in `data-shown-lang` and `data-shown-via` (`original`, `author` or `machine`), so the Accept button of a quote can sign what the person read. The machine version is always made from the original text and its language, and the switch button visits every version in order. `translateTexts` keeps each result in page memory by source, target and texts (`keptTranslation`), so a thread drawn again uses it with no second call; a reload starts empty. Whether the machine version is on screen is kept per card: a caller of `recordText` passes a card key (`quote:<id>`, `request:<id>`, `hit:<listing id>`) as the last argument, and a card with no key or another key opens in its best version. `translationFailure(err)` gives the text for a refusal, by `data.kind`. A machine translation is labelled with its engine and is never signed. A node with no engine draws none of this. Unit tests use a fake engine from `src/testing/translation.ts`.
+
 ##### Add a Roym method
 
-Every Roym service has a method table in its `api.rs`. `web` lists only its own `session.whoami` and forwards every other method, with its `params` unchanged, to the service that owns it. Methods use typed input and output structs in Rust:
+Every Roym service has a method table in its `api.rs`. `web` lists its own `session.whoami`, `translation.targets` and `translation.translate`, and forwards every other method, with its `params` unchanged, to the service that owns it. Methods use typed input and output structs in Rust:
 
 1. **Write input and output structs.** Derive `serde::Deserialize` with `#[serde(deny_unknown_fields)]` on the input struct on a local-only method; leave it off on a wire-reachable method, and list that method in the check's wire list (a nested input struct needs `deny_unknown_fields` too; the check sees only the outer type). A wire-reachable method's input and output types go in `roym_core::method::directory` (or the module of their service there), because the other node reads them. A wire method with no params uses `WireNoParams`, not `NoParams`. An output that another node reads never has `deny_unknown_fields`. A record type inside an input (for example a listing's `payment` block) has no `deny_unknown_fields`, because it also parses signed records from other nodes; an unknown key inside it is ignored and not signed. Derive `serde::Serialize` on the output struct. If a local method takes no parameters, use `NoParams`.
 2. **Add a row to the method table.** In the service's `api.rs`, add an entry to the `service_methods!` macro:
@@ -2424,6 +2431,14 @@ roym session.whoami | jq .result
 
 `session.whoami` is answered by `web` itself. It returns `{did, auth, app_instance}`. `did` is the person. `auth` is `delegated` for a signed-in session and `anonymous` when the token is missing or not valid. A call to any other method with no valid token answers `-32010`.
 
+`web` answers two more methods itself, and both need a signed-in owner. `translation.targets` takes no params and returns `{"targets": [...]}`, the languages the node can translate into. This node has no translation engine, so the list is empty:
+
+```bash
+roym translation.targets | jq .result
+```
+
+`translation.translate` takes `{texts, source_lang?, target_lang}`: 1 to 8 texts, each at most 8,192 bytes and 32,768 bytes in all, and canonical language tags. It answers error `-32020` with `data.kind` set to `unavailable`, `unsupported-pair`, `too-long` or `engine-failed`. With no engine, every call answers `unavailable`. There is no `roymctl` command for these two methods.
+
 ### 6.4. Conversations
 
 List the conversations of the person:
@@ -2529,6 +2544,8 @@ To get the cards of a conversation, first ask `transaction` to read the new mess
 roym transaction.sync "{\"conversation\":\"$CONV\"}"
 roym transaction.thread "{\"conversation\":\"$CONV\"}" | jq .result.cards
 ```
+
+`agreement.accept` takes `{quote_record_id, viewed_lang?, viewed_via_mt?}`. The two optional fields say what the person read, and the node signs them into the acceptance. Without them the node signs the quote's own language and `false`. `viewed_lang` must be a canonical tag. When `viewed_via_mt` is `false`, it must be the quote's `terms.lang` or the tag of one of its author translations. When `viewed_via_mt` is `true`, it can be any language except `terms.lang`. A value that breaks this rule answers `-32602` with `data.field` set to `viewed_lang` or `viewed_via_mt`.
 
 `transaction.thread` takes `{conversation, limit?, cursor?}`. Each card has `message_id`, `direction`, `card_type`, `version`, `known`, `verified`, `expired`, `reason` and `data`. Show a card only when `known` and `verified` are true. The card types of the first version, all with `version` 1, are `request`, `quote`, `agreement-receipt`, `booking-progress`, `payment-request`, `payment-acknowledgement` and `fulfilment-receipt`. For any other type or version, and for a card that is not verified, show a plain notice with the `reason`, and do not guess what the `data` means.
 

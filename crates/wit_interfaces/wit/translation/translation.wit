@@ -1,0 +1,46 @@
+package syneroym:translation@0.1.0;
+
+/// Machine translation for display. The host owns the engine; a guest
+/// cannot choose one. A result is never input to signing.
+interface translation {
+    variant translation-error {
+        /// No engine on this node.
+        unavailable,
+        /// The engine cannot translate from the first tag to the second.
+        unsupported-pair(tuple<string, string>),
+        /// The text is longer than the engine accepts; the limit in bytes.
+        too-long(u32),
+        engine-failed(string),
+    }
+
+    record engine-info {
+        /// Shown to the reader next to every translation.
+        name: string,
+        /// True when the text left this node.
+        remote: bool,
+    }
+
+    record translated {
+        text: string,
+        /// The source language the engine used, stated or detected.
+        source-lang: string,
+        engine: engine-info,
+    }
+
+    record detected {
+        lang: string,
+        /// 0..=1000.
+        confidence: u16,
+    }
+
+    /// Empty when no engine is configured.
+    supported-targets: func() -> list<string>;
+    detect-language: func(text: string) -> result<list<detected>, translation-error>;
+    translate: func(text: string, source-lang: option<string>, target-lang: string)
+        -> result<translated, translation-error>;
+}
+
+/// No guest export, so one world serves the guest and host views alike.
+world translation-import {
+    import translation;
+}

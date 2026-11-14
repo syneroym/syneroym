@@ -50,6 +50,11 @@ const ROUTES: &[(&str, Service, MethodAuth)] = &[
     ("revocation.", DIRECTORY, MethodAuth::Owner),
 ];
 
+/// Methods `web` answers itself, by prefix. They are not routed to a
+/// sibling. Each needs the owner: a later translation engine may be remote
+/// or cost money, so an anonymous Hub page must not reach it.
+const WEB_ROUTES: &[(&str, MethodAuth)] = &[("translation.", MethodAuth::Owner)];
+
 /// Methods a person may reach before signing in. Full method names, never
 /// prefixes: an exception granted to a prefix is an exception granted to
 /// methods nobody has written yet.
@@ -59,11 +64,20 @@ pub fn route(method: &str) -> Option<Service> {
     ROUTES.iter().find(|(p, _, _)| method.starts_with(p)).map(|(_, s, _)| *s)
 }
 
+/// True for a method `web` answers itself (see `WEB_ROUTES`).
+pub fn answered_by_web(method: &str) -> bool {
+    WEB_ROUTES.iter().any(|(p, _)| method.starts_with(p))
+}
+
 pub fn method_auth(method: &str) -> Option<MethodAuth> {
     if PUBLIC_METHODS.contains(&method) {
         return Some(MethodAuth::Public);
     }
-    ROUTES.iter().find(|(p, _, _)| method.starts_with(p)).map(|(_, _, a)| *a)
+    ROUTES
+        .iter()
+        .find(|(p, _, _)| method.starts_with(p))
+        .map(|(_, _, a)| *a)
+        .or_else(|| WEB_ROUTES.iter().find(|(p, _)| method.starts_with(p)).map(|(_, a)| *a))
 }
 
 #[cfg(test)]
@@ -96,6 +110,29 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn web_routes_do_not_overlap_sibling_routes() {
+        for &(web, _) in WEB_ROUTES {
+            for &(sibling, _, _) in ROUTES {
+                assert!(
+                    !web.starts_with(sibling) && !sibling.starts_with(web),
+                    "web prefix '{web}' overlaps sibling prefix '{sibling}'"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn translation_methods_need_the_owner() {
+        for method in ["translation.targets", "translation.translate", "translation.unknown"] {
+            assert_eq!(method_auth(method), Some(MethodAuth::Owner), "{method}");
+            assert_eq!(route(method), None, "{method}");
+            assert!(answered_by_web(method), "{method}");
+        }
+        assert!(!answered_by_web("session.whoami"));
+        assert!(!answered_by_web("transaction.sync"));
     }
 
     #[test]

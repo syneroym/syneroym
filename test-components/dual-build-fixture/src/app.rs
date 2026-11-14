@@ -259,6 +259,17 @@ pub enum Request {
     /// rule is that a trait with only one of its two implementations
     /// exercised is how the native build becomes second-class.
     CallerOrigin,
+
+    /// `syneroym:translation`: the node's target languages.
+    TranslationTargets,
+    DetectLanguage {
+        text: String,
+    },
+    Translate {
+        text: String,
+        source_lang: Option<String>,
+        target_lang: String,
+    },
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]

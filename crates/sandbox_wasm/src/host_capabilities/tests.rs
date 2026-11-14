@@ -41,3 +41,4 @@ mod tests_events;
 mod tests_proxy;
 mod tests_services;
 mod tests_store;
+mod tests_translation;

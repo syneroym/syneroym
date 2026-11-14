@@ -653,6 +653,7 @@ mod capabilities_proxy;
 use capabilities_proxy::MAX_IDEMPOTENCY_KEY_BYTES;
 mod capabilities_services;
 mod capabilities_store;
+mod capabilities_translation;
 
 #[cfg(test)]
 pub(crate) mod tests;

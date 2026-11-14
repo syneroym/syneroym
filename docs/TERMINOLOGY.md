@@ -73,6 +73,8 @@ neighbourhood.
 | **Search key** | The form of a text that search compares, produced by `syneroym-text-lang`. Four steps: Unicode NFC, lower case, a Latin transliteration of Devanagari and Tamil letters, then the Latin fold. | Raw unnormalized text. |
 | **Transliteration table** | A fixed table in `syneroym-text-lang` that turns the letters of one script (Devanagari or Tamil) into Latin letters, by sound. It is lossy on purpose: two spellings of one word must meet, nothing more. | ISO 15919 output (our tables start from it but differ). |
 | **Latin fold** | A fixed, ordered list of rewrite rules over Latin letters (for example `w` becomes `v`, a doubled letter becomes one). It runs on typed Latin text and on the output of a transliteration table. | A language-specific spelling rule. |
+| **Machine translation (MT)** | Text translated by software, not by its author. It is for display only and is never signed. A client names the engine next to every machine translation, and the original text always binds. The node has no engine in this version. | An author translation, which is signed by the author. |
+| **Translation hook point** | A place in a Roym flow where the translation interface is called: the search box, record text, a chat message and a quote before acceptance. A translate action is drawn there only when the node can translate. | A place that always shows a translate button. |
 | **Author translation** | An alternative translation signed by the author inside the record envelope (up to 4 translations per record). The original text always binds. | Machine translation (MT), which is unsigned software output. |
 
 ## Key phrasings

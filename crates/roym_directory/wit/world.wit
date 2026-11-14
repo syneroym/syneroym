@@ -17,6 +17,7 @@ world directory {
     import syneroym:signing/signing@0.1.0;
     import syneroym:invocation/invocation@0.1.0;
     import syneroym:events/events@0.1.0;
+    import syneroym:translation/translation@0.1.0;
 
     export api;
 }

@@ -24,3 +24,5 @@ mod http;
 mod permitted_differences;
 #[path = "dual_build_parity/signing.rs"]
 mod signing;
+#[path = "dual_build_parity/translation.rs"]
+mod translation;

@@ -187,18 +187,22 @@ pub async fn send_quote(
     slot_id: &str,
     terms: Value,
 ) -> String {
-    let quote = quote_author
-        .rpc_ok(
-            "quote.set",
-            json!({
-                "request_record_id": request_record_id,
-                "listing_id": listing_id,
-                "slot_id": slot_id,
-                "expires_in_secs": 3600,
-                "terms": terms,
-            }),
-        )
-        .await;
+    send_quote_with(
+        quote_author,
+        json!({
+            "request_record_id": request_record_id,
+            "listing_id": listing_id,
+            "slot_id": slot_id,
+            "expires_in_secs": 3600,
+            "terms": terms,
+        }),
+    )
+    .await
+}
+
+/// `quote.set` with the given params, delivered. Returns the quote's record id.
+pub async fn send_quote_with(quote_author: &Node, params: Value) -> String {
+    let quote = quote_author.rpc_ok("quote.set", params).await;
     let msg = quote["message_id"].as_str().unwrap().to_string();
     assert!(wait_delivered(quote_author, &msg).await, "the quote is delivered");
     quote["record_id"].as_str().unwrap().to_string()
@@ -207,10 +211,15 @@ pub async fn send_quote(
 /// The counterparty syncs the quote in and accepts it; the accept is delivered
 /// and the pair is one half.
 pub async fn accept_quote(counterparty: &Node, conversation: &str, quote_record_id: &str) {
-    counterparty.rpc_ok("transaction.sync", json!({ "conversation": conversation })).await;
-    let accept = counterparty
-        .rpc_ok("agreement.accept", json!({ "quote_record_id": quote_record_id }))
+    accept_quote_with(counterparty, conversation, json!({ "quote_record_id": quote_record_id }))
         .await;
+}
+
+/// Like [`accept_quote`], with the exact `agreement.accept` params: they may
+/// say which version of the quote the counterparty read.
+pub async fn accept_quote_with(counterparty: &Node, conversation: &str, params: Value) {
+    counterparty.rpc_ok("transaction.sync", json!({ "conversation": conversation })).await;
+    let accept = counterparty.rpc_ok("agreement.accept", params).await;
     assert_eq!(accept["pair"]["state"], "half");
     let msg = accept["message_id"].as_str().unwrap().to_string();
     assert!(wait_delivered(counterparty, &msg).await, "the accept is delivered");

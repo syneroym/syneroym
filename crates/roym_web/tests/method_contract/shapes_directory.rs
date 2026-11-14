@@ -351,6 +351,13 @@ async fn whoami_shapes() {
 }
 
 #[tokio::test]
+async fn translation_targets_shape() {
+    let h = harness().await;
+    let targets = rpc(&h, "translation.targets", json!({})).await;
+    assert_shape("translation_targets", &targets);
+}
+
+#[tokio::test]
 async fn no_synorg_shapes() {
     let h = harness().await;
 

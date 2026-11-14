@@ -1,5 +1,8 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { activate, t } from "../i18n/i18n";
+import { stubRpc } from "../testing/stub-rpc";
+import { ENGINE, fakeEngine, readerReads, unavailableEngine } from "../testing/translation";
+import { setTargetsForTest } from "../translation/translation";
 import { messageLang, messageText } from "./message_text";
 
 describe("messageText and messageLang", () => {
@@ -56,5 +59,106 @@ describe("messageText and messageLang", () => {
     expect(div.tagName.toLowerCase()).toBe("div");
     expect(div.className).toBe("message-body");
     expect(div.getAttribute("lang")).toBe("en");
+  });
+});
+
+describe("messageText with a translation engine", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    setTargetsForTest([]);
+  });
+
+  function draw(body: string, languages: string[], translatable = true): HTMLElement {
+    const host = document.createElement("div");
+    host.append(...messageText(body, languages, "span", { translatable }));
+    return host;
+  }
+
+  it("a node with no engine draws no translate button and makes no call", () => {
+    readerReads([]);
+    const calls = stubRpc({});
+    expect(draw("वणक्कम", ["hi"]).querySelector(".message-translate")).toBeNull();
+    expect(calls).toEqual([]);
+  });
+
+  it("translates on a click, labels the result, and leaves the body alone", async () => {
+    readerReads([]);
+    setTargetsForTest(["en"]);
+    const seen: Record<string, unknown>[] = [];
+    stubRpc({ "translation.translate": fakeEngine(seen) });
+    const host = draw("नमस्ते", ["hi"]);
+    const button = host.querySelector<HTMLButtonElement>(".message-translate")!;
+    expect(button.textContent).toBe("Translate into English");
+
+    button.click();
+    await vi.waitFor(() => expect(host.querySelector(".message-translation")).not.toBeNull());
+    expect(seen).toEqual([{ texts: ["नमस्ते"], source_lang: "hi", target_lang: "en" }]);
+    const translation = host.querySelector(".message-translation")!;
+    expect([translation.textContent, translation.getAttribute("lang")]).toEqual(["T:नमस्ते", "en"]);
+    expect(host.querySelector(".message-translation-note")!.textContent).toBe(
+      `Machine translation into English by ${ENGINE}.`,
+    );
+    expect(host.querySelector(".message-body")!.textContent).toBe("नमस्ते");
+    expect(host.querySelector(".message-translate")).toBeNull();
+  });
+
+  it("draws a translation made earlier again at once, with no button and no second call", async () => {
+    readerReads([]);
+    setTargetsForTest(["en"]);
+    const seen: Record<string, unknown>[] = [];
+    stubRpc({ "translation.translate": fakeEngine(seen) });
+    const first = draw("नमस्ते", ["hi"]);
+    first.querySelector<HTMLButtonElement>(".message-translate")!.click();
+    await vi.waitFor(() => expect(first.querySelector(".message-translation")).not.toBeNull());
+
+    // The thread is drawn again.
+    const second = draw("नमस्ते", ["hi"]);
+    expect(second.querySelector(".message-translation")!.textContent).toBe("T:नमस्ते");
+    expect(second.querySelector(".message-translation-note")!.textContent).toBe(
+      `Machine translation into English by ${ENGINE}.`,
+    );
+    expect(second.querySelector(".message-translate")).toBeNull();
+    expect(second.querySelector(".message-body")!.textContent).toBe("नमस्ते");
+    expect(seen).toHaveLength(1);
+  });
+
+  it("an untagged message sends no source language", async () => {
+    readerReads([]);
+    setTargetsForTest(["en"]);
+    const seen: Record<string, unknown>[] = [];
+    stubRpc({ "translation.translate": fakeEngine(seen) });
+    const host = draw("hello?", []);
+    host.querySelector<HTMLButtonElement>(".message-translate")!.click();
+    await vi.waitFor(() => expect(seen).toHaveLength(1));
+    expect(seen[0]).toEqual({ texts: ["hello?"], target_lang: "en" });
+  });
+
+  it("keeps the body and says why when the engine is unavailable", async () => {
+    readerReads([]);
+    setTargetsForTest(["en"]);
+    stubRpc({ "translation.translate": unavailableEngine });
+    const host = draw("नमस्ते", ["hi"]);
+    host.querySelector<HTMLButtonElement>(".message-translate")!.click();
+    await vi.waitFor(() => expect(host.querySelector(".message-translation-error")).not.toBeNull());
+    expect(host.querySelector(".message-translation-error")!.textContent).toBe(
+      "Translation is not available.",
+    );
+    expect(host.querySelector(".message-body")!.textContent).toBe("नमस्ते");
+    expect(host.querySelector<HTMLButtonElement>(".message-translate")!.disabled).toBe(false);
+  });
+
+  it("a message already tagged in a language the reader reads gets no button", () => {
+    readerReads([]);
+    setTargetsForTest(["en", "hi"]);
+    expect(draw("hello", ["en"]).querySelector(".message-translate")).toBeNull();
+    // English is the second tag.
+    expect(draw("नमस्ते hello", ["hi", "en"]).querySelector(".message-translate")).toBeNull();
+  });
+
+  it("a message that is not translatable gets no button", () => {
+    readerReads([]);
+    setTargetsForTest(["en"]);
+    expect(draw("नमस्ते", ["hi"], false).querySelector(".message-translate")).toBeNull();
   });
 });

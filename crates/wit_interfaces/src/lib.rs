@@ -26,6 +26,8 @@ pub mod proxy;
 pub mod signing;
 #[cfg(feature = "supervisor")]
 pub mod supervisor;
+#[cfg(feature = "translation")]
+pub mod translation;
 #[cfg(feature = "vault")]
 pub mod vault;
 
@@ -46,3 +48,6 @@ pub mod invocation_host;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod events_host;
+
+#[cfg(not(target_arch = "wasm32"))]
+pub mod translation_host;

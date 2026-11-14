@@ -9,6 +9,8 @@ import {
   type GroupMessageRow,
 } from "./groups";
 import { stubRpc } from "../testing/stub-rpc";
+import { readerReads } from "../testing/translation";
+import { setTargetsForTest } from "../translation/translation";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -631,5 +633,38 @@ describe("Groups screen rendering", () => {
       const names = Array.from(host.querySelectorAll(".member-name")).map((el) => el.textContent);
       expect(names).toEqual(["Alice", "राम"]);
     });
+  });
+});
+
+describe("Group messages with a translation engine", () => {
+  const nameOf = (addr: string) => addr;
+  const row = (direction: "incoming" | "outgoing"): GroupMessageRow => ({
+    id: `m-${direction}`,
+    conversation: "grp-1",
+    author: "did:key:zAlice",
+    direction,
+    sender_timestamp_ms: 1000,
+    content_type: "text/plain",
+    body_encoding: "utf8",
+    body: "வணக்கம்",
+    languages: ["ta"],
+    state: "delivered",
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    setTargetsForTest([]);
+  });
+
+  it("an incoming message has a translate button, and the reader's own message does not", () => {
+    readerReads([]);
+    setTargetsForTest(["en"]);
+    expect(renderMessageRow(row("incoming"), nameOf).querySelector(".message-translate")).not.toBeNull();
+    expect(renderMessageRow(row("outgoing"), nameOf).querySelector(".message-translate")).toBeNull();
+  });
+
+  it("a node with no engine draws no translate button", () => {
+    readerReads([]);
+    expect(renderMessageRow(row("incoming"), nameOf).querySelector(".message-translate")).toBeNull();
   });
 });

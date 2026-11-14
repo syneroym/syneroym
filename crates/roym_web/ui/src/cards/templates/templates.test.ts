@@ -1,6 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { formatDateTime } from "../../i18n/format.js";
 import { formatMinor } from "../../money.js";
+import { stubRpc } from "../../testing/stub-rpc";
+import { fakeEngine, readerReads } from "../../testing/translation";
+import { setTargetsForTest } from "../../translation/translation";
 import { renderRefusedCard } from "../refused.js";
 import { renderAgreementReceipt } from "./agreement_receipt.js";
 import { renderBookingProgress } from "./booking_progress.js";
@@ -544,5 +547,81 @@ describe("Card templates", () => {
       expect(el.textContent).toContain("Unverified quote card (v1)");
       expect(el.textContent).toContain("tampered signature bytes");
     });
+  });
+});
+
+describe("Card templates with a translation engine", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    setTargetsForTest([]);
+  });
+
+  const HINDI_QUOTE = {
+    terms: {
+      lang: "hi",
+      scope: "छत की मरम्मत",
+      cancellation_terms: "रद्द करने की शर्त",
+      refund_terms: "वापसी की शर्त",
+      dispute_path: "https://example.org/dispute",
+    },
+  };
+
+  it("a request offers its description and sends the exact text", async () => {
+    readerReads([]);
+    setTargetsForTest(["en"]);
+    const seen: Record<string, unknown>[] = [];
+    stubRpc({ "translation.translate": fakeEngine(seen) });
+    const el = renderRequest({ lang: "hi", description: "नल ठीक करना है" });
+    el.querySelector<HTMLButtonElement>(".record-text-translate")!.click();
+    await vi.waitFor(() => expect(seen).toHaveLength(1));
+    expect(seen[0]).toEqual({ texts: ["नल ठीक करना है"], source_lang: "hi", target_lang: "en" });
+    await vi.waitFor(() =>
+      expect(el.querySelector(".request-description")!.textContent).toBe("T:नल ठीक करना है"),
+    );
+  });
+
+  it("a quote sends its four terms, except a link, and keeps the signed link", async () => {
+    readerReads([]);
+    setTargetsForTest(["en"]);
+    const seen: Record<string, unknown>[] = [];
+    stubRpc({ "translation.translate": fakeEngine(seen) });
+    const el = renderQuote(HINDI_QUOTE);
+    el.querySelector<HTMLButtonElement>(".record-text-translate")!.click();
+    await vi.waitFor(() => expect(seen).toHaveLength(1));
+    expect(seen[0]).toEqual({
+      texts: ["छत की मरम्मत", "रद्द करने की शर्त", "वापसी की शर्त"],
+      source_lang: "hi",
+      target_lang: "en",
+    });
+    await vi.waitFor(() =>
+      expect(el.querySelector(".quote-scope")!.textContent).toBe("Scope: T:छत की मरम्मत"),
+    );
+    // The machine version draws the author's link, not text from the engine.
+    const link = el.querySelector<HTMLAnchorElement>(".quote-dispute a")!;
+    expect(link.textContent).toBe("https://example.org/dispute");
+  });
+
+  it("a machine version of a quote says the original binds", async () => {
+    readerReads([]);
+    setTargetsForTest(["en"]);
+    stubRpc({ "translation.translate": fakeEngine([]) });
+    const el = renderQuote(HINDI_QUOTE);
+    expect(el.querySelector(".quote-original-binds")).toBeNull();
+    el.querySelector<HTMLButtonElement>(".record-text-translate")!.click();
+    await vi.waitFor(() => expect(el.querySelector(".quote-original-binds")).not.toBeNull());
+    expect(el.querySelector(".quote-original-binds")!.textContent).toBe(
+      "The original text, in Hindi, is what binds.",
+    );
+  });
+
+  it("a node with no engine draws no translate action on a request or a quote", () => {
+    readerReads([]);
+    const calls = stubRpc({});
+    const request = renderRequest({ lang: "hi", description: "नल ठीक करना है" });
+    const quote = renderQuote(HINDI_QUOTE);
+    expect(request.querySelector(".record-text-translate")).toBeNull();
+    expect(quote.querySelector(".record-text-translate")).toBeNull();
+    expect(calls).toEqual([]);
   });
 });

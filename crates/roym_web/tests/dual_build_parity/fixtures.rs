@@ -339,7 +339,7 @@ pub(crate) fn peer_counterparty_receipt(
         "counterparty_did": counterparty_did,
         "quote_author_did": quote_author_did,
         "role": "counterparty",
-        "terms": terms,
+        "terms": terms, "viewed_lang": terms["lang"], "viewed_via_mt": false,
     });
     let env_json = sign_as_peer(
         transaction::RECORD_AGREEMENT_RECEIPT,
@@ -442,7 +442,7 @@ pub(crate) fn peer_counterparty_receipt_with_expiry(
         "counterparty_did": counterparty_did,
         "quote_author_did": quote_author_did,
         "role": "counterparty",
-        "terms": terms,
+        "terms": terms, "viewed_lang": terms["lang"], "viewed_via_mt": false,
     });
     let peer = peer_identity();
     let issuer = peer_did();

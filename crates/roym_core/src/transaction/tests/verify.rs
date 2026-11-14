@@ -45,6 +45,8 @@ fn verify_agreement_receipt_refuses_a_half_whose_role_does_not_match_its_issuer(
         quote_author_did: quote_author_did.clone(),
         role: DealRole::Counterparty,
         terms: sample_terms(),
+        viewed_lang: sample_terms().lang,
+        viewed_via_mt: false,
     };
     let author_signs_counterparty_half = sign_envelope(
         &quote_author_key,
@@ -318,6 +320,8 @@ fn verify_agreement_receipt_refuses_expiry() {
         quote_author_did: "did:key:quoteauthor123".to_string(),
         role: DealRole::Counterparty,
         terms: sample_terms(),
+        viewed_lang: sample_terms().lang,
+        viewed_via_mt: false,
     };
     let env = sign_envelope(
         &key,

@@ -116,7 +116,9 @@ export function renderMessageRow(
   const authorName = nameOf(msg.author);
   row.appendChild(text("div", authorName, "message-author"));
   if (msg.body_encoding === "utf8") {
-    const nodes = messageText(msg.body ?? "", msg.languages ?? [], "div");
+    const nodes = messageText(msg.body ?? "", msg.languages ?? [], "div", {
+      translatable: msg.direction === "incoming",
+    });
     row.append(...nodes);
   } else {
     row.appendChild(text("div", msg.body ?? "", "message-body"));

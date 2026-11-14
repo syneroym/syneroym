@@ -29,6 +29,7 @@ syneroym-wit-interfaces = { path = "../wit_interfaces", default-features = false
     "messaging",
     "proxy",
     "signing",
+    "translation",
     "vault",
 ] }
 
@@ -48,3 +49,4 @@ async-trait.workspace = true
 "syneroym:signing" = { path = "wit/deps/signing" }
 "syneroym:invocation" = { path = "wit/deps/invocation" }
 "syneroym:events" = { path = "wit/deps/events" }
+"syneroym:translation" = { path = "wit/deps/translation" }

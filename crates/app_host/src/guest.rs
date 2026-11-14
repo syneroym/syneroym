@@ -26,12 +26,14 @@ use syneroym_wit_interfaces::{
     messaging::syneroym::messaging::host_api as msg,
     proxy::syneroym::proxy::proxy as px,
     signing::syneroym::signing::signing as sgn,
+    translation::syneroym::translation::translation as tr,
     vault::syneroym::vault::vault as vlt,
 };
 
 use crate::{
     AppAppConfig, AppBlobReader, AppBlobStore, AppBlobWriter, AppConversation, AppDataLayer,
-    AppEvents, AppInvocation, AppMessaging, AppProxy, AppSigning, AppVault, AppWebSocket,
+    AppEvents, AppInvocation, AppMessaging, AppProxy, AppSigning, AppTranslation, AppVault,
+    AppWebSocket,
     types::{
         app_config::ConfigError,
         blob_store::BlobError,
@@ -43,6 +45,7 @@ use crate::{
         messaging::MessagingError,
         proxy::{CallOptions, CallRequest, CallTarget, ProxyError},
         signing::{Principal, RecordDraft, SigningError, SigningIdentity},
+        translation::{Detected, Translated, TranslationError},
         vault::VaultError,
     },
 };
@@ -468,6 +471,25 @@ impl AppEvents for GuestHost {
         limit: u32,
     ) -> Result<ReadResult, EventsError> {
         evt::read(after.as_deref(), limit)
+    }
+}
+
+impl AppTranslation for GuestHost {
+    async fn supported_targets(&self) -> Vec<String> {
+        tr::supported_targets()
+    }
+
+    async fn detect_language(&self, text: String) -> Result<Vec<Detected>, TranslationError> {
+        tr::detect_language(&text)
+    }
+
+    async fn translate(
+        &self,
+        text: String,
+        source_lang: Option<String>,
+        target_lang: String,
+    ) -> Result<Translated, TranslationError> {
+        tr::translate(&text, source_lang.as_deref(), &target_lang)
     }
 }
 

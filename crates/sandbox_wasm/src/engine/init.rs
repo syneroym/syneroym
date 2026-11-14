@@ -410,6 +410,7 @@ impl AppSandboxEngine {
         signing::add_to_linker::<_, HasSelf<HostState>>(&mut linker, |state| state)?;
         invocation::add_to_linker::<_, HasSelf<HostState>>(&mut linker, |state| state)?;
         events::add_to_linker::<_, HasSelf<HostState>>(&mut linker, |state| state)?;
+        translation::add_to_linker::<_, HasSelf<HostState>>(&mut linker, |state| state)?;
         Ok(linker)
     }
 

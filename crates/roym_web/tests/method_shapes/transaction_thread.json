@@ -55,7 +55,9 @@
           "refund_terms": "string",
           "scope": "string",
           "tax_minor": "number"
-        }
+        },
+        "viewed_lang": "string",
+        "viewed_via_mt": "boolean"
       },
       "direction": "incoming",
       "expired": "boolean",
@@ -97,7 +99,9 @@
           "refund_terms": "string",
           "scope": "string",
           "tax_minor": "number"
-        }
+        },
+        "viewed_lang": "string",
+        "viewed_via_mt": "boolean"
       },
       "direction": "outgoing",
       "expired": "boolean",

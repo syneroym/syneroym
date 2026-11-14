@@ -56,6 +56,8 @@
       "counterparty_did": "did:key:z6MkhaXgBZDvotDkL5257faiz4898Xnp213as98z",
       "quote_author_did": "did:key:z6MkmFaqYQ36Xk559C351gJ1jF8d7s86s511as88",
       "role": "counterparty",
+      "viewed_lang": "en",
+      "viewed_via_mt": false,
       "pair": {
         "state": "complete"
       },

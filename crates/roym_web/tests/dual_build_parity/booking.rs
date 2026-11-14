@@ -63,7 +63,7 @@ fn peer_counterparty_receipt_with_identity(
         "counterparty_did": counterparty_did,
         "quote_author_did": quote_author_did,
         "role": "counterparty",
-        "terms": terms,
+        "terms": terms, "viewed_lang": terms["lang"], "viewed_via_mt": false,
     });
     let draft = RecordDraft {
         version: transaction::AGREEMENT_RECEIPT_VERSION,

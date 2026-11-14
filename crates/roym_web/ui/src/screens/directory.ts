@@ -14,11 +14,17 @@ import {
   type CheckStandingReply,
 } from "../directory/membership";
 import { formatAge } from "../i18n/format";
-import { langAttr } from "../i18n/text_lang";
-import { recordText, type TextVersion } from "../records/record_text";
+import { langAttr, languageName } from "../i18n/text_lang";
+import { recordText, textFields, type TextVersion } from "../records/record_text";
 import { call } from "../rpc";
 import { categoryPicker } from "../taxonomy/category_picker";
 import { categoryLabel } from "../taxonomy/taxonomy";
+import {
+  machineNote,
+  searchTargets,
+  translateTexts,
+  translationFailure,
+} from "../translation/translation";
 
 /// The word for a revocation status. A status this table does not know is
 /// shown as it came.
@@ -275,8 +281,48 @@ function buildSearch(): HTMLElement {
     }
   };
 
-  wrap.append(textInput, catPicker.root, help, goBtn, progress, results, refusedHost, errorsHost);
+  wrap.append(textInput, ...searchTranslateControls(textInput));
+  wrap.append(catPicker.root, help, goBtn, progress, results, refusedHost, errorsHost);
   return wrap;
+}
+
+/// A language choice and a button that translates the words in the search
+/// box into that language. The person sees the result in the box, and can
+/// change it, before they press Search. Nothing is drawn when the node
+/// cannot translate.
+function searchTranslateControls(textInput: HTMLInputElement): HTMLElement[] {
+  const targets = searchTargets();
+  if (targets.length === 0) return [];
+
+  const select = document.createElement("select");
+  select.className = "search-translate-target";
+  select.setAttribute("aria-label", t("directory-search-translate-target"));
+  for (const target of targets) {
+    const option = document.createElement("option");
+    option.value = target;
+    option.textContent = languageName(target);
+    select.appendChild(option);
+  }
+
+  const note = text("span", "", "search-translate-note");
+  const button = text("button", t("directory-search-translate-button"), "button search-translate") as HTMLButtonElement;
+  button.type = "button";
+  button.onclick = async () => {
+    const words = textInput.value.trim();
+    if (!words) return;
+    button.disabled = true;
+    note.textContent = "";
+    try {
+      const out = await translateTexts([words], null, select.value);
+      textInput.value = out.texts[0] ?? words;
+      note.textContent = machineNote(select.value, out.engine);
+    } catch (err) {
+      note.textContent = translationFailure(err);
+    } finally {
+      button.disabled = false;
+    }
+  };
+  return [select, button, note];
 }
 
 function renderSourceOutcome(
@@ -344,7 +390,7 @@ function renderHits(host: HTMLElement, hits: MergedHit[], truncated: boolean, ru
       summaryEl.setAttribute("lang", langAttr(v.lang));
 
       return [titleEl, summaryEl];
-    });
+    }, textFields<HitTextFields>(["title", "summary"]), `hit:${hit.listing_id}`);
     if (hit.categories.length) {
       const labels = hit.categories.map((c) => categoryLabel(c)).join(", ");
       card.appendChild(

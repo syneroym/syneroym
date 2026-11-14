@@ -45,7 +45,7 @@ syneroym_roym_core::service_methods! {
     "quote.verify": quote_ops::verify [VerifyInput => RecordVerdict<QuotePayload>],
     "quote.decline": quote_ops::decline [quote_ops::QuoteDeclineInput => quote_ops::QuoteDeclineOutput],
 
-    "agreement.accept": agreement_ops::accept [agreement_ops::QuoteRecordInput => agreement_ops::AgreementAcceptOutput],
+    "agreement.accept": agreement_ops::accept [agreement_ops::AgreementAcceptInput => agreement_ops::AgreementAcceptOutput],
     "agreement.get": agreement_ops::get [agreement_ops::QuoteRecordInput => Option<agreement_ops::AgreementView>],
     "agreement.list": agreement_ops::list [agreement_ops::AgreementListInput => agreement_ops::AgreementListOutput],
     "agreement.verify": agreement_ops::verify [VerifyInput => RecordVerdict<AgreementReceiptPayload>],

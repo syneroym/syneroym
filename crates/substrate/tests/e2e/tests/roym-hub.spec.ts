@@ -1420,6 +1420,30 @@ test.describe('Roym Hub', () => {
     await chooseHubLanguage(page, 'en');
   });
 
+  test('the search box offers no translation with a v1 node', async ({ page }) => {
+    await page.goto(HUB_URL);
+    await page.waitForLoadState('networkidle');
+    await loginWithDelegatedKey(page);
+    await ensureSynOrgWithListing(page, 'No translation seed');
+
+    // The node has no translation engine, so it says it can translate into nothing.
+    const targets = await rpcCall(page, 'translation.targets', {});
+    expect(targets.result).toEqual({ targets: [] });
+
+    // With that answer the search box, once it is drawn with a result in it,
+    // has no language choice and no translate button. The record and chat
+    // hook points are covered by the unit tests: this browser reads English,
+    // so no engine could offer an action there for the texts on screen.
+    await removeAllSources(page);
+    await page.locator('.add-source-did').fill(DIRECTORY_DID!);
+    await page.getByRole('button', { name: 'Add directory' }).click();
+    await expect(page.locator('.add-source-status')).toContainText('Added', { timeout: 15_000 });
+    await page.getByRole('button', { name: 'Search', exact: true }).click();
+    await expect(page.locator('.search-hit').first()).toBeVisible({ timeout: 20_000 });
+    await expect(page.locator('.search-translate')).toHaveCount(0);
+    await expect(page.locator('.search-translate-target')).toHaveCount(0);
+  });
+
   test('a Latin search finds a Devanagari listing, and the other way', async ({ page }) => {
     await page.goto(HUB_URL);
     await page.waitForLoadState('networkidle');

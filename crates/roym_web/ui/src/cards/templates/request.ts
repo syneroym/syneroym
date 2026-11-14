@@ -15,7 +15,7 @@ import { labelled } from "../../dom";
 import { timeElement } from "../../i18n/format";
 import { t } from "../../i18n/i18n";
 import { langAttr } from "../../i18n/text_lang";
-import { recordText, type TextVersion } from "../../records/record_text";
+import { recordText, textFields, type TextVersion } from "../../records/record_text";
 import { categoryLabel } from "../../taxonomy/taxonomy";
 
 export interface RequestData {
@@ -67,7 +67,8 @@ export function renderRequest(data?: RequestData): HTMLElement {
       descP.textContent = v.fields.description;
       descP.setAttribute("lang", langAttr(v.lang));
       return [descP];
-    });
+    }, textFields<{ description: string }>(["description"]),
+    data?.request_id !== undefined ? `request:${data.request_id}` : undefined);
   }
 
   if (data?.categories && data.categories.length > 0) {

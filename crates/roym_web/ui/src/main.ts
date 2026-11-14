@@ -23,6 +23,7 @@ import { renderSafety } from "./screens/safety";
 import { renderSetup } from "./screens/setup";
 import { renderSynOrg } from "./screens/synorg";
 import { pendingEnrolment } from "./session/enrolment";
+import { startTranslation } from "./translation/translation";
 import {
   authHeaders,
   fetchMethods,
@@ -90,6 +91,9 @@ async function main() {
   const whoamiData = await whoami();
 
   const did = whoamiData?.person_did;
+  // Every screen draws from the list of languages the node can translate
+  // into, so it is asked for first, once.
+  await startTranslation(Boolean(did));
   if (did) {
     const didSpan = document.createElement("span");
     didSpan.textContent = t("session-logged-in", { did, auth: whoamiData?.auth || "delegated" });

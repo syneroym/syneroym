@@ -17,6 +17,7 @@ world conversation {
     import syneroym:signing/signing@0.1.0;
     import syneroym:invocation/invocation@0.1.0;
     import syneroym:events/events@0.1.0;
+    import syneroym:translation/translation@0.1.0;
 
     // Roym's own inbox: the block list and the first-contact rate limit
     // take effect here, and Roym keeps its own copy of every message.

@@ -17,6 +17,8 @@ pub(crate) mod trust_harness;
 
 #[path = "dual_build_parity/admission.rs"]
 mod admission;
+#[path = "dual_build_parity/agreement_lang.rs"]
+mod agreement_lang;
 #[path = "dual_build_parity/booking.rs"]
 mod booking;
 #[path = "dual_build_parity/bundles.rs"]
@@ -53,6 +55,8 @@ mod transaction;
 mod transaction_cards;
 #[path = "dual_build_parity/transaction_validation.rs"]
 mod transaction_validation;
+#[path = "dual_build_parity/translation.rs"]
+mod translation;
 #[path = "dual_build_parity/trust.rs"]
 mod trust;
 #[path = "dual_build_parity/trust_evidence_cap.rs"]
