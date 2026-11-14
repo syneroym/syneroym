@@ -169,7 +169,7 @@ describe("Accept after a machine translation", () => {
 
 describe("chat messages with a translation engine", () => {
   function conversation(messages: unknown[]) {
-    stubRpc({
+    return stubRpc({
       whoami: () => ({ person_did: ME }),
       "conversation.list": () => ({
         conversations: [{ id: "conv-1", peer_address: "peer-1", message_count: messages.length }],
@@ -213,11 +213,12 @@ describe("chat messages with a translation engine", () => {
     );
   });
 
-  it("a node with no engine draws no translate button", async () => {
+  it("a node with no engine draws no translate button and makes no call", async () => {
     readerReads([]);
-    conversation([text("m_in", "incoming")]);
+    const calls = conversation([text("m_in", "incoming")]);
     const host = document.createElement("div");
     await renderMessages(host);
     expect(host.querySelector(".message-translate")).toBeNull();
+    expect(calls.some((c) => c.method === "translation.translate")).toBe(false);
   });
 });
