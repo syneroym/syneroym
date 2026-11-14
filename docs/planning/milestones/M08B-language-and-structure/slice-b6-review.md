@@ -321,3 +321,216 @@ I answer none of them for the owner. My view on each:
   Steps 2, 3, 5, 6, 7 and the unit test, the owner chooses between a fix
   slice and a backlog row, and `status: done` waits for that answer.
 - *Status:* Fixed (580774ab). Step 4 records the whole demo time before and after; D-B6-7 says what the PR keeps if the booking test finds a bug; section 7.5 and the PR checklist are updated.
+
+## Code review round 1 — Claude Opus 5.5, 2026-11-14
+
+Reviewed `feat/m08b-b6-close-out` at `7629c8f8` (10 commits on top of
+`origin/main`: 4 plan commits, 2 test commits, 4 docs commits), in the main
+checkout (not a worktree: `.git` is a directory). `git pull` said "Already up
+to date".
+
+**Who reviewed.** This session runs on Claude Opus 5.5, as the prompt says.
+Claude Sonnet 5.5 implemented B6 (`status.md`), so the cross-tool rule holds.
+
+**Change docs.** The prompt lists one change doc,
+[roym-multilingual](../../changes/roym-multilingual/change.md). Every B6
+decision and deviation belongs there, and it holds them.
+
+**Summary:** 0 blocker, 0 major, 5 minor, 5 items (R1 to R5). **5 open.** No
+earlier code review round exists, so there are no Fixed or Rejected items to
+re-check. The plan review items P1 to P7 are all Fixed, and the code follows
+their fixes (P4 row reading and language reset, P6 the build named in the ML-18
+cell, P7 the whole demo time in the PR text and `task.md`).
+
+**Not a finding, but it blocks the merge:** the change doc is still
+`status: draft`. By Q6 (a) it becomes `done` only after the owner reads the 13
+Hindi messages of B5, and the date goes in the B5 row of `status.md`. That last
+commit (plan Step 7.9) is still to come. The PR is a draft, which is right.
+
+Limits of this review: CI for the PR (`gh pr checks 363`) is fully green on
+`7629c8f8` (lints, 6 test shards, Playwright E2E, CLA;
+[run 43577526546](https://github.com/syneroym/syneroym/actions/runs/43577526546)).
+I did not run the full suite, `mise run demo` or `mise run verify`. I ran the
+Hub unit tests (`TZ=UTC npx vitest run` in `crates/roym_web/ui`, as `npm test`
+does: 529 passed in 43 files) and `npx tsc --noEmit -p .` in
+`crates/substrate/tests/e2e` (no error). I read the Playwright E2E job log. I
+changed no code.
+
+### What was checked and found correct
+
+- **No product code.** The diff touches two test files, two e2e helper files
+  and docs only. No Rust, WIT, Hub screen or `.ftl` file. So there is no wire
+  change, no access-control change and no component size change, as the plan's
+  section 4 says.
+- **Step 2, the contact sort test.** `contacts.test.ts` draws three contacts in
+  the order `Sita`, `राम`, `Ram` and expects `Ram`, `Sita`, `राम` in English and
+  `राम`, `Ram`, `Sita` in Hindi. A sort that keeps the input order fails both
+  cases. A byte-order sort fails the Hindi case. A sort that always puts
+  Devanagari first fails the English case. `afterEach` now resets the language
+  to `en`. The selector `.contacts-screen > div` finds the list: `querySelector`
+  returns the first direct `div` child, and the list is appended before the
+  add-contact form (`contacts.ts:45` to `:46`). The deviation in the change doc
+  says this.
+- **Step 3, the helpers.** `Locator` is exported from `fixtures.ts`.
+  `issueOwnCredential` holds the five lines that were in `ensureOwnSynOrg`, and
+  `ensureOwnSynOrg` calls it, so there is one copy; the "why" comment moved into
+  its doc comment. `publishListing` keeps its old behaviour for old callers
+  (`conversationAddress = directoryDid`) and returns the id. The regular
+  expression `/lst_[a-z0-9]+/` matches the z-base-32 digest of
+  `content_digest` (`crates/signed_record/src/envelope.rs:228`), and the run tag
+  reaches the slug (`slug_from_title`, `listing.rs:444`). `sendRequest` and
+  `sendQuote` use the class names of `messages.ts`. `openMessages` with
+  `exact: true` is a recorded deviation, and the main suite still passes (75 in
+  CI).
+- **Step 4, the booking test.** It follows Steps 4.1 to 4.10 in order. Every
+  check on Alice's page uses a message id or record data, never English UI text
+  (D-B6-3). The hit is found by `data-listing-id` (D-B6-2). Every text has the
+  run tag (D-B6-4). `pairState` calls `transaction.sync` before
+  `agreement.list`, so it does not depend on a redraw (Step 4.10). It reads
+  `counterparty.envelope`, which is Alice's half: `counterparty` is the party
+  that accepts the quote (`agreement_ops.rs:251`). The test title has no
+  planning id; no `.ts` line in the diff has `ML-`, `B6`, `Q<n>`, `D-B6` or
+  `M08B`. All addresses come from the demo env file.
+- **Which build.** `roym.toml` sets `service_type = "wasm"` for every service, so
+  story 40 runs the WASM build, as the ML-18 cell says.
+- **Counts.** CI: main suite `75 passed`, multi-hop `4 passed`, demo `7 passed
+  (58.3s)`; the new test passed in 6.2 s. The Hub unit tests print 529 passed in
+  43 files. These match `status.md` and `task.md` (`task.md` gives the local
+  demo time, 1.2 min; CI took 58.3 s; both far under the 900 s limit).
+- **Change doc.** The decisions list "Decided 2026-11-14, close-out" sits at the
+  end of "Agreements across languages" and has D-B6-1 to D-B6-7 and Q1 to Q8
+  with the plan's meaning. The deviations of Step 7.3 are there (ML-23, the
+  booking test with no slot, the request that does not name the listing), plus
+  the three "different from the plan" entries. Each of ML-9, ML-23, ML-26 and
+  ML-28 has a "Later:" note, a deviation and a backlog row (Q7). ML-29 sits
+  after ML-20. ML-12 no longer names story 40. ML-21 names both tests (Q4).
+  Every Test cell has full paths in backticks. I checked the new and changed
+  titles with `git grep` ("lists Latin names first in an English Hub", "lists
+  Devanagari names first in a Hindi Hub", "falls back to English when a
+  language lacks taxonomy labels", "a category search sends the same query in
+  English and in Hindi", "the listing screen, in Hindi", "draws group members
+  in sortByName order", the two story 40 titles); all exist. The tasks are
+  ticked and the four task texts of Step 7.6 are edited. The Open questions
+  name the backlog. `living-docs-touched` already lists every file of plan
+  section 9.
+- **Living docs.** The requirements have a new `[APP-L10N]` in Phase 6 (a
+  recorded deviation on its place) and the appendix `[APP-A11Y]` keeps
+  accessibility only; the stale i18n sentence is gone. The matrix has the
+  `[APP-L10N]` row next to `[APP-ROY]`, with the four links of Step 6.2. The two
+  false sentences of the architecture doc are fixed (`git grep "translated
+  labels\|must strictly be valid codes"` finds nothing). The integrated spec has
+  `### Languages` with a reader line and the ADR-0029 link. The demo text says
+  the story ends at the signed agreement, with no slot, and that the request
+  names the category only.
+- **Backlog.** The `:515` row is split: localisation is in "Recently resolved",
+  accessibility stays. The bidi row names the right-to-left layout. The ML-9
+  row was extended, not copied. Eight new rows match plan section 8. No new
+  `TODO` or `FIXME`.
+- **`task.md`.** The false "No slice is planned yet." is gone, the S0 line has
+  the owner check date, the B5 result is under the B5 bullets, and B6 has a
+  result line.
+
+### Findings
+
+#### R1 — The receipt card checks are not tied to this run (minor)
+
+- **Where:** `crates/substrate/tests/e2e/demo/40-roym-languages.spec.ts:236`
+  and `:243` at `7629c8f8`.
+- **Problem:** both checks wait for
+  `.thread-messages .card-agreement-receipt` with `.first()`. That is any
+  receipt card in the open thread, not the one of this run. D-B6-4 says the
+  story can run again on the same nodes (`mise run demo:up` leaves them
+  running). On a second run the thread between Alice and Bob already holds the
+  receipt card of the first run.
+- **Failure case:** second run on the same nodes. Alice's Accept fails, or Bob's
+  Hub never redraws. Both card checks still pass at once on the old card. The
+  step captions "her Hub shows the signed agreement" and "his Hub shows the
+  agreement" then show nothing. (The later `pairState` check still catches a
+  missing half, so the test fails later, with a less clear message. The card
+  checks are the only proof that the Hub draws the receipt.)
+- **Fix:** find the card of this run. The receipt card shows the scope
+  (`agreement_receipt.ts:131` to `:135`), so use
+  `page.locator('.thread-messages .card-agreement-receipt', { hasText: runTag })`
+  with `toHaveCount(1)`, and the same on `bobPage`.
+- *Status:* Open.
+
+#### R2 — The test cannot tell Alice's signed half from Bob's (minor)
+
+- **Where:** `crates/substrate/tests/e2e/demo/40-roym-languages.spec.ts:263` to
+  `:266` at `7629c8f8`; `crates/roym_transaction/src/app/agreement_ops.rs:485`
+  to `:494`.
+- **Problem:** the step "her signed half says she read the English original"
+  checks `verified`, `viewed_lang == "en"` and `viewed_via_mt == false`. Bob's
+  countersigned half has the same values: `maybe_countersign` signs
+  `viewed_lang: q_payload.terms.lang` and `viewed_via_mt: false`, and the quote
+  is in English. So the three checks pass for either half. Nothing checks who
+  signed the envelope that was verified.
+- **Failure case:** a change makes `agreement.list` fill `counterparty` with the
+  quote author's half (or the test picks the wrong field). The test still
+  passes, and the ML-18 cell ("Alice's signed half ... says `viewed_lang` is
+  `en`") is no longer proven.
+- **Fix:** read `ALICE_DID` from the env (story 20 does) and add
+  `expect(verdict.result.issuer).toBe(alice.did)`. Also check
+  `verdict.result.payload.role` is `"counterparty"` (`DealRole`, kebab-case,
+  `crates/roym_core/src/transaction.rs:92`).
+- *Status:* Open.
+
+#### R3 — "The Hub has no ARIA markup" is false, and B6 copied it to two more places (minor)
+
+- **Where:** `docs/planning/traceability-matrix.md:69`;
+  `docs/planning/deferred-backlog.md:515`; `docs/system-requirements-spec.md:1475`
+  (older text, but B6 rewrote this section) at `7629c8f8`.
+- **Problem:** the three places say the Hub has no ARIA markup. The matrix also
+  says "Only the `lang` attribute is set". The Hub sets ARIA attributes today:
+  `aria-label` in `screens/directory.ts:299`, `taxonomy/category_picker.ts:98`
+  and `i18n/language_list.ts:36`, `:44`; `aria-live` in
+  `taxonomy/category_picker.ts:38`; `role="group"` in
+  `i18n/language_list.ts:35`. AGENTS.md asks for living docs without
+  over-claims; this one claims less than is built, and a reader who plans the
+  WCAG work starts from a false fact.
+- **Failure case:** a developer reads "no ARIA markup" and adds a second label
+  to the language list, or reports the matrix row as wrong in the WCAG audit.
+- **Fix:** in all three places say what is true: "The Hub sets `lang` and a few
+  ARIA labels (the language list, the category picker, the search translate
+  list). It has no screen reader test and no WCAG 2.1 AA audit."
+- *Status:* Open.
+
+#### R4 — ML-26 and ML-16 say every no-engine case checks that no call is made; three do not (minor)
+
+- **Where:** `docs/planning/changes/roym-multilingual/change.md:132` (ML-26,
+  "Each has a node-with-no-engine case that checks no action is drawn and no
+  call is made") and `:117` (ML-16, the same claim for the listed files) at
+  `7629c8f8`.
+- **Problem:** B6 checks that every row names tests that prove what the row
+  says. These no-engine cases check only that no action is drawn. They make no
+  check on the calls:
+  - `crates/roym_web/ui/src/screens/directory_translate.test.ts:121` (search
+    hit);
+  - `crates/roym_web/ui/src/screens/messages_translate.test.ts:216`;
+  - `crates/roym_web/ui/src/screens/groups.test.ts:666`.
+  The cases in `record_text.test.ts`, `message_text.test.ts:78`,
+  `templates.test.ts:618` and the search box case
+  (`directory_translate.test.ts:58`) do check `calls` with `toEqual([])`.
+- **Failure case:** a change makes the hit, the chat screen or the group screen
+  call `translation.translate` while it draws. These three tests still pass,
+  and the rows say this is tested.
+- **Fix:** either add `const calls = stubRpc(...)` and `expect(calls)` to the
+  three cases (a test-only change), or reword both cells: "checks no action is
+  drawn; the search box, record text, chat message and card cases also check
+  that no call is made". The first is better, because ML-16 is about the call.
+- *Status:* Open.
+
+#### R5 — `DELIVERY_WAIT_MS` and its comment are copied from story 20 (minor)
+
+- **Where:** `crates/substrate/tests/e2e/demo/40-roym-languages.spec.ts:106` to
+  `:108`; `crates/substrate/tests/e2e/demo/20-roym-chat.spec.ts:10` to `:12`
+  at `7629c8f8`.
+- **Problem:** the same constant and the same two-line comment are in both
+  files. AGENTS.md says to look for an existing helper before writing a new
+  one. The demo stories already share `demo/steps.ts`.
+- **Failure case:** the outbox tick of the demo nodes changes
+  (`demo-nodes.ts:91`), someone raises the wait in one story, and the other
+  story keeps the old value and the old comment.
+- **Fix:** move `DELIVERY_WAIT_MS` with its comment to `demo/steps.ts`, export
+  it, and import it in stories 20 and 40.
+- *Status:* Open.
