@@ -962,3 +962,48 @@ is clean afterwards). I changed no code.
   best version on screen and the machine version reachable with no call. Change
   the change doc sentence to say "the same card".
 - *Status:* Fixed (e1cf993d). The kept result is still found by text. Whether it is on screen is now kept per card: `recordText` takes a card key (`quote:<id>`, `request:<id>`, `hit:<listing id>`), and a card with no key or another key opens in its best version, the machine version one click away with no call. The change doc says "the same card". Proof: with the choice read by text again, the new two-card test fails. Then undone.
+
+## Code review round 4 (check of the fixes) — Claude Opus 5.5, 2026-11-14
+
+Checked `feat/m08b-b5-translation` at `cbfc4eca`, in the main checkout. `git
+pull` said "Already up to date". The fix commit is `e1cf993d` (Hub, developer
+guide and change doc); `cbfc4eca` sets the review statuses and the status row.
+I read the full diff `d200c681..cbfc4eca`.
+
+**Summary:** R10 and R11 are confirmed Fixed. 0 blocker, 0 major, 0 new
+findings. **0 open.**
+
+Evidence: CI on the PR is fully green on `cbfc4eca` (`gh run view
+43556365252`: lints, 6 test shards, Playwright E2E, CLA). I ran the Hub unit
+tests with `npm test` (527 passed in 43 files), `tsc --noEmit` and `eslint src`
+(both clean). To check that the new test guards R11, I made `recordText` open
+every kept machine version on screen again: the new two-card test and the
+redraw test both failed. I then restored the file; the tree is clean. I changed
+no code.
+
+### Items checked
+
+- **R10 (Fixed, confirmed).** `translationFailure` removes the fixed prefix
+  `translation engine failed: ` (the exact text of `translation_error` in
+  `crates/roym_web/src/app/translation.rs`) before it passes the engine's text
+  as `$detail`. The test now uses the node's real message and expects
+  `The translation service failed. engine said no`.
+- **R11 (Fixed, confirmed).** The kept result is still found by text, and
+  "on screen" is now kept per card in a separate set (`shownOn`, at most 200
+  entries, oldest dropped first). `recordText` takes a card key, and all three
+  callers pass one: `quote:<quote_id>`, `request:<request_id>` and
+  `hit:<listing_id>`. `quote_id` and `request_id` are fields of the signed
+  payloads (`roym_core::transaction`), so a card drawn from a thread always has
+  its key, and a revised quote (a new sequence, so a new `quote_id`) does not
+  inherit the choice. A card with no key never opens in the machine version.
+  The new test checks a second key and no key: each opens in the original, has
+  no Translate button, reaches the machine version with one click, and makes no
+  second call. The developer guide and the change doc say the same.
+
+### What else was checked
+
+- A chat message still shows a kept translation of the same text under the
+  original with no click (`messageText`). This is not the R11 case: the
+  original stays on screen, the translation is labelled with its engine, and
+  nothing in a chat message is signed. The change doc says a message drawn
+  again with the same text uses the kept result. No finding.
