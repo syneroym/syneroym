@@ -613,7 +613,7 @@ first run, same step) and passed 6 times. So it fails in 2 of 8 local runs. It
 passed in all 3 CI runs. By D-B6-7 the close stops here, and the change doc
 stays `status: draft`.
 
-**Summary:** 0 blocker, 1 major, 0 minor. **1 open** (R6).
+**Summary:** 0 blocker, 1 major, 0 minor. R6 fixed in `475b8c30`; a check of the fix by another tool is still due.
 
 #### R6 — A thread redraw removes an open quote form, so the new test hangs now and then (major)
 
@@ -650,4 +650,21 @@ stays `status: draft`.
   - (b) A backlog row for the Hub bug, and the test waits until the thread is
     quiet before it opens the form. This hides the bug from the test and
     keeps a race in the demo.
-- *Status:* Open (owner answer needed).
+- *Status:* Fixed (475b8c30), in B6 by owner decision (2026-11-14), not in
+  a separate slice. Claude Opus 5.5 wrote the fix, so a check by another
+  tool is still due (cross-tool rule). The fix: `waitingRedraw`
+  (`crates/roym_web/ui/src/screens/thread_redraw.ts`) gives the thread two
+  redraws. The event feed gets `later`, which waits while `.quote-form`,
+  `.decline-dialog`, `.delete-dialog` or `.accept-mt-box` is in the thread
+  and runs once when the last one leaves (a `MutationObserver` sees it). The
+  person's own actions get `now`. This matters: delete and decline call
+  their redraw while their dialog is still open. Tests: 5 in
+  `thread_redraw.test.ts`, 3 new in `messages_feed.test.ts` (the moved feed
+  test is there too; the fake `EventSource` moved to
+  `src/testing/fake-event-source.ts`). Proof that they can fail: a feed
+  redraw that does not wait fails the two "keeps" cases; `later` for the
+  person's actions fails "a confirmed delete draws the thread again at
+  once"; a helper that never waits fails 5 cases. Hub unit tests 537 passed
+  in 45 files. `mise run demo` 5 times on the fix: 5 of 5 passed, 7 tests
+  each, the booking test in 5.7 s to 7.0 s (before the fix it hung in 2 of 8
+  local runs and in CI run 43600107630 on `8e4be392`).
