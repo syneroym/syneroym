@@ -1280,7 +1280,19 @@ Then open **Listings** and publish a listing titled `नल वाला` to you
 The Devanagari listing is in the results. A search finds a word in the script it was written
 in, and also the same word written in Latin letters.
 
-**Say:** "Every person reads Roym in their own language. The choice stays on this device."
+The story has a second part, with both people. In bob's Hub, in English, publish a listing
+`Hedge trimming` in the category **Gardening** to bob's own directory, with bob's
+conversation address on it. In alice's Hub, still in Hindi, open **Directory**, add bob's
+directory as a source, pick the category **बागवानी** and search. Bob's listing is in the
+results. Its title stays in English, as bob wrote it, and its category shows in Hindi. Press
+**इस लिस्टिंग के मालिक को संदेश भेजें** to see bob's address. Open a chat with bob and send him
+a request written in Hindi, in the same category. The request names the category only. It does
+not name the listing. In bob's Hub, open the chat with alice and send a quote of 1,00,000.50 in
+rupees. Alice sees **कुल: ₹1,00,000.50**. She presses **ये शर्तें स्वीकार करें**. Both Hubs show
+the signed agreement. The story ends here. It has no time slot.
+
+**Say:** "Every person reads Roym in their own language. The choice stays on this device. Alice
+reads in Hindi, Bob writes in English, and they still agree on the same signed terms."
 
 The script is `crates/substrate/tests/e2e/demo/40-roym-languages.spec.ts`. It is the
 reference for the clicks.

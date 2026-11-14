@@ -1430,6 +1430,18 @@ Roym is the only SynApp built so far. It combines directory discovery, catalog l
   >
   > Facilitators provide specialized financial services, such as converting digital network credits into fiat currency or updating tax and accounting records in a local ledger.
 
+### [APP-L10N] Localisation
+
+*People use Roym in their own language, and two people who speak different languages can trade with each other.*
+
+- **Profile languages:** `ProfilePayload` supports `languages`, an ordered list of up to 8 language tags (`Vec<String>`).
+- **Hub localisation:** The Roym Hub has a string catalog for English and Hindi, a language setting in the session bar that is kept in the browser, and local formats for money, numbers, dates and times. Error messages come from the string catalog by error code. Every Hub screen takes its text from the string catalog. The Hub build fails when a source file sets visible text outside it. Listing and request categories, units and payment methods are codes of `[a-z0-9-]`; the Hub offers the base taxonomy kept in the repository, and shows their labels in English or Hindi. No node checks a code against the taxonomy, so a group can use its own codes.
+- **Language-tagged records and chat:** Every signed `profile`, `listing`, `request` and quote terms carry a language tag, the author may add up to 4 translations, and the Hub shows the best version for the reader with a way to open the original. A chat message carries up to 3 language tags, main language first; the Hub sets them from a list in each chat box, marks the message text with the main language, and shows "Language not stated" for a message without one.
+- **Search and names in every script:** Directory search, chat search and contact search work in every script. A word is found in the script it was written in. A word in Devanagari or Tamil script and the same word in Latin letters also find each other, and common Latin spelling variants match. The Hub sorts names by script, with the script of the Hub language first.
+- **Translation interface (no engine):** The substrate has a host interface for machine translation (`syneroym:translation`, ADR-0029). A Roym service can call it, and the Hub reaches it through two local-only `web` methods. This version has no engine: the interface lists no target language and answers `unavailable`, so the Hub shows no translate action. The Hub has the code to offer one at four places (the search box, record text, chat messages and a quote before acceptance) and to label every machine translation with its engine. Each party's signed acceptance of a quote records the language of the text it read and whether that text was a machine translation. Before an acceptance of terms read through machine translation, the Hub warns that the original binds.
+
+> **Envisioned.** Not built yet. A machine translation engine, local or remote, and the translate action for users.
+
 ## Phase 7: Edge Expansion
 
 *Reader: developers and system architects.*
@@ -1456,16 +1468,7 @@ Roym is the only SynApp built so far. It combines directory discovery, catalog l
 
 This appendix defines envisioned extensions to substrate and application contracts. The running list is tracked in [deferred-backlog.md](planning/deferred-backlog.md).
 
-### [APP-A11Y] Accessibility and Localisation
-
-- **Localisation:** `ProfilePayload` supports `languages`, an ordered list of up to 8 language tags (`Vec<String>`).
-- **Hub localisation (built):** The Roym Hub has a string catalog for English and Hindi, a language setting in the session bar that is kept in the browser, and local formats for money, numbers, dates and times. Error messages come from the string catalog by error code. Every Hub screen takes its text from the string catalog. The Hub build fails when a source file sets visible text outside it. Listing and request categories, units and payment methods are codes of `[a-z0-9-]`; the Hub offers the base taxonomy kept in the repository, and shows their labels in English or Hindi. Every signed `profile`, `listing`, `request` and quote terms carry a language tag, the author may add up to 4 translations, and the Hub shows the best version for the reader with a way to open the original. A chat message carries up to 3 language tags, main language first; the Hub sets them from a list in each chat box, marks the message text with the main language, and shows "Language not stated" for a message without one.
-
-- **Translation interface (built, with no engine):** The substrate has a host interface for machine translation (`syneroym:translation`, ADR-0029). A Roym service can call it, and the Hub reaches it through two local-only `web` methods. This version has no engine: the interface lists no target language and answers `unavailable`, so the Hub shows no translate action. The Hub has the code to offer one at four places (the search box, record text, chat messages and a quote before acceptance) and to label every machine translation with its engine. Each party's signed acceptance of a quote records the language of the text it read and whether that text was a machine translation. Before an acceptance of terms read through machine translation, the Hub warns that the original binds.
-
-> **Envisioned.** Not built yet. A machine translation engine, local or remote, and the translate action for users.
->
-> The architecture must support internationalisation (i18n). This allows local community clusters to use translated interfaces.
+### [APP-A11Y] Accessibility
 
 - **Accessibility:**
 
