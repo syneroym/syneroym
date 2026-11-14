@@ -22,7 +22,7 @@ names no other change doc for B6 ("Change doc: roym-multilingual"). I agree:
 every `ML-*` row, every decision and every deviation B6 touches is in that
 doc.
 
-**Summary:** 0 blocker, 1 major, 6 minor, 7 items (P1 to P7). 7 open.
+**Summary:** 0 blocker, 1 major, 6 minor, 7 items (P1 to P7). 0 open: all 7 fixed in 580774ab.
 
 Limits of this review: I read the plan, `task.md`, `status.md`, the whole
 change doc, `session-strategy.md`, T7 of `prompt-templates.md`, the B5 review
@@ -179,7 +179,7 @@ I answer none of them for the owner. My view on each:
   `bob.addr`. Step 5 keeps its assertion. Add a row to the behaviour-change
   audit (section 4) for the new parameter, next to the return-value row.
   Also name in Step 3.2 that the signature change is for this.
-- *Status:* Open
+- *Status:* Fixed (580774ab). Step 3.2 adds `conversationAddress = directoryDid`; Step 4 step 2 passes `bob.addr`; audit row 3.
 
 #### P2 — Minor: step 10 can wait on a sync nobody runs, and proves only one node
 
@@ -207,7 +207,7 @@ I answer none of them for the owner. My view on each:
   conversation id is in the `agreement.list` row). Do the same poll on
   Bob's page. Assert `complete` on both. If the plan wants to keep one node,
   change sections 1 and 3 to say "on Alice's node".
-- *Status:* Open
+- *Status:* Fixed (580774ab). Step 4 step 10 runs `transaction.sync` then `agreement.list` in the poll, on both pages. The conversation id comes from `conversation.open` (the call `openConversation` makes through the Hub), because Bob has no agreement row to read it from until the sync runs.
 
 #### P3 — Minor: the plan does not say where `[APP-L10N]` goes, and the appendix is wrong for it
 
@@ -232,7 +232,7 @@ I answer none of them for the owner. My view on each:
   `[APP-ROY]` (`traceability-matrix.md:58`) with the same target milestone as
   that row. State in section 9 that the backlog row `:516` keeps naming
   `[APP-A11Y]` for the WCAG audit.
-- *Status:* Open
+- *Status:* Fixed (580774ab). Steps 6.1 and 6.2 and section 9 place `[APP-L10N]` in Phase 6 and next to `[APP-ROY]`; backlog `:516` keeps `[APP-A11Y]`.
 
 #### P4 — Minor: Step 2 leaves out three facts that make the contact test pass or fail by accident
 
@@ -257,7 +257,7 @@ I answer none of them for the owner. My view on each:
   `activate("en")` (or `activateWith("en", ...)`) before each case and in
   `afterEach`. Use `activateWith("hi", { hi: async () => HINDI })` as
   `directory.test.ts:144` does.
-- *Status:* Open
+- *Status:* Fixed (580774ab). Step 2.1 names the rows (the list div is the last child of `.contacts-screen`, not a child of the host), `textContent!.trim()`, and `activate("en")` / `activateWith("hi", ...)` with an `afterEach` reset.
 
 #### P5 — Minor: three figures in the plan are wrong
 
@@ -278,7 +278,7 @@ I answer none of them for the owner. My view on each:
 - **Fix:** write "16 of 21" and `:1260`. In Step 7.6, say to edit the text of
   the two tasks to name the real place (`syneroym-text-lang`; the slice plans
   are all written) when ticking.
-- *Status:* Open
+- *Status:* Fixed (580774ab). "16 of 21" and `:1260`; Step 7.6 lists the four task texts to edit when ticking (the two named here, plus the e2e task and the `[APP-A11Y]` task, which the owner answers Q2, Q3 and Q5 change).
 
 #### P6 — Minor: the plan does not say which build the demo story proves
 
@@ -295,7 +295,7 @@ I answer none of them for the owner. My view on each:
   and that the other build is covered by `agreement_lang.rs`
   (`scenario_237_accept_records_what_was_viewed_parity`). Put that sentence
   in the ML-18 Test cell.
-- *Status:* Open
+- *Status:* Fixed (580774ab). Section 3 and 7.3 ML-18 rows and Step 7.2 name the WASM build of the demo nodes and `scenario_237_accept_records_what_was_viewed_parity` for the native build.
 
 #### P7 — Minor: the time budget and the "first browser run" risk are not measured against the whole demo
 
@@ -320,4 +320,4 @@ I answer none of them for the owner. My view on each:
   sentence to D-B6-7: if the booking test finds a product bug, the PR keeps
   Steps 2, 3, 5, 6, 7 and the unit test, the owner chooses between a fix
   slice and a backlog row, and `status: done` waits for that answer.
-- *Status:* Open
+- *Status:* Fixed (580774ab). Step 4 records the whole demo time before and after; D-B6-7 says what the PR keeps if the booking test finds a bug; section 7.5 and the PR checklist are updated.
