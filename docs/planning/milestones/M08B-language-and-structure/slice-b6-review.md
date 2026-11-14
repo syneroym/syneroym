@@ -650,9 +650,12 @@ stays `status: draft`.
   - (b) A backlog row for the Hub bug, and the test waits until the thread is
     quiet before it opens the form. This hides the bug from the test and
     keeps a race in the demo.
-- *Status:* Fixed (475b8c30), in B6 by owner decision (2026-11-14), not in
+- *Status:* Open (round 3, 2026-11-14: the fix in 475b8c30 is partial.
+  A feed redraw that is already running when the person opens the form
+  still removes it. See "Code review round 3", item R6 again). Earlier
+  note: Fixed (475b8c30), in B6 by owner decision (2026-11-14), not in
   a separate slice. Claude Opus 5.5 wrote the fix, so a check by another
-  tool is still due (cross-tool rule). The fix: `waitingRedraw`
+  tool was still due (cross-tool rule). The fix: `waitingRedraw`
   (`crates/roym_web/ui/src/screens/thread_redraw.ts`) gives the thread two
   redraws. The event feed gets `later`, which waits while `.quote-form`,
   `.decline-dialog`, `.delete-dialog` or `.accept-mt-box` is in the thread
@@ -668,3 +671,179 @@ stays `status: draft`.
   in 45 files. `mise run demo` 5 times on the fix: 5 of 5 passed, 7 tests
   each, the booking test in 5.7 s to 7.0 s (before the fix it hung in 2 of 8
   local runs and in CI run 43600107630 on `8e4be392`).
+
+## Code review round 3 (check of the R6 fix) — Claude Sonnet 5.5, 2026-11-14
+
+Checked `feat/m08b-b6-close-out` at `8799efd2`: the Hub fix `475b8c30` for R6
+and its doc commit `8799efd2`. Main checkout (not a worktree), `git pull` said
+"Already up to date". Claude Opus 5.5 wrote the fix, and I am a different
+tool, so the cross-tool rule holds. Change doc:
+[roym-multilingual](../../changes/roym-multilingual/change.md). Rounds 1 and 2
+are closed and I did not re-check them.
+
+**Summary:** 0 blocker, 1 major, 2 minor. **3 open:** R6 (back to Open, the
+fix is partial), R7, R8.
+
+Limits: `gh pr checks 363` on `8799efd2` showed lints, Playwright E2E, CLA and
+test shards 1, 4, 5 and 6 passed, and shards 2 and 3 still running when I
+wrote this. I ran the Hub unit tests (`TZ=UTC npx vitest run` in
+`crates/roym_web/ui`: 537 passed in 45 files, as `status.md` says) and
+`npx tsc --noEmit -p .` (no error). I did not run `mise run demo` or
+`mise run verify`. Three short tests of my own proved suspicions. Two changed
+`messages.ts` for one run each and were undone, and one was a new test file
+(kept in the scratchpad, not in the repo). The tree is clean.
+
+### What was checked and found correct
+
+- **Every redraw path of the Messages thread.** Callers of the thread fill are
+  now: the first draw (`messages.ts:448`, direct, right: nothing is open yet),
+  the two feed paths in `onFeed` (`:247` for a `reload` event and `:258` for a
+  `kind` event; both call `activeFillHistory`, which is `redraw.later`, set at
+  `:447`), and `redraw.now` for the person's own actions: compose send (`:324`),
+  request send (`:396`) and the `refresh` argument of every message element
+  (`:441`: retry, accept, decline, delete, quote submit). `grep` finds no other
+  caller of `fillHistory`. `groups.ts` has its own thread and uses no quote
+  form or dialog of this screen, so it is not part of this fix.
+- **`OPEN_WORK` against the elements that hold input inside
+  `.thread-messages`.** The quote form holds all its inputs and selects
+  (`openQuoteForm`, `:759` on; including the text-language select and the
+  address row). The decline dialog holds the note input. The delete dialog
+  holds the "ask the peer" checkbox. The warning before an acceptance
+  (`.accept-mt-box`) holds buttons only and is rightly listed, because a redraw
+  would close it. The compose row, the request form, the search box and the
+  conversation list are outside `.thread-messages` (`:287` to `:289` and
+  `pane.appendChild`), so the thread redraw never touches them. The card
+  templates draw no input. What is left out is view state, not typed input: the
+  record-version switch of `recordText` and a message translation. A kept
+  translation is drawn again from the page cache (`message_text.ts`), and
+  `shownVersion` reads the screen at the click, so an acceptance records what
+  is on the screen after a redraw. No missing selector.
+- **The observer, in the cases I could construct.** Quote submit does
+  `form.remove(); await refresh()`: `refresh` is `now`, which sets
+  `waiting = false` in the same tick, before the observer's microtask runs, so
+  there is one redraw, not two. Decline and delete call `refresh` while their
+  dialog is open, so `now` is needed there, and the delete test shows it. Two
+  feed events while a form is open set `waiting` once and give one redraw. A
+  redraw's own swap fires the observer, but `waiting` is already false, so
+  there is no loop. `now` clears `waiting`, so a form that closes later causes
+  no stale redraw. The newest-wins check of `refiller` (`dom.ts:120`) still
+  makes the last started run the only one that draws.
+- **Tests do what their titles say, where they reach.** Hub unit tests pass.
+  The moved feed test keeps its assertions (it now uses `body_encoding:
+  "utf8"`, the value the code reads, instead of `"utf-8"`; better). The count
+  is right: 529 − 1 (moved) + 1 + 3 + 5 = 537.
+- **Docs.** The change doc Deviation, the `task.md` result, the backlog rows
+  (the new "a chat thread shows no new message while a form is open" row, the
+  "Recently resolved" row, and the removed sentence in the
+  machine-translation row) and the `status.md` row agree with the code and
+  with each other, except where R6 below says the claim is too wide. No
+  planning id in the new code. Import lines are used. `thread_redraw.ts` and
+  `fake-event-source.ts` are new files beside their users.
+
+### Findings
+
+#### R6 (again) — A feed redraw that is already running still removes a form opened after it started (major)
+
+- **Where:** `crates/roym_web/ui/src/screens/thread_redraw.ts:30` to `:36`
+  (`later` checks for open work only when it starts);
+  `crates/roym_web/ui/src/dom.ts:120` to `:121` (`refiller` swaps the result
+  in without looking at the thread again); `messages.ts:408` and `:446`.
+- **Problem:** `fillHistory` makes three node calls (`transaction.sync`,
+  `transaction.thread`, `conversation.history`) before it swaps the new thread
+  in, and `transaction.sync` reads from the mailbox, so a redraw can run for
+  a good while. `later` looks for an open form once, at the start. If the
+  thread is quiet then, the redraw starts. A form that the person opens while
+  the three calls run is removed by the swap, with its text. The observer
+  cannot help: it only acts on a `waiting` redraw, and none was set. This is
+  the same loss as R6, with a shorter window.
+- **Proof:** a test of mine (not kept): draw the screen, set
+  `conversation.history` to wait on a promise, emit a feed event for the
+  conversation and let the burst timer run, so a redraw is running. Click
+  "Quote this request", type in `.quote-scope-input`, then release the promise.
+  `expect(screen.querySelector(".quote-scope-input")).toBe(scope)` fails: the
+  value is `null`. The existing tests never see this because their node answers
+  at once, so the redraw has finished before the test opens a form.
+- **Failure case:** for a person: a message from the peer arrives and the Hub
+  starts to fetch the thread. Bob clicks "Quote this request" and starts to type.
+  The fetch ends and the form is gone. For the suite: in the booking test
+  `sendQuote` opens the form right after the request card shows, while a second
+  event of the same conversation (the delivery state, a sync result) can have a
+  redraw running. This is the route by which the hang of R6 can still happen. The
+  evidence of the fix is also thin: 5 of 5 demo runs passed, but a failure rate
+  of 2 in 8 gives 5 clean runs by chance about one time in four. So the fix is
+  not shown to have removed the hang.
+- **Fix:** check again at the swap, not only at the start. For example, give
+  `refiller` an optional guard that it calls just before `replaceChildren`
+  (`keep?: () => boolean`, return `true` to skip the swap and resolve
+  `undefined`), and make `waitingRedraw` pass a guard that sets `waiting = true`
+  and returns `true` when `host.querySelector(openWork) !== null`. Then the
+  observer redraws once the form closes, as for a redraw that waits at the
+  start. Add a unit test that is my temporary test (a slow `conversation.history`),
+  and a `thread_redraw.test.ts` case for the guard. After it, run
+  `mise run demo` at least 10 times, and write the number in the status row
+  (5 of 5 is not enough evidence). Update the change doc Deviation and the
+  backlog row: both say a redraw "waits while such an element is open", which
+  is true only at the start until this is fixed.
+- *Status:* Open
+
+#### R7 — A message the person sends, or a request, redraws at once and removes an open quote form (minor)
+
+- **Where:** `messages.ts:324` (compose send) and `:396` (request send), both
+  `redraw.now()`; also the retry and accept buttons through `redraw.now` at
+  `:441`.
+- **Problem:** `now` is right for decline and delete, because they run while
+  their own dialog is open. It is not needed for an action whose form is
+  outside the thread. A person who sends "one moment" in the compose row, or
+  presses Retry or Accept on another card, while a quote form holds typed text
+  loses that text. This is the same class as R6, started by the person.
+- **Failure case:** Bob types half a quote, sends "what is your address?" in the
+  compose row, and the quote form is gone.
+- **Fix:** either (a) keep this as a decision: say in the change doc Deviation
+  and in the backlog row that the person's own actions redraw at once and can
+  close another open form, or (b) let these actions use a redraw that runs at
+  once but keeps the open forms (for example, move the open elements from the old
+  thread into the new one). (a) is enough for v1 if the owner agrees; it needs
+  only the doc lines.
+- *Status:* Open
+
+#### R8 — The tests do not tie the real `OPEN_WORK` and the `now` calls to the behaviour (minor)
+
+- **Where:** `crates/roym_web/ui/src/screens/thread_redraw.test.ts:6` (its own
+  `OPEN` list), `messages_feed.test.ts` (covers only the quote form and the
+  delete dialog), `messages.ts:21`.
+- **Problem:** `OPEN_WORK` is not exported and the unit tests of `waitingRedraw`
+  use a copy. Two mutations that I made and undid both left all 118 tests of
+  `src/screens` green: (1) `OPEN_WORK` cut to `".quote-form, .delete-dialog"`
+  (no test uses the decline dialog or the warning before an acceptance with a
+  feed event); (2) `redraw.now()` replaced by `redraw.later()` in compose send
+  and request send (no test sends while the thread waits). The review file says
+  the tests were seen to fail for three changes; these two are not among them.
+- **Failure case:** someone removes `.accept-mt-box` from `OPEN_WORK` when they
+  tidy the selector. A feed event then closes the warning before an acceptance,
+  which is the case that the removed sentence of the backlog row said was
+  still open. Nothing fails.
+- **Fix:** add two feed cases to `messages_feed.test.ts` in the style of the
+  existing ones: a feed event while `.decline-dialog` is open, and while
+  `.accept-mt-box` is open (a quote card for me, shown through machine
+  translation; the unit tests of `messages_translate.test.ts` have the set-up
+  for the warning). Add one case that a decline confirm redraws at once. Prove
+  each can fail, as for the first three, and write it in the status of the
+  item.
+- *Status:* Open
+
+### Not findings
+
+- The observer is not disconnected when the thread is replaced. If the person
+  switches conversation while a form of the old thread is open and `waiting`
+  is true, a later removal inside the old, detached host (for example a send
+  that ends) makes one redraw of the old conversation into the detached
+  element. That is one extra set of node calls and no change on screen. The
+  code comment says "no mutation reaches this observer again". Close enough
+  for v1, but the comment is a little too sure.
+- When the person confirms the warning before an acceptance, `box.remove()`
+  can start the waiting redraw while `agreement.accept` is running, so the
+  Accept button and its error line are drawn again. A failed accept then shows
+  no error. A feed event during an accept without a warning does the same, so
+  this is older than the fix and not a change by it.
+- `events.test.ts` keeps its own `FakeEventSource` beside the shared
+  `FakeFeedSource`. The two differ in what they offer; not worth a change.
