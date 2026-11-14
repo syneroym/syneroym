@@ -534,3 +534,64 @@ changed no code.
 - **Fix:** move `DELIVERY_WAIT_MS` with its comment to `demo/steps.ts`, export
   it, and import it in stories 20 and 40.
 - *Status:* Fixed (6445ed52). `DELIVERY_WAIT_MS` and its comment are in `demo/steps.ts`; stories 20 and 40 import it.
+
+## Code review round 2 (check of the fixes) — Claude Opus 5.5, 2026-11-14
+
+Checked `feat/m08b-b6-close-out` at `cf800a65`: the three fix commits
+`5c1b36e3`, `165e157a`, `6445ed52` and the review close commit `cf800a65`, on
+top of the round 1 commit `747071d9`. Main checkout, `git pull` done.
+
+**Summary:** all 5 round 1 items are fixed correctly. No new finding. 0
+blocker, 0 major, 0 minor. **0 open.**
+
+Limits: CI run
+[43594245154](https://github.com/syneroym/syneroym/actions/runs/43594245154)
+on `cf800a65`: "Lints, licenses & checks" and "Playwright E2E" (which runs the
+demo stories, story 40 included) passed; the six Rust test shards were still
+running when I wrote this, and B6 changes no Rust code. I ran the Hub unit
+tests (`TZ=UTC npx vitest run`: 529 passed in 43 files) and `npx tsc --noEmit
+-p .` in `crates/substrate/tests/e2e` (no error). I did not run `mise run demo`
+or `mise run verify`, and I changed no code.
+
+### Round 1 items checked
+
+- **R1 — Fixed, correct.** Both receipt checks use
+  `runReceiptCard(page, runTag)`, which matches
+  `.thread-messages .card-agreement-receipt` with the run tag in its text. The
+  receipt card draws the scope (`agreement_receipt.ts:131` to `:135`), and the
+  scope holds the run tag, so an old card from an earlier run no longer
+  matches. Keeping `.first()` instead of `toHaveCount(1)` is right: each half
+  can draw its own card, so one run can have two.
+- **R2 — Fixed, correct.** The test reads `ALICE_DID` and checks
+  `verdict.result.issuer == alice.did` and `payload.role == "counterparty"`
+  (`DealRole` is kebab-case, `transaction.rs:92`). Bob's half has issuer
+  `bob.did` and role `quote-author`, so the check now tells the halves apart.
+  The comment says why.
+- **R3 — Fixed, correct.** The matrix row, the requirements appendix and the
+  backlog row now say the Hub sets `lang` and a few ARIA labels (the language
+  list, the category picker, the search translate list) and has no screen
+  reader test and no WCAG 2.1 AA audit. This matches the code
+  (`language_list.ts:35` to `:44`, `category_picker.ts:38`, `:98`,
+  `directory.ts:299`).
+- **R4 — Fixed, correct (the first option).** The three cases now check the
+  calls: `directory_translate.test.ts` returns `calls` from `drawn` through
+  `withHit` and checks there is no `translation.translate`;
+  `messages_translate.test.ts` returns the `stubRpc` calls from
+  `conversation(...)` and checks the same; `groups.test.ts` stubs with `{}` and
+  checks `calls` is empty. The three titles now say "and makes no call". So the
+  ML-16 and ML-26 cells are true as written. The other cases of the changed
+  describe blocks only take `{ host }` from `withHit`, with no other change.
+- **R5 — Fixed, correct.** `DELIVERY_WAIT_MS` is exported once from
+  `demo/steps.ts` with a doc comment, and stories 20 and 40 import it. No copy
+  is left (`git grep "DELIVERY_WAIT_MS = "` finds one line).
+
+### New problems in the fix commits
+
+None. The fix commits touch only test code and three docs. No planning id in
+any `.ts` line, no new helper that copies an old one, and the imports are used
+(`Locator` in story 40 is the return type of `runReceiptCard`). `status.md`
+counts match the test output above.
+
+**Still before merge (not a finding):** the change doc is `status: draft`
+until the owner reads the 13 Hindi messages of B5 (Q6), and the full
+`mise run verify` with no `--skip` has not run yet.
