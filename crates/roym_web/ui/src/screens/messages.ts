@@ -12,7 +12,13 @@ import { toMinorUnits, currencyMinorExponent } from "../money";
 import type { ServiceLocationKind } from "../listings/editor";
 import { serviceLocationEditorLabel } from "../listings/labels";
 import { type SearchMatch, searchHits } from "./message_search";
+import { waitingRedraw } from "./thread_redraw";
 import { categoryPicker } from "../taxonomy/category_picker";
+
+/// Things the person has started inside a thread. A redraw from the event
+/// feed waits until they are gone, so it never throws away typed text. An
+/// element inside the thread that holds the person's input belongs here.
+const OPEN_WORK = ".quote-form, .decline-dialog, .delete-dialog, .accept-mt-box";
 
 /// Message id for each message state, shown as a word. A `Map`, so a state
 /// from another node can never hit an inherited property.
@@ -315,7 +321,7 @@ async function renderThread(
         languages: langList.value(),
       });
       composeInput.value = "";
-      await fillHistory();
+      await redraw.now();
     } catch (err) {
       composeErr.textContent = t("messages-send-failed", { detail: errText(err) });
     }
@@ -387,7 +393,7 @@ async function renderThread(
       catsPicker.clear();
       listingInput.value = "";
       reqForm.style.display = "none";
-      await fillHistory();
+      await redraw.now();
     } catch (err) {
       reqErr.textContent = t("request-send-failed", { detail: errText(err) });
     } finally {
@@ -432,12 +438,13 @@ async function renderThread(
 
     for (const m of messages) {
       into.appendChild(
-        messageElement(m, cardMap, allCards, newestRequestMap, conv.id, myDid, fillHistory),
+        messageElement(m, cardMap, allCards, newestRequestMap, conv.id, myDid, redraw.now),
       );
     }
   });
 
-  onActive?.(conv.id, fillHistory);
+  const redraw = waitingRedraw(messagesHost, fillHistory, OPEN_WORK);
+  onActive?.(conv.id, redraw.later);
   await fillHistory();
 }
 
