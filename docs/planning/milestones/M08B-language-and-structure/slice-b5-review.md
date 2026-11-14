@@ -929,7 +929,7 @@ is clean afterwards). I changed no code.
   own text as `$detail`. Change the test to use the node's real message
   (`translation engine failed: engine said no`) and expect
   `The translation service failed. engine said no`. No wire change.
-- *Status:* Open
+- *Status:* Fixed (e1cf993d). `translationFailure` removes the node's fixed prefix and passes only the engine's own text as `$detail`. The test now uses the node's real message. Proof: with the prefix kept, that test fails. Then undone.
 
 #### R11 — "On screen" is kept per text, not per card, so another card with the same text opens in its machine version without a click (minor)
 
@@ -961,4 +961,4 @@ is clean afterwards). I changed no code.
   text and different keys; translate the first; the second is drawn with its
   best version on screen and the machine version reachable with no call. Change
   the change doc sentence to say "the same card".
-- *Status:* Open
+- *Status:* Fixed (e1cf993d). The kept result is still found by text. Whether it is on screen is now kept per card: `recordText` takes a card key (`quote:<id>`, `request:<id>`, `hit:<listing id>`), and a card with no key or another key opens in its best version, the machine version one click away with no call. The change doc says "the same card". Proof: with the choice read by text again, the new two-card test fails. Then undone.
