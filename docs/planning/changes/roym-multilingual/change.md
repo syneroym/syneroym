@@ -413,7 +413,7 @@ Before acceptance through MT, the Hub shows: the original binds, it is in the na
   - B6 changes no product code (D-B6-7). A product bug found by the booking test would stop the slice for an owner answer.
   - A Latin letter search that finds a Devanagari title needs no new test. Story 40 (Latin to Devanagari) and `roym-hub.spec.ts` (both directions) show it (Q4).
   - `[APP-A11Y]` is split in the living docs: `[APP-L10N]` Localisation is `Implemented`, and `[APP-A11Y]` Accessibility stays `Envisioned` (Q5).
-  - The change is `status: done` only after the owner has read the 13 Hindi messages of the translation slice, two of which carry legal weight (Q6). The four rows that a later milestone finishes (ML-9, ML-23, ML-26, ML-28) each have a deviation and a backlog row (Q7). This slice does not close the milestone (Q8).
+  - The change is `status: done` only after the owner has read the 13 Hindi messages of the translation slice, two of which carry legal weight (Q6). The owner read them on 2026-11-14 and asked for no change. The four rows that a later milestone finishes (ML-9, ML-23, ML-26, ML-28) each have a deviation and a backlog row (Q7). This slice does not close the milestone (Q8).
 
 ### Search
 

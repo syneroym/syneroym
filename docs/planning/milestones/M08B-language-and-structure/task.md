@@ -234,7 +234,7 @@ Change doc: roym-multilingual.
 
 Change doc: roym-multilingual.
 
-**B6 result:** implemented on the branch `feat/m08b-b6-close-out` (2026-11-14, by Claude Sonnet 5.5). No Rust, Hub screen or string-catalog change, so no component size changed. Hub unit tests 529 passed in 43 files (2 new, in `contacts.test.ts`). Playwright `test:e2e`: main suite 75 passed, multi-hop 4 passed, demo 7 passed (the new story 40 test included). The demo run took 42.9 s with the new test failing after 2.4 s (so about 40 s without it), and 1.2 min with it passing in 4.4 s; the limit is 900 s. Story 40 took 2.3 s before and 6.7 s after. `status: done` of the change doc waits for the owner's reading of the 13 Hindi messages of B5.
+**B6 result:** implemented on the branch `feat/m08b-b6-close-out` (2026-11-14, by Claude Sonnet 5.5). No Rust, Hub screen or string-catalog change, so no component size changed. Hub unit tests 529 passed in 43 files (2 new, in `contacts.test.ts`). Playwright `test:e2e`: main suite 75 passed, multi-hop 4 passed, demo 7 passed (the new story 40 test included). The demo run took 42.9 s with the new test failing after 2.4 s (so about 40 s without it), and 1.2 min with it passing in 4.4 s; the limit is 900 s. Story 40 took 2.3 s before and 6.7 s after. Code review: 2 rounds, 5 items (R1 to R5, all minor), all closed. The owner read the 13 Hindi messages of B5 on 2026-11-14, with no changes. Not closed yet: the close-out check found that the new test fails now and then because the Hub redraws a thread over an open quote form (review R6). The change doc stays `status: draft` until the owner decides.
 
 ## 4. Order and parallel work
 

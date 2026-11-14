@@ -544,11 +544,11 @@ top of the round 1 commit `747071d9`. Main checkout, `git pull` done.
 **Summary:** all 5 round 1 items are fixed correctly. No new finding. 0
 blocker, 0 major, 0 minor. **0 open.**
 
-Limits: CI run
-[43594245154](https://github.com/syneroym/syneroym/actions/runs/43594245154)
-on `cf800a65`: "Lints, licenses & checks" and "Playwright E2E" (which runs the
-demo stories, story 40 included) passed; the six Rust test shards were still
-running when I wrote this, and B6 changes no Rust code. I ran the Hub unit
+Limits: no CI run had finished on the fix commits when I wrote this. (I first
+wrote here that run 43594245154 passed lints and Playwright on `cf800a65`.
+That was wrong: that run was for `747071d9`, the round 1 commit, which has
+none of the fixes, and a later push cancelled it. Corrected at close-out; the
+close-out records the CI run on the final code.) I ran the Hub unit
 tests (`TZ=UTC npx vitest run`: 529 passed in 43 files) and `npx tsc --noEmit
 -p .` in `crates/substrate/tests/e2e` (no error). I did not run `mise run demo`
 or `mise run verify`, and I changed no code.
@@ -595,3 +595,59 @@ counts match the test output above.
 **Still before merge (not a finding):** the change doc is `status: draft`
 until the owner reads the 13 Hindi messages of B5 (Q6), and the full
 `mise run verify` with no `--skip` has not run yet.
+
+## Close-out check — Claude Opus 5.5, 2026-11-14
+
+The owner read the 13 Hindi messages of B5 on 2026-11-14 and asked for no
+change (date in the B5 row of `status.md`). I then started the close (T7) at
+`11b02da1`. Full CI is green on `11b02da1`
+([run 43595402270](https://github.com/syneroym/syneroym/actions/runs/43595402270):
+lints, 6 test shards, Playwright E2E with 75 + 4 passed and demo 7 passed).
+`cargo xtask check-change-docs` and `check-file-lengths` pass.
+
+The local `mise run verify` (no `--skip`, sandbox off) passed 15 of 16 gates
+and failed the e2e gate: the new story 40 test timed out after 180 s in the
+step "Bob's screen: read the request and send a quote in rupees". I then ran
+`mise run demo` 7 more times on the same code. The test failed once more (the
+first run, same step) and passed 6 times. So it fails in 2 of 8 local runs. It
+passed in all 3 CI runs. By D-B6-7 the close stops here, and the change doc
+stays `status: draft`.
+
+**Summary:** 0 blocker, 1 major, 0 minor. **1 open** (R6).
+
+#### R6 — A thread redraw removes an open quote form, so the new test hangs now and then (major)
+
+- **Where:** `crates/roym_web/ui/src/screens/messages.ts:235` to `:264`
+  (`onFeed`), `:402` (`fillHistory`), `:654` and `:752` (the quote form is
+  drawn inside the message element); `crates/roym_web/ui/src/dom.ts:121`
+  (`host.replaceChildren(into)`); `crates/substrate/tests/e2e/hub-helpers.ts`
+  `sendQuote` at `11b02da1`.
+- **Problem:** each event-feed event whose subject is the open conversation
+  calls `fillHistory`, and `refiller` replaces every child of the thread. The
+  quote form lives inside the request's message element, so the redraw
+  removes it, with all the text the person typed. In the test, `sendQuote`
+  clicks "Quote this request" and then fills the form. If an event for the
+  conversation arrives between the click and the fills, the form is gone. A
+  Playwright `fill` has no timeout of its own, so it waits until the 180 s
+  test timeout. Every `expect` in that step has a shorter timeout, and none
+  failed, which fits an action that waits for an element that never comes
+  back. I could not catch the exact action: with tracing on, or with a
+  temporary `actionTimeout`, the 6 runs all passed. The cause is therefore
+  read from the code, not seen in a trace.
+- **Failure case:** for a person: Bob types half a quote, Alice sends a chat
+  message in the same conversation, and Bob's form disappears with his text.
+  The same happens to the warning box before an acceptance (`.accept-mt-box`
+  is in the message element too). For the suite: story 40 fails about 1 run
+  in 4 on this machine, and the demo stories run in `npm test`, so
+  `mise run verify` and the CI job "Playwright E2E" can fail at random.
+- **Fix:** this is product code, so by D-B6-7 the owner chooses:
+  - (a) **Recommended.** A small fix slice before B6 merges: the Hub keeps an
+    open quote form (and an open warning box) across a thread redraw, for
+    example by not redrawing the thread while one of them is open and
+    redrawing when it closes. With a unit test that sends a feed event while
+    the form is open. Then B6 rebases, and `mise run demo` runs at least 5
+    times with no failure before the close.
+  - (b) A backlog row for the Hub bug, and the test waits until the thread is
+    quiet before it opens the form. This hides the bug from the test and
+    keeps a race in the demo.
+- *Status:* Open (owner answer needed).
