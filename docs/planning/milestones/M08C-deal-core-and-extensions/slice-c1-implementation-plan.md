@@ -4,11 +4,13 @@
 owner, who answers the questions in section 2.1. You do not have the
 planning conversation. This plan is meant to stand alone.*
 
-**Status: plan written, 2026-11-15, by Claude Opus 5.5. Owner questions Q1
-to Q6 are open (section 2.1). No plan review yet.**
+**Status: plan written, 2026-11-15, by Claude Opus 5.5. The owner accepted
+the recommendation of every question, Q1 to Q6, on 2026-11-16 (section
+2.1). No plan review yet.**
 
 **Size and PRs.** C1 is the largest slice of M08C. This plan splits it in
-two parts, and each part is one PR that passes `mise run verify` (Q1):
+two parts, and each part is one PR that passes `mise run verify` (Q1,
+accepted):
 
 - **C1a — Deal shapes (L).** Every deal record gets its new shape, in
   place, and every caller uses it: the Rust service, the Hub, `roymctl`,
@@ -82,10 +84,10 @@ decision and deviation is written in the doc that defines it:
 - `AG-*` rows, the record shapes and the writer's rules: roym-agreements.
 - `VX-*` rows that a later sub-milestone finishes (VX-6, VX-12):
   roym-value-exchange.
-- Q3 moves the *shape* of `details` (EX-1, EX-3) into C1. If the owner
-  accepts Q3, the deviation belongs to roym-extensions, which is not in the
-  prompt's list. This plan does not write it; the owner decides (Q3 says
-  where).
+- Q3 moves the *shape* of `details` (EX-1, EX-3) into C1. That deviation
+  belongs to roym-extensions, which is not in the prompt's list. The owner
+  accepted Q3 as written, including where it goes, so the deviation is in
+  roym-extensions' `## Deviations` (2026-11-16).
 
 **Do not copy ids into code.** The ids `D-C1-n`, `Qn` and `AG-n` in this
 plan are for the plan and the change docs only.
@@ -209,9 +211,14 @@ How a developer can see it work:
 ### 2.1 Questions
 
 Each question has options and a recommendation. The plan is written for the
-recommended answer.
+recommended answer. **The owner accepted every recommendation on
+2026-11-16** (each question's "Answer" line). The answer-dependent rows are
+in the change docs' `## Deviations`.
 
 #### Q1. Split C1 into C1a and C1b?
+
+**Answer (2026-11-16): (a).** The status.md row is split into C1a and C1b,
+and task.md's C1 section names the two parts.
 
 Task.md asks the plan to split C1 only if each part leaves a working
 system.
@@ -223,11 +230,12 @@ system.
   that must check the shapes and the crash rules together.
 - (c) Another cut (section 1, "Rejected cuts").
 
-If (a): the C1 row of [status.md](status.md) becomes two rows (C1a, C1b)
-at the plan-fix step, and task.md's C1 section names the two parts. This
-plan does not change task.md now.
+With (a), the C1 row of [status.md](status.md) becomes two rows (C1a,
+C1b), and task.md's C1 section names the two parts.
 
 #### Q2. How do tests control time and simulate a crash?
+
+**Answer (2026-11-16): (a).**
 
 The service reads time from `clock::now_secs()`
 (`crates/roym_core/src/clock.rs:18`). Its own comment says a test cannot pin
@@ -255,6 +263,8 @@ point 2).
 
 #### Q3. Where does a slot go in C1?
 
+**Answer (2026-11-16): (a).** Deviation written in roym-extensions.
+
 The agreements doc moves `slot_id` into the scheduling extension's
 `details.data` (`change.md:322`). But task.md puts `details` in C3a (EX-1,
 EX-3), and C1 must keep booking working.
@@ -275,6 +285,9 @@ EX-3), and C1 must keep booking working.
 
 #### Q4. One original language per record?
 
+**Answer (2026-11-16): (a).** AG-39's refinement is in the agreements
+doc's `## Deviations`.
+
 The agreements doc gives every free-text field its own `LocalText` with its
 own `lang`, and AG-39 requires one set of *translation* languages per
 record. It does not say that every field's *original* language is the
@@ -292,6 +305,9 @@ picks one version for the whole record.
   "language they read".
 
 #### Q5. The restore rules rest on conversation history that a full restore also rolls back
+
+**Answer (2026-11-16): (a).** The limit is in the agreements doc's
+`## Deviations`; C1b adds the backlog row.
 
 AG-42 and review fix P36 say: after a restore from an old backup, the
 writer continues its `seq` from its own snapshot cards in the conversation,
@@ -315,6 +331,8 @@ is restored alone, or when the conversation data is newer.
   writer learns it. A field in every settlement record.
 
 #### Q6. `booking.start`, `scheduled` and `in-progress` until C3b
+
+**Answer (2026-11-16): (a).**
 
 The agreements doc says `scheduled` and `in-progress` are not deal-core
 states; they become scheduling steps (`change.md:486`), and step records

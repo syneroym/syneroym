@@ -1048,8 +1048,8 @@ This document does not write the two ADRs. They must decide:
 
 Written when the M08C C1 slice was planned (2026-11-15,
 [slice-c1-implementation-plan.md](../../milestones/M08C-deal-core-and-extensions/slice-c1-implementation-plan.md)).
-Rows that depend on an open owner question of that plan are added when the
-owner answers.
+The owner answered that plan's questions Q1 to Q6 on 2026-11-16; the rows
+under "Owner decisions while planning C1" record them.
 
 **Criteria finished later.**
 
@@ -1097,6 +1097,41 @@ owner answers.
   writer's sync can also sign a new version after an older one was
   countersigned. The fence refuses that version's acceptance, so the
   outcome is the same.
+
+**Owner decisions while planning C1 (2026-11-16).**
+
+- **Slice cut (C1 plan, Q1).** C1 is built as two PRs. C1a gives every
+  record its new shape and moves every caller to it; the writer's decision
+  runs in its final step order, with no crash recovery yet. C1b adds the
+  version checks, the refusal snapshots, the recovery of `deciding` rows,
+  the restore rules and the signed `deal-decline`. This refines open
+  question 12's cut.
+- **AG-39, one original language (Q4).** Every `LocalText` in one record
+  has the same `lang`, as well as the same set of translation languages.
+  The same check enforces both. So "the original's language", which the
+  `viewed_via_mt` rule and the Hub's `bestVersion` use, is one language
+  per record.
+- **AG-42, the limit of the restore rules (Q5).** "The writer's `seq` after
+  a restore" and "The writer's records after a restore" find the writer's
+  own cards in the conversation. The conversation history is in the same
+  backup set (`conversation.export`), and a 1:1 conversation does not fetch
+  old messages again from the peer. So the rules work when `transaction` is
+  restored alone, or when the conversation data is newer than the
+  `transaction` data. After a full restore from an old backup, the writer
+  can sign a second countersigned half or reuse a `seq`. The counterparty's
+  node keeps the first record it filed and shows `progress-fork` (AG-12),
+  so nothing is merged in silence. AG-42's tests cover the case the rules
+  handle. A deferred-backlog row records the full-restore case (C1b).
+- **`booking.start` (Q6).** C1a removes `booking.start` with no stand-in.
+  From C1a until the scheduling steps of C3a and C3b, nobody can mark work
+  as started. A commitment settles from `promised` directly, so no rule
+  depends on it. A deferred-backlog row (target C3b) records the gap.
+- **The slot in C1 (Q3).** C1a adds a commitment's `extension` and
+  `details` in their final shape, with one case checked in code:
+  extension `scheduling` version 1, schema `scheduling/slot@1`, data
+  `{ listing_id, slot_id }`. Any other extension is refused with
+  `commitment-kind-not-supported` until C3a. The roym-extensions change
+  doc records the EX-1 and EX-3 part.
 
 ## Close-out
 

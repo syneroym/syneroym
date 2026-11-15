@@ -107,6 +107,7 @@ Change docs: roym-message-forwarding.
 - Criteria: AG-1 to AG-13, AG-22, AG-31 to AG-33, AG-35 to AG-37, AG-39, AG-41 to AG-43. AG-14 and AG-15 with today's slot path inside `transaction`; C3b moves them to the extension. AG-23 for the range rule only; C6 adds the Hub part. AG-2 and AG-4 for the three M08C resource kinds.
 - Demo: starts story 50 (Bob quotes a lesson for wheat plus ₹100; Alice accepts).
 - The plan checks the size first. This is the largest slice. If the plan finds a clean cut that keeps a working system after each part, it splits C1, and records why.
+- **Split (owner decision, 2026-11-16, [C1 plan](slice-c1-implementation-plan.md), Q1):** C1a (deal shapes: every record and caller on the new shapes, the writer's decision in its final order) and C1b (single writer and signed decline: version checks, refusal snapshots, recovery, restore rules, `deal-decline`). Each is one PR.
 
 Change docs: roym-agreements, roym-value-exchange (VX-1, VX-2, VX-6 to VX-9, VX-12).
 

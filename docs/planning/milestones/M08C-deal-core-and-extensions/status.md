@@ -9,7 +9,8 @@ The plan and the slice order are in [task.md](task.md). This file records what i
 | Slice | Step | Plan by | Plan review by | Implemented by | Code review by | Evidence |
 | --- | --- | --- | --- | --- | --- | --- |
 | C0 | Not started | — | — | — | — | — |
-| C1 | Plan written | Claude Opus 5.5 | — | — | — | [Plan](slice-c1-implementation-plan.md), 2026-11-15. It proposes to split C1 into C1a (deal shapes) and C1b (single writer and signed decline), owner question Q1; Q1 to Q6 open. Baseline component sizes on `48ea989c` are in the plan, section 2.2, point 10. |
+| C1a | Plan written | Claude Opus 5.5 | — | — | — | [Plan](slice-c1-implementation-plan.md) (one plan for C1a and C1b), 2026-11-15. Owner accepted Q1 to Q6 on 2026-11-16. Baseline component sizes on `48ea989c` are in the plan, section 2.2, point 10. |
+| C1b | Plan written | Claude Opus 5.5 | — | — | — | Same plan, part C1b. Starts after C1a merges. |
 | C2 | Not started | — | — | — | — | — |
 | C3a | Not started | — | — | — | — | — |
 | C3b | Not started | — | — | — | — | — |
