@@ -873,3 +873,258 @@ wrote this. I ran the Hub unit tests (`TZ=UTC npx vitest run` in
   this is older than the fix and not a change by it.
 - `events.test.ts` keeps its own `FakeEventSource` beside the shared
   `FakeFeedSource`. The two differ in what they offer; not worth a change.
+
+## Code review round 4 — Claude Opus 5.5, 2026-11-15
+
+Checked `feat/m08b-b6-close-out` at `4272014d`: the fix commit `80e9d0d8`
+for R6, R7 and R8 of round 3, and the doc commit `4272014d`
+(`git diff 8799efd2..HEAD`). Main checkout (not a worktree), `git pull` said
+"Already up to date". Claude Sonnet 5.5 wrote the fix, and I am a different
+tool, so the cross-tool rule holds. Rounds 1 and 2 and the plan review are
+closed and I did not re-check them.
+
+**Summary:** R6, R7 and R8 stay Fixed: the swap-time guard is correct, the R7
+decision is acceptable, and the new tests fail when the code they guard is
+broken. New findings: 0 blocker, 0 major, 4 minor (R9 to R12). **4 open.**
+
+Limits: full CI is green on `4272014d`
+([run 43669493732](https://github.com/syneroym/syneroym/actions/runs/43669493732):
+lints, licenses and checks; test shards 1 to 6; Playwright E2E; CLA; benchmarks
+and coverage skipped). I ran the Hub unit tests (`TZ=UTC npx vitest run` in
+`crates/roym_web/ui`: 546 passed in 45 files) and `npx tsc --noEmit -p .` (no
+error). I did not run `mise run demo` or `mise run verify`. To prove
+suspicions I made ten temporary changes to `dom.ts`, `thread_redraw.ts` and
+`messages.ts`, one at a time, and one temporary test file. I restored each
+file after its run, and `git status --short` is clean.
+
+### What was checked and found correct
+
+- **`refiller` and `canSwap` (`dom.ts:116` to `:130`).** `canSwap` is asked
+  only when `mine === newest`, because `||` stops at the first true part. It
+  is asked once per run, right after `fill` ends and with no `await` before
+  `replaceChildren`, so the answer is about the thread as it is at the swap.
+  The default `() => true` keeps the old behaviour for the 12 other callers
+  (in `contacts`, `directory`, `groups`, `listings` (3), `messages` (2:
+  search and list), `safety` (2), `synorg` and `synorg_members`). The doc
+  comment says what `canSwap` does and why.
+- **The `atOnce` flag (`thread_redraw.ts:28` to `:57`).** `later` and `now`
+  set the flag in the same synchronous step in which `draw()` raises
+  `newest`, and a `later` that returns early touches neither. So the flag
+  always belongs to the newest run, and only the newest run asks. I built
+  each case of the focus list: `later` then `now` (the `later` run is
+  dropped, `now` draws over the form); `now` then `later` with no open work
+  (the `now` run is dropped; the `later` run fetched after the person's
+  action, so it carries the result; see R9 for the one case where it is
+  held); `later` held by the guard and then `now` (`now` draws, `waiting`
+  is cleared); two feed events in one slow redraw (one draw, or one held
+  draw and one draw after the form closes); the observer's `later` and a
+  `now` (quote submit removes the form and calls `now` in the same step, so
+  `waiting` is false before the observer runs: one draw). No case loses a
+  redraw, removes a form through a feed redraw, or leaves `waiting` true
+  with nothing open. A double draw can happen when a feed event comes while
+  a decline or delete dialog waits for its `now` (the swap removes the
+  dialog and the observer draws once more). That is one extra set of node
+  calls and no change on screen, and it is older than this fix.
+- **The observer with the guard.** The guard sets `waiting = true` only when
+  an open element is in `host`. Every open element closes with `.remove()`
+  (`messages.ts:641`, `:645`, `:726`, `:740`, `:767`, `:861`, `:947`,
+  `:979`, `:1003`), which is a `childList` change that the observer sees. If
+  the form leaves after the guard said "open", the removal is queued after
+  `waiting = true`, so the observer redraws. If it leaves before the guard,
+  the guard sees no form and swaps. There is no order in which the guard
+  sees the form and the observer misses its removal.
+- **`messages.ts`.** Compared with `main`, only the thread fill changed:
+  `fillThread` is a plain function, `waitingRedraw` owns the `refiller`, the
+  person's actions get `redraw.now`, the feed gets `redraw.later`, and the
+  first draw is `redraw.now()` (nothing can be open before it, so it would
+  also be right as `later`; changing it to `later` fails no test, as
+  expected). `refiller` is still imported and used for the search and list
+  fills. The `OPEN_WORK` comment says why. No wire change: no RPC method or
+  parameter changed.
+- **R7 as a decision.** I accept it for v1. The person's own redraw runs at
+  once because decline and delete call it while their dialog is still open.
+  Keeping open forms across a swap (moving them into the new thread) needs a
+  rule for forms whose card has changed, and the backlog row names it as a
+  later change. R10 asks only for the doc text to say what the code does.
+- **Tests: the mutations of the focus list.** Each fails a test:
+  - the guard always says yes: fails "keeps a form that is opened while the
+    redraw waits for the node" and "keeps a quote form that the person
+    opened while the node was answering";
+  - `OPEN_WORK` cut to `.quote-form, .delete-dialog`: fails the decline
+    dialog case and the warning case;
+  - `redraw.later` for the card actions: fails the decline case and "a
+    confirmed delete draws the thread again at once";
+  - `redraw.later()` in compose send and request send: fails "a sent
+    message shows now, and the open quote form is closed with the redraw".
+
+  Four more that I added: `refiller` without the newest check (fails 3
+  `dom.test.ts` cases); `now` that leaves `atOnce` false (fails 6 cases);
+  `later` that leaves `atOnce` as it was (fails the feed race case); the
+  guard asked before `fill` instead of after (fails 3 cases, the two race
+  cases among them). So the race tests do race: the redraw is running when
+  the form opens. `now` that keeps `waiting` true fails 2 cases.
+- **The other test changes.** `stubNode` now awaits an answer and passes the
+  params; the old callers return plain values, so they behave as before.
+  `renderMessages(container, ME)` gives the screen the DID that the quote
+  card names as counterparty, which the accept and decline buttons need.
+  `afterEach` resets the translation targets and the mocks, so the warning
+  test leaks nothing. The older 5 cases of `thread_redraw.test.ts` pass a
+  fill that ignores its fragment, which is the new signature with the same
+  body.
+- **Counts.** `messages_feed.test.ts` has 8 cases (1 moved, 7 new),
+  `thread_redraw.test.ts` 8 (all new), `dom.test.ts` 2 new, and
+  `contacts.test.ts` 2 new: 19 new, and 527 + 19 = 546. So the `task.md`
+  line ("2 new in `contacts.test.ts`, 8 in `thread_redraw.test.ts`, 7 in
+  `messages_feed.test.ts`, 2 in `dom.test.ts`", all new tests) and the
+  `status.md` count are right.
+- **The demo evidence.** 0.75^10 is about 0.056, so "about 6 in 100" in the
+  R6 status is right as arithmetic. The 2 in 8 rate comes from 8 runs, so it
+  is a rough number: at a true rate of 1 in 10, 10 clean runs come by chance
+  about 1 time in 3. The strong evidence for the fix is the two race tests,
+  which fail without the guard. The 10 runs and the green Playwright job on
+  `4272014d` show that nothing else broke. Together this is enough for the
+  feed path. R12 names one more path in the e2e helpers that the demo count
+  cannot rule out.
+- **Code rules.** No plan, slice or review id in the changed `.ts` lines. No
+  size or rule note in a comment. Comments say why ("because the person can
+  open a form while the node is answering"). Imports are tidy. The backlog
+  "Recently resolved" row and the change doc Deviation say that the check
+  is made again before the swap, which matches the code.
+
+### Findings
+
+#### R9 — A person's own redraw does not draw at once when a feed redraw overtakes it (minor)
+
+- **Where:** `crates/roym_web/ui/src/screens/thread_redraw.ts:35` to `:42`
+  (`later` sets `atOnce = false` and starts a newer run), `:17` to `:18`
+  (the doc comment: `now` "replaces the content whatever is open"), at
+  `4272014d`.
+- **Problem:** a `now` run is dropped when a `later` run starts after it,
+  and the `later` run asks the guard as a feed redraw. If the person opens a
+  form before the `later` run ends, the swap waits for the form to close. So
+  the person's own result is not drawn at once. It is not lost: it is drawn
+  (by a third set of node calls) when the form closes.
+- **Proof:** a temporary test: `now()`, then `later()` with nothing open,
+  then a `.quote-form` is opened, then the node answers. After both runs:
+  2 fill calls, nothing drawn, the form still open. After the form closes:
+  3 fill calls, the thread drawn.
+- **Failure case:** Bob sends "one moment". The node emits a
+  `conversation.message` event for it, the feed redraw starts after the
+  150 ms burst, and Bob clicks "Quote this request" before it ends. The
+  compose box is empty, but Bob's message is not in the thread until he
+  closes or sends the quote, so he may send it again. The change doc
+  Deviation and the backlog row say the person's redraw "still runs at
+  once", and the code comment says `now` replaces the content "whatever is
+  open". In this case none of them is true. The window is short (the node
+  calls of one redraw), so this is minor.
+- **Fix:** make "at once" a debt that the next swap pays, not a property of
+  the newest run. For example: `now` sets `owed = true`; the guard is
+  `if (owed || !hasOpenWork()) { owed = false; return true; }`; `later` does
+  not touch the flag. Then a `later` run that overtakes a `now` swaps at
+  once, as the docs say. Add a `thread_redraw.test.ts` case for `now`, then
+  `later`, then a form opened, then the answer (the thread is drawn). If the
+  owner prefers the code as it is, say instead in the doc comment, the
+  Deviation and the backlog row that a feed event that comes during the
+  person's redraw can make it wait for the open form.
+- *Status:* Open.
+
+#### R10 — The R7 decision text names only the quote form, but a person's redraw closes every open element (minor)
+
+- **Where:** `docs/planning/changes/roym-multilingual/change.md:638` (the
+  Deviation "B6 fixes a Hub bug"); `docs/planning/deferred-backlog.md:564`
+  (the row "A chat thread shows no new message while a form is open in it"),
+  at `4272014d`.
+- **Problem:** `now` swaps whatever is open (`thread_redraw.ts:31`). So a
+  person's redraw closes a quote form, a decline dialog (with the typed
+  note), a delete dialog, or the warning before an acceptance. Both texts
+  say only "a quote form". The backlog row also lists the actions as "a sent
+  message, a request, retry, accept", and leaves out decline, delete and
+  quote send, which redraw the same way (`messages.ts:441` passes
+  `redraw.now` to every card action). The Deviation lists decline and delete
+  but not quote send.
+- **Failure case:** a developer reads the backlog row, opens a decline
+  dialog on one quote, types a note, and presses Retry on another message.
+  The dialog and the note are gone. The row said only a quote form can be
+  closed, so this looks like a new bug.
+- **Fix:** in both places, say: "A redraw that the person asks for (send,
+  request, quote send, accept, decline, delete, retry) runs at once, so it
+  closes any form or dialog that is open in the thread, with its text." If
+  R9 is fixed by the doc option, add its case in the same sentence.
+- *Status:* Open.
+
+#### R11 — Two tests prove less than their titles or their status claims (minor)
+
+- **Where:** `crates/roym_web/ui/src/screens/thread_redraw.test.ts:131` to
+  `:141`; `crates/roym_web/ui/src/screens/messages_feed.test.ts:312` to
+  `:331`; the R7 status line in this file ("with `redraw.later()` in compose
+  send and request send, it fails"), at `4272014d`.
+- **Problem:** (1) "a later that is replaced by a newer now draws only the
+  newer one" uses a fill that draws the same `.drawn` element for every run,
+  and `replaceChildren` always leaves one copy. So
+  `toHaveLength(1)` is true whether one run or both runs swapped. A
+  `refiller` without the newest check (both runs swap) still passes this
+  test; only the `dom.test.ts` cases catch it. What the test does prove is
+  that the `now` run swaps over the form (it fails when `now` is guarded).
+  (2) The sent-message test sends from the compose row only. With
+  `redraw.later()` in request send alone, all 130 tests of `src/screens` and
+  `dom.test.ts` pass. The R7 status lists both actions together, so it reads
+  as if each one is pinned. (3) A small one: in "now redraws at once and
+  drops the waiting redraw" (`:85`), the `now` swap already removes the form
+  from `host`, so the later `form.remove()` (`:91`) changes nothing in
+  `host` and checks nothing. The test still fails when `now` keeps
+  `waiting` true, through the swap itself, so it is not wrong, only
+  misleading.
+- **Failure case:** someone changes request send to `redraw.later()` (for
+  example to fix R7 the other way for one action only). No test fails, and
+  the review file says a test pins it.
+- **Fix:** (1) let the `setUpSlow` fill write the run number
+  (`p.textContent = String(calls)`) and check that the text is that of the
+  `now` run, and that the `later` run did not swap (for example, count the
+  swaps with a `MutationObserver` on `host`, or check `host.textContent`
+  after only the first run is released). (2) add a request-send case beside
+  the sent-message case (open a quote form, send a request, the request
+  card shows and the form is closed), or change the R7 status to say that
+  only compose send is pinned. (3) drop the dead `form.remove()` lines, or
+  move them before `now()` with a comment.
+- *Status:* Open.
+
+#### R12 — `openConversation` can let `sendQuote` open the form in a thread that is about to be replaced (minor)
+
+- **Where:** `crates/substrate/tests/e2e/hub-helpers.ts:154` to `:162`
+  (`openConversation`, the comment at `:158` to `:160` and the check at
+  `:161`); `crates/roym_web/ui/src/screens/messages.ts:124` to `:137` (the
+  open button) and `:204`, `:254` to `:260` (the list fill and the feed),
+  at `4272014d`. The helper is older than B6, so this is not a change by the
+  fix, but it is on the path of the step that hung.
+- **Problem:** the helper waits for `.conversation-item.selected` and its
+  comment says the selected row shows that the second drawing (the one the
+  open button starts) has replaced the first. That is not always so. The
+  first drawing shows `rows[0]` and sets `activeConvId`. After that, any
+  feed event of kind `conversation.*` refills the list with
+  `fillList(activeConvId)`, which marks the row of the shown conversation as
+  selected. If such an event comes in before the open click's own list fill
+  starts, the selected row is already there, and the helper returns while
+  the open button still waits for `conversation.open` and
+  `conversation.list`. When they answer, `reloadList` calls `renderThread`,
+  which replaces the whole thread pane. The guard of R6 cannot help: it
+  guards the swap inside one thread, not a new thread.
+- **Failure case:** in story 40, Bob already has the conversation with
+  Alice, so it is `rows[0]`, and Alice's request is delivered to Bob's node
+  in this step (that is why the step waits `DELIVERY_WAIT_MS`). If the
+  delivery event's list refill ends between the first drawing and the open
+  click's list fill, `sendQuote` can see the request card in the first
+  thread, click "Quote this request" and start to fill, and then the second
+  thread replaces the form. The `fill` waits until the 180 s test timeout:
+  the same symptom as R6. The window is two node calls long, and the event
+  must come just before it, so this is rare. It is read from the code, not
+  seen in a run.
+- **Fix:** in `openConversation`, also wait until the open button is enabled
+  again. The click handler disables it at once and enables it only after
+  `reloadList`, which waits for `renderThread` and its first draw
+  (`messages.ts:128` to `:136`). So:
+  `await expect(openButton).toBeEnabled({ timeout: 15_000 })` after the
+  click, with the button found by the same name as the click, and
+  `await expect(page.locator('.open-error')).toHaveText('')`. Then correct
+  the comment: the enabled button, not the selected row, shows that the
+  second drawing is done.
+- *Status:* Open.
