@@ -8,7 +8,7 @@ The plan and the slice order are in [task.md](task.md). This file records what i
 
 | Slice | Step | Plan by | Plan review by | Implemented by | Code review by | Evidence |
 | --- | --- | --- | --- | --- | --- | --- |
-| C0 | Not started | — | — | — | — | — |
+| C0 | Implemented | no plan (docs only) | no plan (docs only) | Claude Opus 5.5 | — | [ADR-0030](../../../decisions/0030-signed-message-origins.md), accepted by the owner 2026-11-16 |
 | C1 | Not started | — | — | — | — | — |
 | C2 | Not started | — | — | — | — | — |
 | C3a | Not started | — | — | — | — | — |

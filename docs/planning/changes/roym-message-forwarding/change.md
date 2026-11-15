@@ -25,7 +25,7 @@ Terms used here:
 
 This is a Roym feature. The substrate conversation capability does not change.
 
-**This change needs an ADR before it is built.** A signed origin makes a message provable to strangers. That is a real loss of deniability (see [Privacy cost](#privacy-cost)). The owner chose the direction: the sender picks the forward mode, so only messages the sender chose to sign lose deniability. The ADR records this choice and the default mode. The choice is the same in a group as in a one-to-one chat.
+**This change needs an ADR before it is built.** A signed origin makes a message provable to strangers. That is a real loss of deniability (see [Privacy cost](#privacy-cost)). The owner chose the direction: the sender picks the forward mode, so only messages the sender chose to sign lose deniability. The ADR records this choice and the default mode. The choice is the same in a group as in a one-to-one chat. The ADR is [ADR-0030](../../../decisions/0030-signed-message-origins.md) (accepted 2026-11-16).
 
 ## Problem
 
@@ -179,7 +179,7 @@ India's IT (Intermediary Guidelines and Digital Media Ethics Code) Rules, 2021, 
 
 ## Tasks
 
-- [ ] ADR: signed message origins and the sender's forward mode (option E), the default mode and deniability.
+- [x] ADR: signed message origins and the sender's forward mode (option E), the default mode and deniability. [ADR-0030](../../../decisions/0030-signed-message-origins.md).
 - [ ] Write the slice plan (in M08C).
 - [ ] `forward_mode` field in the message body, the default-mode setting, and the composer control.
 - [ ] `message-origin` record type, signing at send for `signed` messages, verification at receive.
@@ -188,6 +188,16 @@ India's IT (Intermediary Guidelines and Digital Media Ethics Code) Rules, 2021, 
 - [ ] The group composer notice (FW-11). Settings and first-message text (FW-10). Update the integrated spec's privacy section at close-out.
 
 ## Deviations
+
+From [ADR-0030](../../../decisions/0030-signed-message-origins.md) (2026-11-16). Where this list and the text above differ, this list holds.
+
+- **The signature today, in a one-to-one chat, covers the plain message.** "Problem" and "Privacy cost" say the conversation entry signature covers the ciphertext. That holds for groups only (`crates/conversation/src/dag.rs`, `canonical_entry_bytes`). In a one-to-one chat the sender signs the plain message (`crates/conversation/src/envelope.rs`, `canonical_bytes`). What keeps today's messages deniable is the key: it is a random conversation key, and nothing signed by the person's master key says it is theirs (`crates/conversation/src/crypto.rs`, `PrekeyBundle`). This resolves the `unverified` note in "Privacy cost".
+- **The origin payload is smaller.** It has no `author` and no `sent_at_secs`: the envelope's `issuer` (the master DID) and `issued_at_secs` are the author and the send time. It has `languages` (0 to 3 tags, as in the message) in place of one `lang` tag. `content_hash` covers `languages`. The `subject` is the empty string.
+- **A message with no forward mode counts as `not-forwardable`.** This covers other clients, older content types and system messages.
+- **No certificate, no `signed` message.** If the `conversation` service has no valid record-signing certificate, a `signed` send is refused. The node never changes the mode without asking. The Hub offers `not-forwardable` or a certificate renewal.
+- **Forwarded records (FW-7).** A record travels as itself, in a forward body of its own content type, never as a deal card. It ignores the forward mode. In M08C the forward action offers only `listing`, `profile` and `quote`. A forwarded quote shows only its visible fields (agreements doc, open question 11), and the Hub warns that it shows both parties of the deal.
+- **Size.** The certificate travels inside each origin, as in every Roym record. The ADR estimates about 940 bytes for a short text message. C7 measures a real one and stops to ask the owner if it is over 2 KiB.
+- **The first message.** The Hub asks once. The person may skip, and the shipped default (`not-forwardable`) applies.
 
 ## Close-out
 
