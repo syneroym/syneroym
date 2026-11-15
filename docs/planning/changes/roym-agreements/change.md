@@ -167,7 +167,7 @@ The design builds on these facts about today's code (checked 2026-11-10 on `main
 | Every `transaction` method is local-only (`admit::require_internal`). | `crates/roym_transaction/src/app.rs:278` |
 | The Hub has seven card types. | `crates/roym_core/src/card.rs:9` |
 | A record may carry at most 4 author translations. | `crates/roym_core/src/lang.rs:7` |
-| ML-18's `viewed_lang` and `viewed_via_mt` are not in the code yet. | `transaction.rs:234` |
+| Each acceptance half (`ReceiptHalf`) signs `viewed_lang` and `viewed_via_mt` outside `terms` (ML-18), and `agreement.accept` takes both as optional inputs. | `crates/roym_core/src/transaction.rs:244` |
 
 ### The flow
 
