@@ -14,6 +14,24 @@ function setUp() {
   return { host, redraw, calls: () => calls };
 }
 
+/** A redraw whose node answer waits until `release` is called, so a test can act meanwhile. */
+function setUpSlow() {
+  const host = document.createElement("div");
+  document.body.appendChild(host);
+  let calls = 0;
+  const releases: Array<() => void> = [];
+  const redraw = waitingRedraw(host, async (into) => {
+    calls++;
+    await new Promise<void>((resolve) => releases.push(resolve));
+    into.appendChild(document.createElement("p")).className = "drawn";
+  }, OPEN);
+  const release = async () => {
+    releases.splice(0).forEach((resolve) => resolve());
+    await settle();
+  };
+  return { host, redraw, calls: () => calls, release };
+}
+
 function openElement(host: HTMLElement, className: string): HTMLElement {
   const el = document.createElement("div");
   el.className = className;
@@ -81,5 +99,44 @@ describe("waitingRedraw", () => {
     plain.remove();
     await settle();
     expect(calls()).toBe(0);
+  });
+
+  it("keeps a form that is opened while the redraw waits for the node", async () => {
+    const { host, redraw, calls, release } = setUpSlow();
+    const running = redraw.later();
+    const form = openElement(host, "quote-form");
+    await release();
+    await running;
+    expect(host.querySelector(".quote-form")).toBe(form);
+    expect(host.querySelector(".drawn")).toBeNull();
+    expect(calls()).toBe(1);
+
+    form.remove();
+    await settle();
+    await release();
+    expect(calls()).toBe(2);
+    expect(host.querySelector(".drawn")).not.toBeNull();
+  });
+
+  it("now draws at once over an open form, also when it waited for the node", async () => {
+    const { host, redraw, release } = setUpSlow();
+    openElement(host, "quote-form");
+    const running = redraw.now();
+    await release();
+    await running;
+    expect(host.querySelector(".quote-form")).toBeNull();
+    expect(host.querySelector(".drawn")).not.toBeNull();
+  });
+
+  it("a later that is replaced by a newer now draws only the newer one", async () => {
+    const { host, redraw, calls, release } = setUpSlow();
+    const first = redraw.later();
+    openElement(host, "quote-form");
+    const second = redraw.now();
+    await release();
+    await Promise.all([first, second]);
+    expect(calls()).toBe(2);
+    expect(host.querySelectorAll(".drawn")).toHaveLength(1);
+    expect(host.querySelector(".quote-form")).toBeNull();
   });
 });

@@ -405,7 +405,7 @@ async function renderThread(
   requestSection.appendChild(reqForm);
   pane.appendChild(requestSection);
 
-  const fillHistory = refiller(messagesHost, async (into: DocumentFragment) => {
+  const fillThread = async (into: DocumentFragment) => {
     const cardMap = new Map<string, CardRow>();
     let allCards: CardRow[] = [];
     try {
@@ -441,11 +441,11 @@ async function renderThread(
         messageElement(m, cardMap, allCards, newestRequestMap, conv.id, myDid, redraw.now),
       );
     }
-  });
+  };
 
-  const redraw = waitingRedraw(messagesHost, fillHistory, OPEN_WORK);
+  const redraw = waitingRedraw(messagesHost, fillThread, OPEN_WORK);
   onActive?.(conv.id, redraw.later);
-  await fillHistory();
+  await redraw.now();
 }
 
 export function computeNewestRequestMap(allCards: CardRow[]): Map<string, string> {

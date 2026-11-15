@@ -2,9 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { _resetForTest, startFeed } from "../events";
 import { FakeFeedSource } from "../testing/fake-event-source";
+import { fakeEngine, readerReads } from "../testing/translation";
+import { setTargetsForTest } from "../translation/translation";
 import { renderMessages } from "./messages.js";
 
 const CONV = "conv-1";
+const ME = "did:key:me";
 /** The feed groups the events of one subject for this long before it calls a listener. */
 const FEED_BURST_MS = 150;
 
@@ -46,16 +49,17 @@ const REQUEST_CARD = {
 
 /**
  * A node that answers the calls of the messages screen from `messages` and `cards`, and
- * `extra` for any other method. Both arrays may grow during a test. `historyCalls` counts
+ * `extra` for any other method, or to replace an answer. An answer may be a promise, so a test
+ * can hold the node back. Both arrays may grow during a test. `historyCalls` counts
  * the thread draws.
  */
 function stubNode(
   messages: unknown[],
   cards: unknown[] = [],
-  extra: Record<string, () => unknown> = {},
+  extra: Record<string, (params: Record<string, unknown>) => unknown> = {},
 ) {
   const node = { historyCalls: 0 };
-  const answers: Record<string, () => unknown> = {
+  const answers: Record<string, (params: Record<string, unknown>) => unknown> = {
     whoami: () => ({ person_did: "did:key:me" }),
     "conversation.list": () => ({
       conversations: [{ id: CONV, peer_address: "peer-1", message_count: messages.length }],
@@ -71,9 +75,13 @@ function stubNode(
   vi.stubGlobal(
     "fetch",
     vi.fn(async (_url: string, init: RequestInit) => {
-      const { method } = JSON.parse(String(init.body)) as { method: string };
+      const { method, params } = JSON.parse(String(init.body)) as {
+        method: string;
+        params: Record<string, unknown>;
+      };
       const answer = answers[method];
-      return { ok: true, json: async () => ({ result: answer ? answer() : {} }) };
+      const result = answer ? await answer(params) : {};
+      return { ok: true, json: async () => ({ result }) };
     }),
   );
   return node;
@@ -85,7 +93,7 @@ async function drawScreen(): Promise<HTMLElement> {
   expect(FakeFeedSource.instance).not.toBeNull();
   const container = document.createElement("div");
   document.body.appendChild(container);
-  await renderMessages(container);
+  await renderMessages(container, ME);
   return container;
 }
 
@@ -107,8 +115,10 @@ beforeEach(() => {
 
 afterEach(() => {
   document.body.replaceChildren();
+  setTargetsForTest([]);
   _resetForTest();
   vi.useRealTimers();
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
@@ -190,5 +200,133 @@ describe("a feed redraw keeps open work", () => {
     expect(node.historyCalls).toBe(2);
     expect(screen.querySelector(".delete-dialog")).toBeNull();
     expect(screen.querySelector(".message-body.deleted")).not.toBeNull();
+  });
+});
+
+/** A quote for the signed-in person, as a card message and its card row. */
+const QUOTE_MESSAGE = {
+  ...textMessage("msg-quote", ""),
+  content_type: "application/vnd.roym.card+json",
+  body: undefined,
+};
+
+const QUOTE_CARD = {
+  ...REQUEST_CARD,
+  message_id: "msg-quote",
+  card_type: "quote",
+  record_id: "rec_quote",
+  data: {
+    request_id: "req-1",
+    counterparty_did: ME,
+    terms: { lang: "hi", scope: "छत की मरम्मत" },
+    translations: [],
+  },
+};
+
+describe("a feed redraw that is already running", () => {
+  it("keeps a quote form that the person opened while the node was answering", async () => {
+    const messages: unknown[] = [REQUEST_MESSAGE];
+    let release: () => void = () => {};
+    let slow = false;
+    stubNode(messages, [REQUEST_CARD], {
+      "conversation.history": async () => {
+        if (slow) await new Promise<void>((resolve) => (release = resolve));
+        return { messages };
+      },
+    });
+    const screen = await drawScreen();
+
+    slow = true;
+    messages.push(textMessage("msg-new", "Are you free on Monday?"));
+    await feedReportsChange();
+    screen.querySelector<HTMLButtonElement>(".quote-request-button")!.click();
+    const scope = screen.querySelector<HTMLInputElement>(".quote-scope-input")!;
+    scope.value = "Trim the hedge";
+    release();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(screen.querySelector(".quote-scope-input")).toBe(scope);
+    expect(scope.value).toBe("Trim the hedge");
+    expect(screen.textContent).not.toContain("Are you free on Monday?");
+
+    slow = false;
+    screen.querySelector<HTMLButtonElement>(".cancel-quote-button")!.click();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(screen.textContent).toContain("Are you free on Monday?");
+  });
+});
+
+describe("a feed redraw keeps the other open work", () => {
+  it("a change keeps an open decline dialog, and a confirmed decline draws at once", async () => {
+    const messages: unknown[] = [QUOTE_MESSAGE];
+    const card: Record<string, unknown> = { ...QUOTE_CARD };
+    const node = stubNode(messages, [card], {
+      "quote.decline": () => {
+        card.declined = true;
+        return {};
+      },
+    });
+    const screen = await drawScreen();
+    screen.querySelector<HTMLButtonElement>(".decline-quote-button")!.click();
+    const dialog = screen.querySelector(".decline-dialog")!;
+
+    messages.push(textMessage("msg-new", "Is Monday fine?"));
+    await feedReportsChange();
+
+    expect(screen.querySelector(".decline-dialog")).toBe(dialog);
+    expect(node.historyCalls).toBe(1);
+
+    // The dialog is still open when the decline asks for a redraw.
+    screen.querySelector<HTMLButtonElement>(".confirm-decline")!.click();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(node.historyCalls).toBe(2);
+    expect(screen.querySelector(".decline-dialog")).toBeNull();
+    expect(screen.textContent).toContain("Is Monday fine?");
+  });
+
+  it("a change keeps the warning before an acceptance", async () => {
+    readerReads([]);
+    setTargetsForTest(["en"]);
+    const messages: unknown[] = [QUOTE_MESSAGE];
+    const node = stubNode(messages, [QUOTE_CARD], { "translation.translate": fakeEngine([]) });
+    const screen = await drawScreen();
+    screen.querySelector<HTMLButtonElement>(".record-text-translate")!.click();
+    await vi.advanceTimersByTimeAsync(0);
+    screen.querySelector<HTMLButtonElement>(".accept-quote-button")!.click();
+    const warning = screen.querySelector(".accept-mt-box")!;
+    expect(warning).not.toBeNull();
+
+    messages.push(textMessage("msg-new", "Is Monday fine?"));
+    await feedReportsChange();
+
+    expect(screen.querySelector(".accept-mt-box")).toBe(warning);
+    expect(node.historyCalls).toBe(1);
+
+    screen.querySelector<HTMLButtonElement>(".accept-mt-cancel")!.click();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(node.historyCalls).toBe(2);
+  });
+});
+
+describe("what the person sends draws the thread at once", () => {
+  it("a sent message shows now, and the open quote form is closed with the redraw", async () => {
+    const messages: unknown[] = [REQUEST_MESSAGE];
+    stubNode(messages, [REQUEST_CARD], {
+      "conversation.send": () => {
+        messages.push(textMessage("msg-mine", "One moment", "outgoing"));
+        return {};
+      },
+    });
+    const screen = await drawScreen();
+    screen.querySelector<HTMLButtonElement>(".quote-request-button")!.click();
+    expect(screen.querySelector(".quote-form")).not.toBeNull();
+
+    screen.querySelector<HTMLInputElement>(".compose-input")!.value = "One moment";
+    screen.querySelector<HTMLButtonElement>(".compose-row button")!.click();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(screen.textContent).toContain("One moment");
+    expect(screen.querySelector(".quote-form")).toBeNull();
   });
 });
