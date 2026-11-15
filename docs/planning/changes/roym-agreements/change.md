@@ -1000,7 +1000,8 @@ Each has a recommendation. The owner decides. Questions 1 and 3 to 12 are decide
     Recommendation: a commitment is in the period when it settled in the period. Commitments agreed but not final at the end are listed apart (`open_at_end`). Failed and cancelled ones are not listed as rows.
     Reason: they were not given or received. The settlement time is the `issued_at_secs` of the receiver's settling half, so both parties use the same time (refined in review round 1). Accountants who need the agreement date have `agreed_at_secs` on every row.
     Owner decision (2026-11-10): agreed.
-    Refined in review rounds 4 and 5: an `ended-unconfirmed` commitment is not a row either, because it did not settle, and it is not in `open_at_end`, because it is final. The event log still holds it, with failed and cancelled ones. Owner to confirm.
+    Refined in review rounds 4 and 5: an `ended-unconfirmed` commitment is not a row either, because it did not settle, and it is not in `open_at_end`, because it is final. The event log still holds it, with failed and cancelled ones.
+    Owner decision (2026-11-15): agreed.
 
 11. **Private forwards of a quote with the price shown.** (New.)
     Recommendation: in M08C, a forwarded quote carries no disclosures. The M08G disclosure ADR decides whether a private forward to a contact may show amounts.

@@ -823,8 +823,8 @@ Checked `66f50eca` (HEAD `6ff3909d`) against P28 to P34. All seven fixes solve t
 - [x] **P38 — minor.** *Where:* open question 10 (change.md:992 to :995) against "The statement" (change.md:796).
   *Problem:* The owner's decision on question 10 names "failed and cancelled" as not rows. The fix adds `ended-unconfirmed` to the list of commitments that are not rows and not in `open_at_end`. That extends a confirmed decision, and the question text does not say it. A reader of the question alone would still think an `ended-unconfirmed` commitment may be a row.
   *Fix:* Add one line to question 10: `ended-unconfirmed` commitments are neither rows nor `open_at_end`, and the log holds them. Mark it for the owner to confirm, as the question's decision line is dated 2026-11-10.
-  *Status:* Fixed (fdf5e729). Agreed. Question 10 has a new line for `ended-unconfirmed`, marked "Owner to confirm".
+  *Status:* Fixed (fdf5e729). Agreed. Question 10 has a new line for `ended-unconfirmed`. The owner confirmed it on 2026-11-15.
 
 ## Fix session round 5 — Claude Opus 5.5 (Claude Code), 2026-11-15
 
-P35 to P38 are fixed in `fdf5e729` on `docs/m08c-start`. P35 goes one step further than proposed: the `not-formed` snapshot is stored before any release, so a stored snapshot is the decision. P38 waits for the owner to confirm the added line. A later reviewer checks these fixes.
+P35 to P38 are fixed in `fdf5e729` on `docs/m08c-start`. P35 goes one step further than proposed: the `not-formed` snapshot is stored before any release, so a stored snapshot is the decision. The owner confirmed P38's added line on 2026-11-15. A later reviewer checks these fixes.
