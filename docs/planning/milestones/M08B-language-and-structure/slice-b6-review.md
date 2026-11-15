@@ -1148,3 +1148,116 @@ file after its run, and `git status --short` is clean.
   and story 20 helpers, and `roym-hub.spec.ts`, use it. Not seen to fail before (the window is rare); I
   checked that nothing else broke: `mise run test:e2e` 75 + 4 + 7 passed, and `mise run demo` 5 more
   times, 5 of 5 passed.
+
+## Code review round 5 (check of the R9 to R12 fixes) — Claude Opus 5.5, 2026-11-15
+
+Checked `feat/m08b-b6-close-out` at `f95d56f3`: the fix commit `14e46130`
+for R9 to R12 and the doc commit `f95d56f3` (`git diff f0db1d73..HEAD`).
+Main checkout, `git pull` said "Already up to date". Claude Sonnet 5.5 wrote
+the fix, and I am a different tool, so the cross-tool rule holds.
+
+**Summary:** R9, R10, R11 and R12 are fixed correctly. One new finding:
+0 blocker, 0 major, 1 minor (R13, a Hub case that is older than B6, and a
+helper comment that is too sure). **1 open.**
+
+Limits: on `f95d56f3`, CI run
+[43673282402](https://github.com/syneroym/syneroym/actions/runs/43673282402)
+had passed lints, licenses and checks, and Playwright E2E, and the CLA check
+passed; test shards 1 to 6 were still queued when I wrote this. The fix
+changes only `.ts` files and docs, and the shards passed on `4272014d`. I ran
+the Hub unit tests (`TZ=UTC npx vitest run` in `crates/roym_web/ui`: 549
+passed in 45 files), `npx tsc --noEmit -p .` there and in
+`crates/substrate/tests/e2e` (no error). I did not run `mise run demo` or
+`mise run verify`. I made ten temporary changes, one at a time, and two
+temporary test files. I restored each file, and `git status --short` is
+clean.
+
+### Items checked
+
+- **R9 — Fixed, correct.** `owed` is set by `now` and cleared by the swap
+  that pays it (`thread_redraw.ts:30` to `:36`, `:59`). `later` no longer
+  touches it. The run that pays is always the newest, and it started at or
+  after the `now`, so its node calls come after the person's action and
+  carry its result. Cases I walked through: `now` then `later` (the `later`
+  run swaps at once and clears the debt); `later` then `now` (the `later`
+  run is dropped); `now` with a feed event while a form is open (`later`
+  returns early, `now` swaps, the observer draws once more: one extra set of
+  node calls, as before); a `now` that has swapped, then a feed `later` with
+  a form opened meanwhile (held, because the debt is paid). The doc comment
+  and the variable comment say this. Mutations: `later` that clears `owed`
+  fails "a now that a later redraw overtakes still draws at once over a form
+  opened meanwhile"; `owed` never cleared fails "the debt of a now is paid
+  by one swap only" and the feed race case; a guard that ignores `owed`
+  fails 8 cases.
+- **R10 — Fixed, correct.** The Deviation (`change.md:638`) and the backlog
+  row (`deferred-backlog.md:564`) list all seven actions and say that the
+  person's redraw closes every form or dialog in the thread, also when a
+  feed redraw starts after it. This matches the code.
+- **R11 — Fixed, correct.** (1) The slow fill writes its run number, and
+  `release(1, 0)` lets the newer run end first, so the test sees "2" only if
+  the older run did not swap. A `refiller` without the newest check now
+  fails it. (2) "a sent request shows now, and the open quote form is
+  closed with the redraw" fails with `redraw.later()` in request send alone.
+  (3) The dead `form.remove()` is gone; the test checks
+  `form.isConnected === false` and then no more fill call. The round 4
+  mutations still fail a test each (guard always yes, `OPEN_WORK` cut,
+  `redraw.later` for card actions, `redraw.later()` in compose send, `now`
+  that keeps `waiting` true).
+- **R12 — Fixed, correct for what it claims.** `openConversation` waits
+  until the open button is enabled again and `.open-error` is empty
+  (`hub-helpers.ts:154` to `:166`). The click handler disables the button
+  in its synchronous part and enables it after `reloadList`, so once the
+  button is enabled no `renderThread` of that click is still pending, and a
+  form opened then cannot be replaced by it. All 12 callers (stories 20 and
+  40, `roym-hub.spec.ts`) use the same helper, and Playwright E2E passed on
+  `f95d56f3`. But see R13: "after the second drawing is done" is not always
+  true.
+- **Counts.** `thread_redraw.test.ts` 10 cases, `messages_feed.test.ts` 9
+  (1 moved, 8 new), `dom.test.ts` 2 new, `contacts.test.ts` 2 new: 22 new,
+  527 + 22 = 549. `task.md` and `status.md` agree.
+- **Code rules.** No plan, slice or review id in the changed lines, no rule
+  note, comments say why, imports unchanged. No wire change.
+
+### Findings
+
+#### R13 — An open click that a feed list refill overtakes draws no thread, and the helper comment says it always does (minor)
+
+- **Where:** `crates/roym_web/ui/src/screens/messages.ts:223` to `:228`
+  (`reloadList` returns when `fillList` was replaced) and `:253`, `:268`
+  (the feed calls `fillList(activeConvId)` only);
+  `crates/substrate/tests/e2e/hub-helpers.ts:158` to `:163` (the comment
+  "the Hub turns it on only after the second drawing is done"), at
+  `f95d56f3`. The Hub code is older than B6.
+- **Problem:** `reloadList(select)` sets `activeConvId = select` and then
+  waits for `fillList`. If a feed event of kind `conversation.*` comes while
+  that list call runs, the feed starts a newer `fillList(activeConvId)`.
+  The open click's run is dropped, `reloadList` returns without
+  `renderThread`, and the feed's run draws only the list, with the opened
+  conversation selected. So the thread pane still shows the old
+  conversation, the open button is enabled again, and `activeConvId` names
+  the opened conversation, which is not the one on screen. Feed events for
+  the conversation on screen then no longer redraw it.
+- **Proof:** a temporary test in the style of `messages_feed.test.ts`: two
+  conversations, the second `conversation.list` call held, the open button
+  clicked for `conv-2`, then a feed event, then the held call released.
+  Result: 3 list calls, the thread heading `peer-1`, the selected row
+  `peer-2`, the button enabled.
+- **Failure case:** for a person: Bob types a new address and clicks Open
+  just as a message arrives in another conversation. The list marks the new
+  conversation, but the old thread stays on screen and stops updating. For
+  the suite: `openConversation` then returns (button enabled, no error), and
+  a later step that looks for the new conversation's messages waits for its
+  own timeout. In the current stories this is rare and mostly harmless:
+  each Hub has one conversation with the peer, so the old thread is the
+  right one. R12's goal holds: no drawing of the click is pending, so no
+  form is lost.
+- **Fix:** (a) correct the helper comment: "the Hub turns the button on
+  again when the click's work is over, so no drawing of the click is still
+  pending; a selected row does not show this". (b) Add a backlog row for the
+  Hub case, with `messages.ts` (`reloadList`) as the source. A code fix, if
+  the owner wants it in B6: in `reloadList`, when `fillList` returns
+  `undefined` and `select` was given, wait for the newest list run and draw
+  the selected thread from its rows (or keep the id of the thread on screen
+  and let the feed path call `renderThread` when it differs from
+  `activeConvId`), with a unit test like the proof above.
+- *Status:* Open.
