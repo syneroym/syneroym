@@ -790,3 +790,37 @@ Checked `change.md` on commit `d2e08f1a` (branch `docs/m08c-start`) against the 
 ## Fix session round 4 — Claude Opus 5.5 (Claude Code), 2026-11-15
 
 P28 to P34 are handled in `66f50eca` on `docs/m08c-start`. Six are fixed as proposed or with a simpler form (P28 uses "write the last row after the send" in place of a sent flag). P32 (a) is rejected: the two tables already agree. A later reviewer checks these fixes.
+
+## Doc review round 5 (fixes check) — Claude Sonnet 5.5 (Claude Code), 2026-11-15
+
+Checked `66f50eca` (HEAD `6ff3909d`) against P28 to P34. All seven fixes solve the problem raised. The facts table rows match the code (every named function and line number checked). The fixes create 4 new findings: 1 major, 3 minor.
+
+- **P28.** Confirmed fixed. "Store each signed record once, write the row that ends the step last" removes the final-state-without-send case, and the repeat rule (same `seq`, same bytes) needs no sent flag. Both stores are single unique inserts, one in `ledger` and one in `agreement_progress`, so the host can build them. See P35 for a gap in the rerun of the `not-formed` branch, and P36 for the restore case.
+- **P29.** Confirmed fixed. The four commitment events cover every final state. `occurred_at_secs` is the snapshot's, and the statement says `ended-unconfirmed` is neither a row nor in `open_at_end`. AG-27 has a test per event. See P38 for open question 10.
+- **P30.** Confirmed fixed. `track_ends_at_secs` is gone, `agreed_at_secs` is the countersigned half's `issued_at_secs` (the same on both nodes), and AG-17 now covers the snapshot and derived values. The rough leak through the `issued_at_secs` of an `ended-unconfirmed` snapshot is written down in "What is hidden".
+- **P31.** Confirmed fixed. Step 4 releases confirmed reservations after a refused confirm. Release item 4 and AG-36 cover `failed` and `cancelled` commitments while the agreement goes on. The EX-21 row is in "Differences".
+- **P32.** Confirmed, and the rejection of (a) is accepted. `fulfilment` columns are `giver-half, receiver-half, tick, cancel, failure, other-failed`: the `any final` row has `refused` in `cancel`. `currency` columns are `payment-request, giver-half, receiver-half, tick, cancel, other-failed`: the `any final` row has `refused` in `cancel` (its `no change` cells are `payment-request`, `tick` and the halves). My finding misread the column order. (b) and (c) are fixed: AG-9, the `cancel` event, the Methods table and `commitment-moved` agree, and `closed` excludes `agreement.cancel`.
+- **P33.** Confirmed fixed. A refusal stores its snapshot, sends it, and creates `refused:<half record_id>` last. A repeat sync skips the half. "What `quote.set` reads" lists the sources. AG-12 and AG-43 test two syncs. See P37 for the lookup by quote.
+- **P34.** Confirmed fixed. Facts rows now name functions with current lines. The sample checked: `accept` :113, `prepare_author_booking` :415, `maybe_countersign` :451, `claim_decision` :70, `claim_seat` :134, `track_window_end` :189, `verify_booking_progress` :330, `file_progress_card` :43, `create` :200 and `batch-mutate` :184 in the data-layer WIT, and `app.rs:279`. All are correct.
+
+### Findings
+
+- [ ] **P35 — major.** *Where:* "The writer's decision", step 4, first branch (the refused `confirm`) and "Recovery" (change.md:601 and :606); AG-14.
+  *Problem:* The refused-confirm branch releases every other reservation, stores the `not-formed` snapshot `snapshot:<agreement>:1`, sends it, and only then puts the decision row. Suppose a crash comes after the release or after the store and before the put. The row is still `deciding`, so recovery runs steps 3 and 4 again. Step 3 `reserve` runs on reservations that were just released. The extensions change does not say what `reserve` does for a key that was released. The rerun may also find that the refused `confirm` now succeeds, for example because the other holder's slot was freed. Then step 4 takes the `agreed` branch, stores a countersigned half, and "uses the stored record" for snapshot 1, which is `not-formed`. The writer would then send a countersigned half and a `not-formed` snapshot for the same agreement. AG-14 says a crash at any step ends in the same state as no crash. The tests it names do not cover this.
+  *Fix:* In "Recovery", say that before step 3 the writer looks for `snapshot:<agreement>:1`. If it exists in state `not-formed`, the writer does not reserve or confirm again. It releases every reservation of the agreement (idempotent), sends the stored snapshot, and puts the row to `not-formed` with the stored reason. Add this crash point (after the release, before the last `put`, with the slot free again on the rerun) to AG-14's test.
+  *Status:* Open.
+
+- [ ] **P36 — minor.** *Where:* "The writer's decision", rule "A signed record is made once" and "The writer's `seq` after a restore" (change.md:589 and :579); AG-42.
+  *Problem:* "Made once" relies on the rows `countersign:<agreement>` and `snapshot:<agreement>:<seq>` in the writer's own storage. After a restore from an old backup taken before the writer stored them, the rows are missing, but the cards were already sent. A decision row restored as `deciding` makes the writer sign a second countersigned half with a new `issued_at_secs`. The counterparty would then hold two different halves from the writer for one agreement. The restore rule and AG-42 cover only `seq`.
+  *Fix:* Extend the restore rule: before it signs a countersigned half for a `deciding` row, the writer looks in the conversation for its own countersigned half over that quote version, and stores and reuses it. Add this to AG-42.
+  *Status:* Open.
+
+- [ ] **P37 — minor.** *Where:* "The writer's decision" step 1 and "What `quote.set` reads" (change.md:595 and :608).
+  *Problem:* The row `refused:<half record_id>` holds `{ code, at_secs }`. `quote.set` must find a `quote-expired` refusal by quote id, but the row key is the half's id and the row has no quote id. The author cannot look it up without loading every `refused:` row and every half.
+  *Fix:* Add `quote_id` to the row (`{ quote_id, code, at_secs }`), or key the `quote-expired` case another way that `quote.set` can read directly.
+  *Status:* Open.
+
+- [ ] **P38 — minor.** *Where:* open question 10 (change.md:992 to :995) against "The statement" (change.md:796).
+  *Problem:* The owner's decision on question 10 names "failed and cancelled" as not rows. The fix adds `ended-unconfirmed` to the list of commitments that are not rows and not in `open_at_end`. That extends a confirmed decision, and the question text does not say it. A reader of the question alone would still think an `ended-unconfirmed` commitment may be a row.
+  *Fix:* Add one line to question 10: `ended-unconfirmed` commitments are neither rows nor `open_at_end`, and the log holds them. Mark it for the owner to confirm, as the question's decision line is dated 2026-11-10.
+  *Status:* Open.
