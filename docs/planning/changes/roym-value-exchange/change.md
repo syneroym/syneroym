@@ -701,6 +701,19 @@ Milestone 8 is split into sub-milestones, in dependency order. Each has a folder
 
 ## Deviations
 
+Written when the M08C C1 slice was planned (2026-11-15). The agreements
+change doc refines each row below through its `AG-*` rows.
+
+- **VX-2:** M08C builds the resource kinds `service-in-slot`,
+  `goods-or-service` and `currency` on either side. EEPs on either side
+  come in M08E and M08H.
+- **VX-6:** M08C builds only List-Search (a quote that answers an
+  enquiry), and a unit test that compares both quote forms (AG-3). The
+  Want-Bid end-to-end test comes in M08F.
+- **VX-12:** M08C makes each progress snapshot name every failed
+  commitment, and the agreement names its giver. Reputation shows it in
+  M08G.
+
 ## Close-out
 
 Before merge, update the living docs so they describe the result, then set `status: done` and fill in `living-docs-touched`. Expected changes:

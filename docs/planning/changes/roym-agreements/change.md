@@ -1046,6 +1046,58 @@ This document does not write the two ADRs. They must decide:
 
 ## Deviations
 
+Written when the M08C C1 slice was planned (2026-11-15,
+[slice-c1-implementation-plan.md](../../milestones/M08C-deal-core-and-extensions/slice-c1-implementation-plan.md)).
+Rows that depend on an open owner question of that plan are added when the
+owner answers.
+
+**Criteria finished later.**
+
+- **AG-2, AG-4, AG-6:** M08C builds the kinds `service-in-slot`,
+  `goods-or-service` and `currency`. The EEP kinds and their transition
+  tables come in M08E (`eep-issue`, `eep-return`) and M08H
+  (`eep-transfer`).
+- **AG-3:** M08C builds only quotes that answer an enquiry, and the unit
+  test that compares both `answers` forms. `quote.set` and the verifier
+  refuse `answers.kind = "want"` with `answers-kind-not-supported` until
+  M08F, which adds the Want-Bid end-to-end test.
+- **AG-8:** C1 proves the snapshot's words. Verifying them inside a
+  presentation comes with C2.
+- **AG-14, AG-15:** until C3b, the reservation is a seat hold in
+  `transaction`'s own `ledger` (rows `hold:<agreement>:<commitment_id>` and
+  `seat:<slot>:<n>`), behind the same reserve, confirm and release steps.
+  A seat hold has no expiry, so `confirm` never fails before C3b. C3b moves
+  both criteria to the scheduling extension.
+- **AG-23:** C1 checks the value range. The Hub's totals and difference
+  come in C6.
+- **AG-33:** C1 proves that a `settlement_note` settles and keeps the
+  value. The check that the note is hidden comes in C2, and the statement
+  row in C6.
+- **AG-36:** C1 proves the cascade in the transition tables. The snapshot
+  and the release come in C3b, because no commitment can end `failed`
+  before `commitment-failure` exists.
+
+**Facts corrected while planning C1.**
+
+- **Tick.** "Track window" says the writer applies a `tick` on each sync
+  "as today". Today the writer ticks only in `booking.get`
+  (`crates/roym_transaction/src/app/booking_ops.rs`, `get`). C1 ticks on
+  every `transaction.sync` of the conversation, and in `agreement.get` and
+  `agreement.progress` on the writer's node.
+- **AG-12's test.** The two-node test uses a hand-signed acceptance half
+  for the superseded version, delivered as a card, in place of "a test
+  hook that skips the method check". No production code path exists only
+  for tests.
+- **`supersedes` of a payment acknowledgement** stays the envelope's
+  `supersedes` field, as today (`payment_ops.rs`, `acknowledge`). The
+  sketch in "Settlement records" shows it inside the payload; the rule is
+  unchanged.
+- **`quote-already-agreed`.** "Reason codes" says only a bug or a restored
+  backup can cause it. A `quote.set` that runs at the same time as the
+  writer's sync can also sign a new version after an older one was
+  countersigned. The fence refuses that version's acceptance, so the
+  outcome is the same.
+
 ## Close-out
 
 Before merge, update the living docs (requirements, architecture, integrated spec, developer guide, terminology) so they describe the result. Then set `status: done` and fill in `living-docs-touched` and `demo`. Record anything you postponed in [deferred-backlog.md](../../deferred-backlog.md).
