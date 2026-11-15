@@ -1158,7 +1158,8 @@ the fix, and I am a different tool, so the cross-tool rule holds.
 
 **Summary:** R9, R10, R11 and R12 are fixed correctly. One new finding:
 0 blocker, 0 major, 1 minor (R13, a Hub case that is older than B6, and a
-helper comment that is too sure). **1 open.**
+helper comment that is too sure). **1 open** when this round was written; R13 is now
+Deferred (backlog row, comment corrected), so **0 open**.
 
 Limits: on `f95d56f3`, CI run
 [43673282402](https://github.com/syneroym/syneroym/actions/runs/43673282402)
@@ -1260,4 +1261,4 @@ clean.
   the selected thread from its rows (or keep the id of the thread on screen
   and let the feed path call `renderThread` when it differs from
   `activeConvId`), with a unit test like the proof above.
-- *Status:* Open.
+- *Status:* Deferred: [the backlog row "An Open click that a feed event overtakes draws no thread"](../../deferred-backlog.md), by the first option (the owner chose the comment and the row, not a code fix in B6). The helper comment is corrected in the commit that follows round 5. It says the button turns on when the click's work is over, that a selected row does not show this, and that a feed event can overtake the click's list refill (see the backlog).

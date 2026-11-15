@@ -157,10 +157,12 @@ export async function openConversation(page: Page, conversationAddress: string, 
   await openButton.click();
   await expect(page.locator('.conversation-thread h3').first()).toBeVisible({ timeout: 15_000 });
   // The Hub draws the first conversation by itself when the screen opens, and then draws the
-  // opened one again. The click turns the button off and the Hub turns it on only after the
-  // second drawing is done, so a form opened now is not lost with the old thread. A selected
-  // row does not show this: a feed event can select the row of the first conversation before
-  // the second drawing starts.
+  // opened one again. The click turns the button off and the Hub turns it on again when the work
+  // of the click is over, so no drawing of the click is still pending and a form opened now is
+  // not lost with a thread that is about to be replaced. A selected row does not show this: a
+  // feed event can select the row of the first conversation before the second drawing starts.
+  // (When a feed event overtakes the click's list refill, the Hub draws no second thread at all;
+  // see the deferred backlog.)
   await expect(openButton).toBeEnabled({ timeout: 15_000 });
   await expect(page.locator('.open-error')).toHaveText('');
 }
