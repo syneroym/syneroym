@@ -650,12 +650,25 @@ stays `status: draft`.
   - (b) A backlog row for the Hub bug, and the test waits until the thread is
     quiet before it opens the form. This hides the bug from the test and
     keeps a race in the demo.
-- *Status:* Open (round 3, 2026-11-14: the fix in 475b8c30 is partial.
-  A feed redraw that is already running when the person opens the form
-  still removes it. See "Code review round 3", item R6 again). Earlier
-  note: Fixed (475b8c30), in B6 by owner decision (2026-11-14), not in
-  a separate slice. Claude Opus 5.5 wrote the fix, so a check by another
-  tool was still due (cross-tool rule). The fix: `waitingRedraw`
+- *Status:* Fixed (80e9d0d8). Round 3 found the first fix
+  partial: `later` checked for open work only when a redraw started. Now
+  `refiller` takes an optional `canSwap` (`dom.ts`), asked once just before the
+  swap and only for the newest run. `waitingRedraw` (`thread_redraw.ts`) builds
+  its own `refiller` with a guard that skips the swap and sets `waiting` when
+  open work is there; `now` sets a flag so it still swaps over open work. The
+  observer then redraws when the form closes. `messages.ts` passes the fill
+  function, and the first draw is `redraw.now()`. Tests: in
+  `messages_feed.test.ts`, "keeps a quote form that the person opened while the
+  node was answering" (the round 3 test, with a held `conversation.history`);
+  in `thread_redraw.test.ts`, 3 cases (a form opened while the redraw waits,
+  `now` over an open form, a `later` replaced by a newer `now`); in
+  `dom.test.ts`, 2 cases for `canSwap`. Proof that they can fail: a guard that
+  always says yes fails the feed race case and the first new
+  `thread_redraw` case. `mise run demo` 10 times on the fix: 10 of 10 passed,
+  7 tests each (before the first fix it hung in 2 of 8 local runs; 10 clean
+  runs by chance at that rate is about 6 in 100). Earlier note: the first fix
+  was 475b8c30 (by Claude Opus 5.5), in B6 by owner decision (2026-11-14).
+  The first fix: `waitingRedraw`
   (`crates/roym_web/ui/src/screens/thread_redraw.ts`) gives the thread two
   redraws. The event feed gets `later`, which waits while `.quote-form`,
   `.decline-dialog`, `.delete-dialog` or `.accept-mt-box` is in the thread
@@ -681,8 +694,10 @@ tool, so the cross-tool rule holds. Change doc:
 [roym-multilingual](../../changes/roym-multilingual/change.md). Rounds 1 and 2
 are closed and I did not re-check them.
 
-**Summary:** 0 blocker, 1 major, 2 minor. **3 open:** R6 (back to Open, the
-fix is partial), R7, R8.
+**Summary:** 0 blocker, 1 major, 2 minor. R6 (back to Open, the fix was
+partial), R7 and R8 were open when this round was written. **0 open** after the
+fixes in `80e9d0d8` (written by Claude Sonnet 5.5 at the owner's request, so the
+cross-tool rule asks for a short check of that commit by Claude Opus 5.5).
 
 Limits: `gh pr checks 363` on `8799efd2` showed lints, Playwright E2E, CLA and
 test shards 1, 4, 5 and 6 passed, and shards 2 and 3 still running when I
@@ -784,7 +799,9 @@ wrote this. I ran the Hub unit tests (`TZ=UTC npx vitest run` in
   (5 of 5 is not enough evidence). Update the change doc Deviation and the
   backlog row: both say a redraw "waits while such an element is open", which
   is true only at the start until this is fixed.
-- *Status:* Open
+- *Status:* Fixed (80e9d0d8). The swap-time guard and its tests are described in the status of R6
+  above; the change doc Deviation and the "Recently resolved" backlog row now say the check is made
+  again before the swap.
 
 #### R7 — A message the person sends, or a request, redraws at once and removes an open quote form (minor)
 
@@ -804,7 +821,11 @@ wrote this. I ran the Hub unit tests (`TZ=UTC npx vitest run` in
   once but keeps the open forms (for example, move the open elements from the old
   thread into the new one). (a) is enough for v1 if the owner agrees; it needs
   only the doc lines.
-- *Status:* Open
+- *Status:* Fixed (80e9d0d8), by the first option: a decision, not a code change. The change doc
+  Deviation and the "a chat thread shows no new message while a form is open" backlog row now say that
+  a redraw the person asks for (send, request, retry, accept) runs at once and can close a quote form
+  that is open and not sent. A test pins it: "a sent message shows now, and the open quote form is
+  closed with the redraw". Proof: with `redraw.later()` in compose send and request send, it fails.
 
 #### R8 — The tests do not tie the real `OPEN_WORK` and the `now` calls to the behaviour (minor)
 
@@ -829,7 +850,12 @@ wrote this. I ran the Hub unit tests (`TZ=UTC npx vitest run` in
   for the warning). Add one case that a decline confirm redraws at once. Prove
   each can fail, as for the first three, and write it in the status of the
   item.
-- *Status:* Open
+- *Status:* Fixed (80e9d0d8). `messages_feed.test.ts` now has "a change keeps an open decline dialog,
+  and a confirmed decline draws at once" and "a change keeps the warning before an acceptance" (a quote
+  card read through a fake engine, so the real `.accept-mt-box` is drawn). Proof that they can fail, by
+  changes that I made and undid: `OPEN_WORK` cut to `.quote-form, .delete-dialog` fails both; `redraw.now`
+  replaced by `redraw.later` for the card actions fails the delete case and the decline case; `redraw.now()`
+  replaced by `redraw.later()` in compose send and request send fails the sent-message case.
 
 ### Not findings
 
