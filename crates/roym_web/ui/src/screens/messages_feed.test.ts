@@ -329,4 +329,25 @@ describe("what the person sends draws the thread at once", () => {
     expect(screen.textContent).toContain("One moment");
     expect(screen.querySelector(".quote-form")).toBeNull();
   });
+
+  it("a sent request shows now, and the open quote form is closed with the redraw", async () => {
+    const messages: unknown[] = [REQUEST_MESSAGE];
+    stubNode(messages, [REQUEST_CARD], {
+      "request.set": () => {
+        messages.push(textMessage("msg-mine", "Please trim my lawn too", "outgoing"));
+        return {};
+      },
+    });
+    const screen = await drawScreen();
+    screen.querySelector<HTMLButtonElement>(".quote-request-button")!.click();
+    expect(screen.querySelector(".quote-form")).not.toBeNull();
+
+    screen.querySelector<HTMLButtonElement>(".toggle-request-form")!.click();
+    screen.querySelector<HTMLTextAreaElement>(".request-desc-input")!.value = "Please trim my lawn too";
+    screen.querySelector<HTMLButtonElement>(".send-request-button")!.click();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(screen.textContent).toContain("Please trim my lawn too");
+    expect(screen.querySelector(".quote-form")).toBeNull();
+  });
 });

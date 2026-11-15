@@ -14,19 +14,27 @@ function setUp() {
   return { host, redraw, calls: () => calls };
 }
 
-/** A redraw whose node answer waits until `release` is called, so a test can act meanwhile. */
+/**
+ * A redraw whose node answer waits until `release` is called, so a test can act meanwhile. Each
+ * run draws a `.drawn` element that holds its number (the first run is 1). `release()` lets
+ * every waiting run go on in the order they started; `release(1, 0)` lets them go on in the
+ * order given, by run index.
+ */
 function setUpSlow() {
   const host = document.createElement("div");
   document.body.appendChild(host);
   let calls = 0;
   const releases: Array<() => void> = [];
   const redraw = waitingRedraw(host, async (into) => {
-    calls++;
+    const run = ++calls;
     await new Promise<void>((resolve) => releases.push(resolve));
-    into.appendChild(document.createElement("p")).className = "drawn";
+    const drawn = into.appendChild(document.createElement("p"));
+    drawn.className = "drawn";
+    drawn.textContent = String(run);
   }, OPEN);
-  const release = async () => {
-    releases.splice(0).forEach((resolve) => resolve());
+  const release = async (...order: number[]) => {
+    const waiting = releases.splice(0);
+    (order.length > 0 ? order.map((i) => waiting[i]) : waiting).forEach((resolve) => resolve());
     await settle();
   };
   return { host, redraw, calls: () => calls, release };
@@ -87,8 +95,8 @@ describe("waitingRedraw", () => {
     const form = openElement(host, "quote-form");
     await redraw.later();
     await redraw.now();
-    expect(calls()).toBe(1);
-    form.remove();
+    // The swap of `now` took the form away, and the observer then finds nothing waiting.
+    expect(form.isConnected).toBe(false);
     await settle();
     expect(calls()).toBe(1);
   });
@@ -133,10 +141,39 @@ describe("waitingRedraw", () => {
     const first = redraw.later();
     openElement(host, "quote-form");
     const second = redraw.now();
-    await release();
+    // The older run ends last. If it swapped, the thread would show run 1.
+    await release(1, 0);
     await Promise.all([first, second]);
     expect(calls()).toBe(2);
     expect(host.querySelectorAll(".drawn")).toHaveLength(1);
+    expect(host.querySelector(".drawn")!.textContent).toBe("2");
     expect(host.querySelector(".quote-form")).toBeNull();
+  });
+
+  it("a now that a later redraw overtakes still draws at once over a form opened meanwhile", async () => {
+    const { host, redraw, calls, release } = setUpSlow();
+    const own = redraw.now();
+    const feed = redraw.later();
+    openElement(host, "quote-form");
+    await release();
+    await Promise.all([own, feed]);
+    expect(calls()).toBe(2);
+    expect(host.querySelector(".drawn")!.textContent).toBe("2");
+    expect(host.querySelector(".quote-form")).toBeNull();
+  });
+
+  it("the debt of a now is paid by one swap only", async () => {
+    const { host, redraw, calls, release } = setUpSlow();
+    const own = redraw.now();
+    await release();
+    await own;
+    expect(calls()).toBe(1);
+
+    const feed = redraw.later();
+    const form = openElement(host, "quote-form");
+    await release();
+    await feed;
+    expect(host.querySelector(".quote-form")).toBe(form);
+    expect(host.querySelector(".drawn")!.textContent).toBe("1");
   });
 });

@@ -152,13 +152,17 @@ export async function openMessages(page: Page, tag = 'en') {
 
 /** Start a conversation with an address and show its thread. */
 export async function openConversation(page: Page, conversationAddress: string, tag = 'en') {
+  const openButton = page.getByRole('button', { name: hubMessage(tag, 'messages-open-button') });
   await page.locator('.open-conversation-input').fill(conversationAddress);
-  await page.getByRole('button', { name: hubMessage(tag, 'messages-open-button') }).click();
+  await openButton.click();
   await expect(page.locator('.conversation-thread h3').first()).toBeVisible({ timeout: 15_000 });
   // The Hub draws the first conversation by itself when the screen opens, and then draws the
-  // opened one again. The selected row shows that the second drawing has replaced the first,
-  // so a message typed now is not lost with the old thread.
-  await expect(page.locator('.conversation-item.selected')).toBeVisible({ timeout: 15_000 });
+  // opened one again. The click turns the button off and the Hub turns it on only after the
+  // second drawing is done, so a form opened now is not lost with the old thread. A selected
+  // row does not show this: a feed event can select the row of the first conversation before
+  // the second drawing starts.
+  await expect(openButton).toBeEnabled({ timeout: 15_000 });
+  await expect(page.locator('.open-error')).toHaveText('');
 }
 
 /** Send a message in the open thread. The box clears only when the send succeeds. */
