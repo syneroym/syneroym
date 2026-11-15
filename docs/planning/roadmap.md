@@ -62,7 +62,7 @@ slice is `mise run verify` (see `AGENTS.md`).
 
 | Order | ID | Milestone | Status | Notes |
 | --- | --- | --- | --- | --- |
-| 1 | M08C | Deal core and extensions: commitments, selective disclosure, barter, event log, Roym extensions (scheduling, one-shot), widgets, message forwarding | planning | Outline. [Folder](milestones/M08C-deal-core-and-extensions/). |
+| 1 | M08C | Deal core and extensions: commitments, selective disclosure, mixed exchanges, event log and statement, Roym extensions (scheduling, one-shot), widgets, message forwarding | planning | Plan refreshed 2026-11-15, no slice planned yet. [task.md](milestones/M08C-deal-core-and-extensions/task.md), [status.md](milestones/M08C-deal-core-and-extensions/status.md). |
 | 2 | M08D | Intents and shop: one intent record (offer or want), images, attributes, variants, storefront, browse query | planning | Outline. [Folder](milestones/M08D-intents-and-shop/). |
 | 3 | M08E | EEPs between two parties: issue, redemption, decline, set-off, split | planning | Outline. [Folder](milestones/M08E-eeps/). |
 | 4 | M08F | Discovery and matching: membership and exchange split, wants and bids, matching, friend exchanges | planning | Outline. [Folder](milestones/M08F-discovery-and-matching/). Replaces the "federation" part of the old M8 sketch. |
