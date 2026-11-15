@@ -200,6 +200,9 @@ The manifest reserves `kind = "insight"`, with a `reads` list (for example `even
 
 ## Deviations
 
+- **EX-15 and EX-16 are not built in M08C** (owner decision, 2026-11-15, [M08C task.md](../../milestones/M08C-deal-core-and-extensions/task.md), section 6, question 3). No M08C extension needs events or a deal grant: scheduling confirms and releases through local calls on its own node, and no counterparty calls it. Events to an extension service, deal grants and the deal-grant ADR come with the first extension that needs them. Backlog row: "Extension services cannot receive events or take calls from a counterparty".
+- **EX-11 is built for inline definitions only** (owner decision, 2026-11-15, same task.md, question 4). A widget definition larger than 8 KB is refused. Fetch by hash from the sender's node would need a new wire-reachable method on `conversation`. Backlog row: "A widget definition larger than 8 KB is refused".
+
 ## Close-out
 
 Before merge, update the living docs (requirements, architecture, integrated spec, developer guide, terminology) so they describe the result. Then set `status: done` and fill in `living-docs-touched`. Record anything you postponed in [deferred-backlog.md](../../deferred-backlog.md).
