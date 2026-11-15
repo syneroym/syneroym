@@ -13,6 +13,7 @@ companion_documents:
   - "[ADR-0018](decisions/0018-service-record-visibility.md)"
   - "[ADR-0022](decisions/0022-two-tier-logical-service-discovery.md)"
   - "[ADR-0023](decisions/0023-durable-async-primitives.md)"
+  - "[ADR-0029](decisions/0029-machine-translation-host-interface.md)"
 ---
 
 # Roym: Integrated Experience
@@ -793,6 +794,27 @@ For the first release (D1):
 The M8 Matching Fabric replaces the "which directories do I ask" step with
 deterministic placement and shard lookup. It does not change the verification
 rule above, which is why building the directory first does not create rework.
+
+### Languages
+
+*Reader: developers and the project owner.*
+
+- The Hub speaks English and Hindi. The person picks the language in the
+  session bar, and the choice stays on that device. It is not signed and no
+  other node sees it. Dates, numbers and money follow the Hub language.
+- Categories, units and payment methods are codes. Each reader sees the label
+  of a code in their own language. A code that has no label in that language
+  shows its English label, and a code outside the base taxonomy shows as the
+  code. So two people who speak different languages search with the same code
+  and get the same results.
+- Each signed record with free text (`profile`, `listing`, `request`,
+  `quote`) says the language of its text. The author may add up to 4 signed
+  translations. The Hub shows the version that best matches the reader and
+  always lets the reader open the original. The original is what binds.
+- A chat message may name up to 3 languages, main language first.
+- There is no translation engine yet. The substrate has the interface for
+  one ([ADR-0029](decisions/0029-machine-translation-host-interface.md)),
+  and it answers "unavailable". So the Hub shows no translate action.
 
 ### Data ownership and recovery
 

@@ -71,4 +71,53 @@ describe("refiller", () => {
     expect(host.children).toHaveLength(1);
     expect(host.textContent).toBe("b");
   });
+
+  it("leaves the host as it is when canSwap says no, and resolves to nothing", async () => {
+    const host = document.createElement("div");
+    host.appendChild(row("old"));
+    let allowed = false;
+    const reload = refiller(
+      host,
+      async (into) => {
+        into.appendChild(row("new"));
+        return 1;
+      },
+      () => allowed,
+    );
+
+    expect(await reload()).toBeUndefined();
+    expect(host.textContent).toBe("old");
+
+    allowed = true;
+    expect(await reload()).toBe(1);
+    expect(host.textContent).toBe("new");
+  });
+
+  it("asks canSwap only for the newest run", async () => {
+    const host = document.createElement("div");
+    const gates = [gate(), gate()];
+    let started = 0;
+    let asked = 0;
+    const reload = refiller(
+      host,
+      async (into) => {
+        const mine = started++;
+        await gates[mine].wait;
+        into.appendChild(row(`run ${mine}`));
+      },
+      () => {
+        asked++;
+        return true;
+      },
+    );
+
+    const first = reload();
+    const second = reload();
+    gates[0].open();
+    gates[1].open();
+    await Promise.all([first, second]);
+
+    expect(asked).toBe(1);
+    expect(host.textContent).toBe("run 1");
+  });
 });

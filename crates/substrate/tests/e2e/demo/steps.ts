@@ -79,3 +79,9 @@ export function newSession(browser: Browser, testInfo: TestInfo): Promise<Browse
   const recordVideo = process.env.DEMO_VIDEO === '1' ? { dir: testInfo.outputDir } : undefined;
   return browser.newContext({ recordVideo });
 }
+
+/**
+ * How long a story waits for a message to cross from one node to the other. The sender's outbox
+ * ticks every second on the demo nodes, so the wait is far longer, for a slow machine.
+ */
+export const DELIVERY_WAIT_MS = 60_000;

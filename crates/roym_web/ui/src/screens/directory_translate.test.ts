@@ -112,23 +112,24 @@ describe("the search box with a translation engine", () => {
 describe("a search hit with a translation engine", () => {
   async function withHit(extra: Record<string, (p: Record<string, unknown>) => unknown> = {}) {
     const found = { ...FOUND, hits: [HINDI_HIT] };
-    const { host } = await drawn({ "directory.find": () => found, ...extra });
+    const { host, calls } = await drawn({ "directory.find": () => found, ...extra });
     host.querySelector<HTMLButtonElement>("button.run-search")!.click();
     await vi.waitFor(() => expect(host.querySelectorAll(".search-hit")).toHaveLength(1));
-    return host;
+    return { host, calls };
   }
 
-  it("a node with no engine draws no translate action", async () => {
+  it("a node with no engine draws no translate action and makes no call", async () => {
     readerReads([]);
-    const host = await withHit();
+    const { host, calls } = await withHit();
     expect(host.querySelector(".record-text-translate")).toBeNull();
+    expect(calls.some((c) => c.method === "translation.translate")).toBe(false);
   });
 
   it("sends the title and summary and shows the labelled result", async () => {
     readerReads([]);
     setTargetsForTest(["en"]);
     const seen: Record<string, unknown>[] = [];
-    const host = await withHit({ "translation.translate": fakeEngine(seen) });
+    const { host } = await withHit({ "translation.translate": fakeEngine(seen) });
     host.querySelector<HTMLButtonElement>(".record-text-translate")!.click();
     await vi.waitFor(() => expect(seen).toHaveLength(1));
     expect(seen[0]).toEqual({
@@ -144,7 +145,7 @@ describe("a search hit with a translation engine", () => {
   it("keeps the original text and says why when the engine is unavailable", async () => {
     readerReads([]);
     setTargetsForTest(["en"]);
-    const host = await withHit({ "translation.translate": unavailableEngine });
+    const { host } = await withHit({ "translation.translate": unavailableEngine });
     host.querySelector<HTMLButtonElement>(".record-text-translate")!.click();
     await vi.waitFor(() => expect(host.querySelector(".record-text-error")).not.toBeNull());
     expect(host.querySelector(".hit-title")!.textContent).toBe("नल वाला");

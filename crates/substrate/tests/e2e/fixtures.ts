@@ -1,7 +1,7 @@
 import { test as base } from '@playwright/test';
 
 export { expect } from '@playwright/test';
-export type { Browser, Page } from '@playwright/test';
+export type { Browser, Locator, Page } from '@playwright/test';
 
 // The page's console is chatty (every service-worker request, every tunnel
 // handshake step): echoing it live made a passing run ~180 KB of output.

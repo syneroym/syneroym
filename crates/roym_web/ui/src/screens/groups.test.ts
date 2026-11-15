@@ -663,8 +663,10 @@ describe("Group messages with a translation engine", () => {
     expect(renderMessageRow(row("outgoing"), nameOf).querySelector(".message-translate")).toBeNull();
   });
 
-  it("a node with no engine draws no translate button", () => {
+  it("a node with no engine draws no translate button and makes no call", () => {
     readerReads([]);
+    const calls = stubRpc({});
     expect(renderMessageRow(row("incoming"), nameOf).querySelector(".message-translate")).toBeNull();
+    expect(calls).toEqual([]);
   });
 });
