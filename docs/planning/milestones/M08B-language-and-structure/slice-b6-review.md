@@ -1262,3 +1262,40 @@ clean.
   and let the feed path call `renderThread` when it differs from
   `activeConvId`), with a unit test like the proof above.
 - *Status:* Deferred: [the backlog row "An Open click that a feed event overtakes draws no thread"](../../deferred-backlog.md), by the first option (the owner chose the comment and the row, not a code fix in B6). The helper comment is corrected in the commit that follows round 5. It says the button turns on when the click's work is over, that a selected row does not show this, and that a feed event can overtake the click's list refill (see the backlog).
+
+## Code review round 6 (check of the R13 deferral) — Claude Opus 5.5, 2026-11-15
+
+Checked `feat/m08b-b6-close-out` at `12c0bf7a`, the one commit after round 5
+(`git diff 3cce5caf..HEAD`): a comment change in
+`crates/substrate/tests/e2e/hub-helpers.ts`, a new backlog row, and the
+review and status lines. Main checkout, `git pull` said "Already up to
+date". Claude Sonnet 5.5 wrote the commit, and I am a different tool.
+
+**Summary:** R13 is rightly Deferred. No new finding: 0 blocker, 0 major,
+0 minor. **0 open.**
+
+Limits: CI run
+[43674485317](https://github.com/syneroym/syneroym/actions/runs/43674485317)
+on `12c0bf7a` was still running when I wrote this (CLA check passed; lints,
+Playwright E2E and test shards 1 to 6 pending). The runs on `f95d56f3` and
+`3cce5caf` were cancelled by the next push, so the test shards last
+finished on `4272014d`. Since then only `.ts` files and docs changed, but a
+green run on the newest commit is still needed before merge. I ran
+`npx tsc --noEmit -p .` in `crates/substrate/tests/e2e` (no error). No code
+change in this round needs the Hub unit tests again.
+
+### Item checked
+
+- **R13 — Deferred, accepted.** The backlog row "An Open click that a feed
+  event overtakes draws no thread" is in section 10 (Product surfaces &
+  UX), names `messages.ts` (`reloadList`) as the source, and says what my
+  proof showed: the click's list refill is dropped, `reloadList` returns
+  without drawing, the list marks the opened conversation, and the old
+  thread stays and stops updating. It gives a fix and the target `TBD`. It
+  needs no row under "Open in-code markers", because no `TODO` or `FIXME`
+  was added. The helper comment (`hub-helpers.ts:159` to `:165`) now says
+  what the enabled button proves (no drawing of the click is still
+  pending), not more, and points to the backlog for the case where no
+  second thread is drawn. A pointer to the deferred backlog in a comment
+  is common in this repository (22 files) and names no plan or section.
+  The status line follows the `Deferred: <backlog link>` form.
