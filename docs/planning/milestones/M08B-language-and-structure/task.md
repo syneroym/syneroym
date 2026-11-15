@@ -2,7 +2,7 @@
 
 *Reader: developers who build this sub-milestone.*
 
-**Status: started (2026-11-05).** Progress is in [status.md](status.md). Milestone overview and order: [M08-overview.md](../M08-overview.md).
+**Status: done (2026-11-15). Every slice is merged.** Progress is in [status.md](status.md). Milestone overview and order: [M08-overview.md](../M08-overview.md).
 
 This sub-milestone lets people use Roym in their own language and script. It also gives Roym the shared codes (categories, attributes, units, payment methods) that the shop and matching need. It builds one change doc. Read it first: [roym-multilingual](../../changes/roym-multilingual/change.md) (criteria `ML-*`). Every slice below builds part of that change doc, and no other.
 
@@ -290,3 +290,18 @@ These come from the change doc's open questions and from section 2. Each names t
 - Right-to-left scripts, voice, catalogs beyond `en` and `hi`.
 - Translating the taxonomy into languages other than English and Hindi.
 - Localised error text from the substrate or from `roymctl`.
+
+## 9. Close-out (2026-11-15)
+
+All slices (S0, B1a to B6) are merged ([status.md](status.md)). Every criterion `ML-1` to `ML-29` of [roym-multilingual](../../changes/roym-multilingual/change.md) is met, and each names a test that exists on `main`. Four are met in part, as the change doc says in `## Deviations`. The change doc is `status: done`.
+
+Moved to later milestones (each is a row in the [deferred backlog](../../deferred-backlog.md)):
+
+- **M08C:** widget labels and extension step names from the string catalog, and the widget-answer hook point (ML-28, ML-26, C4); a line on the receipt card that says what each party read.
+- **M08D:** a reader's view of another node's product unit (ML-9); a shop name in any script with its search keys (ML-23); the hook points for offering, want and storefront display (ML-26); search by taxonomy group.
+- **M08G:** the opinion hook point (ML-26).
+- **M9A:** a machine translation engine and a Roym method for `detect-language`.
+- **TBD:** more scripts for search keys, a bundled Indic font, native digits, a chat box language list beyond the 13 record languages, a Hub request that names the listing of a directory hit, and an Open click that a feed event overtakes (a Hub case older than M08B).
+- **Before the first release:** `directory.reindex` for an index built before the search keys.
+
+Nothing in M08B's folder is open. The component size growth (web +53,291 bytes) was accepted by the owner (2026-11-10 and 2026-11-13).

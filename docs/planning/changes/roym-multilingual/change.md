@@ -1,5 +1,5 @@
 ---
-status: draft
+status: done
 living-docs-touched:
   - docs/planning/deferred-backlog.md
   - docs/system-architecture.md
