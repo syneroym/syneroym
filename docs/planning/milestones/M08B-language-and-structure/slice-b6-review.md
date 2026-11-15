@@ -885,7 +885,9 @@ closed and I did not re-check them.
 
 **Summary:** R6, R7 and R8 stay Fixed: the swap-time guard is correct, the R7
 decision is acceptable, and the new tests fail when the code they guard is
-broken. New findings: 0 blocker, 0 major, 4 minor (R9 to R12). **4 open.**
+broken. New findings: 0 blocker, 0 major, 4 minor (R9 to R12). **4 open** when this round was
+written; all four fixed in `14e46130` (Claude Sonnet 5.5, at the owner's request), so **0 open**.
+A check of `14e46130` by another tool is still due (cross-tool rule).
 
 Limits: full CI is green on `4272014d`
 ([run 43669493732](https://github.com/syneroym/syneroym/actions/runs/43669493732):
@@ -1026,7 +1028,13 @@ file after its run, and `git status --short` is clean.
   owner prefers the code as it is, say instead in the doc comment, the
   Deviation and the backlog row that a feed event that comes during the
   person's redraw can make it wait for the open form.
-- *Status:* Open.
+- *Status:* Fixed (14e46130), by the code option. `waitingRedraw` no longer keeps "at once" on the
+  newest run. `now` sets `owed`, and the next swap clears it, so a feed redraw that overtakes the
+  person's redraw swaps at once over a form opened meanwhile. Tests in `thread_redraw.test.ts`: "a now
+  that a later redraw overtakes still draws at once over a form opened meanwhile" and "the debt of a now
+  is paid by one swap only". Proof, by changes that I made and undid: `later` that clears `owed` fails
+  the first; `owed` that is never cleared fails the second and the feed race case. The code comment
+  and the doc texts now say this.
 
 #### R10 — The R7 decision text names only the quote form, but a person's redraw closes every open element (minor)
 
@@ -1050,7 +1058,10 @@ file after its run, and `git status --short` is clean.
   request, quote send, accept, decline, delete, retry) runs at once, so it
   closes any form or dialog that is open in the thread, with its text." If
   R9 is fixed by the doc option, add its case in the same sentence.
-- *Status:* Open.
+- *Status:* Fixed (14e46130). The Deviation and the backlog row now say: a redraw the person asks
+  for (send, request, quote send, accept, decline, delete, retry) runs at once, even when a redraw from
+  the event feed starts after it, so it closes every form or dialog open in the thread, with the text in
+  it.
 
 #### R11 — Two tests prove less than their titles or their status claims (minor)
 
@@ -1086,7 +1097,12 @@ file after its run, and `git status --short` is clean.
   card shows and the form is closed), or change the R7 status to say that
   only compose send is pinned. (3) drop the dead `form.remove()` lines, or
   move them before `now()` with a comment.
-- *Status:* Open.
+- *Status:* Fixed (14e46130). (1) The `setUpSlow` fill writes the run number, and the test releases
+  the newer run first (`release(1, 0)`) and checks the thread shows run 2. A `refiller` without the
+  newest check now fails it (with 3 cases of `dom.test.ts`). (2) A new case in `messages_feed.test.ts`:
+  "a sent request shows now, and the open quote form is closed with the redraw". With `redraw.later()`
+  in request send alone it fails. (3) The dead `form.remove()` is gone; the test checks that the form
+  left the page through the swap of `now`, and that nothing is redrawn after.
 
 #### R12 — `openConversation` can let `sendQuote` open the form in a thread that is about to be replaced (minor)
 
@@ -1127,4 +1143,8 @@ file after its run, and `git status --short` is clean.
   `await expect(page.locator('.open-error')).toHaveText('')`. Then correct
   the comment: the enabled button, not the selected row, shows that the
   second drawing is done.
-- *Status:* Open.
+- *Status:* Fixed (14e46130). `openConversation` waits for the open button to be enabled again and
+  for `.open-error` to be empty, and its comment says why a selected row is not enough. The story 40
+  and story 20 helpers, and `roym-hub.spec.ts`, use it. Not seen to fail before (the window is rare); I
+  checked that nothing else broke: `mise run test:e2e` 75 + 4 + 7 passed, and `mise run demo` 5 more
+  times, 5 of 5 passed.
