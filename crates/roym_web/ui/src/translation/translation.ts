@@ -163,13 +163,33 @@ export async function translateTexts(
   sourceLang: string | null,
   targetLang: string,
 ): Promise<MachineText> {
-  const params: Record<string, unknown> = { texts, target_lang: targetLang };
-  if (sourceLang) params.source_lang = sourceLang;
-  const reply = await call<TranslateReply>("translation.translate", params);
+  const BATCH_SIZE = 8;
+  if (texts.length <= BATCH_SIZE) {
+    const params: Record<string, unknown> = { texts, target_lang: targetLang };
+    if (sourceLang) params.source_lang = sourceLang;
+    const reply = await call<TranslateReply>("translation.translate", params);
+    const out = {
+      texts: reply.items.map((item) => item.text),
+      sourceLang: reply.items[0]?.source_lang ?? "",
+      engine: reply.items[0]?.engine ?? { name: "", remote: false },
+    };
+    keep(keptKey(texts, sourceLang, targetLang), out);
+    return out;
+  }
+
+  const allItems: { text: string; source_lang?: string; engine?: { name: string; remote: boolean } }[] = [];
+  for (let i = 0; i < texts.length; i += BATCH_SIZE) {
+    const batch = texts.slice(i, i + BATCH_SIZE);
+    const params: Record<string, unknown> = { texts: batch, target_lang: targetLang };
+    if (sourceLang) params.source_lang = sourceLang;
+    const reply = await call<TranslateReply>("translation.translate", params);
+    allItems.push(...reply.items);
+  }
+
   const out = {
-    texts: reply.items.map((item) => item.text),
-    sourceLang: reply.items[0]?.source_lang ?? "",
-    engine: reply.items[0]?.engine ?? { name: "", remote: false },
+    texts: allItems.map((item) => item.text),
+    sourceLang: allItems[0]?.source_lang ?? "",
+    engine: allItems[0]?.engine ?? { name: "", remote: false },
   };
   keep(keptKey(texts, sourceLang, targetLang), out);
   return out;

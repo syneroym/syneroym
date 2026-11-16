@@ -1,7 +1,7 @@
 import { CARD_TYPES } from "./registry";
 import { renderUnknown } from "./unknown";
 import { AgreementReceiptData, renderAgreementReceipt } from "./templates/agreement_receipt";
-import { BookingProgressData, renderBookingProgress } from "./templates/booking_progress";
+import { AgreementProgressData, renderAgreementProgress } from "./templates/agreement_progress";
 import { EnquiryData, renderEnquiry } from "./templates/enquiry";
 import { FulfilmentReceiptData, renderFulfilmentReceipt } from "./templates/fulfilment_receipt";
 import { PaymentAcknowledgementData, renderPaymentAcknowledgement } from "./templates/payment_acknowledgement";
@@ -31,8 +31,9 @@ export function renderCard(card: CardObject): HTMLElement {
       return renderQuote(card.data as QuoteData | undefined);
     case "agreement-receipt":
       return renderAgreementReceipt(card.data as AgreementReceiptData | undefined);
+    case "agreement-progress":
     case "booking-progress":
-      return renderBookingProgress(card.data as BookingProgressData | undefined);
+      return renderAgreementProgress(card.data as AgreementProgressData | undefined);
     case "payment-request":
       return renderPaymentRequest({
         ...(card.data as PaymentRequestData | undefined),

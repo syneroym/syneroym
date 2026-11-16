@@ -88,10 +88,20 @@
     }
   },
   {
-    "type": "booking-progress",
+    "type": "agreement-progress",
     "version": 1,
     "data": {
-      "progress": "In Progress"
+      "state": "agreed",
+      "commitments": [
+        {
+          "commitment_id": "c1",
+          "state": "promised"
+        },
+        {
+          "commitment_id": "c2",
+          "state": "promised"
+        }
+      ]
     }
   },
   {

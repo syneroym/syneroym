@@ -6,7 +6,7 @@ import { fakeEngine, readerReads } from "../../testing/translation";
 import { setTargetsForTest } from "../../translation/translation";
 import { renderRefusedCard } from "../refused.js";
 import { renderAgreementReceipt } from "./agreement_receipt.js";
-import { renderBookingProgress } from "./booking_progress.js";
+import { renderAgreementProgress, renderBookingProgress } from "./agreement_progress.js";
 import { renderFulfilmentReceipt } from "./fulfilment_receipt.js";
 import { renderPaymentAcknowledgement } from "./payment_acknowledgement.js";
 import { renderPaymentRequest } from "./payment_request.js";
@@ -326,6 +326,22 @@ describe("Card templates", () => {
         expect(row.children[1].getAttribute("lang")).toBe("ta");
       }
     });
+
+    it("renders receipt with the read-in line", () => {
+      const el = renderAgreementReceipt({
+        viewed_lang: "en",
+        viewed_via_mt: false,
+        counterparty_name: "Alice",
+      });
+      expect(el.textContent).toContain("Alice read this in English");
+
+      const elMt = renderAgreementReceipt({
+        viewed_lang: "hi",
+        viewed_via_mt: true,
+        counterparty_name: "Bob",
+      });
+      expect(elMt.textContent).toContain("Bob read this in Hindi, machine translation");
+    });
   });
 
   describe("renderPaymentRequest", () => {
@@ -524,6 +540,20 @@ describe("Card templates", () => {
 
       expect(el.querySelectorAll("a").length).toBe(0);
       expect(el.textContent).toContain("javascript:alert(1)");
+    });
+
+    it("renders agreement progress with commitment states", () => {
+      const el = renderAgreementProgress({
+        state: "agreed",
+        commitments: [
+          { commitment_id: "c1", state: "promised" },
+          { commitment_id: "c2", state: "promised" },
+        ],
+      });
+      expect(el.classList.contains("card-agreement-progress")).toBe(true);
+      expect(el.textContent).toContain("Agreed");
+      expect(el.textContent).toContain("c1: Promised");
+      expect(el.textContent).toContain("c2: Promised");
     });
   });
 

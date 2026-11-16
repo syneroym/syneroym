@@ -15,10 +15,13 @@ import { type AgreedTermsData } from "./quote";
 export interface FulfilmentReceiptData {
   agreement?: string;
   conversation?: string;
+  commitment_id?: string;
+  commitment_description?: string;
   counterparty_did?: string;
   quote_author_did?: string;
-  role?: "counterparty" | "quote-author";
+  role?: "giver" | "receiver" | "counterparty" | "quote-author";
   terms?: AgreedTermsData;
+  settlement_note?: string | { lang?: string; text?: string };
 }
 
 export function renderFulfilmentReceipt(data?: FulfilmentReceiptData): HTMLElement {
@@ -32,14 +35,45 @@ export function renderFulfilmentReceipt(data?: FulfilmentReceiptData): HTMLEleme
   if (data?.role) {
     const roleP = document.createElement("p");
     roleP.className = "fulfilment-role";
-    roleP.textContent = data.role === "quote-author" ? t("fulfilment-claimed") : t("fulfilment-acknowledged");
+    roleP.textContent =
+      data.role === "giver" || data.role === "quote-author"
+        ? t("fulfilment-claimed")
+        : t("fulfilment-acknowledged");
     card.appendChild(roleP);
   }
 
-  if (data?.terms?.scope) {
+  if (data?.commitment_id) {
+    const comP = document.createElement("p");
+    comP.className = "fulfilment-commitment";
+    comP.textContent = data.commitment_description
+      ? `${data.commitment_id}: ${data.commitment_description}`
+      : data.commitment_id;
+    card.appendChild(comP);
+  }
+
+  const noteText =
+    typeof data?.settlement_note === "object" && data?.settlement_note !== null
+      ? (data.settlement_note as { text?: string }).text
+      : data?.settlement_note;
+  if (noteText) {
+    const noteP = document.createElement("p");
+    noteP.className = "fulfilment-note";
+    noteP.textContent = noteText;
+    card.appendChild(noteP);
+  }
+
+  const scopeText =
+    typeof data?.terms?.scope === "object" && data?.terms?.scope !== null
+      ? (data.terms.scope as { text?: string }).text
+      : data?.terms?.scope;
+  const scopeLang =
+    typeof data?.terms?.scope === "object" && data?.terms?.scope !== null
+      ? (data.terms.scope as { lang?: string }).lang ?? data.terms.lang ?? ""
+      : data?.terms?.lang ?? "";
+  if (scopeText) {
     const scopeP = document.createElement("p");
     scopeP.className = "fulfilment-scope";
-    labelled(scopeP, t("terms-scope-label"), recordValue(data.terms.lang ?? "", data.terms.scope));
+    labelled(scopeP, t("terms-scope-label"), recordValue(scopeLang, scopeText));
     card.appendChild(scopeP);
   }
 

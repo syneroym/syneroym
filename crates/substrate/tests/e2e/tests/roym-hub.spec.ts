@@ -206,10 +206,10 @@ test.describe('Roym Hub', () => {
     await page.getByRole('button', { name: 'Components' }).click();
 
     const knownTypes = [
-      'request',
+      'enquiry',
       'quote',
       'agreement-receipt',
-      'booking-progress',
+      'agreement-progress',
       'payment-request',
       'payment-acknowledgement',
       'fulfilment-receipt',

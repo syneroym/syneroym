@@ -14,6 +14,7 @@ import { serviceLocationEditorLabel } from "../listings/labels";
 import { type SearchMatch, searchHits } from "./message_search";
 import { waitingRedraw } from "./thread_redraw";
 import { categoryPicker } from "../taxonomy/category_picker";
+import { buildDealTerms } from "./quote_terms";
 
 /// Things the person has started inside a thread. A redraw from the event
 /// feed waits until they are gone, so it never throws away typed text. An
@@ -785,6 +786,11 @@ export function openQuoteForm(
   scopeInput.placeholder = t("quote-scope-placeholder");
   scopeInput.className = "quote-scope-input";
 
+  const giveInput = document.createElement("input");
+  giveInput.placeholder = t("quote-give-placeholder");
+  giveInput.setAttribute("aria-label", t("quote-give-label"));
+  giveInput.className = "quote-give-input";
+
   const currencyInput = document.createElement("input");
   currencyInput.placeholder = t("quote-currency-placeholder");
   currencyInput.defaultValue = "EUR";
@@ -929,28 +935,31 @@ export function openQuoteForm(
     const where = whereSelect.value as ServiceLocationKind;
     const address = where === "at-receiver" ? addressInput.value.trim() : undefined;
 
+    const terms = buildDealTerms(
+      {
+        give: giveInput.value.trim() || undefined,
+        scope,
+        currency,
+        amountMinor,
+        taxMinor,
+        feesMinor,
+        payee,
+        timing: timingSelect.value as "before-work" | "after-work",
+        where,
+        address,
+        cancellation: cancInput.value.trim(),
+        refund: refInput.value.trim(),
+        dispute: dispInput.value.trim(),
+      },
+      quoteLang.value,
+    );
+
     submitBtn.disabled = true;
     try {
       await call("quote.set", {
         enquiry_record_id: reqCard.record_id,
         expires_in_secs,
-        terms: {
-          lang: quoteLang.value,
-          scope,
-          currency,
-          amount_minor: amountMinor,
-          tax_minor: taxMinor,
-          fees_minor: feesMinor,
-          payee,
-          payment_timing: timingSelect.value,
-          location: {
-            where,
-            address,
-          },
-          cancellation_terms: cancInput.value.trim(),
-          refund_terms: refInput.value.trim(),
-          dispute_path: dispInput.value.trim(),
-        },
+        terms,
       });
       form.remove();
       await refresh();
@@ -963,6 +972,7 @@ export function openQuoteForm(
   form.append(
     field(t("quote-text-language"), quoteLang),
     scopeInput,
+    giveInput,
     currencyInput,
     amountInput,
     taxInput,

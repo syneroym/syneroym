@@ -35,9 +35,12 @@ function isLink(value: string): boolean {
 /// value is a link is left out of `get` and kept as it is by `set`: the
 /// engine never sees a link, so a machine version cannot show a link the
 /// author did not sign. An empty or absent field is sent as "".
-export function textFields<F extends object>(keys: readonly (keyof F & string)[]): TranslatableText<F> {
+export function textFields<F extends object>(
+  keys: readonly (keyof F & string)[] | ((fields: F) => readonly (keyof F & string)[]),
+): TranslatableText<F> {
+  const resolveKeys = typeof keys === "function" ? keys : () => keys;
   const sent = (fields: F) =>
-    keys.filter((key) => !isLink(String((fields as Record<string, unknown>)[key] ?? "")));
+    resolveKeys(fields).filter((key) => !isLink(String((fields as Record<string, unknown>)[key] ?? "")));
   return {
     get: (fields) => sent(fields).map((key) => String((fields as Record<string, unknown>)[key] ?? "")),
     set: (fields, texts) => {

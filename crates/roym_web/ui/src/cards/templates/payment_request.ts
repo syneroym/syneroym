@@ -19,11 +19,14 @@ import { renderLink } from "../link";
 export interface PaymentRequestData {
   agreement?: string;
   conversation?: string;
+  commitment_id?: string;
+  commitment_description?: string;
+  role?: "giver" | "receiver" | "counterparty" | "quote-author";
   counterparty_did?: string;
   quote_author_did?: string;
   currency?: string;
   amount_minor?: number;
-  note?: string;
+  note?: string | { lang?: string; text?: string };
   /// Sibling fields on the card row, not part of the signed payload.
   agreement_payee?: string;
   agreement_payment_methods?: string[];
@@ -36,6 +39,23 @@ export function renderPaymentRequest(data?: PaymentRequestData): HTMLElement {
   const title = document.createElement("h3");
   title.textContent = t("payment-request-title");
   card.appendChild(title);
+
+  if (data?.role) {
+    const roleP = document.createElement("p");
+    roleP.className = "payment-request-role";
+    roleP.textContent =
+      data.role === "giver" || data.role === "counterparty" ? t("role-giver") : t("role-receiver");
+    card.appendChild(roleP);
+  }
+
+  if (data?.commitment_id) {
+    const comP = document.createElement("p");
+    comP.className = "payment-request-commitment";
+    comP.textContent = data.commitment_description
+      ? `${data.commitment_id}: ${data.commitment_description}`
+      : data.commitment_id;
+    card.appendChild(comP);
+  }
 
   if (data?.amount_minor !== undefined && data?.currency) {
     const amountP = document.createElement("p");
@@ -62,10 +82,14 @@ export function renderPaymentRequest(data?: PaymentRequestData): HTMLElement {
     card.appendChild(payeeP);
   }
 
-  if (data?.note) {
+  const noteText =
+    typeof data?.note === "object" && data?.note !== null
+      ? (data.note as { text?: string }).text
+      : data?.note;
+  if (noteText) {
     const noteP = document.createElement("p");
     noteP.className = "payment-request-note";
-    noteP.textContent = t("payment-note", { note: data.note });
+    noteP.textContent = t("payment-note", { note: noteText });
     card.appendChild(noteP);
   }
 

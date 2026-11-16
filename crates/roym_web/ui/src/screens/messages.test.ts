@@ -208,7 +208,7 @@ describe("text that the person signs", () => {
     submitBtn.click();
 
     await vi.waitFor(() => expect(sentTerms).toBeDefined());
-    expect(sentTerms!.lang).toBe("hi");
+    expect((sentTerms!.scope as Record<string, unknown>).lang).toBe("hi");
   });
 });
 

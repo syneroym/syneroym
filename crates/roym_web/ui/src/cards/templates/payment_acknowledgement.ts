@@ -20,14 +20,17 @@ import { methodLabel } from "../../taxonomy/taxonomy";
 export interface PaymentAcknowledgementData {
   agreement?: string;
   conversation?: string;
+  commitment_id?: string;
+  commitment_description?: string;
+  role?: "giver" | "receiver" | "counterparty" | "quote-author";
   counterparty_did?: string;
   quote_author_did?: string;
-  role?: "counterparty" | "quote-author";
   currency?: string;
   amount_minor?: number;
   observed_at_secs?: number;
   method?: string;
   reference?: string;
+  settlement_note?: string | { lang?: string; text?: string };
   /// Set when this card's own envelope names a `supersedes` record. Not
   /// currently populated by any call site -- see the "known gaps" note in
   /// the C8 Hub UI report.
@@ -45,8 +48,31 @@ export function renderPaymentAcknowledgement(data?: PaymentAcknowledgementData):
   if (data?.role) {
     const roleP = document.createElement("p");
     roleP.className = "payment-ack-role";
-    roleP.textContent = data.role === "counterparty" ? t("payment-claimed") : t("payment-acknowledged");
+    roleP.textContent =
+      data.role === "giver" || data.role === "counterparty"
+        ? t("payment-claimed")
+        : t("payment-acknowledged");
     card.appendChild(roleP);
+  }
+
+  if (data?.commitment_id) {
+    const comP = document.createElement("p");
+    comP.className = "payment-ack-commitment";
+    comP.textContent = data.commitment_description
+      ? `${data.commitment_id}: ${data.commitment_description}`
+      : data.commitment_id;
+    card.appendChild(comP);
+  }
+
+  const noteText =
+    typeof data?.settlement_note === "object" && data?.settlement_note !== null
+      ? (data.settlement_note as { text?: string }).text
+      : data?.settlement_note;
+  if (noteText) {
+    const noteP = document.createElement("p");
+    noteP.className = "payment-ack-note";
+    noteP.textContent = t("payment-note", { note: noteText });
+    card.appendChild(noteP);
   }
 
   if (data?.amount_minor !== undefined && data?.currency) {

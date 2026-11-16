@@ -36,9 +36,10 @@ export interface QuoteTranslationData {
 
 export interface AgreedTermsData {
   lang?: string;
-  scope?: string;
+  scope?: string | { lang?: string; text?: string };
   currency?: string;
   amount_minor?: number;
+  commitments?: Array<Record<string, unknown>>;
   tax_minor?: number;
   fees_minor?: number;
   payment_methods?: string[];
@@ -53,9 +54,9 @@ export interface AgreedTermsData {
     address?: string;
     area?: unknown;
   };
-  cancellation_terms?: string;
-  refund_terms?: string;
-  dispute_path?: string;
+  cancellation_terms?: string | { lang?: string; text?: string };
+  refund_terms?: string | { lang?: string; text?: string };
+  dispute_path?: string | { lang?: string; text?: string };
   quote_expires_at_secs?: number;
 }
 
@@ -66,6 +67,11 @@ export interface QuoteData {
   request_record_id?: string;
   listing_id?: string;
   counterparty_did?: string;
+  quote_author_did?: string;
+  counterparty_name?: string;
+  quote_author_name?: string;
+  peer_name?: string;
+  role?: "counterparty" | "quote-author";
   terms?: AgreedTermsData;
   translations?: QuoteTranslationData[];
   scope?: string;
@@ -115,6 +121,47 @@ export function renderQuote(data?: QuoteData): HTMLElement {
     ...(data?.quote_expires_at_secs !== undefined ? { quote_expires_at_secs: data.quote_expires_at_secs } : {}),
   };
 
+  const scopeText =
+    typeof terms.scope === "object" && terms.scope !== null
+      ? (terms.scope as { text?: string }).text
+      : terms.scope;
+  const cancText =
+    typeof terms.cancellation_terms === "object" && terms.cancellation_terms !== null
+      ? (terms.cancellation_terms as { text?: string }).text
+      : terms.cancellation_terms;
+  const refText =
+    typeof terms.refund_terms === "object" && terms.refund_terms !== null
+      ? (terms.refund_terms as { text?: string }).text
+      : terms.refund_terms;
+  const dispText =
+    typeof terms.dispute_path === "object" && terms.dispute_path !== null
+      ? (terms.dispute_path as { text?: string }).text
+      : terms.dispute_path;
+  const termsLang =
+    (typeof terms.scope === "object" && terms.scope !== null
+      ? (terms.scope as { lang?: string }).lang
+      : undefined) ??
+    terms.lang ??
+    "";
+
+  let totalMinor = terms.amount_minor;
+  let payee = terms.payee;
+  if (terms.commitments && Array.isArray(terms.commitments)) {
+    const currencyCommitments = terms.commitments.filter(
+      (c) => c.kind === "currency" || c.resource_kind === "currency",
+    );
+    if (totalMinor === undefined && currencyCommitments.length > 0) {
+      totalMinor = currencyCommitments.reduce(
+        (sum, c) => sum + (typeof c.declared_value_minor === "number" ? c.declared_value_minor : 0),
+        0,
+      );
+    }
+    if (!payee) {
+      const withPayee = currencyCommitments.find((c) => typeof c.payee === "string");
+      if (withPayee && typeof withPayee.payee === "string") payee = withPayee.payee;
+    }
+  }
+
   interface QuoteTextFields {
     scope?: string;
     cancellation_terms?: string;
@@ -124,12 +171,12 @@ export function renderQuote(data?: QuoteData): HTMLElement {
 
   const versions: TextVersion<QuoteTextFields>[] = [
     {
-      lang: terms.lang ?? "",
+      lang: termsLang,
       fields: {
-        scope: terms.scope,
-        cancellation_terms: terms.cancellation_terms,
-        refund_terms: terms.refund_terms,
-        dispute_path: terms.dispute_path,
+        scope: scopeText,
+        cancellation_terms: cancText,
+        refund_terms: refText,
+        dispute_path: dispText,
       },
       byAuthor: false,
     },
@@ -148,6 +195,42 @@ export function renderQuote(data?: QuoteData): HTMLElement {
   recordText(card, versions, (v) => {
     const nodes: Node[] = [];
 
+    // 0. Commitments
+    if (terms.commitments && Array.isArray(terms.commitments)) {
+      for (const c of terms.commitments) {
+        const comP = document.createElement("p");
+        comP.className = `quote-commitment quote-commitment-${c.commitment_id ?? ""}`;
+        const rawDesc =
+          typeof c.description === "object" && c.description !== null
+            ? (c.description as { text?: string }).text
+            : String(c.description ?? "");
+        const desc = rawDesc || (c.kind === "currency" ? t("quote-payment-description") : "");
+        const isAuthorGiver = c.giver === "quote-author";
+        const isViewer =
+          (isAuthorGiver && data?.role === "quote-author") ||
+          (!isAuthorGiver && (data?.role === "counterparty" || !data?.role));
+        const authorName =
+          data?.quote_author_name ?? data?.peer_name ?? t("receipt-role-author");
+        const otherName = isAuthorGiver
+          ? authorName
+          : (data?.counterparty_name ?? t("receipt-role-recipient"));
+        const lineText = isViewer
+          ? t("commitment-you-give", { description: desc })
+          : t("commitment-other-gives", { name: otherName, description: desc });
+        comP.textContent = lineText;
+        nodes.push(comP);
+
+        if (typeof c.declared_value_minor === "number" && terms.currency && c.kind !== "currency") {
+          const valP = document.createElement("p");
+          valP.className = `quote-declared-value quote-declared-value-${c.commitment_id ?? ""}`;
+          valP.textContent = t("commitment-declared-value", {
+            amount: formatMinor(c.declared_value_minor, terms.currency),
+          });
+          nodes.push(valP);
+        }
+      }
+    }
+
     // 1. Scope
     if (v.fields.scope) {
       const scopeP = document.createElement("p");
@@ -157,10 +240,10 @@ export function renderQuote(data?: QuoteData): HTMLElement {
     }
 
     // 2. Total
-    if (terms.amount_minor !== undefined && terms.currency) {
+    if (totalMinor !== undefined && terms.currency) {
       const totalP = document.createElement("p");
       totalP.className = "quote-total";
-      totalP.textContent = t("terms-total", { amount: formatMinor(terms.amount_minor, terms.currency) });
+      totalP.textContent = t("terms-total", { amount: formatMinor(totalMinor, terms.currency) });
       nodes.push(totalP);
     }
 
@@ -188,14 +271,14 @@ export function renderQuote(data?: QuoteData): HTMLElement {
     }
 
     // 5. Payee, labelled "Payee, as agreed in this quote"
-    if (terms.payee) {
+    if (payee) {
       const payeeP = document.createElement("p");
       payeeP.className = "quote-payee";
-      const isLink = terms.payee.startsWith("http://") || terms.payee.startsWith("https://");
+      const isLink = payee.startsWith("http://") || payee.startsWith("https://");
       labelled(
         payeeP,
         t("terms-payee-label"),
-        isLink ? renderLink(terms.payee) : document.createTextNode(terms.payee),
+        isLink ? renderLink(payee) : document.createTextNode(payee),
       );
       nodes.push(payeeP);
     }

@@ -339,7 +339,7 @@ fn build_quote_commitments(
     slot: Option<&str>,
 ) -> Vec<Value> {
     let mut c1 = json!({
-        "giver": "author",
+        "giver": "quote-author",
         "description": { "lang": parsed_lang.as_str(), "text": scope },
         "declared_value_minor": amount_minor,
         "after": if timing_str == "before-work" && amount_minor > 0 { vec!["c2"] } else { vec![] },
