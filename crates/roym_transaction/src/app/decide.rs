@@ -1,4 +1,4 @@
-//! Writer-side decision execution for deal formation (D-C1-16).
+//! The writer's decision, in its fixed step order.
 
 use serde::{Deserialize, Serialize};
 use syneroym_app_host::{AppDataLayer, AppHost, AppSigning, types::data_layer::RecordWriteValue};

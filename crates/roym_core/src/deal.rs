@@ -141,7 +141,7 @@ pub struct Commitment {
     pub extension: Option<ExtensionRef>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub after: Vec<String>,
-    // The ten fields below are always serialised (D-C1-11).
+    // C2 changes where these fields sit, not whether they are present.
     pub description: LocalText,
     pub declared_value_minor: i64,
     #[serde(default)]

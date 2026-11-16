@@ -16,7 +16,7 @@ interface TestCommitment {
 }
 
 describe("buildDealTerms", () => {
-  it("maps terms according to D-C1-7", () => {
+  it("maps terms into deal commitments and payment dependencies", () => {
     // 1. Amount 0: single commitment, no c2
     const zeroDeal = buildDealTerms(
       {
@@ -95,7 +95,7 @@ describe("buildDealTerms", () => {
     expect(slotComms[0].window).toEqual({ earliest_secs: 1800000000, latest_secs: 1800003600 });
   });
 
-  it("pre-fill never comes from text in another language (P6)", () => {
+  it("pre-fill never comes from text in another language", () => {
     const deal = buildDealTerms(
       {
         give: "Custom work description in English",
@@ -115,7 +115,7 @@ describe("buildDealTerms", () => {
     expect(comms[1].description?.lang).toBe("en");
   });
 
-  it("quotes in a language with no catalog build successfully with language-neutral currency description (P17)", () => {
+  it("quotes in a language with no catalog build successfully with language-neutral currency description", () => {
     const deal = buildDealTerms(
       {
         scope: "Repair",
