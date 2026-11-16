@@ -29,6 +29,8 @@ mod card_sync;
 mod catalog;
 #[path = "dual_build_parity/conversation.rs"]
 mod conversation;
+#[path = "dual_build_parity/deal.rs"]
+mod deal;
 #[path = "dual_build_parity/directory.rs"]
 mod directory;
 #[path = "dual_build_parity/directory_compat.rs"]

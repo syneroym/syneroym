@@ -213,7 +213,14 @@ impl AppProxy for TestHost {
 
         let handler = {
             let handlers = self.call_handlers.lock().unwrap();
-            handlers.get(&(service.clone(), method_name.clone())).cloned()
+            handlers
+                .get(&(service.clone(), method_name.clone()))
+                .or_else(|| {
+                    let stripped = method_name.strip_prefix(&format!("{service}."))?;
+                    handlers.get(&(service.clone(), stripped.to_string()))
+                })
+                .or_else(|| handlers.get(&(service.clone(), format!("{service}.{method_name}"))))
+                .cloned()
         };
 
         if let Some(h) = handler {
@@ -282,7 +289,7 @@ impl TestHost {
         Ok(serde_json::json!({
             "result": {
                 "message_id": format!("msg_{count}"),
-                "state": "sent",
+                "state": "delivered",
                 "sender_timestamp_ms": now_ms
             }
         })

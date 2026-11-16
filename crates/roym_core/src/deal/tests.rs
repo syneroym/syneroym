@@ -8,7 +8,7 @@ use crate::{
     },
     lang::LangTag,
     listing,
-    transaction::{DealRole, TimeWindow},
+    transaction::{AgreementReceiptPayload, DealRole, QuotePayload, TimeWindow},
 };
 
 fn sample_tag(s: &str) -> LangTag {
@@ -372,4 +372,79 @@ fn answers_enquiry_and_want_variants_serialize_consistently() {
     assert_eq!(want_json["kind"], "want");
     assert_eq!(want_json["intent_id"], "int_want_456");
     assert_eq!(want_json["version"], 1);
+}
+
+#[test]
+fn quote_for_an_enquiry_and_for_a_want_give_equal_receipts() {
+    let cp_did = "did:key:z6MkuCounterparty";
+    let author_did = "did:key:z6MkuAuthor";
+    let terms = sample_deal_terms(vec![
+        sample_service_commitment("c1", DealRole::QuoteAuthor, 100),
+        sample_currency_commitment("c2", DealRole::Counterparty, 100),
+    ]);
+
+    let quote_enquiry = QuotePayload {
+        quote_id: "quo_1".to_string(),
+        conversation: "conv_1".to_string(),
+        sequence: 1,
+        answers: Answers::Enquiry { record_id: "rec_enquiry_123".to_string() },
+        counterparty_did: cp_did.to_string(),
+        terms: terms.clone(),
+    };
+    let quote_want = QuotePayload {
+        quote_id: "quo_2".to_string(),
+        conversation: "conv_1".to_string(),
+        sequence: 1,
+        answers: Answers::Want { intent_id: "int_want_456".to_string(), version: 1 },
+        counterparty_did: cp_did.to_string(),
+        terms: terms.clone(),
+    };
+    assert_ne!(quote_enquiry.answers, quote_want.answers);
+    let rec_enquiry_id = "rec_quote_enquiry";
+    let rec_want_id = "rec_quote_want";
+
+    let receipt_enq = AgreementReceiptPayload {
+        quote_record_id: rec_enquiry_id.to_string(),
+        counterparty_did: cp_did.to_string(),
+        quote_author_did: author_did.to_string(),
+        role: DealRole::Counterparty,
+        terms: terms.clone(),
+        viewed_lang: sample_tag("en"),
+        viewed_via_mt: false,
+    };
+    let receipt_want = AgreementReceiptPayload {
+        quote_record_id: rec_want_id.to_string(),
+        counterparty_did: cp_did.to_string(),
+        quote_author_did: author_did.to_string(),
+        role: DealRole::Counterparty,
+        terms: terms.clone(),
+        viewed_lang: sample_tag("en"),
+        viewed_via_mt: false,
+    };
+
+    assert_ne!(receipt_enq.quote_record_id, receipt_want.quote_record_id);
+    let mut receipt_want_matching = receipt_want.clone();
+    receipt_want_matching.quote_record_id = receipt_enq.quote_record_id.clone();
+    assert_eq!(receipt_enq, receipt_want_matching);
+
+    let snap_enq = crate::progress::open(
+        rec_enquiry_id.to_string(),
+        "conv_1".to_string(),
+        cp_did.to_string(),
+        author_did.to_string(),
+        &terms,
+        None,
+    );
+    let snap_want = crate::progress::open(
+        rec_want_id.to_string(),
+        "conv_1".to_string(),
+        cp_did.to_string(),
+        author_did.to_string(),
+        &terms,
+        None,
+    );
+    assert_ne!(snap_enq.agreement, snap_want.agreement);
+    let mut snap_want_matching = snap_want.clone();
+    snap_want_matching.agreement = snap_enq.agreement.clone();
+    assert_eq!(snap_enq, snap_want_matching);
 }

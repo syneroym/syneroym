@@ -392,3 +392,49 @@ fn the_ui_notices_match_this_crate() {
         );
     }
 }
+
+#[test]
+fn halves_differ_only_in_role_and_what_was_read() {
+    let terms = sample_terms();
+
+    let half_author = AgreementReceiptPayload {
+        quote_record_id: "rec_quote_123".to_string(),
+        counterparty_did: "did:key:z6MkuCounterparty".to_string(),
+        quote_author_did: "did:key:z6MkuAuthor".to_string(),
+        role: DealRole::QuoteAuthor,
+        terms: terms.clone(),
+        viewed_lang: LangTag::parse("en").unwrap(),
+        viewed_via_mt: false,
+    };
+
+    let half_counterparty = AgreementReceiptPayload {
+        quote_record_id: "rec_quote_123".to_string(),
+        counterparty_did: "did:key:z6MkuCounterparty".to_string(),
+        quote_author_did: "did:key:z6MkuAuthor".to_string(),
+        role: DealRole::Counterparty,
+        terms: terms.clone(),
+        viewed_lang: LangTag::parse("hi").unwrap(),
+        viewed_via_mt: true,
+    };
+
+    assert_ne!(half_author.role, half_counterparty.role);
+    assert_ne!(half_author.viewed_lang, half_counterparty.viewed_lang);
+    assert_ne!(half_author.viewed_via_mt, half_counterparty.viewed_via_mt);
+    assert!(halves_agree(&half_author, &half_counterparty));
+
+    let mut diff_rec = half_counterparty.clone();
+    diff_rec.quote_record_id = "rec_other".to_string();
+    assert!(!halves_agree(&half_author, &diff_rec));
+
+    let mut diff_author_did = half_counterparty.clone();
+    diff_author_did.quote_author_did = "did:key:z6MkuOther".to_string();
+    assert!(!halves_agree(&half_author, &diff_author_did));
+
+    let mut diff_cp_did = half_counterparty.clone();
+    diff_cp_did.counterparty_did = "did:key:z6MkuOther".to_string();
+    assert!(!halves_agree(&half_author, &diff_cp_did));
+
+    let mut same_role = half_counterparty.clone();
+    same_role.role = DealRole::QuoteAuthor;
+    assert!(!halves_agree(&half_author, &same_role));
+}

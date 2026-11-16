@@ -207,8 +207,8 @@ async fn author_countersigns_the_original_when_the_peer_read_a_translation() {
     let h = harness().await;
     enrol_signing(&h, "conversation").await;
     enrol_signing(&h, "transaction").await;
-    let conv = "conv-237-author";
-    let (req_rec_id, _) = setup_peer_request(&h, conv).await;
+    let conv = open_conv(&h, &peer_did()).await;
+    let (req_rec_id, _) = setup_peer_request(&h, &conv).await;
 
     let params = json!({
         "enquiry_record_id": req_rec_id,
@@ -253,7 +253,7 @@ async fn author_countersigns_the_original_when_the_peer_read_a_translation() {
         .clone();
 
     let (agr_id, receipt) = peer_counterparty_receipt(
-        conv,
+        &conv,
         &quote_record_id,
         &peer_did(),
         &owner_did(),
@@ -263,7 +263,7 @@ async fn author_countersigns_the_original_when_the_peer_read_a_translation() {
     deliver_peer_card(
         &h,
         &format!("m-agr-{agr_id}"),
-        conv,
+        &conv,
         &peer_did(),
         transaction::RECORD_AGREEMENT_RECEIPT,
         transaction::AGREEMENT_RECEIPT_VERSION,

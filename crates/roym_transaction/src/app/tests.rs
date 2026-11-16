@@ -1,6 +1,9 @@
 //! Test fixtures and harness support for transaction service in-crate tests.
 
 pub mod accept;
+pub mod cancel;
+pub mod decide;
+pub mod settle;
 pub mod time;
 
 use std::sync::Arc;
@@ -129,7 +132,7 @@ pub fn fixture() -> TestFixture {
     host.on_call("conversation", "send", |_params| {
         Ok(json!({
             "message_id": "msg_mock_send_123",
-            "state": "sent",
+            "state": "delivered",
             "sender_timestamp_ms": 1_000_000_000_i64
         })
         .to_string())

@@ -323,3 +323,33 @@ fn notices_match_spec_text() {
     );
     assert_eq!(TRACK_UNCONFIRMED, "No confirmation was recorded before the window closed.");
 }
+
+#[test]
+fn snapshot_from_another_signer_is_not_filed() {
+    let author_key = Identity::generate().unwrap();
+    let author_did = substrate::derive_did_key(&author_key.public_key());
+
+    let other_key = Identity::generate().unwrap();
+    let other_did = substrate::derive_did_key(&other_key.public_key());
+
+    let mut p = sample_progress();
+    p.quote_author_did = author_did;
+
+    let draft = RecordDraft {
+        record_type: RECORD_AGREEMENT_PROGRESS.to_string(),
+        version: AGREEMENT_PROGRESS_VERSION,
+        subject: p.agreement.clone(),
+        payload: serde_json::to_value(&p).unwrap(),
+        supersedes: None,
+        expires_at_secs: None,
+    };
+    let (mut env, bytes) = Envelope::unsigned(draft, other_did.clone(), None, 1000).unwrap();
+    let sig = z32::encode(&other_key.sign(&bytes).to_bytes());
+    env.attach_signature(sig).unwrap();
+    let env_json = env.to_json().unwrap();
+
+    let v = verify_agreement_progress(&env_json, 1000);
+    assert!(v.verified);
+    assert_ne!(v.signer_did.as_deref(), Some(p.quote_author_did.as_str()));
+    assert_eq!(v.signer_did.as_deref(), Some(other_did.as_str()));
+}

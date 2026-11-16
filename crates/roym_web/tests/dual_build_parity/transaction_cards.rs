@@ -453,36 +453,21 @@ async fn assert_tampered_core_records(h: &Harness, bundle_val: &Value, now: u64)
 }
 
 async fn assert_tampered_ledger_record(h: &Harness, bundle_val: &Value, now: u64) {
-    // 3. Tampered ledger step with re-signed manifest.
+    // 3. Tampered ledger countersign with re-signed manifest.
     let mut b_ledger: Bundle = serde_json::from_value(bundle_val.clone()).unwrap();
     let bad_step_row = json!({
-        "id": "step:tampered:1",
+        "id": "countersign:rec-quote-142",
         "payload": {
-            "kind": "step",
+            "kind": "countersign",
             "agreement": "rec-quote-142",
-            "slot_id": null,
-            "seat": null,
-            "created_at_secs": now,
-            "step": {
-                "seq": 1,
-                "event": "scheduled",
-                "snapshot": {
-                    "agreement": "rec-quote-142",
-                    "conversation": "conv-142",
-                    "counterparty_did": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
-                    "quote_author_did": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
-                    "seq": 1,
-                    "state": "scheduled",
-                    "payment": "none",
-                    "fulfilment": "none",
-                    "conflict": null,
-                    "track_window_ends_at_secs": now + 86400,
-                    "cancelled_by": null,
-                    "cancel_reason": null
-                },
+            "half": {
                 "envelope": "{\"tampered\": true}",
-                "record_id": "rec_tampered_step_1"
-            }
+                "record_id": "rec_tampered_cs_1",
+                "issuer": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+                "issued_at_secs": now
+            },
+            "message_id": null,
+            "created_at_secs": now
         }
     });
     b_ledger.sections.insert("ledger".to_string(), vec![bad_step_row]);

@@ -429,8 +429,8 @@ async fn scenario_155_slot_removed_before_acceptance_conflict_parity() {
     let (bw, bn) = both_rpc(&h, "agreement.get", json!({ "agreement": quote_rec_id })).await;
     assert_eq!(bw["result"]["state"], "not-formed");
     assert_eq!(bn["result"]["state"], "not-formed");
-    assert_eq!(bw["result"]["state_reason"], "slot-taken");
-    assert_eq!(bn["result"]["state_reason"], "slot-taken");
+    assert_eq!(bw["result"]["state_reason"], "slot-unavailable");
+    assert_eq!(bn["result"]["state_reason"], "slot-unavailable");
 }
 
 #[tokio::test]
