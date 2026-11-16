@@ -835,7 +835,7 @@ blocker, 0 major, 1 minor.**
 
 ### New findings
 
-- [ ] **P26 — minor.** *Where:* D-C1-16 steps 1 and 2.
+- [x] **P26 — minor.** *Where:* D-C1-16 steps 1 and 2.
   *Problem:* Two small cases in the new order. (1) The repeat path skips
   step 1's checks. When neither `snapshot:<agreement>:1` nor
   `countersign:<agreement>` is stored (an error after the fence), it goes on
@@ -854,4 +854,6 @@ blocker, 0 major, 1 minor.**
   `not-formed` with `quote-expired`). Add a C1a test for it. (2) Say that a
   `create` that finds the row with the same agreement goes to the repeat
   path, and with another agreement to the "other agreement" branch.
-  *Status:* Open.
+  *Status:* Fixed (83b70d73).
+
+**Open after round 4: 0 (0 blocker, 0 major, 0 minor).** All 26 items (P1 to P26) are Fixed (83b70d73).
