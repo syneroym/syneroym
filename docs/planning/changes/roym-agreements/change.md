@@ -1,7 +1,15 @@
 ---
 status: draft
 living-docs-touched:
+  - docs/system-requirements-spec.md
+  - docs/roym-integrated-experience-spec.md
+  - docs/developer-guide.md
+  - docs/system-architecture.md
+  - docs/planning/traceability-matrix.md
+  - docs/TERMINOLOGY.md
+  - docs/demo/demo.md
 demo:
+  - crates/substrate/tests/e2e/demo/50-roym-deal.spec.ts
 ---
 # Roym agreements
 

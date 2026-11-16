@@ -241,7 +241,7 @@ tests before the next begins.
 | A person can be a participant without running a full install of their own | Device-bound participant key with encrypted backup and import (`[FND-IDT]` Lightweight Participant Identity) | A participant sets up, backs up, then restores on a clean machine | Recovery by an operator; social recovery | **Passed (C4, C5).** Restore on a clean node reproduces identity and history; no operator can impersonate |
 | A listing owner can publish what they offer | Versioned listing schema covering booking, payment, product, service, location, relationship, and service-record dimensions | Listing owner publishes a listing and edits it | Media galleries; stock counting | **Passed (C5).** Listing round-trips through export/import with schema version preserved |
 | Two people can talk | 1:1 text with X3DH + Double Ratchet; durable outbox with `pending`/`delivered`/`failed` visible to the user | Searcher messages an offline listing owner; listing owner comes online and sees it | Attachments; voice; video; group chat | **Passed (C5).** Message survives a process restart on both sides and is never shown as delivered while pending |
-| A need becomes an offer | Versioned request → quote → agreement records, each signed | Counterparty describes a need, quote author quotes, counterparty accepts | Negotiation history rendering; templates | **Passed (C7).** Accepting a quote produces a signed agreement receipt containing every field listed in [Records](#records-and-what-each-one-proves) |
+| A need becomes an offer | Versioned enquiry → quote → agreement records, each signed | Counterparty describes a need, quote author quotes, counterparty accepts | Negotiation history rendering; templates | **Passed (C7).** Accepting a quote produces a signed agreement receipt containing every field listed in [Records](#records-and-what-each-one-proves) |
 | A person can find a listing owner through a group | Directory `search` by category, area, and filters, returning source and freshness | Searcher searches, sees results with trust evidence | Ranking; paid placement; free-text intent parsing | **Passed (C6).** Results state their source and age; missing evidence shows as unknown, never as positive |
 | People are safe from unwanted contact | Block, report, per-sender contact rate limits, listing publication limits | Searcher blocks a listing owner and reports a listing | Automated moderation; appeals workflow | **Passed (C4, C5).** A blocked sender's messages never reach the recipient's inbox; the recipient keeps its transaction records |
 
@@ -472,7 +472,7 @@ one.
 | `listing` | Listing owner | Who published this offer, and when | That the offer is honest or the listing owner is competent; a listing's stated payee is not agreed terms until an `agreement-receipt` binds it |
 | `membership-credential` | SynOrg | This SynOrg approved this listing owner, within a scope, until an expiry date | That the SynOrg vetted them well, or that any other group agrees |
 | `revocation` | SynOrg | This SynOrg withdrew a credential at a stated time. A revocation is permanent; a suspension is a `moderation-decision`, and the searcher's check shows either | That every cached copy is gone |
-| `request` | Counterparty | What the counterparty asked for | — |
+| `enquiry` | Counterparty | What the counterparty asked for | — |
 | `quote` | Quote author | The exact terms offered, at a version | — |
 | `agreement-receipt` | Both | Both parties accepted these exact terms, including payee, expiry, cancellation and refund terms, and dispute path. Each party also states which language it read and whether that text was a machine translation | That either side will perform, or that the two parties read the same language |
 | `payment-acknowledgement` | Each side, separately | Each party stated what they observed about a payment | **That money moved.** Only a supported payment provider's own attestation could show that, and none is integrated |
@@ -497,7 +497,7 @@ says only what was actually signed.
 
 Two types in the [card table](#cards) carry a *Signed by* column but are not
 in the list above. `payment-request` belongs in it, as a quote author attestation.
-`booking-progress` deliberately does not — it is state written by the
+`agreement-progress` deliberately does not — it is state written by the
 quote author's Transaction service, not a statement by a party, and it is never
 evidence of anything.
 
@@ -529,40 +529,36 @@ service on the quote author's substrate**. The counterparty's client sends reque
 the Transaction service decides.
 
 ```
-  requested ──▶ quoted ──▶ agreed ──▶ scheduled ──▶ in-progress ──▶ completed
-                  │           │           │              │
-                  ▼           ▼           ▼              ▼
-              expired    cancelled    conflict    ended-unconfirmed
+  enquiry ──▶ quoted ──▶ agreed ──▶ closed
+                │           │
+                ▼           ▼
+             expired    cancelled / ended-unconfirmed / not-formed
 ```
 
 - **Writer:** the quote author's Transaction service, always. There is no
   multi-master merge for transactions.
-- **A quote that names an availability slot of the listing is booked by its own
-  acceptance** (M06C `D-C8-2`): the quote author's Transaction service decides the
-  booking the moment it files the counterparty's signed acceptance, claiming the
-  slot under the same single-writer fence a concurrent booking needs. There is
-  no separate wire-reachable "book" step; a quote with no slot is `scheduled`
-  on countersign, exactly as before.
+- **Commitments:** each agreed quote binds one or more bilateral commitments
+  (`DealCommitment`). Each commitment progresses from `promised` through
+  `claimed`, `confirmed`, and `closed` (or `cancelled`, `ended-unconfirmed`,
+  or `failed`). The agreement closes once every commitment is closed.
+- **A quote that names an availability slot of the listing holds seats on
+  acceptance**: the quote author's Transaction service decides the agreement
+  the moment it files the counterparty's signed acceptance, claiming the
+  slot under the single-writer fence.
 - **Idempotency:** every state-changing request carries an idempotency key.
   A retry after a lost connection reaches the same final state; it never
-  creates a second booking. **Read 2026-09-24** (M06C `D-C8-6`) as the
-  record's own content-derived identity, not a client-supplied token: a
-  second call for the same state change answers with the record already
-  made, never a duplicate.
+  creates a second agreement. Content-derived identities ensure a second call
+  for the same state change answers with the record already made, never a duplicate.
 - **Expiry:** a quote has an explicit expiry. An unaccepted quote expires
   rather than sitting open forever.
-- **Conflicts:** two counterparties booking the same slot produce one `scheduled`
-  and one named `conflict` returned to the loser. Last-write-wins is not
-  acceptable here.
 - **Cancellation:** permitted states and actors are explicit and are part of
-  the agreed terms. Only the quote author cancels, and only while neither the
-  payment nor fulfilment track has moved (M06C `D-C8-14`); a counterparty asks in
-  the conversation. The UI shows when cancellation is no longer guaranteed.
-- **Tracks end:** payment and fulfilment each end at their own named terminal
-  30 days after the booking's schedule (or 30 days after scheduling, for a
-  quote with no schedule), holding whatever claim exists rather than sitting
-  open forever. A booking whose tracks both end this way, without both being
-  acknowledged, reaches `ended-unconfirmed` (M06C `D-C8-15`).
+  the agreed terms. Only the quote author cancels, and only while all
+  commitments remain open (`promised`); a counterparty asks in the
+  conversation. The UI shows when cancellation is no longer guaranteed.
+- **Tracks end:** each commitment has a track end (the later of its scheduled
+  window end plus 30 days, or agreement plus 30 days), holding whatever claim
+  exists rather than sitting open forever. An unsettled commitment reaches
+  `ended-unconfirmed`.
 - **Audit:** transitions are append-only. Corrections never rewrite a
   previously signed fact.
 
@@ -744,10 +740,10 @@ The first release has **seven card types**, and no others:
 
 | Type | Signed by | Appears at |
 |---|---|---|
-| `request` | Counterparty | C12 — the counterparty describes a need |
+| `enquiry` | Counterparty | C12 — the counterparty describes a need |
 | `quote` | Quote author | C13 — the quote author's exact terms |
 | `agreement-receipt` | Both | C14 — both sides accepted those terms |
-| `booking-progress` | Quote author's Transaction service | C16 — the shared progress view, driven by the state machine |
+| `agreement-progress` | Quote author's Transaction service | C16 — the shared progress view, driven by the state machine |
 | `payment-request` | Quote author | C17 — payee comes from the signed agreement, never from a later message |
 | `payment-acknowledgement` | Each side, separately | C19 — what each party observed |
 | `fulfilment-receipt` | Both | C20 — both agreed the work was done |

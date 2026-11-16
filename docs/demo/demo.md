@@ -1297,33 +1297,33 @@ reads in Hindi, Bob writes in English, and they still agree on the same signed t
 The script is `crates/substrate/tests/e2e/demo/40-roym-languages.spec.ts`. It is the
 reference for the clicks.
 
-### R4 Request → quote → agreement
+### R4 Enquiry → quote → agreement
 
 Bob asks for work. Alice answers with a price. Bob accepts. Both hold a signed receipt.
 
-In the Hub **Messages** tab: bob sends a **request** card; alice sends a **quote**
+In the Hub **Messages** tab: bob sends an **enquiry** card; alice sends a **quote**
 card; bob presses **Accept**. Then show the receipt.
 
 CLI equivalent (from a person's terminal):
 
 ```bash
 # bob
-roymctl --dir "$S2_DIR" --as owner roym transaction request \
+roymctl --dir "$S2_DIR" --as owner roym transaction enquiry \
   --conversation <CONVERSATION-ID> --description "Mow the lawn" --lang en \
   --gateway-url "http://127.0.0.1:$S2_GW" --host "$ROYM2_HOST"
 # alice
-roymctl --dir "$S1_DIR" --as owner roym transaction quote --request <REQUEST-ID> \
+roymctl --dir "$S1_DIR" --as owner roym transaction quote --enquiry <ENQUIRY-ID> \
   --scope "Mow the lawn" --lang en --currency INR --amount 500 --payee <ALICE-DID> \
   --timing "this week" --where "at your home" \
   --gateway-url "http://127.0.0.1:$S1_GW" --host "$ROYM1_HOST"
 # bob
 roymctl --dir "$S2_DIR" --as owner roym transaction accept --quote <QUOTE-ID> \
   --gateway-url "http://127.0.0.1:$S2_GW" --host "$ROYM2_HOST"
-roymctl --dir "$S2_DIR" --as owner roym transaction agreement --quote <QUOTE-ID> \
+roymctl --dir "$S2_DIR" --as owner roym transaction agreement get --agreement <AGREEMENT-ID> \
   --gateway-url "http://127.0.0.1:$S2_GW" --host "$ROYM2_HOST"
 ```
 
-**Rehearse:** the ids (`<CONVERSATION-ID>`, `<REQUEST-ID>`, `<QUOTE-ID>`) come from the
+**Rehearse:** the ids (`<CONVERSATION-ID>`, `<ENQUIRY-ID>`, `<QUOTE-ID>`) come from the
 previous command's output or `roym transaction thread`. The required flags for `quote`
 were read from `--help`; check the values accepted for `--timing` and `--where`.
 
