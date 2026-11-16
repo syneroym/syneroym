@@ -127,7 +127,7 @@ pub(crate) async fn set<H: AppHost>(host: &H, input: EnquirySetInput) -> Reply<E
         version_count: next_count,
         message_id,
         state,
-        send_error,
+        send_error: send_error.map(|e| e.to_string()),
     })
 }
 

@@ -191,6 +191,7 @@ async fn assert_loser_retry(node_y: &Node, loser_node: &Node, loser_quote_record
     let loser_booking_after =
         node_y.rpc_ok("agreement.get", json!({ "quote_record_id": loser_quote_record_id })).await;
     assert_eq!(loser_booking_after["state"], "not-formed");
+    assert_eq!(loser_booking_after["state_reason"], "slot-taken");
 }
 
 #[tokio::test]
@@ -282,6 +283,8 @@ async fn a_losing_concurrent_booking_is_arbitrated_and_the_winner_completes() {
     let loser_agr =
         node_y.rpc_ok("agreement.get", json!({ "quote_record_id": loser_quote_record_id })).await;
     assert_eq!(loser_agr["pair"]["state"], "half", "the loser's pair is never completed");
+    assert_eq!(loser_agr["state"], "not-formed");
+    assert_eq!(loser_agr["state_reason"], "slot-taken");
 
     wait_and_verify_winner_scheduled(
         &node_y,

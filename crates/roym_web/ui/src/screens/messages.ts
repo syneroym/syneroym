@@ -15,6 +15,7 @@ import { type SearchMatch, searchHits } from "./message_search";
 import { waitingRedraw } from "./thread_redraw";
 import { categoryPicker } from "../taxonomy/category_picker";
 import { buildDealTerms } from "./quote_terms";
+import { computeNewestRequestMap, isQuoteSuperseded } from "./thread_enquiry";
 
 /// Things the person has started inside a thread. A redraw from the event
 /// feed waits until they are gone, so it never throws away typed text. An
@@ -80,8 +81,6 @@ export interface CardRow {
   data?: {
     enquiry_id?: string;
     enquiry_record_id?: string;
-    request_id?: string;
-    request_record_id?: string;
     sequence?: number;
     counterparty_did?: string;
     terms?: {
@@ -453,55 +452,7 @@ async function renderThread(
   await redraw.now();
 }
 
-export function computeNewestRequestMap(allCards: CardRow[]): Map<string, string> {
-  const newestRequestMap = new Map<string, string>();
-  for (const c of allCards) {
-    const isEnquiryOrRequest = c.card_type === "enquiry" || c.card_type === "request";
-    const reqId = c.data?.enquiry_id ?? c.data?.request_id;
-    if (isEnquiryOrRequest && c.verified && reqId && c.record_id) {
-      const currNewestRecord = newestRequestMap.get(reqId);
-      if (!currNewestRecord) {
-        newestRequestMap.set(reqId, c.record_id);
-      } else {
-        const existing = allCards.find((x) => x.record_id === currNewestRecord);
-        const cVer = c.version_count ?? 0;
-        const exVer = existing?.version_count ?? 0;
-        if (
-          cVer > exVer ||
-          (cVer === exVer && c.sender_timestamp_ms > (existing?.sender_timestamp_ms ?? 0))
-        ) {
-          newestRequestMap.set(reqId, c.record_id);
-        }
-      }
-    }
-  }
-  return newestRequestMap;
-}
-
-export function isQuoteSuperseded(
-  cardRow: CardRow,
-  allCards: CardRow[],
-  newestRequestMap: Map<string, string>,
-): boolean {
-  const reqRecordId = cardRow.data?.enquiry_record_id ?? cardRow.data?.request_record_id;
-  if (cardRow.card_type === "quote" && cardRow.verified && reqRecordId) {
-    const matchingReq = allCards.find(
-      (c) =>
-        (c.card_type === "enquiry" || c.card_type === "request") &&
-        (c.record_id === reqRecordId ||
-          (c.data?.enquiry_id ?? c.data?.request_id) ===
-            (cardRow.data?.enquiry_id ?? cardRow.data?.request_id)),
-    );
-    const reqId = matchingReq?.data?.enquiry_id ?? matchingReq?.data?.request_id;
-    if (matchingReq && reqId) {
-      const newestRecordId = newestRequestMap.get(reqId);
-      if (newestRecordId && newestRecordId !== reqRecordId) {
-        return true;
-      }
-    }
-  }
-  return false;
-}
+export { computeNewestRequestMap, isQuoteSuperseded };
 
 /** What a sender is told when the other side turned a delivered message away. */
 /** A short explanation for a state word that needs one, else null. */
@@ -663,8 +614,8 @@ export function renderCardActions(
   myDid: string,
   refresh: () => Promise<void>,
 ) {
-  // Quote this request: on verified request or enquiry not issued by me
-  if ((card.card_type === "enquiry" || card.card_type === "request") && card.verified) {
+  // Quote this enquiry: on verified enquiry not issued by me
+  if (card.card_type === "enquiry" && card.verified) {
     const notIssuedByMe = card.direction === "incoming" || (myDid && card.issuer !== myDid);
     if (notIssuedByMe) {
       const quoteBtn = text("button", t("quote-request-button"), "button quote-request-button") as HTMLButtonElement;

@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use syneroym_app_host::{AppDataLayer, AppHost, types::data_layer::RecordWriteValue};
 use syneroym_roym_core::{
     clock,
-    deal::{ResourceKind, transition::track_end},
+    deal::{DealTerms, ResourceKind, transition::track_end},
     envelope::Response,
     method::Reply,
     paging,
@@ -49,6 +49,103 @@ pub struct AgreementProgressSnapshotRow {
     pub message_id: Option<String>,
 }
 
+async fn roll_forward<H: AppHost>(host: &H, row: &mut AgreementRow) -> Result<SnapshotRow, String> {
+    let mut cur_seq = row.seq.unwrap_or(1);
+    let mut cur_snap: SnapshotRow =
+        match get_row(host, AGREEMENT_PROGRESS, &snapshot_id(&row.quote_record_id, cur_seq)).await?
+        {
+            Some(s) => s,
+            None => return Err("no-progress-snapshot".to_string()),
+        };
+
+    while let Some(next_snap) = get_row::<SnapshotRow, _>(
+        host,
+        AGREEMENT_PROGRESS,
+        &snapshot_id(&row.quote_record_id, cur_seq + 1),
+    )
+    .await?
+    {
+        cur_seq += 1;
+        cur_snap = next_snap;
+        row.seq = Some(cur_seq);
+        row.state = Some(cur_snap.snapshot.state);
+        row.state_reason = cur_snap.snapshot.state_reason.clone();
+        row.cancel_reason = cur_snap.snapshot.cancel_reason;
+        row.commitments = cur_snap.snapshot.commitments.clone();
+    }
+    Ok(cur_snap)
+}
+
+fn prepare_next_snapshot(
+    cur_snap: &AgreementProgressPayload,
+    terms: &DealTerms,
+    agreed_at: u64,
+    event: &AgreementEvent,
+) -> Result<Option<AgreementProgressPayload>, Response> {
+    match core_progress::apply(cur_snap, terms, agreed_at, event) {
+        Ok(None) => Ok(None),
+        Ok(Some(mut n)) => {
+            n.seq = cur_snap.seq + 1;
+            Ok(Some(n))
+        }
+        Err(TransitionError::CannotCancel) => Err(Response::invalid_params("commitment-moved")),
+        Err(e) => Err(Response::invalid_params(e.to_string())),
+    }
+}
+
+async fn finalize_snapshot<H: AppHost>(
+    host: &H,
+    row: &mut AgreementRow,
+    agreement: &str,
+    mut snap_row: SnapshotRow,
+    now: u64,
+) -> Reply<AgreementRow> {
+    let next_snap_key = snapshot_id(agreement, snap_row.seq);
+    if snap_row.snapshot.state == AgreementState::Cancelled {
+        for c in &row.terms.commitments {
+            if c.giver == DealRole::QuoteAuthor && c.resource_kind == ResourceKind::ServiceInSlot {
+                let _ = SeatLedger.release(host, agreement, &c.commitment_id).await;
+            }
+        }
+    }
+
+    let (message_id, _, _) = send_card_and_file(
+        host,
+        &row.conversation,
+        RECORD_AGREEMENT_PROGRESS,
+        AGREEMENT_PROGRESS_VERSION,
+        &snap_row.envelope,
+        now,
+        None,
+    )
+    .await;
+
+    if !message_id.is_empty() {
+        snap_row.message_id = Some(message_id);
+        let _ = put_row(host, AGREEMENT_PROGRESS, &next_snap_key, &snap_row).await;
+    }
+
+    row.state = Some(snap_row.snapshot.state);
+    row.state_reason = snap_row.snapshot.state_reason.clone();
+    row.cancel_reason = snap_row.snapshot.cancel_reason;
+    row.seq = Some(snap_row.snapshot.seq);
+    row.commitments = snap_row.snapshot.commitments.clone();
+    row.updated_at_secs = now;
+    if let Err(e) = put_row(host, AGREEMENTS, agreement, row).await {
+        return Err(Response::internal_error(e));
+    }
+
+    let _ = host
+        .record_event(
+            EVENT_PROGRESS.to_string(),
+            row.conversation.clone(),
+            Some(agreement.to_string()),
+        )
+        .await;
+
+    Ok(row.clone())
+}
+
 pub(crate) async fn transition_at<H: AppHost>(
     host: &H,
     agreement: &str,
@@ -61,109 +158,75 @@ pub(crate) async fn transition_at<H: AppHost>(
         Err(e) => return Err(Response::internal_error(e)),
     };
 
-    let highest_seq = row.seq.unwrap_or(1);
-    let snap_key = snapshot_id(agreement, highest_seq);
-    let cur_snap_row: SnapshotRow = match get_row(host, AGREEMENT_PROGRESS, &snap_key).await {
-        Ok(Some(sr)) => sr,
-        Ok(None) => return Err(Response::invalid_params("no-progress-snapshot")),
-        Err(e) => return Err(Response::internal_error(e)),
-    };
-
-    let agreed_at = row.agreed_at_secs.unwrap_or(now);
-    let next_snap =
-        match core_progress::apply(&cur_snap_row.snapshot, &row.terms, agreed_at, &event) {
-            Ok(None) => {
-                progress::resend_if_unsent(host, agreement, highest_seq, &row.conversation).await;
-                return Ok(row);
-            }
-            Ok(Some(mut n)) => {
-                n.seq = highest_seq + 1;
-                n
-            }
-            Err(TransitionError::CannotCancel) => {
-                return Err(Response::invalid_params("commitment-moved"));
-            }
-            Err(e) => return Err(Response::invalid_params(e.to_string())),
+    for _attempt in 0..3 {
+        let cur_snap_row = match roll_forward(host, &mut row).await {
+            Ok(sr) => sr,
+            Err(e) => return Err(Response::invalid_params(e)),
         };
 
-    let (snap_env, snap_rec_id) = match progress::sign(host, &next_snap).await {
-        Ok(s) => s,
-        Err(e) => return Err(Response::internal_error(e)),
-    };
+        let agreed_at = row.agreed_at_secs.unwrap_or(now);
+        let next_snap =
+            match prepare_next_snapshot(&cur_snap_row.snapshot, &row.terms, agreed_at, &event)? {
+                None => {
+                    progress::resend_if_unsent(
+                        host,
+                        agreement,
+                        cur_snap_row.seq,
+                        &row.conversation,
+                    )
+                    .await;
+                    return Ok(row);
+                }
+                Some(n) => n,
+            };
 
-    let next_seq = next_snap.seq;
-    let next_snap_key = snapshot_id(agreement, next_seq);
-    let mut snap_row = SnapshotRow {
-        seq: next_seq,
-        agreement: agreement.to_string(),
-        conversation: row.conversation.clone(),
-        snapshot: next_snap.clone(),
-        envelope: snap_env.clone(),
-        record_id: snap_rec_id,
-        message_id: None,
-        stored_at_secs: now,
-    };
+        let (snap_env, snap_rec_id) = match progress::sign(host, &next_snap).await {
+            Ok(s) => s,
+            Err(e) => return Err(Response::internal_error(e)),
+        };
 
-    let payload = match serde_json::to_vec(&snap_row) {
-        Ok(b) => b,
-        Err(e) => return Err(Response::internal_error(e.to_string())),
-    };
-    let write = RecordWriteValue { id: next_snap_key.clone(), payload };
-    if let Err(e) = AppDataLayer::create(host, AGREEMENT_PROGRESS.to_string(), vec![write]).await {
-        return Err(Response::internal_error(e.to_string()));
-    }
+        let next_seq = next_snap.seq;
+        let next_snap_key = snapshot_id(agreement, next_seq);
+        let snap_row = SnapshotRow {
+            seq: next_seq,
+            agreement: agreement.to_string(),
+            conversation: row.conversation.clone(),
+            snapshot: next_snap.clone(),
+            envelope: snap_env.clone(),
+            record_id: snap_rec_id,
+            message_id: None,
+            stored_at_secs: now,
+        };
 
-    if next_snap.state == AgreementState::Cancelled {
-        let reservations = SeatLedger;
-        for c in &row.terms.commitments {
-            if c.giver == DealRole::QuoteAuthor && c.resource_kind == ResourceKind::ServiceInSlot {
-                let _ = reservations.release(host, agreement, &c.commitment_id).await;
-            }
+        let payload = match serde_json::to_vec(&snap_row) {
+            Ok(b) => b,
+            Err(e) => return Err(Response::internal_error(e.to_string())),
+        };
+        let write = RecordWriteValue { id: next_snap_key.clone(), payload };
+        match AppDataLayer::create(host, AGREEMENT_PROGRESS.to_string(), vec![write]).await {
+            Ok(Some(_)) => continue,
+            Ok(None) => {}
+            Err(e) => return Err(Response::internal_error(e.to_string())),
         }
+
+        return finalize_snapshot(host, &mut row, agreement, snap_row, now).await;
     }
 
-    let (message_id, _, _) = send_card_and_file(
-        host,
-        &row.conversation,
-        RECORD_AGREEMENT_PROGRESS,
-        AGREEMENT_PROGRESS_VERSION,
-        &snap_env,
-        now,
-        None,
-    )
-    .await;
-
-    if !message_id.is_empty() {
-        snap_row.message_id = Some(message_id);
-        let _ = put_row(host, AGREEMENT_PROGRESS, &next_snap_key, &snap_row).await;
-    }
-
-    row.state = Some(next_snap.state);
-    row.state_reason = next_snap.state_reason;
-    row.cancel_reason = next_snap.cancel_reason;
-    row.seq = Some(next_seq);
-    row.commitments = next_snap.commitments;
-    row.updated_at_secs = now;
-    if let Err(e) = put_row(host, AGREEMENTS, agreement, &row).await {
-        return Err(Response::internal_error(e));
-    }
-
-    let _ = host
-        .record_event(
-            EVENT_PROGRESS.to_string(),
-            row.conversation.clone(),
-            Some(agreement.to_string()),
-        )
-        .await;
-
-    Ok(row)
+    Err(Response::internal_error("busy"))
 }
 
 pub(crate) async fn cancel<H: AppHost>(
     host: &H,
     input: AgreementCancelInput,
 ) -> Reply<AgreementView> {
-    let now = clock::now_secs();
+    cancel_at(host, input, clock::now_secs()).await
+}
+
+pub(crate) async fn cancel_at<H: AppHost>(
+    host: &H,
+    input: AgreementCancelInput,
+    now: u64,
+) -> Reply<AgreementView> {
     let agr: AgreementRow = match get_row(host, AGREEMENTS, &input.agreement).await {
         Ok(Some(a)) => a,
         Ok(None) => return Err(Response::invalid_params("no-such-agreement")),
@@ -278,6 +341,19 @@ pub(crate) async fn tick_conversation_at<H: AppHost>(
     for row in &mut agreements {
         if owner == row.quote_author_did {
             let _ = tick_agreement_at(host, row, now).await;
+        } else if owner == row.counterparty_did
+            && row.quote_author.is_none()
+            && now >= row.terms.quote_expires_at_secs
+        {
+            let reservations = SeatLedger;
+            for c in &row.terms.commitments {
+                if c.giver == DealRole::Counterparty
+                    && c.resource_kind == ResourceKind::ServiceInSlot
+                {
+                    let _ =
+                        reservations.release(host, &row.quote_record_id, &c.commitment_id).await;
+                }
+            }
         }
     }
     Ok(())

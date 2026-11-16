@@ -36,7 +36,7 @@ pub(super) async fn claim_payment_request_fence<H: AppHost>(
         commitment_id: Some(commitment_id.to_string()),
         slot_id: None,
         seat: None,
-        step: None,
+        reason: None,
         half: Some(half.clone()),
         created_at_secs: now,
     };
@@ -180,7 +180,7 @@ pub(super) async fn claim_payment_ack_fence<H: AppHost>(
         commitment_id: Some(commitment_id.to_string()),
         slot_id: None,
         seat: None,
-        step: None,
+        reason: None,
         half: Some(half.clone()),
         created_at_secs: now,
     };

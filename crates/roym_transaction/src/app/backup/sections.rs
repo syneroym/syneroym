@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use syneroym_app_host::AppHost;
 use syneroym_roym_core::{
@@ -16,7 +17,11 @@ use syneroym_roym_core::{
 use super::{
     super::{
         AGREEMENT_PROGRESS, AgreementRow, FULFILMENTS, FulfilmentsRow, LEDGER, PAYMENTS,
-        PaymentsRow, decide::SnapshotRow, ledger::LedgerRow, put_row,
+        PaymentsRow,
+        decide::{CountersignRow, DecisionRow, SnapshotRow},
+        hold::{HoldLedgerRow, SeatLedgerRow},
+        ledger::LedgerRow,
+        put_row,
     },
     QuotesByRecordId,
 };
@@ -24,13 +29,24 @@ use super::{
 type HistoryEntry = (String, String, String);
 type ValidatedPayments = (Vec<(String, PaymentsRow)>, Vec<HistoryEntry>);
 type ValidatedFulfilments = (Vec<(String, FulfilmentsRow)>, Vec<HistoryEntry>);
-type ValidatedLedger = (Vec<(String, LedgerRow)>, Vec<HistoryEntry>);
+type ValidatedLedger = (Vec<(String, ValidatedLedgerRow)>, Vec<HistoryEntry>);
 type ValidatedProgress = (Vec<(String, SnapshotRow)>, Vec<HistoryEntry>);
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub(crate) enum ValidatedLedgerRow {
+    Decision(DecisionRow),
+    Countersign(CountersignRow),
+    Hold(HoldLedgerRow),
+    Seat(SeatLedgerRow),
+    Fence(LedgerRow),
+    Other(Value),
+}
 
 pub(crate) struct ValidatedVerticalSections {
     pub(crate) payments: Vec<(String, PaymentsRow)>,
     pub(crate) fulfilments: Vec<(String, FulfilmentsRow)>,
-    pub(crate) ledger: Vec<(String, LedgerRow)>,
+    pub(crate) ledger: Vec<(String, ValidatedLedgerRow)>,
     pub(crate) progress: Vec<(String, SnapshotRow)>,
     pub(crate) history_entries: Vec<HistoryEntry>,
 }
@@ -286,31 +302,135 @@ fn validate_fulfilments(
     Ok((validated, history))
 }
 
-fn validate_ledger(ledger_rows: Vec<Value>, now: u64) -> Result<ValidatedLedger, Response> {
-    let mut validated_ledger = Vec::new();
-    let history = Vec::new();
-
-    for r in ledger_rows {
-        let id = r.get("id").and_then(Value::as_str).unwrap_or("");
-        let payload = r.get("payload").cloned().unwrap_or(Value::Null);
-        let row: LedgerRow = match serde_json::from_value(payload) {
-            Ok(row) => row,
-            Err(e) => {
-                return Err(Response::invalid_params(format!("ledger '{id}': invalid row: {e}")));
-            }
-        };
-
-        if let Some(ref step) = row.step {
-            let v = progress::verify_agreement_progress(&step.envelope, now);
+fn validate_fence_entry(
+    id: &str,
+    payload: Value,
+    now: u64,
+) -> Result<ValidatedLedgerRow, Response> {
+    let row: LedgerRow = serde_json::from_value(payload)
+        .map_err(|e| Response::invalid_params(format!("ledger '{id}': invalid fence row: {e}")))?;
+    if id.starts_with("payreq:") && (row.agreement.is_empty() || row.commitment_id.is_none()) {
+        return Err(Response::invalid_params(format!("ledger '{id}': empty fields")));
+    }
+    if id.starts_with("ack:") {
+        if let Some(ref half) = row.half {
+            let v = payment::verify_payment_acknowledgement(&half.envelope, now);
             if !v.verified {
                 return Err(Response::invalid_params(format!(
-                    "ledger '{id}' step does not verify: {:?}",
+                    "ledger '{id}': ack half does not verify: {:?}",
                     v.reason
                 )));
             }
+        } else {
+            // No half to verify
         }
+    }
+    if id.starts_with("fulfil:") {
+        if let Some(ref half) = row.half {
+            let v = fulfilment::verify_fulfilment_receipt(&half.envelope, now);
+            if !v.verified {
+                return Err(Response::invalid_params(format!(
+                    "ledger '{id}': fulfil half does not verify: {:?}",
+                    v.reason
+                )));
+            }
+        } else {
+            // No half to verify
+        }
+    }
+    Ok(ValidatedLedgerRow::Fence(row))
+}
 
-        validated_ledger.push((id.to_string(), row));
+fn validate_non_seat_entry(
+    id: &str,
+    payload: Value,
+    quotes_by_record_id: &QuotesByRecordId,
+    now: u64,
+    active_holds: &mut std::collections::HashSet<(String, u32, String)>,
+) -> Result<Option<ValidatedLedgerRow>, Response> {
+    if id.starts_with("hold:") {
+        let row: HoldLedgerRow = serde_json::from_value(payload).map_err(|e| {
+            Response::invalid_params(format!("ledger '{id}': invalid hold row: {e}"))
+        })?;
+        if row.agreement.is_empty() || row.commitment_id.is_empty() {
+            return Err(Response::invalid_params(format!("ledger '{id}': empty fields")));
+        }
+        active_holds.insert((row.slot_id.clone(), row.seat, row.agreement.clone()));
+        Ok(Some(ValidatedLedgerRow::Hold(row)))
+    } else if id.starts_with("decision:") {
+        let row: DecisionRow = serde_json::from_value(payload).map_err(|e| {
+            Response::invalid_params(format!("ledger '{id}': invalid decision row: {e}"))
+        })?;
+        if row.agreement.is_empty() {
+            return Err(Response::invalid_params(format!("ledger '{id}': empty agreement")));
+        }
+        if row.state != "deciding" && row.state != "agreed" && row.state != "not-formed" {
+            return Err(Response::invalid_params(format!(
+                "ledger '{id}': unknown decision state '{}'",
+                row.state
+            )));
+        }
+        Ok(Some(ValidatedLedgerRow::Decision(row)))
+    } else if id.starts_with("countersign:") {
+        let row: CountersignRow = serde_json::from_value(payload).map_err(|e| {
+            Response::invalid_params(format!("ledger '{id}': invalid countersign row: {e}"))
+        })?;
+        let v = syneroym_roym_core::transaction::verify_agreement_receipt(&row.half.envelope, now);
+        if !v.verified {
+            return Err(Response::invalid_params(format!(
+                "ledger '{id}': countersign does not verify: {:?}",
+                v.reason
+            )));
+        }
+        if !quotes_by_record_id.contains_key(&row.agreement) {
+            return Err(Response::invalid_params(format!(
+                "ledger '{id}': names unheld quote '{}'",
+                row.agreement
+            )));
+        }
+        Ok(Some(ValidatedLedgerRow::Countersign(row)))
+    } else if id.starts_with("payreq:") || id.starts_with("ack:") || id.starts_with("fulfil:") {
+        validate_fence_entry(id, payload, now).map(Some)
+    } else if id.starts_with("seat:") {
+        Ok(None)
+    } else {
+        Ok(Some(ValidatedLedgerRow::Other(payload)))
+    }
+}
+
+fn validate_ledger(
+    ledger_rows: Vec<Value>,
+    quotes_by_record_id: &QuotesByRecordId,
+    now: u64,
+) -> Result<ValidatedLedger, Response> {
+    let mut validated_ledger = Vec::new();
+    let history = Vec::new();
+    let mut active_holds = std::collections::HashSet::new();
+
+    for r in &ledger_rows {
+        let id = r.get("id").and_then(Value::as_str).unwrap_or("");
+        let payload = r.get("payload").cloned().unwrap_or(Value::Null);
+        if let Some(row) =
+            validate_non_seat_entry(id, payload, quotes_by_record_id, now, &mut active_holds)?
+        {
+            validated_ledger.push((id.to_string(), row));
+        }
+    }
+
+    for r in &ledger_rows {
+        let id = r.get("id").and_then(Value::as_str).unwrap_or("");
+        if id.starts_with("seat:") {
+            let payload = r.get("payload").cloned().unwrap_or(Value::Null);
+            let row: SeatLedgerRow = serde_json::from_value(payload).map_err(|e| {
+                Response::invalid_params(format!("ledger '{id}': invalid seat row: {e}"))
+            })?;
+            if !active_holds.contains(&(row.slot_id.clone(), row.seat, row.agreement.clone())) {
+                return Err(Response::invalid_params(format!(
+                    "ledger '{id}': seat has no matching active hold"
+                )));
+            }
+            validated_ledger.push((id.to_string(), ValidatedLedgerRow::Seat(row)));
+        }
     }
 
     Ok((validated_ledger, history))
@@ -379,7 +499,7 @@ pub(crate) fn validate_vertical_sections(
     history_entries.extend(h_pay);
     let (fulfilments, h_ful) = validate_fulfilments(ful_rows, agreements_map, now)?;
     history_entries.extend(h_ful);
-    let (ledger, h_led) = validate_ledger(led_rows, now)?;
+    let (ledger, h_led) = validate_ledger(led_rows, quotes_by_record_id, now)?;
     history_entries.extend(h_led);
     let (progress, h_prog) = validate_progress(prog_rows, quotes_by_record_id, now)?;
     history_entries.extend(h_prog);

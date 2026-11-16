@@ -531,6 +531,9 @@ async fn file_agreement_receipt_card<H: AppHost>(
             issued_at_secs: issued_at,
         };
         row_agr.set_half(payload.role, half);
+        if payload.role == transaction::DealRole::QuoteAuthor {
+            row_agr.agreed_at_secs = Some(issued_at);
+        }
         row_agr.updated_at_secs = now;
         put_row(host, AGREEMENTS, &payload.quote_record_id, &row_agr).await?;
     }

@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { buildDealTerms } from "./quote_terms";
+import {
+  SCHEDULING_EXTENSION,
+  SCHEDULING_SLOT_SCHEMA,
+  buildDealTerms,
+} from "./quote_terms";
 
 interface TestCommitment {
   giver?: string;
@@ -79,6 +83,7 @@ describe("buildDealTerms", () => {
         payee: "Cleaner",
         timing: "after-work",
         where: "at-receiver",
+        listingId: "listing-123",
         slotId: "slot-123",
         schedule: { earliest_secs: 1800000000, latest_secs: 1800003600 },
       },
@@ -86,11 +91,11 @@ describe("buildDealTerms", () => {
     );
     const slotComms = slotDeal.commitments as TestCommitment[];
     expect(slotComms[0].resource_kind).toBe("service-in-slot");
-    expect(slotComms[0].extension).toEqual({ id: "scheduling", version: 1 });
+    expect(slotComms[0].extension).toEqual({ id: SCHEDULING_EXTENSION, version: 1 });
     expect(slotComms[0].details).toEqual({
-      extension: "scheduling",
-      schema: "scheduling/slot@1",
-      data: { slot_id: "slot-123" },
+      extension: SCHEDULING_EXTENSION,
+      schema: SCHEDULING_SLOT_SCHEMA,
+      data: { listing_id: "listing-123", slot_id: "slot-123" },
     });
     expect(slotComms[0].window).toEqual({ earliest_secs: 1800000000, latest_secs: 1800003600 });
   });

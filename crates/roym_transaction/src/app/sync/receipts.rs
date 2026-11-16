@@ -204,16 +204,19 @@ async fn apply_newer_snapshot<H: AppHost>(
     agr.seq = Some(p.seq);
     agr.commitments = p.commitments.clone();
     if agr.agreed_at_secs.is_none() && p.state == AgreementState::Agreed {
-        agr.agreed_at_secs = Some(ctx.issued_at.unwrap_or(ctx.now));
+        let agreed_at = agr
+            .quote_author
+            .as_ref()
+            .map_or_else(|| ctx.issued_at.unwrap_or(ctx.now), |h| h.issued_at_secs);
+        agr.agreed_at_secs = Some(agreed_at);
     }
     agr.updated_at_secs = ctx.now;
     put_row(host, AGREEMENTS, &p.agreement, &agr).await?;
 
     if p.state == AgreementState::NotFormed || p.state == AgreementState::Cancelled {
-        let reservations = SeatLedger;
         for c in &agr.terms.commitments {
             if c.giver == DealRole::Counterparty && c.resource_kind == ResourceKind::ServiceInSlot {
-                let _ = reservations.release(host, &p.agreement, &c.commitment_id).await;
+                let _ = SeatLedger.release(host, &p.agreement, &c.commitment_id).await;
             }
         }
     }

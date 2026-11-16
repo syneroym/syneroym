@@ -66,8 +66,8 @@ describe("newestRequestMap and quote superseded notice", () => {
     record_id: "rec_quo_1",
     data: {
       quote_id: "quo_1",
-      request_record_id: "rec_req_v1",
-      request_id: "req_canonical_1",
+      enquiry_record_id: "rec_req_v1",
+      enquiry_id: "req_canonical_1",
       counterparty_did: "did:key:counterparty",
     },
     stored_at_secs: 2,
@@ -86,8 +86,8 @@ describe("newestRequestMap and quote superseded notice", () => {
     record_id: "rec_quo_2",
     data: {
       quote_id: "quo_2",
-      request_record_id: "rec_req_v2",
-      request_id: "req_canonical_1",
+      enquiry_record_id: "rec_req_v2",
+      enquiry_id: "req_canonical_1",
       counterparty_did: "did:key:counterparty",
     },
     stored_at_secs: 3,

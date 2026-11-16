@@ -1,6 +1,9 @@
 import type { ServiceLocationKind } from "../listings/editor";
 import { currencyMinorExponent, minorToDecimal } from "../money";
 
+export const SCHEDULING_EXTENSION = "scheduling";
+export const SCHEDULING_SLOT_SCHEMA = "scheduling/slot@1";
+
 export interface QuoteFormFields {
   give?: string;
   scope: string;
@@ -15,6 +18,7 @@ export interface QuoteFormFields {
   cancellation?: string;
   refund?: string;
   dispute?: string;
+  listingId?: string;
   slotId?: string;
   schedule?: {
     earliest_secs: number;
@@ -46,11 +50,11 @@ export function buildDealTerms(fields: QuoteFormFields, lang: string): Record<st
     c1.window = fields.schedule;
   }
   if (fields.slotId) {
-    c1.extension = { id: "scheduling", version: 1 };
+    c1.extension = { id: SCHEDULING_EXTENSION, version: 1 };
     c1.details = {
-      extension: "scheduling",
-      schema: "scheduling/slot@1",
-      data: { slot_id: fields.slotId },
+      extension: SCHEDULING_EXTENSION,
+      schema: SCHEDULING_SLOT_SCHEMA,
+      data: { listing_id: fields.listingId ?? "", slot_id: fields.slotId },
     };
   }
 

@@ -57,7 +57,6 @@ pub struct AgreementAcceptOutput {
     pub role: DealRole,
     pub record_id: String,
     pub pair: PairState,
-    pub booking: Option<Option<()>>,
     pub message_id: String,
     pub state: SendState,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -182,11 +181,17 @@ pub(crate) async fn accept_at<H: AppHost>(
                 Ok(ReserveOutcome::Held { .. } | ReserveOutcome::AlreadyHeld { .. }) => {
                     reserved.push(c.commitment_id.clone());
                 }
-                Ok(ReserveOutcome::SlotUnavailable | ReserveOutcome::SlotTaken) => {
+                Ok(outcome @ (ReserveOutcome::SlotUnavailable | ReserveOutcome::SlotTaken)) => {
                     for cid in &reserved {
                         let _ = reservations.release(host, &input.quote_record_id, cid).await;
                     }
-                    return Err(Response::invalid_params("reserve-failed"));
+                    let reason = if outcome == ReserveOutcome::SlotUnavailable {
+                        "slot-unavailable"
+                    } else {
+                        "slot-taken"
+                    };
+                    return Err(Response::invalid_params("reserve-failed")
+                        .with_data(serde_json::json!({ "reason": reason })));
                 }
                 Err(e) => {
                     for cid in &reserved {
@@ -227,10 +232,9 @@ pub(crate) async fn accept_at<H: AppHost>(
         role,
         record_id,
         pair,
-        booking: Some(None),
         message_id,
         state,
-        send_error,
+        send_error: send_error.map(|e| e.to_string()),
     })
 }
 
@@ -357,7 +361,6 @@ fn already_accepted_response(
         role,
         record_id: existing.record_id.clone(),
         pair,
-        booking: Some(None),
         message_id: String::new(),
         state: SendState::AlreadyAccepted,
         send_error: None,
@@ -383,7 +386,14 @@ async fn sign_agreement_receipt<H: AppHost>(
         viewed_via_mt,
     };
     if let Err(e) = payload.validate() {
-        return Err(Response::invalid_params(e.to_string()));
+        let resp = Response::invalid_params(e.to_string());
+        let resp = match &e {
+            transaction::TransactionError::Deal(de) => {
+                resp.with_data(serde_json::json!({ "code": de.code() }))
+            }
+            _ => resp,
+        };
+        return Err(resp);
     }
 
     let payload_str = match serde_json::to_string(&payload) {

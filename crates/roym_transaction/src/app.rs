@@ -502,6 +502,26 @@ pub(crate) async fn file_own_card<H: AppHost>(
 /// aborting: the signed record is already durably stored by the caller, so
 /// the record exists here either way and only the notification/own-card
 /// bookkeeping is at risk.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SendCardError {
+    Transport(String),
+    Refused(String),
+}
+
+impl SendCardError {
+    pub(crate) fn is_transport(&self) -> bool {
+        matches!(self, Self::Transport(_))
+    }
+}
+
+impl std::fmt::Display for SendCardError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Transport(s) | Self::Refused(s) => write!(f, "{s}"),
+        }
+    }
+}
+
 pub(crate) async fn send_card_and_file<H: AppHost>(
     host: &H,
     conversation: &str,
@@ -510,10 +530,16 @@ pub(crate) async fn send_card_and_file<H: AppHost>(
     envelope_json: &str,
     now: u64,
     version_count: Option<u64>,
-) -> (String, SendState, Option<String>) {
+) -> (String, SendState, Option<SendCardError>) {
     let body = match card::card_body(card_type, version, envelope_json) {
         Ok(b) => b,
-        Err(e) => return (String::new(), SendState::NotSent, Some(e.to_string())),
+        Err(e) => {
+            return (
+                String::new(),
+                SendState::NotSent,
+                Some(SendCardError::Refused(e.to_string())),
+            );
+        }
     };
 
     let send_resp = call_sibling::<_, SendInput, SendOutput>(
@@ -531,12 +557,18 @@ pub(crate) async fn send_card_and_file<H: AppHost>(
 
     let (message_id, state, sender_timestamp_ms, mut send_error) = match send_resp {
         Ok(out) => (out.message_id, SendState::from(out.state), out.sender_timestamp_ms, None),
-        Err(SiblingError::Refused(err)) => {
-            (String::new(), SendState::NotSent, now as i64 * 1000, Some(err.message))
-        }
-        Err(SiblingError::Transport(e) | SiblingError::BadReply(e)) => {
-            (String::new(), SendState::NotSent, now as i64 * 1000, Some(e))
-        }
+        Err(SiblingError::Refused(err)) => (
+            String::new(),
+            SendState::NotSent,
+            now as i64 * 1000,
+            Some(SendCardError::Refused(err.message)),
+        ),
+        Err(SiblingError::Transport(e) | SiblingError::BadReply(e)) => (
+            String::new(),
+            SendState::NotSent,
+            now as i64 * 1000,
+            Some(SendCardError::Transport(e)),
+        ),
     };
 
     if !message_id.is_empty()
@@ -553,7 +585,8 @@ pub(crate) async fn send_card_and_file<H: AppHost>(
         )
         .await
     {
-        send_error = send_error.or(Some(format!("file own card failed: {e}")));
+        send_error = send_error
+            .or_else(|| Some(SendCardError::Transport(format!("file own card failed: {e}"))));
     }
 
     (message_id, state, send_error)

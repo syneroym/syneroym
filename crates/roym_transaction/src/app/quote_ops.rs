@@ -163,7 +163,14 @@ pub(crate) async fn set_at<H: AppHost>(
         terms,
     };
     if let Err(e) = payload.validate() {
-        return Err(Response::invalid_params(e.to_string()));
+        let resp = Response::invalid_params(e.to_string());
+        let resp = match &e {
+            transaction::TransactionError::Deal(de) => {
+                resp.with_data(serde_json::json!({ "code": de.code() }))
+            }
+            _ => resp,
+        };
+        return Err(resp);
     }
 
     let signed =
@@ -193,7 +200,7 @@ pub(crate) async fn set_at<H: AppHost>(
         expires_at_secs,
         message_id,
         state,
-        send_error,
+        send_error: send_error.map(|e| e.to_string()),
     })
 }
 

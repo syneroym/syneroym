@@ -54,6 +54,8 @@ pub struct QuoteArgs {
     #[arg(long)]
     pub expires_hours: u64,
     #[arg(long)]
+    pub listing_id: Option<String>,
+    #[arg(long)]
     pub slot: Option<String>,
     #[arg(long, default_value = DEFAULT_GATEWAY_URL)]
     pub gateway_url: String,
@@ -244,6 +246,7 @@ fn build_quote_params(
     refund_file: &Path,
     dispute: &str,
     expires_hours: u64,
+    listing_id: Option<&str>,
     slot: Option<&str>,
 ) -> Result<Value> {
     let parsed_lang = LangTag::parse(lang)?;
@@ -302,6 +305,7 @@ fn build_quote_params(
         &timing_str,
         location,
         schedule_val,
+        listing_id,
         slot,
     );
 
@@ -336,6 +340,7 @@ fn build_quote_commitments(
     timing_str: &str,
     location: Value,
     schedule: Option<Value>,
+    listing_id: Option<&str>,
     slot: Option<&str>,
 ) -> Vec<Value> {
     let mut c1 = json!({
@@ -351,11 +356,12 @@ fn build_quote_commitments(
     if let Some(sl) = slot {
         c1["resource_kind"] = json!("service-in-slot");
         c1["kind"] = json!("fulfilment");
-        c1["extension"] = json!({ "id": "scheduling", "version": 1 });
+        c1["extension"] =
+            json!({ "id": syneroym_roym_core::deal::SCHEDULING_EXTENSION, "version": 1 });
         c1["details"] = json!({
-            "extension": "scheduling",
-            "schema": "scheduling:slot:v1",
-            "data": { "slot_id": sl },
+            "extension": syneroym_roym_core::deal::SCHEDULING_EXTENSION,
+            "schema": syneroym_roym_core::deal::SCHEDULING_SLOT_SCHEMA,
+            "data": { "listing_id": listing_id.unwrap_or_default(), "slot_id": sl },
         });
     } else {
         c1["resource_kind"] = json!("goods-or-service");
@@ -537,6 +543,7 @@ pub(super) async fn handle_transaction(
                 &args.refund_file,
                 &args.dispute,
                 args.expires_hours,
+                args.listing_id.as_deref(),
                 args.slot.as_deref(),
             )?;
             call_and_print(ctx, &args.gateway_url, args.host.as_deref(), "quote.set", params)
@@ -690,6 +697,7 @@ mod tests {
             "arbitration",
             24,
             None,
+            None,
         );
         assert!(params.is_ok());
         if let Ok(p) = params {
@@ -714,6 +722,7 @@ mod tests {
             &refund_path,
             "arbitration",
             24,
+            None,
             None,
         );
         assert!(err.is_err());

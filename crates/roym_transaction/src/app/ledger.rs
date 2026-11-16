@@ -10,7 +10,6 @@ pub(crate) enum LedgerKind {
     Countersign,
     Hold,
     Seat,
-    Step,
     Fence,
 }
 
@@ -29,19 +28,9 @@ pub(crate) struct LedgerRow {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) seat: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) step: Option<StepRow>,
+    pub(crate) reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) half: Option<ReceiptHalf>,
     #[serde(default, alias = "at_secs")]
     pub(crate) created_at_secs: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct StepRow {
-    pub(crate) seq: u32,
-    pub(crate) event: String,
-    pub(crate) envelope: String,
-    pub(crate) record_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) message_id: Option<String>,
 }

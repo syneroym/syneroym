@@ -15,7 +15,7 @@ use syneroym_roym_core::{
 
 use super::{LEDGER, get_row};
 
-pub const MAX_SLOT_CAPACITY: u32 = 100;
+pub const MAX_SLOT_CAPACITY: u32 = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReserveOutcome {
