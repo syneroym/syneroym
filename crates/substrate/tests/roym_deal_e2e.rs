@@ -28,16 +28,18 @@ use common::{
     },
 };
 
-#[tokio::test]
-#[expect(clippy::too_many_lines, reason = "two nodes cross-quoting simultaneously")]
-async fn each_party_quotes_the_other_at_once() {
-    let _guard = common::serial_guard().await;
-    let _ = ring::default_provider().install_default();
-    if !roym_artifacts_present() {
-        eprintln!("skipping: Roym wasm/UI artifacts not built (`mise run build:roym`)");
-        return;
-    }
+struct CrossQuoteFixture {
+    _dir_x: tempfile::TempDir,
+    _dir_y: tempfile::TempDir,
+    node_x: Node,
+    node_y: Node,
+    conv_x: String,
+    conv_y: String,
+    req_x: String,
+    req_y: String,
+}
 
+async fn setup_cross_quote_fixture() -> CrossQuoteFixture {
     let dir_x = tempfile::tempdir().unwrap();
     let dir_y = tempfile::tempdir().unwrap();
     let owner_x = Identity::generate().unwrap();
@@ -101,6 +103,21 @@ async fn each_party_quotes_the_other_at_once() {
     assert!(wait_delivered(&node_y, &y_enq_msg).await, "Y enquiry delivered to X");
 
     node_x.rpc_ok("transaction.sync", json!({ "conversation": conv_x })).await;
+
+    CrossQuoteFixture { _dir_x: dir_x, _dir_y: dir_y, node_x, node_y, conv_x, conv_y, req_x, req_y }
+}
+
+#[tokio::test]
+async fn each_party_quotes_the_other_at_once() {
+    let _guard = common::serial_guard().await;
+    let _ = ring::default_provider().install_default();
+    if !roym_artifacts_present() {
+        eprintln!("skipping: Roym wasm/UI artifacts not built (`mise run build:roym`)");
+        return;
+    }
+
+    let CrossQuoteFixture { _dir_x, _dir_y, node_x, node_y, conv_x, conv_y, req_x, req_y } =
+        setup_cross_quote_fixture().await;
 
     let quote_x_fut = node_x.rpc_ok(
         "quote.set",
@@ -193,16 +210,18 @@ async fn each_party_quotes_the_other_at_once() {
     assert!(q_on_y["declined_at_secs"].is_null());
 }
 
-#[tokio::test]
-#[expect(clippy::too_many_lines, reason = "two nodes barter deal lifecycle")]
-async fn service_for_service_and_goods_deals_close() {
-    let _guard = common::serial_guard().await;
-    let _ = ring::default_provider().install_default();
-    if !roym_artifacts_present() {
-        eprintln!("skipping: Roym wasm/UI artifacts not built (`mise run build:roym`)");
-        return;
-    }
+struct BarterFixture {
+    _dir_x: tempfile::TempDir,
+    _dir_y: tempfile::TempDir,
+    node_x: Node,
+    node_y: Node,
+    conv_x: String,
+    conv_y: String,
+    req_x: String,
+    owner_y_did: String,
+}
 
+async fn setup_barter_fixture() -> BarterFixture {
     let dir_x = tempfile::tempdir().unwrap();
     let dir_y = tempfile::tempdir().unwrap();
     let owner_x = Identity::generate().unwrap();
@@ -251,6 +270,90 @@ async fn service_for_service_and_goods_deals_close() {
             .await;
     let conv_y = quote_author_conv_for(&node_y, &x_conv_did).await;
     let req_x = request_record_on_quote_author(&node_y, &conv_y).await;
+
+    BarterFixture {
+        _dir_x: dir_x,
+        _dir_y: dir_y,
+        node_x,
+        node_y,
+        conv_x,
+        conv_y,
+        req_x,
+        owner_y_did,
+    }
+}
+
+async fn exchange_barter_fulfilments(
+    node_x: &Node,
+    node_y: &Node,
+    conv_x: &str,
+    conv_y: &str,
+    quote_rec_id: &str,
+) {
+    let y_f1 = node_y
+        .rpc_ok("fulfilment.sign", json!({ "agreement": quote_rec_id, "commitment_id": "c1" }))
+        .await;
+    let y_f1_msg = y_f1["message_id"].as_str().unwrap();
+    assert!(wait_delivered(node_y, y_f1_msg).await, "Y c1 fulfilment delivered");
+
+    node_x.rpc_ok("transaction.sync", json!({ "conversation": conv_x })).await;
+    let x_f1_rc = node_x
+        .rpc_ok("fulfilment.sign", json!({ "agreement": quote_rec_id, "commitment_id": "c1" }))
+        .await;
+    let x_f1_msg = x_f1_rc["message_id"].as_str().unwrap();
+    assert!(wait_delivered(node_x, x_f1_msg).await, "X c1 receiver half delivered");
+
+    node_y.rpc_ok("transaction.sync", json!({ "conversation": conv_y })).await;
+
+    let x_f2 = node_x
+        .rpc_ok("fulfilment.sign", json!({ "agreement": quote_rec_id, "commitment_id": "c2" }))
+        .await;
+    let x_f2_msg = x_f2["message_id"].as_str().unwrap();
+    assert!(wait_delivered(node_x, x_f2_msg).await, "X c2 fulfilment delivered");
+
+    node_y.rpc_ok("transaction.sync", json!({ "conversation": conv_y })).await;
+    let y_f2_rc = node_y
+        .rpc_ok("fulfilment.sign", json!({ "agreement": quote_rec_id, "commitment_id": "c2" }))
+        .await;
+    let y_f2_msg = y_f2_rc["message_id"].as_str().unwrap();
+    assert!(wait_delivered(node_y, y_f2_msg).await, "Y c2 receiver half delivered");
+}
+
+async fn wait_both_agreements_closed(
+    node_x: &Node,
+    node_y: &Node,
+    conv_x: &str,
+    conv_y: &str,
+    quote_rec_id: &str,
+) {
+    let y_closed = wait_until(Duration::from_secs(30), || async {
+        node_y.rpc_ok("transaction.sync", json!({ "conversation": conv_y })).await;
+        let b = node_y.rpc_ok("agreement.get", json!({ "quote_record_id": quote_rec_id })).await;
+        b["state"] == "closed"
+    })
+    .await;
+    assert!(y_closed, "Y agreement reaches closed");
+
+    let x_closed = wait_until(Duration::from_secs(30), || async {
+        node_x.rpc_ok("transaction.sync", json!({ "conversation": conv_x })).await;
+        let b = node_x.rpc_ok("agreement.get", json!({ "quote_record_id": quote_rec_id })).await;
+        b["state"] == "closed"
+    })
+    .await;
+    assert!(x_closed, "X agreement reaches closed");
+}
+
+#[tokio::test]
+async fn service_for_service_and_goods_deals_close() {
+    let _guard = common::serial_guard().await;
+    let _ = ring::default_provider().install_default();
+    if !roym_artifacts_present() {
+        eprintln!("skipping: Roym wasm/UI artifacts not built (`mise run build:roym`)");
+        return;
+    }
+
+    let BarterFixture { _dir_x, _dir_y, node_x, node_y, conv_x, conv_y, req_x, owner_y_did } =
+        setup_barter_fixture().await;
 
     let quote_res = node_y
         .rpc_ok(
@@ -303,47 +406,6 @@ async fn service_for_service_and_goods_deals_close() {
     )
     .await;
 
-    let y_f1 = node_y
-        .rpc_ok("fulfilment.sign", json!({ "agreement": quote_rec_id, "commitment_id": "c1" }))
-        .await;
-    let y_f1_msg = y_f1["message_id"].as_str().unwrap();
-    assert!(wait_delivered(&node_y, y_f1_msg).await, "Y c1 fulfilment delivered");
-
-    node_x.rpc_ok("transaction.sync", json!({ "conversation": conv_x })).await;
-    let x_f1_rc = node_x
-        .rpc_ok("fulfilment.sign", json!({ "agreement": quote_rec_id, "commitment_id": "c1" }))
-        .await;
-    let x_f1_msg = x_f1_rc["message_id"].as_str().unwrap();
-    assert!(wait_delivered(&node_x, x_f1_msg).await, "X c1 receiver half delivered");
-
-    node_y.rpc_ok("transaction.sync", json!({ "conversation": conv_y })).await;
-
-    let x_f2 = node_x
-        .rpc_ok("fulfilment.sign", json!({ "agreement": quote_rec_id, "commitment_id": "c2" }))
-        .await;
-    let x_f2_msg = x_f2["message_id"].as_str().unwrap();
-    assert!(wait_delivered(&node_x, x_f2_msg).await, "X c2 fulfilment delivered");
-
-    node_y.rpc_ok("transaction.sync", json!({ "conversation": conv_y })).await;
-    let y_f2_rc = node_y
-        .rpc_ok("fulfilment.sign", json!({ "agreement": quote_rec_id, "commitment_id": "c2" }))
-        .await;
-    let y_f2_msg = y_f2_rc["message_id"].as_str().unwrap();
-    assert!(wait_delivered(&node_y, y_f2_msg).await, "Y c2 receiver half delivered");
-
-    let y_closed = wait_until(Duration::from_secs(30), || async {
-        node_y.rpc_ok("transaction.sync", json!({ "conversation": conv_y })).await;
-        let b = node_y.rpc_ok("agreement.get", json!({ "quote_record_id": quote_rec_id })).await;
-        b["state"] == "closed"
-    })
-    .await;
-    assert!(y_closed, "Y agreement reaches closed");
-
-    let x_closed = wait_until(Duration::from_secs(30), || async {
-        node_x.rpc_ok("transaction.sync", json!({ "conversation": conv_x })).await;
-        let b = node_x.rpc_ok("agreement.get", json!({ "quote_record_id": quote_rec_id })).await;
-        b["state"] == "closed"
-    })
-    .await;
-    assert!(x_closed, "X agreement reaches closed");
+    exchange_barter_fulfilments(&node_x, &node_y, &conv_x, &conv_y, &quote_rec_id).await;
+    wait_both_agreements_closed(&node_x, &node_y, &conv_x, &conv_y, &quote_rec_id).await;
 }

@@ -686,7 +686,8 @@
             "issuer": "string",
             "record_id": "string"
           },
-          "kind": "countersign"
+          "kind": "countersign",
+          "message_id": "string"
         }
       },
       {
