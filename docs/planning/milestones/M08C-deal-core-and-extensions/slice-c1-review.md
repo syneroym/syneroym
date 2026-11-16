@@ -857,3 +857,17 @@ blocker, 0 major, 1 minor.**
   *Status:* Fixed (83b70d73).
 
 **Open after round 4: 0 (0 blocker, 0 major, 0 minor).** All 26 items (P1 to P26) are Fixed (83b70d73).
+
+## Plan review round 5 (fixes check) — Claude Opus 5.5 (Claude Code), 2026-11-16
+
+Checked `83b70d73` against P26. **Confirmed fixed.** (1) D-C1-16's repeat
+path now checks the expiry when neither snapshot 1 nor the countersigned
+half is stored, leaves the row `deciding` past it, and has the test
+`repeat_past_expiry_without_countersign_leaves_row_deciding`. (2) A `create`
+that finds the row goes to the repeat path (same agreement) or the "other
+agreement" branch. The fixes are spread over three commits: `3462e4eb`
+(P1 to P22), `e2a3898b` (P3, P8, P15, P19, P23 to P25) and `83b70d73` (P26).
+
+**The plan review is closed: 26 items, 0 open.** Rounds 1, 3, 4 and 5 were
+done by Claude Opus 5.5, the same model as the author; round 2 by Claude
+Sonnet 5.5.
