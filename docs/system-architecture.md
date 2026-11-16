@@ -1225,39 +1225,35 @@ The agreement opens on the quote author's node once the counterparty has accepte
 ```mermaid
 stateDiagram-v2
     state "agreed" as Agreed
-    state "ended-unconfirmed" as EndedUnconfirmed
 
     [*] --> Agreed : seat and decision claimed
     [*] --> not_formed : quote expired or no seat free
 
-    Agreed --> closed : every commitment closed
+    Agreed --> closed : every commitment final
     Agreed --> cancelled : quote author cancels, all commitments open
-    Agreed --> EndedUnconfirmed : commitment track window ends unsettled
 
     closed --> [*]
     cancelled --> [*]
     not_formed --> [*]
-    EndedUnconfirmed --> [*]
 ```
 
-The five agreement states are `agreed`, `closed`, `cancelled`, `ended-unconfirmed`, and `not-formed`. The last four are final. An agreement opens as `agreed`, or as `not-formed` when no seat is free or the quote expired.
+The four agreement states are `agreed`, `closed`, `cancelled`, and `not-formed`. The last three are final. An agreement opens as `agreed`, or as `not-formed` when no seat is free or the quote expired.
 
-**Commitment tracks.** Each agreed quote binds bilateral commitments (`DealCommitment`). Each commitment progresses from `promised` through `claimed`, `confirmed`, and `closed` (or `cancelled`, `ended-unconfirmed`, `failed`).
+**Commitment tracks.** Each agreed quote binds bilateral commitments (`Commitment`). Each commitment progresses through its own state machine: `promised`, `payment-requested`, `claimed`, `fulfilled`, `acknowledged`, `ended-unconfirmed`, `failed`, and `cancelled`. The final states are `acknowledged`, `fulfilled`, `ended-unconfirmed`, `failed`, and `cancelled`.
 
 | Commitment kind | Who claims | Who confirms |
 |---|---|---|
-| Currency | The giver says they paid (`payment-acknowledgement`). | The receiver confirms they received the payment (`payment-acknowledgement`). |
-| Goods / Service | The giver says the work is done (`fulfilment-receipt`). | The receiver confirms the work is done (`fulfilment-receipt`). |
+| Currency | The giver says they paid (`payment-acknowledgement`), reaching `claimed`. | The receiver confirms they received the payment (`payment-acknowledgement`), reaching `acknowledged`. |
+| Goods / Service | The giver says the work is done (`fulfilment-receipt`), reaching `claimed`. | The receiver confirms the work is done (`fulfilment-receipt`), reaching `fulfilled`. |
 
 Money moves outside Roym. Roym records what each side says and cannot confirm that a payment happened. The quote says whether payment is due before or after the work. That term only decides what the Hub suggests next. It never blocks a step.
 
-The rules of the booking:
+The rules of the agreement:
 
-- **Against interest.** A statement that goes against the interest of the person who signs it moves the track to `acknowledged` at once: the quote author's payment half, and the counterparty's fulfilment half. A statement in favor of the signer only makes the track `claimed`. A track that is `acknowledged` or `unconfirmed` does not change again. A repeated statement changes nothing.
-- **First half.** The first payment or fulfilment half moves `scheduled` to `in-progress`. The quote author can also move it with `booking.start`.
-- **Completed.** The booking is `completed` only when both tracks are `acknowledged`.
-- **Track window.** Each track stays open for 30 days after the end of the quote's schedule. With no schedule, it is 30 days after the booking opens. After that, a track that is `none` or `claimed` becomes `unconfirmed`. When both tracks are final and not both are `acknowledged`, the booking is `ended-unconfirmed`. It holds whatever claims exist.
-- **Cancel.** Only the quote author can cancel, with `agreement.cancel` and a reason. It is possible only while all commitments are open (`promised`). A counterparty asks in the conversation. A cancel frees claimed seats and holds.
+- **Against interest.** A statement that goes against the interest of the person who signs it moves the track to final (`acknowledged` or `fulfilled`) at once: the quote author's payment half, and the counterparty's fulfilment half. A statement in favor of the signer only makes the track `claimed`. A track that is final does not change again. A repeated statement changes nothing.
+- **Closed.** The agreement reaches `closed` once every commitment reaches a final state (`acknowledged`, `fulfilled`, `ended-unconfirmed`, `failed`, or `cancelled`).
+- **Track window.** Each track stays open for 30 days after the later of the commitment's schedule window and the agreement time. With no schedule window, it is 30 days after the agreement opens. After that, a track that is `promised`, `payment-requested`, or `claimed` becomes `ended-unconfirmed` (recording `claimed: true` if the giver claimed, `claimed: false` otherwise).
+- **Cancel.** Only the quote author can cancel, with `agreement.cancel` and a reason. It is possible only while all commitments are open (`promised` or `payment-requested`). A counterparty asks in the conversation. A cancel frees claimed seats and holds.
 
 **Slot claiming.** One slot of the catalog can have more than one seat, up to 64. The quote author's node claims the seats of a slot in order, with the create fence of the data layer. The first claim wins. When every seat is taken, the agreement is `not-formed` with `slot-taken`. When the slot no longer exists or has no seats, the reason is `slot-unavailable`. A quote with no slot gets one decision per agreement in the same way. A second attempt is answered with the first result. The quote author's node is the only writer of an agreement, so a race is two requests that reach one writer. The signed `agreement-progress` snapshot writes the refusal reason if not formed.
 

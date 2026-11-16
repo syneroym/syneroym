@@ -538,9 +538,9 @@ the Transaction service decides.
 - **Writer:** the quote author's Transaction service, always. There is no
   multi-master merge for transactions.
 - **Commitments:** each agreed quote binds one or more bilateral commitments
-  (`DealCommitment`). Each commitment progresses from `promised` through
-  `claimed`, `confirmed`, and `closed` (or `cancelled`, `ended-unconfirmed`,
-  or `failed`). The agreement closes once every commitment is closed.
+  (`Commitment`). Each commitment progresses from `promised` through
+  `payment-requested`, `claimed`, `fulfilled`, `acknowledged`, `ended-unconfirmed`,
+  `failed`, or `cancelled`. The agreement closes once every commitment is final.
 - **A quote that names an availability slot of the listing holds seats on
   acceptance**: the quote author's Transaction service decides the agreement
   the moment it files the counterparty's signed acceptance, claiming the
