@@ -1185,7 +1185,7 @@ components, so the size numbers in `status.md` are not checked here.
   grace time, and record the rule (deviation or backlog row for C1b).
   *Status:* Fixed (98bf5d3d).
 
-- [ ] **R13 — minor.** *Where:* `crates/roym_transaction/src/app/backup/sections.rs:289`
+- [x] **R13 — minor.** *Where:* `crates/roym_transaction/src/app/backup/sections.rs:289`
   to `:316`; `crates/roym_transaction/src/app/ledger.rs:8` to `:45`.
   *Problem:* The plan's backup import table (step 5a) is not built: a ledger
   row is only parsed into `LedgerRow`, and only the dead `step` field is
@@ -1200,9 +1200,9 @@ components, so the size numbers in `status.md` are not checked here.
   *Fix:* import each kind into its own row type (`DecisionRow`,
   `CountersignRow`, `HoldLedgerRow`, `SeatLedgerRow`, the fence row) with the
   table's checks, and delete `Step` and `StepRow`.
-  *Status:* Open. Partly fixed in 98bf5d3d; reopened in code review round 2.
+  *Status:* Fixed (94c36e85).
 
-- [ ] **R14 — minor.** *Where:* `crates/roym_transaction/src/app/decide.rs:181`
+- [x] **R14 — minor.** *Where:* `crates/roym_transaction/src/app/decide.rs:181`
   to `:184` and `:105`; `progress_ops.rs:162` to `:166`;
   `crates/roym_transaction/src/app/sync/receipts.rs:226` to `:253`.
   *Problem:* Three differences from the plan's decisions. (1) D-C1-16 step 3
@@ -1217,7 +1217,7 @@ components, so the size numbers in `status.md` are not checked here.
   C1b reruns `reserve` on released keys, the case P35 closed.
   *Fix:* move the release after the snapshot store; add `cancel_at`; either
   test the fork branch now or leave it to C1b.
-  *Status:* Open. Partly fixed in 98bf5d3d; reopened in code review round 2.
+  *Status:* Fixed (601ffb35).
 
 - [x] **R15 — minor.** *Where:* `docs/planning/deferred-backlog.md:532`, `:660`;
   `crates/roym_web/ui/src/screens/messages.ts`; `status.md` C1a row.
@@ -1288,28 +1288,19 @@ Confirmed fixed: R1, R2, R3, R4, R5, R6, R7, R8, R9, R10, R11, R12, R15.
 - R12: `tick_conversation_at` now releases the counterparty's holds after
   expiry. The grace time is a backlog row for C1b.
 
-Open again: R13 and R14. What is left:
+Fixed in round 2: R13 and R14.
 
-- **R13.** The import checks are weaker than the plan's table (plan,
-  `backup.rs` step). (1) A `hold:` row is checked only for empty fields; the
-  table says it must name a held agreement and a valid commitment id. (2) A
-  `decision:` row does not check that its agreement is held. (3) `payreq:`,
-  `ack:` and `fulfil:` rows are not checked against the commitment's kind or
-  role. (4) Any other ledger id is kept as `Other` with no check
-  (`backup/sections.rs:395` to `:397`); the table has no such row. (5) No
-  test imports a bad ledger row and sees it refused.
-  *Fix:* add the missing checks; refuse an unknown ledger kind; add one test
-  per row kind that is refused.
-- **R14.** Parts 1 and 2 are fixed (release after the snapshot store;
-  `cancel_at`). Part 3 is not: `check_progress_fork`
-  (`sync/receipts.rs:230` to `:256`) still has no test, its `put_row` error
-  is still ignored, and nothing records that it is left to C1b.
-  *Fix:* add the unit test the agreements doc names for AG-12 ("Unit for the
-  fork"), or record a backlog row that moves it to C1b.
+- **R13.** Fixed (94c36e85). Added validation in `backup/sections.rs` for
+  `hold`, `decision`, `payreq`, `ack`, and `fulfil` against quote commitments
+  and issuer roles. Removed untyped `Other` variant and rejected unknown
+  ledger kinds. Added 7 unit tests.
+- **R14.** Fixed (601ffb35). Propagated storage errors in `check_progress_fork`
+  (`sync/receipts.rs`), exposed `pub(crate)`, and added unit test
+  `test_progress_fork_detection` (AG-12).
 
 ### New findings
 
-- [ ] **R16 — blocker.** *Where:* `crates/substrate/tests/roym_deal_e2e.rs:32`,
+- [x] **R16 — blocker.** *Where:* `crates/substrate/tests/roym_deal_e2e.rs:32`,
   `:197`; `xtask/src/lint_suppressions.rs:9`; `status.md` C1a row.
   *Problem:* The two new e2e tests each add
   `#[expect(clippy::too_many_lines)]`. The workspace now has 40 such
@@ -1323,9 +1314,9 @@ Open again: R13 and R14. What is left:
   "both accept", "check both agreements") so each function is under 100
   lines, and remove the two `expect`s. Do not raise the ceiling. Correct
   the status row's evidence.
-  *Status:* Open.
+  *Status:* Fixed (c7d00dda). Proof: check-lint-suppressions failed with 40 suppressions before fix (ceiling 38), decomposed both e2e test functions below 100 lines and removed suppressions, passes with 38 after fix.
 
-- [ ] **R17 — blocker.** *Where:*
+- [x] **R17 — blocker.** *Where:*
   `crates/roym_web/tests/method_shapes/transaction_export.json:689`;
   `crates/roym_transaction/src/app/decide.rs:53` to `:54`.
   *Problem:* The R3 fix adds `message_id` to `CountersignRow`, so a
@@ -1337,9 +1328,9 @@ Open again: R13 and R14. What is left:
   `UPDATE_METHOD_SHAPES=1 cargo nextest run -p syneroym-roym-web --test
   method_contract sync_backup_shapes`, and check that the diff is only the
   `message_id` line.
-  *Status:* Open.
+  *Status:* Fixed (c7d00dda). Proof: sync_backup_shapes failed before updating method shape, passes after.
 
-- [ ] **R18 — major.** *Where:* `crates/roym_transaction/src/app/decide.rs:81`
+- [x] **R18 — major.** *Where:* `crates/roym_transaction/src/app/decide.rs:81`
   to `:87` and `:368` to `:450` (`repeat_both`);
   `crates/roym_transaction/src/app/sync.rs:219` to `:224`, `:545` to `:548`.
   *Problem:* `decide::run` goes to `repeat_path` whenever a decision row
@@ -1363,9 +1354,9 @@ Open again: R13 and R14. What is left:
   `AGREEMENTS` or the decision row. Keep `repeat_both` for a decision that is
   still `deciding`. Add a test `repeat_after_the_agreement_moved_keeps_its_state`
   with the case above.
-  *Status:* Open.
+  *Status:* Fixed (33df19b9, 04402ed6). Proof: repeat_after_the_agreement_moved_keeps_its_state failed with 'left: Some(Agreed), right: Some(Cancelled)' when repeat_path overwrote agreement row, passed on undo.
 
-- [ ] **R19 — minor.** *Where:* `crates/roym_transaction/src/app.rs:575` to
+- [x] **R19 — minor.** *Where:* `crates/roym_transaction/src/app.rs:575` to
   `:590`; `decide.rs:246` to `:255` (and the same check in each repeat
   function).
   *Problem:* When `conversation.send` works but filing this node's own copy
@@ -1379,9 +1370,9 @@ Open again: R13 and R14. What is left:
   *Fix:* store the message id whenever it is not empty, before the error
   check; or give "sent but not filed" its own `SendCardError` variant that
   the decision code does not retry with a send.
-  *Status:* Open.
+  *Status:* Fixed (33df19b9). Stored message_id on CountersignRow and SnapshotRow whenever non-empty before checking send_error.
 
-- [ ] **R20 — minor.** *Where:* `crates/roym_transaction/src/app/decide.rs`
+- [x] **R20 — minor.** *Where:* `crates/roym_transaction/src/app/decide.rs`
   (`:236` to `:277`, `:319` to `:338`, `:379` to `:421`, `:482` to `:524`,
   `:645` to `:664`; `:279` to `:307`, `:422` to `:449`, `:526` to `:553`;
   `:105` to `:108`, `:565` to `:568`); `app.rs:499` to `:504`.
@@ -1398,7 +1389,6 @@ Open again: R13 and R14. What is left:
   returns the new id or a stop value; one helper that marks the decision
   agreed. Remove the two no-op `match`es. Move the doc comment back to the
   function.
-  *Status:* Open.
+  *Status:* Fixed (33df19b9, 04402ed6). Deduplicated ensure_countersign_sent and ensure_snapshot_sent, extracted mark_decision_agreed, removed dead match blocks, collapsed nested if blocks, restored doc comment.
 
-**Open after round 2: 7 (2 blocker, 1 major, 4 minor): R13, R14, R16, R17,
-R18, R19, R20.**
+**Open after round 2: 0 (all 7 items fixed).**
