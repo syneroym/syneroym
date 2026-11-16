@@ -161,42 +161,42 @@ fn expired_quote_envelope_verifies_with_expired_flag() {
 }
 
 #[test]
-fn verify_request_happy_and_mismatch() {
+fn verify_enquiry_happy_and_mismatch() {
     let key = Identity::generate().unwrap();
     let issuer = substrate::derive_did_key(&key.public_key());
-    let req = sample_request(&issuer);
+    let req = sample_enquiry(&issuer);
 
     let env = sign_envelope(
         &key,
-        RECORD_REQUEST,
-        REQUEST_VERSION,
-        &req.request_id,
+        RECORD_ENQUIRY,
+        ENQUIRY_VERSION,
+        &req.enquiry_id,
         serde_json::to_value(&req).unwrap(),
         None,
         1000,
     );
 
-    let v = verify_request(&env, 1000);
+    let v = verify_enquiry(&env, 1000);
     assert!(v.verified);
     assert!(!v.expired);
-    assert_eq!(v.payload.as_ref().unwrap().request_id, req.request_id);
+    assert_eq!(v.payload.as_ref().unwrap().enquiry_id, req.enquiry_id);
 
     // Sign with mismatching issuer
     let wrong_key = Identity::generate().unwrap();
     let env_mismatch = sign_envelope(
         &wrong_key,
-        RECORD_REQUEST,
-        REQUEST_VERSION,
-        &req.request_id,
+        RECORD_ENQUIRY,
+        ENQUIRY_VERSION,
+        &req.enquiry_id,
         serde_json::to_value(&req).unwrap(),
         None,
         1000,
     );
-    let v_bad = verify_request(&env_mismatch, 1000);
+    let v_bad = verify_enquiry(&env_mismatch, 1000);
     assert!(!v_bad.verified);
     assert_eq!(
         v_bad.reason.as_deref(),
-        Some("request_id is not derivable from the signature's own issuer")
+        Some("enquiry_id is not derivable from the signature's own issuer")
     );
 }
 
@@ -268,12 +268,12 @@ fn verify_quote_refuses_same_counterparty_and_quote_author_did() {
 fn verifiers_refuse_wrong_record_type() {
     let key = Identity::generate().unwrap();
     let issuer = substrate::derive_did_key(&key.public_key());
-    let req = sample_request(&issuer);
+    let req = sample_enquiry(&issuer);
     let env = sign_envelope(
         &key,
-        RECORD_REQUEST,
-        REQUEST_VERSION,
-        &req.request_id,
+        RECORD_ENQUIRY,
+        ENQUIRY_VERSION,
+        &req.enquiry_id,
         serde_json::to_value(&req).unwrap(),
         None,
         1000,
@@ -292,22 +292,22 @@ fn verifiers_refuse_wrong_record_type() {
 }
 
 #[test]
-fn verify_request_refuses_expiry() {
+fn verify_enquiry_refuses_expiry() {
     let key = Identity::generate().unwrap();
     let issuer = substrate::derive_did_key(&key.public_key());
-    let req = sample_request(&issuer);
+    let req = sample_enquiry(&issuer);
     let env = sign_envelope(
         &key,
-        RECORD_REQUEST,
-        REQUEST_VERSION,
-        &req.request_id,
+        RECORD_ENQUIRY,
+        ENQUIRY_VERSION,
+        &req.enquiry_id,
         serde_json::to_value(&req).unwrap(),
         Some(20000),
         1000,
     );
-    let verdict = verify_request(&env, 1000);
+    let verdict = verify_enquiry(&env, 1000);
     assert!(!verdict.verified);
-    assert_eq!(verdict.reason.as_deref(), Some("a request may not declare an expiry"));
+    assert_eq!(verdict.reason.as_deref(), Some("an enquiry may not declare an expiry"));
 }
 
 #[test]

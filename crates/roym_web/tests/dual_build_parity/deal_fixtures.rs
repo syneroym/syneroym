@@ -12,8 +12,8 @@ pub(crate) async fn setup_peer_request(h: &Harness, conv: &str) -> (String, Stri
         &format!("m-req-{req_id}"),
         conv,
         &peer_did(),
-        transaction::RECORD_REQUEST,
-        transaction::REQUEST_VERSION,
+        transaction::RECORD_ENQUIRY,
+        transaction::ENQUIRY_VERSION,
         &req_env,
     )
     .await;
@@ -138,11 +138,10 @@ pub(crate) async fn setup_synced_counterparty_quote(
 ) -> String {
     let req = both_rpc(
         h,
-        "request.set",
+        "enquiry.set",
         json!({
             "conversation": conv,
-            "description": "Counterparty deal",
-            "lang": "en",
+            "description": { "lang": "en", "text": "Counterparty deal" },
             "categories": ["gardening"],
             "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
         }),

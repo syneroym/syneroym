@@ -25,19 +25,19 @@ async fn scenario_123_request_set_signs_stores_and_sends_parity() {
 
     let params = json!({
         "conversation": conv,
-        "description": "Install new fence", "lang": "en",
+        "description": { "lang": "en", "text": "Install new fence" },
         "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
     });
-    let (w, n) = both_rpc(&h, "request.set", params).await;
-    assert_eq!(w["result"]["request_id"], n["result"]["request_id"]);
+    let (w, n) = both_rpc(&h, "enquiry.set", params).await;
+    assert_eq!(w["result"]["enquiry_id"], n["result"]["enquiry_id"]);
     assert_eq!(w["result"]["record_id"], n["result"]["record_id"]);
     assert_eq!(w["result"]["state"], n["result"]["state"]);
-    let req_id = w["result"]["request_id"].as_str().unwrap().to_string();
+    let req_id = w["result"]["enquiry_id"].as_str().unwrap().to_string();
 
-    let expected_req_id = transaction::derive_request_id(&conv, &owner_did(), 1).unwrap();
+    let expected_req_id = transaction::derive_enquiry_id(&conv, &owner_did(), 1).unwrap();
     assert_eq!(req_id, expected_req_id);
 
-    let (gw, gn) = both_rpc(&h, "request.get", json!({ "request_id": req_id })).await;
+    let (gw, gn) = both_rpc(&h, "enquiry.get", json!({ "enquiry_id": req_id })).await;
     assert_eq!(gw["result"]["envelope"], gn["result"]["envelope"]);
     let env_str = gw["result"]["envelope"].as_str().unwrap();
 
@@ -53,7 +53,7 @@ async fn scenario_123_request_set_signs_stores_and_sends_parity() {
     assert_eq!(msgs[0]["content_type"], card::CARD_CONTENT_TYPE);
     let card: card::Card =
         serde_json::from_slice(msgs[0]["body"].as_str().unwrap().as_bytes()).unwrap();
-    assert_eq!(card.card_type, transaction::RECORD_REQUEST);
+    assert_eq!(card.card_type, transaction::RECORD_ENQUIRY);
     assert_eq!(card.envelope, env_str);
 }
 
@@ -65,10 +65,10 @@ async fn scenario_124_request_set_without_enrolment_answers_not_enrolled_parity(
 
     let params = json!({
         "conversation": conv,
-        "description": "Unenrolled request", "lang": "en",
+        "description": { "lang": "en", "text": "Unenrolled request" },
         "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
     });
-    let (w, n) = both_rpc(&h, "request.set", params).await;
+    let (w, n) = both_rpc(&h, "enquiry.set", params).await;
     assert_eq!(w, n);
     assert_eq!(w["error"]["code"], -32602);
     assert!(w["error"]["message"].as_str().unwrap().contains("signing-not-enrolled"));
@@ -83,34 +83,34 @@ async fn scenario_125_request_set_with_id_produces_superseding_version_parity() 
 
     let params1 = json!({
         "conversation": conv,
-        "description": "Initial fence proposal", "lang": "en",
+        "description": { "lang": "en", "text": "Initial fence proposal" },
         "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
     });
-    let (w1, n1) = both_rpc(&h, "request.set", params1).await;
-    assert_eq!(w1["result"]["request_id"], n1["result"]["request_id"]);
-    let req_id = w1["result"]["request_id"].as_str().unwrap().to_string();
+    let (w1, n1) = both_rpc(&h, "enquiry.set", params1).await;
+    assert_eq!(w1["result"]["enquiry_id"], n1["result"]["enquiry_id"]);
+    let req_id = w1["result"]["enquiry_id"].as_str().unwrap().to_string();
     let rec_id_1 = w1["result"]["record_id"].as_str().unwrap().to_string();
     assert_eq!(w1["result"]["version_count"], 1);
 
     let params2 = json!({
         "conversation": conv,
-        "request_id": req_id,
-        "description": "Revised fence proposal with painted finish", "lang": "en",
+        "enquiry_id": req_id,
+        "description": { "lang": "en", "text": "Revised fence proposal with painted finish" },
         "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
     });
-    let (w2, n2) = both_rpc(&h, "request.set", params2).await;
-    assert_eq!(w2["result"]["request_id"], n2["result"]["request_id"]);
-    assert_eq!(w2["result"]["request_id"], req_id);
+    let (w2, n2) = both_rpc(&h, "enquiry.set", params2).await;
+    assert_eq!(w2["result"]["enquiry_id"], n2["result"]["enquiry_id"]);
+    assert_eq!(w2["result"]["enquiry_id"], req_id);
     assert_eq!(w2["result"]["version_count"], 2);
     let rec_id_2 = w2["result"]["record_id"].as_str().unwrap().to_string();
     assert_ne!(rec_id_1, rec_id_2);
 
-    let (gw, gn) = both_rpc(&h, "request.get", json!({ "request_id": req_id })).await;
+    let (gw, gn) = both_rpc(&h, "enquiry.get", json!({ "enquiry_id": req_id })).await;
     assert_eq!(gw["result"]["envelope"], gn["result"]["envelope"]);
     let env2 = Envelope::from_json(gw["result"]["envelope"].as_str().unwrap()).unwrap();
     assert_eq!(env2.supersedes, Some(rec_id_1.clone()));
 
-    let (hw, hn) = both_rpc(&h, "request.history", json!({ "request_id": req_id })).await;
+    let (hw, hn) = both_rpc(&h, "enquiry.history", json!({ "enquiry_id": req_id })).await;
     assert_eq!(stripped(&hw), stripped(&hn));
     let hist = hw["result"]["history"].as_array().unwrap();
     assert_eq!(hist.len(), 2);
@@ -125,14 +125,14 @@ async fn scenario_126_quote_set_refuses_own_request_parity() {
 
     let params = json!({
         "conversation": conv,
-        "description": "My own job request", "lang": "en",
+        "description": { "lang": "en", "text": "My own job request" },
         "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
     });
-    let (w, _) = both_rpc(&h, "request.set", params).await;
+    let (w, _) = both_rpc(&h, "enquiry.set", params).await;
     let rec_id = w["result"]["record_id"].as_str().unwrap().to_string();
 
     let quote_params = json!({
-        "request_record_id": rec_id,
+        "enquiry_record_id": rec_id,
         "expires_in_secs": 3600,
         "terms": sample_quote_terms(),
     });
@@ -143,7 +143,7 @@ async fn scenario_126_quote_set_refuses_own_request_parity() {
         qw["error"]["message"]
             .as_str()
             .unwrap()
-            .contains("a request cannot be quoted by the person who made it")
+            .contains("an enquiry cannot be quoted by the person who made it")
     );
 }
 
@@ -160,8 +160,8 @@ async fn scenario_127_peer_request_card_is_filed_by_sync_parity() {
         &conv,
         &peer_did(),
         1_000,
-        transaction::RECORD_REQUEST,
-        transaction::REQUEST_VERSION,
+        transaction::RECORD_ENQUIRY,
+        transaction::ENQUIRY_VERSION,
         &env_json,
     );
     h.deliver(true, card_msg.clone()).await;
@@ -175,7 +175,7 @@ async fn scenario_127_peer_request_card_is_filed_by_sync_parity() {
     assert_eq!(stripped(&tw), stripped(&tn));
     let cards = tw["result"]["cards"].as_array().unwrap();
     assert_eq!(cards.len(), 1);
-    assert_eq!(cards[0]["card_type"], transaction::RECORD_REQUEST);
+    assert_eq!(cards[0]["card_type"], transaction::RECORD_ENQUIRY);
     assert_eq!(cards[0]["verified"], true);
     assert_eq!(cards[0]["issuer"], peer_did());
     assert_eq!(cards[0]["record_id"], rec_id);
@@ -194,8 +194,8 @@ async fn scenario_128_quote_set_against_filed_request_parity() {
         &conv,
         &peer_did(),
         1_000,
-        transaction::RECORD_REQUEST,
-        transaction::REQUEST_VERSION,
+        transaction::RECORD_ENQUIRY,
+        transaction::ENQUIRY_VERSION,
         &env_json,
     );
     h.deliver(true, card_msg.clone()).await;
@@ -203,7 +203,7 @@ async fn scenario_128_quote_set_against_filed_request_parity() {
     both_rpc(&h, "transaction.sync", json!({ "conversation": conv })).await;
 
     let quote_params = json!({
-        "request_record_id": req_rec_id,
+        "enquiry_record_id": req_rec_id,
         "expires_in_secs": 3600,
         "terms": sample_quote_terms(),
     });
@@ -259,8 +259,8 @@ async fn scenario_129_agreement_accept_quote_author_and_counterparty_halves_pari
         &conv,
         &peer_did(),
         1_000,
-        transaction::RECORD_REQUEST,
-        transaction::REQUEST_VERSION,
+        transaction::RECORD_ENQUIRY,
+        transaction::ENQUIRY_VERSION,
         &req_env,
     );
     h.deliver(true, card_msg.clone()).await;
@@ -268,7 +268,7 @@ async fn scenario_129_agreement_accept_quote_author_and_counterparty_halves_pari
     both_rpc(&h, "transaction.sync", json!({ "conversation": conv })).await;
 
     let quote_params = json!({
-        "request_record_id": req_rec_id,
+        "enquiry_record_id": req_rec_id,
         "expires_in_secs": 3600,
         "terms": sample_quote_terms(),
     });
@@ -303,10 +303,10 @@ async fn scenario_129_agreement_accept_quote_author_and_counterparty_halves_pari
     // Part B: Counterparty accepts peer-issued quote
     let (my_req_w, _) = both_rpc(
         &h,
-        "request.set",
+        "enquiry.set",
         json!({
             "conversation": conv,
-            "description": "Another request", "lang": "en",
+            "description": { "lang": "en", "text": "Another request" },
             "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
         }),
     )
@@ -373,15 +373,15 @@ async fn scenario_130_full_agreement_pair_countersigns_parity() {
             &conv,
             &peer_did(),
             1_000,
-            transaction::RECORD_REQUEST,
-            transaction::REQUEST_VERSION,
+            transaction::RECORD_ENQUIRY,
+            transaction::ENQUIRY_VERSION,
             &req_env,
         );
         h.deliver(wasm, card_msg).await;
         one_rpc(&h, wasm, "transaction.sync", json!({ "conversation": conv })).await;
 
         let quote_params = json!({
-            "request_record_id": req_rec_id,
+            "enquiry_record_id": req_rec_id,
             "expires_in_secs": 3600,
             "terms": sample_quote_terms(),
         });
@@ -449,15 +449,15 @@ async fn scenario_131_counterparty_half_terms_differ_filed_refused_parity() {
             &conv,
             &peer_did(),
             1_000,
-            transaction::RECORD_REQUEST,
-            transaction::REQUEST_VERSION,
+            transaction::RECORD_ENQUIRY,
+            transaction::ENQUIRY_VERSION,
             &req_env,
         );
         h.deliver(wasm, card_msg).await;
         one_rpc(&h, wasm, "transaction.sync", json!({ "conversation": conv })).await;
 
         let quote_params = json!({
-            "request_record_id": req_rec_id,
+            "enquiry_record_id": req_rec_id,
             "expires_in_secs": 3600,
             "terms": sample_quote_terms(),
         });
@@ -513,15 +513,15 @@ async fn scenario_132_counterparty_half_from_stranger_filed_refused_parity() {
             &conv,
             &peer_did(),
             1_000,
-            transaction::RECORD_REQUEST,
-            transaction::REQUEST_VERSION,
+            transaction::RECORD_ENQUIRY,
+            transaction::ENQUIRY_VERSION,
             &req_env,
         );
         h.deliver(wasm, card_msg).await;
         one_rpc(&h, wasm, "transaction.sync", json!({ "conversation": conv })).await;
 
         let quote_params = json!({
-            "request_record_id": req_rec_id,
+            "enquiry_record_id": req_rec_id,
             "expires_in_secs": 3600,
             "terms": sample_quote_terms(),
         });
@@ -570,10 +570,10 @@ async fn scenario_133_expired_quote_card_filed_verified_with_terms_accept_refuse
 
     let (my_req_w, _) = both_rpc(
         &h,
-        "request.set",
+        "enquiry.set",
         json!({
             "conversation": conv,
-            "description": "Window cleaning", "lang": "en",
+            "description": { "lang": "en", "text": "Window cleaning" },
             "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
         }),
     )
@@ -637,15 +637,15 @@ async fn scenario_133b_completed_pair_survives_quote_expiry_parity() {
             &conv,
             &peer_did(),
             1_000,
-            transaction::RECORD_REQUEST,
-            transaction::REQUEST_VERSION,
+            transaction::RECORD_ENQUIRY,
+            transaction::ENQUIRY_VERSION,
             &req_env,
         );
         h.deliver(wasm, card_msg).await;
         one_rpc(&h, wasm, "transaction.sync", json!({ "conversation": conv })).await;
 
         let quote_params = json!({
-            "request_record_id": req_rec_id,
+            "enquiry_record_id": req_rec_id,
             "expires_in_secs": 3600,
             "terms": sample_quote_terms(),
         });
@@ -690,8 +690,8 @@ async fn scenario_134_sync_is_idempotent_parity() {
         &conv,
         &peer_did(),
         1_000,
-        transaction::RECORD_REQUEST,
-        transaction::REQUEST_VERSION,
+        transaction::RECORD_ENQUIRY,
+        transaction::ENQUIRY_VERSION,
         &req_env,
     );
     h.deliver(true, card_msg.clone()).await;
@@ -713,9 +713,9 @@ async fn scenario_134_sync_is_idempotent_parity() {
     assert_eq!(stripped(&tw), stripped(&tn));
     assert_eq!(tw["result"]["cards"].as_array().unwrap().len(), 1);
 
-    let (rw, rn) = both_rpc(&h, "request.list", json!({ "conversation": conv })).await;
+    let (rw, rn) = both_rpc(&h, "enquiry.list", json!({ "conversation": conv })).await;
     assert_eq!(stripped(&rw), stripped(&rn));
-    assert_eq!(rw["result"]["requests"].as_array().unwrap().len(), 1);
+    assert_eq!(rw["result"]["enquiries"].as_array().unwrap().len(), 1);
 }
 
 #[tokio::test]
@@ -731,8 +731,8 @@ async fn scenario_135_sync_full_rescan_files_nothing_new_parity() {
         &conv,
         &peer_did(),
         1_000,
-        transaction::RECORD_REQUEST,
-        transaction::REQUEST_VERSION,
+        transaction::RECORD_ENQUIRY,
+        transaction::ENQUIRY_VERSION,
         &req_env,
     );
     h.deliver(true, card_msg.clone()).await;
@@ -827,8 +827,8 @@ async fn scenario_139_card_payload_names_different_conversation_filed_refused_pa
         &conv_a,
         &peer_did(),
         1_000,
-        transaction::RECORD_REQUEST,
-        transaction::REQUEST_VERSION,
+        transaction::RECORD_ENQUIRY,
+        transaction::ENQUIRY_VERSION,
         &req_env,
     );
     h.deliver(true, card_msg.clone()).await;

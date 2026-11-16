@@ -200,17 +200,16 @@ async fn setup_scheduled_transaction(
     let x_conv_id = opened["conversation_id"].as_str().unwrap().to_string();
     let req = node_x
         .rpc_ok(
-            "request.set",
+            "enquiry.set",
             json!({
                 "conversation": x_conv_id,
-                "description": description,
-                "lang": "en",
+                "description": { "lang": "en", "text": description },
                 "categories": ["cleaning"],
                 "data_use_notice": DEFAULT_DATA_USE_NOTICE,
             }),
         )
         .await;
-    let req_id = req["request_id"].as_str().unwrap().to_string();
+    let req_id = req["enquiry_id"].as_str().unwrap().to_string();
     let req_record_id = req["record_id"].as_str().unwrap().to_string();
     let req_msg_id = req["message_id"].as_str().unwrap().to_string();
     assert!(wait_delivered(node_x, &req_msg_id).await, "request delivered");
@@ -225,7 +224,7 @@ async fn setup_scheduled_transaction(
         .rpc_ok(
             "quote.set",
             json!({
-                "request_record_id": req_record_id,
+                "enquiry_record_id": req_record_id,
                 "listing_id": listing_id,
                 "slot_id": slot_id,
                 "expires_in_secs": 3600,
@@ -326,7 +325,7 @@ async fn capture_before_snapshot(node_y: &Node, tx: &ActiveTransaction) -> Befor
         node_y.rpc_ok("fulfilment.get", json!({ "agreement": tx.quote_record_id })).await;
     assert_eq!(fulfilment["track"], "claimed");
     let request_history =
-        node_y.rpc_ok("request.history", json!({ "request_id": tx.req_id })).await;
+        node_y.rpc_ok("enquiry.history", json!({ "enquiry_id": tx.req_id })).await;
     let quote_history = node_y.rpc_ok("quote.history", json!({ "quote_id": tx.quote_id })).await;
     let thread = node_y.rpc_ok("transaction.thread", json!({ "conversation": tx.y_conv_id })).await;
     let conv_history =
@@ -367,7 +366,7 @@ async fn assert_durability_parity(node_y2: &Node, before: &BeforeSnapshot, tx: &
     assert_eq!(fulfilment_after["quote_author"], before.fulfilment["quote_author"]);
 
     let request_history_after =
-        node_y2.rpc_ok("request.history", json!({ "request_id": tx.req_id })).await;
+        node_y2.rpc_ok("enquiry.history", json!({ "enquiry_id": tx.req_id })).await;
     assert_eq!(request_history_after["history"], before.request_history["history"]);
     let quote_history_after =
         node_y2.rpc_ok("quote.history", json!({ "quote_id": tx.quote_id })).await;
@@ -394,7 +393,7 @@ async fn assert_durability_parity(node_y2: &Node, before: &BeforeSnapshot, tx: &
     assert_eq!(bodies_after, bodies_before);
 
     let req_verify = node_y2
-        .rpc_ok("request.verify", json!({ "envelope": request_history_after["history"][0] }))
+        .rpc_ok("enquiry.verify", json!({ "envelope": request_history_after["history"][0] }))
         .await;
     assert_eq!(req_verify["verified"], true);
     let quote_verify = node_y2

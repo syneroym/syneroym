@@ -17,6 +17,16 @@
         "record_count": "number",
         "schema_version": "number"
       },
+      "enquiries": {
+        "digest": "string",
+        "record_count": "number",
+        "schema_version": "number"
+      },
+      "enquiry_history": {
+        "digest": "string",
+        "record_count": "number",
+        "schema_version": "number"
+      },
       "fulfilments": {
         "digest": "string",
         "record_count": "number",
@@ -43,16 +53,6 @@
         "schema_version": "number"
       },
       "quotes": {
-        "digest": "string",
-        "record_count": "number",
-        "schema_version": "number"
-      },
-      "request_history": {
-        "digest": "string",
-        "record_count": "number",
-        "schema_version": "number"
-      },
-      "requests": {
         "digest": "string",
         "record_count": "number",
         "schema_version": "number"
@@ -257,6 +257,38 @@
       {
         "id": "string",
         "payload": {
+          "card_type": "enquiry",
+          "conversation": "string",
+          "data": {
+            "categories": [
+              "string"
+            ],
+            "conversation": "string",
+            "data_use_notice": "string",
+            "description": {
+              "lang": "string",
+              "text": "string"
+            },
+            "enquiry_id": "string",
+            "sequence": "number"
+          },
+          "direction": "incoming",
+          "expired": "boolean",
+          "issuer": "string",
+          "known": "boolean",
+          "message_id": "string",
+          "record_id": "string",
+          "revocation_status": "unknown",
+          "sender_timestamp_ms": "number",
+          "stored_at_secs": "number",
+          "verified": "boolean",
+          "version": "number",
+          "version_count": "number"
+        }
+      },
+      {
+        "id": "string",
+        "payload": {
           "card_type": "payment-request",
           "conversation": "string",
           "data": {
@@ -326,35 +358,30 @@
           "version": "number",
           "version_count": "number"
         }
-      },
+      }
+    ],
+    "enquiries": [
       {
         "id": "string",
         "payload": {
-          "card_type": "request",
           "conversation": "string",
-          "data": {
-            "categories": [
-              "string"
-            ],
-            "conversation": "string",
-            "data_use_notice": "string",
-            "description": "string",
-            "lang": "string",
-            "request_id": "string",
-            "sequence": "number"
-          },
-          "direction": "incoming",
-          "expired": "boolean",
+          "envelope": "string",
+          "id": "string",
+          "issued_at_secs": "number",
           "issuer": "string",
-          "known": "boolean",
-          "message_id": "string",
+          "mine": "boolean",
           "record_id": "string",
-          "revocation_status": "unknown",
-          "sender_timestamp_ms": "number",
-          "stored_at_secs": "number",
-          "verified": "boolean",
-          "version": "number",
+          "sequence": "number",
+          "updated_at_secs": "number",
           "version_count": "number"
+        }
+      }
+    ],
+    "enquiry_history": [
+      {
+        "id": "string",
+        "payload": {
+          "envelope": "string"
         }
       }
     ],
@@ -447,31 +474,6 @@
           "mine": "boolean",
           "record_id": "string",
           "request_record_id": "string",
-          "sequence": "number",
-          "updated_at_secs": "number",
-          "version_count": "number"
-        }
-      }
-    ],
-    "request_history": [
-      {
-        "id": "string",
-        "payload": {
-          "envelope": "string"
-        }
-      }
-    ],
-    "requests": [
-      {
-        "id": "string",
-        "payload": {
-          "conversation": "string",
-          "envelope": "string",
-          "id": "string",
-          "issued_at_secs": "number",
-          "issuer": "string",
-          "mine": "boolean",
-          "record_id": "string",
           "sequence": "number",
           "updated_at_secs": "number",
           "version_count": "number"

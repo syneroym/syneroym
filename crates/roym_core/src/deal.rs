@@ -54,6 +54,19 @@ impl LocalText {
         }
         &self.text
     }
+
+    /// Validates the text and its translations.
+    pub fn validate(&self, field: &'static str, max_len: usize) -> Result<(), TranslationError> {
+        if self.text.trim().is_empty() {
+            return Err(TranslationError::Empty { lang: self.lang.to_string(), field });
+        }
+        check_text(&self.lang, field, &self.text, max_len, true)?;
+        check_translation_langs(&self.lang, self.translations.iter().map(|t| &t.lang))?;
+        for t in &self.translations {
+            check_text(&t.lang, field, &t.text, max_len, true)?;
+        }
+        Ok(())
+    }
 }
 
 /// A translation of a text into another language.
@@ -544,20 +557,7 @@ fn validate_local_text(
     field: &'static str,
     max_len: usize,
 ) -> Result<(), DealError> {
-    if lt.text.trim().is_empty() {
-        return Err(DealError::Text(TranslationError::Empty { lang: lt.lang.to_string(), field }));
-    }
-    if lt.text.len() > max_len {
-        return Err(DealError::Text(TranslationError::TooLong {
-            lang: lt.lang.to_string(),
-            field,
-            max: max_len,
-        }));
-    }
-    for t in &lt.translations {
-        check_text(&t.lang, field, &t.text, max_len, true)?;
-    }
-    Ok(())
+    lt.validate(field, max_len).map_err(DealError::Text)
 }
 
 fn validate_terms_texts(terms: &DealTerms) -> Result<(), DealError> {

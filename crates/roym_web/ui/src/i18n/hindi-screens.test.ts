@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { renderAgreementReceipt } from "../cards/templates/agreement_receipt";
 import { renderFulfilmentReceipt } from "../cards/templates/fulfilment_receipt";
 import { renderQuote } from "../cards/templates/quote";
-import { renderRequest } from "../cards/templates/request";
+import { renderRequest } from "../cards/templates/enquiry";
 import { RpcError } from "../rpc";
 import { renderBackup } from "../screens/backup";
 import { renderContacts } from "../screens/contacts";

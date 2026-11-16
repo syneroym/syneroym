@@ -21,9 +21,8 @@ use crate::{
     },
     payment::{PaymentAcknowledgementPayload, PaymentRequestPayload},
     transaction::{
-        AgreedTerms, AgreementReceiptPayload, DEFAULT_DATA_USE_NOTICE, DealRole, PaymentTiming,
-        QuoteLocation, QuotePayload, QuoteTranslation, RequestPayload, RequestTranslation,
-        TimeWindow,
+        AgreedTerms, AgreementReceiptPayload, DEFAULT_DATA_USE_NOTICE, DealRole, EnquiryPayload,
+        PaymentTiming, QuoteLocation, QuotePayload, QuoteTranslation, TimeWindow,
     },
 };
 
@@ -155,19 +154,21 @@ fn terms(place: ServiceLocation) -> AgreedTerms {
     }
 }
 
-fn request() -> RequestPayload {
-    RequestPayload {
-        request_id: "req_1".to_string(),
+fn enquiry() -> EnquiryPayload {
+    EnquiryPayload {
+        enquiry_id: "enq_1".to_string(),
         conversation: "conv_1".to_string(),
         sequence: 1,
         listing_id: Some("lst_1".to_string()),
         categories: vec!["gardening".to_string()],
-        description: "Trim the hedge".to_string(),
-        lang: LangTag::parse("en").unwrap(),
-        translations: vec![RequestTranslation {
-            lang: LangTag::parse("hi").unwrap(),
-            description: "झाड़ी काटें".to_string(),
-        }],
+        description: crate::deal::LocalText {
+            lang: LangTag::parse("en").unwrap(),
+            text: "Trim the hedge".to_string(),
+            translations: vec![crate::deal::TextTranslation {
+                lang: LangTag::parse("hi").unwrap(),
+                text: "झाड़ी काटें".to_string(),
+            }],
+        },
         area: Some(Area::Circle { lat_e6: 1, lon_e6: 2, radius_m: 3 }),
         window: Some(TimeWindow { earliest_secs: 1_000, latest_secs: 2_000 }),
         data_use_notice: DEFAULT_DATA_USE_NOTICE.to_string(),
@@ -312,7 +313,7 @@ fn the_other_wire_enums_say_no_old_word_in_any_variant() {
 
 #[test]
 fn a_request_and_a_quote_say_no_old_word() {
-    assert_no_old_words("request", &request());
+    assert_no_old_words("enquiry", &enquiry());
     for place in every_place() {
         let quote = QuotePayload {
             quote_id: "quo_1".to_string(),

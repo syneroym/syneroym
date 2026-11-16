@@ -254,7 +254,7 @@ test.describe('Roym Hub', () => {
       const container = document.createElement('div');
       container.id = 'safety-test-container';
       container.appendChild(
-        win.RoymRegistry.renderCard({ type: 'request', version: 1, data: { summary: payload } }),
+        win.RoymRegistry.renderCard({ type: 'enquiry', version: 1, data: { summary: payload } }),
       );
       document.body.appendChild(container);
     }, maliciousPayload);
@@ -268,7 +268,7 @@ test.describe('Roym Hub', () => {
     expect(externalRequests).toEqual([]);
     expect(consoleErrors).toEqual([]);
 
-    await expect(page.locator('#safety-test-container .card-request')).toHaveClass(/card-request/);
+    await expect(page.locator('#safety-test-container .card-enquiry')).toHaveClass(/card-enquiry/);
     const renderedText = await page.locator('#safety-test-container').innerText();
     expect(renderedText).toContain('<img src=x');
     expect(renderedText).toContain('<script>');
@@ -843,7 +843,7 @@ test.describe('Roym Hub', () => {
     await loginWithDelegatedKey(page);
     await page.getByRole('button', { name: 'Components' }).click();
 
-    const requestCard = page.locator('.card-request');
+    const requestCard = page.locator('.card-enquiry');
     await expect(requestCard).toContainText('Front brake cable replacement and tuning');
     await expect(requestCard).toContainText('cycling, repair');
 
@@ -970,7 +970,7 @@ test.describe('Roym Hub', () => {
     expect(text).toContain('<script>');
   });
 
-  test('26. messages tab: sending a request posts a card rendered as .card-request, never raw JSON', async ({ page }) => {
+  test('26. messages tab: sending a request posts a card rendered as .card-enquiry, never raw JSON', async ({ page }) => {
     await page.goto(HUB_URL);
     await page.waitForLoadState('networkidle');
     await loginWithDelegatedKey(page);
@@ -989,7 +989,7 @@ test.describe('Roym Hub', () => {
 
     await expect(page.locator('.request-form')).not.toBeVisible({ timeout: 15_000 });
 
-    const requestCard = page.locator('.thread-messages .card-request').first();
+    const requestCard = page.locator('.thread-messages .card-enquiry').first();
     await expect(requestCard).toBeVisible({ timeout: 15_000 });
     await expect(requestCard.locator('.request-description')).toHaveText(descText);
 
@@ -1053,7 +1053,7 @@ test.describe('Roym Hub', () => {
         conversation: 'conv_test',
         direction: 'incoming',
         sender_timestamp_ms: 1000,
-        card_type: 'request',
+        card_type: 'enquiry',
         version: 1,
         known: true,
         verified: true,

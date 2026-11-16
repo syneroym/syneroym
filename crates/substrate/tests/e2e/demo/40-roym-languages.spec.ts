@@ -205,7 +205,7 @@ test('Roym languages story: Alice, in Hindi, finds an English listing and accept
       await openMessages(page, 'hi');
       await openConversation(page, bob.addr, 'hi');
       await sendRequest(page, requestText, 'gardening', 'hi');
-      await expect(threadMessage(page, requestText).locator('.card-request')).toBeVisible({ timeout: 15_000 });
+      await expect(threadMessage(page, requestText).locator('.card-enquiry')).toBeVisible({ timeout: 15_000 });
     });
 
     await step(bobPage, "Bob's screen: read the request and send a quote in rupees", async () => {

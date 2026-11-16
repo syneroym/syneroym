@@ -98,11 +98,10 @@ pub async fn open_request_conv(
     let conv_id = opened["conversation_id"].as_str().unwrap().to_string();
     let req = node
         .rpc_ok(
-            "request.set",
+            "enquiry.set",
             json!({
                 "conversation": conv_id,
-                "description": description,
-                "lang": "en",
+                "description": { "lang": "en", "text": description },
                 "categories": categories,
                 "data_use_notice": DEFAULT_DATA_USE_NOTICE,
             }),
@@ -153,7 +152,7 @@ pub async fn request_record_on_quote_author(
         .as_array()
         .unwrap()
         .iter()
-        .find(|c| c["card_type"] == "request")
+        .find(|c| c["card_type"] == "enquiry")
         .expect("request card in the quote author's thread")["record_id"]
         .as_str()
         .unwrap()
@@ -190,7 +189,7 @@ pub async fn send_quote(
     send_quote_with(
         quote_author,
         json!({
-            "request_record_id": request_record_id,
+            "enquiry_record_id": request_record_id,
             "listing_id": listing_id,
             "slot_id": slot_id,
             "expires_in_secs": 3600,

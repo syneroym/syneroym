@@ -36,14 +36,14 @@ const REQUEST_CARD = {
   conversation: CONV,
   direction: "incoming",
   sender_timestamp_ms: 1000,
-  card_type: "request",
+  card_type: "enquiry",
   version: 1,
   known: true,
   verified: true,
   expired: false,
   issuer: "did:key:peer",
   record_id: "rec_req",
-  data: { request_id: "req-1", lang: "en", description: "Trim my hedge", categories: [] },
+  data: { enquiry_id: "req-1", description: { lang: "en", text: "Trim my hedge" }, categories: [] },
   stored_at_secs: 1,
 };
 
@@ -333,7 +333,7 @@ describe("what the person sends draws the thread at once", () => {
   it("a sent request shows now, and the open quote form is closed with the redraw", async () => {
     const messages: unknown[] = [REQUEST_MESSAGE];
     stubNode(messages, [REQUEST_CARD], {
-      "request.set": () => {
+      "enquiry.set": () => {
         messages.push(textMessage("msg-mine", "Please trim my lawn too", "outgoing"));
         return {};
       },

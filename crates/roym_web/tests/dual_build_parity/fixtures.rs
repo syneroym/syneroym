@@ -262,18 +262,18 @@ pub(crate) fn sample_quote_terms() -> Value {
 }
 
 pub(crate) fn peer_signed_request(conv: &str, seq: u32, issued_at: u64) -> (String, String) {
-    let req_id = transaction::derive_request_id(conv, &peer_did(), seq).unwrap();
+    let req_id = transaction::derive_enquiry_id(conv, &peer_did(), seq).unwrap();
     let payload = json!({
-        "request_id": req_id,
+        "enquiry_id": req_id,
         "conversation": conv,
         "sequence": seq,
-        "categories": ["gardening"], "lang": "en",
-        "description": "Prune apple tree",
+        "categories": ["gardening"],
+        "description": { "lang": "en", "text": "Prune apple tree" },
         "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
     });
     let env_json = sign_as_peer(
-        transaction::RECORD_REQUEST,
-        transaction::REQUEST_VERSION,
+        transaction::RECORD_ENQUIRY,
+        transaction::ENQUIRY_VERSION,
         &req_id,
         payload,
         None,
@@ -361,20 +361,20 @@ pub(crate) fn peer_signed_request_with(
     expires_at_secs: Option<u64>,
     supersedes: Option<String>,
 ) -> (String, String) {
-    let req_id = transaction::derive_request_id(conv, &peer_did(), seq).unwrap();
+    let req_id = transaction::derive_enquiry_id(conv, &peer_did(), seq).unwrap();
     let payload = json!({
-        "request_id": req_id,
+        "enquiry_id": req_id,
         "conversation": conv,
         "sequence": seq,
-        "categories": ["gardening"], "lang": "en",
-        "description": "Prune apple tree",
+        "categories": ["gardening"],
+        "description": { "lang": "en", "text": "Prune apple tree" },
         "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
     });
     let peer = peer_identity();
     let issuer = peer_did();
     let draft = RecordDraft {
-        version: transaction::REQUEST_VERSION,
-        record_type: transaction::RECORD_REQUEST.to_string(),
+        version: transaction::ENQUIRY_VERSION,
+        record_type: transaction::RECORD_ENQUIRY.to_string(),
         subject: req_id,
         payload,
         expires_at_secs,
@@ -477,7 +477,7 @@ pub(crate) const WIRE_REFUSED_VERBS: [(services::Service, &str); 6] = [
     (services::CONVERSATION, "conversation.history"),
     (services::PROFILE, "profile.get"),
     (services::CATALOG, "listing.get"),
-    (services::TRANSACTION, "request.ping"),
+    (services::TRANSACTION, "enquiry.ping"),
     (services::DIRECTORY, "directory.ping"),
 ];
 
@@ -778,7 +778,7 @@ pub(crate) fn peer_signed_progress(
 
 pub(crate) fn valid_quote_params(conv: &str, req_rec_id: &str) -> Value {
     let _ = conv;
-    json!({ "request_record_id": req_rec_id, "expires_in_secs": 3600, "terms": sample_quote_terms() })
+    json!({ "enquiry_record_id": req_rec_id, "expires_in_secs": 3600, "terms": sample_quote_terms() })
 }
 
 pub(crate) async fn deliver_peer_card(

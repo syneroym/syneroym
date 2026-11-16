@@ -1,4 +1,4 @@
-/// Renders a request card.
+/// Renders an enquiry card.
 ///
 /// Rules:
 /// - Every value is textContent. No innerHTML, no insertAdjacentHTML,
@@ -18,15 +18,22 @@ import { langAttr } from "../../i18n/text_lang";
 import { recordText, textFields, type TextVersion } from "../../records/record_text";
 import { categoryLabel } from "../../taxonomy/taxonomy";
 
-export interface RequestData {
+export interface LocalText {
+  lang: string;
+  text: string;
+  translations?: Array<{ lang: string; text: string }>;
+}
+
+export interface EnquiryData {
+  enquiry_id?: string;
   request_id?: string;
   conversation?: string;
   sequence?: number;
   listing_id?: string;
   categories?: string[];
-  description?: string;
+  description?: LocalText | string;
   lang?: string;
-  translations?: Array<{ lang: string; description: string }>;
+  translations?: Array<{ lang: string; description?: string; text?: string }>;
   area?: {
     center?: { lat: number; lon: number };
     radius_m?: number;
@@ -39,36 +46,68 @@ export interface RequestData {
   summary?: string;
 }
 
-export function renderRequest(data?: RequestData): HTMLElement {
+export function renderEnquiry(data?: EnquiryData): HTMLElement {
   const card = document.createElement("div");
-  card.className = "card card-request";
+  card.className = "card card-enquiry";
 
   const title = document.createElement("h3");
   title.textContent = t("request-title");
   card.appendChild(title);
 
-  const desc = data?.description ?? data?.summary;
-  if (desc !== undefined && desc !== null && desc !== "") {
+  let descText = "";
+  let descLang = "";
+  let translations: Array<{ lang: string; description: string }> = [];
+
+  if (typeof data?.description === "object" && data.description !== null) {
+    descText = data.description.text ?? "";
+    descLang = data.description.lang ?? "";
+    if (data.description.translations) {
+      translations = data.description.translations.map((tr) => ({
+        lang: tr.lang,
+        description: tr.text,
+      }));
+    }
+  } else if (typeof data?.description === "string") {
+    descText = data.description;
+    descLang = data?.lang ?? "";
+    if (data?.translations) {
+      translations = data.translations.map((tr) => ({
+        lang: tr.lang,
+        description: tr.description ?? tr.text ?? "",
+      }));
+    }
+  } else if (data?.summary) {
+    descText = data.summary;
+    descLang = data?.lang ?? "";
+  }
+
+  if (descText !== "") {
     const versions: TextVersion<{ description: string }>[] = [
       {
-        lang: data?.lang ?? "",
-        fields: { description: desc },
+        lang: descLang,
+        fields: { description: descText },
         byAuthor: false,
       },
-      ...(data?.translations || []).map((tr) => ({
+      ...translations.map((tr) => ({
         lang: tr.lang,
         fields: { description: tr.description },
         byAuthor: true,
       })),
     ];
-    recordText(card, versions, (v) => {
-      const descP = document.createElement("p");
-      descP.className = "request-description";
-      descP.textContent = v.fields.description;
-      descP.setAttribute("lang", langAttr(v.lang));
-      return [descP];
-    }, textFields<{ description: string }>(["description"]),
-    data?.request_id !== undefined ? `request:${data.request_id}` : undefined);
+    const recId = data?.enquiry_id ?? data?.request_id;
+    recordText(
+      card,
+      versions,
+      (v) => {
+        const descP = document.createElement("p");
+        descP.className = "request-description";
+        descP.textContent = v.fields.description;
+        descP.setAttribute("lang", langAttr(v.lang));
+        return [descP];
+      },
+      textFields<{ description: string }>(["description"]),
+      recId !== undefined ? `enquiry:${recId}` : undefined,
+    );
   }
 
   if (data?.categories && data.categories.length > 0) {
@@ -110,3 +149,7 @@ export function renderRequest(data?: RequestData): HTMLElement {
 
   return card;
 }
+
+export const renderRequest = renderEnquiry;
+export type RequestData = EnquiryData;
+

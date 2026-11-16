@@ -19,17 +19,17 @@ use super::{
 };
 
 async fn deal_pings_and_empty(h: &Harness) {
-    let ping_r = rpc(h, "request.ping", json!({})).await;
-    assert_shape("request_ping", &ping_r);
+    let ping_r = rpc(h, "enquiry.ping", json!({})).await;
+    assert_shape("enquiry_ping", &ping_r);
     let ping_q = rpc(h, "quote.ping", json!({})).await;
     assert_shape("quote_ping", &ping_q);
     let ping_a = rpc(h, "agreement.ping", json!({})).await;
     assert_shape("agreement_ping", &ping_a);
 
-    let r_empty = rpc(h, "request.list", json!({})).await;
-    assert_shape("request_list_empty", &r_empty);
-    let r_missing = rpc(h, "request.get", json!({ "request_id": "nonexistent" })).await;
-    assert_shape("request_get_missing", &r_missing);
+    let r_empty = rpc(h, "enquiry.list", json!({})).await;
+    assert_shape("enquiry_list_empty", &r_empty);
+    let r_missing = rpc(h, "enquiry.get", json!({ "enquiry_id": "nonexistent" })).await;
+    assert_shape("enquiry_get_missing", &r_missing);
 
     let q_empty = rpc(h, "quote.list", json!({})).await;
     assert_shape("quote_list_empty", &q_empty);
@@ -42,51 +42,49 @@ async fn deal_pings_and_empty(h: &Harness) {
     assert_shape("agreement_get_missing", &a_missing);
 }
 
-async fn deal_request_and_quote_shapes(h: &Harness, conv: &str) -> (String, String, String) {
+async fn deal_enquiry_and_quote_shapes(h: &Harness, conv: &str) -> (String, String, String) {
     let r_set = rpc(
         h,
-        "request.set",
+        "enquiry.set",
         json!({
             "conversation": conv,
-            "description": "Fix the fence",
-            "lang": "en",
+            "description": { "lang": "en", "text": "Fix the fence" },
             "categories": ["gardening"],
             "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
         }),
     )
     .await;
-    assert_shape("request_set_sent", &r_set);
+    assert_shape("enquiry_set_sent", &r_set);
     let req_rec_id = r_set["record_id"].as_str().unwrap().to_string();
-    let req_id = r_set["request_id"].as_str().unwrap().to_string();
+    let req_id = r_set["enquiry_id"].as_str().unwrap().to_string();
 
     let r_set_err = rpc(
         h,
-        "request.set",
+        "enquiry.set",
         json!({
             "conversation": "nonexistent-conversation",
-            "description": "Fix the fence elsewhere",
-            "lang": "en",
+            "description": { "lang": "en", "text": "Fix the fence elsewhere" },
             "categories": ["gardening"],
             "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
         }),
     )
     .await;
-    assert_shape("request_set_send_error", &r_set_err);
+    assert_shape("enquiry_set_send_error", &r_set_err);
 
-    let r_get = rpc(h, "request.get", json!({ "request_id": req_id })).await;
-    assert_shape("request_get_found", &r_get);
+    let r_get = rpc(h, "enquiry.get", json!({ "enquiry_id": req_id })).await;
+    assert_shape("enquiry_get_found", &r_get);
     let req_env = r_get["envelope"].as_str().unwrap().to_string();
 
-    let r_list = rpc(h, "request.list", json!({})).await;
-    assert_shape("request_list_with_rows", &r_list);
+    let r_list = rpc(h, "enquiry.list", json!({})).await;
+    assert_shape("enquiry_list_with_rows", &r_list);
 
-    let r_hist = rpc(h, "request.history", json!({ "request_id": req_id })).await;
-    assert_shape("request_history", &r_hist);
+    let r_hist = rpc(h, "enquiry.history", json!({ "enquiry_id": req_id })).await;
+    assert_shape("enquiry_history", &r_hist);
 
-    let r_ver_good = rpc(h, "request.verify", json!({ "envelope": req_env })).await;
-    assert_shape("request_verify_good", &r_ver_good);
-    let r_ver_bad = rpc(h, "request.verify", json!({ "envelope": "tampered" })).await;
-    assert_shape("request_verify_bad", &r_ver_bad);
+    let r_ver_good = rpc(h, "enquiry.verify", json!({ "envelope": req_env })).await;
+    assert_shape("enquiry_verify_good", &r_ver_good);
+    let r_ver_bad = rpc(h, "enquiry.verify", json!({ "envelope": "tampered" })).await;
+    assert_shape("enquiry_verify_bad", &r_ver_bad);
 
     let (peer_req_id, _) = setup_peer_request(h, conv).await;
     let q_params = valid_quote_params(conv, &peer_req_id);
@@ -174,7 +172,7 @@ async fn deal_shapes() {
     enrol_signing(&h, "transaction").await;
     deal_pings_and_empty(&h).await;
     let conv = open_conv(&h, &peer_did()).await;
-    deal_request_and_quote_shapes(&h, &conv).await;
+    deal_enquiry_and_quote_shapes(&h, &conv).await;
     deal_agreement_shapes(&h, &conv).await;
 }
 

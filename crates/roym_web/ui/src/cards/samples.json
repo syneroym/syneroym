@@ -1,10 +1,12 @@
 [
   {
-    "type": "request",
+    "type": "enquiry",
     "version": 1,
     "data": {
-      "lang": "en",
-      "description": "Front brake cable replacement and tuning",
+      "description": {
+        "lang": "en",
+        "text": "Front brake cable replacement and tuning"
+      },
       "categories": [
         "cycling",
         "repair"

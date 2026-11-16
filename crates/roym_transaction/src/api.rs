@@ -11,12 +11,12 @@ use syneroym_roym_core::{
         InstallCertificateInput, InstallCertificateOutput, SigningStatusOutput,
         install_signing_certificate, signing_status,
     },
-    transaction::{AgreementReceiptPayload, QuotePayload, RecordVerdict, RequestPayload},
+    transaction::{AgreementReceiptPayload, EnquiryPayload, QuotePayload, RecordVerdict},
 };
 
 use crate::app::{
-    AgreementRef, HalfRecordedOutput, ListInput, agreement_ops, backup, booking_ops,
-    fulfilment_ops, payment_ops, quote_ops, request_ops, sync, thread,
+    AgreementRef, HalfRecordedOutput, ListInput, agreement_ops, backup, booking_ops, enquiry_ops,
+    fulfilment_ops, payment_ops, quote_ops, sync, thread,
 };
 
 async fn ping<H: AppHost>(_host: &H, _: NoParams) -> Reply<PingOutput> {
@@ -24,7 +24,7 @@ async fn ping<H: AppHost>(_host: &H, _: NoParams) -> Reply<PingOutput> {
 }
 
 syneroym_roym_core::service_methods! {
-    "request.ping": ping [NoParams => PingOutput],
+    "enquiry.ping": ping [NoParams => PingOutput],
     "quote.ping": ping [NoParams => PingOutput],
     "agreement.ping": ping [NoParams => PingOutput],
     "receipt.ping": ping [NoParams => PingOutput],
@@ -32,11 +32,11 @@ syneroym_roym_core::service_methods! {
     "payment.ping": ping [NoParams => PingOutput],
     "fulfilment.ping": ping [NoParams => PingOutput],
 
-    "request.set": request_ops::set [request_ops::RequestSetInput => request_ops::RequestSetOutput],
-    "request.get": request_ops::get [request_ops::RequestKeyInput => Option<request_ops::RequestView>],
-    "request.list": request_ops::list [ListInput => request_ops::RequestListOutput],
-    "request.history": request_ops::history [request_ops::RequestKeyInput => EnvelopeHistoryOutput],
-    "request.verify": request_ops::verify [VerifyInput => RecordVerdict<RequestPayload>],
+    "enquiry.set": enquiry_ops::set [enquiry_ops::EnquirySetInput => enquiry_ops::EnquirySetOutput],
+    "enquiry.get": enquiry_ops::get [enquiry_ops::EnquiryKeyInput => Option<enquiry_ops::EnquiryView>],
+    "enquiry.list": enquiry_ops::list [ListInput => enquiry_ops::EnquiryListOutput],
+    "enquiry.history": enquiry_ops::history [enquiry_ops::EnquiryKeyInput => EnvelopeHistoryOutput],
+    "enquiry.verify": enquiry_ops::verify [VerifyInput => RecordVerdict<EnquiryPayload>],
 
     "quote.set": quote_ops::set [quote_ops::QuoteSetInput => quote_ops::QuoteSetOutput],
     "quote.get": quote_ops::get [quote_ops::QuoteKeyInput => Option<quote_ops::QuoteView>],

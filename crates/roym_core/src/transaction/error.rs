@@ -94,8 +94,8 @@ pub enum TransactionError {
     #[error("counterparty and quote author cannot be the same DID")]
     SamePartyDid,
 
-    #[error("request_id is empty")]
-    RequestIdEmpty,
+    #[error("enquiry_id is empty")]
+    EnquiryIdEmpty,
 
     #[error("description is empty")]
     DescriptionEmpty,

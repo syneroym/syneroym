@@ -4,6 +4,7 @@ use syneroym_identity::{Identity, substrate};
 use syneroym_signed_record::{Envelope, RecordDraft};
 
 use super::*;
+use crate::lang::TranslationError;
 
 mod lang;
 mod verify;
@@ -33,19 +34,21 @@ pub(super) fn sample_terms() -> AgreedTerms {
     }
 }
 
-pub(super) fn sample_request(issuer: &str) -> RequestPayload {
+pub(super) fn sample_enquiry(issuer: &str) -> EnquiryPayload {
     let conversation = "conv_123456";
     let sequence = 1;
-    let request_id = derive_request_id(conversation, issuer, sequence).unwrap();
-    RequestPayload {
-        request_id,
+    let enquiry_id = derive_enquiry_id(conversation, issuer, sequence).unwrap();
+    EnquiryPayload {
+        enquiry_id,
         conversation: conversation.to_string(),
         sequence,
         listing_id: Some("lst_abc123".to_string()),
         categories: vec!["gardening".to_string()],
-        description: "Need fence installed".to_string(),
-        lang: LangTag::parse("en").unwrap(),
-        translations: vec![],
+        description: LocalText {
+            lang: LangTag::parse("en").unwrap(),
+            text: "Need fence installed".to_string(),
+            translations: vec![],
+        },
         area: None,
         window: Some(TimeWindow { earliest_secs: 10000, latest_secs: 20000 }),
         data_use_notice: DEFAULT_DATA_USE_NOTICE.to_string(),
@@ -212,15 +215,15 @@ fn agreed_terms_validate_rules() {
 }
 
 #[test]
-fn request_payload_validate_rules() {
+fn enquiry_payload_validate_rules() {
     let key = Identity::generate().unwrap();
     let issuer = substrate::derive_did_key(&key.public_key());
-    let mut r = sample_request(&issuer);
+    let mut r = sample_enquiry(&issuer);
     assert!(r.validate().is_ok());
 
-    r.request_id = "".to_string();
-    assert_eq!(r.validate(), Err(TransactionError::RequestIdEmpty));
-    r.request_id = "req_123".to_string();
+    r.enquiry_id = "".to_string();
+    assert_eq!(r.validate(), Err(TransactionError::EnquiryIdEmpty));
+    r.enquiry_id = "enq_123".to_string();
 
     r.conversation = "".to_string();
     assert_eq!(r.validate(), Err(TransactionError::ConversationEmpty));
@@ -230,11 +233,17 @@ fn request_payload_validate_rules() {
     assert_eq!(r.validate(), Err(TransactionError::InvalidSequence(0)));
     r.sequence = 1;
 
-    r.description = "   ".to_string();
-    assert_eq!(r.validate(), Err(TransactionError::DescriptionEmpty));
-    r.description = "d".repeat(MAX_DESCRIPTION_LEN + 1);
-    assert_eq!(r.validate(), Err(TransactionError::DescriptionTooLong));
-    r.description = "Valid description".to_string();
+    r.description.text = "   ".to_string();
+    assert!(matches!(
+        r.validate(),
+        Err(TransactionError::Translation(TranslationError::Empty { .. }))
+    ));
+    r.description.text = "d".repeat(MAX_DESCRIPTION_LEN + 1);
+    assert!(matches!(
+        r.validate(),
+        Err(TransactionError::Translation(TranslationError::TooLong { .. }))
+    ));
+    r.description.text = "Valid description".to_string();
 
     r.categories = (0..MAX_CATEGORIES + 1).map(|i| format!("c{i}")).collect();
     assert_eq!(r.validate(), Err(TransactionError::TooManyCategories));
@@ -319,18 +328,18 @@ fn agreement_receipt_payload_validate_rules() {
 }
 
 #[test]
-fn derive_request_id_and_quote_id_are_stable_and_differ_on_any_input_change() {
-    let id1 = derive_request_id("c1", "did:key:1", 1).unwrap();
-    let id2 = derive_request_id("c1", "did:key:1", 1).unwrap();
+fn derive_enquiry_id_and_quote_id_are_stable_and_differ_on_any_input_change() {
+    let id1 = derive_enquiry_id("c1", "did:key:1", 1).unwrap();
+    let id2 = derive_enquiry_id("c1", "did:key:1", 1).unwrap();
     assert_eq!(id1, id2);
-    assert!(id1.starts_with(REQUEST_ID_PREFIX));
+    assert!(id1.starts_with(ENQUIRY_ID_PREFIX));
 
     // Changing conversation
-    assert_ne!(id1, derive_request_id("c2", "did:key:1", 1).unwrap());
+    assert_ne!(id1, derive_enquiry_id("c2", "did:key:1", 1).unwrap());
     // Changing issuer
-    assert_ne!(id1, derive_request_id("c1", "did:key:2", 1).unwrap());
+    assert_ne!(id1, derive_enquiry_id("c1", "did:key:2", 1).unwrap());
     // Changing sequence
-    assert_ne!(id1, derive_request_id("c1", "did:key:1", 2).unwrap());
+    assert_ne!(id1, derive_enquiry_id("c1", "did:key:1", 2).unwrap());
 
     // Quote id
     let q1 = derive_quote_id("c1", "did:key:1", 1).unwrap();

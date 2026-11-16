@@ -546,8 +546,8 @@ async fn invalid_field_types_and_unknown_fields_in_catalog_and_transaction_are_r
     assert_eq!(w["error"]["code"], -32602);
     assert_eq!(w["error"]["data"]["field"], "envelope");
 
-    // request.list with unknown key agreement
-    let (w, _) = post_rpc(&h, "request.list", Some(json!({ "agreement": "agr1" }))).await;
+    // enquiry.list with unknown key agreement
+    let (w, _) = post_rpc(&h, "enquiry.list", Some(json!({ "agreement": "agr1" }))).await;
     assert_eq!(w["error"]["code"], -32602);
     assert_eq!(w["error"]["data"]["field"], "agreement");
 
@@ -568,19 +568,21 @@ async fn invalid_field_types_and_unknown_fields_in_catalog_and_transaction_are_r
     assert_eq!(w["error"]["code"], -32602);
     assert_eq!(w["error"]["data"]["field"], "state");
 
-    // request.list with params absent works
-    let (w, _) = post_rpc(&h, "request.list", None).await;
-    assert!(w.get("error").is_none(), "request.list with no params must succeed: {w}");
+    // enquiry.list with params absent works
+    let (w, _) = post_rpc(&h, "enquiry.list", None).await;
+    assert!(w.get("error").is_none(), "enquiry.list with no params must succeed: {w}");
     assert!(w.get("result").is_some());
 
-    // request.set with malformed tagged area block
+    // enquiry.set with malformed tagged area block
     let (w, _) = post_rpc(
         &h,
-        "request.set",
+        "enquiry.set",
         Some(json!({
             "conversation": "c1",
-            "description": "Need help",
-            "lang": "en",
+            "description": {
+                "lang": "en",
+                "text": "Need help"
+            },
             "data_use_notice": "standard",
             "area": {
                 "kind": "circle",

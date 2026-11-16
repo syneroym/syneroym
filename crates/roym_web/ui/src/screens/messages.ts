@@ -77,6 +77,8 @@ export interface CardRow {
   issuer?: string;
   record_id?: string;
   data?: {
+    enquiry_id?: string;
+    enquiry_record_id?: string;
     request_id?: string;
     request_record_id?: string;
     sequence?: number;
@@ -381,10 +383,12 @@ async function renderThread(
     reqErr.textContent = "";
     try {
       const categories = catsPicker.codes();
-      await call("request.set", {
+      await call("enquiry.set", {
         conversation: conv.id,
-        description: desc,
-        lang: reqLang.value,
+        description: {
+          lang: reqLang.value,
+          text: desc,
+        },
         categories,
         listing_id: listingInput.value.trim() || undefined,
         data_use_notice: dataUseNotice,
@@ -451,8 +455,9 @@ async function renderThread(
 export function computeNewestRequestMap(allCards: CardRow[]): Map<string, string> {
   const newestRequestMap = new Map<string, string>();
   for (const c of allCards) {
-    if (c.card_type === "request" && c.verified && c.data?.request_id && c.record_id) {
-      const reqId = c.data.request_id;
+    const isEnquiryOrRequest = c.card_type === "enquiry" || c.card_type === "request";
+    const reqId = c.data?.enquiry_id ?? c.data?.request_id;
+    if (isEnquiryOrRequest && c.verified && reqId && c.record_id) {
       const currNewestRecord = newestRequestMap.get(reqId);
       if (!currNewestRecord) {
         newestRequestMap.set(reqId, c.record_id);
@@ -477,15 +482,18 @@ export function isQuoteSuperseded(
   allCards: CardRow[],
   newestRequestMap: Map<string, string>,
 ): boolean {
-  const reqRecordId = cardRow.data?.request_record_id;
+  const reqRecordId = cardRow.data?.enquiry_record_id ?? cardRow.data?.request_record_id;
   if (cardRow.card_type === "quote" && cardRow.verified && reqRecordId) {
     const matchingReq = allCards.find(
       (c) =>
-        c.card_type === "request" &&
-        (c.record_id === reqRecordId || c.data?.request_id === cardRow.data?.request_id),
+        (c.card_type === "enquiry" || c.card_type === "request") &&
+        (c.record_id === reqRecordId ||
+          (c.data?.enquiry_id ?? c.data?.request_id) ===
+            (cardRow.data?.enquiry_id ?? cardRow.data?.request_id)),
     );
-    if (matchingReq && matchingReq.data?.request_id) {
-      const newestRecordId = newestRequestMap.get(matchingReq.data.request_id);
+    const reqId = matchingReq?.data?.enquiry_id ?? matchingReq?.data?.request_id;
+    if (matchingReq && reqId) {
+      const newestRecordId = newestRequestMap.get(reqId);
       if (newestRecordId && newestRecordId !== reqRecordId) {
         return true;
       }
@@ -654,8 +662,8 @@ export function renderCardActions(
   myDid: string,
   refresh: () => Promise<void>,
 ) {
-  // Quote this request: on verified request not issued by me
-  if (card.card_type === "request" && card.verified) {
+  // Quote this request: on verified request or enquiry not issued by me
+  if ((card.card_type === "enquiry" || card.card_type === "request") && card.verified) {
     const notIssuedByMe = card.direction === "incoming" || (myDid && card.issuer !== myDid);
     if (notIssuedByMe) {
       const quoteBtn = text("button", t("quote-request-button"), "button quote-request-button") as HTMLButtonElement;
@@ -924,7 +932,7 @@ export function openQuoteForm(
     submitBtn.disabled = true;
     try {
       await call("quote.set", {
-        request_record_id: reqCard.record_id,
+        enquiry_record_id: reqCard.record_id,
         expires_in_secs,
         terms: {
           lang: quoteLang.value,

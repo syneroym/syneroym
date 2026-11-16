@@ -32,7 +32,7 @@ const ROUTES: &[(&str, Service, MethodAuth)] = &[
     // `catalog.install-signing-certificate`) reach the catalog through
     // its own name; without this row `roym enrol-signing` cannot see it.
     ("catalog.", CATALOG, MethodAuth::Owner),
-    ("request.", TRANSACTION, MethodAuth::Owner),
+    ("enquiry.", TRANSACTION, MethodAuth::Owner),
     ("quote.", TRANSACTION, MethodAuth::Owner),
     ("agreement.", TRANSACTION, MethodAuth::Owner),
     ("receipt.", TRANSACTION, MethodAuth::Owner),

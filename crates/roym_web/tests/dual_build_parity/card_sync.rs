@@ -15,8 +15,8 @@ async fn stash_unanswered_card(h: &Harness, id: &str, conv: &str, env: &str, ts:
         conv,
         &peer_did(),
         ts,
-        transaction::RECORD_REQUEST,
-        transaction::REQUEST_VERSION,
+        transaction::RECORD_ENQUIRY,
+        transaction::ENQUIRY_VERSION,
         env,
     );
     for stack in [&h.wasm_conversation, &h.native_conversation] {
@@ -58,8 +58,8 @@ async fn deliver_request(h: &Harness, id: &str, conv: &str, env: &str) {
         id,
         conv,
         &peer_did(),
-        transaction::RECORD_REQUEST,
-        transaction::REQUEST_VERSION,
+        transaction::RECORD_ENQUIRY,
+        transaction::ENQUIRY_VERSION,
         env,
     )
     .await;

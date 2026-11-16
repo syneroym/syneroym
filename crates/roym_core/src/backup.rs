@@ -28,8 +28,8 @@ pub const SECTION_MEMBERS: &str = "members";
 pub const SECTION_PUBLICATIONS: &str = "publications";
 pub const SECTION_PUBLICATION_LOG: &str = "publication_log";
 pub const SECTION_SOURCES: &str = "sources";
-pub const SECTION_REQUESTS: &str = "requests";
-pub const SECTION_REQUEST_HISTORY: &str = "request_history";
+pub const SECTION_ENQUIRIES: &str = "enquiries";
+pub const SECTION_ENQUIRY_HISTORY: &str = "enquiry_history";
 pub const SECTION_QUOTES: &str = "quotes";
 pub const SECTION_QUOTE_HISTORY: &str = "quote_history";
 pub const SECTION_AGREEMENTS: &str = "agreements";
@@ -452,11 +452,11 @@ mod tests {
             SECTION_PUBLICATIONS,
             SECTION_PUBLICATION_LOG,
             SECTION_SOURCES,
-            SECTION_REQUESTS,
+            SECTION_ENQUIRIES,
             SECTION_QUOTES,
             SECTION_AGREEMENTS,
             SECTION_CARDS,
-            SECTION_REQUEST_HISTORY,
+            SECTION_ENQUIRY_HISTORY,
             SECTION_QUOTE_HISTORY,
             SECTION_LEDGER,
             SECTION_BOOKINGS,

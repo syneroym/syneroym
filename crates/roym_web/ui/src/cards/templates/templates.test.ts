@@ -11,7 +11,7 @@ import { renderFulfilmentReceipt } from "./fulfilment_receipt.js";
 import { renderPaymentAcknowledgement } from "./payment_acknowledgement.js";
 import { renderPaymentRequest } from "./payment_request.js";
 import { renderQuote } from "./quote.js";
-import { renderRequest } from "./request.js";
+import { renderEnquiry } from "./enquiry.js";
 
 /// The `datetime` of every `<time>` element under `selector`.
 function datetimes(el: HTMLElement, selector: string): (string | null)[] {
@@ -19,10 +19,10 @@ function datetimes(el: HTMLElement, selector: string): (string | null)[] {
 }
 
 describe("Card templates", () => {
-  describe("renderRequest", () => {
+  describe("renderEnquiry", () => {
     it("renders every field it is given as text", () => {
       const data = {
-        description: "Need roof repair after storm",
+        description: { lang: "en", text: "Need roof repair after storm" },
         categories: ["roofing", "repair"],
         listing_id: "list-123",
         window: {
@@ -31,9 +31,9 @@ describe("Card templates", () => {
         },
         data_use_notice: "Standard data use notice text",
       };
-      const el = renderRequest(data);
+      const el = renderEnquiry(data);
 
-      expect(el.classList.contains("card-request")).toBe(true);
+      expect(el.classList.contains("card-enquiry")).toBe(true);
       expect(el.textContent).toContain("Need roof repair after storm");
       expect(el.textContent).toContain("roofing, repair");
       expect(el.textContent).toContain("list-123");
@@ -52,19 +52,19 @@ describe("Card templates", () => {
         listing_id: xss,
         data_use_notice: xss,
       };
-      const el = renderRequest(data);
+      const el = renderEnquiry(data);
 
       expect(el.querySelectorAll("img").length).toBe(0);
       expect(el.textContent).toContain(xss);
     });
 
     it("renders taxonomy category labels and own codes as they came", () => {
-      const el = renderRequest({ categories: ["bicycle-repair", "my-own-code"] });
+      const el = renderEnquiry({ categories: ["bicycle-repair", "my-own-code"] });
       expect(el.textContent).toContain("Bicycle Repair, my-own-code");
     });
 
     it("marks description with lang and keeps label without lang", () => {
-      const el = renderRequest({
+      const el = renderEnquiry({
         lang: "hi",
         description: "Need roof repair",
         data_use_notice: "Notice text",
@@ -572,7 +572,7 @@ describe("Card templates with a translation engine", () => {
     setTargetsForTest(["en"]);
     const seen: Record<string, unknown>[] = [];
     stubRpc({ "translation.translate": fakeEngine(seen) });
-    const el = renderRequest({ lang: "hi", description: "नल ठीक करना है" });
+    const el = renderEnquiry({ lang: "hi", description: "नल ठीक करना है" });
     el.querySelector<HTMLButtonElement>(".record-text-translate")!.click();
     await vi.waitFor(() => expect(seen).toHaveLength(1));
     expect(seen[0]).toEqual({ texts: ["नल ठीक करना है"], source_lang: "hi", target_lang: "en" });
@@ -618,7 +618,7 @@ describe("Card templates with a translation engine", () => {
   it("a node with no engine draws no translate action on a request or a quote", () => {
     readerReads([]);
     const calls = stubRpc({});
-    const request = renderRequest({ lang: "hi", description: "नल ठीक करना है" });
+    const request = renderEnquiry({ lang: "hi", description: "नल ठीक करना है" });
     const quote = renderQuote(HINDI_QUOTE);
     expect(request.querySelector(".record-text-translate")).toBeNull();
     expect(quote.querySelector(".record-text-translate")).toBeNull();

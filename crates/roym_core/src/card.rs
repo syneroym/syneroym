@@ -7,7 +7,7 @@ use thiserror::Error;
 /// rendered at today. Fixed: a card of an unlisted type, or a listed type
 /// at an unlisted version, renders as the neutral unknown block.
 pub const CARD_TYPES: &[(&str, u32)] = &[
-    ("request", 1),
+    ("enquiry", 1),
     ("quote", 1),
     ("agreement-receipt", 1),
     ("booking-progress", 1),
@@ -141,17 +141,17 @@ mod tests {
     #[test]
     fn card_round_trip() {
         let envelope = "{\"test\": \"env\"}";
-        let body = card_body("request", 1, envelope).expect("serialize card");
+        let body = card_body("enquiry", 1, envelope).expect("serialize card");
         let parsed = parse_card(&body).expect("parse card");
         assert_eq!(parsed.card_version, CARD_WRAPPER_VERSION);
-        assert_eq!(parsed.card_type, "request");
+        assert_eq!(parsed.card_type, "enquiry");
         assert_eq!(parsed.version, 1);
         assert_eq!(parsed.envelope, envelope);
     }
 
     #[test]
     fn unknown_wrapper_version_is_refused() {
-        let json = r#"{"card_version": 99, "type": "request", "version": 1, "envelope": "{}"}"#;
+        let json = r#"{"card_version": 99, "type": "enquiry", "version": 1, "envelope": "{}"}"#;
         assert_eq!(parse_card(json), Err(CardError::UnknownWrapperVersion(99)));
     }
 
@@ -169,16 +169,16 @@ mod tests {
         assert_eq!(parse_card(&large_body), Err(CardError::TooLarge));
 
         let large_env = "x".repeat(MAX_CARD_BODY_BYTES);
-        assert_eq!(card_body("request", 1, &large_env), Err(CardError::TooLarge));
+        assert_eq!(card_body("enquiry", 1, &large_env), Err(CardError::TooLarge));
     }
 
     #[test]
     fn extra_keys_parse_but_missing_envelope_fails() {
-        let with_extra = r#"{"card_version": 1, "type": "request", "version": 1, "envelope": "{}", "unexpected": 123}"#;
+        let with_extra = r#"{"card_version": 1, "type": "enquiry", "version": 1, "envelope": "{}", "unexpected": 123}"#;
         let parsed = parse_card(with_extra).expect("serde should ignore extra keys");
-        assert_eq!(parsed.card_type, "request");
+        assert_eq!(parsed.card_type, "enquiry");
 
-        let missing_env = r#"{"card_version": 1, "type": "request", "version": 1}"#;
+        let missing_env = r#"{"card_version": 1, "type": "enquiry", "version": 1}"#;
         assert!(matches!(parse_card(missing_env), Err(CardError::Json(_))));
     }
 
@@ -188,7 +188,7 @@ mod tests {
         // which forces heavy escaping when embedded into the Card JSON wrapper.
         let heavy_escapes = r#"\""#.repeat(32_000); // 64,000 bytes
         let env = format!(r#"{{"payload":"{heavy_escapes}"}}"#);
-        let res = card_body("request", 1, &env);
+        let res = card_body("enquiry", 1, &env);
         assert!(res.is_ok(), "heavy-escape envelope should fit under MAX_CARD_BODY_BYTES");
         let body = res.unwrap();
         assert!(body.len() <= MAX_CARD_BODY_BYTES);

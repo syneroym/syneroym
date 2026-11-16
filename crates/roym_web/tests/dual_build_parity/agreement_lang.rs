@@ -51,11 +51,10 @@ async fn synced_quote(h: &Harness, name: &str) -> String {
     let conv = format!("conv-237-{name}");
     let request = both_rpc(
         h,
-        "request.set",
+        "enquiry.set",
         json!({
             "conversation": conv,
-            "description": "Counterparty deal",
-            "lang": "en",
+            "description": { "lang": "en", "text": "Counterparty deal" },
             "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
         }),
     )

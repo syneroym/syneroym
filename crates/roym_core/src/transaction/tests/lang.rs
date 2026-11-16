@@ -1,46 +1,41 @@
 use syneroym_identity::{Identity, substrate};
 
 use super::*;
-use crate::lang::TranslationError;
+use crate::{deal::TextTranslation, lang::TranslationError};
 
 pub(super) fn sample_tag(s: &str) -> LangTag {
     LangTag::parse(s).expect("valid tag")
 }
 
 #[test]
-fn request_translation_validation() {
-    let mut req = sample_request("did:key:zRequester");
-    req.lang = sample_tag("hi");
+fn enquiry_translation_validation() {
+    let mut req = sample_enquiry("did:key:zRequester");
+    req.description.lang = sample_tag("hi");
 
     // 5 translations exceeds limit of 4
     let tags = ["ta", "bn", "gu", "kn", "ml"];
-    req.translations = tags
+    req.description.translations = tags
         .into_iter()
-        .map(|t| RequestTranslation {
-            lang: sample_tag(t),
-            description: format!("Description {t}"),
-        })
+        .map(|t| TextTranslation { lang: sample_tag(t), text: format!("Description {t}") })
         .collect();
     assert_eq!(req.validate(), Err(TransactionError::Translation(TranslationError::TooMany)));
 
     // 4 translations pass
-    req.translations.pop();
+    req.description.translations.pop();
     assert!(req.validate().is_ok());
 
     // Same tag as record
-    req.translations = vec![RequestTranslation {
-        lang: sample_tag("hi"),
-        description: "Same as record".to_string(),
-    }];
+    req.description.translations =
+        vec![TextTranslation { lang: sample_tag("hi"), text: "Same as record".to_string() }];
     assert_eq!(
         req.validate(),
         Err(TransactionError::Translation(TranslationError::SameAsRecord("hi".to_string())))
     );
 
     // Duplicate tags
-    req.translations = vec![
-        RequestTranslation { lang: sample_tag("en"), description: "English 1".to_string() },
-        RequestTranslation { lang: sample_tag("en"), description: "English 2".to_string() },
+    req.description.translations = vec![
+        TextTranslation { lang: sample_tag("en"), text: "English 1".to_string() },
+        TextTranslation { lang: sample_tag("en"), text: "English 2".to_string() },
     ];
     assert_eq!(
         req.validate(),
@@ -48,8 +43,8 @@ fn request_translation_validation() {
     );
 
     // Empty description
-    req.translations =
-        vec![RequestTranslation { lang: sample_tag("en"), description: "   ".to_string() }];
+    req.description.translations =
+        vec![TextTranslation { lang: sample_tag("en"), text: "   ".to_string() }];
     assert_eq!(
         req.validate(),
         Err(TransactionError::Translation(TranslationError::Empty {
@@ -59,10 +54,8 @@ fn request_translation_validation() {
     );
 
     // Description too long
-    req.translations = vec![RequestTranslation {
-        lang: sample_tag("en"),
-        description: "a".repeat(MAX_DESCRIPTION_LEN + 1),
-    }];
+    req.description.translations =
+        vec![TextTranslation { lang: sample_tag("en"), text: "a".repeat(MAX_DESCRIPTION_LEN + 1) }];
     assert_eq!(
         req.validate(),
         Err(TransactionError::Translation(TranslationError::TooLong {
@@ -220,60 +213,60 @@ fn quote_translation_field_validation() {
 }
 
 #[test]
-fn request_verify_refuses_missing_malformed_and_non_canonical_lang() {
+fn enquiry_verify_refuses_missing_malformed_and_non_canonical_lang() {
     let key = Identity::generate().unwrap();
     let issuer = substrate::derive_did_key(&key.public_key());
-    let req = sample_request(&issuer);
+    let req = sample_enquiry(&issuer);
     let base_val = serde_json::to_value(&req).unwrap();
 
-    // Missing lang
+    // Missing lang inside description
     let mut missing_lang = base_val.clone();
-    missing_lang.as_object_mut().unwrap().remove("lang");
+    missing_lang["description"].as_object_mut().unwrap().remove("lang");
     let env_missing = sign_envelope(
         &key,
-        RECORD_REQUEST,
-        REQUEST_VERSION,
-        &req.request_id,
+        RECORD_ENQUIRY,
+        ENQUIRY_VERSION,
+        &req.enquiry_id,
         missing_lang,
         None,
         1000,
     );
-    let v_missing = verify_request(&env_missing, 1000);
+    let v_missing = verify_enquiry(&env_missing, 1000);
     assert!(!v_missing.verified);
     assert!(
-        v_missing.reason.as_deref().unwrap_or("").contains("payload: missing field `lang`"),
+        v_missing.reason.as_deref().unwrap_or("").contains("missing field `lang`"),
         "expected missing field lang refusal: {:?}",
         v_missing.reason
     );
 
     // Malformed lang: hi_IN
     let mut malformed = base_val.clone();
-    malformed["lang"] = serde_json::json!("hi_IN");
+    malformed["description"]["lang"] = serde_json::json!("hi_IN");
     let env_malformed = sign_envelope(
         &key,
-        RECORD_REQUEST,
-        REQUEST_VERSION,
-        &req.request_id,
+        RECORD_ENQUIRY,
+        ENQUIRY_VERSION,
+        &req.enquiry_id,
         malformed,
         None,
         1000,
     );
-    let v_malformed = verify_request(&env_malformed, 1000);
+    let v_malformed = verify_enquiry(&env_malformed, 1000);
     assert!(!v_malformed.verified);
 
     // Non-canonical lang: HI
     let mut non_canonical = base_val.clone();
-    non_canonical["lang"] = serde_json::json!("HI");
+    non_canonical["description"]["lang"] = serde_json::json!("HI");
     let env_non_canonical = sign_envelope(
         &key,
-        RECORD_REQUEST,
-        REQUEST_VERSION,
-        &req.request_id,
+        RECORD_ENQUIRY,
+        ENQUIRY_VERSION,
+        &req.enquiry_id,
         non_canonical,
         None,
         1000,
     );
-    let v_non_canonical = verify_request(&env_non_canonical, 1000);
+    let v_non_canonical = verify_enquiry(&env_non_canonical, 1000);
     assert!(!v_non_canonical.verified);
     assert!(
         v_non_canonical

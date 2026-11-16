@@ -20,14 +20,14 @@ describe("newestRequestMap and quote superseded notice", () => {
     conversation: "conv1",
     direction: "outgoing",
     sender_timestamp_ms: 1000,
-    card_type: "request",
+    card_type: "enquiry",
     version: 1,
     known: true,
     verified: true,
     expired: false,
     record_id: "rec_req_v1",
     data: {
-      request_id: "req_canonical_1",
+      enquiry_id: "req_canonical_1",
       sequence: 1,
     },
     version_count: 1,
@@ -39,14 +39,14 @@ describe("newestRequestMap and quote superseded notice", () => {
     conversation: "conv1",
     direction: "outgoing",
     sender_timestamp_ms: 2000,
-    card_type: "request",
+    card_type: "enquiry",
     version: 1,
     known: true,
     verified: true,
     expired: false,
     record_id: "rec_req_v2",
     data: {
-      request_id: "req_canonical_1", // same sequence and canonical request_id
+      enquiry_id: "req_canonical_1", // same sequence and canonical enquiry_id
       sequence: 1,
     },
     version_count: 2,
@@ -248,9 +248,9 @@ describe("request form category picker reset", () => {
       "transaction.sync": () => ({}),
       "transaction.thread": () => ({ cards: [] }),
       "conversation.history": () => ({ messages: [] }),
-      "request.set": (params) => {
+      "enquiry.set": (params) => {
         sentCategories = (params as { categories: string[] }).categories;
-        return { request_id: "req-1", record_id: "rec-1" };
+        return { enquiry_id: "req-1", record_id: "rec-1" };
       },
     });
 
@@ -296,9 +296,9 @@ describe("request form category picker reset", () => {
       "transaction.sync": () => ({}),
       "transaction.thread": () => ({ cards: [] }),
       "conversation.history": () => ({ messages: [] }),
-      "request.set": (params) => {
-        sentLang = (params as { lang: string }).lang;
-        return { request_id: "req-1", record_id: "rec-1" };
+      "enquiry.set": (params) => {
+        sentLang = (params as { description?: { lang?: string } }).description?.lang;
+        return { enquiry_id: "req-1", record_id: "rec-1" };
       },
     });
 
@@ -452,10 +452,10 @@ describe("request form category picker reset", () => {
         new_records: [
           {
             record_id: "rec_c1",
-            card_type: "request",
+            card_type: "enquiry",
             version: 1,
             author_did: "peer-1",
-            content: { request_id: "req_1", scope: "repair" },
+            content: { enquiry_id: "req_1", scope: "repair" },
           },
         ],
       }),
@@ -466,13 +466,13 @@ describe("request form category picker reset", () => {
             conversation: "conv-1",
             direction: "incoming",
             sender_timestamp_ms: 1000,
-            card_type: "request",
+            card_type: "enquiry",
             version: 1,
             known: true,
             verified: true,
             expired: false,
             record_id: "rec_c1",
-            data: { request_id: "req_1" },
+            data: { enquiry_id: "req_1" },
             stored_at_secs: 1,
           },
         ],

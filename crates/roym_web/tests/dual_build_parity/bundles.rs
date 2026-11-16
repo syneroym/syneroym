@@ -11,30 +11,28 @@ async fn scenario_150_superseded_request_card_verifies_after_import_parity() {
     enrol_signing(&h, "transaction").await;
     let conv = open_conv(&h, &peer_did()).await;
 
-    // Create v1 of a request
+    // Create v1 of an enquiry
     let (r1w, _) = both_rpc(
         &h,
-        "request.set",
+        "enquiry.set",
         json!({
             "conversation": conv,
-            "description": "Initial request",
-            "lang": "en",
+            "description": { "lang": "en", "text": "Initial request" },
             "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
         }),
     )
     .await;
-    let req_id = r1w["result"]["request_id"].as_str().unwrap().to_string();
+    let req_id = r1w["result"]["enquiry_id"].as_str().unwrap().to_string();
     let rec_id_v1 = r1w["result"]["record_id"].as_str().unwrap().to_string();
 
     // Revise to v2 (superseding v1)
     let (r2w, _) = both_rpc(
         &h,
-        "request.set",
+        "enquiry.set",
         json!({
             "conversation": conv,
-            "request_id": req_id,
-            "description": "Revised request",
-            "lang": "en",
+            "enquiry_id": req_id,
+            "description": { "lang": "en", "text": "Revised request" },
             "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
         }),
     )

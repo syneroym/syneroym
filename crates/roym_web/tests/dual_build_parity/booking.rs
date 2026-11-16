@@ -25,19 +25,18 @@ fn peer_signed_request_with_identity(
     id: &Identity,
 ) -> (String, String) {
     let did = derive_did_key(&id.public_key());
-    let req_id = transaction::derive_request_id(conv, &did, 1).unwrap();
+    let req_id = transaction::derive_enquiry_id(conv, &did, 1).unwrap();
     let payload = json!({
-        "request_id": req_id,
+        "enquiry_id": req_id,
         "conversation": conv,
         "sequence": 1,
         "categories": ["gardening"],
-        "description": "Fix fence",
-        "lang": "en",
+        "description": { "lang": "en", "text": "Fix fence" },
         "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
     });
     let draft = RecordDraft {
-        version: transaction::REQUEST_VERSION,
-        record_type: transaction::RECORD_REQUEST.to_string(),
+        version: transaction::ENQUIRY_VERSION,
+        record_type: transaction::RECORD_ENQUIRY.to_string(),
         subject: req_id,
         payload,
         expires_at_secs: None,
@@ -222,8 +221,8 @@ async fn scenario_153_two_counterparty_halves_capacity_1_concurrent_sync_parity(
         &format!("m-req2-{req2_id}"),
         &conv2,
         &peer2_did_str,
-        transaction::RECORD_REQUEST,
-        transaction::REQUEST_VERSION,
+        transaction::RECORD_ENQUIRY,
+        transaction::ENQUIRY_VERSION,
         &req2_env,
     )
     .await;
@@ -488,8 +487,8 @@ async fn scenario_156_booking_start_cancel_and_seat_reuse_parity() {
         &format!("m-req3-{req3_id}"),
         &conv3,
         &peer3_did_str,
-        transaction::RECORD_REQUEST,
-        transaction::REQUEST_VERSION,
+        transaction::RECORD_ENQUIRY,
+        transaction::ENQUIRY_VERSION,
         &req3_env,
     )
     .await;

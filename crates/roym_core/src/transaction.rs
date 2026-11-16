@@ -16,23 +16,24 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use syneroym_signed_record::{EnvelopeError, VerifyOptions, content_digest};
 
-pub use crate::record::{RECORD_AGREEMENT_RECEIPT, RECORD_QUOTE, RECORD_REQUEST};
+pub use crate::record::{RECORD_AGREEMENT_RECEIPT, RECORD_ENQUIRY, RECORD_QUOTE};
 use crate::{
     area::Area,
+    deal::LocalText,
     lang::{LangTag, check_text, check_translation_langs},
     listing::{self, ServiceLocation},
     money, person, record,
 };
 
-pub const REQUEST_VERSION: u32 = 1;
+pub const ENQUIRY_VERSION: u32 = 1;
 pub const QUOTE_VERSION: u32 = 1;
 pub const AGREEMENT_RECEIPT_VERSION: u32 = 1;
 
 pub const EVENT_CARD: &str = "transaction.card";
 pub const EVENT_BOOKING: &str = "transaction.booking";
 
-/// The English text of the notice a counterparty is shown before a request
-/// is signed, and which the request then carries under their own signature.
+/// The English text of the notice a counterparty is shown before an enquiry
+/// is signed, and which the enquiry then carries under their own signature.
 /// `roymctl` uses it as the default. The Hub signs the notice in its own
 /// language: `request-data-use-notice` in the string catalog is this text in
 /// `en.ftl` (a test reads that file and compares), and the Hindi catalog
@@ -51,7 +52,7 @@ pub const ADDRESS_DISCLOSURE_NOTICE: &str = "This address becomes part of a sign
                                              both parties keep and can export. It cannot be \
                                              removed from a record already signed.";
 
-pub const REQUEST_ID_PREFIX: &str = "req_";
+pub const ENQUIRY_ID_PREFIX: &str = "enq_";
 pub const QUOTE_ID_PREFIX: &str = "quo_";
 
 pub const MAX_DESCRIPTION_LEN: usize = 4096;
@@ -128,13 +129,6 @@ pub struct QuoteLocation {
     pub address: Option<String>,
 }
 
-/// An author translation of a request's free-text fields.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RequestTranslation {
-    pub lang: LangTag,
-    pub description: String,
-}
-
 /// An author translation of a quote's free-text fields.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QuoteTranslation {
@@ -178,23 +172,20 @@ pub struct AgreedTerms {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RequestPayload {
-    /// `content_digest("req_", {conversation, issuer, sequence})`.
-    pub request_id: String,
-    /// The conversation this request was made in. Both parties compute
+pub struct EnquiryPayload {
+    /// `content_digest("enq_", {conversation, issuer, sequence})`.
+    pub enquiry_id: String,
+    /// The conversation this enquiry was made in. Both parties compute
     /// the same value, so it is the one thing a receiver can check the
     /// id against.
     pub conversation: String,
-    /// The nth request this issuer made in this conversation, from 1.
+    /// The nth enquiry this issuer made in this conversation, from 1.
     pub sequence: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub listing_id: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub categories: Vec<String>,
-    pub description: String,
-    pub lang: LangTag,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub translations: Vec<RequestTranslation>,
+    pub description: LocalText,
     /// Approximate, deliberately. An exact address is disclosed inside a
     /// quote, when the work needs one, and never here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -390,10 +381,10 @@ impl AgreedTerms {
     }
 }
 
-impl RequestPayload {
+impl EnquiryPayload {
     pub fn validate(&self) -> Result<(), TransactionError> {
-        if self.request_id.is_empty() {
-            return Err(TransactionError::RequestIdEmpty);
+        if self.enquiry_id.is_empty() {
+            return Err(TransactionError::EnquiryIdEmpty);
         }
         if self.conversation.is_empty() {
             return Err(TransactionError::ConversationEmpty);
@@ -401,12 +392,7 @@ impl RequestPayload {
         if self.sequence < 1 {
             return Err(TransactionError::InvalidSequence(self.sequence));
         }
-        if self.description.trim().is_empty() {
-            return Err(TransactionError::DescriptionEmpty);
-        }
-        if self.description.len() > MAX_DESCRIPTION_LEN {
-            return Err(TransactionError::DescriptionTooLong);
-        }
+        self.description.validate("description", MAX_DESCRIPTION_LEN)?;
         if self.categories.len() > MAX_CATEGORIES {
             return Err(TransactionError::TooManyCategories);
         }
@@ -426,12 +412,6 @@ impl RequestPayload {
         }
         if self.data_use_notice.len() > MAX_NOTICE_LEN {
             return Err(TransactionError::DataUseNoticeTooLong);
-        }
-        if !self.translations.is_empty() {
-            check_translation_langs(&self.lang, self.translations.iter().map(|t| &t.lang))?;
-            for t in &self.translations {
-                check_text(&t.lang, "description", &t.description, MAX_DESCRIPTION_LEN, true)?;
-            }
         }
         Ok(())
     }
@@ -514,13 +494,13 @@ impl AgreementReceiptPayload {
     }
 }
 
-pub fn derive_request_id(
+pub fn derive_enquiry_id(
     conversation: &str,
     issuer: &str,
     sequence: u32,
 ) -> Result<String, EnvelopeError> {
     content_digest(
-        REQUEST_ID_PREFIX,
+        ENQUIRY_ID_PREFIX,
         &json!({
             "conversation": conversation,
             "issuer": issuer,
@@ -557,16 +537,16 @@ pub fn halves_agree(a: &AgreementReceiptPayload, b: &AgreementReceiptPayload) ->
 
 pub use crate::verdict::RecordVerdict;
 
-pub fn verify_request(envelope: &str, now_secs: u64) -> RecordVerdict<RequestPayload> {
+pub fn verify_enquiry(envelope: &str, now_secs: u64) -> RecordVerdict<EnquiryPayload> {
     let opts = VerifyOptions::new(now_secs).allowing_expired();
     let verified = match record::verify_json(envelope, &opts) {
         Ok(v) => v,
         Err(e) => return RecordVerdict::refused(e.to_string()),
     };
-    if verified.record_type != RECORD_REQUEST || verified.version != REQUEST_VERSION {
-        return RecordVerdict::refused("not a request record this build understands");
+    if verified.record_type != RECORD_ENQUIRY || verified.version != ENQUIRY_VERSION {
+        return RecordVerdict::refused("not an enquiry record this build understands");
     }
-    let payload: RequestPayload = match serde_json::from_value(verified.payload.clone()) {
+    let payload: EnquiryPayload = match serde_json::from_value(verified.payload.clone()) {
         Ok(p) => p,
         Err(e) => return RecordVerdict::refused(format!("payload: {e}")),
     };
@@ -574,17 +554,17 @@ pub fn verify_request(envelope: &str, now_secs: u64) -> RecordVerdict<RequestPay
         return RecordVerdict::refused(e.to_string());
     }
     let expected_id =
-        match derive_request_id(&payload.conversation, &verified.issuer, payload.sequence) {
+        match derive_enquiry_id(&payload.conversation, &verified.issuer, payload.sequence) {
             Ok(id) => id,
             Err(e) => return RecordVerdict::refused(e.to_string()),
         };
-    if payload.request_id != expected_id {
+    if payload.enquiry_id != expected_id {
         return RecordVerdict::refused(
-            "request_id is not derivable from the signature's own issuer",
+            "enquiry_id is not derivable from the signature's own issuer",
         );
     }
     if verified.expires_at_secs.is_some() {
-        return RecordVerdict::refused("a request may not declare an expiry");
+        return RecordVerdict::refused("an enquiry may not declare an expiry");
     }
     RecordVerdict {
         verified: true,

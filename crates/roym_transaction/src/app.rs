@@ -3,12 +3,12 @@
 pub mod agreement_ops;
 pub mod backup;
 pub mod booking_ops;
+pub mod enquiry_ops;
 pub mod fulfilment_ops;
 pub mod ledger;
 pub mod payment_ops;
 pub mod progress;
 pub mod quote_ops;
-pub mod request_ops;
 pub mod sync;
 pub mod thread;
 
@@ -48,8 +48,8 @@ use crate::api;
 // the ledger.
 pub const SCHEMA_VERSION: u32 = 4;
 
-pub(crate) const REQUESTS: &str = "requests";
-pub(crate) const REQUEST_HISTORY: &str = "request_history";
+pub(crate) const ENQUIRIES: &str = "enquiries";
+pub(crate) const ENQUIRY_HISTORY: &str = "enquiry_history";
 pub(crate) const QUOTES: &str = "quotes";
 pub(crate) const QUOTE_HISTORY: &str = "quote_history";
 pub(crate) const AGREEMENTS: &str = "agreements";
@@ -337,11 +337,11 @@ fn idx(field: &str, ty: IndexType) -> IndexDefinition {
 pub(crate) async fn ensure_collections<H: AppHost>(host: &H) -> Result<(), String> {
     ensure_coll(
         host,
-        REQUESTS,
+        ENQUIRIES,
         &[idx("conversation", IndexType::String), idx("updated_at_secs", IndexType::Numeric)],
     )
     .await?;
-    ensure_coll(host, REQUEST_HISTORY, &[]).await?;
+    ensure_coll(host, ENQUIRY_HISTORY, &[]).await?;
     ensure_coll(
         host,
         QUOTES,

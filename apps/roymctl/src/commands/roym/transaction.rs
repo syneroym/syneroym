@@ -19,7 +19,7 @@ use crate::{DEFAULT_GATEWAY_URL, commands::session};
 #[derive(Args, Debug, Clone)]
 pub struct QuoteArgs {
     #[arg(long)]
-    pub request: String,
+    pub enquiry: String,
     #[arg(long)]
     pub scope: String,
     #[arg(long)]
@@ -63,8 +63,8 @@ pub struct QuoteArgs {
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum TransactionCommands {
-    /// Send a signed request card in a conversation.
-    Request {
+    /// Send a signed enquiry card in a conversation.
+    Enquiry {
         #[arg(long)]
         conversation: String,
         #[arg(long)]
@@ -159,7 +159,7 @@ pub enum TransactionCommands {
     },
 }
 
-struct RequestParamsArgs<'a> {
+struct EnquiryParamsArgs<'a> {
     conversation: &'a str,
     description: &'a str,
     lang: &'a str,
@@ -170,7 +170,7 @@ struct RequestParamsArgs<'a> {
     notice: Option<&'a str>,
 }
 
-fn build_request_params(args: RequestParamsArgs<'_>) -> Result<Value> {
+fn build_enquiry_params(args: EnquiryParamsArgs<'_>) -> Result<Value> {
     let parsed_lang = LangTag::parse(args.lang)?;
     let data_use_notice = args
         .notice
@@ -179,8 +179,10 @@ fn build_request_params(args: RequestParamsArgs<'_>) -> Result<Value> {
 
     let mut params = json!({
         "conversation": args.conversation,
-        "description": args.description,
-        "lang": parsed_lang.as_str(),
+        "description": {
+            "lang": parsed_lang.as_str(),
+            "text": args.description,
+        },
         "categories": args.categories,
         "data_use_notice": data_use_notice,
     });
@@ -198,7 +200,7 @@ fn build_request_params(args: RequestParamsArgs<'_>) -> Result<Value> {
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn handle_request(
+async fn handle_enquiry(
     conversation: &str,
     description: &str,
     lang: &str,
@@ -214,7 +216,7 @@ async fn handle_request(
     let data_use_notice = notice.unwrap_or(transaction::DEFAULT_DATA_USE_NOTICE);
     println!("{data_use_notice}");
 
-    let params = build_request_params(RequestParamsArgs {
+    let params = build_enquiry_params(EnquiryParamsArgs {
         conversation,
         description,
         lang,
@@ -225,7 +227,7 @@ async fn handle_request(
         notice,
     })?;
 
-    call_and_print(ctx, gateway_url, host, "request.set", params).await
+    call_and_print(ctx, gateway_url, host, "enquiry.set", params).await
 }
 
 /// Validate a quote's terms and build the `quote.set` params object:
@@ -234,7 +236,7 @@ async fn handle_request(
 /// and read the cancellation/refund terms files.
 #[allow(clippy::too_many_arguments)]
 fn build_quote_params(
-    request: &str,
+    enquiry: &str,
     scope: &str,
     lang: &str,
     currency: &str,
@@ -312,7 +314,7 @@ fn build_quote_params(
     }
 
     let mut quote_params = json!({
-        "request_record_id": request,
+        "enquiry_record_id": enquiry,
         "expires_in_secs": expires_hours * 3600,
         "terms": terms,
     });
@@ -432,7 +434,7 @@ pub(super) async fn handle_transaction(
 ) -> Result<()> {
     let ctx = RpcCtx { run_as, ucan_path, dir };
     match command {
-        TransactionCommands::Request {
+        TransactionCommands::Enquiry {
             conversation,
             description,
             lang,
@@ -444,7 +446,7 @@ pub(super) async fn handle_transaction(
             gateway_url,
             host,
         } => {
-            handle_request(
+            handle_enquiry(
                 conversation,
                 description,
                 lang,
@@ -461,7 +463,7 @@ pub(super) async fn handle_transaction(
         }
         TransactionCommands::Quote(args) => {
             let params = build_quote_params(
-                &args.request,
+                &args.enquiry,
                 &args.scope,
                 &args.lang,
                 &args.currency,
@@ -574,8 +576,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn build_request_params_validates_lang() {
-        let params = build_request_params(RequestParamsArgs {
+    fn build_enquiry_params_validates_lang() {
+        let params = build_enquiry_params(EnquiryParamsArgs {
             conversation: "conv1",
             description: "desc",
             lang: "HI-latn",
@@ -587,10 +589,10 @@ mod tests {
         });
         assert!(params.is_ok());
         if let Ok(p) = params {
-            assert_eq!(p["lang"], "hi-Latn");
+            assert_eq!(p["description"]["lang"], "hi-Latn");
         }
 
-        let err = build_request_params(RequestParamsArgs {
+        let err = build_enquiry_params(EnquiryParamsArgs {
             conversation: "conv1",
             description: "desc",
             lang: "hi_IN",

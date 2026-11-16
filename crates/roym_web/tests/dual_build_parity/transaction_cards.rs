@@ -28,7 +28,7 @@ async fn scenario_140_malformed_oversized_and_missing_version_cards_refused_pari
     msg2.body = vec![b' '; 70_000];
     // 3. Envelope JSON has no version field
     let no_version_envelope = json!({
-        "record_type": "request",
+        "record_type": "enquiry",
         "subject": "req_123",
         "issuer": peer_did(),
         "issued_at_secs": 1000,
@@ -38,7 +38,7 @@ async fn scenario_140_malformed_oversized_and_missing_version_cards_refused_pari
     .to_string();
     let msg3_body = json!({
         "card_version": 1,
-        "type": "request",
+        "type": "enquiry",
         "version": 1,
         "envelope": no_version_envelope,
     })
@@ -71,14 +71,14 @@ async fn scenario_140b_sync_at_cap_leaves_watermark_parity() {
     enrol_signing(&h, "transaction").await;
     let conv = open_conv(&h, &peer_did()).await;
 
-    both_rpc(&h, "request.list", json!({ "conversation": conv })).await;
+    both_rpc(&h, "enquiry.list", json!({ "conversation": conv })).await;
 
     let dummy_card = json!({
         "message_id": "seed",
         "conversation": conv,
         "direction": "incoming",
         "sender_timestamp_ms": 1000,
-        "card_type": "request",
+        "card_type": "enquiry",
         "version": 1,
         "known": true,
         "verified": true,
@@ -103,8 +103,8 @@ async fn scenario_140b_sync_at_cap_leaves_watermark_parity() {
         &conv,
         &peer_did(),
         1_000,
-        transaction::RECORD_REQUEST,
-        transaction::REQUEST_VERSION,
+        transaction::RECORD_ENQUIRY,
+        transaction::ENQUIRY_VERSION,
         &req_env,
     );
     h.deliver(true, card_msg.clone()).await;
@@ -135,11 +135,10 @@ async fn scenario_140c_quote_decline_parity() {
 
     let (my_req_w, _) = both_rpc(
         &h,
-        "request.set",
+        "enquiry.set",
         json!({
             "conversation": conv,
-            "description": "Plumbing service",
-            "lang": "en",
+            "description": { "lang": "en", "text": "Plumbing service" },
             "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
         }),
     )
@@ -220,8 +219,8 @@ async fn scenario_141_transaction_thread_sort_order_parity() {
         &conv,
         &peer_did(),
         3_000,
-        transaction::RECORD_REQUEST,
-        transaction::REQUEST_VERSION,
+        transaction::RECORD_ENQUIRY,
+        transaction::ENQUIRY_VERSION,
         &env3,
     );
     let m1 = inbound_card(
@@ -229,8 +228,8 @@ async fn scenario_141_transaction_thread_sort_order_parity() {
         &conv,
         &peer_did(),
         1_000,
-        transaction::RECORD_REQUEST,
-        transaction::REQUEST_VERSION,
+        transaction::RECORD_ENQUIRY,
+        transaction::ENQUIRY_VERSION,
         &env1,
     );
     let m2 = inbound_card(
@@ -238,8 +237,8 @@ async fn scenario_141_transaction_thread_sort_order_parity() {
         &conv,
         &peer_did(),
         2_000,
-        transaction::RECORD_REQUEST,
-        transaction::REQUEST_VERSION,
+        transaction::RECORD_ENQUIRY,
+        transaction::ENQUIRY_VERSION,
         &env2,
     );
 
@@ -267,11 +266,10 @@ async fn scenario_141b_filed_card_carries_host_sender_timestamp_not_guest_clock(
 
     let (rw, rn) = both_rpc(
         &h,
-        "request.set",
+        "enquiry.set",
         json!({
             "conversation": conv,
-            "description": "Timestamp verification job",
-            "lang": "en",
+            "description": { "lang": "en", "text": "Timestamp verification job" },
             "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
         }),
     )
@@ -313,11 +311,10 @@ async fn scenario_142_transaction_export_import_roundtrip_parity() {
 
     let (rw, _) = both_rpc(
         &h,
-        "request.set",
+        "enquiry.set",
         json!({
             "conversation": conv,
-            "description": "Export roundtrip job",
-            "lang": "en",
+            "description": { "lang": "en", "text": "Export roundtrip job" },
             "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
         }),
     )
@@ -344,7 +341,7 @@ async fn scenario_142_transaction_export_import_roundtrip_parity() {
         let bundle: Bundle = serde_json::from_value(side["result"].clone()).unwrap();
         bundle.check_integrity().expect("exported bundle must pass integrity");
         let sections = &bundle.manifest.sections;
-        assert_eq!(sections["requests"].schema_version, 4);
+        assert_eq!(sections["enquiries"].schema_version, 4);
         assert_eq!(sections["quotes"].schema_version, 4);
         assert_eq!(sections["agreements"].schema_version, 4);
         assert_eq!(sections["cards"].schema_version, 4);
@@ -610,19 +607,18 @@ async fn scenario_143_guard_transaction_verbs_local_admission() {
 
     let (rw, _) = both_rpc(
         &h,
-        "request.set",
+        "enquiry.set",
         json!({
             "conversation": conv,
-            "description": "Guard request",
-            "lang": "en",
+            "description": { "lang": "en", "text": "Guard request" },
             "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
         }),
     )
     .await;
-    let req_id = rw["result"]["request_id"].as_str().unwrap().to_string();
+    let req_id = rw["result"]["enquiry_id"].as_str().unwrap().to_string();
     let req_rec_id = rw["result"]["record_id"].as_str().unwrap().to_string();
 
-    let (rg, _) = both_rpc(&h, "request.get", json!({ "request_id": req_id })).await;
+    let (rg, _) = both_rpc(&h, "enquiry.get", json!({ "enquiry_id": req_id })).await;
     let req_env = rg["result"]["envelope"].clone();
 
     let (peer_q_rec_id, peer_q_env) =
@@ -644,27 +640,26 @@ async fn scenario_143_guard_transaction_verbs_local_admission() {
     let bundle = exp["result"].clone();
 
     let calls: Vec<(&str, Value)> = vec![
-        ("request.ping", json!({})),
+        ("enquiry.ping", json!({})),
         ("quote.ping", json!({})),
         ("agreement.ping", json!({})),
         ("receipt.ping", json!({})),
         (
-            "request.set",
+            "enquiry.set",
             json!({
                 "conversation": conv,
-                "description": "Another",
-                "lang": "en",
+                "description": { "lang": "en", "text": "Another" },
                 "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
             }),
         ),
-        ("request.get", json!({ "request_id": req_id })),
-        ("request.list", json!({})),
-        ("request.history", json!({ "request_id": req_id })),
-        ("request.verify", json!({ "envelope": req_env })),
+        ("enquiry.get", json!({ "enquiry_id": req_id })),
+        ("enquiry.list", json!({})),
+        ("enquiry.history", json!({ "enquiry_id": req_id })),
+        ("enquiry.verify", json!({ "envelope": req_env })),
         (
             "quote.set",
             json!({
-                "request_record_id": req_rec_id,
+                "enquiry_record_id": req_rec_id,
                 "expires_in_secs": 3600,
                 "terms": sample_quote_terms(),
             }),

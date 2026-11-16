@@ -19,9 +19,9 @@ use syneroym_roym_core::{
 };
 
 use super::{
-    AGREEMENTS, AgreementRow, CARDS, CardRow, QUOTE_HISTORY, REQUEST_HISTORY, SYNC_STATE,
-    SyncStateRow, agreement_ops::maybe_countersign, ensure_collections, get_bytes, get_row,
-    put_card, put_row, quote_ops::store_received_quote, request_ops::store_received_request,
+    AGREEMENTS, AgreementRow, CARDS, CardRow, ENQUIRY_HISTORY, QUOTE_HISTORY, SYNC_STATE,
+    SyncStateRow, agreement_ops::maybe_countersign, enquiry_ops::store_received_enquiry,
+    ensure_collections, get_bytes, get_row, put_card, put_row, quote_ops::store_received_quote,
 };
 
 #[derive(Debug, Deserialize)]
@@ -269,7 +269,7 @@ async fn dispatch_known_card<H: AppHost>(
     owner: &str,
 ) -> Result<FileCardResult, String> {
     match card.card_type.as_str() {
-        "request" => file_request_card(host, row, &card.envelope, conversation, now, owner).await,
+        "enquiry" => file_enquiry_card(host, row, &card.envelope, conversation, now, owner).await,
         "quote" => file_quote_card(host, row, &card.envelope, conversation, now, owner).await,
         "agreement-receipt" => {
             file_agreement_receipt_card(host, row, &card.envelope, conversation, now, owner).await
@@ -346,7 +346,7 @@ pub(crate) async fn refuse_card<H: AppHost>(
     })
 }
 
-async fn file_request_card<H: AppHost>(
+async fn file_enquiry_card<H: AppHost>(
     host: &H,
     mut row: CardRow,
     envelope: &str,
@@ -354,9 +354,9 @@ async fn file_request_card<H: AppHost>(
     now: u64,
     owner: &str,
 ) -> Result<FileCardResult, String> {
-    let v = transaction::verify_request(envelope, now);
+    let v = transaction::verify_enquiry(envelope, now);
     if !v.verified {
-        let reason = v.reason.unwrap_or_else(|| "request does not verify".to_string());
+        let reason = v.reason.unwrap_or_else(|| "enquiry does not verify".to_string());
         return refuse_card(host, row, reason).await;
     }
     let payload = match v.payload.as_ref() {
@@ -366,7 +366,7 @@ async fn file_request_card<H: AppHost>(
     if payload.conversation != conversation {
         return refuse_card(host, row, "card names another conversation").await;
     }
-    let version_count = match store_received_request(host, envelope, &v, payload, now, owner).await
+    let version_count = match store_received_enquiry(host, envelope, &v, payload, now, owner).await
     {
         Ok(vc) => vc,
         Err(e) => return refuse_card(host, row, e).await,
@@ -407,21 +407,21 @@ async fn file_quote_card<H: AppHost>(
     if payload.conversation != conversation {
         return refuse_card(host, row, "card names another conversation").await;
     }
-    let req_bytes = match get_bytes(host, REQUEST_HISTORY, &payload.request_record_id).await? {
+    let req_bytes = match get_bytes(host, ENQUIRY_HISTORY, &payload.request_record_id).await? {
         Some(b) => b,
         None => {
-            return refuse_card(host, row, "answers a request this node does not hold").await;
+            return refuse_card(host, row, "answers an enquiry this node does not hold").await;
         }
     };
     let req_str = match String::from_utf8(req_bytes) {
         Ok(s) => s,
         Err(_) => {
-            return refuse_card(host, row, "stored request envelope is invalid utf8").await;
+            return refuse_card(host, row, "stored enquiry envelope is invalid utf8").await;
         }
     };
-    let req_v = transaction::verify_request(&req_str, now);
+    let req_v = transaction::verify_enquiry(&req_str, now);
     if !req_v.verified || req_v.issuer.as_deref() != Some(payload.counterparty_did.as_str()) {
-        return refuse_card(host, row, "quote counterparty_did does not match request issuer")
+        return refuse_card(host, row, "quote counterparty_did does not match enquiry issuer")
             .await;
     }
     let version_count = match store_received_quote(host, envelope, &v, payload, now, owner).await {

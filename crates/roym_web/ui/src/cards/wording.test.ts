@@ -131,7 +131,7 @@ describe("the words on deal cards", () => {
 
   it("keeps a request card free of the old words", () => {
     const text = textOf({
-      type: "request",
+      type: "enquiry",
       data: { description: "Trim the hedge", data_use_notice: t("payment-notice"), categories: ["gardening"] },
     });
     expect(text).not.toMatch(OLD_WORDS);

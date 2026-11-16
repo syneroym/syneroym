@@ -23,14 +23,14 @@ use syneroym_roym_core::{
     services,
     signing::{self, CertificateError},
     transaction::{
-        self, AgreedTerms, MAX_QUOTE_LIFETIME_SECS, MIN_QUOTE_LIFETIME_SECS, PaymentTiming,
-        QUOTE_VERSION, QuoteLocation, QuotePayload, QuoteTranslation, RecordVerdict,
-        RequestPayload, TimeWindow,
+        self, AgreedTerms, EnquiryPayload, MAX_QUOTE_LIFETIME_SECS, MIN_QUOTE_LIFETIME_SECS,
+        PaymentTiming, QUOTE_VERSION, QuoteLocation, QuotePayload, QuoteTranslation, RecordVerdict,
+        TimeWindow,
     },
 };
 
 use super::{
-    AGREEMENTS, AgreementRow, ListInput, QUOTE_HISTORY, QUOTES, REQUEST_HISTORY, RecordPointerRow,
+    AGREEMENTS, AgreementRow, ENQUIRY_HISTORY, ListInput, QUOTE_HISTORY, QUOTES, RecordPointerRow,
     SendState, conversation_mine_filter, count_mine, ensure_collections, get_bytes, get_row,
     put_bytes, put_row, resolve_principal_and_owner, send_card_and_file,
 };
@@ -81,7 +81,8 @@ impl QuoteTermsInput {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct QuoteSetInput {
-    pub request_record_id: String,
+    #[serde(alias = "request_record_id")]
+    pub enquiry_record_id: String,
     #[serde(default)]
     pub quote_id: Option<String>,
     #[serde(default)]
@@ -174,7 +175,7 @@ pub(crate) async fn set<H: AppHost>(host: &H, input: QuoteSetInput) -> Reply<Quo
     ensure_collections(host).await.map_err(Response::internal_error)?;
 
     let (req_payload, counterparty_did) =
-        load_verified_request(host, &input.request_record_id, now, &owner).await?;
+        load_verified_enquiry(host, &input.enquiry_record_id, now, &owner).await?;
     let conversation = req_payload.conversation;
 
     let (sequence, supersedes, next_count) =
@@ -196,7 +197,7 @@ pub(crate) async fn set<H: AppHost>(host: &H, input: QuoteSetInput) -> Reply<Quo
         quote_id: quote_id.clone(),
         conversation: conversation.clone(),
         sequence,
-        request_record_id: input.request_record_id.clone(),
+        request_record_id: input.enquiry_record_id.clone(),
         listing_id: input.listing_id,
         slot_id: input.slot_id,
         counterparty_did: counterparty_did.clone(),
@@ -238,17 +239,17 @@ pub(crate) async fn set<H: AppHost>(host: &H, input: QuoteSetInput) -> Reply<Quo
     })
 }
 
-/// Fetches and verifies the request this quote answers, and checks the
-/// caller is not the same party that made the request.
-async fn load_verified_request<H: AppHost>(
+/// Fetches and verifies the enquiry this quote answers, and checks the
+/// caller is not the same party that made the enquiry.
+async fn load_verified_enquiry<H: AppHost>(
     host: &H,
-    request_record_id: &str,
+    enquiry_record_id: &str,
     now: u64,
     owner: &str,
-) -> Result<(RequestPayload, String), Response> {
-    let req_envelope_bytes = match get_bytes(host, REQUEST_HISTORY, request_record_id).await {
+) -> Result<(EnquiryPayload, String), Response> {
+    let req_envelope_bytes = match get_bytes(host, ENQUIRY_HISTORY, enquiry_record_id).await {
         Ok(Some(b)) => b,
-        Ok(None) => return Err(Response::invalid_params("no such request")),
+        Ok(None) => return Err(Response::invalid_params("no such enquiry")),
         Err(e) => return Err(Response::internal_error(e)),
     };
 
@@ -257,24 +258,24 @@ async fn load_verified_request<H: AppHost>(
         Err(e) => return Err(Response::internal_error(e.to_string())),
     };
 
-    let req_verdict = transaction::verify_request(&req_envelope_str, now);
+    let req_verdict = transaction::verify_enquiry(&req_envelope_str, now);
     if !req_verdict.verified {
         return Err(Response::invalid_params(format!(
-            "the request this quote answers does not verify: {}",
+            "the enquiry this quote answers does not verify: {}",
             req_verdict.reason.as_deref().unwrap_or("unknown")
         )));
     }
     let req_payload = match req_verdict.payload {
         Some(p) => p,
-        None => return Err(Response::internal_error("missing request payload")),
+        None => return Err(Response::internal_error("missing enquiry payload")),
     };
     let counterparty_did = match req_verdict.issuer {
         Some(i) => i,
-        None => return Err(Response::internal_error("missing request issuer")),
+        None => return Err(Response::internal_error("missing enquiry issuer")),
     };
     if counterparty_did == owner {
         return Err(Response::invalid_params(
-            "a request cannot be quoted by the person who made it",
+            "an enquiry cannot be quoted by the person who made it",
         ));
     }
     Ok((req_payload, counterparty_did))
@@ -300,9 +301,9 @@ async fn resolve_quote_sequence<H: AppHost>(
         if prior.conversation != conversation {
             return Err(Response::invalid_params("quote belongs to another conversation"));
         }
-        if prior.request_record_id.as_deref() != Some(&params.request_record_id) {
+        if prior.request_record_id.as_deref() != Some(&params.enquiry_record_id) {
             return Err(Response::invalid_params(
-                "a new version of a quote answers the same request",
+                "a new version of a quote answers the same enquiry",
             ));
         }
         Ok((prior.sequence, Some(prior.record_id), prior.version_count + 1))

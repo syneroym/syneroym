@@ -8,7 +8,7 @@ use syneroym_app_host::AppHost;
 use syneroym_roym_core::{clock, envelope::Response, method::Reply, paging};
 
 use super::{
-    AGREEMENTS, AgreementRow, CARDS, CardRow, QUOTES, REQUESTS, RecordPointerRow,
+    AGREEMENTS, AgreementRow, CARDS, CardRow, ENQUIRIES, QUOTES, RecordPointerRow,
     default_list_limit_u64, ensure_collections,
 };
 
@@ -41,13 +41,13 @@ pub(crate) async fn thread<H: AppHost>(host: &H, input: ThreadInput) -> Reply<Th
     let quote_map: HashMap<String, RecordPointerRow> =
         quote_pointers.into_iter().map(|p| (p.id.clone(), p)).collect();
 
-    let request_pointers: Vec<RecordPointerRow> =
-        match paging::query_all(host, REQUESTS, Some(filter.clone())).await {
+    let enquiry_pointers: Vec<RecordPointerRow> =
+        match paging::query_all(host, ENQUIRIES, Some(filter.clone())).await {
             Ok(v) => v,
             Err(e) => return Err(Response::internal_error(e)),
         };
-    let request_map: HashMap<String, RecordPointerRow> =
-        request_pointers.into_iter().map(|p| (p.id.clone(), p)).collect();
+    let enquiry_map: HashMap<String, RecordPointerRow> =
+        enquiry_pointers.into_iter().map(|p| (p.id.clone(), p)).collect();
 
     let agreement_rows: Vec<AgreementRow> =
         match paging::query_all(host, AGREEMENTS, Some(filter.clone())).await {
@@ -83,11 +83,11 @@ pub(crate) async fn thread<H: AppHost>(host: &H, input: ThreadInput) -> Reply<Th
             {
                 row.expired = now >= exp;
             }
-        } else if row.card_type == "request"
+        } else if row.card_type == "enquiry"
             && row.verified
-            && let Some(rid) =
-                row.data.as_ref().and_then(|r| r.get("request_id")).and_then(Value::as_str)
-            && let Some(pointer) = request_map.get(rid)
+            && let Some(eid) =
+                row.data.as_ref().and_then(|r| r.get("enquiry_id")).and_then(Value::as_str)
+            && let Some(pointer) = enquiry_map.get(eid)
             && row.version_count.is_none()
         {
             row.version_count = Some(pointer.version_count);
