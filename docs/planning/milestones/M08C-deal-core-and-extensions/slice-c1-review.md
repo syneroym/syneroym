@@ -170,7 +170,7 @@ The owner accepted Q1 to Q6 on 2026-11-16. This is only the reviewer's view.
   can finish the decision.
   *Status:* Fixed (3462e4eb).
 
-- [x] **P3 — major.** *Where:* D-C1-16; C1b step 3 and step 4; agreements
+- [ ] **P3 — major.** *Where:* D-C1-16; C1b step 3 and step 4; agreements
   doc "The writer's decision" step 2 and "Recovery" (`change.md:597`,
   `:607` to `:613`). Reopens agreements review P35.
   *Problem:* Step 2 says: "If the row exists with the same agreement, this
@@ -194,7 +194,7 @@ The owner accepted Q1 to Q6 on 2026-11-16. This is only the reviewer's view.
   used and never decided again), because C1a already has the re-read path.
   Add an AG-14 test: crash after the `not-formed` snapshot is stored, then
   deliver the same half again (not the sweep), with the slot free.
-  *Status:* Fixed (3462e4eb).
+  *Status:* Fixed in part (3462e4eb); reopened in round 3. Open.
 
 - [x] **P4 — major.** *Where:* D-C1-16 ("C1a has no … step-1 refusal
   snapshots"), section 4 behaviour changes 1 to 9, section 8.
@@ -279,7 +279,7 @@ The owner accepted Q1 to Q6 on 2026-11-16. This is only the reviewer's view.
   classes that stay.
   *Status:* Fixed (3462e4eb).
 
-- [x] **P8 — minor.** *Where:* section 9 (living docs).
+- [ ] **P8 — minor.** *Where:* section 9 (living docs).
   *Problem:* Statements that C1a makes false are missing from the list:
   `docs/system-requirements-spec.md:356`, `:407`, `:447` (`AgreedTerms`,
   and a link to `transaction.rs:116` that is already stale);
@@ -289,7 +289,7 @@ The owner accepted Q1 to Q6 on 2026-11-16. This is only the reviewer's view.
   C1a.
   *Fix:* Add these to section 9. Also search the traceability matrix for
   `request` and `booking` rows.
-  *Status:* Fixed (3462e4eb).
+  *Status:* Fixed in part (3462e4eb); reopened in round 3. Open.
 
 - [x] **P9 — minor.** *Where:* step 3, section 7.8.
   *Problem:* Size facts that the plan misses. (1)
@@ -391,7 +391,7 @@ The owner accepted Q1 to Q6 on 2026-11-16. This is only the reviewer's view.
   verifies and is bound to the quote's signer) and what is kept.
   *Status:* Fixed (3462e4eb).
 
-- [x] **P15 — minor.** *Where:* plan lines 71 to 74, 80 to 90, 179 to 180,
+- [ ] **P15 — minor.** *Where:* plan lines 71 to 74, 80 to 90, 179 to 180,
   206; task.md line 5 and the C1 "Change docs" line; section 3 VX-12.
   *Problem:* Small inconsistencies. (1) Section 0 says "this plan writes
   nothing into [roym-extensions]"; "Change docs" says the deviation is
@@ -409,7 +409,7 @@ The owner accepted Q1 to Q6 on 2026-11-16. This is only the reviewer's view.
   *Fix:* Fix the five texts. For the CLI, use one shape, for example
   `transaction agreement get|cancel|progress`, in step 5a, the developer
   bullet, `cli_args.rs` and `docs/demo/demo.md`.
-  *Status:* Fixed (3462e4eb).
+  *Status:* Fixed in part (3462e4eb); reopened in round 3. Open.
 
 ## Plan review round 2 — Claude Sonnet 5.5 (Claude Code), 2026-11-16
 
@@ -587,7 +587,7 @@ the Hub does offer 13 record languages, which matters only for P17).
   test clock starts at or after the real "now" and only moves forward.
   *Status:* Fixed (3462e4eb).
 
-- [x] **P19 — minor.** *Where:* C1b step 3 ("In `decide::run`, before step 2
+- [ ] **P19 — minor.** *Where:* C1b step 3 ("In `decide::run`, before step 2
   of D-C1-16: the checks of the doc's step 1").
   *Problem:* Step 1's expiry and version checks run on every entry, also on
   a repeat of a half whose decision is already made. The doc's Recovery says
@@ -608,7 +608,7 @@ the Hub does offer 13 record languages, which matters only for P17).
   decision (this is also P3's fix). Add a test: crash after the countersign is
   stored, move the time past the expiry, sync, and check there is no `refused:`
   row.
-  *Status:* Fixed (3462e4eb).
+  *Status:* Fixed in part (3462e4eb); reopened in round 3. Open.
 
 - [x] **P20 — minor.** *Where:* step 5b, section 7.5, Q4.
   *Problem:* The Hub reads quote, receipt and enquiry text through
@@ -710,3 +710,98 @@ What the fix session uses where the rounds differ:
 
 **Open after both rounds: 0 (0 blocker, 0 major, 0 minor).** All 22 items
 (P1 to P22) are Fixed (3462e4eb).
+
+## Plan review round 3 (fixes check) — Claude Opus 5.5 (Claude Code), 2026-11-16
+
+Checked the fix commits `3462e4eb` and `b77ceecd` (branch at `b77ceecd`)
+against P1 to P22, the agreements doc and the code. New file and line
+references were checked: `signing.rs:36` (`MAX_CERTIFICATE_LIFETIME_SECS`,
+5 years), `crates/roym_web/src/app/translation.rs:23` and `:122` (8 texts per
+call), `crates/roym_web/ui/src/records/record_text.ts`, and `batch_mutate`
+in `crates/app_host/src/lib.rs:239`.
+
+**Summary:** 18 items confirmed fixed, 4 reopened (1 major, 3 minor), 3 new
+(all minor). **7 open: 0 blocker, 1 major, 6 minor.**
+
+### Round 1 and 2 items
+
+- **Confirmed fixed:** P1, P2, P4, P5, P6, P7, P9, P10, P11, P12, P13, P14,
+  P16, P17, P18, P20, P21, P22. Each fix is in the plan (and, for P11 and
+  P13, in the agreements doc's `## Deviations`; for P15 (2), in task.md).
+- **P3 — reopened (major).** The plan is fixed: one function finishes a
+  `deciding` row, and both step 2's repeat path and the sweep call it. But
+  the agreements doc still says, at step 2, "If the row exists with the same
+  agreement, this is a repeat: continue from the row's state"
+  (`change.md:597`). There is no `## Deviations` row for it, and agreements
+  review P35 is still Open. The plan and the doc now disagree on the rule
+  that P35 is about. *Fix:* change step 2's sentence in the agreements doc
+  to "a repeat of a `deciding` row runs Recovery's three checks", add the
+  AG-14 case "the same half delivered again after the `not-formed` snapshot
+  is stored", and close P35 in the agreements review with that commit.
+- **P8 — reopened (minor).** Section 9 names `docs/traceability-matrix.md`.
+  The file is `docs/planning/traceability-matrix.md`. *Fix:* correct the
+  path.
+- **P15 — reopened (minor).** Four of the five points are fixed. The fix of
+  point (3) adds a new error: the end-user bullet now says Bob fills in
+  "what Alice gives". The new field "What you give" is what Bob gives (the
+  service commitment's description, D-C1-7). *Fix:* "…the payee, and what
+  he gives (filled in advance from the scope)".
+- **P19 — reopened (minor).** C1b step 3 is fixed (a held `decision:` or
+  `countersign:` row skips step 1's checks). C1a's D-C1-16 is not: its
+  step 1 checks the expiry before the repeat check in its step 2. In C1a a
+  repeat really happens (an error returns before the card is filed, P2). If
+  the error came after `countersign:<agreement>` was stored and the clock
+  has passed the expiry, step 1 returns, the card is filed, and the stored
+  half is never sent; C1a has no sweep to finish it. Also C1b step 3 says
+  "finish the decision (Recovery check 1)"; it means all three checks.
+  *Fix:* in D-C1-16, look up `decision:<quote_id>` first; a row with the
+  same agreement goes to the repeat path with no step 1 checks; only a new
+  decision runs step 1. In C1b step 3, write "Recovery's three checks".
+
+### New findings
+
+- [ ] **P23 — minor.** *Where:* D-C1-16 step 6 ("A `conversation.send`
+  error returns `Err` from `decide::run`").
+  *Problem:* Today a send error is ignored (`agreement_ops.rs:546`). The fix for P16 makes it return `Err`, and `sync` then returns
+  before it saves the cursor (`sync.rs:97`, `:106`). A send error that does
+  not go away (for example a conversation the peer has left or blocked, or
+  a card body over the limit) now fails every sync of that conversation at
+  the same card. No later card in that conversation is filed, including
+  payments and declines of other deals.
+  *Failure case:* one acceptance in a conversation whose sends always fail
+  stops all card filing in that conversation.
+  *Fix:* return `Err` only for errors that can pass (a transport error).
+  For a lasting refusal, keep the decision row `deciding`, file the card,
+  and let C1b's sweep send it later; name this in the C1a backlog row "The
+  writer's decision has no crash recovery". Add the case to
+  `send_error_stops_decision_row_and_retries_on_next_sync`.
+  *Status:* Open.
+
+- [ ] **P24 — minor.** *Where:* section 2.1, Q1's "Owner answer" line and
+  Q4 option (a).
+  *Problem:* The fix wrote new text into the owner's answers. Q1's answer
+  line now says that C1a includes Recovery's check 1, and Q4 option (a) now
+  carries the language-neutral currency description from P17. The owner
+  accepted Q1 and Q4 before these texts existed. Round 2 asked only that the
+  owner be told.
+  *Failure case:* a reader takes the added texts as the owner's own words.
+  *Fix:* keep the answer lines as the owner gave them, and put the two
+  additions in a note under each question: "Added by plan review fixes
+  (P3, P4; P17), 2026-11-16; told to the owner." Tell the owner.
+  *Status:* Open.
+
+- [ ] **P25 — minor.** *Where:* step 5a import table (P14), D-C1-5 release
+  points (P10).
+  *Problem:* Two small gaps left by these fixes. (1) The import table has
+  no rows for `refused:` and `decline:`, which C1b adds to `ledger`. (2) The
+  counterparty releases its holds "when the quote expires", but nothing
+  says which call notices the expiry on the counterparty's node; the writer
+  is the only node that ticks (D-C1-9).
+  *Failure case:* C1b's import refuses or drops `refused:` rows, so a
+  restored writer sends a second refusal; a counterparty's seat stays taken
+  after the expiry until some other change.
+  *Fix:* (1) add the two rows to the table as a C1b step. (2) Say that the
+  counterparty checks the expiry of its own accepted, not-countersigned
+  quotes on each `transaction.sync` of the conversation and in
+  `agreement.get`, and releases then.
+  *Status:* Open.

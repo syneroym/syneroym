@@ -9,8 +9,8 @@ The plan and the slice order are in [task.md](task.md). This file records what i
 | Slice | Step | Plan by | Plan review by | Implemented by | Code review by | Evidence |
 | --- | --- | --- | --- | --- | --- | --- |
 | C0 | Not started | — | — | — | — | — |
-| C1a | Plan reviewed | Claude Opus 5.5 | Claude Opus 5.5 (round 1), Claude Sonnet 5.5 (round 2) | — | — | [Plan](slice-c1-implementation-plan.md) (one plan for C1a and C1b), 2026-11-15. Owner answers recorded (Q1 to Q6, 2026-11-16). Review rounds 1 and 2 items P1–P22 closed (22 fixed in 3462e4eb, 0 open, [review](slice-c1-review.md)). Baseline component sizes in plan 2.2 point 10. |
-| C1b | Plan reviewed | Claude Opus 5.5 | Claude Opus 5.5 (round 1), Claude Sonnet 5.5 (round 2) | — | — | Same plan, part C1b. Starts after C1a merges. Owner answers recorded, review items P1–P22 closed (same review file, 0 open). |
+| C1a | Plan reviewed | Claude Opus 5.5 | Claude Opus 5.5 (rounds 1, 3), Claude Sonnet 5.5 (round 2) | — | — | [Plan](slice-c1-implementation-plan.md) (one plan for C1a and C1b), 2026-11-15. Owner answers recorded (Q1 to Q6, 2026-11-16). Review rounds 1 to 3 (2026-11-16): 18 of P1–P22 confirmed fixed (3462e4eb); P3, P8, P15, P19 reopened and P23–P25 new: 7 open (0 blocker, 1 major, 6 minor) ([review](slice-c1-review.md)). Baseline component sizes in plan 2.2 point 10. |
+| C1b | Plan reviewed | Claude Opus 5.5 | Claude Opus 5.5 (rounds 1, 3), Claude Sonnet 5.5 (round 2) | — | — | Same plan, part C1b. Starts after C1a merges. Owner answers recorded, same review file, 7 open. |
 | C2 | Not started | — | — | — | — | — |
 | C3a | Not started | — | — | — | — | — |
 | C3b | Not started | — | — | — | — | — |
