@@ -748,15 +748,20 @@ differs from the doc's text (marked "deviation").
   method check.
 - **D-C1-16. Ordered decision in C1a.** The writer runs the decision in order:
   1. Look up `decision:<quote_id>` first. If the row already exists:
-     - Same agreement: repeat path with no step-1 checks. If
-       `snapshot:<agreement>:1` is already stored, reuse it (Recovery check 1;
-       never run reserve/confirm again). If `countersign:<agreement>` is stored,
-       resend stored half and snapshot.
+     - Same agreement: repeat path. If `snapshot:<agreement>:1` is already
+       stored, reuse it (Recovery check 1; never run reserve/confirm again). If
+       `countersign:<agreement>` is stored, resend stored half and snapshot.
+       If neither is stored, check the quote's expiry; past it, do not
+       countersign and leave the row `deciding` (C1b's sweep ends it
+       `not-formed` with `quote-expired`).
      - Other agreement: leave half filed with no countersign and no snapshot
        (backlog row for C1b).
   2. For a new decision, run step-1 validation: check signer and expiry before
      creating the fence; if invalid, return as today (no snapshot). Then create
-     the fence row `decision:<quote_id>` (`deciding`).
+     the fence row `decision:<quote_id>` (`deciding`). If `create` finds the
+     row already exists (concurrent sync): with the same agreement go to the
+     repeat path of step 1; with another agreement go to the "other agreement"
+     branch.
   3. Reserve holds through `Reservations`. On failure: store snapshot 1
      `not-formed`, release holds, send cards, put decision row `not-formed`.
   4. Confirm holds.
@@ -1397,7 +1402,8 @@ C1a (each file under 800 lines):
   `send_error_stops_decision_row_and_retries_on_next_sync` (P16, P23:
   transport error returns Err and retries; lasting send error keeps decision
   row deciding and files card);
-  `release_both_seat_and_hold_in_one_batch` (P21).
+  `release_both_seat_and_hold_in_one_batch` (P21);
+  `repeat_past_expiry_without_countersign_leaves_row_deciding` (P26).
 - `time.rs`: `unsettled_commitment_ends_unconfirmed_after_its_track_end`,
   with and without a giver's half (AG-7); `tick_before_the_end_changes_nothing`;
   `a_late_half_after_the_end_is_kept_and_changes_nothing`.
