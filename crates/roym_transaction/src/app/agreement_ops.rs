@@ -429,9 +429,10 @@ async fn sign_agreement_receipt<H: AppHost>(
     })
 }
 
-pub(crate) async fn get<H: AppHost>(
+pub(crate) async fn get_at<H: AppHost>(
     host: &H,
     input: QuoteRecordInput,
+    now: u64,
 ) -> Reply<Option<AgreementView>> {
     ensure_collections(host).await.map_err(Response::internal_error)?;
     let mut row: Option<AgreementRow> =
@@ -443,7 +444,6 @@ pub(crate) async fn get<H: AppHost>(
         return Ok(None);
     };
 
-    let now = clock::now_secs();
     if let Ok(owner) = signing::owner_did(host).await {
         if owner == agr.quote_author_did {
             let _ = progress_ops::tick_agreement_at(host, agr, now).await;
@@ -464,6 +464,13 @@ pub(crate) async fn get<H: AppHost>(
     }
 
     Ok(Some(AgreementView::from(agr.clone())))
+}
+
+pub(crate) async fn get<H: AppHost>(
+    host: &H,
+    input: QuoteRecordInput,
+) -> Reply<Option<AgreementView>> {
+    get_at(host, input, clock::now_secs()).await
 }
 
 pub(crate) async fn list<H: AppHost>(

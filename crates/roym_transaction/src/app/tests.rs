@@ -1,5 +1,7 @@
 //! Test fixtures and harness support for transaction service in-crate tests.
 
+pub mod accept;
+
 use std::sync::Arc;
 
 use serde_json::json;

@@ -292,9 +292,10 @@ impl TestHost {
 
 fn extract_invoke_method_and_params(params: &str) -> Option<(String, String)> {
     let val = serde_json::from_str::<serde_json::Value>(params).ok()?;
-    let arr = val.as_array()?;
-    let first = arr.first()?;
-    let method = first.get("method").and_then(|v| v.as_str())?.to_string();
-    let inner = first.get("params").cloned().unwrap_or(serde_json::Value::Null).to_string();
+    let first = if let Some(arr) = val.as_array() { arr.first()?.clone() } else { val };
+    let obj: serde_json::Value =
+        if let Some(s) = first.as_str() { serde_json::from_str(s).ok()? } else { first };
+    let method = obj.get("method").and_then(|v| v.as_str())?.to_string();
+    let inner = obj.get("params").cloned().unwrap_or(serde_json::Value::Null).to_string();
     Some((method, inner))
 }
