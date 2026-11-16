@@ -1185,7 +1185,7 @@ components, so the size numbers in `status.md` are not checked here.
   grace time, and record the rule (deviation or backlog row for C1b).
   *Status:* Fixed (98bf5d3d).
 
-- [x] **R13 — minor.** *Where:* `crates/roym_transaction/src/app/backup/sections.rs:289`
+- [ ] **R13 — minor.** *Where:* `crates/roym_transaction/src/app/backup/sections.rs:289`
   to `:316`; `crates/roym_transaction/src/app/ledger.rs:8` to `:45`.
   *Problem:* The plan's backup import table (step 5a) is not built: a ledger
   row is only parsed into `LedgerRow`, and only the dead `step` field is
@@ -1200,9 +1200,9 @@ components, so the size numbers in `status.md` are not checked here.
   *Fix:* import each kind into its own row type (`DecisionRow`,
   `CountersignRow`, `HoldLedgerRow`, `SeatLedgerRow`, the fence row) with the
   table's checks, and delete `Step` and `StepRow`.
-  *Status:* Fixed (98bf5d3d).
+  *Status:* Open. Partly fixed in 98bf5d3d; reopened in code review round 2.
 
-- [x] **R14 — minor.** *Where:* `crates/roym_transaction/src/app/decide.rs:181`
+- [ ] **R14 — minor.** *Where:* `crates/roym_transaction/src/app/decide.rs:181`
   to `:184` and `:105`; `progress_ops.rs:162` to `:166`;
   `crates/roym_transaction/src/app/sync/receipts.rs:226` to `:253`.
   *Problem:* Three differences from the plan's decisions. (1) D-C1-16 step 3
@@ -1217,7 +1217,7 @@ components, so the size numbers in `status.md` are not checked here.
   C1b reruns `reserve` on released keys, the case P35 closed.
   *Fix:* move the release after the snapshot store; add `cancel_at`; either
   test the fork branch now or leave it to C1b.
-  *Status:* Fixed (98bf5d3d).
+  *Status:* Open. Partly fixed in 98bf5d3d; reopened in code review round 2.
 
 - [x] **R15 — minor.** *Where:* `docs/planning/deferred-backlog.md:532`, `:660`;
   `crates/roym_web/ui/src/screens/messages.ts`; `status.md` C1a row.
@@ -1235,3 +1235,170 @@ components, so the size numbers in `status.md` are not checked here.
   *Status:* Fixed (98bf5d3d).
 
 **Open after round 1: 0 (all 15 items fixed: R1 in 1023868e; R2, R3, R4, R7-R15 in 98bf5d3d; R6 in 4f03d8aa; R5 in 2b950f7a).**
+
+## Code review round 2 — Claude Opus 5.5 (Claude Code), 2026-11-16
+
+Reviewed sha: `cf31173c`. This round checks the fixes for R1–R15 and the CI
+run on that sha. It also looks at the new code in the fix commits.
+
+**Summary:** 13 of 15 round-1 items are confirmed fixed. R13 and R14 are only
+partly fixed and are open again. CI is red in two places (R16, R17). The fix
+commits add one new major bug (R18) and two minor items (R19, R20).
+**Open after round 2: 7 (2 blocker, 1 major, 4 minor).**
+
+### How this was checked
+
+- `gh pr checks 367` on `cf31173c`: "Lints, licenses & checks" fails, "Test
+  4/6" fails, and so the "CI Pipeline" summary fails. Tests 1, 2, 3, 5, 6,
+  Playwright E2E and CLA pass.
+- The lint job stops at the first failing step. So CI did not run the steps
+  after it. I ran them here: `check-module-layout`, `check-change-docs`,
+  `check-dep-versions` and `check-duplication` pass (duplication is 6.91%,
+  the ceiling is 7.0%). `mise run test:roym-ui` passes (556 tests).
+- `cargo nextest run -p syneroym-roym-transaction`: 23 passed.
+- `cargo nextest run -p syneroym-roym-web --test method_contract
+  sync_backup_shapes`: fails here too, so it is not a flaky test.
+- Temporary tests in `app/tests/decide.rs`, deleted after the run (the tree
+  is clean):
+  - The R2 case: `crash_on_write("ledger", "countersign:")`, `restart`, then
+    `decide::run` again. Now it answers `Ok(true)`, the countersign row
+    exists and the decision row is `agreed`. R2 is fixed.
+  - The R18 case below.
+- I did not run the full suite or `mise run verify`.
+
+### Round-1 items
+
+Confirmed fixed: R1, R2, R3, R4, R5, R6, R7, R8, R9, R10, R11, R12, R15.
+
+- R1: `check-planning-refs.py` passes in CI (the lint job fails later, at
+  R16). The three Hub test names no longer carry ids.
+- R2, R3: each repeat case has its own function (`repeat_not_formed`,
+  `repeat_both`, `repeat_countersigned`, `repeat_fresh`). Send errors are a
+  `SendCardError` enum, not text matching. A lasting refusal leaves the
+  decision row `deciding`.
+- R4: `transition_at` goes round again on `Ok(Some(_))` and answers `busy`
+  after 3 tries. The test for an existing row exists.
+- R5: every test that section 7 names for C1a now exists, in the planned
+  file.
+- R6: the architecture doc has the four agreement states and the eight
+  commitment states. The closed rule matches `progress.rs:243`.
+- R8: `MAX_SLOT_CAPACITY` is 64 again.
+- R10: `roymctl` and the Hub build `{ listing_id, slot_id }` with the
+  `scheduling/slot@1` schema.
+- R12: `tick_conversation_at` now releases the counterparty's holds after
+  expiry. The grace time is a backlog row for C1b.
+
+Open again: R13 and R14. What is left:
+
+- **R13.** The import checks are weaker than the plan's table (plan,
+  `backup.rs` step). (1) A `hold:` row is checked only for empty fields; the
+  table says it must name a held agreement and a valid commitment id. (2) A
+  `decision:` row does not check that its agreement is held. (3) `payreq:`,
+  `ack:` and `fulfil:` rows are not checked against the commitment's kind or
+  role. (4) Any other ledger id is kept as `Other` with no check
+  (`backup/sections.rs:395` to `:397`); the table has no such row. (5) No
+  test imports a bad ledger row and sees it refused.
+  *Fix:* add the missing checks; refuse an unknown ledger kind; add one test
+  per row kind that is refused.
+- **R14.** Parts 1 and 2 are fixed (release after the snapshot store;
+  `cancel_at`). Part 3 is not: `check_progress_fork`
+  (`sync/receipts.rs:230` to `:256`) still has no test, its `put_row` error
+  is still ignored, and nothing records that it is left to C1b.
+  *Fix:* add the unit test the agreements doc names for AG-12 ("Unit for the
+  fork"), or record a backlog row that moves it to C1b.
+
+### New findings
+
+- [ ] **R16 — blocker.** *Where:* `crates/substrate/tests/roym_deal_e2e.rs:32`,
+  `:197`; `xtask/src/lint_suppressions.rs:9`; `status.md` C1a row.
+  *Problem:* The two new e2e tests each add
+  `#[expect(clippy::too_many_lines)]`. The workspace now has 40 such
+  suppressions; the ratchet allows 38. CI's lint job fails at "Check Lint
+  Suppressions". Because the job stops there, CI also skipped module layout,
+  change docs, dependency versions, duplication and the Hub UI tests. The
+  status row says "Clean clippy, fmt, xtask checks", which is not true on
+  this sha.
+  *Failure case:* the PR cannot merge; CI stays red.
+  *Fix:* split each test into named steps (for example "both nodes quote",
+  "both accept", "check both agreements") so each function is under 100
+  lines, and remove the two `expect`s. Do not raise the ceiling. Correct
+  the status row's evidence.
+  *Status:* Open.
+
+- [ ] **R17 — blocker.** *Where:*
+  `crates/roym_web/tests/method_shapes/transaction_export.json:689`;
+  `crates/roym_transaction/src/app/decide.rs:53` to `:54`.
+  *Problem:* The R3 fix adds `message_id` to `CountersignRow`, so a
+  `countersign` ledger row in `transaction.export` now has a `message_id`.
+  The recorded shape file was not updated. `shapes_transaction::sync_backup_shapes`
+  fails in CI ("Test 4/6", all 3 tries) and here.
+  *Failure case:* CI stays red.
+  *Fix:* the new field is wanted, so regenerate the file with
+  `UPDATE_METHOD_SHAPES=1 cargo nextest run -p syneroym-roym-web --test
+  method_contract sync_backup_shapes`, and check that the diff is only the
+  `message_id` line.
+  *Status:* Open.
+
+- [ ] **R18 — major.** *Where:* `crates/roym_transaction/src/app/decide.rs:81`
+  to `:87` and `:368` to `:450` (`repeat_both`);
+  `crates/roym_transaction/src/app/sync.rs:219` to `:224`, `:545` to `:548`.
+  *Problem:* `decide::run` goes to `repeat_path` whenever a decision row
+  exists, also when that decision is already `agreed`. `repeat_both` then
+  writes the agreement row again with `seq: 1`, `state: agreed` and the
+  commitments of snapshot 1, and records a progress event. It does not
+  check whether the agreement has moved on. Sync calls `decide::run` for
+  each newly filed acceptance card from the counterparty. Sync only skips a
+  card whose message id it has already filed, so a second message that
+  carries the same signed half (a resend by the counterparty's node, or a
+  peer that sends it on purpose) runs the decision again.
+  *Failure case:* proven with a temporary test: agree (seq 1), then
+  `transition_at(Cancel)` gives seq 2 `cancelled`, then `decide::run` again.
+  It answers `Ok(true)` and the stored agreement row is `agreed` with seq 1.
+  After that, `agreement.get` shows `agreed`. `agreement.progress` lists only
+  seq 1, because it reads up to `agr.seq` (`progress_ops.rs:282`), so the
+  cancel is hidden. The writer is the only node that writes agreement
+  state, so the counterparty can make that state go back.
+  *Fix:* in `run`, when the decision row is `agreed` or `not-formed`, only
+  send the stored cards that have no message id, and do not write
+  `AGREEMENTS` or the decision row. Keep `repeat_both` for a decision that is
+  still `deciding`. Add a test `repeat_after_the_agreement_moved_keeps_its_state`
+  with the case above.
+  *Status:* Open.
+
+- [ ] **R19 — minor.** *Where:* `crates/roym_transaction/src/app.rs:575` to
+  `:590`; `decide.rs:246` to `:255` (and the same check in each repeat
+  function).
+  *Problem:* When `conversation.send` works but filing this node's own copy
+  fails, `send_card_and_file` returns a message id and a `Transport` error.
+  The decision code checks the error first and returns `Err`, so it never
+  stores the message id. The next sync sends the card again.
+  *Failure case:* the counterparty gets the agreement receipt or snapshot
+  twice in its thread. Its node files the second one as a repeat
+  (agreements doc: "files a repeat as a repeat"), so no state is wrong, but
+  the user sees two cards.
+  *Fix:* store the message id whenever it is not empty, before the error
+  check; or give "sent but not filed" its own `SendCardError` variant that
+  the decision code does not retry with a send.
+  *Status:* Open.
+
+- [ ] **R20 — minor.** *Where:* `crates/roym_transaction/src/app/decide.rs`
+  (`:236` to `:277`, `:319` to `:338`, `:379` to `:421`, `:482` to `:524`,
+  `:645` to `:664`; `:279` to `:307`, `:422` to `:449`, `:526` to `:553`;
+  `:105` to `:108`, `:565` to `:568`); `app.rs:499` to `:504`.
+  *Problem:* The R2 fix copies the same code many times. The block "send the
+  card, return `Err` on a transport error or `Ok(false)` on a refusal, store
+  the message id" is written out 9 times. The block "write the decision row
+  `agreed`, set the agreement row, record the event" is written out 3 times.
+  The `match` at `:105` and `:565` maps each value to itself. The doc comment
+  of `send_card_and_file` now sits on `SendCardError`. Duplication is now
+  6.91% of the workspace; the gate fails at 7.0%.
+  *Failure case:* a later fix (for example R18 or R19) must be made in 9
+  places, and one is easy to miss.
+  *Fix:* one helper that sends a card only when it has no message id and
+  returns the new id or a stop value; one helper that marks the decision
+  agreed. Remove the two no-op `match`es. Move the doc comment back to the
+  function.
+  *Status:* Open.
+
+**Open after round 2: 7 (2 blocker, 1 major, 4 minor): R13, R14, R16, R17,
+R18, R19, R20.**
