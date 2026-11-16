@@ -410,3 +410,303 @@ The owner accepted Q1 to Q6 on 2026-11-16. This is only the reviewer's view.
   `transaction agreement get|cancel|progress`, in step 5a, the developer
   bullet, `cli_args.rs` and `docs/demo/demo.md`.
   *Status:* Open.
+
+## Plan review round 2 — Claude Sonnet 5.5 (Claude Code), 2026-11-16
+
+Checked [slice-c1-implementation-plan.md](slice-c1-implementation-plan.md)
+on branch `feat/m08c-c1-commitment-model` at `70e49ea6`, against the code on
+this checkout (same as `main` for `crates/` and `apps/`). The first pass was
+made before reading round 1: the test host (`signing.rs`, `method.rs`,
+`xtask/src/main.rs`), the writer's decision and sync order
+(`sync.rs`, `agreement_ops.rs`, `ledger.rs`), the Hub (`messages.ts`,
+`quote.ts`, `record_text.ts`, `text_lang.ts`, `translation.ts`), `thread.rs`,
+the callers of every renamed or removed method, the living docs and the file
+sizes. Then each of P1 to P15 was checked against the code. The agreements
+change doc was read for "The writer's decision", "Recovery", "Single writer",
+"Deal rules", "Reason codes" and the AG rows. Q1 to Q6 were not reopened: no
+fact they rest on is wrong (`booking.start` has exactly the callers Q6 names;
+the Hub does offer 13 record languages, which matters only for P17).
+
+### Round 1 items
+
+- **P1.** Agree in part. The gate failure is real: `check_crate_manifest_dependencies`
+  reads `[dependencies]` of every `crates/roym_*` manifest and allows only the
+  fixed list (`xtask/src/main.rs:70` to `:83`), so an optional
+  `syneroym-identity` fails. The sticky fault is also right (`let _ = delete`
+  at `ledger.rs:276`, `:331`, `booking_ops.rs:249` ignore errors, so a fault on a
+  delete never reaches the caller; the plan's own rule in 7.11, "the call
+  returned the injected error", cannot hold for those). Wrong or too strong:
+  (a) the real enum is `Principal::Delegated` / `Principal::Service`, not
+  `Principal::Person`; (b) point (4) is overstated, because the service reaches
+  the conversation through `call_sibling` to `conversation.changes` and
+  `conversation.send` (`sync.rs:128`, `agreement_ops.rs:531`), which the plan's
+  `on_call` map can already answer; the conversation stub must be an `on_call`
+  handler, not an `AppConversation` impl on the host (the service never calls
+  that trait); (c) the fix says the new crate "needs only
+  `syneroym-app-host`" and then signs through `syneroym-core`'s
+  `NodeRecordSigner`. That is `reqwest`, `rustls`, `pkarr` and a mock
+  `EndpointRegistry` with a recorded owner (`record_signer.rs:100`), and
+  `RecordClock` is fixed at construction, so `set_now` means rebuilding the
+  signer. It builds (the `roym_web` dev-dependencies already hold
+  `syneroym-core` with `test-utils`), but it is heavier than needed, and it
+  moves the host out of `roym_core::testing`, which is the place Q2 (a) names.
+  A lighter fix that keeps Q2 (a) as accepted: keep `roym_core::testing`, and
+  let the host take an injected signer (`Fn(RecordDraft, Principal, u64) ->
+  Result<String, SigningError>`) that `roym_transaction`'s dev-dependencies
+  (`syneroym-identity`, `z32`, `tokio`) build in its own test support. If the
+  owner prefers the new crate, say so against Q2. Either way, see P18.
+- **P2.** Agree in part. The fact is right: `maybe_countersign` runs at
+  `sync.rs:527`, `put_card` at `:528`, and an `Err` returns before the cursor
+  is saved. Wrong: the failure case. An expired or missing certificate does not
+  stop the sync: `person_principal` errors map to `Ok(false)`
+  (`agreement_ops.rs:480` to `:483`), so the card is filed and the countersign
+  is never retried, which is the gap P2 names one paragraph earlier. A lasting
+  `Err` needs a storage or `sign_record` error. The rule to test (each crash
+  test first checks that the card row is stored and the cursor moved) is good.
+  P16 adds a path P2 did not see.
+- **P3.** Agree. The doc's own safety sentence ("a stored `not-formed`
+  snapshot is never undone by a later reserve or confirm that succeeds",
+  `change.md:613`) only holds if the repeat path runs the same checks. A
+  stronger failure case than P3's: a repeat after the expiry reaches step 3
+  and countersigns after the expiry (see P19).
+- **P4.** Agree. `agreement_ops.rs:472` checks the expiry before any write
+  today, and D-C1-16 starts with the fence. One small point: P4's fix and P3's
+  fix move a little recovery code (check 1) into C1a. That touches the wording
+  of Q1 ("no crash recovery yet"). It is a small change, and the owner should
+  be told.
+- **P5.** Agree. The doc rules at `change.md:358` to `:360` are enforced only
+  by the sender in the plan.
+- **P6.** Agree. Story 40 has the case (`40-roym-languages.spec.ts:207` writes
+  Hindi, `:229` expects `lang="en"`). Pre-filling "What you give" from the
+  scope field at submit time is a good fix. P17 is the same kind of problem on
+  the other commitment.
+- **P7.** Agree. Verified `:208` (`.card-request`), `:216`
+  (`.request-description`), `:259` (`a.terms.scope`) and
+  `hub-helpers.ts:210`.
+- **P8.** Agree. Verified `docs/system-architecture.md:1139` and `:3127`, and
+  `docs/system-requirements-spec.md:356`, `:359`, `:360`, `:407`, `:447`
+  (five lines, not three).
+- **P9.** Agree. `fixtures.rs` is 799 lines and not listed in
+  `xtask/oversized-test-files.txt`. Also near the cap and touched by 5a:
+  `transaction_cards.rs` (697), `booking.rs` (669), `cli_args.rs` (717),
+  roymctl `transaction.rs` (669).
+- **P10.** Agree. Today's cancel frees the seat in `roll_forward`
+  (`ledger.rs:268` to `:277`); the plan moves that code and names no release
+  point for cancel.
+- **P11.** Agree. The doc's "holds an acceptance of any version"
+  (`change.md:573`) and "Deal rules" (a refused acceptance is not an end)
+  disagree, and the plan picks the first reading without saying so.
+- **P12.** Agree on all three points.
+- **P13.** Agree. `sync.rs:511` keeps the first half per role and says
+  nothing about a second, different one.
+- **P14.** Agree. `validate_ledger_and_bookings` re-verifies every step row on
+  import (`backup/sections.rs:257` to `:300`), so the new row kinds need rules.
+- **P15.** Agree. Verified: the `Agreement` leaf command takes `--quote`
+  (`apps/roymctl/src/commands/roym/transaction.rs:137`).
+
+### View on the owner questions
+
+- **Q1.** Agree with the split. C1a still needs a small re-entry path in the
+  decision (P3, P4, P16); that is the only soft spot in "C1b rewrites nothing".
+- **Q2.** Agree with (a). The host cannot sit in `roym_core` as written (P1),
+  and its clock needs care (P18).
+- **Q3.** Agree. The fixed scheduling case is small and the shape is final.
+- **Q4.** Agree. Its fact "the Hub writes all fields in one language" needs
+  the Hub's catalog text to exist in that language, which it does not (P17).
+- **Q5.** Agree with (a), with P13's correction to the wording.
+- **Q6.** Agree. `booking.start` callers match the plan; the method-contract
+  shapes also call it (`shapes_transaction.rs:191`).
+
+### New findings
+
+- [ ] **P16 — major.** *Where:* D-C1-16 ("send both cards; put the decision
+  row last"), step 5a (`maybe_countersign` becomes `decide::run`),
+  `crates/roym_transaction/src/app/agreement_ops.rs:465` to `:468` and
+  `:531` to `:539`.
+  *Problem:* Two parts of today's code defeat D-C1-16 if they are kept.
+  (1) Today the quote author's half is stored in `AGREEMENTS` before the
+  send (`put_row` at `:520`). A re-read of the same card then hits
+  `if row.quote_author.is_some()` and returns `Ok(false)` at `:465`, so the
+  card is never sent again. (2) A failed `conversation.send` is swallowed:
+  `Err(_) => (String::new(), …)` at `:536` to `:538`, and the function still
+  returns `Ok(true)`. The plan says what the last write is, but not that a
+  failed send must stop it, and not what replaces the early return.
+  *Failure case:* `conversation.send` fails once. The writer stores the half,
+  puts the decision row `agreed` (the last write), and the counterparty never
+  gets the countersigned half or snapshot 1. C1b's sweep looks only at
+  `deciding` rows, so nothing finishes it. The counterparty waits until the
+  quote expires.
+  *Fix:* Write two rules into D-C1-16. A send error returns `Err` from
+  `decide::run` and the decision row is not put. The early return on a stored
+  half is replaced by the repeat branch (use the stored half, send again, put
+  the row). Add a service test in C1a: the first `conversation.send` fails,
+  one more sync sends the same stored half and snapshot, and the decision row
+  is `agreed` only after that.
+  *Status:* Open.
+
+- [ ] **P17 — major.** *Where:* D-C1-7 ("the currency commitment's
+  description is the catalog text `quote-payment-description` in the quote's
+  language"), Q4, step 5b.
+  *Problem:* The Hub offers 13 record languages
+  (`crates/roym_web/ui/src/i18n/text_lang.ts:4` to `:6`: `en`, `hi`,
+  `hi-Latn`, `bn`, `gu`, `kn`, `ml`, `mr`, `or`, `pa`, `ta`, `ta-Latn`, `te`),
+  and the quote form lets the person pick any of them
+  (`messages.ts`, `textLangSelect("quote-text-lang", …)`). The Hub has two
+  catalogs only: `en.ftl` and `hi.ftl`. For the other 11 languages there is no
+  `quote-payment-description` text in "the quote's language", and Q4 needs every
+  text of the record to carry that one `lang`.
+  *Failure case:* Bob picks Tamil for the quote. The Hub either sends the
+  English or Hindi catalog text tagged `ta` (a false tag in a signed record,
+  read by the `viewed_lang` rules, the same defect as P6), or fails to build
+  the quote. Also `hi-Latn` needs the Latin-script Hindi text, which the Hindi
+  catalog does not give.
+  *Fix:* Build the currency line's description from language-neutral parts:
+  the ISO currency code and the amount (for example `INR 100.00`), with no
+  catalog sentence. The role words ("You give") come from the reader's catalog
+  when the card is drawn, not from the signed text. Add a `quote_terms.test.ts`
+  case for a quote in a language with no catalog.
+  *Status:* Open.
+
+- [ ] **P18 — minor.** *Where:* Q2, D-C1-3 (`set_now`), step 3, section 7.2
+  (tests with chosen times).
+  *Problem:* A pinned signing clock needs a certificate that is valid at that
+  time, and the plan does not say how the host gets one. `DelegationCertificate::issue`
+  stamps the real clock (`crates/identity/src/delegation.rs:109`), and
+  verification refuses a certificate issued more than 300 seconds after `now`
+  (`:231`); `NodeRecordSigner::sign_record` checks the certificate at the
+  pinned time (`record_signer.rs:130` to `:141`). The service also needs the
+  certificate installed in its own `signing_certificates` collection, and
+  `person_principal` refuses it once `now >= expires_at_secs`
+  (`signing.rs:194` to `:196`).
+  *Failure case:* a test that sets the clock to a small number (like scenario
+  165's window `1_000..2_000`) cannot sign. A test that moves the clock 31 days
+  ahead to pass a track end finds the default certificate lifetime is too
+  short, so the late half no longer verifies.
+  *Fix:* In step 3: the fixture mints the certificate with the longest lifetime
+  the install check allows (5 years, `signing.rs:46`) and installs it; every
+  test clock starts at or after the real "now" and only moves forward.
+  *Status:* Open.
+
+- [ ] **P19 — minor.** *Where:* C1b step 3 ("In `decide::run`, before step 2
+  of D-C1-16: the checks of the doc's step 1").
+  *Problem:* Step 1's expiry and version checks run on every entry, also on
+  a repeat of a half whose decision is already made. The doc's Recovery says
+  the expiry is checked again only when no `countersign:<agreement>` row
+  exists (`change.md:609`). Step 1's refusal also writes
+  `snapshot:<version record_id>:1`, the same key as the decision's snapshot
+  (`agreement` is the version's `record_id` in both).
+  *Failure case:* the writer stores the countersign and snapshot 1 `agreed`,
+  sends them, and crashes before the last `put`. The quote expires. The half is
+  read again: step 1 says `quote-expired`, tries to create snapshot 1
+  `not-formed`, finds the stored `agreed` one, and sends that. It also creates
+  `refused:<half>` with `quote-expired`. The end state is right by luck, but
+  `quote.set` now reads a `refused:` row that says the quote expired, for a
+  deal that is agreed. The same happens when a `quote.set` on another version
+  runs in between (`quote-superseded`).
+  *Fix:* One function decides what to do with a half. If a `decision:` row or a
+  `countersign:` row exists for this agreement, skip step 1 and finish the
+  decision (this is also P3's fix). Add a test: crash after the countersign is
+  stored, move the time past the expiry, sync, and check there is no `refused:`
+  row.
+  *Status:* Open.
+
+- [ ] **P20 — minor.** *Where:* step 5b, section 7.5, Q4.
+  *Problem:* The Hub reads quote, receipt and enquiry text through
+  `crates/roym_web/ui/src/records/record_text.ts` (`TextVersion`,
+  `textFields`, `bestVersion`; used by `quote.ts`, `request.ts`,
+  `agreement_receipt.ts`, `fulfilment_receipt.ts`), with a flat list of fixed
+  text keys per record, and the "Translate" action sends them in one call. The
+  new shape has one `LocalText` per field and a variable number of commitment
+  descriptions. The plan names `bestVersion` and some tests, but not this
+  module or its test file (398 lines). The node refuses a translate call of
+  more than 8 texts (`crates/roym_web/src/app/translation.rs:23`, `:122`), and
+  `translateTexts` does not split a call (`translation.ts:161` to `:176`). A
+  quote of 5 or more commitments, made by `roymctl` or by a peer, has more than
+  8 texts.
+  *Failure case:* a reader presses "Translate" on a quote with 6 commitments
+  and gets "Could not translate". Hub-made quotes (6 texts) are fine, so no Hub
+  test finds it.
+  *Fix:* Add `record_text.ts` and its test to step 5b, with the rule that
+  `textFields` takes the key list from the record (terms texts and each
+  commitment's description). Split the call into groups of 8 texts in
+  `translateTexts`, or state that a larger record shows no translate action.
+  `web` Rust code stays unchanged.
+  *Status:* Open.
+
+- [ ] **P21 — minor.** *Where:* D-C1-5 (`release`: "deletes the seat row …,
+  then the hold row"; `reserve`: "a `hold:` row that already exists means
+  already held").
+  *Problem:* Two deletes are two writes. A crash between them leaves a `hold:`
+  row with no `seat:` row. A later `reserve` for the same (agreement,
+  commitment) then answers "already held" and takes no seat.
+  *Failure case:* the counterparty's `agreement.accept` fails on its second
+  commitment and releases the first; the process stops after the seat delete.
+  The person presses "Accept" again: the first commitment says already held,
+  signs, and the seat is free for another agreement. Two bookings for one seat.
+  *Fix:* `release` reads the seat row, then removes both rows in one
+  `batch_mutate` (it has `delete`, `data-layer.wit:74` to `:78`). Also let
+  `reserve` check that the seat row exists when it finds a hold row. One crash
+  test between the two deletes.
+  *Status:* Open.
+
+- [ ] **P22 — minor.** *Where:* step 5a (`thread.rs`: "the thread carries
+  `agreement-progress` cards"), C1b step 2 (Hub shows "Accept" only when the
+  deal is not `agreed`, `declined`, `expired` or `not-formed`).
+  *Problem:* `transaction.thread` adds fields to the card rows on the server
+  (`crates/roym_transaction/src/app/thread.rs:46` to `:100`): `declined`,
+  `version_count`, `expired` (read from `terms.quote_expires_at_secs`) and, for
+  a payment request, `agreement_payee = agr.terms.payee` and the payment
+  methods. After C1a the payee and methods belong to a commitment, named by
+  the card's `commitment_id`, so this code must change; the plan says only
+  that the thread "carries" the new card. For C1b, the Hub needs a deal state
+  per quote version (`agreed`, `not-formed`, refused). The thread does not give
+  one, and the plan does not say where the Hub gets it. The refusal snapshot's
+  `agreement` is the version's `record_id`, so the Hub would have to join cards
+  by itself.
+  *Failure case:* case 24's payee sentence has no data source for a
+  per-commitment payment request; in C1b the Hub shows "Accept" on a version
+  that the writer refused, because only the client could know.
+  *Fix:* In step 5a, say that the thread fills `agreement_payee` and the
+  methods from the commitment the card names. In C1b step 2, add a `deal_state`
+  to the quote card rows in `thread` (computed on the server from the pointer,
+  the agreement row, the snapshots and the clock) and keep the Hub's choice a
+  plain read of that field, with a unit test.
+  *Status:* Open.
+
+**Counts.** New findings: 7 (0 blocker, 2 major, 5 minor). Round 1 items: 13
+agree (P3 to P15), 2 agree in part (P1, P2), 0 disagree.
+
+## Rounds 1 and 2 compared — Claude Opus 5.5 (Claude Code), 2026-11-16
+
+The round 1 reviewer checked round 2's corrections and new findings against
+the code. Round 2 is right on every point checked: `Principal` has
+`Delegated` and `Service` (`crates/app_host/src/types.rs:76`); a signing
+error maps to `Ok(false)` (`agreement_ops.rs:480` to `:483`); a re-read
+returns early when the author's half exists (`:465` to `:467`); the Hub
+offers 13 record languages (`crates/roym_web/ui/src/i18n/text_lang.ts:4`)
+and has only `en.ftl` and `hi.ftl`; `syneroym-core` depends on `reqwest`,
+`rustls` and `pkarr`.
+
+What the fix session uses where the rounds differ:
+
+- **P1.** Use round 2's fix, not round 1's. Keep the host in
+  `roym_core::testing` behind `test-host`, as Q2 (a) says. The host takes
+  an injected signer; `roym_transaction`'s dev-dependencies
+  (`syneroym-identity`, `z32`, `tokio`) build it in its own test support.
+  `check-roym-deps` does not read `[dev-dependencies]`, so no gate fails,
+  and the owner's Q2 answer stays as written. The conversation stub is an
+  `on_call` handler for `conversation.send` and `conversation.changes`.
+  The sticky, named fault from round 1 stays.
+- **P2.** Drop round 1's failure case (c). A lasting signing error does not
+  block the sync; it files the card and gives up (`Ok(false)`), which is
+  the gap P2 already names. "Logs it" in the fix means: the decision row
+  stays `deciding` and the sweep finishes it; no log channel is needed.
+- **P8.** The requirements spec has five stale lines: `:356`, `:359`,
+  `:360`, `:407`, `:447`.
+- **P3, P4 and Q1.** Their fixes put Recovery's check 1 (a stored
+  `not-formed` snapshot is used, not decided again) into C1a. This is a
+  small change to Q1's "no crash recovery yet". The owner should know; it
+  does not change the cut.
+
+**Open after both rounds: 22 (0 blocker, 8 major, 14 minor).** P1 to P22
+are all Open.
