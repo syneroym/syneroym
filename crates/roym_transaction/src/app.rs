@@ -496,12 +496,6 @@ pub(crate) async fn file_own_card<H: AppHost>(
     put_card(host, &card_row).await
 }
 
-/// Sends a record as a card on `conversation`, then files this node's own
-/// copy of that card under the message id the send returned. A send or
-/// file-own-card failure is reported back as `send_error` rather than
-/// aborting: the signed record is already durably stored by the caller, so
-/// the record exists here either way and only the notification/own-card
-/// bookkeeping is at risk.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SendCardError {
     Transport(String),
@@ -522,6 +516,12 @@ impl std::fmt::Display for SendCardError {
     }
 }
 
+/// Sends a record as a card on `conversation`, then files this node's own
+/// copy of that card under the message id the send returned. A send or
+/// file-own-card failure is reported back as `send_error` rather than
+/// aborting: the signed record is already durably stored by the caller, so
+/// the record exists here either way and only the notification/own-card
+/// bookkeeping is at risk.
 pub(crate) async fn send_card_and_file<H: AppHost>(
     host: &H,
     conversation: &str,

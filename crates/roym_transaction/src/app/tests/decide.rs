@@ -673,3 +673,70 @@ async fn transition_retries_and_advances_when_snapshot_key_already_exists() {
             .unwrap();
     assert!(snap3.is_some(), "snapshot 3 must be stored");
 }
+
+#[tokio::test]
+async fn repeat_after_the_agreement_moved_keeps_its_state() {
+    let f = fixture();
+    let cp = Identity::generate().expect("generate cp");
+    let cp_did = substrate::derive_did_key(&cp.public_key());
+    let now = f.host.now();
+
+    let (quote, quote_rec_id, _) = build_and_sign_author_quote(
+        &f.master,
+        &cp_did,
+        vec![author_service_commitment("c1")],
+        now + 3600,
+        now,
+    );
+    let (_cp_receipt, cp_rec_id, cp_envelope) =
+        make_counterparty_receipt(&cp, &f.master_did, &quote_rec_id, &quote.terms, now);
+
+    let mut row = AgreementRow {
+        quote_record_id: quote_rec_id.clone(),
+        quote_id: quote.quote_id.clone(),
+        conversation: "conv_1".to_string(),
+        counterparty_did: cp_did.clone(),
+        quote_author_did: f.master_did.clone(),
+        terms: quote.terms.clone(),
+        agreed_at_secs: None,
+        counterparty: Some(ReceiptHalf {
+            envelope: cp_envelope,
+            record_id: cp_rec_id,
+            issuer: cp_did.clone(),
+            issued_at_secs: now,
+        }),
+        quote_author: None,
+        state: None,
+        state_reason: None,
+        cancel_reason: None,
+        seq: None,
+        commitments: vec![],
+        updated_at_secs: now,
+    };
+    crate::app::put_row(&f.host, AGREEMENTS, &quote_rec_id, &row).await.unwrap();
+
+    let agreed = decide::run(&f.host, &mut row, &quote, now).await.expect("initial decide");
+    assert!(agreed);
+    assert_eq!(row.state, Some(AgreementState::Agreed));
+    assert_eq!(row.seq, Some(1));
+
+    let cancelled = progress_ops::transition_at(
+        &f.host,
+        &quote_rec_id,
+        AgreementEvent::Cancel { reason: syneroym_roym_core::progress::CancelReason::Other },
+        now,
+    )
+    .await
+    .expect("cancel transition");
+    assert_eq!(cancelled.state, Some(AgreementState::Cancelled));
+    assert_eq!(cancelled.seq, Some(2));
+
+    let res = decide::run(&f.host, &mut row, &quote, now).await.expect("repeat decide");
+    assert!(res);
+
+    let stored: Option<AgreementRow> =
+        crate::app::get_row(&f.host, AGREEMENTS, &quote_rec_id).await.unwrap();
+    let agr = stored.expect("agreement exists");
+    assert_eq!(agr.state, Some(AgreementState::Cancelled));
+    assert_eq!(agr.seq, Some(2));
+}

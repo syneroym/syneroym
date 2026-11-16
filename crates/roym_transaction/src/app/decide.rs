@@ -6,7 +6,7 @@ use syneroym_roym_core::{
     deal::ResourceKind,
     progress::{
         self as core_progress, AGREEMENT_PROGRESS_VERSION, AgreementProgressPayload,
-        AgreementState, RECORD_AGREEMENT_PROGRESS,
+        AgreementState, CommitmentProgress, RECORD_AGREEMENT_PROGRESS,
     },
     record::{Envelope, RECORD_AGREEMENT_RECEIPT},
     signing,
@@ -83,6 +83,9 @@ pub(crate) async fn run<H: AppHost>(
             // Other agreement: leave half filed with no countersign and no snapshot
             return Ok(false);
         }
+        if existing_dec.state == "agreed" || existing_dec.state == "not-formed" {
+            return resend_completed_decision(host, row, quote, &existing_dec.state, now).await;
+        }
         return repeat_path(host, row, quote, now).await;
     }
 
@@ -96,16 +99,16 @@ pub(crate) async fn run<H: AppHost>(
             super::get_row::<DecisionRow, _>(host, LEDGER, &dec_key).await
             && existing_dec.agreement == row.quote_record_id
         {
+            if existing_dec.state == "agreed" || existing_dec.state == "not-formed" {
+                return resend_completed_decision(host, row, quote, &existing_dec.state, now).await;
+            }
             return repeat_path(host, row, quote, now).await;
         }
         return Ok(false);
     }
 
     // 3. Reserve holds through Reservations
-    let (reserved, failed) = match reserve_author_holds(host, row, now).await? {
-        (res, None) => (res, None),
-        (res, Some(reason)) => (res, Some(reason)),
-    };
+    let (reserved, failed) = reserve_author_holds(host, row, now).await?;
     if let Some(reason) = failed {
         return handle_not_formed(host, row, quote, &reserved, reason, now).await;
     }
@@ -117,7 +120,149 @@ pub(crate) async fn run<H: AppHost>(
     }
 
     // 5-7. Store countersign, snapshots, send cards, and complete agreed state
-    finalize_agreed_deal(host, row, quote, &dec_key, now).await
+    finalize_agreed_deal(host, row, quote, now).await
+}
+
+async fn ensure_countersign_sent<H: AppHost>(
+    host: &H,
+    conversation: &str,
+    cs: &mut CountersignRow,
+    now: u64,
+) -> Result<bool, String> {
+    if cs.message_id.is_some() {
+        return Ok(true);
+    }
+    let (msg_id, _, err) = send_card_and_file(
+        host,
+        conversation,
+        RECORD_AGREEMENT_RECEIPT,
+        AGREEMENT_RECEIPT_VERSION,
+        &cs.half.envelope,
+        now,
+        None,
+    )
+    .await;
+    if !msg_id.is_empty() {
+        cs.message_id = Some(msg_id);
+        let _ = put_row(host, LEDGER, &countersign_id(&cs.agreement), cs).await;
+    }
+    if let Some(err) = err {
+        if err.is_transport() {
+            return Err(err.to_string());
+        }
+        return Ok(false);
+    }
+    Ok(true)
+}
+
+async fn ensure_snapshot_sent<H: AppHost>(
+    host: &H,
+    conversation: &str,
+    snap: &mut SnapshotRow,
+    now: u64,
+) -> Result<bool, String> {
+    if snap.message_id.is_some() {
+        return Ok(true);
+    }
+    let (msg_id, _, err) = send_card_and_file(
+        host,
+        conversation,
+        RECORD_AGREEMENT_PROGRESS,
+        AGREEMENT_PROGRESS_VERSION,
+        &snap.envelope,
+        now,
+        None,
+    )
+    .await;
+    if !msg_id.is_empty() {
+        snap.message_id = Some(msg_id);
+        let _ =
+            put_row(host, AGREEMENT_PROGRESS, &snapshot_id(&snap.agreement, snap.seq), snap).await;
+    }
+    if let Some(err) = err {
+        if err.is_transport() {
+            return Err(err.to_string());
+        }
+        return Ok(false);
+    }
+    Ok(true)
+}
+
+async fn mark_decision_agreed<H: AppHost>(
+    host: &H,
+    row: &mut AgreementRow,
+    quote: &QuotePayload,
+    half: ReceiptHalf,
+    commitments: Vec<CommitmentProgress>,
+    now: u64,
+) -> Result<bool, String> {
+    let dec_agreed = DecisionRow {
+        kind: "decision".to_string(),
+        state: "agreed".to_string(),
+        agreement: row.quote_record_id.clone(),
+        quote_id: quote.quote_id.clone(),
+        reason: None,
+        created_at_secs: now,
+    };
+    put_row(host, LEDGER, &decision_id(&quote.quote_id), &dec_agreed).await?;
+
+    row.state = Some(AgreementState::Agreed);
+    row.state_reason = None;
+    row.cancel_reason = None;
+    row.seq = Some(1);
+    row.commitments = commitments;
+    row.agreed_at_secs = Some(half.issued_at_secs);
+    row.quote_author = Some(half);
+    row.updated_at_secs = now;
+    put_row(host, AGREEMENTS, &row.quote_record_id, row).await?;
+
+    let _ = host
+        .record_event(
+            EVENT_PROGRESS.to_string(),
+            row.conversation.clone(),
+            Some(row.quote_record_id.clone()),
+        )
+        .await;
+
+    Ok(true)
+}
+
+async fn resend_completed_decision<H: AppHost>(
+    host: &H,
+    row: &mut AgreementRow,
+    quote: &QuotePayload,
+    state: &str,
+    now: u64,
+) -> Result<bool, String> {
+    let snap_key = snapshot_id(&row.quote_record_id, 1);
+    let mut stored_snap: Option<SnapshotRow> =
+        super::get_row(host, AGREEMENT_PROGRESS, &snap_key).await?;
+
+    let cs_key = countersign_id(&row.quote_record_id);
+    let mut stored_cs: Option<CountersignRow> = super::get_row(host, LEDGER, &cs_key).await?;
+
+    if state == "agreed" {
+        if let Some(cs) = stored_cs.as_mut() {
+            if !ensure_countersign_sent(host, &row.conversation, cs, now).await? {
+                return Ok(false);
+            }
+        }
+        if let Some(snap) = stored_snap.as_mut() {
+            if !ensure_snapshot_sent(host, &row.conversation, snap, now).await? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    } else if state == "not-formed" {
+        if let Some(snap) = stored_snap.as_mut() {
+            if !ensure_snapshot_sent(host, &row.conversation, snap, now).await? {
+                return Ok(false);
+            }
+        }
+        Ok(false)
+    } else {
+        repeat_path(host, row, quote, now).await
+    }
 }
 
 fn precheck_acceptance(row: &AgreementRow, quote: &QuotePayload, now: u64) -> bool {
@@ -198,7 +343,6 @@ async fn finalize_agreed_deal<H: AppHost>(
     host: &H,
     row: &mut AgreementRow,
     quote: &QuotePayload,
-    dec_key: &str,
     now: u64,
 ) -> Result<bool, String> {
     let half = sign_author_receipt_half(host, row, now).await?;
@@ -233,78 +377,14 @@ async fn finalize_agreed_deal<H: AppHost>(
     };
     put_row(host, AGREEMENT_PROGRESS, &snap_key, &snap_row).await?;
 
-    let (cs_msg, _cs_state, cs_err) = send_card_and_file(
-        host,
-        &row.conversation,
-        RECORD_AGREEMENT_RECEIPT,
-        AGREEMENT_RECEIPT_VERSION,
-        &half.envelope,
-        now,
-        None,
-    )
-    .await;
-    if let Some(err) = cs_err {
-        if err.is_transport() {
-            return Err(err.to_string());
-        }
+    if !ensure_countersign_sent(host, &row.conversation, &mut cs_row, now).await? {
         return Ok(false);
     }
-    if !cs_msg.is_empty() {
-        cs_row.message_id = Some(cs_msg);
-        let _ = put_row(host, LEDGER, &countersign_id(&row.quote_record_id), &cs_row).await;
-    }
-
-    let (snap_msg, _, snap_err) = send_card_and_file(
-        host,
-        &row.conversation,
-        RECORD_AGREEMENT_PROGRESS,
-        AGREEMENT_PROGRESS_VERSION,
-        &snap_env,
-        now,
-        None,
-    )
-    .await;
-    if let Some(err) = snap_err {
-        if err.is_transport() {
-            return Err(err.to_string());
-        }
+    if !ensure_snapshot_sent(host, &row.conversation, &mut snap_row, now).await? {
         return Ok(false);
     }
 
-    if !snap_msg.is_empty() {
-        snap_row.message_id = Some(snap_msg);
-        let _ = put_row(host, AGREEMENT_PROGRESS, &snap_key, &snap_row).await;
-    }
-
-    let dec_agreed = DecisionRow {
-        kind: "decision".to_string(),
-        state: "agreed".to_string(),
-        agreement: row.quote_record_id.clone(),
-        quote_id: quote.quote_id.clone(),
-        reason: None,
-        created_at_secs: now,
-    };
-    put_row(host, LEDGER, dec_key, &dec_agreed).await?;
-
-    row.state = Some(AgreementState::Agreed);
-    row.state_reason = None;
-    row.cancel_reason = None;
-    row.seq = Some(1);
-    row.commitments = snapshot.commitments;
-    row.agreed_at_secs = Some(half.issued_at_secs);
-    row.quote_author = Some(half);
-    row.updated_at_secs = now;
-    put_row(host, AGREEMENTS, &row.quote_record_id, row).await?;
-
-    let _ = host
-        .record_event(
-            EVENT_PROGRESS.to_string(),
-            row.conversation.clone(),
-            Some(row.quote_record_id.clone()),
-        )
-        .await;
-
-    Ok(true)
+    mark_decision_agreed(host, row, quote, half, snapshot.commitments, now).await
 }
 
 async fn repeat_not_formed<H: AppHost>(
@@ -314,29 +394,10 @@ async fn repeat_not_formed<H: AppHost>(
     mut snap_row: SnapshotRow,
     now: u64,
 ) -> Result<bool, String> {
-    let snap_key = snapshot_id(&row.quote_record_id, 1);
-    if snap_row.message_id.is_none() {
-        let (snap_msg, _, snap_err) = send_card_and_file(
-            host,
-            &row.conversation,
-            RECORD_AGREEMENT_PROGRESS,
-            AGREEMENT_PROGRESS_VERSION,
-            &snap_row.envelope,
-            now,
-            None,
-        )
-        .await;
-        if let Some(err) = snap_err {
-            if err.is_transport() {
-                return Err(err.to_string());
-            }
-            return Ok(false);
-        }
-        if !snap_msg.is_empty() {
-            snap_row.message_id = Some(snap_msg);
-            let _ = put_row(host, AGREEMENT_PROGRESS, &snap_key, &snap_row).await;
-        }
+    if !ensure_snapshot_sent(host, &row.conversation, &mut snap_row, now).await? {
+        return Ok(false);
     }
+
     let dec_not_formed = DecisionRow {
         kind: "decision".to_string(),
         state: "not-formed".to_string(),
@@ -373,80 +434,13 @@ async fn repeat_both<H: AppHost>(
     mut cs: CountersignRow,
     now: u64,
 ) -> Result<bool, String> {
-    let cs_key = countersign_id(&row.quote_record_id);
-    let snap_key = snapshot_id(&row.quote_record_id, 1);
-    if cs.message_id.is_none() {
-        let (cs_msg, _, cs_err) = send_card_and_file(
-            host,
-            &row.conversation,
-            RECORD_AGREEMENT_RECEIPT,
-            AGREEMENT_RECEIPT_VERSION,
-            &cs.half.envelope,
-            now,
-            None,
-        )
-        .await;
-        if let Some(err) = cs_err {
-            if err.is_transport() {
-                return Err(err.to_string());
-            }
-            return Ok(false);
-        }
-        if !cs_msg.is_empty() {
-            cs.message_id = Some(cs_msg);
-            let _ = put_row(host, LEDGER, &cs_key, &cs).await;
-        }
+    if !ensure_countersign_sent(host, &row.conversation, &mut cs, now).await? {
+        return Ok(false);
     }
-    if snap_row.message_id.is_none() {
-        let (snap_msg, _, snap_err) = send_card_and_file(
-            host,
-            &row.conversation,
-            RECORD_AGREEMENT_PROGRESS,
-            AGREEMENT_PROGRESS_VERSION,
-            &snap_row.envelope,
-            now,
-            None,
-        )
-        .await;
-        if let Some(err) = snap_err {
-            if err.is_transport() {
-                return Err(err.to_string());
-            }
-            return Ok(false);
-        }
-        if !snap_msg.is_empty() {
-            snap_row.message_id = Some(snap_msg);
-            let _ = put_row(host, AGREEMENT_PROGRESS, &snap_key, &snap_row).await;
-        }
+    if !ensure_snapshot_sent(host, &row.conversation, &mut snap_row, now).await? {
+        return Ok(false);
     }
-    let dec_agreed = DecisionRow {
-        kind: "decision".to_string(),
-        state: "agreed".to_string(),
-        agreement: row.quote_record_id.clone(),
-        quote_id: quote.quote_id.clone(),
-        reason: None,
-        created_at_secs: now,
-    };
-    put_row(host, LEDGER, &decision_id(&quote.quote_id), &dec_agreed).await?;
-
-    row.state = Some(AgreementState::Agreed);
-    row.state_reason = None;
-    row.cancel_reason = None;
-    row.seq = Some(1);
-    row.commitments = snap_row.snapshot.commitments;
-    row.agreed_at_secs = Some(cs.half.issued_at_secs);
-    row.quote_author = Some(cs.half);
-    row.updated_at_secs = now;
-    put_row(host, AGREEMENTS, &row.quote_record_id, row).await?;
-
-    let _ = host
-        .record_event(
-            EVENT_PROGRESS.to_string(),
-            row.conversation.clone(),
-            Some(row.quote_record_id.clone()),
-        )
-        .await;
-    Ok(true)
+    mark_decision_agreed(host, row, quote, cs.half, snap_row.snapshot.commitments, now).await
 }
 
 async fn repeat_countersigned<H: AppHost>(
@@ -457,7 +451,6 @@ async fn repeat_countersigned<H: AppHost>(
     now: u64,
 ) -> Result<bool, String> {
     let snap_key = snapshot_id(&row.quote_record_id, 1);
-    let cs_key = countersign_id(&row.quote_record_id);
     let snapshot = core_progress::open(
         row.quote_record_id.clone(),
         row.conversation.clone(),
@@ -479,78 +472,14 @@ async fn repeat_countersigned<H: AppHost>(
     };
     put_row(host, AGREEMENT_PROGRESS, &snap_key, &snap_row).await?;
 
-    if cs.message_id.is_none() {
-        let (cs_msg, _, cs_err) = send_card_and_file(
-            host,
-            &row.conversation,
-            RECORD_AGREEMENT_RECEIPT,
-            AGREEMENT_RECEIPT_VERSION,
-            &cs.half.envelope,
-            now,
-            None,
-        )
-        .await;
-        if let Some(err) = cs_err {
-            if err.is_transport() {
-                return Err(err.to_string());
-            }
-            return Ok(false);
-        }
-        if !cs_msg.is_empty() {
-            cs.message_id = Some(cs_msg);
-            let _ = put_row(host, LEDGER, &cs_key, &cs).await;
-        }
-    }
-
-    let (snap_msg, _, snap_err) = send_card_and_file(
-        host,
-        &row.conversation,
-        RECORD_AGREEMENT_PROGRESS,
-        AGREEMENT_PROGRESS_VERSION,
-        &snap_env,
-        now,
-        None,
-    )
-    .await;
-    if let Some(err) = snap_err {
-        if err.is_transport() {
-            return Err(err.to_string());
-        }
+    if !ensure_countersign_sent(host, &row.conversation, &mut cs, now).await? {
         return Ok(false);
     }
-    if !snap_msg.is_empty() {
-        snap_row.message_id = Some(snap_msg);
-        let _ = put_row(host, AGREEMENT_PROGRESS, &snap_key, &snap_row).await;
+    if !ensure_snapshot_sent(host, &row.conversation, &mut snap_row, now).await? {
+        return Ok(false);
     }
 
-    let dec_agreed = DecisionRow {
-        kind: "decision".to_string(),
-        state: "agreed".to_string(),
-        agreement: row.quote_record_id.clone(),
-        quote_id: quote.quote_id.clone(),
-        reason: None,
-        created_at_secs: now,
-    };
-    put_row(host, LEDGER, &decision_id(&quote.quote_id), &dec_agreed).await?;
-
-    row.state = Some(AgreementState::Agreed);
-    row.state_reason = None;
-    row.cancel_reason = None;
-    row.seq = Some(1);
-    row.commitments = snapshot.commitments;
-    row.agreed_at_secs = Some(cs.half.issued_at_secs);
-    row.quote_author = Some(cs.half);
-    row.updated_at_secs = now;
-    put_row(host, AGREEMENTS, &row.quote_record_id, row).await?;
-
-    let _ = host
-        .record_event(
-            EVENT_PROGRESS.to_string(),
-            row.conversation.clone(),
-            Some(row.quote_record_id.clone()),
-        )
-        .await;
-    Ok(true)
+    mark_decision_agreed(host, row, quote, cs.half, snapshot.commitments, now).await
 }
 
 async fn repeat_fresh<H: AppHost>(
@@ -562,10 +491,7 @@ async fn repeat_fresh<H: AppHost>(
     if now >= quote.terms.quote_expires_at_secs {
         return Ok(false);
     }
-    let (reserved, failed) = match reserve_author_holds(host, row, now).await? {
-        (res, None) => (res, None),
-        (res, Some(reason)) => (res, Some(reason)),
-    };
+    let (reserved, failed) = reserve_author_holds(host, row, now).await?;
     if let Some(reason) = failed {
         return handle_not_formed(host, row, quote, &reserved, reason, now).await;
     }
@@ -575,7 +501,7 @@ async fn repeat_fresh<H: AppHost>(
         reservations.confirm(host, &row.quote_record_id, cid).await?;
     }
 
-    finalize_agreed_deal(host, row, quote, &decision_id(&quote.quote_id), now).await
+    finalize_agreed_deal(host, row, quote, now).await
 }
 
 async fn repeat_path<H: AppHost>(
@@ -642,25 +568,8 @@ async fn handle_not_formed<H: AppHost>(
         let _ = reservations.release(host, &row.quote_record_id, cid).await;
     }
 
-    let (snap_msg, _, snap_err) = send_card_and_file(
-        host,
-        &row.conversation,
-        RECORD_AGREEMENT_PROGRESS,
-        AGREEMENT_PROGRESS_VERSION,
-        &snap_env,
-        now,
-        None,
-    )
-    .await;
-    if let Some(err) = snap_err {
-        if err.is_transport() {
-            return Err(err.to_string());
-        }
+    if !ensure_snapshot_sent(host, &row.conversation, &mut snap_row, now).await? {
         return Ok(false);
-    }
-    if !snap_msg.is_empty() {
-        snap_row.message_id = Some(snap_msg);
-        let _ = put_row(host, AGREEMENT_PROGRESS, &snap_key, &snap_row).await;
     }
 
     let dec_not_formed = DecisionRow {
