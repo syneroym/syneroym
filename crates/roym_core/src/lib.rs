@@ -10,6 +10,7 @@ pub mod booking;
 pub mod card;
 pub mod clock;
 pub mod conversation;
+pub mod deal;
 pub mod directory;
 pub mod dual_build;
 pub mod envelope;
