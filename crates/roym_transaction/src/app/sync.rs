@@ -295,7 +295,7 @@ async fn dispatch_known_card<H: AppHost>(
     }
 }
 
-async fn file_incoming_card<H: AppHost>(
+pub(crate) async fn file_incoming_card<H: AppHost>(
     host: &H,
     m: &Value,
     conversation: &str,

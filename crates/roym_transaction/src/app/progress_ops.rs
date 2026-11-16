@@ -189,7 +189,14 @@ pub(crate) async fn progress<H: AppHost>(
     host: &H,
     input: AgreementRef,
 ) -> Reply<AgreementProgressOutput> {
-    let now = clock::now_secs();
+    progress_at(host, input, clock::now_secs()).await
+}
+
+pub(crate) async fn progress_at<H: AppHost>(
+    host: &H,
+    input: AgreementRef,
+    now: u64,
+) -> Reply<AgreementProgressOutput> {
     let mut agr: AgreementRow = match get_row(host, AGREEMENTS, &input.agreement).await {
         Ok(Some(a)) => a,
         Ok(None) => return Err(Response::invalid_params("no-such-agreement")),

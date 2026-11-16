@@ -79,7 +79,14 @@ pub(crate) async fn sign<H: AppHost>(
     host: &H,
     input: FulfilmentSignInput,
 ) -> Reply<HalfRecordedOutput> {
-    let now = clock::now_secs();
+    sign_at(host, input, clock::now_secs()).await
+}
+
+pub(crate) async fn sign_at<H: AppHost>(
+    host: &H,
+    input: FulfilmentSignInput,
+    now: u64,
+) -> Reply<HalfRecordedOutput> {
     let (principal, owner) = resolve_principal_and_owner(host, now).await?;
 
     let agr: AgreementRow = match get_row(host, AGREEMENTS, &input.agreement).await {
