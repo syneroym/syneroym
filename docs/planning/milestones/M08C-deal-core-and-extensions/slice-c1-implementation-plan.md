@@ -179,8 +179,8 @@ Rejected cuts:
 C1a:
 
 - Bob gets an enquiry from Alice and writes a quote in the Hub, as today.
-  He fills what he will do, the price, the payee, and what Alice gives
-  (filled in advance or from scope).
+  He fills what he will do, the price, the payee, and what he gives
+  (filled in advance from the scope).
 - Alice sees the quote as a short list: "Bob gives: one lesson" and "You
   give: ₹100", each with its value.
 - Alice presses "Accept". Both Hubs show the signed agreement with the same
@@ -221,9 +221,12 @@ in the change docs' `## Deviations`.
 #### Q1. Split C1 into C1a and C1b?
 
 **Owner answer: (a), 2026-11-16.** The status.md row is split into C1a and C1b,
-and task.md's C1 section names the two parts. C1a includes Recovery's check 1
-(a stored snapshot 1 is reused and never decided again) to handle repeats
-safely on the re-read path before the sweep is built in C1b.
+and task.md's C1 section names the two parts.
+
+*Note on Recovery check 1:* Added by plan review fixes (P3, P4), 2026-11-16;
+told to the owner. C1a includes Recovery's check 1 (a stored snapshot 1 is
+reused and never decided again) to handle repeats safely on the re-read path
+before the sweep is built in C1b.
 
 Task.md asks the plan to split C1 only if each part leaves a working
 system.
@@ -310,15 +313,18 @@ picks one version for the whole record.
 - **(a) Every `LocalText` in one record has the same `lang` and the same set
   of translation languages.** Recommended. Checked with AG-39 by the same
   function (`check_record_text`). The Hub writes all fields in one
-  language anyway. The currency commitment's description is built from
-  language-neutral parts (`<ISO> <amount>`, for example `INR 100.00`) with
-  no localized catalog sentence in the signed record; role labels ("You give")
-  are rendered at view time from the reader's catalog, so quotes in any of
-  the Hub's 13 languages share the record's one original language without
-  missing catalog entries. The agreements doc's AG-39 gets this refinement.
+  language anyway. The agreements doc's AG-39 gets this refinement.
 - (b) Leave the original languages free, and define `viewed_lang` against
   the quote's `scope`. A person who reads a mixed record has no single
   "language they read".
+
+*Note on language-neutral currency descriptions:* Added by plan review fixes
+(P17), 2026-11-16; told to the owner. The currency commitment's description is
+built from language-neutral parts (`<ISO> <amount>`, for example `INR 100.00`)
+with no localized catalog sentence in the signed record; role labels ("You give")
+are rendered at view time from the reader's catalog, so quotes in any of the
+Hub's 13 languages share the record's one original language without missing
+catalog entries.
 
 #### Q5. The restore rules rest on conversation history that a full restore also rolls back
 
@@ -670,8 +676,10 @@ differs from the doc's text (marked "deviation").
   expiry. `release` reads the seat row, then deletes both seat and hold rows
   in one `batch_mutate`. Release points: the writer releases holds on
   `agreement.cancel`; the counterparty releases holds when filing a
-  `not-formed` or `cancelled` snapshot, or when the quote expires. C3b swaps
-  `SeatLedger` for calls to the scheduling service. C1b's tests use a stub
+  `not-formed` or `cancelled` snapshot, or when the quote expires (the
+  counterparty checks the expiry of its own accepted, not-countersigned quotes
+  on each `transaction.sync` of the conversation and in `agreement.get`, and
+  releases then). C3b swaps `SeatLedger` for calls to the scheduling service. C1b's tests use a stub
   that refuses `confirm`.
 - **D-C1-6. `quote.set` input.** `{ enquiry_record_id, quote_id?,
   expires_in_secs, terms: DealTermsInput }`. `DealTermsInput` is `DealTerms`
@@ -739,21 +747,25 @@ differs from the doc's text (marked "deviation").
   hand-signed half delivered as a peer card, not a hook that skips the
   method check.
 - **D-C1-16. Ordered decision in C1a.** The writer runs the decision in order:
-  1. Validate counterparty half: check signer and expiry before creating the
-     fence; if invalid, return as today (no snapshot).
-  2. Create fence `decision:<quote_id>` (`deciding`). If the row exists:
-     - Same agreement: repeat path. If `snapshot:<agreement>:1` is already
-       stored, reuse it (Recovery check 1; never run reserve/confirm again).
+  1. Look up `decision:<quote_id>` first. If the row already exists:
+     - Same agreement: repeat path with no step-1 checks. If
+       `snapshot:<agreement>:1` is already stored, reuse it (Recovery check 1;
+       never run reserve/confirm again). If `countersign:<agreement>` is stored,
+       resend stored half and snapshot.
      - Other agreement: leave half filed with no countersign and no snapshot
        (backlog row for C1b).
+  2. For a new decision, run step-1 validation: check signer and expiry before
+     creating the fence; if invalid, return as today (no snapshot). Then create
+     the fence row `decision:<quote_id>` (`deciding`).
   3. Reserve holds through `Reservations`. On failure: store snapshot 1
      `not-formed`, release holds, send cards, put decision row `not-formed`.
   4. Confirm holds.
   5. Store `countersign:<agreement>` and `snapshot:<agreement>:1` (`agreed`).
   6. Send both cards. A `conversation.send` error returns `Err` from
-     `decide::run` so the decision row is not put `agreed`. The early return
-     on a stored author half is replaced by the repeat branch (resend stored
-     half and snapshot).
+     `decide::run` only for errors that can pass (a transport error), so sync
+     retries and the cursor is not saved. For a lasting refusal (blocked peer or
+     limit reached), keep the decision row `deciding`, file the card, and let
+     C1b's sweep send it later.
   7. Put decision row `agreed` last.
   C1a has no recovery sweep and no step-1 refusal snapshots; C1b adds them
   around this code.
@@ -1050,7 +1062,8 @@ Test: full `cargo nextest run --workspace`, `npm test` in the Hub,
   answers `reserve-failed` with the reason; signs and sends the half.
   Delete `prepare_author_booking`. The counterparty releases its seat holds
   when filing a `not-formed` or `cancelled` snapshot, or when the quote
-  expires (release points, D-C1-5). `maybe_countersign` becomes
+  expires (checked on each `transaction.sync` of the conversation and in
+  `agreement.get`; D-C1-5). `maybe_countersign` becomes
   `decide::run(host, row, quote, now)` in a new `app/decide.rs`, the ordered
   steps of D-C1-16.
 - `booking_ops.rs` → `progress_ops.rs`: `transition_at(host, agreement,
@@ -1084,6 +1097,8 @@ Test: full `cargo nextest run --workspace`, `npm test` in the Hub,
   | `payreq:<agreement>:<commitment_id>` | Valid agreement and currency commitment id | Kept |
   | `ack:<agreement>:<commitment_id>:<role>:<ver>` | Valid signature against commitment role | Kept |
   | `fulfil:<agreement>:<commitment_id>:<role>` | Valid signature against commitment role | Kept |
+  | `refused:<half record_id>` | Valid quote id and refusal reason code (C1b) | Kept |
+  | `decline:<deal>` | Valid signature and deal id (C1b) | Kept |
   | `agreement_progress` | Valid signature from writer bound to quote signer | Kept |
 
 - `thread.rs`: the thread carries `agreement-progress` cards; fills
@@ -1236,7 +1251,8 @@ Branch `feat/m08c-c1b-single-writer` from `main` after C1a merges.
   4. Refuse when this node holds an unrefused counterparty acceptance half
      for any version of that quote id.
   A refused decline is kept as a refused card. On a valid decline, mark the
-  deal or enquiry `declined`. Delete `quote_ops::decline`
+  deal or enquiry `declined`. Add `decline:<deal>` to the backup import
+  validation table (step 5a, P25). Delete `quote_ops::decline`
   (`quote_ops.rs:508`) and the "new version clears a decline" code
   (`store_received_quote`, `:605` to `:615`).
 - Hub: `openDeclineDialog` (`messages.ts:724` to `:757`) calls
@@ -1273,11 +1289,12 @@ Branch `feat/m08c-c1b-single-writer` from `main` after C1a merges.
 #### Step 3 — The writer's refusals
 
 In `decide::run`: if a `decision:` or `countersign:` row already exists for
-this agreement, skip step 1 checks and finish the decision (Recovery check 1).
-Otherwise, run the checks of the doc's step 1. A refusal stores
+this agreement, skip step 1 checks and finish the decision with Recovery's
+three checks. Otherwise, run the checks of the doc's step 1. A refusal stores
 `snapshot:<version record_id>:1` (`not-formed`, the code in `state_reason`),
 sends it, and creates `refused:<half record_id>` = `{ quote_id, code,
-at_secs }` last. Step 2's fence that finds another agreement refuses with
+at_secs }` last (and adds `refused:` to the backup import validation table,
+step 5a, P25). Step 2's fence that finds another agreement refuses with
 `quote-already-agreed` the same way. The counterparty files a refusal snapshot
 for that version only: it releases the seat holds it took for that version
 (release point, D-C1-5), and the Hub shows the refusal on that version's card.
@@ -1377,7 +1394,9 @@ C1a (each file under 800 lines):
 - `decide.rs`: `writer_countersigns_in_sync_and_sends_snapshot_one`;
   `losing_the_last_seat_ends_not_formed` (AG-14, one node, two quotes);
   `repeat_branch_reuses_stored_snapshot_one` (P3);
-  `send_error_stops_decision_row_and_retries_on_next_sync` (P16);
+  `send_error_stops_decision_row_and_retries_on_next_sync` (P16, P23:
+  transport error returns Err and retries; lasting send error keeps decision
+  row deciding and files card);
   `release_both_seat_and_hold_in_one_batch` (P21).
 - `time.rs`: `unsettled_commitment_ends_unconfirmed_after_its_track_end`,
   with and without a giver's half (AG-7); `tick_before_the_end_changes_nothing`;
@@ -1526,7 +1545,7 @@ words (`quote-superseded`, `quote-expired`, `progress-fork`).
 | "Hub transaction action panel and Playwright transaction spec (cases 33-39) are not built" (`:654`) | C1b: quote accept and decline are built; the row keeps booking steps, payments and fulfilment (C6 shrinks it further). |
 | "`RECORD_TYPES` is not read by any verifier" (`:656`) | C1a and C1b update the type list in the row. |
 | "Two Roym outputs carry another node's card data as an untyped `Value`" (`:532`) | C1a: `PeerStep` is gone; `agreement.progress` returns typed snapshots. Update the row's file names. |
-| New: "The writer's decision has no crash recovery" | C1a adds it, target C1b; C1b resolves it. |
+| New: "The writer's decision has no crash recovery" | C1a adds it (includes lasting send error leaving decision row deciding while filing card, sent later by C1b sweep; P23), target C1b; C1b resolves it. |
 | New: "A second acceptance of an older quote version waits with no answer" | C1a adds it, target C1b; C1b resolves it. |
 | New: "The Hub shows 'Accept' on every version of a quote" | C1a adds it, target C1b; C1b resolves it. |
 | New: "`quote.set` can revise an accepted quote" | C1a adds it, target C1b; C1b resolves it. |
@@ -1556,7 +1575,7 @@ change docs' close-out lists.
   `booking-progress`), Cards (`:1203` to `:1217`, `:1217` names
   `quote.decline`, C1b), the Booking State Machine (`:1219` to `:1269`), the
   flow diagram (`:1271` to `:1324`), `:3127` ("seven card types").
-- `docs/traceability-matrix.md`: update `request` and `booking` rows.
+- `docs/planning/traceability-matrix.md`: update `request` and `booking` rows.
 - `docs/TERMINOLOGY.md`: enquiry, commitment, declared value, progress
   snapshot (`:64` to `:67`; `:67` says the code names the parties, not giver
   and receiver, which C1a makes false).
