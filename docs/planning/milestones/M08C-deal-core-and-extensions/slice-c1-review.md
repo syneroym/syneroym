@@ -95,7 +95,7 @@ The owner accepted Q1 to Q6 on 2026-11-16. This is only the reviewer's view.
 
 ### Findings
 
-- [ ] **P1 — major.** *Where:* Q2, D-C1-3, step 3 (plan lines 248 to 257,
+- [x] **P1 — major.** *Where:* Q2, D-C1-3, step 3 (plan lines 248 to 257,
   608 to 612, 846 to 873).
   *Problem:* The test host cannot be built as the plan describes.
   (1) Today's `TestHost` has `sign_record`, `create`, `delete`,
@@ -136,9 +136,9 @@ The owner accepted Q1 to Q6 on 2026-11-16. This is only the reviewer's view.
   write until `restart()`. Add `tokio` (macros, rt) to the transaction
   crate's dev-dependencies. Update Q2's text, D-C1-3 and step 3; no owner
   decision changes.
-  *Status:* Open.
+  *Status:* Fixed (3462e4eb).
 
-- [ ] **P2 — major.** *Where:* section 2.2 point 4; section 1 "Each part
+- [x] **P2 — major.** *Where:* section 2.2 point 4; section 1 "Each part
   leaves a working system"; section 8 row "The writer's decision has no
   crash recovery"; section 7.2 `recover.rs`.
   *Problem:* The fact is wrong. Today the receipt card row is written after
@@ -168,9 +168,9 @@ The owner accepted Q1 to Q6 on 2026-11-16. This is only the reviewer's view.
   test first checks that the card row is stored and the sync cursor has
   moved past it, and then runs a sync with no new card, so only the sweep
   can finish the decision.
-  *Status:* Open.
+  *Status:* Fixed (3462e4eb).
 
-- [ ] **P3 — major.** *Where:* D-C1-16; C1b step 3 and step 4; agreements
+- [x] **P3 — major.** *Where:* D-C1-16; C1b step 3 and step 4; agreements
   doc "The writer's decision" step 2 and "Recovery" (`change.md:597`,
   `:607` to `:613`). Reopens agreements review P35.
   *Problem:* Step 2 says: "If the row exists with the same agreement, this
@@ -194,9 +194,9 @@ The owner accepted Q1 to Q6 on 2026-11-16. This is only the reviewer's view.
   used and never decided again), because C1a already has the re-read path.
   Add an AG-14 test: crash after the `not-formed` snapshot is stored, then
   deliver the same half again (not the sweep), with the slot free.
-  *Status:* Open.
+  *Status:* Fixed (3462e4eb).
 
-- [ ] **P4 — major.** *Where:* D-C1-16 ("C1a has no … step-1 refusal
+- [x] **P4 — major.** *Where:* D-C1-16 ("C1a has no … step-1 refusal
   snapshots"), section 4 behaviour changes 1 to 9, section 8.
   *Problem:* C1a does not say what its decision does in the cases that C1b
   closes, and C1a still allows them: the Hub shows "Accept" on every
@@ -221,9 +221,9 @@ The owner accepted Q1 to Q6 on 2026-11-16. This is only the reviewer's view.
   (target C1b) for: a second acceptance of a quote waits with no answer; the
   Hub shows "Accept" on every version; `quote.set` can revise an accepted
   quote; the decline is still local and unsigned. C1b deletes them.
-  *Status:* Open.
+  *Status:* Fixed (3462e4eb).
 
-- [ ] **P5 — major (security).** *Where:* C1b step 1 ("Sync files a
+- [x] **P5 — major (security).** *Where:* C1b step 1 ("Sync files a
   `deal-decline` card from the other party and marks the deal or enquiry
   `declined`").
   *Problem:* The plan names only `verify_deal_decline` (signature, subject).
@@ -245,9 +245,9 @@ The owner accepted Q1 to Q6 on 2026-11-16. This is only the reviewer's view.
   refuse when this node holds the counterparty's acceptance half for any
   version of that quote id. A refused decline is kept as a refused card,
   like other refused cards.
-  *Status:* Open.
+  *Status:* Fixed (3462e4eb).
 
-- [ ] **P6 — major.** *Where:* D-C1-7 ("filled in advance from the first
+- [x] **P6 — major.** *Where:* D-C1-7 ("filled in advance from the first
   line of the enquiry"); step 5b; story 40.
   *Problem:* The quote form signs every `LocalText` with the form's
   language (Q4: one `lang` per record). The enquiry may be in another
@@ -263,9 +263,9 @@ The owner accepted Q1 to Q6 on 2026-11-16. This is only the reviewer's view.
   language as the form), or leave it empty and let `sendQuote` in
   `hub-helpers.ts` fill it. Add a `quote_terms.test.ts` case that the
   pre-fill never comes from text in another language.
-  *Status:* Open.
+  *Status:* Fixed (3462e4eb).
 
-- [ ] **P7 — minor.** *Where:* step 4 (Playwright list), section 7.6,
+- [x] **P7 — minor.** *Where:* step 4 (Playwright list), section 7.6,
   D-C1-12.
   *Problem:* Missed callers of the request card. Story 40 reads
   `.card-request` (`demo/40-roym-languages.spec.ts:208`),
@@ -277,9 +277,9 @@ The owner accepted Q1 to Q6 on 2026-11-16. This is only the reviewer's view.
   *Fix:* Add these lines to step 4 and to the 7.6 table. Add
   `.request-description` and `.quote-request-button` to D-C1-12's list of
   classes that stay.
-  *Status:* Open.
+  *Status:* Fixed (3462e4eb).
 
-- [ ] **P8 — minor.** *Where:* section 9 (living docs).
+- [x] **P8 — minor.** *Where:* section 9 (living docs).
   *Problem:* Statements that C1a makes false are missing from the list:
   `docs/system-requirements-spec.md:356`, `:407`, `:447` (`AgreedTerms`,
   and a link to `transaction.rs:116` that is already stale);
@@ -289,9 +289,9 @@ The owner accepted Q1 to Q6 on 2026-11-16. This is only the reviewer's view.
   C1a.
   *Fix:* Add these to section 9. Also search the traceability matrix for
   `request` and `booking` rows.
-  *Status:* Open.
+  *Status:* Fixed (3462e4eb).
 
-- [ ] **P9 — minor.** *Where:* step 3, section 7.8.
+- [x] **P9 — minor.** *Where:* step 3, section 7.8.
   *Problem:* Size facts that the plan misses. (1)
   `dual_build_parity/fixtures.rs` is 799 lines; it is not in
   `xtask/oversized-test-files.txt`, so its cap is 800, and step 5a grows
@@ -305,9 +305,9 @@ The owner accepted Q1 to Q6 on 2026-11-16. This is only the reviewer's view.
   *Fix:* Name `fixtures.rs` in 7.8 and move new deal fixtures to
   `deal_fixtures.rs` (188 lines). Plan the host as a file plus sibling
   folder from the start. Add the two-sided ratchet note.
-  *Status:* Open.
+  *Status:* Fixed (3462e4eb).
 
-- [ ] **P10 — minor.** *Where:* D-C1-5, step 5a (`agreement.cancel`), C1b
+- [x] **P10 — minor.** *Where:* D-C1-5, step 5a (`agreement.cancel`), C1b
   step 3.
   *Problem:* The plan says when the writer releases its own holds only for
   a failed reserve. It does not say when (a) the writer releases on
@@ -322,9 +322,9 @@ The owner accepted Q1 to Q6 on 2026-11-16. This is only the reviewer's view.
   fails with `slot-taken`.
   *Fix:* List the release points in step 5a for both nodes, and add one
   service test per point (cancel, `not-formed`, expiry).
-  *Status:* Open.
+  *Status:* Fixed (3462e4eb).
 
-- [ ] **P11 — minor.** *Where:* C1b step 1 (decline "refused once the
+- [x] **P11 — minor.** *Where:* C1b step 1 (decline "refused once the
   counterparty's half exists"), C1b step 2 (`quote-already-accepted` "when
   `AGREEMENTS` holds a counterparty half for any version").
   *Problem:* A half that the writer refused with `quote-superseded` is still
@@ -339,9 +339,9 @@ The owner accepted Q1 to Q6 on 2026-11-16. This is only the reviewer's view.
   writer; no refusal snapshot on the counterparty). Refuse
   `agreement.accept` on an ended deal with `quote-ended`. Write the reading
   as a row in the agreements doc's `## Deviations`.
-  *Status:* Open.
+  *Status:* Fixed (3462e4eb).
 
-- [ ] **P12 — minor.** *Where:* C1b step 5, D-C1-8, C1b step 4.
+- [x] **P12 — minor.** *Where:* C1b step 5, D-C1-8, C1b step 4.
   *Problem:* (1) "read through `conversation.changes` from 0 … only when no
   stored row exists for the next `seq`" is always true, because the next
   `seq` never has a row. As written, every transition scans the whole
@@ -357,9 +357,9 @@ The owner accepted Q1 to Q6 on 2026-11-16. This is only the reviewer's view.
   `deciding` row with no `countersign:` row. (2) Store a fork under
   `fork:<agreement>:<seq>:<record_id>`. (3) Add `quote_id` to the ledger
   indexes.
-  *Status:* Open.
+  *Status:* Fixed (3462e4eb).
 
-- [ ] **P13 — minor.** *Where:* Q5 option (a); the Q5 row in the agreements
+- [x] **P13 — minor.** *Where:* Q5 option (a); the Q5 row in the agreements
   doc's `## Deviations`.
   *Problem:* "The counterparty's node keeps the first record it filed and
   shows `progress-fork`" is true for snapshots only. A second, different
@@ -373,9 +373,9 @@ The owner accepted Q1 to Q6 on 2026-11-16. This is only the reviewer's view.
   *Fix:* Correct the deviation text. Optionally show a warning when a
   second, different half for the same role arrives (no new state, the same
   as `progress-fork`). The owner's choice of (a) does not change.
-  *Status:* Open.
+  *Status:* Fixed (3462e4eb).
 
-- [ ] **P14 — minor.** *Where:* step 5a (`backup.rs`, `backup/sections.rs`),
+- [x] **P14 — minor.** *Where:* step 5a (`backup.rs`, `backup/sections.rs`),
   C1b step 5, AG-42.
   *Problem:* The import rules for the new rows are not given. Today import
   rebuilds bookings from `step:` rows (`backup/sections.rs:260`). After C1a
@@ -389,9 +389,9 @@ The owner accepted Q1 to Q6 on 2026-11-16. This is only the reviewer's view.
   *Fix:* Add a table to step 5a: per row kind, the check on import (for
   example a `countersign:` half verifies and names a held quote; a snapshot
   verifies and is bound to the quote's signer) and what is kept.
-  *Status:* Open.
+  *Status:* Fixed (3462e4eb).
 
-- [ ] **P15 — minor.** *Where:* plan lines 71 to 74, 80 to 90, 179 to 180,
+- [x] **P15 — minor.** *Where:* plan lines 71 to 74, 80 to 90, 179 to 180,
   206; task.md line 5 and the C1 "Change docs" line; section 3 VX-12.
   *Problem:* Small inconsistencies. (1) Section 0 says "this plan writes
   nothing into [roym-extensions]"; "Change docs" says the deviation is
@@ -409,7 +409,7 @@ The owner accepted Q1 to Q6 on 2026-11-16. This is only the reviewer's view.
   *Fix:* Fix the five texts. For the CLI, use one shape, for example
   `transaction agreement get|cancel|progress`, in step 5a, the developer
   bullet, `cli_args.rs` and `docs/demo/demo.md`.
-  *Status:* Open.
+  *Status:* Fixed (3462e4eb).
 
 ## Plan review round 2 — Claude Sonnet 5.5 (Claude Code), 2026-11-16
 
@@ -519,7 +519,7 @@ the Hub does offer 13 record languages, which matters only for P17).
 
 ### New findings
 
-- [ ] **P16 — major.** *Where:* D-C1-16 ("send both cards; put the decision
+- [x] **P16 — major.** *Where:* D-C1-16 ("send both cards; put the decision
   row last"), step 5a (`maybe_countersign` becomes `decide::run`),
   `crates/roym_transaction/src/app/agreement_ops.rs:465` to `:468` and
   `:531` to `:539`.
@@ -542,9 +542,9 @@ the Hub does offer 13 record languages, which matters only for P17).
   the row). Add a service test in C1a: the first `conversation.send` fails,
   one more sync sends the same stored half and snapshot, and the decision row
   is `agreed` only after that.
-  *Status:* Open.
+  *Status:* Fixed (3462e4eb).
 
-- [ ] **P17 — major.** *Where:* D-C1-7 ("the currency commitment's
+- [x] **P17 — major.** *Where:* D-C1-7 ("the currency commitment's
   description is the catalog text `quote-payment-description` in the quote's
   language"), Q4, step 5b.
   *Problem:* The Hub offers 13 record languages
@@ -565,9 +565,9 @@ the Hub does offer 13 record languages, which matters only for P17).
   catalog sentence. The role words ("You give") come from the reader's catalog
   when the card is drawn, not from the signed text. Add a `quote_terms.test.ts`
   case for a quote in a language with no catalog.
-  *Status:* Open.
+  *Status:* Fixed (3462e4eb).
 
-- [ ] **P18 — minor.** *Where:* Q2, D-C1-3 (`set_now`), step 3, section 7.2
+- [x] **P18 — minor.** *Where:* Q2, D-C1-3 (`set_now`), step 3, section 7.2
   (tests with chosen times).
   *Problem:* A pinned signing clock needs a certificate that is valid at that
   time, and the plan does not say how the host gets one. `DelegationCertificate::issue`
@@ -585,9 +585,9 @@ the Hub does offer 13 record languages, which matters only for P17).
   *Fix:* In step 3: the fixture mints the certificate with the longest lifetime
   the install check allows (5 years, `signing.rs:46`) and installs it; every
   test clock starts at or after the real "now" and only moves forward.
-  *Status:* Open.
+  *Status:* Fixed (3462e4eb).
 
-- [ ] **P19 — minor.** *Where:* C1b step 3 ("In `decide::run`, before step 2
+- [x] **P19 — minor.** *Where:* C1b step 3 ("In `decide::run`, before step 2
   of D-C1-16: the checks of the doc's step 1").
   *Problem:* Step 1's expiry and version checks run on every entry, also on
   a repeat of a half whose decision is already made. The doc's Recovery says
@@ -608,9 +608,9 @@ the Hub does offer 13 record languages, which matters only for P17).
   decision (this is also P3's fix). Add a test: crash after the countersign is
   stored, move the time past the expiry, sync, and check there is no `refused:`
   row.
-  *Status:* Open.
+  *Status:* Fixed (3462e4eb).
 
-- [ ] **P20 — minor.** *Where:* step 5b, section 7.5, Q4.
+- [x] **P20 — minor.** *Where:* step 5b, section 7.5, Q4.
   *Problem:* The Hub reads quote, receipt and enquiry text through
   `crates/roym_web/ui/src/records/record_text.ts` (`TextVersion`,
   `textFields`, `bestVersion`; used by `quote.ts`, `request.ts`,
@@ -631,9 +631,9 @@ the Hub does offer 13 record languages, which matters only for P17).
   commitment's description). Split the call into groups of 8 texts in
   `translateTexts`, or state that a larger record shows no translate action.
   `web` Rust code stays unchanged.
-  *Status:* Open.
+  *Status:* Fixed (3462e4eb).
 
-- [ ] **P21 — minor.** *Where:* D-C1-5 (`release`: "deletes the seat row …,
+- [x] **P21 — minor.** *Where:* D-C1-5 (`release`: "deletes the seat row …,
   then the hold row"; `reserve`: "a `hold:` row that already exists means
   already held").
   *Problem:* Two deletes are two writes. A crash between them leaves a `hold:`
@@ -647,9 +647,9 @@ the Hub does offer 13 record languages, which matters only for P17).
   `batch_mutate` (it has `delete`, `data-layer.wit:74` to `:78`). Also let
   `reserve` check that the seat row exists when it finds a hold row. One crash
   test between the two deletes.
-  *Status:* Open.
+  *Status:* Fixed (3462e4eb).
 
-- [ ] **P22 — minor.** *Where:* step 5a (`thread.rs`: "the thread carries
+- [x] **P22 — minor.** *Where:* step 5a (`thread.rs`: "the thread carries
   `agreement-progress` cards"), C1b step 2 (Hub shows "Accept" only when the
   deal is not `agreed`, `declined`, `expired` or `not-formed`).
   *Problem:* `transaction.thread` adds fields to the card rows on the server
@@ -671,7 +671,7 @@ the Hub does offer 13 record languages, which matters only for P17).
   to the quote card rows in `thread` (computed on the server from the pointer,
   the agreement row, the snapshots and the clock) and keep the Hub's choice a
   plain read of that field, with a unit test.
-  *Status:* Open.
+  *Status:* Fixed (3462e4eb).
 
 **Counts.** New findings: 7 (0 blocker, 2 major, 5 minor). Round 1 items: 13
 agree (P3 to P15), 2 agree in part (P1, P2), 0 disagree.
@@ -708,5 +708,5 @@ What the fix session uses where the rounds differ:
   small change to Q1's "no crash recovery yet". The owner should know; it
   does not change the cut.
 
-**Open after both rounds: 22 (0 blocker, 8 major, 14 minor).** P1 to P22
-are all Open.
+**Open after both rounds: 0 (0 blocker, 0 major, 0 minor).** All 22 items
+(P1 to P22) are Fixed (3462e4eb).
