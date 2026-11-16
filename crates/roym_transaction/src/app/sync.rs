@@ -1,6 +1,8 @@
 //! Transaction synchronization across conversation history.
 
 pub(crate) mod receipts;
+#[cfg(test)]
+mod tests;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};

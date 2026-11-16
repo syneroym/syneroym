@@ -227,7 +227,7 @@ async fn apply_newer_snapshot<H: AppHost>(
     Ok(())
 }
 
-async fn check_progress_fork<H: AppHost>(
+pub(crate) async fn check_progress_fork<H: AppHost>(
     host: &H,
     p: &progress::AgreementProgressPayload,
     snap_key: &str,
@@ -250,7 +250,7 @@ async fn check_progress_fork<H: AppHost>(
             message_id: None,
             stored_at_secs: now,
         };
-        let _ = put_row(host, AGREEMENT_PROGRESS, &fork_key, &snap_row).await;
+        put_row(host, AGREEMENT_PROGRESS, &fork_key, &snap_row).await?;
         return Ok(Some("progress-fork".to_string()));
     }
     Ok(None)
