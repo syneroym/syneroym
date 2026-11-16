@@ -7,6 +7,9 @@ license.workspace = true
 [lints]
 workspace = true
 
+[features]
+test-host = []
+
 [dependencies]
 syneroym-app-host.workspace = true
 syneroym-signed-record.workspace = true

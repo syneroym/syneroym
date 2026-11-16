@@ -12,6 +12,9 @@ pub mod request_ops;
 pub mod sync;
 pub mod thread;
 
+#[cfg(test)]
+pub mod tests;
+
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use syneroym_app_host::{

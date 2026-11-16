@@ -37,6 +37,12 @@ syneroym-wit-interfaces = { path = "../wit_interfaces", default-features = false
 syneroym-rpc.workspace = true
 async-trait.workspace = true
 
+[dev-dependencies]
+syneroym-roym-core = { workspace = true, features = ["test-host"] }
+syneroym-identity.workspace = true
+tokio = { workspace = true, features = ["macros", "rt"] }
+z32.workspace = true
+
 [package.metadata.component.target.dependencies]
 "syneroym:data-layer" = { path = "wit/deps/data-layer" }
 "syneroym:blob-store" = { path = "wit/deps/blob-store" }
