@@ -807,3 +807,51 @@ in `crates/app_host/src/lib.rs:239`.
   *Status:* Fixed (e2a3898b).
 
 **Open after round 3: 0 (0 blocker, 0 major, 0 minor).** All 25 items (P1 to P25) are Fixed (e2a3898b).
+
+## Plan review round 4 (fixes check) — Claude Opus 5.5 (Claude Code), 2026-11-16
+
+Checked the fix commit `e2a3898b` (branch at `2f709a76`, which also merges
+`main` with the C0 ADR) against the seven items left open in round 3.
+
+**Summary:** all seven confirmed fixed; one new minor item. **1 open: 0
+blocker, 0 major, 1 minor.**
+
+- **P3.** Confirmed. The agreements doc's step 2 now says a repeat of a
+  `deciding` row runs Recovery's three checks, AG-14 has the case of the
+  same half delivered again after the `not-formed` snapshot is stored, and
+  agreements review P35 is closed.
+- **P8.** Confirmed: `docs/planning/traceability-matrix.md`.
+- **P15.** Confirmed: "what he gives (filled in advance from the scope)".
+- **P19.** Confirmed: D-C1-16 looks up `decision:<quote_id>` before step 1,
+  and C1b step 3 names Recovery's three checks. See P26 for one case the new
+  order leaves open.
+- **P23.** Confirmed: only a transport error returns `Err`; a lasting
+  refusal keeps the row `deciding` and files the card, with the backlog row.
+- **P24.** Confirmed: the owner's answer lines are as given, with the
+  additions in dated notes.
+- **P25.** Confirmed: `refused:` and `decline:` are in the import table,
+  and the counterparty checks its own expiry on each sync and in
+  `agreement.get`.
+
+### New findings
+
+- [ ] **P26 — minor.** *Where:* D-C1-16 steps 1 and 2.
+  *Problem:* Two small cases in the new order. (1) The repeat path skips
+  step 1's checks. When neither `snapshot:<agreement>:1` nor
+  `countersign:<agreement>` is stored (an error after the fence), it goes on
+  to reserve, confirm and countersign with no expiry check. The agreements
+  doc's step 2 says a repeat runs Recovery's three checks, and check 2 is
+  the expiry. (2) Step 1 looks the row up and step 2 creates it. Two syncs
+  at the same time can both find no row; the second `create` then finds the
+  row. The plan does not say that this result goes to the repeat path.
+  *Failure case:* (1) the fence is created, a transport error returns, and
+  the next sync comes after the quote's expiry; C1a countersigns after the
+  expiry, which AG-43 forbids. (2) The second sync treats the existing row
+  as an error or as another agreement.
+  *Fix:* (1) In C1a's repeat path, with no stored snapshot 1 and no stored
+  countersign, check the expiry; past it, do not countersign and leave the
+  row `deciding` (C1a has no refusal snapshot; C1b's sweep ends it
+  `not-formed` with `quote-expired`). Add a C1a test for it. (2) Say that a
+  `create` that finds the row with the same agreement goes to the repeat
+  path, and with another agreement to the "other agreement" branch.
+  *Status:* Open.
