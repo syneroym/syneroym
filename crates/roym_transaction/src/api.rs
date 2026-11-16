@@ -3,7 +3,6 @@
 use syneroym_app_host::AppHost;
 use syneroym_roym_core::{
     backup::{Bundle, ImportInput},
-    booking::BookingProgressPayload,
     fulfilment::FulfilmentReceiptPayload,
     method::{EnvelopeHistoryOutput, MethodInfo, NoParams, PingOutput, Reply, VerifyInput},
     services,
@@ -15,8 +14,8 @@ use syneroym_roym_core::{
 };
 
 use crate::app::{
-    AgreementRef, HalfRecordedOutput, ListInput, agreement_ops, backup, booking_ops, enquiry_ops,
-    fulfilment_ops, payment_ops, quote_ops, sync, thread,
+    AgreementRef, HalfRecordedOutput, ListInput, agreement_ops, backup, enquiry_ops,
+    fulfilment_ops, payment_ops, progress_ops, quote_ops, sync, thread,
 };
 
 async fn ping<H: AppHost>(_host: &H, _: NoParams) -> Reply<PingOutput> {
@@ -28,7 +27,6 @@ syneroym_roym_core::service_methods! {
     "quote.ping": ping [NoParams => PingOutput],
     "agreement.ping": ping [NoParams => PingOutput],
     "receipt.ping": ping [NoParams => PingOutput],
-    "booking.ping": ping [NoParams => PingOutput],
     "payment.ping": ping [NoParams => PingOutput],
     "fulfilment.ping": ping [NoParams => PingOutput],
 
@@ -48,22 +46,17 @@ syneroym_roym_core::service_methods! {
     "agreement.accept": agreement_ops::accept [agreement_ops::AgreementAcceptInput => agreement_ops::AgreementAcceptOutput],
     "agreement.get": agreement_ops::get [agreement_ops::QuoteRecordInput => Option<agreement_ops::AgreementView>],
     "agreement.list": agreement_ops::list [agreement_ops::AgreementListInput => agreement_ops::AgreementListOutput],
+    "agreement.cancel": progress_ops::cancel [progress_ops::AgreementCancelInput => agreement_ops::AgreementView],
+    "agreement.progress": progress_ops::progress [AgreementRef => progress_ops::AgreementProgressOutput],
     "agreement.verify": agreement_ops::verify [VerifyInput => RecordVerdict<AgreementReceiptPayload>],
-
-    "booking.get": booking_ops::get [AgreementRef => booking_ops::BookingView],
-    "booking.list": booking_ops::list [booking_ops::BookingListInput => booking_ops::BookingListOutput],
-    "booking.start": booking_ops::start [AgreementRef => booking_ops::BookingView],
-    "booking.cancel": booking_ops::cancel [booking_ops::BookingCancelInput => booking_ops::BookingView],
-    "booking.history": booking_ops::history [AgreementRef => booking_ops::BookingHistoryOutput],
-    "booking.verify": booking_ops::verify [VerifyInput => RecordVerdict<BookingProgressPayload>],
 
     "payment.request": payment_ops::request [payment_ops::PaymentRequestInput => payment_ops::PaymentRequestOutput],
     "payment.acknowledge": payment_ops::acknowledge [payment_ops::PaymentAckInput => HalfRecordedOutput],
-    "payment.get": payment_ops::get [AgreementRef => payment_ops::PaymentGetOutput],
+    "payment.get": payment_ops::get [payment_ops::PaymentKeyInput => payment_ops::PaymentGetOutput],
     "payment.verify": payment_ops::verify [VerifyInput => payment_ops::PaymentVerdict],
 
-    "fulfilment.sign": fulfilment_ops::sign [AgreementRef => HalfRecordedOutput],
-    "fulfilment.get": fulfilment_ops::get [AgreementRef => fulfilment_ops::FulfilmentGetOutput],
+    "fulfilment.sign": fulfilment_ops::sign [fulfilment_ops::FulfilmentSignInput => HalfRecordedOutput],
+    "fulfilment.get": fulfilment_ops::get [fulfilment_ops::FulfilmentKeyInput => fulfilment_ops::FulfilmentGetOutput],
     "fulfilment.verify": fulfilment_ops::verify [VerifyInput => RecordVerdict<FulfilmentReceiptPayload>],
 
     "transaction.sync": sync::sync [sync::SyncInput => sync::SyncOutput],

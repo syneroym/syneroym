@@ -1,4 +1,4 @@
-//! Booking, payment, and fulfilment subcommands for Roym.
+//! Agreement, payment, and fulfilment subcommands for Roym.
 
 use std::{
     fs,
@@ -7,29 +7,29 @@ use std::{
 
 use anyhow::{Context, Result};
 use clap::Subcommand;
-use serde_json::json;
-use syneroym_roym_core::booking;
+use serde_json::{Value, json};
+use syneroym_roym_core::progress;
 
 use super::directory::{RpcCtx, call_and_print};
-use crate::DEFAULT_GATEWAY_URL;
+use crate::{DEFAULT_GATEWAY_URL, commands::session};
 
 #[derive(Subcommand, Debug, Clone)]
-pub enum BookingCommands {
-    /// Get booking progress and next expected step.
+pub enum AgreementCommands {
+    /// Get agreement progress and next expected step.
     Get {
         #[arg(long)]
-        agreement: String,
+        agreement: Option<String>,
+        #[arg(long)]
+        quote: Option<String>,
         #[arg(long, default_value = DEFAULT_GATEWAY_URL)]
         gateway_url: String,
         #[arg(long)]
         host: Option<String>,
     },
-    /// List bookings for this installation.
+    /// List agreements for this installation.
     List {
         #[arg(long)]
         conversation: Option<String>,
-        #[arg(long)]
-        state: Option<String>,
         #[arg(long, default_value_t = 50)]
         limit: usize,
         #[arg(long, default_value_t = 0)]
@@ -39,16 +39,7 @@ pub enum BookingCommands {
         #[arg(long)]
         host: Option<String>,
     },
-    /// Quote author starts work on a scheduled booking.
-    Start {
-        #[arg(long)]
-        agreement: String,
-        #[arg(long, default_value = DEFAULT_GATEWAY_URL)]
-        gateway_url: String,
-        #[arg(long)]
-        host: Option<String>,
-    },
-    /// Quote author cancels a scheduled booking.
+    /// Cancel an agreement.
     Cancel {
         #[arg(long)]
         agreement: String,
@@ -59,8 +50,8 @@ pub enum BookingCommands {
         #[arg(long)]
         host: Option<String>,
     },
-    /// View booking progress history.
-    History {
+    /// View agreement progress snapshot history.
+    Progress {
         #[arg(long)]
         agreement: String,
         #[arg(long, default_value = DEFAULT_GATEWAY_URL)]
@@ -77,6 +68,8 @@ pub enum PaymentCommands {
         #[arg(long)]
         agreement: String,
         #[arg(long)]
+        commitment: Option<String>,
+        #[arg(long)]
         note: Option<String>,
         #[arg(long, default_value = DEFAULT_GATEWAY_URL)]
         gateway_url: String,
@@ -88,6 +81,8 @@ pub enum PaymentCommands {
     Ack {
         #[arg(long)]
         agreement: String,
+        #[arg(long)]
+        commitment: Option<String>,
         #[arg(long)]
         observed_at: Option<u64>,
         #[arg(long)]
@@ -105,6 +100,8 @@ pub enum PaymentCommands {
     Get {
         #[arg(long)]
         agreement: String,
+        #[arg(long)]
+        commitment: Option<String>,
         #[arg(long, default_value = DEFAULT_GATEWAY_URL)]
         gateway_url: String,
         #[arg(long)]
@@ -129,6 +126,8 @@ pub enum FulfilmentCommands {
     Sign {
         #[arg(long)]
         agreement: String,
+        #[arg(long)]
+        commitment: Option<String>,
         #[arg(long, default_value = DEFAULT_GATEWAY_URL)]
         gateway_url: String,
         #[arg(long)]
@@ -138,6 +137,8 @@ pub enum FulfilmentCommands {
     Get {
         #[arg(long)]
         agreement: String,
+        #[arg(long)]
+        commitment: Option<String>,
         #[arg(long, default_value = DEFAULT_GATEWAY_URL)]
         gateway_url: String,
         #[arg(long)]
@@ -145,40 +146,77 @@ pub enum FulfilmentCommands {
     },
 }
 
-pub(super) async fn handle_booking(
-    cmd: &BookingCommands,
+async fn resolve_commitment_id(
+    ctx: RpcCtx<'_>,
+    gateway_url: &str,
+    host: Option<&str>,
+    agreement: &str,
+    target_kind: &str,
+) -> Result<String> {
+    let v = session::rpc_call(
+        gateway_url,
+        host,
+        ctx.run_as,
+        ctx.ucan_path,
+        ctx.dir,
+        "agreement.get",
+        json!({ "agreement": agreement }),
+    )
+    .await?;
+    let empty = vec![];
+    let commitments = v
+        .get("terms")
+        .and_then(|t| t.get("commitments"))
+        .and_then(Value::as_array)
+        .unwrap_or(&empty);
+    let matching: Vec<&str> = commitments
+        .iter()
+        .filter(|c| c.get("kind").and_then(Value::as_str).is_some_and(|k| k == target_kind))
+        .filter_map(|c| c.get("commitment_id").and_then(Value::as_str))
+        .collect();
+    match matching.as_slice() {
+        [single] => Ok((*single).to_string()),
+        [] => anyhow::bail!("agreement has no {target_kind} commitment"),
+        _ => anyhow::bail!(
+            "agreement has multiple {target_kind} commitments, specify --commitment <id>"
+        ),
+    }
+}
+
+pub(super) async fn handle_agreement(
+    cmd: &AgreementCommands,
     dir: &Path,
     run_as: Option<&str>,
     ucan_path: Option<&Path>,
 ) -> Result<()> {
     let ctx = RpcCtx { run_as, ucan_path, dir };
     match cmd {
-        BookingCommands::Get { agreement, gateway_url, host } => {
-            println!("{}", booking::PROGRESS_NOTICE);
-            let params = json!({ "agreement": agreement });
-            call_and_print(ctx, gateway_url, host.as_deref(), "booking.get", params).await
+        AgreementCommands::Get { agreement, quote, gateway_url, host } => {
+            println!("{}", progress::PROGRESS_NOTICE);
+            let mut params = json!({});
+            if let Some(a) = agreement {
+                params["agreement"] = json!(a);
+            } else if let Some(q) = quote {
+                params["quote_record_id"] = json!(q);
+            } else {
+                anyhow::bail!("either --agreement or --quote is required");
+            }
+            call_and_print(ctx, gateway_url, host.as_deref(), "agreement.get", params).await
         }
-        BookingCommands::List { conversation, state, limit, offset, gateway_url, host } => {
+        AgreementCommands::List { conversation, limit, offset, gateway_url, host } => {
             let mut params = json!({ "limit": limit, "offset": offset });
             if let Some(c) = conversation {
                 params["conversation"] = json!(c);
             }
-            if let Some(s) = state {
-                params["state"] = json!(s);
-            }
-            call_and_print(ctx, gateway_url, host.as_deref(), "booking.list", params).await
+            call_and_print(ctx, gateway_url, host.as_deref(), "agreement.list", params).await
         }
-        BookingCommands::Start { agreement, gateway_url, host } => {
-            let params = json!({ "agreement": agreement });
-            call_and_print(ctx, gateway_url, host.as_deref(), "booking.start", params).await
-        }
-        BookingCommands::Cancel { agreement, reason, gateway_url, host } => {
+        AgreementCommands::Cancel { agreement, reason, gateway_url, host } => {
             let params = json!({ "agreement": agreement, "reason": reason });
-            call_and_print(ctx, gateway_url, host.as_deref(), "booking.cancel", params).await
+            call_and_print(ctx, gateway_url, host.as_deref(), "agreement.cancel", params).await
         }
-        BookingCommands::History { agreement, gateway_url, host } => {
+        AgreementCommands::Progress { agreement, gateway_url, host } => {
             let params = json!({ "agreement": agreement });
-            call_and_print(ctx, gateway_url, host.as_deref(), "booking.history", params).await
+            call_and_print(ctx, gateway_url, host.as_deref(), "agreement.progress", params).await
         }
     }
 }
@@ -191,15 +229,23 @@ pub(super) async fn handle_payment(
 ) -> Result<()> {
     let ctx = RpcCtx { run_as, ucan_path, dir };
     match cmd {
-        PaymentCommands::Request { agreement, note, gateway_url, host } => {
-            let mut params = json!({ "agreement": agreement });
+        PaymentCommands::Request { agreement, commitment, note, gateway_url, host } => {
+            let cid = match commitment {
+                Some(c) => c.clone(),
+                None => {
+                    resolve_commitment_id(ctx, gateway_url, host.as_deref(), agreement, "currency")
+                        .await?
+                }
+            };
+            let mut params = json!({ "agreement": agreement, "commitment_id": cid });
             if let Some(n) = note {
-                params["note"] = json!(n);
+                params["note"] = json!({ "lang": "en", "text": n });
             }
             call_and_print(ctx, gateway_url, host.as_deref(), "payment.request", params).await
         }
         PaymentCommands::Ack {
             agreement,
+            commitment,
             observed_at,
             method,
             reference,
@@ -207,7 +253,14 @@ pub(super) async fn handle_payment(
             gateway_url,
             host,
         } => {
-            let mut params = json!({ "agreement": agreement });
+            let cid = match commitment {
+                Some(c) => c.clone(),
+                None => {
+                    resolve_commitment_id(ctx, gateway_url, host.as_deref(), agreement, "currency")
+                        .await?
+                }
+            };
+            let mut params = json!({ "agreement": agreement, "commitment_id": cid });
             if let Some(oa) = observed_at {
                 params["observed_at_secs"] = json!(oa);
             }
@@ -222,9 +275,16 @@ pub(super) async fn handle_payment(
             }
             call_and_print(ctx, gateway_url, host.as_deref(), "payment.acknowledge", params).await
         }
-        PaymentCommands::Get { agreement, gateway_url, host } => {
-            println!("{}", booking::PAYMENT_NOTICE);
-            let params = json!({ "agreement": agreement });
+        PaymentCommands::Get { agreement, commitment, gateway_url, host } => {
+            println!("{}", progress::PAYMENT_NOTICE);
+            let cid = match commitment {
+                Some(c) => c.clone(),
+                None => {
+                    resolve_commitment_id(ctx, gateway_url, host.as_deref(), agreement, "currency")
+                        .await?
+                }
+            };
+            let params = json!({ "agreement": agreement, "commitment_id": cid });
             call_and_print(ctx, gateway_url, host.as_deref(), "payment.get", params).await
         }
         PaymentCommands::Verify { envelope, envelope_file, gateway_url, host } => {
@@ -248,12 +308,38 @@ pub(super) async fn handle_fulfilment(
 ) -> Result<()> {
     let ctx = RpcCtx { run_as, ucan_path, dir };
     match cmd {
-        FulfilmentCommands::Sign { agreement, gateway_url, host } => {
-            let params = json!({ "agreement": agreement });
+        FulfilmentCommands::Sign { agreement, commitment, gateway_url, host } => {
+            let cid = match commitment {
+                Some(c) => c.clone(),
+                None => {
+                    resolve_commitment_id(
+                        ctx,
+                        gateway_url,
+                        host.as_deref(),
+                        agreement,
+                        "fulfilment",
+                    )
+                    .await?
+                }
+            };
+            let params = json!({ "agreement": agreement, "commitment_id": cid });
             call_and_print(ctx, gateway_url, host.as_deref(), "fulfilment.sign", params).await
         }
-        FulfilmentCommands::Get { agreement, gateway_url, host } => {
-            let params = json!({ "agreement": agreement });
+        FulfilmentCommands::Get { agreement, commitment, gateway_url, host } => {
+            let cid = match commitment {
+                Some(c) => c.clone(),
+                None => {
+                    resolve_commitment_id(
+                        ctx,
+                        gateway_url,
+                        host.as_deref(),
+                        agreement,
+                        "fulfilment",
+                    )
+                    .await?
+                }
+            };
+            let params = json!({ "agreement": agreement, "commitment_id": cid });
             call_and_print(ctx, gateway_url, host.as_deref(), "fulfilment.get", params).await
         }
     }

@@ -10,7 +10,7 @@ pub const CARD_TYPES: &[(&str, u32)] = &[
     ("enquiry", 1),
     ("quote", 1),
     ("agreement-receipt", 1),
-    ("booking-progress", 1),
+    ("agreement-progress", 1),
     ("payment-request", 1),
     ("payment-acknowledgement", 1),
     ("fulfilment-receipt", 1),

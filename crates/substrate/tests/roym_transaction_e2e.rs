@@ -37,7 +37,7 @@ use common::{
         wait_until,
     },
     roym_flow::{
-        accept_quote_with, open_request_conv, quote_author_conv_for, quote_terms,
+        accept_quote_with, open_request_conv, quote_author_conv_for,
         request_record_on_quote_author, send_quote_with,
     },
 };
@@ -179,26 +179,41 @@ async fn an_offer_is_agreed_across_two_installations() {
                 "enquiry_record_id": req_record_id,
                 "expires_in_secs": 3600,
                 "terms": {
-                    "lang": "en",
-                    "scope": "Replace brake cable and adjust pads",
                     "currency": "EUR",
-                    "amount_minor": 4500,
-                    "tax_minor": 500,
-                    "fees_minor": 0,
-                    "payment_methods": ["cash", "sepa"],
-                    "payee": "Y Repairs",
-                    "payment_timing": "after-work",
-                    "schedule": {
-                        "earliest_secs": 1800000000,
-                        "latest_secs": 1800003600
-                    },
-                    "location": {
-                        "where": "at-receiver",
-                        "address": "123 High Street"
-                    },
-                    "cancellation_terms": "24 hours notice required for full refund",
-                    "refund_terms": "Full refund if work not completed",
-                    "dispute_path": "Small claims court or informal mediation"
+                    "commitments": [
+                        {
+                            "giver": "quote-author",
+                            "resource_kind": "goods-or-service",
+                            "kind": "fulfilment",
+                            "after": [],
+                            "description": { "lang": "en", "text": "Replace brake cable and adjust pads" },
+                            "declared_value_minor": 4500,
+                            "window": {
+                                "earliest_secs": 1800000000,
+                                "latest_secs": 1800003600
+                            },
+                            "location": {
+                                "where": "at-receiver",
+                                "address": "123 High Street"
+                            }
+                        },
+                        {
+                            "giver": "counterparty",
+                            "resource_kind": "currency",
+                            "kind": "currency",
+                            "after": ["c1"],
+                            "description": { "lang": "en", "text": "EUR 45.00" },
+                            "declared_value_minor": 4500,
+                            "payee": "Y Repairs",
+                            "payment_methods": ["cash", "sepa"],
+                            "tax_minor": 500,
+                            "fees_minor": 0
+                        }
+                    ],
+                    "scope": { "lang": "en", "text": "Replace brake cable and adjust pads" },
+                    "cancellation_terms": { "lang": "en", "text": "24 hours notice required for full refund" },
+                    "refund_terms": { "lang": "en", "text": "Full refund if work not completed" },
+                    "dispute_path": { "lang": "en", "text": "Small claims court or informal mediation" }
                 }
             }),
         )
@@ -280,22 +295,22 @@ async fn an_offer_is_agreed_across_two_installations() {
         assert_eq!(half_payload["quote_author_did"], owner_y_did);
         assert_eq!(half_payload["quote_record_id"], quote_record_id);
         let terms = &half_payload["terms"];
-        assert!(terms["payee"].is_string() && !terms["payee"].as_str().unwrap().is_empty());
+        assert_eq!(terms["commitments"][1]["payee"], "Y Repairs");
         assert!(
             terms["quote_expires_at_secs"].is_u64()
                 && terms["quote_expires_at_secs"].as_u64().unwrap() > 0
         );
-        assert!(
-            terms["cancellation_terms"].is_string()
-                && !terms["cancellation_terms"].as_str().unwrap().is_empty()
+        assert_eq!(
+            terms["cancellation_terms"]["text"].as_str().unwrap(),
+            "24 hours notice required for full refund"
         );
-        assert!(
-            terms["refund_terms"].is_string()
-                && !terms["refund_terms"].as_str().unwrap().is_empty()
+        assert_eq!(
+            terms["refund_terms"]["text"].as_str().unwrap(),
+            "Full refund if work not completed"
         );
-        assert!(
-            terms["dispute_path"].is_string()
-                && !terms["dispute_path"].as_str().unwrap().is_empty()
+        assert_eq!(
+            terms["dispute_path"]["text"].as_str().unwrap(),
+            "Small claims court or informal mediation"
         );
     }
 
@@ -326,7 +341,7 @@ async fn an_offer_is_agreed_across_two_installations() {
 
     let x_agr_check =
         node_x.rpc_ok("agreement.get", json!({ "quote_record_id": quote_record_id })).await;
-    assert_eq!(x_agr_check["terms"]["payee"], "Y Repairs");
+    assert_eq!(x_agr_check["terms"]["commitments"][1]["payee"], "Y Repairs");
 
     // Step 14: No directory source configured on either installation; sources is
     // empty.
@@ -518,21 +533,13 @@ async fn accepting_an_author_translation_is_signed_and_the_pair_completes() {
     let y_conv_id = quote_author_conv_for(&node_y, &x_address).await;
     let request_record_id = request_record_on_quote_author(&node_y, &y_conv_id).await;
 
-    let mut terms = quote_terms("Y Repairs", 4500);
-    terms["lang"] = json!("hi");
+    let terms = sample_hindi_terms();
     let quote_record_id = send_quote_with(
         &node_y,
         json!({
             "enquiry_record_id": request_record_id,
             "expires_in_secs": 3600,
             "terms": terms,
-            "translations": [{
-                "lang": "en",
-                "scope": "Clear garden waste and green bin collection",
-                "cancellation_terms": "24 hours notice required",
-                "refund_terms": "Full refund if work not completed",
-                "dispute_path": "Informal mediation",
-            }],
         }),
     )
     .await;
@@ -569,4 +576,61 @@ async fn accepting_an_author_translation_is_signed_and_the_pair_completes() {
 
     node_x.teardown().await;
     node_y.teardown().await;
+}
+
+fn sample_hindi_terms() -> serde_json::Value {
+    json!({
+        "currency": "EUR",
+        "commitments": [
+            {
+                "giver": "quote-author",
+                "resource_kind": "goods-or-service",
+                "kind": "fulfilment",
+                "after": [],
+                "description": {
+                    "lang": "hi",
+                    "text": "बगीचे का कचरा साफ करना",
+                    "translations": [{ "lang": "en", "text": "Clear garden waste and green bin collection" }]
+                },
+                "declared_value_minor": 4500,
+                "location": { "where": "at-receiver", "address": "1 Garden Lane" },
+            },
+            {
+                "giver": "counterparty",
+                "resource_kind": "currency",
+                "kind": "currency",
+                "after": ["c1"],
+                "description": {
+                    "lang": "hi",
+                    "text": "EUR 45.00",
+                    "translations": [{ "lang": "en", "text": "EUR 45.00" }]
+                },
+                "declared_value_minor": 4500,
+                "payee": "Y Repairs",
+                "payment_methods": ["cash"],
+                "tax_minor": 0,
+                "fees_minor": 0,
+            }
+        ],
+        "scope": {
+            "lang": "hi",
+            "text": "बगीचे का कचरा साफ करना",
+            "translations": [{ "lang": "en", "text": "Clear garden waste and green bin collection" }]
+        },
+        "cancellation_terms": {
+            "lang": "hi",
+            "text": "24 घंटे का नोटिस आवश्यक",
+            "translations": [{ "lang": "en", "text": "24 hours notice required" }]
+        },
+        "refund_terms": {
+            "lang": "hi",
+            "text": "पूरा रिफंड यदि काम पूरा नहीं हुआ",
+            "translations": [{ "lang": "en", "text": "Full refund if work not completed" }]
+        },
+        "dispute_path": {
+            "lang": "hi",
+            "text": "अनौपचारिक मध्यस्थता",
+            "translations": [{ "lang": "en", "text": "Informal mediation" }]
+        }
+    })
 }

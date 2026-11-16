@@ -16,13 +16,16 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use syneroym_signed_record::{EnvelopeError, VerifyOptions, content_digest};
 
-pub use crate::record::{RECORD_AGREEMENT_RECEIPT, RECORD_ENQUIRY, RECORD_QUOTE};
 use crate::{
     area::Area,
     deal::LocalText,
-    lang::{LangTag, check_text, check_translation_langs},
+    lang::LangTag,
     listing::{self, ServiceLocation},
-    money, person, record,
+    person, record,
+};
+pub use crate::{
+    deal::{Answers, DealTerms},
+    record::{RECORD_AGREEMENT_RECEIPT, RECORD_ENQUIRY, RECORD_QUOTE},
 };
 
 pub const ENQUIRY_VERSION: u32 = 1;
@@ -30,7 +33,7 @@ pub const QUOTE_VERSION: u32 = 1;
 pub const AGREEMENT_RECEIPT_VERSION: u32 = 1;
 
 pub const EVENT_CARD: &str = "transaction.card";
-pub const EVENT_BOOKING: &str = "transaction.booking";
+pub const EVENT_PROGRESS: &str = "transaction.progress";
 
 /// The English text of the notice a counterparty is shown before an enquiry
 /// is signed, and which the enquiry then carries under their own signature.
@@ -78,15 +81,6 @@ pub const SYNC_WINDOW: u32 = 500;
 /// new ones rather than growing without bound.
 pub const MAX_CARDS_PER_CONVERSATION: usize = 2_000;
 
-/// When the quote says money changes hands. A signed term, used to drive
-/// what the product asks next, never to gate a transition.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum PaymentTiming {
-    BeforeWork,
-    AfterWork,
-}
-
 /// One of the two parties of a deal: the quote author or the counterparty.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -129,48 +123,6 @@ pub struct QuoteLocation {
     pub address: Option<String>,
 }
 
-/// An author translation of a quote's free-text fields.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct QuoteTranslation {
-    pub lang: LangTag,
-    pub scope: String,
-    pub cancellation_terms: String,
-    pub refund_terms: String,
-    pub dispute_path: String,
-}
-
-/// The one struct the quote states and both halves of the agreement
-/// receipt carry verbatim. Every field the Records table names for an
-/// `agreement-receipt` is here: payee, expiry, cancellation and refund
-/// terms, and dispute path.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AgreedTerms {
-    pub lang: LangTag,
-    pub scope: String,
-    /// ISO-4217, and a code `money::currency_minor_exponent` knows.
-    pub currency: String,
-    /// The total the counterparty owes, inclusive, in minor units.
-    pub amount_minor: i64,
-    /// Informational breakdowns of `amount_minor`, never additions to it.
-    pub tax_minor: i64,
-    pub fees_minor: i64,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub payment_methods: Vec<String>,
-    /// Bound here. A later chat message naming another payee changes
-    /// nothing, and the product shows this one.
-    pub payee: String,
-    pub payment_timing: PaymentTiming,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub schedule: Option<TimeWindow>,
-    pub location: QuoteLocation,
-    pub cancellation_terms: String,
-    pub refund_terms: String,
-    pub dispute_path: String,
-    /// What the quote's own envelope expiry was. A record of the window
-    /// acceptance had to fall inside; the receipt does not expire.
-    pub quote_expires_at_secs: u64,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EnquiryPayload {
     /// `content_digest("enq_", {conversation, issuer, sequence})`.
@@ -203,22 +155,9 @@ pub struct QuotePayload {
     pub quote_id: String,
     pub conversation: String,
     pub sequence: u32,
-    /// The `record_id` of the request version this answers.
-    pub request_record_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub listing_id: Option<String>,
-    /// The listing owner's availability slot this quote offers, when it offers
-    /// one. Re-derivable: `listing::derive_slot_id(listing_id,
-    /// schedule.earliest_secs, schedule.latest_secs)`. Accepting a quote
-    /// that names one books it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub slot_id: Option<String>,
-    /// The request's own issuer. This is what names the second party, and
-    /// it is what makes the agreement pair checkable.
+    pub answers: Answers,
     pub counterparty_did: String,
-    pub terms: AgreedTerms,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub translations: Vec<QuoteTranslation>,
+    pub terms: DealTerms,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -230,7 +169,7 @@ pub struct AgreementReceiptPayload {
     pub quote_author_did: String,
     /// The only field the two halves of a complete pair differ in.
     pub role: DealRole,
-    pub terms: AgreedTerms,
+    pub terms: DealTerms,
     /// The language of the text this party read before it signed. It is
     /// outside `terms`, so the two halves may differ in it.
     pub viewed_lang: LangTag,
@@ -307,80 +246,6 @@ impl QuoteLocation {
     }
 }
 
-impl AgreedTerms {
-    pub fn validate(&self) -> Result<(), TransactionError> {
-        if self.scope.trim().is_empty() {
-            return Err(TransactionError::ScopeEmpty);
-        }
-        if self.scope.len() > MAX_SCOPE_LEN {
-            return Err(TransactionError::ScopeTooLong);
-        }
-        if money::currency_minor_exponent(&self.currency).is_none() {
-            return Err(TransactionError::CurrencyUnknown(self.currency.clone()));
-        }
-        if self.amount_minor < 0 {
-            return Err(TransactionError::NegativeAmount(self.amount_minor));
-        }
-        if self.tax_minor < 0 {
-            return Err(TransactionError::NegativeTax(self.tax_minor));
-        }
-        if self.fees_minor < 0 {
-            return Err(TransactionError::NegativeFees(self.fees_minor));
-        }
-        let breakdown = self.tax_minor.checked_add(self.fees_minor);
-        match breakdown {
-            Some(b) if b <= self.amount_minor => {}
-            _ => {
-                return Err(TransactionError::BreakdownExceedsTotal {
-                    tax_minor: self.tax_minor,
-                    fees_minor: self.fees_minor,
-                    amount_minor: self.amount_minor,
-                });
-            }
-        }
-        if self.payee.trim().is_empty() {
-            return Err(TransactionError::PayeeEmpty);
-        }
-        if self.payee.len() > MAX_PAYEE_LEN {
-            return Err(TransactionError::PayeeTooLong);
-        }
-        if self.payment_methods.len() > MAX_PAYMENT_METHODS {
-            return Err(TransactionError::TooManyPaymentMethods);
-        }
-        for m in &self.payment_methods {
-            if !listing::valid_token(m, MAX_PAYMENT_METHOD_LEN) {
-                return Err(TransactionError::PaymentMethodShape(m.clone()));
-            }
-        }
-        if let Some(ref sched) = self.schedule {
-            sched.validate()?;
-        }
-        self.location.validate()?;
-        if self.cancellation_terms.trim().is_empty() {
-            return Err(TransactionError::CancellationTermsEmpty);
-        }
-        if self.cancellation_terms.len() > MAX_TERMS_TEXT_LEN {
-            return Err(TransactionError::CancellationTermsTooLong);
-        }
-        if self.refund_terms.trim().is_empty() {
-            return Err(TransactionError::RefundTermsEmpty);
-        }
-        if self.refund_terms.len() > MAX_TERMS_TEXT_LEN {
-            return Err(TransactionError::RefundTermsTooLong);
-        }
-        if self.dispute_path.trim().is_empty() {
-            return Err(TransactionError::DisputePathEmpty);
-        }
-        if self.dispute_path.len() > MAX_TERMS_TEXT_LEN {
-            return Err(TransactionError::DisputePathTooLong);
-        }
-        if self.quote_expires_at_secs == 0 {
-            return Err(TransactionError::QuoteExpiryZero);
-        }
-        Ok(())
-    }
-}
-
 impl EnquiryPayload {
     pub fn validate(&self) -> Result<(), TransactionError> {
         if self.enquiry_id.is_empty() {
@@ -428,46 +293,20 @@ impl QuotePayload {
         if self.sequence < 1 {
             return Err(TransactionError::InvalidSequence(self.sequence));
         }
-        if !self.request_record_id.starts_with("rec_") {
-            return Err(TransactionError::InvalidRecordId(self.request_record_id.clone()));
+        match &self.answers {
+            Answers::Enquiry { record_id } => {
+                if !record_id.starts_with("rec_") {
+                    return Err(TransactionError::InvalidRecordId(record_id.clone()));
+                }
+            }
+            Answers::Want { .. } => {
+                return Err(TransactionError::AnswersKindNotSupported);
+            }
         }
         if !person::is_did_key(&self.counterparty_did) {
             return Err(TransactionError::InvalidDid(self.counterparty_did.clone()));
         }
         self.terms.validate()?;
-        if let Some(ref slot_id) = self.slot_id {
-            let listing_id =
-                self.listing_id.as_deref().ok_or(TransactionError::SlotNeedsListingAndSchedule)?;
-            let schedule = self
-                .terms
-                .schedule
-                .as_ref()
-                .ok_or(TransactionError::SlotNeedsListingAndSchedule)?;
-            if schedule.latest_secs <= schedule.earliest_secs {
-                return Err(TransactionError::SlotNeedsListingAndSchedule);
-            }
-            let expected_slot =
-                listing::derive_slot_id(listing_id, schedule.earliest_secs, schedule.latest_secs)
-                    .map_err(|_| TransactionError::SlotIdMismatch)?;
-            if slot_id != &expected_slot {
-                return Err(TransactionError::SlotIdMismatch);
-            }
-        }
-        if !self.translations.is_empty() {
-            check_translation_langs(&self.terms.lang, self.translations.iter().map(|t| &t.lang))?;
-            for t in &self.translations {
-                check_text(&t.lang, "scope", &t.scope, MAX_SCOPE_LEN, true)?;
-                check_text(
-                    &t.lang,
-                    "cancellation_terms",
-                    &t.cancellation_terms,
-                    MAX_TERMS_TEXT_LEN,
-                    true,
-                )?;
-                check_text(&t.lang, "refund_terms", &t.refund_terms, MAX_TERMS_TEXT_LEN, true)?;
-                check_text(&t.lang, "dispute_path", &t.dispute_path, MAX_TERMS_TEXT_LEN, true)?;
-            }
-        }
         Ok(())
     }
 }
@@ -487,7 +326,7 @@ impl AgreementReceiptPayload {
             return Err(TransactionError::SamePartyDid);
         }
         self.terms.validate()?;
-        if self.viewed_via_mt && self.viewed_lang == self.terms.lang {
+        if self.viewed_via_mt && self.viewed_lang == self.terms.scope.lang {
             return Err(TransactionError::ViewedMtOfOriginal);
         }
         Ok(())

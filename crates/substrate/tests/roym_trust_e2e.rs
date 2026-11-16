@@ -364,10 +364,9 @@ async fn searcher_leaves_with_their_data(t: &Trio, dir: &Path, quote_record_id: 
     let held = x2.rpc_ok("directory.memberships", json!({ "member_did": t.y_owner_did })).await;
     assert_eq!(held["memberships"][0]["verdict"]["state"], "revoked", "{held}");
 
-    let booking = x2.rpc_ok("booking.get", json!({ "agreement": quote_record_id })).await;
-    assert_eq!(booking["state"], "completed", "the finished booking came across: {booking}");
-
     let agreement = x2.rpc_ok("agreement.get", json!({ "quote_record_id": quote_record_id })).await;
+    assert_eq!(agreement["state"], "closed", "the finished agreement came across: {agreement}");
+
     let verified = x2
         .rpc_ok("agreement.verify", json!({ "envelope": agreement["counterparty"]["envelope"] }))
         .await;

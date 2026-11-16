@@ -1,7 +1,7 @@
 {
+  "enquiry_id": "string",
   "message_id": "string",
   "record_id": "string",
-  "enquiry_id": "string",
   "send_error": "string",
   "state": "not-sent",
   "version_count": "number"

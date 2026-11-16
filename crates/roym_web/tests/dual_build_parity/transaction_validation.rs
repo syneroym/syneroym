@@ -12,7 +12,6 @@ async fn scenario_144_every_transaction_verb_refused_over_wire_parity() {
         "quote.ping",
         "agreement.ping",
         "receipt.ping",
-        "booking.ping",
         "payment.ping",
         "fulfilment.ping",
         "enquiry.set",
@@ -29,13 +28,9 @@ async fn scenario_144_every_transaction_verb_refused_over_wire_parity() {
         "agreement.accept",
         "agreement.get",
         "agreement.list",
+        "agreement.cancel",
+        "agreement.progress",
         "agreement.verify",
-        "booking.get",
-        "booking.list",
-        "booking.start",
-        "booking.cancel",
-        "booking.history",
-        "booking.verify",
         "payment.request",
         "payment.acknowledge",
         "payment.get",
@@ -106,9 +101,10 @@ async fn scenario_145_currency_unknown_refused_and_jpy_accepted_parity() {
     // 3. quote.set with "JPY" (minor exponent 0) is accepted and signed
     let mut jpy_terms = sample_quote_terms();
     jpy_terms["currency"] = json!("JPY");
-    jpy_terms["amount_minor"] = json!(5000);
-    jpy_terms["tax_minor"] = json!(0);
-    jpy_terms["fees_minor"] = json!(0);
+    jpy_terms["commitments"][0]["declared_value_minor"] = json!(5000);
+    jpy_terms["commitments"][1]["declared_value_minor"] = json!(5000);
+    jpy_terms["commitments"][1]["tax_minor"] = json!(0);
+    jpy_terms["commitments"][1]["fees_minor"] = json!(0);
     let (qw_jpy, qn_jpy) = both_rpc(
         &h,
         "quote.set",
@@ -127,9 +123,9 @@ async fn scenario_145_currency_unknown_refused_and_jpy_accepted_parity() {
     let q_data_w = Envelope::from_json(gw["result"]["envelope"].as_str().unwrap()).unwrap().payload;
     let q_data_n = Envelope::from_json(gn["result"]["envelope"].as_str().unwrap()).unwrap().payload;
     assert_eq!(q_data_w["terms"]["currency"], "JPY");
-    assert_eq!(q_data_w["terms"]["amount_minor"], 5000);
+    assert_eq!(q_data_w["terms"]["commitments"][1]["declared_value_minor"], 5000);
     assert_eq!(q_data_n["terms"]["currency"], "JPY");
-    assert_eq!(q_data_n["terms"]["amount_minor"], 5000);
+    assert_eq!(q_data_n["terms"]["commitments"][1]["declared_value_minor"], 5000);
 }
 
 #[tokio::test]

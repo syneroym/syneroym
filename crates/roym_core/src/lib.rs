@@ -9,7 +9,6 @@
 pub mod admit;
 pub mod area;
 pub mod backup;
-pub mod booking;
 pub mod card;
 pub mod clock;
 pub mod conversation;
@@ -26,6 +25,7 @@ pub mod money;
 pub mod paging;
 pub mod payment;
 pub mod person;
+pub mod progress;
 pub mod record;
 pub mod router;
 pub mod safety;

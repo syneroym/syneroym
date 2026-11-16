@@ -113,8 +113,7 @@ async fn accepting_an_agreement_records_card_and_booking_events_in_both_builds()
     let conv = open_conv(&h, &peer_did()).await;
 
     let (req_rec_id, _) = deal_fixtures::setup_peer_request(&h, &conv).await;
-    let mut q_params = valid_quote_params(&conv, &req_rec_id);
-    q_params["terms"]["payment_timing"] = json!("after-work");
+    let q_params = valid_quote_params(&conv, &req_rec_id);
     let (qw, _) = both_rpc(&h, "quote.set", q_params).await;
     let quote_rec_id = qw["result"]["record_id"].as_str().unwrap().to_string();
     let quote_id = qw["result"]["quote_id"].as_str().unwrap().to_string();
@@ -181,7 +180,7 @@ async fn accepting_an_agreement_records_card_and_booking_events_in_both_builds()
     assert_eq!(tuples_w, tuples_n);
     let kinds: Vec<&str> = tuples_w.iter().map(|(k, ..)| k.as_str()).collect();
     assert!(kinds.contains(&"transaction.card"));
-    assert!(kinds.contains(&"transaction.booking"));
+    assert!(kinds.contains(&"transaction.progress"));
 }
 
 #[tokio::test]

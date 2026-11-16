@@ -45,7 +45,7 @@ pub const RECORD_BUNDLE_MANIFEST: &str = "bundle-manifest";
 /// Signed by the quote author's transaction service, not by a person, and
 /// deliberately absent from `RECORD_TYPES`: it is derived state that
 /// names its writer, never evidence of anything.
-pub const RECORD_BOOKING_PROGRESS: &str = "booking-progress";
+pub const RECORD_AGREEMENT_PROGRESS: &str = "agreement-progress";
 
 pub fn is_known_record(record_type: &str, version: u32) -> bool {
     RECORD_TYPES.iter().any(|&(t, v)| t == record_type && v == version)

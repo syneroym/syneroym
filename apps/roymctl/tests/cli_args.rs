@@ -490,6 +490,39 @@ fn roym_transaction_subcommands_help() -> Result<(), Box<dyn Error>> {
         .stdout(contains("--dispute"))
         .stdout(contains("--expires-hours"));
 
+    let mut cmd = Command::cargo_bin("roymctl")?;
+    cmd.arg("roym")
+        .arg("transaction")
+        .arg("agreement")
+        .arg("get")
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(contains("--agreement"))
+        .stdout(contains("--quote"));
+
+    let mut cmd = Command::cargo_bin("roymctl")?;
+    cmd.arg("roym")
+        .arg("transaction")
+        .arg("payment")
+        .arg("request")
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(contains("--agreement"))
+        .stdout(contains("--commitment"));
+
+    let mut cmd = Command::cargo_bin("roymctl")?;
+    cmd.arg("roym")
+        .arg("transaction")
+        .arg("fulfilment")
+        .arg("sign")
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(contains("--agreement"))
+        .stdout(contains("--commitment"));
+
     Ok(())
 }
 

@@ -1,6 +1,6 @@
 //! Fulfilment receipt signing, retrieval, and verification operations.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use syneroym_app_host::{
     AppDataLayer, AppHost, AppSigning,
     types::{
@@ -9,39 +9,63 @@ use syneroym_app_host::{
     },
 };
 use syneroym_roym_core::{
-    booking::{BookingEvent, BookingState, Track, TrackState},
     clock,
+    deal::{CommitmentKind, LocalText, SettlementRole, transition::CommitmentState},
     envelope::Response,
     fulfilment::{self, FulfilmentReceiptPayload},
     method::{self, Reply, VerifyInput},
+    progress::AgreementEvent,
     record::{Envelope, RECORD_FULFILMENT_RECEIPT},
     transaction::{DealRole, PairState, ReceiptHalf, RecordVerdict, pair_state},
 };
 
 use super::{
-    AGREEMENTS, AgreementRef, AgreementRow, FULFILMENTS, FenceOutcome, FulfilmentsRow,
-    HalfRecordedOutput, LEDGER, PROGRESS, ProgressRow, SendState, booking_ops, get_row,
-    ledger::{LedgerKind, LedgerRow, load_booking},
-    put_row, resolve_principal_and_owner, send_card_and_file,
+    AGREEMENTS, AgreementRow, FULFILMENTS, FenceOutcome, FulfilmentsRow, HalfRecordedOutput,
+    LEDGER, SendState, get_row,
+    ledger::{LedgerKind, LedgerRow},
+    progress_ops, put_row, resolve_principal_and_owner, send_card_and_file,
 };
+
+pub(crate) fn fulfilment_id(agreement: &str, commitment_id: &str) -> String {
+    format!("{agreement}:{commitment_id}")
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FulfilmentSignInput {
+    pub agreement: String,
+    pub commitment_id: String,
+    #[serde(default)]
+    pub settlement_note: Option<LocalText>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FulfilmentKeyInput {
+    pub agreement: String,
+    pub commitment_id: String,
+}
 
 #[derive(Debug, Serialize)]
 pub struct FulfilmentGetOutput {
     pub counterparty: Option<ReceiptHalf>,
     pub quote_author: Option<ReceiptHalf>,
-    pub track: TrackState,
+    pub track: CommitmentState,
 }
 
 async fn load_fulfilments_row<H: AppHost>(
     host: &H,
+    f_id: &str,
     agreement: &str,
+    commitment_id: &str,
     conversation: &str,
     now: u64,
 ) -> Result<FulfilmentsRow, Response> {
-    match get_row(host, FULFILMENTS, agreement).await {
+    match get_row(host, FULFILMENTS, f_id).await {
         Ok(Some(f)) => Ok(f),
         Ok(None) => Ok(FulfilmentsRow {
             agreement: agreement.to_string(),
+            commitment_id: commitment_id.to_string(),
             conversation: conversation.to_string(),
             counterparty: None,
             quote_author: None,
@@ -51,7 +75,10 @@ async fn load_fulfilments_row<H: AppHost>(
     }
 }
 
-pub(crate) async fn sign<H: AppHost>(host: &H, input: AgreementRef) -> Reply<HalfRecordedOutput> {
+pub(crate) async fn sign<H: AppHost>(
+    host: &H,
+    input: FulfilmentSignInput,
+) -> Reply<HalfRecordedOutput> {
     let now = clock::now_secs();
     let (principal, owner) = resolve_principal_and_owner(host, now).await?;
 
@@ -61,36 +88,46 @@ pub(crate) async fn sign<H: AppHost>(host: &H, input: AgreementRef) -> Reply<Hal
         Err(e) => return Err(Response::internal_error(e)),
     };
 
-    let role = check_fulfilment_preconditions(host, &input.agreement, &agr, &owner).await?;
+    let (deal_role, settlement_role) =
+        check_fulfilment_preconditions(&agr, &input.commitment_id, &owner)?;
 
-    let mut fulfilments =
-        load_fulfilments_row(host, &input.agreement, &agr.conversation, now).await?;
+    let f_id = fulfilment_id(&input.agreement, &input.commitment_id);
+    let fulfilments = load_fulfilments_row(
+        host,
+        &f_id,
+        &input.agreement,
+        &input.commitment_id,
+        &agr.conversation,
+        now,
+    )
+    .await?;
 
-    let existing = match role {
+    let existing = match deal_role {
         DealRole::Counterparty => &fulfilments.counterparty,
         DealRole::QuoteAuthor => &fulfilments.quote_author,
     };
     if let Some(half) = existing {
         let record_id = half.record_id.clone();
-        return already_recorded_fulfilment_response(
-            host,
-            &input.agreement,
-            &owner,
-            &agr.quote_author_did,
-            role,
-            &record_id,
+        let author_ctx = FulfilmentAuthorContext {
+            agreement: &input.agreement,
+            commitment_id: &input.commitment_id,
+            role: settlement_role,
+            record_id: &record_id,
+            owner: &owner,
+            quote_author_did: &agr.quote_author_did,
             now,
-        )
-        .await;
+        };
+        return already_recorded_fulfilment_response(host, deal_role, author_ctx).await;
     }
 
     let payload = FulfilmentReceiptPayload {
         agreement: input.agreement.clone(),
         conversation: agr.conversation.clone(),
+        commitment_id: input.commitment_id.clone(),
         counterparty_did: agr.counterparty_did.clone(),
         quote_author_did: agr.quote_author_did.clone(),
-        role,
-        terms: agr.terms.clone(),
+        role: settlement_role,
+        settlement_note: input.settlement_note,
     };
     if let Err(e) = payload.validate() {
         return Err(Response::invalid_params(e.to_string()));
@@ -101,15 +138,17 @@ pub(crate) async fn sign<H: AppHost>(host: &H, input: AgreementRef) -> Reply<Hal
 
     let half = ReceiptHalf {
         record_id: record_id.clone(),
-        envelope: env_json.clone(),
+        envelope: env_json,
         issuer: env.issuer,
         issued_at_secs: env.issued_at_secs,
     };
 
     let fence_claim = FulfilmentFenceClaim {
         agreement: &input.agreement,
+        commitment_id: &input.commitment_id,
         conversation: &agr.conversation,
-        role,
+        deal_role,
+        settlement_role,
         owner: &owner,
         quote_author_did: &agr.quote_author_did,
     };
@@ -118,39 +157,85 @@ pub(crate) async fn sign<H: AppHost>(host: &H, input: AgreementRef) -> Reply<Hal
         FenceOutcome::Answered(out) => return Ok(out),
     }
 
-    match role {
-        DealRole::Counterparty => fulfilments.counterparty = Some(half),
-        DealRole::QuoteAuthor => fulfilments.quote_author = Some(half),
+    let author_ctx = FulfilmentAuthorContext {
+        agreement: &input.agreement,
+        commitment_id: &input.commitment_id,
+        role: settlement_role,
+        record_id: &record_id,
+        owner: &owner,
+        quote_author_did: &agr.quote_author_did,
+        now,
+    };
+    record_and_send_fulfilment(
+        host,
+        &f_id,
+        fulfilments,
+        deal_role,
+        half,
+        &agr.conversation,
+        author_ctx,
+    )
+    .await
+}
+
+struct FulfilmentAuthorContext<'a> {
+    agreement: &'a str,
+    commitment_id: &'a str,
+    role: SettlementRole,
+    record_id: &'a str,
+    owner: &'a str,
+    quote_author_did: &'a str,
+    now: u64,
+}
+
+async fn record_and_send_fulfilment<H: AppHost>(
+    host: &H,
+    f_id: &str,
+    mut fulfilments: FulfilmentsRow,
+    deal_role: DealRole,
+    half: ReceiptHalf,
+    conversation: &str,
+    author_ctx: FulfilmentAuthorContext<'_>,
+) -> Reply<HalfRecordedOutput> {
+    let now = author_ctx.now;
+    match deal_role {
+        DealRole::Counterparty => fulfilments.counterparty = Some(half.clone()),
+        DealRole::QuoteAuthor => fulfilments.quote_author = Some(half.clone()),
     }
     fulfilments.updated_at_secs = now;
 
-    if let Err(e) = put_row(host, FULFILMENTS, &input.agreement, &fulfilments).await {
+    if let Err(e) = put_row(host, FULFILMENTS, f_id, &fulfilments).await {
         return Err(Response::internal_error(e));
     }
 
     let (message_id, send_state, _) =
-        send_card_and_file(host, &agr.conversation, "fulfilment-receipt", 1, &env_json, now, None)
+        send_card_and_file(host, conversation, "fulfilment-receipt", 1, &half.envelope, now, None)
             .await;
 
-    maybe_transition_author_fulfilment(host, &input.agreement, &owner, &agr.quote_author_did, now)
-        .await;
+    maybe_transition_author_fulfilment(host, &author_ctx).await;
 
-    Ok(HalfRecordedOutput { record_id, role, message_id: Some(message_id), state: send_state })
+    Ok(HalfRecordedOutput {
+        record_id: half.record_id,
+        role: deal_role,
+        message_id: Some(message_id),
+        state: send_state,
+    })
 }
 
 async fn maybe_transition_author_fulfilment<H: AppHost>(
     host: &H,
-    agreement: &str,
-    owner: &str,
-    quote_author_did: &str,
-    now: u64,
+    ctx: &FulfilmentAuthorContext<'_>,
 ) {
-    if owner == quote_author_did {
-        let _ = booking_ops::transition(
+    if ctx.owner == ctx.quote_author_did {
+        let _ = progress_ops::transition_at(
             host,
-            agreement,
-            BookingEvent::Half { track: Track::Fulfilment, role: DealRole::QuoteAuthor },
-            now,
+            ctx.agreement,
+            AgreementEvent::Half {
+                commitment_id: ctx.commitment_id.to_string(),
+                role: ctx.role,
+                record_id: ctx.record_id.to_string(),
+            },
+            ctx.now,
         )
         .await;
     }
@@ -158,76 +243,57 @@ async fn maybe_transition_author_fulfilment<H: AppHost>(
 
 async fn already_recorded_fulfilment_response<H: AppHost>(
     host: &H,
-    agreement: &str,
-    owner: &str,
-    quote_author_did: &str,
-    role: DealRole,
-    record_id: &str,
-    now: u64,
+    deal_role: DealRole,
+    author_ctx: FulfilmentAuthorContext<'_>,
 ) -> Reply<HalfRecordedOutput> {
-    maybe_transition_author_fulfilment(host, agreement, owner, quote_author_did, now).await;
+    maybe_transition_author_fulfilment(host, &author_ctx).await;
     Ok(HalfRecordedOutput {
-        record_id: record_id.to_string(),
-        role,
+        record_id: author_ctx.record_id.to_string(),
+        role: deal_role,
         message_id: None,
         state: SendState::AlreadyRecorded,
     })
 }
 
-async fn check_booking_not_terminal<H: AppHost>(
+pub(crate) async fn get<H: AppHost>(
     host: &H,
-    agreement: &str,
-    role: DealRole,
-) -> Option<Response> {
-    match role {
-        DealRole::QuoteAuthor => {
-            if let Ok(Some(b)) = load_booking(host, agreement).await {
-                if b.state == BookingState::Conflict {
-                    return Some(Response::invalid_params("booking-conflict"));
-                }
-                if b.state == BookingState::Cancelled {
-                    return Some(Response::invalid_params("booking-cancelled"));
-                }
-            }
-        }
-        DealRole::Counterparty => {
-            if let Ok(Some(pr)) = get_row::<ProgressRow, _>(host, PROGRESS, agreement).await {
-                if pr.snapshot.state == BookingState::Conflict {
-                    return Some(Response::invalid_params("booking-conflict"));
-                }
-                if pr.snapshot.state == BookingState::Cancelled {
-                    return Some(Response::invalid_params("booking-cancelled"));
-                }
-            }
-        }
-    }
-    None
-}
-
-pub(crate) async fn get<H: AppHost>(host: &H, input: AgreementRef) -> Reply<FulfilmentGetOutput> {
-    let _agr: AgreementRow = match get_row(host, AGREEMENTS, &input.agreement).await {
+    input: FulfilmentKeyInput,
+) -> Reply<FulfilmentGetOutput> {
+    let agr: AgreementRow = match get_row(host, AGREEMENTS, &input.agreement).await {
         Ok(Some(a)) => a,
         Ok(None) => return Err(Response::invalid_params("no-such-agreement")),
         Err(e) => return Err(Response::internal_error(e)),
     };
 
-    let fulfilments: FulfilmentsRow = match get_row(host, FULFILMENTS, &input.agreement).await {
+    let commitment =
+        match agr.terms.commitments.iter().find(|c| c.commitment_id == input.commitment_id) {
+            Some(c) => c,
+            None => return Err(Response::invalid_params("no-such-commitment")),
+        };
+    if commitment.kind != CommitmentKind::Fulfilment {
+        return Err(Response::invalid_params("not-fulfilment-commitment"));
+    }
+
+    let f_id = fulfilment_id(&input.agreement, &input.commitment_id);
+    let fulfilments: FulfilmentsRow = match get_row(host, FULFILMENTS, &f_id).await {
         Ok(Some(f)) => f,
-        Ok(None) => FulfilmentsRow::default(),
+        Ok(None) => FulfilmentsRow {
+            agreement: input.agreement.clone(),
+            commitment_id: input.commitment_id.clone(),
+            conversation: agr.conversation.clone(),
+            counterparty: None,
+            quote_author: None,
+            updated_at_secs: agr.updated_at_secs,
+        },
         Err(e) => return Err(Response::internal_error(e)),
     };
 
-    let track = if let Ok(Some(b)) = load_booking(host, &input.agreement).await {
-        b.snapshot.fulfilment
-    } else if let Ok(Some(pr)) = get_row::<ProgressRow, _>(host, PROGRESS, &input.agreement).await {
-        pr.snapshot.fulfilment
-    } else if fulfilments.counterparty.is_some() && fulfilments.quote_author.is_some() {
-        TrackState::Acknowledged
-    } else if fulfilments.quote_author.is_some() {
-        TrackState::Claimed
-    } else {
-        TrackState::None
-    };
+    let track = agr
+        .commitments
+        .iter()
+        .find(|c| c.commitment_id == input.commitment_id)
+        .map(|c| c.state)
+        .unwrap_or(CommitmentState::Promised);
 
     Ok(FulfilmentGetOutput {
         counterparty: fulfilments.counterparty,
@@ -236,18 +302,32 @@ pub(crate) async fn get<H: AppHost>(host: &H, input: AgreementRef) -> Reply<Fulf
     })
 }
 
-async fn check_fulfilment_preconditions<H: AppHost>(
-    host: &H,
-    agreement: &str,
+fn check_fulfilment_preconditions(
     agr: &AgreementRow,
+    commitment_id: &str,
     owner: &str,
-) -> Result<DealRole, Response> {
+) -> Result<(DealRole, SettlementRole), Response> {
     let pair = pair_state(agr.counterparty.as_ref(), agr.quote_author.as_ref());
     if pair != PairState::Complete {
         return Err(Response::invalid_params("agreement-incomplete"));
     }
+    if let Some(state) = agr.state
+        && state.is_terminal()
+    {
+        return Err(Response::invalid_params("agreement-terminal"));
+    }
 
-    let role = if owner == agr.quote_author_did {
+    let c = agr
+        .terms
+        .commitments
+        .iter()
+        .find(|c| c.commitment_id == commitment_id)
+        .ok_or_else(|| Response::invalid_params("no-such-commitment"))?;
+    if c.kind != CommitmentKind::Fulfilment {
+        return Err(Response::invalid_params("not-fulfilment-commitment"));
+    }
+
+    let deal_role = if owner == agr.quote_author_did {
         DealRole::QuoteAuthor
     } else if owner == agr.counterparty_did {
         DealRole::Counterparty
@@ -255,10 +335,10 @@ async fn check_fulfilment_preconditions<H: AppHost>(
         return Err(Response::invalid_params("not-a-party"));
     };
 
-    if let Some(err) = check_booking_not_terminal(host, agreement, role).await {
-        return Err(err);
-    }
-    Ok(role)
+    let settlement_role =
+        if deal_role == c.giver { SettlementRole::Giver } else { SettlementRole::Receiver };
+
+    Ok((deal_role, settlement_role))
 }
 
 async fn sign_fulfilment_receipt<H: AppHost>(
@@ -294,26 +374,39 @@ async fn sign_fulfilment_receipt<H: AppHost>(
     Ok((env_json, env, record_id))
 }
 
-struct FulfilmentFenceClaim<'a> {
-    agreement: &'a str,
-    conversation: &'a str,
-    role: DealRole,
-    owner: &'a str,
-    quote_author_did: &'a str,
+pub(crate) struct FulfilmentFenceClaim<'a> {
+    pub(crate) agreement: &'a str,
+    pub(crate) commitment_id: &'a str,
+    pub(crate) conversation: &'a str,
+    pub(crate) deal_role: DealRole,
+    pub(crate) settlement_role: SettlementRole,
+    pub(crate) owner: &'a str,
+    pub(crate) quote_author_did: &'a str,
 }
 
-async fn claim_fulfilment_fence<H: AppHost>(
+pub(crate) async fn claim_fulfilment_fence<H: AppHost>(
     host: &H,
     claim: FulfilmentFenceClaim<'_>,
     half: &ReceiptHalf,
     now: u64,
 ) -> Result<FenceOutcome<HalfRecordedOutput>, Response> {
-    let FulfilmentFenceClaim { agreement, conversation, role, owner, quote_author_did } = claim;
-    let role_str = role.as_str();
-    let fence_key = format!("fulfil:{agreement}:{role_str}");
+    let FulfilmentFenceClaim {
+        agreement,
+        commitment_id,
+        conversation,
+        deal_role,
+        settlement_role,
+        owner,
+        quote_author_did,
+    } = claim;
+    let role_str = deal_role.as_str();
+    let fence_key = format!("fulfil:{agreement}:{commitment_id}:{role_str}");
     let fence_row = LedgerRow {
         kind: LedgerKind::Fence,
         agreement: agreement.to_string(),
+        state: None,
+        quote_id: None,
+        commitment_id: Some(commitment_id.to_string()),
         slot_id: None,
         seat: None,
         step: None,
@@ -330,8 +423,15 @@ async fn claim_fulfilment_fence<H: AppHost>(
             if let Ok(Some(fence)) = get_row::<LedgerRow, _>(host, LEDGER, &fence_key).await
                 && let Some(existing) = &fence.half
             {
-                let ctx =
-                    FulfilmentRecordCtx { agreement, conversation, role, owner, quote_author_did };
+                let ctx = FulfilmentRecordCtx {
+                    agreement,
+                    commitment_id,
+                    conversation,
+                    deal_role,
+                    settlement_role,
+                    owner,
+                    quote_author_did,
+                };
                 return ensure_fulfilment_recorded(host, ctx, existing, now)
                     .await
                     .map(FenceOutcome::Answered);
@@ -342,31 +442,37 @@ async fn claim_fulfilment_fence<H: AppHost>(
     }
 }
 
-struct FulfilmentRecordCtx<'a> {
-    agreement: &'a str,
-    conversation: &'a str,
-    role: DealRole,
-    owner: &'a str,
-    quote_author_did: &'a str,
+pub(crate) struct FulfilmentRecordCtx<'a> {
+    pub(crate) agreement: &'a str,
+    pub(crate) commitment_id: &'a str,
+    pub(crate) conversation: &'a str,
+    pub(crate) deal_role: DealRole,
+    pub(crate) settlement_role: SettlementRole,
+    pub(crate) owner: &'a str,
+    pub(crate) quote_author_did: &'a str,
 }
 
-/// Mirrors `payment_ops::ensure_payment_ack_recorded`: a crash between
-/// claiming the fulfilment fence and writing the shared `FULFILMENTS` row
-/// would otherwise strand a signed half that no retry ever files or
-/// sends -- every later call would just answer `already-recorded` against
-/// a row nothing ever wrote. Called only from the fence's "already
-/// claimed" branch.
-async fn ensure_fulfilment_recorded<H: AppHost>(
+pub(crate) async fn ensure_fulfilment_recorded<H: AppHost>(
     host: &H,
     ctx: FulfilmentRecordCtx<'_>,
     half: &ReceiptHalf,
     now: u64,
 ) -> Reply<HalfRecordedOutput> {
-    let FulfilmentRecordCtx { agreement, conversation, role, owner, quote_author_did } = ctx;
-    let mut f: FulfilmentsRow = match get_row(host, FULFILMENTS, agreement).await {
+    let FulfilmentRecordCtx {
+        agreement,
+        commitment_id,
+        conversation,
+        deal_role,
+        settlement_role,
+        owner,
+        quote_author_did,
+    } = ctx;
+    let f_id = fulfilment_id(agreement, commitment_id);
+    let mut f: FulfilmentsRow = match get_row(host, FULFILMENTS, &f_id).await {
         Ok(Some(row)) => row,
         Ok(None) => FulfilmentsRow {
             agreement: agreement.to_string(),
+            commitment_id: commitment_id.to_string(),
             conversation: conversation.to_string(),
             counterparty: None,
             quote_author: None,
@@ -374,7 +480,7 @@ async fn ensure_fulfilment_recorded<H: AppHost>(
         },
         Err(e) => return Err(Response::internal_error(e)),
     };
-    let slot = match role {
+    let slot = match deal_role {
         DealRole::Counterparty => &mut f.counterparty,
         DealRole::QuoteAuthor => &mut f.quote_author,
     };
@@ -382,17 +488,26 @@ async fn ensure_fulfilment_recorded<H: AppHost>(
     if !already_present {
         *slot = Some(half.clone());
         f.updated_at_secs = now;
-        if let Err(e) = put_row(host, FULFILMENTS, agreement, &f).await {
+        if let Err(e) = put_row(host, FULFILMENTS, &f_id, &f).await {
             return Err(Response::internal_error(e));
         }
     }
 
-    maybe_transition_author_fulfilment(host, agreement, owner, quote_author_did, now).await;
+    let author_ctx = FulfilmentAuthorContext {
+        agreement,
+        commitment_id,
+        role: settlement_role,
+        record_id: &half.record_id,
+        owner,
+        quote_author_did,
+        now,
+    };
+    maybe_transition_author_fulfilment(host, &author_ctx).await;
 
     if already_present {
         return Ok(HalfRecordedOutput {
             record_id: half.record_id.clone(),
-            role,
+            role: deal_role,
             message_id: None,
             state: SendState::AlreadyRecorded,
         });
@@ -402,7 +517,7 @@ async fn ensure_fulfilment_recorded<H: AppHost>(
             .await;
     Ok(HalfRecordedOutput {
         record_id: half.record_id.clone(),
-        role,
+        role: deal_role,
         message_id: Some(message_id),
         state: send_state,
     })

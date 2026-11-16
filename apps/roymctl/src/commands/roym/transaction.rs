@@ -133,29 +133,20 @@ pub enum TransactionCommands {
         #[arg(long)]
         host: Option<String>,
     },
-    /// View the agreement receipt for a quote.
+    /// Agreement operations: get, cancel, progress, list.
     Agreement {
-        #[arg(long)]
-        quote: String,
-        #[arg(long, default_value = DEFAULT_GATEWAY_URL)]
-        gateway_url: String,
-        #[arg(long)]
-        host: Option<String>,
-    },
-    /// Booking operations: get, list, start, cancel, history.
-    Booking {
         #[command(subcommand)]
-        command: super::booking::BookingCommands,
+        command: super::agreement::AgreementCommands,
     },
     /// Payment operations: request, ack, get, verify.
     Payment {
         #[command(subcommand)]
-        command: super::booking::PaymentCommands,
+        command: super::agreement::PaymentCommands,
     },
     /// Fulfilment operations: sign, get.
     Fulfilment {
         #[command(subcommand)]
-        command: super::booking::FulfilmentCommands,
+        command: super::agreement::FulfilmentCommands,
     },
 }
 
@@ -294,35 +285,101 @@ fn build_quote_params(
         location["address"] = json!(addr);
     }
 
-    let mut terms = json!({
-        "lang": parsed_lang.as_str(),
-        "scope": scope,
-        "currency": curr,
-        "amount_minor": amount_minor,
-        "tax_minor": tax_minor,
-        "fees_minor": fees_minor,
-        "payment_methods": methods,
-        "payee": payee,
-        "payment_timing": timing_str,
-        "location": location,
-        "cancellation_terms": cancellation_terms,
-        "refund_terms": refund_terms,
-        "dispute_path": dispute,
-    });
-    if let Some(s) = schedule {
-        terms["schedule"] = parse_window(s)?;
-    }
+    let schedule_val = match schedule {
+        Some(s) => Some(parse_window(s)?),
+        None => None,
+    };
+    let commitments = build_quote_commitments(
+        &parsed_lang,
+        scope,
+        &curr,
+        amount,
+        amount_minor,
+        payee,
+        tax_minor,
+        fees_minor,
+        methods,
+        &timing_str,
+        location,
+        schedule_val,
+        slot,
+    );
 
-    let mut quote_params = json!({
+    let terms = json!({
+        "currency": curr,
+        "commitments": commitments,
+        "scope": { "lang": parsed_lang.as_str(), "text": scope },
+        "cancellation_terms": { "lang": parsed_lang.as_str(), "text": cancellation_terms },
+        "refund_terms": { "lang": parsed_lang.as_str(), "text": refund_terms },
+        "dispute_path": { "lang": parsed_lang.as_str(), "text": dispute },
+    });
+    let quote_params = json!({
         "enquiry_record_id": enquiry,
         "expires_in_secs": expires_hours * 3600,
         "terms": terms,
     });
-    if let Some(sl) = slot {
-        quote_params["slot_id"] = json!(sl);
-    }
 
     Ok(quote_params)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_quote_commitments(
+    parsed_lang: &LangTag,
+    scope: &str,
+    curr: &str,
+    amount: &str,
+    amount_minor: i64,
+    payee: &str,
+    tax_minor: i64,
+    fees_minor: i64,
+    methods: &[String],
+    timing_str: &str,
+    location: Value,
+    schedule: Option<Value>,
+    slot: Option<&str>,
+) -> Vec<Value> {
+    let mut c1 = json!({
+        "giver": "author",
+        "description": { "lang": parsed_lang.as_str(), "text": scope },
+        "declared_value_minor": amount_minor,
+        "after": if timing_str == "before-work" && amount_minor > 0 { vec!["c2"] } else { vec![] },
+        "location": location,
+    });
+    if let Some(w) = schedule {
+        c1["window"] = w;
+    }
+    if let Some(sl) = slot {
+        c1["resource_kind"] = json!("service-in-slot");
+        c1["kind"] = json!("fulfilment");
+        c1["extension"] = json!({ "id": "scheduling", "version": 1 });
+        c1["details"] = json!({
+            "extension": "scheduling",
+            "schema": "scheduling:slot:v1",
+            "data": { "slot_id": sl },
+        });
+    } else {
+        c1["resource_kind"] = json!("goods-or-service");
+        c1["kind"] = json!("fulfilment");
+    }
+
+    if amount_minor > 0 {
+        let curr_desc = format!("{curr} {amount}");
+        let c2 = json!({
+            "giver": "counterparty",
+            "resource_kind": "currency",
+            "kind": "currency",
+            "description": { "lang": parsed_lang.as_str(), "text": curr_desc },
+            "declared_value_minor": amount_minor,
+            "payee": payee,
+            "payment_methods": methods,
+            "tax_minor": tax_minor,
+            "fees_minor": fees_minor,
+            "after": if timing_str == "after-work" { vec!["c1"] } else { vec![] },
+        });
+        vec![c1, c2]
+    } else {
+        vec![c1]
+    }
 }
 
 async fn handle_decline(
@@ -499,18 +556,14 @@ pub(super) async fn handle_transaction(
         TransactionCommands::Thread { conversation, gateway_url, host } => {
             handle_thread(conversation, gateway_url, host.as_deref(), ctx).await?;
         }
-        TransactionCommands::Agreement { quote, gateway_url, host } => {
-            let params = json!({ "quote_record_id": quote });
-            call_and_print(ctx, gateway_url, host.as_deref(), "agreement.get", params).await?;
-        }
-        TransactionCommands::Booking { command } => {
-            super::booking::handle_booking(command, dir, run_as, ucan_path).await?;
+        TransactionCommands::Agreement { command } => {
+            super::agreement::handle_agreement(command, dir, run_as, ucan_path).await?;
         }
         TransactionCommands::Payment { command } => {
-            super::booking::handle_payment(command, dir, run_as, ucan_path).await?;
+            super::agreement::handle_payment(command, dir, run_as, ucan_path).await?;
         }
         TransactionCommands::Fulfilment { command } => {
-            super::booking::handle_fulfilment(command, dir, run_as, ucan_path).await?;
+            super::agreement::handle_fulfilment(command, dir, run_as, ucan_path).await?;
         }
     }
     Ok(())
@@ -640,7 +693,7 @@ mod tests {
         );
         assert!(params.is_ok());
         if let Ok(p) = params {
-            assert_eq!(p["terms"]["lang"], "hi-Latn");
+            assert_eq!(p["terms"]["scope"]["lang"], "hi-Latn");
         }
 
         let err = build_quote_params(

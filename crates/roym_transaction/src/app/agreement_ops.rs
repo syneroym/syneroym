@@ -1,41 +1,40 @@
-//! Agreement record operations: accept, get, list, verify, countersign.
+//! Agreement record operations: accept, get, list, verify.
 
 use std::cmp::Reverse;
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use syneroym_app_host::{
     AppHost, AppSigning,
     types::signing::{Principal, RecordDraft},
 };
 use syneroym_roym_core::{
-    booking::BookingState,
-    card::{self, CARD_CONTENT_TYPE},
     clock,
+    deal::{DealTerms, ResourceKind, transition::track_end},
     envelope::Response,
     lang::LangTag,
-    method::{
-        self, ParamError, Reply, VerifyInput,
-        conversation::{SendInput, SendOutput},
-    },
+    method::{self, ParamError, Reply, VerifyInput},
     paging,
+    progress::{AgreementState, CancelReason, CommitmentProgress},
     record::{Envelope, RECORD_AGREEMENT_RECEIPT},
-    services, signing,
+    signing,
     transaction::{
-        self, AGREEMENT_RECEIPT_VERSION, AgreedTerms, AgreementReceiptPayload, DealRole, PairState,
+        self, AGREEMENT_RECEIPT_VERSION, AgreementReceiptPayload, DealRole, PairState,
         QuotePayload, ReceiptHalf, RecordVerdict, pair_state,
     },
 };
 
 use super::{
-    AGREEMENTS, AgreementRow, BookingWriter, QUOTE_HISTORY, SendState,
-    booking_ops::{self, BookingView},
-    default_list_limit_u64, ensure_collections, file_own_card, get_bytes, get_row, put_row,
-    resolve_principal_and_owner, send_card_and_file,
+    AGREEMENTS, AgreementRow, QUOTE_HISTORY, SendState, default_list_limit_u64, ensure_collections,
+    get_bytes, get_row,
+    hold::{Reservations, ReserveOutcome, SeatLedger},
+    progress_ops, put_row, resolve_principal_and_owner, send_card_and_file,
 };
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct QuoteRecordInput {
+    #[serde(alias = "agreement")]
     pub quote_record_id: String,
 }
 
@@ -58,8 +57,7 @@ pub struct AgreementAcceptOutput {
     pub role: DealRole,
     pub record_id: String,
     pub pair: PairState,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub booking: Option<Option<BookingView>>,
+    pub booking: Option<Option<()>>,
     pub message_id: String,
     pub state: SendState,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -69,20 +67,39 @@ pub struct AgreementAcceptOutput {
 #[derive(Debug, Serialize)]
 pub struct AgreementView {
     pub quote_record_id: String,
+    pub quote_id: String,
     pub conversation: String,
     pub counterparty_did: String,
     pub quote_author_did: String,
     pub counterparty: Option<ReceiptHalf>,
     pub quote_author: Option<ReceiptHalf>,
     pub pair: PairState,
-    pub terms: AgreedTerms,
+    pub terms: DealTerms,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<AgreementState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cancel_reason: Option<CancelReason>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seq: Option<u32>,
+    pub commitments: Vec<CommitmentProgress>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agreed_at_secs: Option<u64>,
+    pub track_ends: Vec<u64>,
 }
 
 impl From<AgreementRow> for AgreementView {
     fn from(r: AgreementRow) -> Self {
         let pair = pair_state(r.counterparty.as_ref(), r.quote_author.as_ref());
+        let track_ends = if let Some(agreed_at) = r.agreed_at_secs {
+            r.terms.commitments.iter().map(|c| track_end(c.window.as_ref(), agreed_at)).collect()
+        } else {
+            Vec::new()
+        };
         Self {
             quote_record_id: r.quote_record_id,
+            quote_id: r.quote_id,
             conversation: r.conversation,
             counterparty_did: r.counterparty_did,
             quote_author_did: r.quote_author_did,
@@ -90,6 +107,13 @@ impl From<AgreementRow> for AgreementView {
             quote_author: r.quote_author,
             pair,
             terms: r.terms,
+            state: r.state,
+            state_reason: r.state_reason,
+            cancel_reason: r.cancel_reason,
+            seq: r.seq,
+            commitments: r.commitments,
+            agreed_at_secs: r.agreed_at_secs,
+            track_ends,
         }
     }
 }
@@ -110,17 +134,22 @@ pub struct AgreementListOutput {
     pub agreements: Vec<AgreementView>,
 }
 
-pub(crate) async fn accept<H: AppHost>(
+pub(crate) async fn accept_at<H: AppHost>(
     host: &H,
     input: AgreementAcceptInput,
+    now: u64,
 ) -> Reply<AgreementAcceptOutput> {
-    let now = clock::now_secs();
     let (principal, owner) = resolve_principal_and_owner(host, now).await?;
-
     ensure_collections(host).await.map_err(Response::internal_error)?;
 
     let (quote_payload, quote_author_did, role) =
         load_verified_quote_and_role(host, &input.quote_record_id, now, &owner).await?;
+
+    if role == DealRole::QuoteAuthor {
+        return Err(Response::invalid_params("writer-countersigns")
+            .with_data(serde_json::json!("writer-countersigns")));
+    }
+
     let viewed = viewed(&input, &quote_payload)?;
 
     let mut row = load_or_init_agreement_row(
@@ -136,11 +165,38 @@ pub(crate) async fn accept<H: AppHost>(
         return Ok(out);
     }
 
-    let booking_view = if role == DealRole::QuoteAuthor {
-        prepare_author_booking(host, &row, &quote_payload, &input.quote_record_id, now).await?
-    } else {
-        None
-    };
+    let reservations = SeatLedger;
+    let mut reserved = Vec::new();
+    for c in &row.terms.commitments {
+        if c.giver == DealRole::Counterparty && c.resource_kind == ResourceKind::ServiceInSlot {
+            let slot_id = c
+                .details
+                .as_ref()
+                .and_then(|d| d.data.get("slot_id"))
+                .and_then(Value::as_str)
+                .ok_or_else(|| Response::invalid_params("missing slot_id"))?;
+            match reservations
+                .reserve(host, &input.quote_record_id, &c.commitment_id, slot_id, now)
+                .await
+            {
+                Ok(ReserveOutcome::Held { .. } | ReserveOutcome::AlreadyHeld { .. }) => {
+                    reserved.push(c.commitment_id.clone());
+                }
+                Ok(ReserveOutcome::SlotUnavailable | ReserveOutcome::SlotTaken) => {
+                    for cid in &reserved {
+                        let _ = reservations.release(host, &input.quote_record_id, cid).await;
+                    }
+                    return Err(Response::invalid_params("reserve-failed"));
+                }
+                Err(e) => {
+                    for cid in &reserved {
+                        let _ = reservations.release(host, &input.quote_record_id, cid).await;
+                    }
+                    return Err(Response::internal_error(e));
+                }
+            }
+        }
+    }
 
     let half =
         sign_agreement_receipt(host, principal, &input.quote_record_id, &row, &owner, role, viewed)
@@ -171,23 +227,26 @@ pub(crate) async fn accept<H: AppHost>(
         role,
         record_id,
         pair,
-        booking: Some(booking_view),
+        booking: Some(None),
         message_id,
         state,
         send_error,
     })
 }
 
+pub(crate) async fn accept<H: AppHost>(
+    host: &H,
+    input: AgreementAcceptInput,
+) -> Reply<AgreementAcceptOutput> {
+    accept_at(host, input, clock::now_secs()).await
+}
+
 fn viewed_error(field: &str, message: impl Into<String>) -> Response {
     ParamError { field: Some(field.to_string()), message: message.into() }.into_response()
 }
 
-/// What this party says it read: the language and whether it was a machine
-/// translation. Without an engine, "not a machine translation" means a
-/// version the quote author signed, so the tag must name one. A machine
-/// translation into the original's own language is not a translation.
 fn viewed(input: &AgreementAcceptInput, quote: &QuotePayload) -> Result<(LangTag, bool), Response> {
-    let original = &quote.terms.lang;
+    let original = &quote.terms.scope.lang;
     let via_mt = input.viewed_via_mt.unwrap_or(false);
     let lang = match input.viewed_lang.as_deref() {
         None => original.clone(),
@@ -202,15 +261,12 @@ fn viewed(input: &AgreementAcceptInput, quote: &QuotePayload) -> Result<(LangTag
                 "viewed_via_mt is true, but viewed_lang is the language of the original terms",
             ));
         }
-    } else if lang != *original && !quote.translations.iter().any(|t| t.lang == lang) {
+    } else if lang != *original && !quote.terms.scope.translations.iter().any(|t| t.lang == lang) {
         return Err(viewed_error("viewed_lang", "viewed_lang names no version of this quote"));
     }
     Ok((lang, via_mt))
 }
 
-/// Fetches and verifies the quote a caller wants to accept, and works out
-/// which side of it (counterparty or quote author) this installation's owner
-/// is.
 async fn load_verified_quote_and_role<H: AppHost>(
     host: &H,
     quote_record_id: &str,
@@ -259,8 +315,6 @@ async fn load_verified_quote_and_role<H: AppHost>(
     Ok((quote_payload, quote_author_did, role))
 }
 
-/// Loads the agreement row this quote already has, or seeds a fresh one from
-/// the quote's own payload when this is the first half either party files.
 async fn load_or_init_agreement_row<H: AppHost>(
     host: &H,
     quote_record_id: &str,
@@ -272,10 +326,17 @@ async fn load_or_init_agreement_row<H: AppHost>(
         Ok(Some(r)) => Ok(r),
         Ok(None) => Ok(AgreementRow {
             quote_record_id: quote_record_id.to_string(),
+            quote_id: quote_payload.quote_id.clone(),
             conversation: quote_payload.conversation.clone(),
             counterparty_did: quote_payload.counterparty_did.clone(),
             quote_author_did: quote_author_did.to_string(),
             terms: quote_payload.terms.clone(),
+            state: None,
+            state_reason: None,
+            cancel_reason: None,
+            seq: None,
+            commitments: Vec::new(),
+            agreed_at_secs: None,
             counterparty: None,
             quote_author: None,
             updated_at_secs: now,
@@ -284,9 +345,6 @@ async fn load_or_init_agreement_row<H: AppHost>(
     }
 }
 
-/// Some(response) when this role already has a half on file for this
-/// agreement, so the caller can return the idempotent "already-accepted"
-/// reply instead of signing a second one.
 fn already_accepted_response(
     row: &AgreementRow,
     role: DealRole,
@@ -299,15 +357,13 @@ fn already_accepted_response(
         role,
         record_id: existing.record_id.clone(),
         pair,
-        booking: None,
+        booking: Some(None),
         message_id: String::new(),
         state: SendState::AlreadyAccepted,
         send_error: None,
     })
 }
 
-/// Builds, validates and signs this role's half of the agreement receipt,
-/// and checks the host signed it under the issuer this service asked for.
 async fn sign_agreement_receipt<H: AppHost>(
     host: &H,
     principal: Principal,
@@ -378,11 +434,36 @@ pub(crate) async fn get<H: AppHost>(
     input: QuoteRecordInput,
 ) -> Reply<Option<AgreementView>> {
     ensure_collections(host).await.map_err(Response::internal_error)?;
-    let row: Option<AgreementRow> = match get_row(host, AGREEMENTS, &input.quote_record_id).await {
-        Ok(r) => r,
-        Err(e) => return Err(Response::internal_error(e)),
+    let mut row: Option<AgreementRow> =
+        match get_row(host, AGREEMENTS, &input.quote_record_id).await {
+            Ok(r) => r,
+            Err(e) => return Err(Response::internal_error(e)),
+        };
+    let Some(ref mut agr) = row else {
+        return Ok(None);
     };
-    Ok(row.map(AgreementView::from))
+
+    let now = clock::now_secs();
+    if let Ok(owner) = signing::owner_did(host).await {
+        if owner == agr.quote_author_did {
+            let _ = progress_ops::tick_agreement_at(host, agr, now).await;
+        } else if owner == agr.counterparty_did
+            && agr.quote_author.is_none()
+            && now >= agr.terms.quote_expires_at_secs
+        {
+            let reservations = SeatLedger;
+            for c in &agr.terms.commitments {
+                if c.giver == DealRole::Counterparty
+                    && c.resource_kind == ResourceKind::ServiceInSlot
+                {
+                    let _ =
+                        reservations.release(host, &agr.quote_record_id, &c.commitment_id).await;
+                }
+            }
+        }
+    }
+
+    Ok(Some(AgreementView::from(agr.clone())))
 }
 
 pub(crate) async fn list<H: AppHost>(
@@ -410,156 +491,4 @@ pub(crate) async fn verify<H: AppHost>(
     input: VerifyInput,
 ) -> Reply<RecordVerdict<AgreementReceiptPayload>> {
     method::verify_with(input, transaction::verify_agreement_receipt)
-}
-
-async fn prepare_author_booking<H: AppHost>(
-    host: &H,
-    row: &AgreementRow,
-    quote_payload: &QuotePayload,
-    quote_record_id: &str,
-    now: u64,
-) -> Result<Option<BookingView>, Response> {
-    if quote_payload.slot_id.is_some() && row.counterparty.is_none() {
-        return Err(Response::invalid_params(
-            "the quote author cannot accept a slot quote before the counterparty accepts",
-        ));
-    }
-    if row.counterparty.is_some() {
-        let b = match booking_ops::decide_booking(host, row, quote_payload, now).await {
-            Ok(b) => b,
-            Err(e) => return Err(Response::internal_error(e)),
-        };
-        if b.state == BookingState::Conflict {
-            return Err(Response::invalid_params("slot-unavailable"));
-        }
-        let view = booking_ops::booking_view(
-            quote_record_id,
-            Some(&b.snapshot),
-            Some(&b.progress_record_id),
-            Some(BookingWriter::Mine),
-            row,
-            DealRole::QuoteAuthor,
-        );
-        return Ok(Some(view));
-    }
-    Ok(None)
-}
-
-/// Attempts to countersign an agreement on the quote author's node when the
-/// counterparty has accepted. Refused, and left to the person, when the slot
-/// the quote names is already full.
-pub(crate) async fn maybe_countersign<H: AppHost>(
-    host: &H,
-    row: &mut AgreementRow,
-    qv: &RecordVerdict<QuotePayload>,
-    now: u64,
-    owner: &str,
-) -> Result<bool, String> {
-    if row.counterparty.is_none() {
-        return Ok(false);
-    }
-    let q_payload = match qv.payload.as_ref() {
-        Some(p) => p,
-        None => return Ok(false),
-    };
-    if row.quote_author.is_some() {
-        let _ = booking_ops::decide_booking(host, row, q_payload, now).await;
-        return Ok(false);
-    }
-    if owner.is_empty() || owner != row.quote_author_did {
-        return Ok(false);
-    }
-    if now >= row.terms.quote_expires_at_secs {
-        return Ok(false);
-    }
-
-    let booking = booking_ops::decide_booking(host, row, q_payload, now).await?;
-    if booking.state == BookingState::Conflict {
-        return Ok(false);
-    }
-    let (principal, _master) = match signing::person_principal(host, now).await {
-        Ok(p) => p,
-        Err(_) => return Ok(false),
-    };
-
-    let payload = AgreementReceiptPayload {
-        quote_record_id: row.quote_record_id.clone(),
-        counterparty_did: row.counterparty_did.clone(),
-        quote_author_did: row.quote_author_did.clone(),
-        role: DealRole::QuoteAuthor,
-        terms: q_payload.terms.clone(),
-        // The quote author wrote the original, and no person read anything
-        // when the countersignature is made.
-        viewed_lang: q_payload.terms.lang.clone(),
-        viewed_via_mt: false,
-    };
-    if payload.validate().is_err() {
-        return Ok(false);
-    }
-    let payload_str = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
-
-    let draft = RecordDraft {
-        version: AGREEMENT_RECEIPT_VERSION,
-        record_type: RECORD_AGREEMENT_RECEIPT.to_string(),
-        subject: row.quote_record_id.clone(),
-        payload: payload_str,
-        expires_at_secs: None,
-        supersedes: None,
-    };
-
-    let envelope_json = match AppSigning::sign_record(host, draft, principal).await {
-        Ok(json) => json,
-        Err(e) => return Err(e.to_string()),
-    };
-
-    let envelope = Envelope::from_json(&envelope_json).map_err(|e| e.to_string())?;
-    let record_id = envelope.record_id().map_err(|e| e.to_string())?;
-
-    let half = ReceiptHalf {
-        envelope: envelope_json.clone(),
-        record_id: record_id.clone(),
-        issuer: owner.to_string(),
-        issued_at_secs: envelope.issued_at_secs,
-    };
-    row.quote_author = Some(half);
-    row.updated_at_secs = now;
-    put_row(host, AGREEMENTS, &row.quote_record_id, &row).await?;
-
-    let body = card::card_body(RECORD_AGREEMENT_RECEIPT, AGREEMENT_RECEIPT_VERSION, &envelope_json)
-        .map_err(|e| e.to_string())?;
-
-    let send_resp = method::call_sibling::<_, SendInput, SendOutput>(
-        host,
-        services::CONVERSATION,
-        "conversation.send",
-        &SendInput {
-            conversation: row.conversation.clone(),
-            body,
-            content_type: Some(CARD_CONTENT_TYPE.to_string()),
-            languages: Vec::new(),
-        },
-    )
-    .await;
-
-    let (message_id, sender_timestamp_ms) = match send_resp {
-        Ok(out) => (out.message_id, out.sender_timestamp_ms),
-        Err(_) => (String::new(), now as i64 * 1000),
-    };
-
-    if !message_id.is_empty() {
-        file_own_card(
-            host,
-            &message_id,
-            &row.conversation,
-            RECORD_AGREEMENT_RECEIPT,
-            AGREEMENT_RECEIPT_VERSION,
-            &envelope_json,
-            sender_timestamp_ms,
-            now,
-            None,
-        )
-        .await?;
-    }
-
-    Ok(true)
 }

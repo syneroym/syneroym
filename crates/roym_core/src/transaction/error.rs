@@ -124,6 +124,12 @@ pub enum TransactionError {
     #[error("viewed_via_mt is true, but viewed_lang is the language of the original terms")]
     ViewedMtOfOriginal,
 
+    #[error("answers kind is not supported")]
+    AnswersKindNotSupported,
+
+    #[error("deal terms: {0}")]
+    Deal(#[from] crate::deal::DealError),
+
     #[error(transparent)]
     Translation(#[from] TranslationError),
 }

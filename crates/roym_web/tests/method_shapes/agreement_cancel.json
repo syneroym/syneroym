@@ -1,0 +1,103 @@
+{
+  "agreed_at_secs": "number",
+  "cancel_reason": "schedule-conflict",
+  "commitments": [
+    {
+      "commitment_id": "string",
+      "state": "cancelled"
+    }
+  ],
+  "conversation": "string",
+  "counterparty": {
+    "envelope": "string",
+    "issued_at_secs": "number",
+    "issuer": "string",
+    "record_id": "string"
+  },
+  "counterparty_did": "string",
+  "pair": {
+    "state": "complete"
+  },
+  "quote_author": {
+    "envelope": "string",
+    "issued_at_secs": "number",
+    "issuer": "string",
+    "record_id": "string"
+  },
+  "quote_author_did": "string",
+  "quote_id": "string",
+  "quote_record_id": "string",
+  "seq": "number",
+  "state": "cancelled",
+  "terms": {
+    "cancellation_terms": {
+      "lang": "string",
+      "text": "string"
+    },
+    "commitments": [
+      {
+        "after": [
+          "string"
+        ],
+        "commitment_id": "string",
+        "declared_value_minor": "number",
+        "description": {
+          "lang": "string",
+          "text": "string"
+        },
+        "details": "null",
+        "eep": "null",
+        "fees_minor": "number",
+        "giver": "counterparty",
+        "kind": "currency",
+        "location": "null",
+        "payee": "string",
+        "payment_methods": [
+          "string"
+        ],
+        "resource_kind": "currency",
+        "tax_minor": "number",
+        "window": "null"
+      },
+      {
+        "commitment_id": "string",
+        "declared_value_minor": "number",
+        "description": {
+          "lang": "string",
+          "text": "string"
+        },
+        "details": "null",
+        "eep": "null",
+        "fees_minor": "null",
+        "giver": "quote-author",
+        "kind": "fulfilment",
+        "location": {
+          "address": "string",
+          "where": "at-receiver"
+        },
+        "payee": "null",
+        "payment_methods": "null",
+        "resource_kind": "goods-or-service",
+        "tax_minor": "null",
+        "window": "null"
+      }
+    ],
+    "currency": "string",
+    "dispute_path": {
+      "lang": "string",
+      "text": "string"
+    },
+    "quote_expires_at_secs": "number",
+    "refund_terms": {
+      "lang": "string",
+      "text": "string"
+    },
+    "scope": {
+      "lang": "string",
+      "text": "string"
+    }
+  },
+  "track_ends": [
+    "number"
+  ]
+}

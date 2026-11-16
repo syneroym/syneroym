@@ -11,7 +11,10 @@ use serde_json::Value;
 
 use crate::{
     area::Area,
-    booking::{BookingProgressPayload, BookingState, ConflictReason, NextStep, TrackState},
+    deal::{
+        Answers, Commitment, CommitmentKind, DealTerms, LocalText, ResourceKind, SettlementRole,
+        TextTranslation, transition::CommitmentState,
+    },
     fulfilment::FulfilmentReceiptPayload,
     lang::LangTag,
     listing::{
@@ -20,9 +23,10 @@ use crate::{
         ProductDetail, RelationshipTerms, ServiceDetail, ServiceLocation, ServiceRecordTerms,
     },
     payment::{PaymentAcknowledgementPayload, PaymentRequestPayload},
+    progress::{AgreementProgressPayload, AgreementState, CancelReason, CommitmentProgress},
     transaction::{
-        AgreedTerms, AgreementReceiptPayload, DEFAULT_DATA_USE_NOTICE, DealRole, EnquiryPayload,
-        PaymentTiming, QuoteLocation, QuotePayload, QuoteTranslation, TimeWindow,
+        AgreementReceiptPayload, DEFAULT_DATA_USE_NOTICE, DealRole, EnquiryPayload, QuoteLocation,
+        QuotePayload, TimeWindow,
     },
 };
 
@@ -79,6 +83,10 @@ fn every_role() -> [DealRole; 2] {
     every!(DealRole, [DealRole::QuoteAuthor, DealRole::Counterparty])
 }
 
+fn every_settlement_role() -> [SettlementRole; 2] {
+    every!(SettlementRole, [SettlementRole::Giver, SettlementRole::Receiver])
+}
+
 fn every_place() -> [ServiceLocation; 3] {
     every!(
         ServiceLocation,
@@ -90,67 +98,116 @@ fn every_audience() -> [OpenTo; 4] {
     every!(OpenTo, [OpenTo::Anyone, OpenTo::Members, OpenTo::Referral, OpenTo::PastCounterparties])
 }
 
-fn every_next_step() -> [NextStep; 7] {
+fn every_agreement_state() -> [AgreementState; 4] {
     every!(
-        NextStep,
+        AgreementState,
         [
-            NextStep::WaitForQuoteAuthor,
-            NextStep::RequestPayment,
-            NextStep::PayOutsideRoym,
-            NextStep::ConfirmPaymentReceived,
-            NextStep::MarkWorkComplete,
-            NextStep::ConfirmWorkComplete,
-            NextStep::Nothing,
+            AgreementState::Agreed,
+            AgreementState::Closed,
+            AgreementState::Cancelled,
+            AgreementState::NotFormed,
         ]
     )
 }
 
-fn every_booking_state() -> [BookingState; 6] {
+fn every_cancel_reason() -> [CancelReason; 4] {
     every!(
-        BookingState,
+        CancelReason,
         [
-            BookingState::Scheduled,
-            BookingState::InProgress,
-            BookingState::Completed,
-            BookingState::Cancelled,
-            BookingState::Conflict,
-            BookingState::EndedUnconfirmed,
+            CancelReason::CannotDeliver,
+            CancelReason::ScheduleConflict,
+            CancelReason::CounterpartyAsked,
+            CancelReason::Other,
         ]
     )
 }
 
-fn every_track_state() -> [TrackState; 4] {
+fn every_commitment_state() -> [CommitmentState; 8] {
     every!(
-        TrackState,
-        [TrackState::None, TrackState::Claimed, TrackState::Acknowledged, TrackState::Unconfirmed]
+        CommitmentState,
+        [
+            CommitmentState::Promised,
+            CommitmentState::PaymentRequested,
+            CommitmentState::Claimed,
+            CommitmentState::Fulfilled,
+            CommitmentState::Acknowledged,
+            CommitmentState::EndedUnconfirmed,
+            CommitmentState::Failed,
+            CommitmentState::Cancelled,
+        ]
     )
 }
 
-fn every_conflict() -> [ConflictReason; 2] {
-    every!(ConflictReason, [ConflictReason::SlotTaken, ConflictReason::SlotUnavailable])
-}
-
-fn terms(place: ServiceLocation) -> AgreedTerms {
-    AgreedTerms {
-        lang: LangTag::parse("en").unwrap(),
-        scope: "Trim the hedge".to_string(),
+fn terms(place: ServiceLocation) -> DealTerms {
+    DealTerms {
         currency: "EUR".to_string(),
-        amount_minor: 12_000,
-        tax_minor: 2_000,
-        fees_minor: 100,
-        payment_methods: vec!["cash".to_string()],
-        payee: "A. Gardener".to_string(),
-        payment_timing: PaymentTiming::BeforeWork,
-        schedule: Some(TimeWindow { earliest_secs: 1_000, latest_secs: 2_000 }),
-        location: QuoteLocation {
-            where_: place,
-            area: Some(Area::Named { label: "North".to_string(), code: Some("N1".to_string()) }),
-            address: Some("1 Garden Lane".to_string()),
-        },
-        cancellation_terms: "Free until a day before".to_string(),
-        refund_terms: "Refund if the work is not done".to_string(),
-        dispute_path: "Write to the quote author".to_string(),
         quote_expires_at_secs: 5_000,
+        home_exchange: None,
+        commitments: vec![Commitment {
+            commitment_id: "c1".to_string(),
+            giver: DealRole::QuoteAuthor,
+            resource_kind: ResourceKind::GoodsOrService,
+            kind: CommitmentKind::Fulfilment,
+            extension: None,
+            after: Vec::new(),
+            description: LocalText {
+                lang: LangTag::parse("en").unwrap(),
+                text: "Trim the hedge".to_string(),
+                translations: vec![TextTranslation {
+                    lang: LangTag::parse("hi").unwrap(),
+                    text: "झाड़ी काटें".to_string(),
+                }],
+            },
+            declared_value_minor: 12_000,
+            details: None,
+            window: Some(TimeWindow { earliest_secs: 1_000, latest_secs: 2_000 }),
+            location: Some(QuoteLocation {
+                where_: place,
+                area: Some(Area::Named {
+                    label: "North".to_string(),
+                    code: Some("N1".to_string()),
+                }),
+                address: Some("1 Garden Lane".to_string()),
+            }),
+            payee: None,
+            payment_methods: None,
+            tax_minor: None,
+            fees_minor: None,
+            eep: None,
+        }],
+        listing_id: Some("lst_1".to_string()),
+        scope: LocalText {
+            lang: LangTag::parse("en").unwrap(),
+            text: "Trim the hedge".to_string(),
+            translations: vec![TextTranslation {
+                lang: LangTag::parse("hi").unwrap(),
+                text: "झाड़ी काटें".to_string(),
+            }],
+        },
+        cancellation_terms: LocalText {
+            lang: LangTag::parse("en").unwrap(),
+            text: "Free until a day before".to_string(),
+            translations: vec![TextTranslation {
+                lang: LangTag::parse("hi").unwrap(),
+                text: "रद्दीकरण".to_string(),
+            }],
+        },
+        refund_terms: LocalText {
+            lang: LangTag::parse("en").unwrap(),
+            text: "Refund if the work is not done".to_string(),
+            translations: vec![TextTranslation {
+                lang: LangTag::parse("hi").unwrap(),
+                text: "वापसी".to_string(),
+            }],
+        },
+        dispute_path: LocalText {
+            lang: LangTag::parse("en").unwrap(),
+            text: "Write to the quote author".to_string(),
+            translations: vec![TextTranslation {
+                lang: LangTag::parse("hi").unwrap(),
+                text: "विवाद".to_string(),
+            }],
+        },
     }
 }
 
@@ -161,10 +218,10 @@ fn enquiry() -> EnquiryPayload {
         sequence: 1,
         listing_id: Some("lst_1".to_string()),
         categories: vec!["gardening".to_string()],
-        description: crate::deal::LocalText {
+        description: LocalText {
             lang: LangTag::parse("en").unwrap(),
             text: "Trim the hedge".to_string(),
-            translations: vec![crate::deal::TextTranslation {
+            translations: vec![TextTranslation {
                 lang: LangTag::parse("hi").unwrap(),
                 text: "झाड़ी काटें".to_string(),
             }],
@@ -175,24 +232,30 @@ fn enquiry() -> EnquiryPayload {
     }
 }
 
-fn booking_progress(
-    cancelled_by: DealRole,
-    conflict: ConflictReason,
-    state: BookingState,
-) -> BookingProgressPayload {
-    BookingProgressPayload {
+fn agreement_progress(
+    cancel_reason: Option<CancelReason>,
+    state: AgreementState,
+) -> AgreementProgressPayload {
+    AgreementProgressPayload {
         agreement: "rec_agreement".to_string(),
         conversation: "conv_1".to_string(),
         counterparty_did: COUNTERPARTY.to_string(),
         quote_author_did: QUOTE_AUTHOR.to_string(),
         seq: 2,
         state,
-        conflict: Some(conflict),
-        payment: TrackState::Claimed,
-        fulfilment: TrackState::Acknowledged,
-        track_window_ends_at_secs: 9_000,
-        cancelled_by: Some(cancelled_by),
-        cancel_reason: Some("changed my mind".to_string()),
+        state_reason: if state == AgreementState::NotFormed {
+            Some("slot-taken".to_string())
+        } else {
+            None
+        },
+        cancel_reason,
+        commitments: vec![CommitmentProgress {
+            commitment_id: "c1".to_string(),
+            state: CommitmentState::Promised,
+            reason: None,
+            claimed: None,
+            halves: vec!["rec_half1".to_string()],
+        }],
     }
 }
 
@@ -260,27 +323,27 @@ fn the_deal_enums_say_no_old_word_in_any_variant() {
     for role in every_role() {
         assert_no_old_words("role", &role);
     }
+    for s_role in every_settlement_role() {
+        assert_no_old_words("settlement role", &s_role);
+    }
     for place in every_place() {
         assert_no_old_words("place", &place);
     }
     for open_to in every_audience() {
         assert_no_old_words("open_to", &open_to);
     }
-    for step in every_next_step() {
-        assert_no_old_words("next_step", &step);
-    }
 }
 
 #[test]
 fn the_other_wire_enums_say_no_old_word_in_any_variant() {
-    for state in every_booking_state() {
-        assert_no_old_words("booking state", &state);
+    for state in every_agreement_state() {
+        assert_no_old_words("agreement state", &state);
     }
-    for track in every_track_state() {
-        assert_no_old_words("track state", &track);
+    for reason in every_cancel_reason() {
+        assert_no_old_words("cancel reason", &reason);
     }
-    for conflict in every_conflict() {
-        assert_no_old_words("conflict reason", &conflict);
+    for c_state in every_commitment_state() {
+        assert_no_old_words("commitment state", &c_state);
     }
     let statuses = every!(
         ListingStatus,
@@ -302,13 +365,11 @@ fn the_other_wire_enums_say_no_old_word_in_any_variant() {
     );
     let disclosures =
         every!(AddressDisclosure, [AddressDisclosure::OnAgreement, AddressDisclosure::Public]);
-    let timings = every!(PaymentTiming, [PaymentTiming::BeforeWork, PaymentTiming::AfterWork]);
     assert_no_old_words("listing status", &statuses);
     assert_no_old_words("booking mode", &modes);
     assert_no_old_words("payment model", &models);
     assert_no_old_words("product condition", &conditions);
     assert_no_old_words("address disclosure", &disclosures);
-    assert_no_old_words("payment timing", &timings);
 }
 
 #[test]
@@ -319,18 +380,9 @@ fn a_request_and_a_quote_say_no_old_word() {
             quote_id: "quo_1".to_string(),
             conversation: "conv_1".to_string(),
             sequence: 1,
-            request_record_id: "rec_request".to_string(),
-            listing_id: Some("lst_1".to_string()),
-            slot_id: Some("slot_1".to_string()),
+            answers: Answers::Enquiry { record_id: "rec_enquiry".to_string() },
             counterparty_did: COUNTERPARTY.to_string(),
             terms: terms(place),
-            translations: vec![QuoteTranslation {
-                lang: LangTag::parse("hi").unwrap(),
-                scope: "झाड़ी काटें".to_string(),
-                cancellation_terms: "रद्दीकरण".to_string(),
-                refund_terms: "वापसी".to_string(),
-                dispute_path: "विवाद".to_string(),
-            }],
         };
         assert_no_old_words("quote", &quote);
     }
@@ -345,21 +397,24 @@ fn an_agreement_and_its_receipts_say_no_old_word() {
                 counterparty_did: COUNTERPARTY.to_string(),
                 quote_author_did: QUOTE_AUTHOR.to_string(),
                 role,
-                viewed_lang: terms(place).lang,
+                viewed_lang: terms(place).scope.lang,
                 viewed_via_mt: false,
                 terms: terms(place),
             };
             assert_no_old_words("agreement-receipt", &agreement);
-            let fulfilment = FulfilmentReceiptPayload {
-                agreement: "rec_agreement".to_string(),
-                conversation: "conv_1".to_string(),
-                counterparty_did: COUNTERPARTY.to_string(),
-                quote_author_did: QUOTE_AUTHOR.to_string(),
-                role,
-                terms: terms(place),
-            };
-            assert_no_old_words("fulfilment-receipt", &fulfilment);
         }
+    }
+    for s_role in every_settlement_role() {
+        let fulfilment = FulfilmentReceiptPayload {
+            agreement: "rec_agreement".to_string(),
+            conversation: "conv_1".to_string(),
+            commitment_id: "c1".to_string(),
+            counterparty_did: COUNTERPARTY.to_string(),
+            quote_author_did: QUOTE_AUTHOR.to_string(),
+            role: s_role,
+            settlement_note: None,
+        };
+        assert_no_old_words("fulfilment-receipt", &fulfilment);
     }
 }
 
@@ -368,37 +423,38 @@ fn the_payment_records_say_no_old_word() {
     let request = PaymentRequestPayload {
         agreement: "rec_agreement".to_string(),
         conversation: "conv_1".to_string(),
+        commitment_id: "c1".to_string(),
         counterparty_did: COUNTERPARTY.to_string(),
         quote_author_did: QUOTE_AUTHOR.to_string(),
-        currency: "EUR".to_string(),
-        amount_minor: 12_000,
-        note: Some("Please pay".to_string()),
+        note: Some(LocalText {
+            lang: LangTag::parse("en").unwrap(),
+            text: "Please pay".to_string(),
+            translations: Vec::new(),
+        }),
     };
     assert_no_old_words("payment-request", &request);
-    for role in every_role() {
+    for s_role in every_settlement_role() {
         let ack = PaymentAcknowledgementPayload {
             agreement: "rec_agreement".to_string(),
             conversation: "conv_1".to_string(),
+            commitment_id: "c1".to_string(),
             counterparty_did: COUNTERPARTY.to_string(),
             quote_author_did: QUOTE_AUTHOR.to_string(),
-            role,
-            currency: "EUR".to_string(),
-            amount_minor: 12_000,
+            role: s_role,
             observed_at_secs: 3_000,
             method: Some("cash".to_string()),
             reference: Some("receipt 7".to_string()),
+            settlement_note: None,
         };
         assert_no_old_words("payment-acknowledgement", &ack);
     }
 }
 
 #[test]
-fn a_booking_progress_snapshot_says_no_old_word_for_either_canceller() {
-    for role in every_role() {
-        for conflict in every_conflict() {
-            for state in every_booking_state() {
-                assert_no_old_words("booking-progress", &booking_progress(role, conflict, state));
-            }
+fn an_agreement_progress_snapshot_says_no_old_word() {
+    for reason in every_cancel_reason() {
+        for state in every_agreement_state() {
+            assert_no_old_words("agreement-progress", &agreement_progress(Some(reason), state));
         }
     }
 }

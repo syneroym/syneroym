@@ -9,8 +9,8 @@ use serde_json::json;
 use crate::DEFAULT_GATEWAY_URL;
 
 pub mod address;
+pub mod agreement;
 pub mod backup;
-pub mod booking;
 pub mod directory;
 pub mod find;
 pub mod group;
@@ -23,10 +23,10 @@ mod tests;
 
 #[cfg(test)]
 pub(crate) use address::find_roym_service;
+pub use agreement::{AgreementCommands, FulfilmentCommands, PaymentCommands};
 pub use backup::{
     ARCHIVE_INFO, ARCHIVE_VERSION, BackupCommands, RESTORE_DATA_SUCCESS_NOTICE, RoymArchive,
 };
-pub use booking::{BookingCommands, FulfilmentCommands, PaymentCommands};
 pub use directory::{DirectoryCommands, MemberCommands};
 pub use group::GroupCommands;
 #[cfg(test)]

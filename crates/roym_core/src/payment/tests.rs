@@ -3,28 +3,33 @@ use syneroym_signed_record::{Envelope, RecordDraft};
 
 use super::*;
 use crate::{
+    deal::{Commitment, CommitmentKind, ResourceKind},
     lang::LangTag,
-    listing::ServiceLocation,
-    transaction::{PaymentTiming, QuoteLocation},
+    transaction::DealRole,
 };
 
-fn sample_terms() -> AgreedTerms {
-    AgreedTerms {
-        lang: LangTag::parse("en").unwrap(),
-        scope: "All work".to_string(),
-        currency: "USD".to_string(),
-        amount_minor: 10_000,
-        tax_minor: 0,
-        fees_minor: 0,
-        payment_methods: vec!["card".to_string(), "cash".to_string()],
-        payee: "Test Payee".to_string(),
-        payment_timing: PaymentTiming::BeforeWork,
-        schedule: None,
-        location: QuoteLocation { where_: ServiceLocation::Remote, area: None, address: None },
-        cancellation_terms: "Standard cancellation".to_string(),
-        refund_terms: "Standard refund".to_string(),
-        dispute_path: "Contact the quote author".to_string(),
-        quote_expires_at_secs: 2000,
+fn sample_commitment() -> Commitment {
+    Commitment {
+        commitment_id: "c1".to_string(),
+        giver: DealRole::Counterparty,
+        resource_kind: ResourceKind::Currency,
+        kind: CommitmentKind::Currency,
+        extension: None,
+        after: Vec::new(),
+        description: LocalText {
+            lang: LangTag::parse("en").unwrap(),
+            text: "USD 100.00".to_string(),
+            translations: Vec::new(),
+        },
+        declared_value_minor: 10_000,
+        details: None,
+        window: None,
+        location: None,
+        payee: Some("Test Payee".to_string()),
+        payment_methods: Some(vec!["card".to_string(), "cash".to_string()]),
+        tax_minor: Some(0),
+        fees_minor: Some(0),
+        eep: None,
     }
 }
 
@@ -32,26 +37,29 @@ fn sample_request() -> PaymentRequestPayload {
     PaymentRequestPayload {
         agreement: "rec_quote123".to_string(),
         conversation: "conv_123".to_string(),
+        commitment_id: "c1".to_string(),
         counterparty_did: "did:key:zCounterparty".to_string(),
         quote_author_did: "did:key:zQuoteAuthor".to_string(),
-        currency: "USD".to_string(),
-        amount_minor: 10_000,
-        note: Some("Initial payment".to_string()),
+        note: Some(LocalText {
+            lang: LangTag::parse("en").unwrap(),
+            text: "Initial payment".to_string(),
+            translations: Vec::new(),
+        }),
     }
 }
 
-fn sample_ack(role: DealRole) -> PaymentAcknowledgementPayload {
+fn sample_ack(role: SettlementRole) -> PaymentAcknowledgementPayload {
     PaymentAcknowledgementPayload {
         agreement: "rec_quote123".to_string(),
         conversation: "conv_123".to_string(),
+        commitment_id: "c1".to_string(),
         counterparty_did: "did:key:zCounterparty".to_string(),
         quote_author_did: "did:key:zQuoteAuthor".to_string(),
         role,
-        currency: "USD".to_string(),
-        amount_minor: 10_000,
         observed_at_secs: 1000,
         method: Some("card".to_string()),
         reference: Some("ref_tx_999".to_string()),
+        settlement_note: None,
     }
 }
 
@@ -72,22 +80,22 @@ fn payment_request_validation() {
     assert!(matches!(req.validate(), Err(PaymentError::SamePartyDid)));
     req.quote_author_did = "did:key:zQuoteAuthor".to_string();
 
-    req.currency = "INVALID".to_string();
-    assert!(matches!(req.validate(), Err(PaymentError::UnknownCurrency(_))));
-    req.currency = "USD".to_string();
-
-    req.amount_minor = -1;
-    assert!(matches!(req.validate(), Err(PaymentError::NegativeAmount(-1))));
-    req.amount_minor = 10_000;
+    req.commitment_id = String::new();
+    assert!(matches!(req.validate(), Err(PaymentError::CommitmentIdEmpty)));
+    req.commitment_id = "c1".to_string();
 
     let long_note = "n".repeat(MAX_NOTE_LEN + 1);
-    req.note = Some(long_note);
-    assert!(matches!(req.validate(), Err(PaymentError::NoteTooLong)));
+    req.note = Some(LocalText {
+        lang: LangTag::parse("en").unwrap(),
+        text: long_note,
+        translations: Vec::new(),
+    });
+    assert!(matches!(req.validate(), Err(PaymentError::Note(_))));
 }
 
 #[test]
 fn payment_acknowledgement_validation() {
-    let mut ack = sample_ack(DealRole::Counterparty);
+    let mut ack = sample_ack(SettlementRole::Giver);
     assert!(ack.validate().is_ok());
 
     ack.observed_at_secs = 0;
@@ -109,29 +117,27 @@ fn payment_acknowledgement_validation() {
 }
 
 #[test]
-fn test_matches_terms() {
-    let terms = sample_terms();
-    assert!(matches_terms("USD", 10_000, Some("card"), &terms));
-    assert!(matches_terms("USD", 10_000, None, &terms));
-    assert!(!matches_terms("EUR", 10_000, Some("card"), &terms));
-    assert!(!matches_terms("USD", 5_000, Some("card"), &terms));
-    assert!(!matches_terms("USD", 10_000, Some("crypto"), &terms));
+fn test_commitment_accepts() {
+    let commitment = sample_commitment();
+    assert!(commitment_accepts(&commitment, "card"));
+    assert!(commitment_accepts(&commitment, "cash"));
+    assert!(!commitment_accepts(&commitment, "crypto"));
 }
 
 #[test]
 fn test_acknowledgements_agree() {
-    let counterparty_ack = sample_ack(DealRole::Counterparty);
-    let quote_author_ack = sample_ack(DealRole::QuoteAuthor);
-    assert!(acknowledgements_agree(&counterparty_ack, &quote_author_ack));
+    let giver_ack = sample_ack(SettlementRole::Giver);
+    let receiver_ack = sample_ack(SettlementRole::Receiver);
+    assert!(acknowledgements_agree(&giver_ack, &receiver_ack));
 
-    let mut mismatched = quote_author_ack.clone();
-    mismatched.amount_minor = 20_000;
-    assert!(!acknowledgements_agree(&counterparty_ack, &mismatched));
+    let mut mismatched = receiver_ack.clone();
+    mismatched.commitment_id = "c2".to_string();
+    assert!(!acknowledgements_agree(&giver_ack, &mismatched));
 }
 
 #[test]
 fn test_is_valid_correction() {
-    let old = sample_ack(DealRole::Counterparty);
+    let old = sample_ack(SettlementRole::Giver);
     let mut new = old.clone();
     new.reference = Some("corrected_ref".to_string());
     new.method = Some("cash".to_string());
@@ -139,7 +145,7 @@ fn test_is_valid_correction() {
     assert!(is_valid_correction(&old, &new));
 
     let mut bad_correction = old.clone();
-    bad_correction.amount_minor = 50_000;
+    bad_correction.commitment_id = "c2".to_string();
     assert!(!is_valid_correction(&old, &bad_correction));
 }
 
@@ -169,7 +175,7 @@ fn verify_payment_envelopes() {
     assert_eq!(verdict.payload, Some(req));
 
     // Payment ack
-    let mut ack = sample_ack(DealRole::QuoteAuthor);
+    let mut ack = sample_ack(SettlementRole::Receiver);
     ack.quote_author_did = issuer.clone();
     let ack_draft = RecordDraft {
         version: PAYMENT_ACKNOWLEDGEMENT_VERSION,

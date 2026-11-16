@@ -1,43 +1,66 @@
-use serde_json::Value;
 use syneroym_roym_core::{
+    deal::{CommitmentKind, LocalText, ResourceKind},
     lang::LangTag,
-    listing::ServiceLocation,
-    transaction::{PaymentTiming, QuoteLocation, TimeWindow},
+    transaction::DealRole,
 };
 
-use super::QuoteTermsInput;
+use super::{CommitmentInput, DealTermsInput};
 
 #[test]
-fn quote_terms_input_matches_agreed_terms_fields() {
-    let input = QuoteTermsInput {
-        lang: LangTag::parse_canonical("en").expect("valid tag"),
-        scope: "gardening".to_string(),
-        currency: "EUR".to_string(),
-        amount_minor: 5000,
-        tax_minor: 500,
-        fees_minor: 100,
-        payment_methods: vec!["sepa".to_string()],
-        payee: "did:key:z6MkuPayee".to_string(),
-        payment_timing: PaymentTiming::AfterWork,
-        schedule: Some(TimeWindow { earliest_secs: 1000, latest_secs: 2000 }),
-        location: QuoteLocation {
-            where_: ServiceLocation::AtGiver,
-            area: None,
-            address: Some("Baker Street 221B".to_string()),
-        },
-        cancellation_terms: "24h".to_string(),
-        refund_terms: "full refund".to_string(),
-        dispute_path: "arbitration".to_string(),
+fn deal_terms_input_assigns_commitment_ids_and_expiry() {
+    let input = DealTermsInput {
+        currency: "INR".to_string(),
+        home_exchange: None,
+        commitments: vec![
+            CommitmentInput {
+                giver: DealRole::QuoteAuthor,
+                resource_kind: ResourceKind::GoodsOrService,
+                kind: CommitmentKind::Fulfilment,
+                extension: None,
+                after: vec![],
+                description: LocalText::plain(LangTag::parse_canonical("en").unwrap(), "Delivery"),
+                declared_value_minor: 10000,
+                details: None,
+                window: None,
+                location: None,
+                payee: None,
+                payment_methods: None,
+                tax_minor: None,
+                fees_minor: None,
+                eep: None,
+            },
+            CommitmentInput {
+                giver: DealRole::Counterparty,
+                resource_kind: ResourceKind::Currency,
+                kind: CommitmentKind::Currency,
+                extension: None,
+                after: vec!["c1".to_string()],
+                description: LocalText::plain(
+                    LangTag::parse_canonical("en").unwrap(),
+                    "INR 100.00",
+                ),
+                declared_value_minor: 10000,
+                details: None,
+                window: None,
+                location: None,
+                payee: Some("did:key:z6MkuPayee".to_string()),
+                payment_methods: Some(vec!["upi".to_string()]),
+                tax_minor: Some(0),
+                fees_minor: Some(0),
+                eep: None,
+            },
+        ],
+        listing_id: None,
+        scope: LocalText::plain(LangTag::parse_canonical("en").unwrap(), "Delivery of goods"),
+        cancellation_terms: LocalText::plain(LangTag::parse_canonical("en").unwrap(), "24h"),
+        refund_terms: LocalText::plain(LangTag::parse_canonical("en").unwrap(), "Full refund"),
+        dispute_path: LocalText::plain(LangTag::parse_canonical("en").unwrap(), "Mediation"),
     };
 
-    let expires_at_secs = 999_999;
-    let agreed = input.clone().into_agreed_terms(expires_at_secs);
-
-    let mut agreed_json = serde_json::to_value(&agreed).expect("serialize agreed terms");
-    let agreed_map = agreed_json.as_object_mut().expect("agreed terms is object");
-    let removed_expiry = agreed_map.remove("quote_expires_at_secs");
-    assert_eq!(removed_expiry, Some(Value::from(expires_at_secs)));
-
-    let input_json = serde_json::to_value(&input).expect("serialize quote terms input");
-    assert_eq!(input_json, agreed_json);
+    let expires = 1_234_567;
+    let deal = input.into_deal_terms(expires);
+    assert_eq!(deal.quote_expires_at_secs, expires);
+    assert_eq!(deal.commitments.len(), 2);
+    assert_eq!(deal.commitments[0].commitment_id, "c1");
+    assert_eq!(deal.commitments[1].commitment_id, "c2");
 }

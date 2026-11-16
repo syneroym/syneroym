@@ -91,14 +91,17 @@ pub(crate) async fn thread<H: AppHost>(host: &H, input: ThreadInput) -> Reply<Th
             && row.version_count.is_none()
         {
             row.version_count = Some(pointer.version_count);
-        } else if row.card_type == "payment-request"
+        } else if (row.card_type == "payment-request" || row.card_type == "payment-acknowledgement")
             && row.verified
             && let Some(agr_id) =
                 row.data.as_ref().and_then(|p| p.get("agreement")).and_then(Value::as_str)
+            && let Some(cid) =
+                row.data.as_ref().and_then(|p| p.get("commitment_id")).and_then(Value::as_str)
             && let Some(agr) = agreement_map.get(agr_id)
+            && let Some(c) = agr.terms.commitments.iter().find(|c| c.commitment_id == cid)
         {
-            row.agreement_payee = Some(agr.terms.payee.clone());
-            row.agreement_payment_methods = agr.terms.payment_methods.clone();
+            row.agreement_payee = c.payee.clone();
+            row.agreement_payment_methods = c.payment_methods.clone().unwrap_or_default();
         }
     }
 

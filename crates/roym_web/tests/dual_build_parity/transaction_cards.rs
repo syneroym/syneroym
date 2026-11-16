@@ -341,10 +341,10 @@ async fn scenario_142_transaction_export_import_roundtrip_parity() {
         let bundle: Bundle = serde_json::from_value(side["result"].clone()).unwrap();
         bundle.check_integrity().expect("exported bundle must pass integrity");
         let sections = &bundle.manifest.sections;
-        assert_eq!(sections["enquiries"].schema_version, 4);
-        assert_eq!(sections["quotes"].schema_version, 4);
-        assert_eq!(sections["agreements"].schema_version, 4);
-        assert_eq!(sections["cards"].schema_version, 4);
+        assert_eq!(sections["enquiries"].schema_version, 5);
+        assert_eq!(sections["quotes"].schema_version, 5);
+        assert_eq!(sections["agreements"].schema_version, 5);
+        assert_eq!(sections["cards"].schema_version, 5);
     }
 
     let bundle_val = exp_w["result"].clone();
@@ -504,36 +504,36 @@ async fn assert_tampered_progress_record(h: &Harness, bundle_val: &Value, now: u
     let bad_prog_row = json!({
         "id": "rec-quote-142",
         "payload": {
+            "seq": 1,
             "agreement": "rec-quote-142",
             "conversation": "conv-142",
-            "seq": 1,
-            "writer": "writer",
-            "received_at_secs": now,
             "record_id": "rec_tampered_prog_1",
             "envelope": "{\"tampered\": true}",
+            "stored_at_secs": now,
             "snapshot": {
                 "agreement": "rec-quote-142",
                 "conversation": "conv-142",
                 "counterparty_did": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
                 "quote_author_did": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
                 "seq": 1,
-                "state": "scheduled",
-                "payment": "none",
-                "fulfilment": "none",
-                "conflict": null,
-                "track_window_ends_at_secs": now + 86400,
-                "cancelled_by": null,
-                "cancel_reason": null
+                "state": "agreed",
+                "commitments": []
             }
         }
     });
-    b_progress.sections.insert("progress".to_string(), vec![bad_prog_row]);
+    b_progress.sections.insert(
+        syneroym_roym_core::backup::SECTION_AGREEMENT_PROGRESS.to_string(),
+        vec![bad_prog_row],
+    );
     let p_digest = Bundle::digest(
         transaction_app::SCHEMA_VERSION,
-        b_progress.sections.get("progress").unwrap(),
+        b_progress.sections.get(syneroym_roym_core::backup::SECTION_AGREEMENT_PROGRESS).unwrap(),
     )
     .unwrap();
-    b_progress.manifest.sections.insert("progress".to_string(), p_digest);
+    b_progress
+        .manifest
+        .sections
+        .insert(syneroym_roym_core::backup::SECTION_AGREEMENT_PROGRESS.to_string(), p_digest);
     resign_bundle(&mut b_progress, &h.owner, now);
 
     let (pw, pn) = both_rpc(h, "transaction.import", json!({ "bundle": b_progress })).await;

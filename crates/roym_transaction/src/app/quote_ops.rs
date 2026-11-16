@@ -1,19 +1,22 @@
 //! Quote record operations: set, get, list, history, decline, store.
 
+pub mod input;
 #[cfg(test)]
 mod tests;
 
 use std::cmp::Reverse;
 
+pub use input::{CommitmentInput, DealTermsInput};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use syneroym_app_host::{
     AppHost, AppSigning,
     types::signing::{Principal, RecordDraft},
 };
 use syneroym_roym_core::{
     clock,
+    deal::ResourceKind,
     envelope::Response,
-    lang::LangTag,
     method::{
         self, EnvelopeHistoryOutput, Reply, SiblingError, VerifyInput, call_sibling,
         catalog::{SlotKeyInput, SlotRow},
@@ -23,9 +26,8 @@ use syneroym_roym_core::{
     services,
     signing::{self, CertificateError},
     transaction::{
-        self, AgreedTerms, EnquiryPayload, MAX_QUOTE_LIFETIME_SECS, MIN_QUOTE_LIFETIME_SECS,
-        PaymentTiming, QUOTE_VERSION, QuoteLocation, QuotePayload, QuoteTranslation, RecordVerdict,
-        TimeWindow,
+        self, Answers, DealRole, EnquiryPayload, MAX_QUOTE_LIFETIME_SECS, MIN_QUOTE_LIFETIME_SECS,
+        QUOTE_VERSION, QuotePayload, RecordVerdict, TimeWindow,
     },
 };
 
@@ -35,49 +37,6 @@ use super::{
     put_bytes, put_row, resolve_principal_and_owner, send_card_and_file,
 };
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct QuoteTermsInput {
-    pub lang: LangTag,
-    pub scope: String,
-    pub currency: String,
-    pub amount_minor: i64,
-    pub tax_minor: i64,
-    pub fees_minor: i64,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub payment_methods: Vec<String>,
-    pub payee: String,
-    pub payment_timing: PaymentTiming,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub schedule: Option<TimeWindow>,
-    pub location: QuoteLocation,
-    pub cancellation_terms: String,
-    pub refund_terms: String,
-    pub dispute_path: String,
-}
-
-impl QuoteTermsInput {
-    pub fn into_agreed_terms(self, quote_expires_at_secs: u64) -> AgreedTerms {
-        AgreedTerms {
-            lang: self.lang,
-            scope: self.scope,
-            currency: self.currency,
-            amount_minor: self.amount_minor,
-            tax_minor: self.tax_minor,
-            fees_minor: self.fees_minor,
-            payment_methods: self.payment_methods,
-            payee: self.payee,
-            payment_timing: self.payment_timing,
-            schedule: self.schedule,
-            location: self.location,
-            cancellation_terms: self.cancellation_terms,
-            refund_terms: self.refund_terms,
-            dispute_path: self.dispute_path,
-            quote_expires_at_secs,
-        }
-    }
-}
-
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct QuoteSetInput {
@@ -85,14 +44,8 @@ pub struct QuoteSetInput {
     pub enquiry_record_id: String,
     #[serde(default)]
     pub quote_id: Option<String>,
-    #[serde(default)]
-    pub listing_id: Option<String>,
-    #[serde(default)]
-    pub slot_id: Option<String>,
     pub expires_in_secs: u64,
-    pub terms: QuoteTermsInput,
-    #[serde(default)]
-    pub translations: Vec<QuoteTranslation>,
+    pub terms: DealTermsInput,
 }
 
 #[derive(Debug, Serialize)]
@@ -161,8 +114,11 @@ pub struct QuoteDeclineOutput {
     pub note: Option<String>,
 }
 
-pub(crate) async fn set<H: AppHost>(host: &H, input: QuoteSetInput) -> Reply<QuoteSetOutput> {
-    let now = clock::now_secs();
+pub(crate) async fn set_at<H: AppHost>(
+    host: &H,
+    mut input: QuoteSetInput,
+    now: u64,
+) -> Reply<QuoteSetOutput> {
     let (principal, owner) = resolve_principal_and_owner(host, now).await?;
 
     if !(MIN_QUOTE_LIFETIME_SECS..=MAX_QUOTE_LIFETIME_SECS).contains(&input.expires_in_secs) {
@@ -182,26 +138,28 @@ pub(crate) async fn set<H: AppHost>(host: &H, input: QuoteSetInput) -> Reply<Quo
         resolve_quote_sequence(host, &input, &conversation, &owner).await?;
 
     let expires_at_secs = now + input.expires_in_secs;
-    let quote_id = match transaction::derive_quote_id(&conversation, &owner, sequence) {
-        Ok(id) => id,
-        Err(e) => return Err(Response::internal_error(e.to_string())),
+    let quote_id = match input.quote_id.take() {
+        Some(id) => id,
+        None => match transaction::derive_quote_id(&conversation, &owner, sequence) {
+            Ok(id) => id,
+            Err(e) => return Err(Response::internal_error(e.to_string())),
+        },
     };
 
-    let mut terms = input.terms.into_agreed_terms(expires_at_secs);
-
-    if let Some(ref slot_id) = input.slot_id {
-        validate_and_apply_slot(host, slot_id, input.listing_id.as_deref(), &mut terms).await?;
+    for c in &mut input.terms.commitments {
+        if c.giver == DealRole::QuoteAuthor && c.resource_kind == ResourceKind::ServiceInSlot {
+            validate_and_apply_slot(host, c, input.terms.listing_id.as_deref()).await?;
+        }
     }
+
+    let terms = input.terms.into_deal_terms(expires_at_secs);
 
     let payload = QuotePayload {
         quote_id: quote_id.clone(),
         conversation: conversation.clone(),
         sequence,
-        request_record_id: input.enquiry_record_id.clone(),
-        listing_id: input.listing_id,
-        slot_id: input.slot_id,
+        answers: Answers::Enquiry { record_id: input.enquiry_record_id.clone() },
         counterparty_did: counterparty_did.clone(),
-        translations: input.translations,
         terms,
     };
     if let Err(e) = payload.validate() {
@@ -237,6 +195,10 @@ pub(crate) async fn set<H: AppHost>(host: &H, input: QuoteSetInput) -> Reply<Quo
         state,
         send_error,
     })
+}
+
+pub(crate) async fn set<H: AppHost>(host: &H, input: QuoteSetInput) -> Reply<QuoteSetOutput> {
+    set_at(host, input, clock::now_secs()).await
 }
 
 /// Fetches and verifies the enquiry this quote answers, and checks the
@@ -318,14 +280,28 @@ async fn resolve_quote_sequence<H: AppHost>(
 
 async fn validate_and_apply_slot<H: AppHost>(
     host: &H,
-    slot_id: &str,
-    listing_id: Option<&str>,
-    terms: &mut AgreedTerms,
+    c: &mut CommitmentInput,
+    terms_listing_id: Option<&str>,
 ) -> Result<(), Response> {
-    let listing_id = match listing_id {
-        Some(lid) => lid,
-        None => return Err(Response::invalid_params("slot requires listing_id")),
+    let details = c
+        .details
+        .as_ref()
+        .ok_or_else(|| Response::invalid_params("service-in-slot commitment requires details"))?;
+    let slot_id = details
+        .data
+        .get("slot_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| Response::invalid_params("details.data requires slot_id"))?;
+    let detail_listing = details.data.get("listing_id").and_then(Value::as_str);
+    let listing_id = match (terms_listing_id, detail_listing) {
+        (Some(tl), Some(dl)) if tl != dl => {
+            return Err(Response::invalid_params("slot-not-in-listing"));
+        }
+        (Some(tl), _) => tl,
+        (None, Some(dl)) => dl,
+        (None, None) => return Err(Response::invalid_params("slot requires listing_id")),
     };
+
     let slot = match call_sibling::<_, SlotKeyInput, Option<SlotRow>>(
         host,
         services::CATALOG,
@@ -345,12 +321,12 @@ async fn validate_and_apply_slot<H: AppHost>(
     }
     let start_secs = slot.start_secs;
     let end_secs = slot.end_secs;
-    if let Some(ref sched) = terms.schedule
+    if let Some(ref sched) = c.window
         && (sched.earliest_secs != start_secs || sched.latest_secs != end_secs)
     {
         return Err(Response::invalid_params("schedule-differs-from-slot"));
     }
-    terms.schedule = Some(TimeWindow { earliest_secs: start_secs, latest_secs: end_secs });
+    c.window = Some(TimeWindow { earliest_secs: start_secs, latest_secs: end_secs });
     Ok(())
 }
 
@@ -424,6 +400,10 @@ fn build_quote_pointer(
     next_count: u64,
     now: u64,
 ) -> RecordPointerRow {
+    let request_record_id = match &payload.answers {
+        Answers::Enquiry { record_id } => Some(record_id.clone()),
+        _ => None,
+    };
     RecordPointerRow {
         envelope: signed.envelope_json.clone(),
         record_id: signed.record_id.clone(),
@@ -435,7 +415,7 @@ fn build_quote_pointer(
         updated_at_secs: now,
         version_count: next_count,
         issued_at_secs: now,
-        request_record_id: Some(payload.request_record_id.clone()),
+        request_record_id,
         counterparty_did: Some(payload.counterparty_did.clone()),
         declined_at_secs: None,
         decline_note: None,
@@ -615,6 +595,10 @@ pub(crate) async fn store_received_quote<H: AppHost>(
         (1, None, None)
     };
     let mine = !owner.is_empty() && v.issuer.as_deref() == Some(owner);
+    let request_record_id = match &payload.answers {
+        Answers::Enquiry { record_id } => Some(record_id.clone()),
+        _ => None,
+    };
     let pointer = RecordPointerRow {
         envelope: envelope.to_string(),
         record_id: record_id.to_string(),
@@ -626,7 +610,7 @@ pub(crate) async fn store_received_quote<H: AppHost>(
         updated_at_secs: now,
         version_count,
         issued_at_secs: incoming_issued,
-        request_record_id: Some(payload.request_record_id.clone()),
+        request_record_id,
         counterparty_did: Some(payload.counterparty_did.clone()),
         declined_at_secs,
         decline_note,

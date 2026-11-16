@@ -9,11 +9,72 @@
       "conversation": "string",
       "data": {
         "agreement": "string",
-        "amount_minor": "number",
+        "commitment_id": "string",
         "conversation": "string",
         "counterparty_did": "string",
-        "currency": "string",
         "quote_author_did": "string"
+      },
+      "direction": "outgoing",
+      "expired": "boolean",
+      "issuer": "string",
+      "known": "boolean",
+      "message_id": "string",
+      "record_id": "string",
+      "revocation_status": "not-revoked",
+      "sender_timestamp_ms": "number",
+      "stored_at_secs": "number",
+      "verified": "boolean",
+      "version": "number"
+    },
+    {
+      "card_type": "agreement-progress",
+      "conversation": "string",
+      "data": {
+        "agreement": "string",
+        "commitments": [
+          {
+            "commitment_id": "string",
+            "state": "payment-requested"
+          },
+          {
+            "commitment_id": "string",
+            "state": "promised"
+          }
+        ],
+        "conversation": "string",
+        "counterparty_did": "string",
+        "quote_author_did": "string",
+        "seq": "number",
+        "state": "agreed"
+      },
+      "direction": "outgoing",
+      "expired": "boolean",
+      "issuer": "string",
+      "known": "boolean",
+      "message_id": "string",
+      "record_id": "string",
+      "revocation_status": "not-revoked",
+      "sender_timestamp_ms": "number",
+      "stored_at_secs": "number",
+      "verified": "boolean",
+      "version": "number"
+    },
+    {
+      "card_type": "agreement-progress",
+      "conversation": "string",
+      "data": {
+        "agreement": "string",
+        "commitments": [
+          {
+            "commitment_id": "string",
+            "state": "promised"
+          }
+        ],
+        "conversation": "string",
+        "counterparty_did": "string",
+        "quote_author_did": "string",
+        "seq": "number",
+        "state": "agreed"
       },
       "direction": "outgoing",
       "expired": "boolean",
@@ -36,25 +97,72 @@
         "quote_record_id": "string",
         "role": "counterparty",
         "terms": {
-          "amount_minor": "number",
-          "cancellation_terms": "string",
-          "currency": "string",
-          "dispute_path": "string",
-          "fees_minor": "number",
-          "lang": "string",
-          "location": {
-            "address": "string",
-            "where": "at-receiver"
+          "cancellation_terms": {
+            "lang": "string",
+            "text": "string"
           },
-          "payee": "string",
-          "payment_methods": [
-            "string"
+          "commitments": [
+            {
+              "after": [
+                "string"
+              ],
+              "commitment_id": "string",
+              "declared_value_minor": "number",
+              "description": {
+                "lang": "string",
+                "text": "string"
+              },
+              "details": "null",
+              "eep": "null",
+              "fees_minor": "number",
+              "giver": "counterparty",
+              "kind": "currency",
+              "location": "null",
+              "payee": "string",
+              "payment_methods": [
+                "string"
+              ],
+              "resource_kind": "currency",
+              "tax_minor": "number",
+              "window": "null"
+            },
+            {
+              "commitment_id": "string",
+              "declared_value_minor": "number",
+              "description": {
+                "lang": "string",
+                "text": "string"
+              },
+              "details": "null",
+              "eep": "null",
+              "fees_minor": "null",
+              "giver": "quote-author",
+              "kind": "fulfilment",
+              "location": {
+                "address": "string",
+                "where": "at-receiver"
+              },
+              "payee": "null",
+              "payment_methods": "null",
+              "resource_kind": "goods-or-service",
+              "tax_minor": "null",
+              "window": "null"
+            }
           ],
-          "payment_timing": "after-work",
+          "currency": "string",
+          "dispute_path": {
+            "lang": "string",
+            "text": "string"
+          },
           "quote_expires_at_secs": "number",
-          "refund_terms": "string",
-          "scope": "string",
-          "tax_minor": "number"
+          "refund_terms": {
+            "lang": "string",
+            "text": "string"
+          },
+          "scope": {
+            "lang": "string",
+            "text": "string"
+          }
         },
         "viewed_lang": "string",
         "viewed_via_mt": "boolean"
@@ -80,54 +188,75 @@
         "quote_record_id": "string",
         "role": "quote-author",
         "terms": {
-          "amount_minor": "number",
-          "cancellation_terms": "string",
-          "currency": "string",
-          "dispute_path": "string",
-          "fees_minor": "number",
-          "lang": "string",
-          "location": {
-            "address": "string",
-            "where": "at-receiver"
+          "cancellation_terms": {
+            "lang": "string",
+            "text": "string"
           },
-          "payee": "string",
-          "payment_methods": [
-            "string"
+          "commitments": [
+            {
+              "after": [
+                "string"
+              ],
+              "commitment_id": "string",
+              "declared_value_minor": "number",
+              "description": {
+                "lang": "string",
+                "text": "string"
+              },
+              "details": "null",
+              "eep": "null",
+              "fees_minor": "number",
+              "giver": "counterparty",
+              "kind": "currency",
+              "location": "null",
+              "payee": "string",
+              "payment_methods": [
+                "string"
+              ],
+              "resource_kind": "currency",
+              "tax_minor": "number",
+              "window": "null"
+            },
+            {
+              "commitment_id": "string",
+              "declared_value_minor": "number",
+              "description": {
+                "lang": "string",
+                "text": "string"
+              },
+              "details": "null",
+              "eep": "null",
+              "fees_minor": "null",
+              "giver": "quote-author",
+              "kind": "fulfilment",
+              "location": {
+                "address": "string",
+                "where": "at-receiver"
+              },
+              "payee": "null",
+              "payment_methods": "null",
+              "resource_kind": "goods-or-service",
+              "tax_minor": "null",
+              "window": "null"
+            }
           ],
-          "payment_timing": "after-work",
+          "currency": "string",
+          "dispute_path": {
+            "lang": "string",
+            "text": "string"
+          },
           "quote_expires_at_secs": "number",
-          "refund_terms": "string",
-          "scope": "string",
-          "tax_minor": "number"
+          "refund_terms": {
+            "lang": "string",
+            "text": "string"
+          },
+          "scope": {
+            "lang": "string",
+            "text": "string"
+          }
         },
         "viewed_lang": "string",
         "viewed_via_mt": "boolean"
-      },
-      "direction": "outgoing",
-      "expired": "boolean",
-      "issuer": "string",
-      "known": "boolean",
-      "message_id": "string",
-      "record_id": "string",
-      "revocation_status": "not-revoked",
-      "sender_timestamp_ms": "number",
-      "stored_at_secs": "number",
-      "verified": "boolean",
-      "version": "number"
-    },
-    {
-      "card_type": "booking-progress",
-      "conversation": "string",
-      "data": {
-        "agreement": "string",
-        "conversation": "string",
-        "counterparty_did": "string",
-        "fulfilment": "none",
-        "payment": "none",
-        "quote_author_did": "string",
-        "seq": "number",
-        "state": "scheduled",
-        "track_window_ends_at_secs": "number"
       },
       "direction": "outgoing",
       "expired": "boolean",
@@ -174,31 +303,81 @@
       "card_type": "quote",
       "conversation": "string",
       "data": {
+        "answers": {
+          "kind": "enquiry",
+          "record_id": "string"
+        },
         "conversation": "string",
         "counterparty_did": "string",
         "quote_id": "string",
-        "request_record_id": "string",
         "sequence": "number",
         "terms": {
-          "amount_minor": "number",
-          "cancellation_terms": "string",
-          "currency": "string",
-          "dispute_path": "string",
-          "fees_minor": "number",
-          "lang": "string",
-          "location": {
-            "address": "string",
-            "where": "at-receiver"
+          "cancellation_terms": {
+            "lang": "string",
+            "text": "string"
           },
-          "payee": "string",
-          "payment_methods": [
-            "string"
+          "commitments": [
+            {
+              "after": [
+                "string"
+              ],
+              "commitment_id": "string",
+              "declared_value_minor": "number",
+              "description": {
+                "lang": "string",
+                "text": "string"
+              },
+              "details": "null",
+              "eep": "null",
+              "fees_minor": "number",
+              "giver": "counterparty",
+              "kind": "currency",
+              "location": "null",
+              "payee": "string",
+              "payment_methods": [
+                "string"
+              ],
+              "resource_kind": "currency",
+              "tax_minor": "number",
+              "window": "null"
+            },
+            {
+              "commitment_id": "string",
+              "declared_value_minor": "number",
+              "description": {
+                "lang": "string",
+                "text": "string"
+              },
+              "details": "null",
+              "eep": "null",
+              "fees_minor": "null",
+              "giver": "quote-author",
+              "kind": "fulfilment",
+              "location": {
+                "address": "string",
+                "where": "at-receiver"
+              },
+              "payee": "null",
+              "payment_methods": "null",
+              "resource_kind": "goods-or-service",
+              "tax_minor": "null",
+              "window": "null"
+            }
           ],
-          "payment_timing": "after-work",
+          "currency": "string",
+          "dispute_path": {
+            "lang": "string",
+            "text": "string"
+          },
           "quote_expires_at_secs": "number",
-          "refund_terms": "string",
-          "scope": "string",
-          "tax_minor": "number"
+          "refund_terms": {
+            "lang": "string",
+            "text": "string"
+          },
+          "scope": {
+            "lang": "string",
+            "text": "string"
+          }
         }
       },
       "direction": "outgoing",

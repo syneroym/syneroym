@@ -9,21 +9,21 @@ use serde_json::{Value, json};
 use syneroym_app_host::AppHost;
 use syneroym_roym_core::{
     backup::{
-        self, Bundle, ImportInput, SECTION_AGREEMENTS, SECTION_BOOKINGS, SECTION_CARDS,
+        self, Bundle, ImportInput, SECTION_AGREEMENT_PROGRESS, SECTION_AGREEMENTS, SECTION_CARDS,
         SECTION_ENQUIRIES, SECTION_ENQUIRY_HISTORY, SECTION_FULFILMENTS, SECTION_LEDGER,
-        SECTION_PAYMENTS, SECTION_PROGRESS, SECTION_QUOTE_HISTORY, SECTION_QUOTES,
+        SECTION_PAYMENTS, SECTION_QUOTE_HISTORY, SECTION_QUOTES,
     },
-    booking, clock,
+    clock,
     envelope::Response,
     fulfilment,
     method::{NoParams, Reply},
-    paging, payment, signing,
+    paging, payment, progress, signing,
     transaction::{self, DealRole, QuotePayload, ReceiptHalf},
 };
 
 use super::{
-    AGREEMENTS, AgreementRow, BOOKINGS, CARDS, CardRow, ENQUIRIES, ENQUIRY_HISTORY, FULFILMENTS,
-    LEDGER, PAYMENTS, PROGRESS, QUOTE_HISTORY, QUOTES, RecordPointerRow, SCHEMA_VERSION,
+    AGREEMENT_PROGRESS, AGREEMENTS, AgreementRow, CARDS, CardRow, ENQUIRIES, ENQUIRY_HISTORY,
+    FULFILMENTS, LEDGER, PAYMENTS, QUOTE_HISTORY, QUOTES, RecordPointerRow, SCHEMA_VERSION,
     ensure_collections, get_bytes, put_bytes, put_row,
 };
 
@@ -50,8 +50,7 @@ pub(crate) async fn export<H: AppHost>(host: &H, _input: NoParams) -> Reply<Bund
             (SECTION_AGREEMENTS, AGREEMENTS),
             (SECTION_CARDS, CARDS),
             (SECTION_LEDGER, LEDGER),
-            (SECTION_BOOKINGS, BOOKINGS),
-            (SECTION_PROGRESS, PROGRESS),
+            (SECTION_AGREEMENT_PROGRESS, AGREEMENT_PROGRESS),
             (SECTION_PAYMENTS, PAYMENTS),
             (SECTION_FULFILMENTS, FULFILMENTS),
         ],
@@ -373,7 +372,11 @@ fn verify_imported_quotes(
         row.issuer = v.issuer.clone().unwrap_or_default();
         row.mine = v.issuer.as_deref() == Some(owner);
         row.issued_at_secs = v.issued_at_secs.unwrap_or(row.issued_at_secs);
-        row.request_record_id = Some(p.request_record_id.clone());
+        let request_record_id = match &p.answers {
+            transaction::Answers::Enquiry { record_id } => Some(record_id.clone()),
+            transaction::Answers::Want { .. } => None,
+        };
+        row.request_record_id = request_record_id;
         row.counterparty_did = Some(p.counterparty_did.clone());
 
         quotes_by_record_id.insert(
@@ -636,7 +639,7 @@ async fn write_imported_cards<H: AppHost>(
                     "enquiry" => transaction::verify_enquiry(env, now).verified,
                     "quote" => transaction::verify_quote(env, now).verified,
                     "agreement-receipt" => transaction::verify_agreement_receipt(env, now).verified,
-                    "booking-progress" => booking::verify_booking_progress(env, now).verified,
+                    "agreement-progress" => progress::verify_agreement_progress(env, now).verified,
                     "payment-request" => payment::verify_payment_request(env, now).verified,
                     "payment-acknowledgement" => {
                         payment::verify_payment_acknowledgement(env, now).verified

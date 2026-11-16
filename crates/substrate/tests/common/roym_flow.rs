@@ -161,19 +161,34 @@ pub async fn request_record_on_quote_author(
 
 pub fn quote_terms(payee: &str, amount_minor: u64) -> Value {
     json!({
-        "lang": "en",
-        "scope": "Clear garden waste and green bin collection",
         "currency": "EUR",
-        "amount_minor": amount_minor,
-        "tax_minor": 0,
-        "fees_minor": 0,
-        "payment_methods": ["cash"],
-        "payee": payee,
-        "payment_timing": "after-work",
-        "location": { "where": "at-receiver", "address": "1 Garden Lane" },
-        "cancellation_terms": "24 hours notice required",
-        "refund_terms": "Full refund if work not completed",
-        "dispute_path": "Informal mediation",
+        "commitments": [
+            {
+                "giver": "quote-author",
+                "resource_kind": "goods-or-service",
+                "kind": "fulfilment",
+                "after": [],
+                "description": { "lang": "en", "text": "Clear garden waste and green bin collection" },
+                "declared_value_minor": amount_minor as i64,
+                "location": { "where": "at-receiver", "address": "1 Garden Lane" },
+            },
+            {
+                "giver": "counterparty",
+                "resource_kind": "currency",
+                "kind": "currency",
+                "after": ["c1"],
+                "description": { "lang": "en", "text": format!("EUR {:.2}", amount_minor as f64 / 100.0) },
+                "declared_value_minor": amount_minor as i64,
+                "payee": payee,
+                "payment_methods": ["cash"],
+                "tax_minor": 0,
+                "fees_minor": 0,
+            }
+        ],
+        "scope": { "lang": "en", "text": "Clear garden waste and green bin collection" },
+        "cancellation_terms": { "lang": "en", "text": "24 hours notice required" },
+        "refund_terms": { "lang": "en", "text": "Full refund if work not completed" },
+        "dispute_path": { "lang": "en", "text": "Informal mediation" },
     })
 }
 
@@ -186,12 +201,29 @@ pub async fn send_quote(
     slot_id: &str,
     terms: Value,
 ) -> String {
+    let mut terms = terms;
+    if !slot_id.is_empty() && !listing_id.is_empty() {
+        terms["listing_id"] = json!(listing_id);
+        if let Some(c) =
+            terms.get_mut("commitments").and_then(|v| v.as_array_mut()).and_then(|a| a.get_mut(0))
+        {
+            c["resource_kind"] = json!("service-in-slot");
+            c["extension"] = json!({ "id": "scheduling", "version": 1 });
+            c["details"] = json!({
+                "extension": "scheduling",
+                "schema": "scheduling/slot@1",
+                "data": {
+                    "listing_id": listing_id,
+                    "slot_id": slot_id,
+                },
+                "extra": []
+            });
+        }
+    }
     send_quote_with(
         quote_author,
         json!({
             "enquiry_record_id": request_record_id,
-            "listing_id": listing_id,
-            "slot_id": slot_id,
             "expires_in_secs": 3600,
             "terms": terms,
         }),
@@ -253,13 +285,14 @@ pub async fn wait_and_verify_winner_scheduled(
     assert!(wait_delivered(node_y, prov_msg_id).await, "countersigned receipt delivered to winner");
 
     winner_node.rpc_ok("transaction.sync", json!({ "conversation": winner_conv_id })).await;
-    let winner_booking =
-        winner_node.rpc_ok("booking.get", json!({ "agreement": winner_quote_record_id })).await;
-    assert_eq!(winner_booking["state"], "scheduled");
+    let winner_booking = winner_node
+        .rpc_ok("agreement.get", json!({ "quote_record_id": winner_quote_record_id }))
+        .await;
+    assert_eq!(winner_booking["state"], "agreed");
 }
 
 /// Payment request, both acknowledgements, both fulfilment signatures, and
-/// both sides' bookings `completed`. `payee` is the quote's own payee.
+/// both sides' agreements `closed`. `payee` is the quote's own payee.
 pub async fn complete_winner_lifecycle(
     winner_node: &Node,
     node_y: &Node,
@@ -268,8 +301,12 @@ pub async fn complete_winner_lifecycle(
     winner_conv_on_y: &str,
     payee: &str,
 ) {
-    let pay_req =
-        node_y.rpc_ok("payment.request", json!({ "agreement": winner_quote_record_id })).await;
+    let pay_req = node_y
+        .rpc_ok(
+            "payment.request",
+            json!({ "agreement": winner_quote_record_id, "commitment_id": "c2" }),
+        )
+        .await;
     let pay_req_msg = pay_req["message_id"].as_str().unwrap().to_string();
     assert!(wait_delivered(node_y, &pay_req_msg).await, "payment request delivered");
 
@@ -285,25 +322,44 @@ pub async fn complete_winner_lifecycle(
     assert_eq!(pay_req_card["agreement_payee"], payee);
 
     let x_ack = winner_node
-        .rpc_ok("payment.acknowledge", json!({ "agreement": winner_quote_record_id }))
+        .rpc_ok(
+            "payment.acknowledge",
+            json!({ "agreement": winner_quote_record_id, "commitment_id": "c2" }),
+        )
         .await;
     let x_ack_msg = x_ack["message_id"].as_str().unwrap().to_string();
     assert!(wait_delivered(winner_node, &x_ack_msg).await, "counterparty's payment ack delivered");
 
     node_y.rpc_ok("transaction.sync", json!({ "conversation": winner_conv_on_y })).await;
-    let y_payment_after_counterparty =
-        node_y.rpc_ok("payment.get", json!({ "agreement": winner_quote_record_id })).await;
+    let y_payment_after_counterparty = node_y
+        .rpc_ok(
+            "payment.get",
+            json!({ "agreement": winner_quote_record_id, "commitment_id": "c2" }),
+        )
+        .await;
     assert_eq!(y_payment_after_counterparty["track"], "claimed");
 
-    let y_ack =
-        node_y.rpc_ok("payment.acknowledge", json!({ "agreement": winner_quote_record_id })).await;
+    let y_ack = node_y
+        .rpc_ok(
+            "payment.acknowledge",
+            json!({ "agreement": winner_quote_record_id, "commitment_id": "c2" }),
+        )
+        .await;
     assert_ne!(y_ack["state"], "already-recorded");
-    let y_payment_after_quote_author =
-        node_y.rpc_ok("payment.get", json!({ "agreement": winner_quote_record_id })).await;
+    let y_payment_after_quote_author = node_y
+        .rpc_ok(
+            "payment.get",
+            json!({ "agreement": winner_quote_record_id, "commitment_id": "c2" }),
+        )
+        .await;
     assert_eq!(y_payment_after_quote_author["track"], "acknowledged");
 
-    let y_fulfil =
-        node_y.rpc_ok("fulfilment.sign", json!({ "agreement": winner_quote_record_id })).await;
+    let y_fulfil = node_y
+        .rpc_ok(
+            "fulfilment.sign",
+            json!({ "agreement": winner_quote_record_id, "commitment_id": "c1" }),
+        )
+        .await;
     let y_fulfil_msg = y_fulfil["message_id"].as_str().unwrap().to_string();
     assert!(
         wait_delivered(node_y, &y_fulfil_msg).await,
@@ -311,8 +367,12 @@ pub async fn complete_winner_lifecycle(
     );
 
     winner_node.rpc_ok("transaction.sync", json!({ "conversation": winner_conv_id })).await;
-    let x_fulfil =
-        winner_node.rpc_ok("fulfilment.sign", json!({ "agreement": winner_quote_record_id })).await;
+    let x_fulfil = winner_node
+        .rpc_ok(
+            "fulfilment.sign",
+            json!({ "agreement": winner_quote_record_id, "commitment_id": "c1" }),
+        )
+        .await;
     let x_fulfil_msg = x_fulfil["message_id"].as_str().unwrap().to_string();
     assert!(
         wait_delivered(winner_node, &x_fulfil_msg).await,
@@ -329,7 +389,7 @@ pub async fn complete_winner_lifecycle(
     .await;
 }
 
-/// Both sides sync until their booking for the agreement reads `completed`.
+/// Both sides sync until their agreement reads `closed`.
 async fn assert_booking_completed(
     node_y: &Node,
     winner_node: &Node,
@@ -339,17 +399,19 @@ async fn assert_booking_completed(
 ) {
     let synced = wait_until(Duration::from_secs(30), || async {
         node_y.rpc_ok("transaction.sync", json!({ "conversation": conv_on_y })).await;
-        let b = node_y.rpc_ok("booking.get", json!({ "agreement": quote_record_id })).await;
-        b["state"] == "completed"
+        let b = node_y.rpc_ok("agreement.get", json!({ "quote_record_id": quote_record_id })).await;
+        b["state"] == "closed"
     })
     .await;
-    assert!(synced, "quote author's booking reaches completed");
+    assert!(synced, "quote author's agreement reaches closed");
 
     let synced_counterparty = wait_until(Duration::from_secs(30), || async {
         winner_node.rpc_ok("transaction.sync", json!({ "conversation": conv_on_winner })).await;
-        let b = winner_node.rpc_ok("booking.get", json!({ "agreement": quote_record_id })).await;
-        b["state"] == "completed"
+        let b = winner_node
+            .rpc_ok("agreement.get", json!({ "quote_record_id": quote_record_id }))
+            .await;
+        b["state"] == "closed"
     })
     .await;
-    assert!(synced_counterparty, "winner's own progress reaches completed");
+    assert!(synced_counterparty, "winner's own agreement reaches closed");
 }

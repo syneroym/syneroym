@@ -1,21 +1,20 @@
 use serde_json::json;
-use syneroym_roym_core::{
-    booking::BOOKING_PROGRESS_VERSION, record::RECORD_BOOKING_PROGRESS, transaction,
-};
+use syneroym_roym_core::transaction;
 use syneroym_signed_record::Envelope;
 
 use super::{
     deal_fixtures::{
-        seed_row, setup_active_agreement, setup_author_slot_quote_accepted_by_peer,
-        setup_listing_with_slot, setup_peer_request, setup_synced_counterparty_quote,
+        peer_signed_progress, seed_row, setup_active_agreement,
+        setup_author_slot_quote_accepted_by_peer, setup_listing_with_slot, setup_peer_request,
+        setup_synced_counterparty_quote,
     },
     fixtures::{
         deliver_peer_card, enrol_signing, open_conv, peer_counterparty_receipt, peer_did,
-        peer_identity, peer_signed_payment_ack, peer_signed_progress, peer_signed_quote,
-        peer_signed_request, valid_quote_params, wall_now,
+        peer_identity, peer_signed_payment_ack, peer_signed_quote, peer_signed_request,
+        valid_quote_params, wall_now,
     },
     helpers::{Harness, harness, owner_did},
-    shapes::{assert_shape, enrol_native_signing, rpc},
+    shapes::{assert_shape, enrol_native_signing, rpc, rpc_err},
 };
 
 async fn deal_pings_and_empty(h: &Harness) {
@@ -140,19 +139,19 @@ async fn deal_agreement_shapes(h: &Harness, conv: &str) {
         setup_author_slot_quote_accepted_by_peer(h, conv, "deal-slot-listing").await;
 
     let agr_accept_author =
-        rpc(h, "agreement.accept", json!({ "quote_record_id": q_slot_rec_id })).await;
-    assert_shape("agreement_accept_author_with_slot", &agr_accept_author);
-
-    let agr_accept_again =
-        rpc(h, "agreement.accept", json!({ "quote_record_id": q_slot_rec_id })).await;
-    assert_shape("agreement_accept_already_accepted", &agr_accept_again);
+        rpc_err(h, "agreement.accept", json!({ "quote_record_id": q_slot_rec_id })).await;
+    assert_shape("agreement_accept_writer_countersigns", &agr_accept_author);
 
     let cp_q_rec_id = setup_synced_counterparty_quote(h, conv, 3, "m-quote-cp").await;
 
     let agr_accept_cp = rpc(h, "agreement.accept", json!({ "quote_record_id": cp_q_rec_id })).await;
     assert_shape("agreement_accept_counterparty", &agr_accept_cp);
 
-    let agr_get = rpc(h, "agreement.get", json!({ "quote_record_id": q_slot_rec_id })).await;
+    let agr_accept_again =
+        rpc(h, "agreement.accept", json!({ "quote_record_id": cp_q_rec_id })).await;
+    assert_shape("agreement_accept_already_accepted", &agr_accept_again);
+
+    let agr_get = rpc(h, "agreement.get", json!({ "quote_record_id": cp_q_rec_id })).await;
     assert_shape("agreement_get_found", &agr_get);
 
     let agr_list = rpc(h, "agreement.list", json!({})).await;
@@ -176,124 +175,68 @@ async fn deal_shapes() {
     deal_agreement_shapes(&h, &conv).await;
 }
 
-async fn booking_author_shapes(h: &Harness, conv: &str) -> String {
-    let b_ping = rpc(h, "booking.ping", json!({})).await;
-    assert_shape("booking_ping", &b_ping);
+async fn agreement_progress_and_cancel_shapes(h: &Harness, conv: &str) {
+    let (agr_rec, _) = setup_active_agreement(h, conv, "after-work").await;
 
-    let q_slot_rec_id = setup_author_slot_quote_accepted_by_peer(h, conv, "booking-listing").await;
-    rpc(h, "agreement.accept", json!({ "quote_record_id": q_slot_rec_id })).await;
+    let a_prog = rpc(h, "agreement.progress", json!({ "agreement": agr_rec })).await;
+    assert_shape("agreement_progress", &a_prog);
 
-    let b_get_author = rpc(h, "booking.get", json!({ "agreement": q_slot_rec_id })).await;
-    assert_shape("booking_get_author", &b_get_author);
-
-    let b_start = rpc(h, "booking.start", json!({ "agreement": q_slot_rec_id })).await;
-    assert_shape("booking_start", &b_start);
-
-    let b_hist_author = rpc(h, "booking.history", json!({ "agreement": q_slot_rec_id })).await;
-    assert_shape("booking_history_author", &b_hist_author);
-
-    let b_cancel = rpc(
-        h,
-        "booking.cancel",
-        json!({ "agreement": q_slot_rec_id, "reason": "Client cancelled" }),
-    )
-    .await;
-    assert_shape("booking_cancel", &b_cancel);
-
-    q_slot_rec_id
-}
-
-async fn booking_counterparty_shapes(h: &Harness, conv: &str) {
-    let cp_q_rec_id = setup_synced_counterparty_quote(h, conv, 2, "m-quote-cp-book").await;
-    rpc(h, "agreement.accept", json!({ "quote_record_id": cp_q_rec_id })).await;
-
-    let b_get_cp = rpc(h, "booking.get", json!({ "agreement": cp_q_rec_id })).await;
-    assert_shape("booking_get_counterparty", &b_get_cp);
-
-    let (_, prog_env) = peer_signed_progress(
-        conv,
-        &cp_q_rec_id,
-        &owner_did(),
-        &peer_did(),
-        1,
-        "scheduled",
-        None,
-        "none",
-        "none",
-        2_000_000,
-        &peer_identity(),
-        1_001_500,
-    );
-    deliver_peer_card(
-        h,
-        "m-prog-cp",
-        conv,
-        &peer_did(),
-        RECORD_BOOKING_PROGRESS,
-        BOOKING_PROGRESS_VERSION,
-        &prog_env,
-    )
-    .await;
-    rpc(h, "transaction.sync", json!({ "conversation": conv, "full": true })).await;
-
-    let b_hist_cp = rpc(h, "booking.history", json!({ "agreement": cp_q_rec_id })).await;
-    assert_shape("booking_history_counterparty", &b_hist_cp);
-
-    let b_ver_good = rpc(h, "booking.verify", json!({ "envelope": prog_env })).await;
-    assert_shape("booking_verify_good", &b_ver_good);
-    let b_ver_bad = rpc(h, "booking.verify", json!({ "envelope": "tampered" })).await;
-    assert_shape("booking_verify_bad", &b_ver_bad);
+    let a_cancel =
+        rpc(h, "agreement.cancel", json!({ "agreement": agr_rec, "reason": "schedule-conflict" }))
+            .await;
+    assert_shape("agreement_cancel", &a_cancel);
 }
 
 #[tokio::test]
-async fn booking_shapes() {
+async fn agreement_progress_shapes() {
     let h = harness().await;
     enrol_signing(&h, "conversation").await;
     enrol_signing(&h, "transaction").await;
     let conv = open_conv(&h, &peer_did()).await;
 
-    booking_author_shapes(&h, &conv).await;
-    booking_counterparty_shapes(&h, &conv).await;
-
-    let b_list = rpc(&h, "booking.list", json!({})).await;
-    assert_shape("booking_list", &b_list);
+    agreement_progress_and_cancel_shapes(&h, &conv).await;
 }
 
 async fn payment_crash_recovery_shapes(h: &Harness, conv: &str) {
     let (agr_cr1, _) = setup_active_agreement(h, conv, "after-work").await;
-    let pr_cr1 = rpc(h, "payment.request", json!({ "agreement": agr_cr1 })).await;
+    let pr_cr1 =
+        rpc(h, "payment.request", json!({ "agreement": agr_cr1, "commitment_id": "c2" })).await;
     let rec1 = pr_cr1["record_id"].as_str().unwrap().to_string();
     seed_row(
         h,
         false,
         "transaction",
         "payments",
-        &agr_cr1,
+        &format!("{agr_cr1}:c2"),
         json!({
             "agreement": agr_cr1,
+            "commitment_id": "c2",
             "conversation": conv,
             "updated_at_secs": 1_000_000,
         }),
     )
     .await;
-    let pr_cr2 = rpc(h, "payment.request", json!({ "agreement": agr_cr1 })).await;
+    let pr_cr2 =
+        rpc(h, "payment.request", json!({ "agreement": agr_cr1, "commitment_id": "c2" })).await;
     assert_eq!(pr_cr2["record_id"], rec1);
     assert_ne!(pr_cr2["state"], "already-recorded");
     assert_shape("payment_request_crash_recovery", &pr_cr2);
 
     let (agr_cr2, _) = setup_active_agreement(h, conv, "after-work").await;
-    rpc(h, "payment.request", json!({ "agreement": agr_cr2 })).await;
-    let pa_cr1 = rpc(h, "payment.acknowledge", json!({ "agreement": agr_cr2 })).await;
+    rpc(h, "payment.request", json!({ "agreement": agr_cr2, "commitment_id": "c2" })).await;
+    let pa_cr1 =
+        rpc(h, "payment.acknowledge", json!({ "agreement": agr_cr2, "commitment_id": "c2" })).await;
     let rec2 = pa_cr1["record_id"].as_str().unwrap().to_string();
-    let pget = rpc(h, "payment.get", json!({ "agreement": agr_cr2 })).await;
+    let pget = rpc(h, "payment.get", json!({ "agreement": agr_cr2, "commitment_id": "c2" })).await;
     seed_row(
         h,
         false,
         "transaction",
         "payments",
-        &agr_cr2,
+        &format!("{agr_cr2}:c2"),
         json!({
             "agreement": agr_cr2,
+            "commitment_id": "c2",
             "conversation": conv,
             "request": pget["request"],
             "quote_author": [],
@@ -302,28 +245,32 @@ async fn payment_crash_recovery_shapes(h: &Harness, conv: &str) {
         }),
     )
     .await;
-    let pa_cr2 = rpc(h, "payment.acknowledge", json!({ "agreement": agr_cr2 })).await;
+    let pa_cr2 =
+        rpc(h, "payment.acknowledge", json!({ "agreement": agr_cr2, "commitment_id": "c2" })).await;
     assert_eq!(pa_cr2["record_id"], rec2);
     assert_ne!(pa_cr2["state"], "already-recorded");
     assert_shape("payment_ack_crash_recovery", &pa_cr2);
 
     let (agr_cr3, _) = setup_active_agreement(h, conv, "after-work").await;
-    let fs_cr1 = rpc(h, "fulfilment.sign", json!({ "agreement": agr_cr3 })).await;
+    let fs_cr1 =
+        rpc(h, "fulfilment.sign", json!({ "agreement": agr_cr3, "commitment_id": "c1" })).await;
     let rec3 = fs_cr1["record_id"].as_str().unwrap().to_string();
     seed_row(
         h,
         false,
         "transaction",
         "fulfilments",
-        &agr_cr3,
+        &format!("{agr_cr3}:c1"),
         json!({
             "agreement": agr_cr3,
+            "commitment_id": "c1",
             "conversation": conv,
             "updated_at_secs": 1_000_000,
         }),
     )
     .await;
-    let fs_cr2 = rpc(h, "fulfilment.sign", json!({ "agreement": agr_cr3 })).await;
+    let fs_cr2 =
+        rpc(h, "fulfilment.sign", json!({ "agreement": agr_cr3, "commitment_id": "c1" })).await;
     assert_eq!(fs_cr2["record_id"], rec3);
     assert_ne!(fs_cr2["state"], "already-recorded");
     assert_shape("fulfilment_sign_crash_recovery", &fs_cr2);
@@ -342,40 +289,48 @@ async fn payment_fulfilment_shapes() {
 
     let (agr1, _) = setup_active_agreement(&h, &conv, "after-work").await;
 
-    let p_get_empty = rpc(&h, "payment.get", json!({ "agreement": agr1 })).await;
+    let p_get_empty =
+        rpc(&h, "payment.get", json!({ "agreement": agr1, "commitment_id": "c2" })).await;
     assert_shape("payment_get_empty", &p_get_empty);
 
-    let f_get_empty = rpc(&h, "fulfilment.get", json!({ "agreement": agr1 })).await;
+    let f_get_empty =
+        rpc(&h, "fulfilment.get", json!({ "agreement": agr1, "commitment_id": "c1" })).await;
     assert_shape("fulfilment_get_empty", &f_get_empty);
 
     let pr_new =
-        rpc(&h, "payment.request", json!({ "agreement": agr1, "note": "Please pay" })).await;
+        rpc(&h, "payment.request", json!({ "agreement": agr1, "commitment_id": "c2", "note": { "lang": "en", "text": "Please pay" } })).await;
     assert_shape("payment_request_new", &pr_new);
 
-    let pr_already = rpc(&h, "payment.request", json!({ "agreement": agr1 })).await;
+    let pr_already =
+        rpc(&h, "payment.request", json!({ "agreement": agr1, "commitment_id": "c2" })).await;
     assert_shape("payment_request_already_recorded", &pr_already);
 
     let pa_new = rpc(
         &h,
         "payment.acknowledge",
-        json!({ "agreement": agr1, "method": "card", "reference": "tx-123" }),
+        json!({ "agreement": agr1, "commitment_id": "c2", "method": "card", "reference": "tx-123" }),
     )
     .await;
     assert_shape("payment_acknowledge_new", &pa_new);
 
-    let pa_already = rpc(&h, "payment.acknowledge", json!({ "agreement": agr1 })).await;
+    let pa_already =
+        rpc(&h, "payment.acknowledge", json!({ "agreement": agr1, "commitment_id": "c2" })).await;
     assert_shape("payment_acknowledge_already_recorded", &pa_already);
 
-    let p_get_rows = rpc(&h, "payment.get", json!({ "agreement": agr1 })).await;
+    let p_get_rows =
+        rpc(&h, "payment.get", json!({ "agreement": agr1, "commitment_id": "c2" })).await;
     assert_shape("payment_get_with_rows", &p_get_rows);
 
-    let fs_new = rpc(&h, "fulfilment.sign", json!({ "agreement": agr1 })).await;
+    let fs_new =
+        rpc(&h, "fulfilment.sign", json!({ "agreement": agr1, "commitment_id": "c1" })).await;
     assert_shape("fulfilment_sign_new", &fs_new);
 
-    let fs_already = rpc(&h, "fulfilment.sign", json!({ "agreement": agr1 })).await;
+    let fs_already =
+        rpc(&h, "fulfilment.sign", json!({ "agreement": agr1, "commitment_id": "c1" })).await;
     assert_shape("fulfilment_sign_already_recorded", &fs_already);
 
-    let f_get_rows = rpc(&h, "fulfilment.get", json!({ "agreement": agr1 })).await;
+    let f_get_rows =
+        rpc(&h, "fulfilment.get", json!({ "agreement": agr1, "commitment_id": "c1" })).await;
     assert_shape("fulfilment_get_with_rows", &f_get_rows);
 
     let req_env = p_get_rows["request"]["envelope"].as_str().unwrap();
@@ -388,8 +343,7 @@ async fn payment_fulfilment_shapes() {
         &peer_did(),
         &owner_did(),
         "counterparty",
-        "GBP",
-        1000,
+        "c2",
         1_002_000,
         Some("card"),
         Some("tx-123"),
@@ -425,7 +379,7 @@ async fn sync_backup_shapes() {
 
     let conv = open_conv(&h, &peer_did()).await;
     let (agr, _) = setup_active_agreement(&h, &conv, "after-work").await;
-    rpc(&h, "payment.request", json!({ "agreement": agr })).await;
+    rpc(&h, "payment.request", json!({ "agreement": agr, "commitment_id": "c2" })).await;
 
     let sync = rpc(&h, "transaction.sync", json!({ "conversation": conv, "full": true })).await;
     assert_shape("transaction_sync", &sync);

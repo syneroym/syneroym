@@ -27,7 +27,7 @@ fn test_cli_help_for_new_subcommands() -> Result<(), Box<dyn Error>> {
     cmd.arg("roym").arg("backup").arg("--help").assert().success();
 
     let mut cmd = Command::cargo_bin("roymctl")?;
-    cmd.arg("roym").arg("transaction").arg("booking").arg("--help").assert().success();
+    cmd.arg("roym").arg("transaction").arg("agreement").arg("--help").assert().success();
 
     let mut cmd = Command::cargo_bin("roymctl")?;
     cmd.arg("roym").arg("transaction").arg("payment").arg("--help").assert().success();

@@ -86,11 +86,12 @@ async fn scenario_150_superseded_request_card_verifies_after_import_parity() {
 async fn scenario_167_every_new_verb_refused_over_wire_parity() {
     let h = harness().await;
     for method in [
-        "booking.get",
-        "booking.list",
-        "booking.start",
-        "booking.cancel",
-        "booking.history",
+        "agreement.accept",
+        "agreement.get",
+        "agreement.list",
+        "agreement.cancel",
+        "agreement.progress",
+        "agreement.verify",
         "payment.request",
         "payment.acknowledge",
         "payment.get",
@@ -145,9 +146,6 @@ async fn scenario_168_transaction_export_import_full_vertical_parity() {
     .await;
     both_rpc(&h, "transaction.sync", json!({ "conversation": conv, "full": true })).await;
 
-    // Start booking
-    both_rpc(&h, "booking.start", json!({ "agreement": quote_rec_id })).await;
-
     // Payment ack + correction. `observed_at_secs` is given explicitly so
     // both builds sign an identical payload -- left to default, each
     // build's own `clock::now_secs()` read could straddle a second and
@@ -156,7 +154,7 @@ async fn scenario_168_transaction_export_import_full_vertical_parity() {
         &h,
         "payment.acknowledge",
         json!({
-            "agreement": quote_rec_id, "method": "cash", "reference": "tx-1",
+            "agreement": quote_rec_id, "commitment_id": "c2", "method": "cash", "reference": "tx-1",
             "observed_at_secs": 1_002_000,
         }),
     )
@@ -168,24 +166,26 @@ async fn scenario_168_transaction_export_import_full_vertical_parity() {
         &h,
         "payment.acknowledge",
         json!({
-            "agreement": quote_rec_id, "method": "cash", "reference": "tx-1-corr",
+            "agreement": quote_rec_id, "commitment_id": "c2", "method": "cash", "reference": "tx-1-corr",
             "observed_at_secs": 1_002_100, "supersedes": p1_rec_w,
         }),
     )
     .await;
 
     // Fulfilment
-    both_rpc(&h, "fulfilment.sign", json!({ "agreement": quote_rec_id })).await;
+    both_rpc(&h, "fulfilment.sign", json!({ "agreement": quote_rec_id, "commitment_id": "c1" }))
+        .await;
 
     // Snapshot before export
     let (mut bw_before, mut bn_before) =
-        both_rpc(&h, "booking.get", json!({ "agreement": quote_rec_id })).await;
+        both_rpc(&h, "agreement.get", json!({ "agreement": quote_rec_id })).await;
     strip_volatile(&mut bw_before);
     strip_volatile(&mut bn_before);
     assert_eq!(bw_before, bn_before);
 
     let (mut pw_before, mut pn_before) =
-        both_rpc(&h, "payment.get", json!({ "agreement": quote_rec_id })).await;
+        both_rpc(&h, "payment.get", json!({ "agreement": quote_rec_id, "commitment_id": "c2" }))
+            .await;
     strip_volatile(&mut pw_before);
     strip_volatile(&mut pn_before);
     assert_eq!(pw_before, pn_before);
@@ -200,14 +200,15 @@ async fn scenario_168_transaction_export_import_full_vertical_parity() {
 
     // Assert states after import match before
     let (mut bw_after, mut bn_after) =
-        both_rpc(&h, "booking.get", json!({ "agreement": quote_rec_id })).await;
+        both_rpc(&h, "agreement.get", json!({ "agreement": quote_rec_id })).await;
     strip_volatile(&mut bw_after);
     strip_volatile(&mut bn_after);
     assert_eq!(bw_after, bw_before);
     assert_eq!(bn_after, bn_before);
 
     let (mut pw_after, mut pn_after) =
-        both_rpc(&h, "payment.get", json!({ "agreement": quote_rec_id })).await;
+        both_rpc(&h, "payment.get", json!({ "agreement": quote_rec_id, "commitment_id": "c2" }))
+            .await;
     strip_volatile(&mut pw_after);
     strip_volatile(&mut pn_after);
     assert_eq!(pw_after, pw_before);

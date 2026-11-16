@@ -1,5 +1,8 @@
 {
-  "expired": "boolean",
-  "reason": "string",
-  "verified": "boolean"
+  "kind": "unknown",
+  "verdict": {
+    "expired": "boolean",
+    "reason": "string",
+    "verified": "boolean"
+  }
 }

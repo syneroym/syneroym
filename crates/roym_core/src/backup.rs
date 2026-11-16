@@ -35,8 +35,7 @@ pub const SECTION_QUOTE_HISTORY: &str = "quote_history";
 pub const SECTION_AGREEMENTS: &str = "agreements";
 pub const SECTION_CARDS: &str = "cards";
 pub const SECTION_LEDGER: &str = "ledger";
-pub const SECTION_BOOKINGS: &str = "bookings";
-pub const SECTION_PROGRESS: &str = "progress";
+pub const SECTION_AGREEMENT_PROGRESS: &str = "agreement_progress";
 pub const SECTION_PAYMENTS: &str = "payments";
 pub const SECTION_FULFILMENTS: &str = "fulfilments";
 pub const SECTION_CREDENTIALS: &str = "credentials";
@@ -459,8 +458,7 @@ mod tests {
             SECTION_ENQUIRY_HISTORY,
             SECTION_QUOTE_HISTORY,
             SECTION_LEDGER,
-            SECTION_BOOKINGS,
-            SECTION_PROGRESS,
+            SECTION_AGREEMENT_PROGRESS,
             SECTION_PAYMENTS,
             SECTION_FULFILMENTS,
         ] {

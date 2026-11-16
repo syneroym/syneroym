@@ -36,7 +36,6 @@ const ROUTES: &[(&str, Service, MethodAuth)] = &[
     ("quote.", TRANSACTION, MethodAuth::Owner),
     ("agreement.", TRANSACTION, MethodAuth::Owner),
     ("receipt.", TRANSACTION, MethodAuth::Owner),
-    ("booking.", TRANSACTION, MethodAuth::Owner),
     ("payment.", TRANSACTION, MethodAuth::Owner),
     ("fulfilment.", TRANSACTION, MethodAuth::Owner),
     // The certificate verbs (`transaction.signing-status` /

@@ -4,31 +4,81 @@
   "issued_at_secs": "number",
   "issuer": "string",
   "payload": {
+    "answers": {
+      "kind": "enquiry",
+      "record_id": "string"
+    },
     "conversation": "string",
     "counterparty_did": "string",
     "quote_id": "string",
-    "request_record_id": "string",
     "sequence": "number",
     "terms": {
-      "amount_minor": "number",
-      "cancellation_terms": "string",
-      "currency": "string",
-      "dispute_path": "string",
-      "fees_minor": "number",
-      "lang": "string",
-      "location": {
-        "address": "string",
-        "where": "at-receiver"
+      "cancellation_terms": {
+        "lang": "string",
+        "text": "string"
       },
-      "payee": "string",
-      "payment_methods": [
-        "string"
+      "commitments": [
+        {
+          "after": [
+            "string"
+          ],
+          "commitment_id": "string",
+          "declared_value_minor": "number",
+          "description": {
+            "lang": "string",
+            "text": "string"
+          },
+          "details": "null",
+          "eep": "null",
+          "fees_minor": "number",
+          "giver": "counterparty",
+          "kind": "currency",
+          "location": "null",
+          "payee": "string",
+          "payment_methods": [
+            "string"
+          ],
+          "resource_kind": "currency",
+          "tax_minor": "number",
+          "window": "null"
+        },
+        {
+          "commitment_id": "string",
+          "declared_value_minor": "number",
+          "description": {
+            "lang": "string",
+            "text": "string"
+          },
+          "details": "null",
+          "eep": "null",
+          "fees_minor": "null",
+          "giver": "quote-author",
+          "kind": "fulfilment",
+          "location": {
+            "address": "string",
+            "where": "at-receiver"
+          },
+          "payee": "null",
+          "payment_methods": "null",
+          "resource_kind": "goods-or-service",
+          "tax_minor": "null",
+          "window": "null"
+        }
       ],
-      "payment_timing": "after-work",
+      "currency": "string",
+      "dispute_path": {
+        "lang": "string",
+        "text": "string"
+      },
       "quote_expires_at_secs": "number",
-      "refund_terms": "string",
-      "scope": "string",
-      "tax_minor": "number"
+      "refund_terms": {
+        "lang": "string",
+        "text": "string"
+      },
+      "scope": {
+        "lang": "string",
+        "text": "string"
+      }
     }
   },
   "record_id": "string",

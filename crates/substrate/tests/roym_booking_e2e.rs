@@ -189,8 +189,8 @@ async fn assert_loser_retry(node_y: &Node, loser_node: &Node, loser_quote_record
         .await;
     assert_eq!(loser_retry["state"], "already-accepted");
     let loser_booking_after =
-        node_y.rpc_ok("booking.get", json!({ "agreement": loser_quote_record_id })).await;
-    assert_eq!(loser_booking_after["state"], "conflict");
+        node_y.rpc_ok("agreement.get", json!({ "quote_record_id": loser_quote_record_id })).await;
+    assert_eq!(loser_booking_after["state"], "not-formed");
 }
 
 #[tokio::test]
@@ -240,15 +240,17 @@ async fn a_losing_concurrent_booking_is_arbitrated_and_the_winner_completes() {
 
     // Exactly one scheduled and one conflict; the loser's pair stays
     // half (the quote author does not countersign a conflicting booking).
-    let x_booking =
-        node_y.rpc_ok("booking.get", json!({ "agreement": quotes.x_quote_record_id })).await;
-    let w_booking =
-        node_y.rpc_ok("booking.get", json!({ "agreement": quotes.w_quote_record_id })).await;
+    let x_booking = node_y
+        .rpc_ok("agreement.get", json!({ "quote_record_id": quotes.x_quote_record_id }))
+        .await;
+    let w_booking = node_y
+        .rpc_ok("agreement.get", json!({ "quote_record_id": quotes.w_quote_record_id }))
+        .await;
     let states: Vec<Value> = vec![x_booking["state"].clone(), w_booking["state"].clone()];
-    let scheduled_count = states.iter().filter(|s| **s == json!("scheduled")).count();
-    let conflict_count = states.iter().filter(|s| **s == json!("conflict")).count();
-    assert_eq!(scheduled_count, 1, "exactly one booking is scheduled: {states:?}");
-    assert_eq!(conflict_count, 1, "exactly one booking is a named conflict: {states:?}");
+    let scheduled_count = states.iter().filter(|s| **s == json!("agreed")).count();
+    let conflict_count = states.iter().filter(|s| **s == json!("not-formed")).count();
+    assert_eq!(scheduled_count, 1, "exactly one booking is agreed: {states:?}");
+    assert_eq!(conflict_count, 1, "exactly one booking is not-formed: {states:?}");
 
     let (
         winner_quote_record_id,
@@ -257,7 +259,7 @@ async fn a_losing_concurrent_booking_is_arbitrated_and_the_winner_completes() {
         winner_conv_on_y,
         loser_quote_record_id,
         loser_node,
-    ) = if x_booking["state"] == json!("scheduled") {
+    ) = if x_booking["state"] == json!("agreed") {
         (
             quotes.x_quote_record_id.clone(),
             &node_x,

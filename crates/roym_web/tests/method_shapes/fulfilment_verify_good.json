@@ -4,31 +4,11 @@
   "issuer": "string",
   "payload": {
     "agreement": "string",
+    "commitment_id": "string",
     "conversation": "string",
     "counterparty_did": "string",
     "quote_author_did": "string",
-    "role": "quote-author",
-    "terms": {
-      "amount_minor": "number",
-      "cancellation_terms": "string",
-      "currency": "string",
-      "dispute_path": "string",
-      "fees_minor": "number",
-      "lang": "string",
-      "location": {
-        "address": "string",
-        "where": "at-receiver"
-      },
-      "payee": "string",
-      "payment_methods": [
-        "string"
-      ],
-      "payment_timing": "after-work",
-      "quote_expires_at_secs": "number",
-      "refund_terms": "string",
-      "scope": "string",
-      "tax_minor": "number"
-    }
+    "role": "giver"
   },
   "record_id": "string",
   "revocation_status": "unknown",

@@ -41,6 +41,11 @@ pub struct LocalText {
 }
 
 impl LocalText {
+    #[must_use]
+    pub fn plain(lang: LangTag, text: impl Into<String>) -> Self {
+        Self { lang, text: text.into(), translations: Vec::new() }
+    }
+
     /// Returns the text in the requested language if available, falling back to
     /// original.
     pub fn text_in(&self, lang: &LangTag) -> &str {
