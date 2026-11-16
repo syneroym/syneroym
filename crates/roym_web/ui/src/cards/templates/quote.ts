@@ -204,7 +204,13 @@ export function renderQuote(data?: QuoteData): HTMLElement {
           typeof c.description === "object" && c.description !== null
             ? (c.description as { text?: string }).text
             : String(c.description ?? "");
-        const desc = rawDesc || (c.kind === "currency" ? t("quote-payment-description") : "");
+        let desc = rawDesc;
+        if (c.kind === "currency" && typeof c.declared_value_minor === "number" && terms.currency) {
+          desc = formatMinor(c.declared_value_minor, terms.currency);
+        } else if (!desc && c.kind === "currency") {
+          desc = t("quote-payment-description");
+        }
+        const safeDesc = desc ?? "";
         const isAuthorGiver = c.giver === "quote-author";
         const isViewer =
           (isAuthorGiver && data?.role === "quote-author") ||
@@ -215,8 +221,8 @@ export function renderQuote(data?: QuoteData): HTMLElement {
           ? authorName
           : (data?.counterparty_name ?? t("receipt-role-recipient"));
         const lineText = isViewer
-          ? t("commitment-you-give", { description: desc })
-          : t("commitment-other-gives", { name: otherName, description: desc });
+          ? t("commitment-you-give", { description: safeDesc })
+          : t("commitment-other-gives", { name: otherName, description: safeDesc });
         comP.textContent = lineText;
         nodes.push(comP);
 
