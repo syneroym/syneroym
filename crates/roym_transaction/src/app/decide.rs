@@ -242,22 +242,22 @@ async fn resend_completed_decision<H: AppHost>(
     let mut stored_cs: Option<CountersignRow> = super::get_row(host, LEDGER, &cs_key).await?;
 
     if state == "agreed" {
-        if let Some(cs) = stored_cs.as_mut() {
-            if !ensure_countersign_sent(host, &row.conversation, cs, now).await? {
-                return Ok(false);
-            }
+        if let Some(cs) = stored_cs.as_mut()
+            && !ensure_countersign_sent(host, &row.conversation, cs, now).await?
+        {
+            return Ok(false);
         }
-        if let Some(snap) = stored_snap.as_mut() {
-            if !ensure_snapshot_sent(host, &row.conversation, snap, now).await? {
-                return Ok(false);
-            }
+        if let Some(snap) = stored_snap.as_mut()
+            && !ensure_snapshot_sent(host, &row.conversation, snap, now).await?
+        {
+            return Ok(false);
         }
         Ok(true)
     } else if state == "not-formed" {
-        if let Some(snap) = stored_snap.as_mut() {
-            if !ensure_snapshot_sent(host, &row.conversation, snap, now).await? {
-                return Ok(false);
-            }
+        if let Some(snap) = stored_snap.as_mut()
+            && !ensure_snapshot_sent(host, &row.conversation, snap, now).await?
+        {
+            return Ok(false);
         }
         Ok(false)
     } else {
