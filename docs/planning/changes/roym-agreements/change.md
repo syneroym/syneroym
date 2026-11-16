@@ -1119,9 +1119,16 @@ under "Owner decisions while planning C1" record them.
   restored alone, or when the conversation data is newer than the
   `transaction` data. After a full restore from an old backup, the writer
   can sign a second countersigned half or reuse a `seq`. The counterparty's
-  node keeps the first record it filed and shows `progress-fork` (AG-12),
-  so nothing is merged in silence. AG-42's tests cover the case the rules
-  handle. A deferred-backlog row records the full-restore case (C1b).
+  node keeps the first countersigned half it filed silently; for snapshots
+  with the same `seq` and different bytes it shows `progress-fork` (AG-12).
+  AG-42's tests cover the case the rules handle. A deferred-backlog row
+  records the full-restore case (C1b).
+- **Deal rules and version check (P11).** Only unrefused counterparty halves
+  count against the version check (`quote-already-accepted`) and the decline
+  rule. A half that the writer refused with `quote-superseded` is not an
+  acceptance of that quote id; the deal stays `quoted` and can still be revised
+  or declined. Refuse `agreement.accept` on an ended deal (`declined`,
+  `expired`, `not-formed`) with `quote-ended`.
 - **`booking.start` (Q6).** C1a removes `booking.start` with no stand-in.
   From C1a until the scheduling steps of C3a and C3b, nobody can mark work
   as started. A commitment settles from `promised` directly, so no rule

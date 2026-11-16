@@ -2,7 +2,7 @@
 
 *Reader: developers who build this sub-milestone, and the project owner.*
 
-**Status: started (2026-11-15). No slice is planned yet. The owner answered every question in section 6 on 2026-11-15.** Progress is in [status.md](status.md). Milestone overview and order: [M08-overview.md](../M08-overview.md).
+**Status: started (2026-11-15). C1 plan written and reviewed (2026-11-16). The owner answered every question in section 6 on 2026-11-15.** Progress is in [status.md](status.md). Milestone overview and order: [M08-overview.md](../M08-overview.md).
 
 ## Goal
 
@@ -109,7 +109,7 @@ Change docs: roym-message-forwarding.
 - The plan checks the size first. This is the largest slice. If the plan finds a clean cut that keeps a working system after each part, it splits C1, and records why.
 - **Split (owner decision, 2026-11-16, [C1 plan](slice-c1-implementation-plan.md), Q1):** C1a (deal shapes: every record and caller on the new shapes, the writer's decision in its final order) and C1b (single writer and signed decline: version checks, refusal snapshots, recovery, restore rules, `deal-decline`). Each is one PR.
 
-Change docs: roym-agreements, roym-value-exchange (VX-1, VX-2, VX-6 to VX-9, VX-12).
+Change docs: roym-agreements, roym-value-exchange (VX-1, VX-2, VX-6 to VX-9, VX-12), roym-extensions (EX-1, EX-3 shape only).
 
 ### C2 — Selective disclosure (L)
 

@@ -711,8 +711,9 @@ change doc refines each row below through its `AG-*` rows.
   enquiry), and a unit test that compares both quote forms (AG-3). The
   Want-Bid end-to-end test comes in M08F.
 - **VX-12:** M08C makes each progress snapshot name every failed
-  commitment, and the agreement names its giver. Reputation shows it in
-  M08G.
+  commitment, and the agreement names its giver. In C1, commitments end
+  `ended-unconfirmed`; `failed` requires `commitment-failure` in C3b.
+  Reputation shows it in M08G.
 
 ## Close-out
 

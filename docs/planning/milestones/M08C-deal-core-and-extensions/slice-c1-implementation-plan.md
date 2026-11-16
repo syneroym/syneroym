@@ -4,9 +4,9 @@
 owner, who answers the questions in section 2.1. You do not have the
 planning conversation. This plan is meant to stand alone.*
 
-**Status: plan written, 2026-11-15, by Claude Opus 5.5. The owner accepted
-the recommendation of every question, Q1 to Q6, on 2026-11-16 (section
-2.1). No plan review yet.**
+**Status: plan written, 2026-11-15, by Claude Opus 5.5; plan review rounds 1
+and 2 folded, 2026-11-16. The owner accepted the recommendation of every
+question, Q1 to Q6, on 2026-11-16 (section 2.1).**
 
 **Size and PRs.** C1 is the largest slice of M08C. This plan splits it in
 two parts, and each part is one PR that passes `mise run verify` (Q1,
@@ -70,24 +70,22 @@ this plan found in them; Q5 is the one that needs the owner.
   agreements doc refines each of them through `AG-*` rows.
 - [roym-extensions change doc](../../changes/roym-extensions/change.md):
   only for the `details` block (EX-1, EX-3), because Q3 brings its shape
-  into C1. Task.md does not list it as a C1 change doc; this plan writes
-  nothing into it (see "Change docs" below).
+  into C1a, recorded in roym-extensions' `## Deviations` (see "Change docs"
+  below).
 - The previous slice plans: M08C has none yet, so this plan uses the
   layout of [M08B slice B5](../M08B-language-and-structure/slice-b5-implementation-plan.md),
   the last M08B slice that changed `transaction`. Section 7.11 lists how C1
   avoids the kinds of findings in the M08B review files.
 
-**Change docs.** The prompt lists two: roym-agreements and
-roym-value-exchange. Task.md names the same two for C1. Each criterion,
-decision and deviation is written in the doc that defines it:
+**Change docs.** The prompt lists three: roym-agreements,
+roym-value-exchange and roym-extensions. Each criterion, decision and
+deviation is written in the doc that defines it:
 
 - `AG-*` rows, the record shapes and the writer's rules: roym-agreements.
 - `VX-*` rows that a later sub-milestone finishes (VX-6, VX-12):
   roym-value-exchange.
-- Q3 moves the *shape* of `details` (EX-1, EX-3) into C1. That deviation
-  belongs to roym-extensions, which is not in the prompt's list. The owner
-  accepted Q3 as written, including where it goes, so the deviation is in
-  roym-extensions' `## Deviations` (2026-11-16).
+- Q3 moves the *shape* of `details` (EX-1, EX-3) into C1a: roym-extensions'
+  `## Deviations`.
 
 **Do not copy ids into code.** The ids `D-C1-n`, `Qn` and `AG-n` in this
 plan are for the plan and the change docs only.
@@ -155,11 +153,15 @@ The cut follows the two kinds of work:
   two Hub actions. It needs the fault-injecting test host.
 
 Each part leaves a working system. After C1a, every deal can be made,
-booked, paid, fulfilled and cancelled through the new shapes, with the same
-robustness as today (today's writer has no crash recovery either; section
-2.2, point 4). After C1b, the agreements doc's single-writer design is
-complete. C1a builds the writer's decision in its final step order, so C1b
-adds recovery around it and rewrites nothing.
+booked, paid, fulfilled and cancelled through the new shapes. Today's sync
+retries on error because `maybe_countersign` runs before `put_card` and cursor
+save; C1a preserves this error return so a transient error still triggers a
+retry on the next sync (section 2.2, point 4). To prevent a repeat from
+undoing a decision after a crash, C1a builds Recovery's check 1 into the repeat
+path (a stored snapshot 1 is used, never decided again). After C1b, the recovery
+sweep and the full single-writer design are complete. C1a builds the writer's
+decision in its final step order, so C1b adds recovery around it and rewrites
+nothing.
 
 Rejected cuts:
 
@@ -177,7 +179,8 @@ Rejected cuts:
 C1a:
 
 - Bob gets an enquiry from Alice and writes a quote in the Hub, as today.
-  He fills the same fields: what he will do, the price, the payee.
+  He fills what he will do, the price, the payee, and what Alice gives
+  (filled in advance or from scope).
 - Alice sees the quote as a short list: "Bob gives: one lesson" and "You
   give: ₹100", each with its value.
 - Alice presses "Accept". Both Hubs show the signed agreement with the same
@@ -203,7 +206,7 @@ How a developer can see it work:
 - `cargo nextest run -p syneroym-roym-transaction`: the new in-crate service
   tests, including (in C1b) a crash after each step of the writer's
   decision.
-- `cargo run --bin roymctl -- roym transaction agreement --quote <rec>`
+- `cargo run --bin roymctl -- roym transaction agreement get --quote <rec>`
   prints the agreement with one line per commitment and its state.
 
 ## 2. Points for the owner
@@ -217,8 +220,10 @@ in the change docs' `## Deviations`.
 
 #### Q1. Split C1 into C1a and C1b?
 
-**Answer (2026-11-16): (a).** The status.md row is split into C1a and C1b,
-and task.md's C1 section names the two parts.
+**Owner answer: (a), 2026-11-16.** The status.md row is split into C1a and C1b,
+and task.md's C1 section names the two parts. C1a includes Recovery's check 1
+(a stored snapshot 1 is reused and never decided again) to handle repeats
+safely on the re-read path before the sweep is built in C1b.
 
 Task.md asks the plan to split C1 only if each part leaves a working
 system.
@@ -235,7 +240,7 @@ C1b), and task.md's C1 section names the two parts.
 
 #### Q2. How do tests control time and simulate a crash?
 
-**Answer (2026-11-16): (a).**
+**Owner answer: (a), 2026-11-16.**
 
 The service reads time from `clock::now_secs()`
 (`crates/roym_core/src/clock.rs:18`). Its own comment says a test cannot pin
@@ -249,12 +254,20 @@ point 2).
   Each verb becomes a thin wrapper: `verb(host, input)` calls
   `verb_at(host, input, clock::now_secs())`. Tests call `verb_at` with any
   time. The test host is today's `TestHost` in `roym_core`
-  (`crates/roym_core/src/signing.rs:305`), moved to a `testing` module
+  (`crates/roym_core/src/signing.rs:305`), moved to `roym_core::testing`
   behind a `test-host` feature and extended: `create`, `delete`, filtered
-  `query`, call routing by service and method, a settable signing clock,
-  and "fail the n-th write". No production test knob. The parity harness
-  still proves that both builds agree; the in-crate tests prove timing and
-  crash behaviour.
+  `query`, call routing by service and method (`conversation.send` and
+  `conversation.changes` stubs via `on_call`), an injected record signer
+  closure `Fn(RecordDraft, Principal, u64) -> Result<String, SigningError>`
+  (`Principal::Delegated` / `Principal::Service`), and sticky, named
+  `crash_on_write(collection, key_prefix)` fault injection.
+  `syneroym-roym-transaction` adds dev-dependencies (`syneroym-identity`,
+  `z32`, `tokio`) to provide the signer; `cargo xtask check-roym-deps`
+  checks `[dependencies]` only, so the manifest gate passes. Test fixtures
+  mint delegation certificates with the maximum 5-year lifetime, and test
+  clocks start at or after the real "now" and move forward monotonically.
+  No production test knob. The parity harness still proves that both builds
+  agree; the in-crate tests prove timing and crash behaviour.
 - (b) A clock the host provides: a WASI wall-clock override in the sandbox
   plus a native override, so parity scenarios can move time. Two new
   mechanisms in substrate code, and still no fault injection.
@@ -263,7 +276,7 @@ point 2).
 
 #### Q3. Where does a slot go in C1?
 
-**Answer (2026-11-16): (a).** Deviation written in roym-extensions.
+**Owner answer: (a), 2026-11-16.** Deviation written in roym-extensions.
 
 The agreements doc moves `slot_id` into the scheduling extension's
 `details.data` (`change.md:322`). But task.md puts `details` in C3a (EX-1,
@@ -277,15 +290,13 @@ EX-3), and C1 must keep booking working.
   Recommended. The shape never changes again; C3a replaces the fixed check
   with the manifest, the registry and the schema check (EX-2), and C3b
   moves the slot to the scheduling service. A deviation is written into
-  roym-extensions: EX-1 and EX-3 (shape only) are built in C1a. That doc
-  is not in this slice's change-doc list, so the owner confirms where it
-  goes.
+  roym-extensions: EX-1 and EX-3 (shape only) are built in C1a.
 - (b) A temporary visible `slot_id` on the commitment, removed in C3a. A
   field the design does not have, and a second shape change.
 
 #### Q4. One original language per record?
 
-**Answer (2026-11-16): (a).** AG-39's refinement is in the agreements
+**Owner answer: (a), 2026-11-16.** AG-39's refinement is in the agreements
 doc's `## Deviations`.
 
 The agreements doc gives every free-text field its own `LocalText` with its
@@ -299,14 +310,19 @@ picks one version for the whole record.
 - **(a) Every `LocalText` in one record has the same `lang` and the same set
   of translation languages.** Recommended. Checked with AG-39 by the same
   function (`check_record_text`). The Hub writes all fields in one
-  language anyway. The agreements doc's AG-39 gets this refinement.
+  language anyway. The currency commitment's description is built from
+  language-neutral parts (`<ISO> <amount>`, for example `INR 100.00`) with
+  no localized catalog sentence in the signed record; role labels ("You give")
+  are rendered at view time from the reader's catalog, so quotes in any of
+  the Hub's 13 languages share the record's one original language without
+  missing catalog entries. The agreements doc's AG-39 gets this refinement.
 - (b) Leave the original languages free, and define `viewed_lang` against
   the quote's `scope`. A person who reads a mixed record has no single
   "language they read".
 
 #### Q5. The restore rules rest on conversation history that a full restore also rolls back
 
-**Answer (2026-11-16): (a).** The limit is in the agreements doc's
+**Owner answer: (a), 2026-11-16.** The limit is in the agreements doc's
 `## Deviations`; C1b adds the backlog row.
 
 AG-42 and review fix P36 say: after a restore from an old backup, the
@@ -321,10 +337,10 @@ is restored alone, or when the conversation data is newer.
 
 - **(a) Build the rules as designed (C1b), and write the limit down:** a
   full restore from an old backup can produce a second countersigned half
-  or a reused `seq`. The counterparty's node keeps the first record it
-  filed and shows `progress-fork` (AG-12), so nothing is merged in silence.
-  A deferred-backlog row and a sentence in the agreements doc record the
-  limit. Recommended.
+  or a reused `seq`. The counterparty's node keeps the first countersigned
+  half it filed silently; for snapshots with the same `seq` and different
+  bytes it shows `progress-fork` (AG-12). A deferred-backlog row and a
+  sentence in the agreements doc record the limit. Recommended.
 - (b) Add a "send me my records again" card that the restored writer sends
   and the counterparty answers. A new card type and a new sync path.
 - (c) Make each counterparty card carry the highest `seq` it holds, so the
@@ -332,7 +348,7 @@ is restored alone, or when the conversation data is newer.
 
 #### Q6. `booking.start`, `scheduled` and `in-progress` until C3b
 
-**Answer (2026-11-16): (a).**
+**Owner answer: (a), 2026-11-16.**
 
 The agreements doc says `scheduled` and `in-progress` are not deal-core
 states; they become scheduling steps (`change.md:486`), and step records
@@ -387,14 +403,20 @@ Hub never calls it.
    ticks on every `transaction.sync` of the conversation and in
    `agreement.get` and `agreement.progress` on the writer (D-C1-9). A
    deviation records the corrected fact.
-4. **Today's decision has no crash recovery.** The decision runs only when
-   a receipt card is filed (`maybe_countersign`,
-   `crates/roym_transaction/src/app/agreement_ops.rs:451`, called from
-   `file_agreement_receipt_card`, `sync.rs:448`). A crash after the fence
-   and before the countersign leaves the deal waiting, because the next
-   incremental sync does not file that card again. C1a keeps this gap; C1b
-   closes it with the recovery sweep. A backlog row with target C1b records
-   the interim.
+4. **Today's decision and sync order.** Today `maybe_countersign` runs at
+   `crates/roym_transaction/src/app/sync.rs:527` and `put_card` at `:528`, and
+   an error from `maybe_countersign` returns from `sync` before the cursor is
+   saved (`:97`, `:106`). So after a failed write or crash during the
+   decision, the next incremental sync reads the same card again and retries.
+   What is not retried is when `maybe_countersign` returns `Ok(false)` with
+   work half done (`agreement_ops.rs:482` no signing principal; `:497`
+   invalid payload), as the card is filed and never read again. In C1a, before
+   the recovery sweep exists, `decide::run` preserves the error return on
+   storage or send failures so the retry still happens, and builds Recovery
+   check 1 into the repeat branch (a stored snapshot 1 is used and never
+   decided again). In C1b, after the fence, `decide::run` does not return an
+   error to `sync`; the card is filed and the `deciding` row is finished by the
+   recovery sweep.
 5. **AG-12's two-node test asks for "a test hook that skips the method
    check"** (`change.md:110`). That is a production code path only tests
    use. The parity harness already signs peer records by hand
@@ -429,7 +451,15 @@ Hub never calls it.
    - Parity: `transaction.rs` 846, `transaction_cards.rs` 697, `booking.rs`
      669, `transaction_validation.rs` 537, `payment.rs` 424, `bundles.rs`
      310, `events.rs` 264, `fulfilment.rs` 252, `agreement_lang.rs` 230,
-     `deal_fixtures.rs` 188, `fixtures.rs` 799, `normalize.rs` 90.
+     `deal_fixtures.rs` 188, `fixtures.rs` 799, `normalize.rs` 90. Note on
+     caps: `fixtures.rs` is at 799 lines (cap 800; not in oversized list);
+     new deal fixtures must go to `deal_fixtures.rs`. Also near 800 lines
+     and touched by step 5a: `transaction_cards.rs` (697), `booking.rs`
+     (669), `cli_args.rs` (717), and roymctl `transaction.rs` (669). The
+     oversized-file gate fails in both directions: if listed files shrink
+     (`dual_build_parity/transaction.rs` at 846, `helpers.rs` at 1290),
+     their recorded line counts in `xtask/oversized-test-files.txt` must be
+     lowered in the same PR.
    - Method contract: `shapes_transaction.rs` 443, `contract.rs` 663, and 69
      JSON shape files in `crates/roym_web/tests/method_shapes/`.
    - Two-node: `common/roym_flow.rs` 356, `roym_transaction_e2e.rs` 571,
@@ -471,7 +501,7 @@ as task.md section 5 asks).
 | AG-11 | C1a | Unit and service: only writer-signed snapshots with a higher `seq` are filed. | |
 | AG-12 | C1b | Service: `quote-superseded` on accept; refusal snapshot once over two syncs; fork. Two-node with a hand-signed half (D-C1-15). | |
 | AG-13 | C1a, C1b | C1a: repeated `agreement.accept`, `fulfilment.sign`, `payment.acknowledge` (today's behaviour, new shapes). C1b: `deal.decline`. | |
-| AG-14 | C1a, C1b | C1a: the slot race (two-node, today's booking race test) through the seat hold. C1b: every crash point, recovery past the expiry, a refused `confirm` (stub). | Moved to the scheduling extension: C3b |
+| AG-14 | C1a, C1b | C1a: the slot race (two-node, today's booking race test) through the seat hold, and repeat check 1 (stored snapshot 1 used). C1b: every crash point, recovery past the expiry, a refused `confirm` (stub), and repeat half delivery after not-formed snapshot stored. | Moved to the scheduling extension: C3b |
 | AG-15 | C1a | Service: the counterparty's own seat hold before it signs; `reserve-failed`. | Moved to the extension: C3b |
 | AG-22 | C1a | Unit (same quote with and without money) and two-node. | |
 | AG-23 | C1a | Unit: the value range. | Hub totals: C6 |
@@ -489,8 +519,9 @@ as task.md section 5 asks).
 From [roym-value-exchange](../../changes/roym-value-exchange/change.md),
 through the rows above: VX-1 (AG-1), VX-2 (AG-2, three kinds), VX-6 (AG-3,
 enquiry form only), VX-7 (AG-4), VX-8 (AG-6, AG-7), VX-9 (AG-11, AG-12),
-VX-12 (the snapshot names each failed commitment and its giver; shown by
-reputation in M08G).
+VX-12 (the snapshot names each failed commitment and its giver; in C1,
+commitments end `ended-unconfirmed`, and `failed` requires
+`commitment-failure` in C3b; shown by reputation in M08G).
 
 Not in C1: AG-16 (C3b), AG-17 to AG-21, AG-34, AG-38, AG-40 (C2), AG-24 to
 AG-26 (M08E, M08H), AG-27 to AG-30 (C6).
@@ -545,6 +576,9 @@ C1a:
    `agreement_ops.rs:415`, is deleted). Every deal has one order.
 2. The fence is `decision:<quote_id>` (today `decision:<agreement>`,
    `ledger.rs:52`). At most one version of a quote becomes an agreement.
+   In C1a, step 1's validation checks (signer, expiry) run before the fence;
+   if a fence row exists and names another version, the half is filed with no
+   countersign and no snapshot (backlog rows for C1b).
 3. A commitment's track end is `max(window.latest_secs, agreed_at_secs) +
    30 days` (today `window.latest_secs` or the scheduling time, plus 30
    days, `booking.rs:189`).
@@ -606,10 +640,20 @@ differs from the doc's text (marked "deviation").
   `quote-author` and `counterparty`, as the doc's `giver` field needs. A new
   `SettlementRole { Giver, Receiver }` is the role of a settlement record.
 - **D-C1-3. The test host (Q2 a).** `roym_core::testing::TestHost`, behind
-  `cfg(any(test, feature = "test-host"))`. `syneroym-roym-transaction` takes
-  `syneroym-roym-core` with `test-host` as a dev-dependency feature. The
-  existing `TestHost` in `signing.rs` moves there, so one host serves every
-  crate.
+  `cfg(any(test, feature = "test-host"))`, laid out as `testing.rs` with
+  sibling `testing/` module to stay under 800 lines. The host takes an
+  injected record signer closure `Fn(RecordDraft, Principal, u64) ->
+  Result<String, SigningError>` (`Principal::Delegated` /
+  `Principal::Service`). `syneroym-roym-transaction` takes
+  `syneroym-roym-core` with `test-host` as a dev-dependency feature, and adds
+  dev-dependencies (`syneroym-identity`, `z32`, `tokio`) to provide the
+  signer in its test support; `cargo xtask check-roym-deps` checks only
+  `[dependencies]`, so no gate fails. The conversation stub is an `on_call`
+  handler for `conversation.send` and `conversation.changes`. Fault injection
+  uses sticky, named `crash_on_write(collection, key_prefix)` that fails
+  that write and subsequent writes until `restart()`. Test fixtures mint
+  delegation certificates with the maximum 5-year lifetime, and test clocks
+  start at or after real "now" and move forward monotonically.
 - **D-C1-4. "At" functions.** Every verb that reads the clock becomes
   `pub(crate) async fn verb_at(host, input, now: u64)`, and the dispatch
   table calls the wrapper `verb(host, input)`. Only the wrapper reads
@@ -621,9 +665,12 @@ differs from the doc's text (marked "deviation").
   `seat:` rows. `reserve` creates `hold:<agreement>:<commitment_id>` and
   `seat:<slot>:<n>` in one `create`, trying `n = 1..=capacity` as
   `try_claim_seat` does today (`ledger.rs:178`); a `hold:` row that already
-  exists means "already held" (idempotent). `confirm` does nothing in C1,
-  because a seat hold has no expiry. `release` deletes the seat row if it
-  names this agreement and commitment, then the hold row. C3b swaps
+  exists checks that the seat row exists and answers "already held"
+  (idempotent). `confirm` does nothing in C1, because a seat hold has no
+  expiry. `release` reads the seat row, then deletes both seat and hold rows
+  in one `batch_mutate`. Release points: the writer releases holds on
+  `agreement.cancel`; the counterparty releases holds when filing a
+  `not-formed` or `cancelled` snapshot, or when the quote expires. C3b swaps
   `SeatLedger` for calls to the scheduling service. C1b's tests use a stub
   that refuses `confirm`.
 - **D-C1-6. `quote.set` input.** `{ enquiry_record_id, quote_id?,
@@ -639,17 +686,26 @@ differs from the doc's text (marked "deviation").
   `payment_timing` maps to `after`: `before-work` puts `c2` in `c1.after`,
   `after-work` puts `c1` in `c2.after`. The service commitment's
   `description` comes from a new one-line form field, "What you give",
-  filled in advance from the first line of the enquiry, so existing helpers
-  need not type it; the currency commitment's description is the catalog
-  text `quote-payment-description` in the quote's language.
+  filled in advance from the quote's own `scope` field (the same language as
+  the form; never from an enquiry in another language, Q4), or left empty for
+  `sendQuote` in `hub-helpers.ts` to fill. The currency commitment's
+  description is built from language-neutral parts: the ISO currency code and
+  the amount (for example `INR 100.00`), with no localized catalog sentence in
+  the signed record; role labels ("You give") are rendered at view time from
+  the reader's catalog.
 - **D-C1-8. Snapshot storage.** One collection, `agreement_progress`, holds
   every snapshot this node signed or filed, under
   `snapshot:<agreement>:<seq>`. The writer creates the row with a unique
   insert before it sends (the "made once" rule), and stores the
   `message_id` after the send; `resend_if_unsent` stays for snapshots after
-  `seq` 1. The `AgreementRow` (collection `agreements`) gains `state`,
-  `seq`, `commitments`, `agreed_at_secs`. The collections `bookings` and
-  `progress` go away.
+  `seq` 1. The writer tracks its highest own `seq` during sync while filing
+  outgoing cards and stores it on `AgreementRow`; `conversation.changes` is
+  scanned from 0 only in the recovery sweep when a `deciding` row has no
+  `countersign:` row. Progress forks are stored under
+  `fork:<agreement>:<seq>:<record_id>`. The `AgreementRow` (collection
+  `agreements`) gains `state`, `seq`, `commitments`, `agreed_at_secs`.
+  `quote_id` and `state` are added to the ledger indexes. The collections
+  `bookings` and `progress` go away.
 - **D-C1-9. Tick (deviation).** The writer ticks each agreement of the
   conversation on every `transaction.sync`, and the agreement asked for in
   `agreement.get` and `agreement.progress`.
@@ -668,8 +724,9 @@ differs from the doc's text (marked "deviation").
   are present.
 - **D-C1-12. The Hub keeps its visible words for the enquiry.** The record
   and methods are renamed; the person still sees "Request" in English and
-  today's Hindi word, and the form keeps its CSS classes
-  (`.toggle-request-form`, `.request-desc-input`, `.send-request-button`).
+  today's Hindi word, and the form and cards keep their CSS classes
+  (`.toggle-request-form`, `.request-desc-input`, `.send-request-button`,
+  `.request-description`, `.quote-request-button`).
   Only the card's class follows its type (`.card-enquiry`). No new Hindi
   text for the rename.
 - **D-C1-13. `Answers::Want` is refused** by `quote.set` and the verifier
@@ -681,14 +738,25 @@ differs from the doc's text (marked "deviation").
 - **D-C1-15. No test hook (C1b, deviation).** AG-12's test uses a
   hand-signed half delivered as a peer card, not a hook that skips the
   method check.
-- **D-C1-16. Ordered decision in C1a.** The writer runs the agreements
-  doc's steps 2 to 4 in order: create `decision:<quote_id>` (`deciding`);
-  reserve its own `service-in-slot` commitments through `Reservations`;
-  confirm; store `countersign:<agreement>`; create
-  `snapshot:<agreement>:1`; send both cards; put the decision row last.
-  On a failed reserve: store the `not-formed` snapshot first, release, send,
-  put. C1a has no recovery sweep and no step-1 refusal snapshots; C1b adds
-  them around this code.
+- **D-C1-16. Ordered decision in C1a.** The writer runs the decision in order:
+  1. Validate counterparty half: check signer and expiry before creating the
+     fence; if invalid, return as today (no snapshot).
+  2. Create fence `decision:<quote_id>` (`deciding`). If the row exists:
+     - Same agreement: repeat path. If `snapshot:<agreement>:1` is already
+       stored, reuse it (Recovery check 1; never run reserve/confirm again).
+     - Other agreement: leave half filed with no countersign and no snapshot
+       (backlog row for C1b).
+  3. Reserve holds through `Reservations`. On failure: store snapshot 1
+     `not-formed`, release holds, send cards, put decision row `not-formed`.
+  4. Confirm holds.
+  5. Store `countersign:<agreement>` and `snapshot:<agreement>:1` (`agreed`).
+  6. Send both cards. A `conversation.send` error returns `Err` from
+     `decide::run` so the decision row is not put `agreed`. The early return
+     on a stored author half is replaced by the repeat branch (resend stored
+     half and snapshot).
+  7. Put decision row `agreed` last.
+  C1a has no recovery sweep and no step-1 refusal snapshots; C1b adds them
+  around this code.
 
 ## 6. Step-by-step changes
 
@@ -846,8 +914,9 @@ Unit tests (`deal/tests.rs`, `deal/transition/tests.rs`): section 7.1.
 #### Step 3 — The shared test host
 
 1. Move `TestHost`, `RecordedCall`, `DummyWriter`, `DummyReader` from the
-   test module of `crates/roym_core/src/signing.rs` (`:285` to `:470`) to
-   `crates/roym_core/src/testing.rs`, `pub` under
+   test module of `crates/roym_core/src/signing.rs` (`:256` to `:799`) to
+   `crates/roym_core/src/testing.rs` with sibling directory `testing/` (so
+   neither file nears the 800-line cap), `pub` under
    `#[cfg(any(test, feature = "test-host"))]`. `signing.rs` and `admit.rs`
    tests import it from there.
 2. Extend it:
@@ -856,19 +925,30 @@ Unit tests (`deal/tests.rs`, `deal/transition/tests.rs`): section 7.1.
      fields and an `$gt`/`$lt` on numbers (only what `paging::query_all`
      and the service use). Keep `push_query_page` for `admit`'s tests.
    - `on_call(service, method, handler)`: a map from (service, method) to a
-     closure that answers `AppProxy::call`. `call_sibling` goes through it.
-   - `set_now(secs)`: the time the host's `sign_record` stamps into
+     closure that answers `AppProxy::call`. `call_sibling` goes through it;
+     `conversation.send` and `conversation.changes` stubs are handled here.
+   - Injected record signer closure `Fn(RecordDraft, Principal, u64) ->
+     Result<String, SigningError>` (`Principal::Delegated` /
+     `Principal::Service`).
+   - `set_now(secs)`: the time the host's signer stamps into
      `issued_at_secs`.
-   - `fail_write_after(n)`: the n-th write (`put`, `create`, `delete`,
-     `batch_mutate`) from now returns `DataLayerError::Internal`.
+   - `crash_on_write(collection, key_prefix)`: a sticky fault; any write
+     (`put`, `create`, `delete`, `batch_mutate`) matching that collection and
+     key prefix fails and all subsequent writes fail with
+     `DataLayerError::Internal` until `restart()`.
    - `sent_cards()`: every `conversation.send` body, in order, through the
      `on_call` map's default handler for `conversation.send`.
 3. `crates/roym_core/Cargo.toml`: feature `test-host = []`.
-   `crates/roym_transaction/Cargo.toml`: dev-dependency
-   `syneroym-roym-core = { workspace = true, features = ["test-host"] }`.
+   `crates/roym_transaction/Cargo.toml`: dev-dependencies
+   `syneroym-roym-core = { workspace = true, features = ["test-host"] }`,
+   `syneroym-identity.workspace = true`, `z32.workspace = true`, and
+   `tokio = { workspace = true, features = ["macros", "rt"] }`.
 4. `crates/roym_transaction/src/app/tests.rs` (with `app/tests/`) holds a
-   `fixture()` that builds a host with an owner, an enrolled signer, a
-   `catalog.availability.get` stub and a `conversation.send` stub.
+   `fixture()` that builds a host with an owner, a signer enrolled with a
+   delegation certificate minted with the maximum 5-year lifetime
+   (`signing.rs:46`), a `catalog.availability.get` stub and a
+   `conversation.send` / `changes` stub. Test clocks start at or after real
+   "now" and move forward monotonically.
 
 Test: `cargo nextest run -p syneroym-roym-core`.
 
@@ -894,8 +974,12 @@ layer, in one commit:
   (the product is not released); `tests/cli_args.rs:446` to `:467`.
 - Tests: every `request.*` call and `"request"` card type in parity,
   contract shapes (10 `request_*` JSON files renamed `enquiry_*`), two-node
-  helpers (`common/roym_flow.rs:91`, `:142`), Playwright cases 4, 26, 29
-  (`.card-request` → `.card-enquiry`; the form classes stay, D-C1-12).
+  helpers (`common/roym_flow.rs:91`, `:142`), Playwright cases 4, 24
+  (`roym-hub.spec.ts:846` `.card-request`), 26, 29 (`.card-request` →
+  `.card-enquiry`), `hub-helpers.ts:210` (`.quote-request-button`), and
+  story 40 (`demo/40-roym-languages.spec.ts:208` `.card-request`, `:216`
+  `.request-description`, `:259` `a.terms.scope`). The form and button
+  classes stay (D-C1-12).
 
 Test: full `cargo nextest run --workspace`, `npm test` in the Hub,
 `mise run test:e2e`.
@@ -964,15 +1048,17 @@ Test: full `cargo nextest run --workspace`, `npm test` in the Hub,
   `service-in-slot` commitment the counterparty gives (step 6 adds the
   tests; the code is here); on a failed reserve releases the others and
   answers `reserve-failed` with the reason; signs and sends the half.
-  Delete `prepare_author_booking`. `maybe_countersign` becomes
+  Delete `prepare_author_booking`. The counterparty releases its seat holds
+  when filing a `not-formed` or `cancelled` snapshot, or when the quote
+  expires (release points, D-C1-5). `maybe_countersign` becomes
   `decide::run(host, row, quote, now)` in a new `app/decide.rs`, the ordered
   steps of D-C1-16.
 - `booking_ops.rs` → `progress_ops.rs`: `transition_at(host, agreement,
   event, now)` keeps today's retry over the unique `snapshot:<agreement>:<seq>`
   create (`booking_ops.rs:180` to `:271`), with the new payload;
-  `agreement.cancel` and `agreement.progress`; `tick_conversation_at` for
-  sync. `ledger.rs` keeps only the decision row helpers; the seat code moves
-  into `hold.rs` (D-C1-5).
+  `agreement.cancel` (which releases the writer's seat holds) and
+  `agreement.progress`; `tick_conversation_at` for sync. `ledger.rs` keeps
+  only the decision row helpers; the seat code moves into `hold.rs` (D-C1-5).
 - `payment_ops.rs`, `payment_ops/fence.rs`, `fulfilment_ops.rs`: every input
   takes `commitment_id`; the signer's role is computed from the commitment
   (`giver` if `commitment.giver` is this node's role, else `receiver`); a
@@ -987,16 +1073,31 @@ Test: full `cargo nextest run --workspace`, `npm test` in the Hub,
   writer ticks the conversation's agreements (D-C1-9).
 - `backup.rs`, `backup/sections.rs`: the new sections and their checks
   (`validate_ledger_and_bookings` becomes `validate_ledger_and_progress`).
-- `thread.rs`: the thread carries `agreement-progress` cards.
+  The backup import rules for new ledger rows are:
+
+  | Row kind | Import validation | What is kept |
+  | --- | --- | --- |
+  | `decision:<quote_id>` | State is `deciding`, `agreed`, or `not-formed`; valid agreement id | Kept (`deciding` preserved so sweep finishes it) |
+  | `countersign:<agreement>` | Valid signature; names held quote | Kept |
+  | `hold:<agreement>:<commitment_id>` | Names held agreement and valid commitment id | Kept |
+  | `seat:<slot>:<n>` | Matches an active hold row | Kept |
+  | `payreq:<agreement>:<commitment_id>` | Valid agreement and currency commitment id | Kept |
+  | `ack:<agreement>:<commitment_id>:<role>:<ver>` | Valid signature against commitment role | Kept |
+  | `fulfil:<agreement>:<commitment_id>:<role>` | Valid signature against commitment role | Kept |
+  | `agreement_progress` | Valid signature from writer bound to quote signer | Kept |
+
+- `thread.rs`: the thread carries `agreement-progress` cards; fills
+  `agreement_payee` and payment methods from the commitment named by the
+  card's `commitment_id`.
 
 Callers:
 
 - `roymctl`: `transaction quote` builds `DealTermsInput` from today's flags
-  (D-C1-7); `booking` subcommands → `transaction agreement cancel
-  --reason <code>` and `transaction agreement progress`; `payment` and
-  `fulfilment` take `--commitment <id>` (default: the only commitment of
-  the right kind, if there is exactly one); `tests/cli_args.rs`,
-  `tests/backup.rs:30` to `:45`.
+  (D-C1-7); `booking` subcommands → `transaction agreement get`,
+  `transaction agreement cancel --reason <code>` and `transaction agreement
+  progress`; `payment` and `fulfilment` take `--commitment <id>` (default:
+  the only commitment of the right kind, if there is exactly one);
+  `tests/cli_args.rs`, `tests/backup.rs:30` to `:45`.
 - Parity: `fixtures.rs` (`sample_quote_terms`, `peer_signed_*` with the new
   payloads), `deal_fixtures.rs`, and each scenario file in section 2.2
   point 9. Scenario 129 (`transaction.rs:249`) changes from "author accepts
@@ -1027,8 +1128,12 @@ Test: `mise run build:roym`, then `cargo nextest run --workspace` and
   keeps its fields and adds "What you give" (`.quote-give-input`); it
   builds `DealTermsInput` (D-C1-7). Move the form's term building into a new
   `screens/quote_terms.ts` (`buildDealTerms(fields, lang)`), with its own
-  unit test, so `messages.ts` does not grow. `agreement.accept` and
-  `quote.decline` calls are unchanged in C1a.
+  unit test, so `messages.ts` does not grow. "What you give" is filled in
+  advance from the quote's own `scope` field (the same language as the form;
+  never from an enquiry in another language, Q4, P6) or left empty. The
+  currency commitment's description is built language-neutral
+  (`<ISO> <amount>`, P17). `agreement.accept` and `quote.decline` calls are
+  unchanged in C1a.
 - `cards/templates/quote.ts`: one line per commitment: who gives
   ("{name} gives" or "You give"), the description (`bestVersion`), the
   declared value with the currency, the payee on a currency line (case 24
@@ -1036,6 +1141,11 @@ Test: `mise run build:roym`, then `cargo nextest run --workspace` and
   place when set. Keep the classes `.quote-scope` and `.quote-total` (story
   40 reads them; `.quote-total` is the sum of currency commitments the
   reader gives).
+- `records/record_text.ts` and its test file (398 lines): `textFields` takes
+  the key list dynamically from the record (terms texts and each commitment's
+  description). In `translation.ts`, `translateTexts` batches calls to at
+  most 8 texts per request to respect the server limit
+  (`crates/roym_web/src/app/translation.rs:23`, `:122`).
 - `templates/agreement_receipt.ts`: the same commitment list, plus the line
   "{name} read this in {language}{, machine translation}" for each half
   (closes the backlog row "The receipt card does not show what each party
@@ -1053,9 +1163,11 @@ Test: `mise run build:roym`, then `cargo nextest run --workspace` and
   progress". Section 7.10 lists them for the owner's Hindi review.
 - Unit tests: section 7.5.
 - Playwright: cases 3, 24, 25, 27, 29 and 30 (section 7.6);
-  `demo/40-roym-languages.spec.ts:112` to `:122` reads
-  `terms.scope.text`; `hub-helpers.ts` `sendQuote` unchanged (the new field
-  is filled in advance).
+  `demo/40-roym-languages.spec.ts:112` to `:122` reads `terms.scope.text`,
+  `:208` reads `.card-request` / `.card-enquiry`, `:216` reads
+  `.request-description`; `hub-helpers.ts` `sendQuote` unchanged (the new field
+  is filled in advance) and `:210` clicks `.quote-request-button`. The form
+  and button classes stay (D-C1-12).
 
 Test: `npm test` in `crates/roym_web/ui`, `mise run test:e2e`.
 
@@ -1113,10 +1225,18 @@ Branch `feat/m08c-c1b-single-writer` from `main` after C1a merges.
   `router.rs`: `deal.`.
 - `transaction`: `app/decline_ops.rs` with `decline_at`: who may decline
   what (`change.md:358` to `:359`): the counterparty a quote version or its
-  own enquiry, the quote author an enquiry; refused once the counterparty's
-  half exists; idempotent through a fence row `decline:<deal>` that holds
-  the record (AG-13). Sync files a `deal-decline` card from the other party
-  and marks the deal or enquiry `declined`. Delete `quote_ops::decline`
+  own enquiry, the quote author an enquiry; refused once an unrefused
+  counterparty half exists; idempotent through a fence row `decline:<deal>`
+  that holds the record (AG-13). Sync files a `deal-decline` card from the
+  other party, with filing checks:
+  1. The signer is the party the rule allows for that record (counterparty
+     for a quote; either party for an enquiry).
+  2. `declines` is a record this node holds in the same `conversation`.
+  3. `deal` equals that record's `quote_id` or `enquiry_id`.
+  4. Refuse when this node holds an unrefused counterparty acceptance half
+     for any version of that quote id.
+  A refused decline is kept as a refused card. On a valid decline, mark the
+  deal or enquiry `declined`. Delete `quote_ops::decline`
   (`quote_ops.rs:508`) and the "new version clears a decline" code
   (`store_received_quote`, `:605` to `:615`).
 - Hub: `openDeclineDialog` (`messages.ts:724` to `:757`) calls
@@ -1138,48 +1258,63 @@ Branch `feat/m08c-c1b-single-writer` from `main` after C1a merges.
 - `agreement.accept_at`: refuse with `quote-superseded` when the version is
   not the record id in the `QUOTES` pointer row of its `quote_id` (that row
   always names the latest version; `build_quote_pointer`,
-  `quote_ops.rs:419`).
-- `quote.set_at`: `quote-already-accepted` when `AGREEMENTS` holds a
-  counterparty half for any version of this `quote_id` (index the
-  agreement row by `quote_id`); `quote-ended` from the sources in "What
-  `quote.set` reads" (`change.md:615`).
+  `quote_ops.rs:419`); refuse with `quote-ended` on an ended deal (`declined`,
+  `expired`, `not-formed`).
+- `quote.set_at`: `quote-already-accepted` when `AGREEMENTS` holds an
+  unrefused counterparty half for any version of this `quote_id` (index the
+  agreement row by `quote_id`; halves with a `refused:` row do not count);
+  `quote-ended` from the sources in "What `quote.set` reads" (`change.md:615`).
+- Server-side `deal_state`: `thread.rs` computes `deal_state` on quote card
+  rows from the pointer, the agreement row, the snapshots and the clock.
 - Hub: "Accept" and "Decline" only on the newest version of a `quote_id`
-  (point 6), and not when the deal is `agreed`, `declined`, `expired` or
-  `not-formed`.
+  (point 6), read directly from `deal_state`, and not when the deal is
+  `agreed`, `declined`, `expired` or `not-formed`.
 
 #### Step 3 — The writer's refusals
 
-In `decide::run`, before step 2 of D-C1-16: the checks of the doc's step 1.
-A refusal stores `snapshot:<version record_id>:1` (`not-formed`, the code
-in `state_reason`), sends it, and creates `refused:<half record_id>` =
-`{ quote_id, code, at_secs }` last. Step 2's fence that finds another
-agreement refuses with `quote-already-agreed` the same way. The
-counterparty files a refusal snapshot for that version only: it releases
-the seat holds it took for that version, and the Hub shows the refusal on
-that version's card. Expiry: `quote-expired` as AG-43.
+In `decide::run`: if a `decision:` or `countersign:` row already exists for
+this agreement, skip step 1 checks and finish the decision (Recovery check 1).
+Otherwise, run the checks of the doc's step 1. A refusal stores
+`snapshot:<version record_id>:1` (`not-formed`, the code in `state_reason`),
+sends it, and creates `refused:<half record_id>` = `{ quote_id, code,
+at_secs }` last. Step 2's fence that finds another agreement refuses with
+`quote-already-agreed` the same way. The counterparty files a refusal snapshot
+for that version only: it releases the seat holds it took for that version
+(release point, D-C1-5), and the Hub shows the refusal on that version's card.
+Expiry: `quote-expired` as AG-43.
 
 #### Step 4 — Recovery of `deciding` rows
 
-On every `transaction.sync`, query `ledger` for `kind = "decision"` and
-`state = "deciding"` (add `state` to the ledger's indexes,
-`app.rs:357` to `:362`) and finish each one in the doc's three-check order
-(`change.md:607` to `:611`). The crash-point tests use
-`fail_write_after(n)` for every write of the decision and the stub
-`Reservations` that refuses `confirm` (section 7.2).
+One function finishes a `deciding` row with Recovery's three checks
+(`change.md:607` to `:611`), called by step 2's repeat path and by the
+recovery sweep. On every `transaction.sync`, query `ledger` for `kind =
+"decision"` and `state = "deciding"` (with `state` and `quote_id` indexed in
+`app.rs:357` to `:362`) and finish each one. The crash-point tests in
+`recover.rs` use sticky `crash_on_write(collection, key_prefix)` for every
+write of the decision and the stub `Reservations` that refuses `confirm`
+(section 7.2); each test confirms that the card row was stored and the sync
+cursor moved, then runs a sync with no new card so only the recovery sweep
+finishes the decision.
 
 #### Step 5 — Restore rules and forks
 
-- The writer's next `seq` is one more than the highest of: its stored
-  snapshots, and its own `agreement-progress` cards in the conversation
-  (read through `conversation.changes` from 0 for that conversation only
-  when no stored row exists for the next `seq`).
+- The writer tracks its highest own `seq` during sync while filing outgoing
+  `agreement-progress` cards and stores it on `AgreementRow`. The writer's
+  next `seq` is one more than the highest of: its stored snapshots, and its own
+  `agreement-progress` cards in the conversation (read through
+  `conversation.changes` from 0 only in the recovery sweep when a `deciding`
+  row has no `countersign:` row).
 - Before it signs a countersigned half or a snapshot with no stored row, it
   looks for its own card with that record in the conversation, and stores
   and reuses it.
 - The counterparty: same `seq` and same bytes → repeat (D-C1-14); same
-  `seq`, other bytes → keep the first, store the second as evidence, and
-  show a `progress-fork` warning on the card.
-- Write Q5's limit into the agreements doc and the backlog.
+  `seq`, other bytes → keep the first, store the second as evidence under
+  `fork:<agreement>:<seq>:<record_id>`, and show a `progress-fork` warning
+  on the card.
+- Write Q5's limit into the agreements doc and the backlog: a second,
+  different countersigned half for the same role is kept silently by
+  `file_agreement_receipt_card` (first half per role kept); `progress-fork`
+  applies to snapshots.
 
 #### Step 6 — Close-out of C1b
 
@@ -1237,16 +1372,21 @@ C1a (each file under 800 lines):
 - `accept.rs`: `authors_own_accept_is_refused` (AG-41);
   `repeated_accept_returns_the_same_half` (AG-13);
   `counterparty_holds_its_own_seat_before_signing`,
-  `taken_seat_answers_reserve_failed_and_signs_nothing` (AG-15).
+  `taken_seat_answers_reserve_failed_and_signs_nothing` (AG-15);
+  `counterparty_releases_holds_on_not_formed_and_expiry` (P10).
 - `decide.rs`: `writer_countersigns_in_sync_and_sends_snapshot_one`;
-  `losing_the_last_seat_ends_not_formed` (AG-14, one node, two quotes).
+  `losing_the_last_seat_ends_not_formed` (AG-14, one node, two quotes);
+  `repeat_branch_reuses_stored_snapshot_one` (P3);
+  `send_error_stops_decision_row_and_retries_on_next_sync` (P16);
+  `release_both_seat_and_hold_in_one_batch` (P21).
 - `time.rs`: `unsettled_commitment_ends_unconfirmed_after_its_track_end`,
   with and without a giver's half (AG-7); `tick_before_the_end_changes_nothing`;
   `a_late_half_after_the_end_is_kept_and_changes_nothing`.
 - `settle.rs`: `receiver_half_settles_with_a_settlement_note` (AG-33);
   `one_payment_per_currency_commitment`; `repeated_sign_and_ack_return_the_same_record`
   (AG-13); `a_half_from_the_wrong_party_is_not_filed` (AG-11).
-- `cancel.rs`: `cancel_is_refused_once_a_commitment_moved` (AG-9).
+- `cancel.rs`: `cancel_is_refused_once_a_commitment_moved` (AG-9);
+  `cancel_releases_writer_seat_holds` (P10).
 
 C1b:
 
@@ -1254,17 +1394,21 @@ C1b:
   `two_syncs_send_one_refusal` (AG-12, AG-43);
   `a_countersigned_half_before_expiry_still_forms_the_agreement` (AG-43);
   `revision_after_acceptance_is_refused`, `revision_after_an_end_is_refused`
-  (AG-35).
+  (AG-35); `counterparty_releases_holds_on_refusal_snapshot` (P10).
 - `recover.rs`: one test per crash point of D-C1-16 (after the fence, after
   each reserve, after the countersign row, after the snapshot row, between
-  the send and the last `put`), each followed by one sync and compared with
-  the no-crash end state; the same with the time moved past the expiry;
-  the stub that refuses `confirm` after another succeeded; that stub with a
-  crash after the `not-formed` snapshot is stored and the slot free again
-  on the rerun (AG-14).
+  the send and the last `put`), each first checking that the card row is
+  stored and the sync cursor moved, then running a sync with no new card so
+  only the recovery sweep finishes the decision (P2); the same with the time
+  moved past the expiry; crash after countersign stored with clock moved past
+  expiry checks no `refused:` row (P19); the stub that refuses `confirm`
+  after another succeeded; that stub with a crash after the `not-formed`
+  snapshot is stored and the slot free again on the rerun delivered as a
+  repeat half (AG-14, P3).
 - `restore.rs`: `restored_writer_continues_seq_from_its_cards` and
   `restored_writer_reuses_its_sent_countersign` (AG-42, Q5 scope).
-- `decline.rs`: `repeated_decline_returns_the_same_record` (AG-13).
+- `decline.rs`: `repeated_decline_returns_the_same_record` (AG-13);
+  `decline_filing_checks_refuse_invalid_signers_or_records` (P5).
 
 ### 7.3 Parity (both builds agree)
 
@@ -1285,7 +1429,12 @@ file `roym_deal_e2e.rs` so the existing file stays under 800 lines;
 ### 7.5 Hub unit tests (`npm test`)
 
 - `quote_terms.test.ts`: the D-C1-7 mapping (amount 0, before-work,
-  after-work, slot).
+  after-work, slot); test that pre-fill never comes from text in another
+  language (P6); test that quotes in a language with no catalog build
+  successfully with language-neutral currency description (P17).
+- `record_text.test.ts` (398 lines): dynamic extraction of text keys from
+  record; batching in `translation.ts` (`translateTexts`) at most 8 texts per
+  request (P20).
 - `templates.test.ts`: quote, receipt (with the read-in line), progress,
   payment, fulfilment templates; the old `renderBookingProgress` block
   (`:481` to `:528`) becomes the progress template's.
@@ -1301,14 +1450,14 @@ file `roym_deal_e2e.rs` so the existing file stays under 800 lines;
 | --- | --- | --- | --- |
 | 3 | `roym-hub.spec.ts:200` | `agreement-progress` in the 7 types | 8 types with `deal-decline` |
 | 4 | `:224` | `enquiry` card | |
-| 24 | `:840` | sample cards on new shapes; payee sentence on the money line | |
+| 24 | `:840` | sample cards on new shapes; payee sentence on the money line; `:846` `.card-request` / `.card-enquiry`; `hub-helpers.ts:210` `.quote-request-button` | |
 | 25 | `:870` | `renderCard` data on new shapes | |
 | 26 | `:973` | `.card-enquiry` | |
 | 27 | `:1001` | none (refused card) | |
 | 29 | `:1029` | quote form opened from an `enquiry` card | |
 | 30 | `:1073` | expired quote data on new shapes | |
 | 31 | `:1125` | none | new decline sentence; the other side is told |
-| story 40 | `demo/40-roym-languages.spec.ts:112` | `terms.scope.text` | |
+| story 40 | `demo/40-roym-languages.spec.ts:112` | `terms.scope.text`; `:208` `.card-request` / `.card-enquiry`; `:216` `.request-description`; `:259` `a.terms.scope` | |
 | story 50 | new | two commitments, accepted | |
 
 ### 7.7 Not tested
@@ -1378,6 +1527,10 @@ words (`quote-superseded`, `quote-expired`, `progress-fork`).
 | "`RECORD_TYPES` is not read by any verifier" (`:656`) | C1a and C1b update the type list in the row. |
 | "Two Roym outputs carry another node's card data as an untyped `Value`" (`:532`) | C1a: `PeerStep` is gone; `agreement.progress` returns typed snapshots. Update the row's file names. |
 | New: "The writer's decision has no crash recovery" | C1a adds it, target C1b; C1b resolves it. |
+| New: "A second acceptance of an older quote version waits with no answer" | C1a adds it, target C1b; C1b resolves it. |
+| New: "The Hub shows 'Accept' on every version of a quote" | C1a adds it, target C1b; C1b resolves it. |
+| New: "`quote.set` can revise an accepted quote" | C1a adds it, target C1b; C1b resolves it. |
+| New: "Decline of a deal is local and unsigned" | C1a adds it, target C1b; C1b resolves it. |
 | New: "Nobody can mark work as started" (Q6) | C1a adds it, target C3b. |
 | New: "The restore rules do not cover a full restore from an old backup" (Q5) | C1b adds it, target TBD. |
 | New: "The Hub's quote form builds only one service and one payment" | C1a adds it, target C6. |
@@ -1390,6 +1543,8 @@ in "Open in-code markers".
 Each PR fixes the statements it makes false. C8 does the full pass of the
 change docs' close-out lists.
 
+- `docs/system-requirements-spec.md`: lines `:356`, `:359`, `:360`, `:407`,
+  `:447` (remove `AgreedTerms` and update stale links).
 - `docs/roym-integrated-experience-spec.md`: the R2 transaction table
   (`:244` to `:253`), the Records table (`:463` to `:524`; request at
   `:475`, booking-progress at `:500`), the transaction state section
@@ -1397,14 +1552,16 @@ change docs' close-out lists.
 - `docs/developer-guide.md`: the event kinds table (`:2489` to `:2490`),
   "Show cards" (`:2537` to `:2550`, the card types and `agreement.accept`
   params).
-- `docs/system-architecture.md`: Cards (`:1203` to `:1217`, `:1217` names
+- `docs/system-architecture.md`: `:1139` (the chain of records and
+  `booking-progress`), Cards (`:1203` to `:1217`, `:1217` names
   `quote.decline`, C1b), the Booking State Machine (`:1219` to `:1269`), the
-  flow diagram (`:1271` to `:1324`).
+  flow diagram (`:1271` to `:1324`), `:3127` ("seven card types").
+- `docs/traceability-matrix.md`: update `request` and `booking` rows.
 - `docs/TERMINOLOGY.md`: enquiry, commitment, declared value, progress
   snapshot (`:64` to `:67`; `:67` says the code names the parties, not giver
   and receiver, which C1a makes false).
 - `docs/demo/demo.md`: the `roymctl` transaction commands (`:1311` to
-  `:1327`).
+  `:1327`), using `agreement get|cancel|progress`.
 
 ## 10. Exit criteria
 
