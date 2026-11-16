@@ -871,3 +871,367 @@ agreement" branch. The fixes are spread over three commits: `3462e4eb`
 **The plan review is closed: 26 items, 0 open.** Rounds 1, 3, 4 and 5 were
 done by Claude Opus 5.5, the same model as the author; round 2 by Claude
 Sonnet 5.5.
+
+## Code review round 1 — Claude Opus 5.5 (Claude Code), 2026-11-16
+
+Reviewed part C1a, PR [#367](https://github.com/syneroym/syneroym/pull/367),
+branch `feat/m08c-c1-commitment-model` at `f841c8d6`, against `origin/main`
+(`git diff origin/main...HEAD`), in the main checkout (`.git` is a
+directory, not a worktree). `git pull` said "Already up to date". The code
+was written by Gemini 3.8 Flash, so this round meets the cross-tool rule.
+
+**Change docs.** The prompt lists three: roym-agreements, roym-value-exchange
+and "roym extensions". The last one is the folder `roym-extensions` (with a
+hyphen); there is no folder with a space. I read all three.
+
+**Summary:** 1 blocker, 5 major, 9 minor, 15 items (R1 to R15). **15 open.**
+There is no earlier code review round, so there are no Fixed or Rejected
+items to re-check.
+
+Limits of this review: CI (`gh pr checks 367`) is **not** green. The six test
+shards and Playwright E2E pass; "Lints, licenses & checks" fails (R1), so the
+"CI Pipeline" summary job fails too. I did not run the full suite or
+`mise run verify`. I ran `cargo nextest run -p syneroym-roym-transaction`
+(10 passed, the count `status.md` gives). To prove R2 and R4, I added a
+temporary test file in `crates/roym_transaction/src/app/tests/`, ran it, and
+deleted it; the tree is clean. I changed no code. I did not build the WASM
+components, so the size numbers in `status.md` are not checked here.
+
+### What was checked and found correct
+
+- **Pure deal core.** `deal/transition.rs` is the agreements doc's two tables
+  (`change.md:552` to `:564`) cell by cell, for both kinds, including the
+  final-state rows and `claimed: true/false` on `tick`. `track_end` is
+  `max(window.latest_secs, agreed_at_secs) + 30 days`. `progress::apply`
+  closes the agreement only when every commitment is final, never after a
+  cancel; cancel needs every commitment `promised` or `payment-requested`
+  (behaviour change 8). `AgreementState` has the doc's four states.
+- **`agreement.accept`.** Refused on the author's node with
+  `writer-countersigns` before any write (AG-41). A repeated accept returns
+  the stored half before any seat is held (AG-13). The counterparty holds its
+  own `service-in-slot` seats before it signs; a failed hold releases the
+  others and signs nothing (AG-15). `prepare_author_booking` is gone.
+- **Seat hold.** `hold.rs` creates `hold:` and `seat:` in one `create`, tries
+  seats in order, answers "already held" for an existing hold, and releases
+  both rows in one `batch_mutate` (D-C1-5).
+- **Fence key and first decision.** `decide::run` checks the signer and the
+  expiry before the fence, takes `decision:<quote_id>`, sends a half for
+  another version to the "other agreement" branch, and a `create` that finds
+  the row with the same agreement goes to the repeat path (D-C1-16 step 2).
+  On the happy path it stores the countersigned half and snapshot 1 before it
+  sends, and puts the decision row `agreed` last.
+- **Filing rules.** A snapshot is filed only from the quote's signer, only on
+  the counterparty's node, and only with a higher `seq` (AG-11). A payment
+  request is filed only from the receiver of a `currency` commitment; an
+  acknowledgement only when its `role` matches the signer's place in that
+  commitment. Settlement fences are per commitment (D-C1-10).
+- **Tick.** The writer ticks every agreement of the conversation after the
+  card loop of `transaction.sync`, and in `agreement.get` and
+  `agreement.progress` (D-C1-9).
+- **Access control.** Every new method is in the method table and under the
+  `Owner` router prefixes `enquiry.` and `agreement.`; `booking.` is gone.
+  `agreement.cancel` is refused for a non-author; `agreement.progress` for a
+  non-party. The wire-refusal tables list the new methods
+  (`transaction_validation.rs:11` to `:32`, `bundles.rs:92`,
+  `transaction_cards.rs:643`). No method became wire-reachable.
+- **Ledger indexes and schema.** `kind`, `quote_id` and `state` are indexed on
+  `ledger`; `SCHEMA_VERSION = 5`.
+- **Hub.** `buildDealTerms` follows D-C1-7 (`c1` work, `c2` money, amount 0
+  builds no `c2`, `before-work` puts `c2` in `c1.after`, `after-work` the
+  other way round, currency description `<ISO> <amount>`). Story 50 checks the
+  two commitment lines and reads `['promised', 'promised']` on both nodes
+  through `agreement.list`.
+- **Change docs.** The deviations (criteria finished later, facts corrected,
+  owner decisions Q1 and Q3 to Q6) are in the doc that owns each one, with the
+  plan's numbers and meaning. EX-1 and EX-3 are in roym-extensions; VX-2,
+  VX-6, VX-12 are in roym-value-exchange.
+- **Ratchets.** `dual_build_parity/transaction.rs` is 821 lines and
+  `xtask/oversized-test-files.txt` says 821; the duplication ceiling is
+  lowered to 7.0. No new `.rs` file is over 800 lines (`receipts.rs` 797).
+- **Status count.** "10 passed in syneroym-roym-transaction" equals the run.
+
+### New findings
+
+- [ ] **R1 — blocker.** *Where:* `crates/roym_core/src/deal.rs:144`,
+  `crates/roym_transaction/src/app/decide.rs:1`;
+  `crates/roym_web/ui/src/screens/quote_terms.test.ts:19`, `:98`, `:118`.
+  *Problem:* Two code comments cite plan ids ("(D-C1-11)", "(D-C1-16)"). CI's
+  planning-ref gate (`.github/scripts/check-planning-refs.py`) fails on both,
+  so "Lints, licenses & checks" and "CI Pipeline" are red. Three Hub test
+  names also carry plan and review ids ("D-C1-7", "P6", "P17"). The gate reads
+  only comments, so it does not catch them, but AGENTS.md bans ids in test
+  names too.
+  *Failure case:* the PR cannot merge; the test names stop making sense when
+  the plan is archived.
+  *Fix:* say the rule in the comment itself ("C2 changes where these fields
+  sit, not whether they are present"; "The writer's decision, in its fixed
+  step order"). Rename the three tests to say what they prove. Re-run the gate.
+  *Status:* Open.
+
+- [ ] **R2 — major.** *Where:* `crates/roym_transaction/src/app/decide.rs:298`
+  to `:350` (`repeat_path`).
+  *Problem:* The repeat path does not finish a decision that was started. Each
+  case of D-C1-16 step 1 differs from the code:
+  (a) no snapshot 1 and no countersigned half, quote not expired: the plan's
+  retry should go on to reserve, confirm and countersign; the code returns
+  `Ok(false)` in both branches of `:346` to `:349`, so the expiry check there
+  changes nothing;
+  (b) countersigned half stored, no snapshot: the code returns `Ok(false)`;
+  the plan says go on and send both;
+  (c) both stored: the code resends only the snapshot, never the
+  countersigned half, and it never puts the decision row `agreed`;
+  (d) snapshot 1 stored in state `not-formed`: the code returns `Ok(false)`
+  and neither resends it nor puts the row `not-formed`.
+  `run` then returns `Ok`, `sync` files the card and moves the cursor, and the
+  half is never read again. So the "retry on the next sync" that C1a relies on
+  (plan section 1, section 2.2 point 4) does not exist.
+  *Failure case (proven):* with the test host, `crash_on_write("ledger",
+  "countersign:")`, then `decide::run` returns `Err` (the fault fired); after
+  `restart()`, a second `decide::run` before the expiry returns `Ok(false)`;
+  no `countersign:` row exists and the decision row stays `deciding`. In
+  production: a storage error, or a transport error on the first card send,
+  during the decision leaves the counterparty holding a half with no answer
+  until C1b; in case (c) the counterparty never gets the writer's half.
+  *Fix:* make each branch do what D-C1-16 step 1 says: (a) run steps 3 to 7;
+  (b) store and send snapshot 1, then steps 6 and 7; (c) send any card whose
+  stored row has no `message_id` (the half too), then put the row `agreed`;
+  (d) send the stored `not-formed` snapshot and put the row `not-formed`. Add
+  the planned `decide.rs` tests `repeat_branch_reuses_stored_snapshot_one`,
+  `send_error_stops_decision_row_and_retries_on_next_sync` and
+  `repeat_past_expiry_without_countersign_leaves_row_deciding`, each first
+  checking that the fault fired.
+  *Status:* Open.
+
+- [ ] **R3 — major.** *Where:* `crates/roym_transaction/src/app/decide.rs:230`
+  to `:275`, `:478` to `:480`; `docs/planning/deferred-backlog.md` row "The
+  writer's decision has no crash recovery".
+  *Problem:* (1) A send error is classed as passing or lasting by searching the
+  message text for "transport", "timeout" or "connection".
+  `send_card_and_file` already knows the `SiblingError` kind and throws it
+  away. A transport error with other words is taken as lasting; a refusal
+  whose text says "connection" is taken as passing and retried forever.
+  (2) On a lasting refusal, D-C1-16 step 6 says keep the decision row
+  `deciding`, so C1b's sweep sends the card later. The code goes on and puts
+  the row `agreed` with no `message_id` on the half. C1b's sweep reads only
+  `deciding` rows, so the cards are never sent. The new backlog row says the
+  row stays `deciding`, which is not what the code does.
+  *Failure case:* the peer is blocked for a moment when the writer decides;
+  the agreement is `agreed` on the writer and the counterparty never learns it,
+  also after C1b.
+  *Fix:* return the error kind from `send_card_and_file` (an enum, or keep the
+  `SiblingError`) and branch on it; on a lasting refusal leave the decision
+  row `deciding` and return `Ok`. Then the backlog row is true.
+  *Status:* Open.
+
+- [ ] **R4 — major.** *Where:* `crates/roym_transaction/src/app/progress_ops.rs:107`
+  to `:114` (`transition_at`).
+  *Problem:* The plan says `transition_at` "keeps today's retry over the
+  unique `snapshot:<agreement>:<seq>` create". The code only checks for `Err`.
+  When `create` answers `Ok(Some(_))` (the row already exists), it goes on:
+  it sends the snapshot it did not store, and moves `AgreementRow` to that
+  `seq`. The retry loop of `booking_ops::transition` (three attempts, re-read,
+  `continue` on an existing row) and `roll_forward` are both gone, and
+  `row.seq` is the only source of the next `seq`. This breaks the "made once"
+  rule of D-C1-8.
+  *Failure case (proven):* agree a deal, store a `snapshot:<agr>:2` row (as a
+  crash after the `create` and before the `AgreementRow` put leaves it), then
+  `fulfilment::sign_at`: it succeeds, sends 2 cards (the receipt and a second,
+  different `seq` 2 snapshot), and the agreement row says `seq` 2, `claimed`,
+  while the stored `seq` 2 row is the other one. The same happens when a local
+  `fulfilment.sign` and a sync that files a payment half run at the same time.
+  The counterparty sees two different snapshots with `seq` 2 (a
+  `progress-fork`), and the writer's own rows disagree.
+  *Fix:* on `Ok(Some(_))`, re-read the highest stored snapshot (walk
+  `snapshot:<agr>:<seq+1>` up as `roll_forward` did), apply the event to it,
+  and retry a bounded number of times; answer "busy" after that. Add a test
+  for the existing-row case.
+  *Status:* Open.
+
+- [ ] **R5 — major.** *Where:* plan section 3 and section 7; missing files
+  `crates/roym_transaction/src/app/tests/{decide,settle,cancel}.rs`,
+  `crates/roym_web/tests/dual_build_parity/deal.rs`,
+  `crates/substrate/tests/roym_deal_e2e.rs`.
+  *Problem:* Many C1a rows of section 3 have no test. `git grep 'fn <name>'`
+  finds none of: `each_party_quotes_the_other_at_once` (AG-1),
+  `service_for_service_and_goods_deals_close` (AG-2, AG-4, AG-22 two-node),
+  all six `decide.rs` tests (AG-14 repeat check 1 and the slot loss on one
+  node), all four `settle.rs` tests (AG-11 half from the wrong party, AG-13
+  repeated sign and ack, AG-33 settlement note, one payment per currency
+  commitment), both `cancel.rs` tests (AG-9 service, cancel releases the
+  writer's holds), `halves_differ_only_in_role_and_what_was_read` (AG-32),
+  `snapshot_from_another_signer_is_not_filed` (AG-11 unit). The AG-3 test
+  compares receipts and first snapshots of both forms; the one that exists
+  (`answers_enquiry_and_want_variants_serialize_consistently`) only
+  serialises `Answers`. The parity file `deal.rs` (two- and three-commitment
+  quotes, goods, cancel, per-commitment settlement) does not exist. Exit
+  criterion 1 ("Every C1a row of section 3 names a test that exists and
+  passes") is not met. R2 and R4 are the kind of bug these tests were planned
+  to catch.
+  *Failure case:* AG-1, AG-2, AG-4, AG-9, AG-11, AG-13, AG-14, AG-22, AG-32
+  and AG-33 are claimed for C1a with no proof; a goods or service-for-service
+  deal is never run on two nodes.
+  *Fix:* write the missing tests of section 7.1 to 7.4 with the planned names,
+  in the planned files. Each crash or error test first checks that the fault
+  fired.
+  *Status:* Open.
+
+- [ ] **R6 — major.** *Where:* `docs/system-architecture.md:1243` to `:1262`.
+  *Problem:* The living doc says things that are false after C1a. It lists
+  `ended-unconfirmed` as an agreement state (it is a commitment state;
+  `AgreementState` has `agreed`, `closed`, `cancelled`, `not-formed`). It
+  names a type `DealCommitment` that does not exist, and commitment states
+  `confirmed` and `closed` that do not exist (the states are `promised`,
+  `payment-requested`, `claimed`, `fulfilled`, `acknowledged`,
+  `ended-unconfirmed`, `failed`, `cancelled`). "The rules of the booking"
+  still describes two tracks, `scheduled`, `in-progress`, `booking.start`,
+  `completed` and `unconfirmed`. Cancel is said to need every commitment
+  `promised`, but `payment-requested` is allowed too. "Up to 64" seats is not
+  the code (R8).
+  *Failure case:* a developer builds a client or C2 from this section and gets
+  the states wrong.
+  *Fix:* rewrite this section from `progress.rs` and `deal/transition.rs`:
+  the four agreement states, the eight commitment states with the two tables
+  (or a link to the agreements doc), the cancel rule, the track end, and the
+  seat limit. Then grep the other living docs for the same words.
+  *Status:* Open.
+
+- [ ] **R7 — minor.** *Where:* `crates/roym_transaction/src/app/decide.rs:180`
+  to `:184`; `agreement_ops.rs:185` to `:189`;
+  `crates/substrate/tests/roym_booking_e2e.rs:193`; `crates/roym_core/src/deal.rs:243`.
+  *Problem:* (1) The writer maps both `SlotUnavailable` and `SlotTaken` to
+  `slot-taken`; behaviour change 7 and the architecture doc say a slot that
+  no longer exists ends `slot-unavailable`, as on `main`. (2) `reserve-failed`
+  has no reason; plan step 6 says it answers with `slot-taken`. (3) The race
+  test checks `not-formed` but not the reason. (4) `DealError::code()` exists
+  but no method puts the code word in the error `data`, so clients see only
+  English text.
+  *Failure case:* a person whose slot was deleted is told it was taken; the
+  Hub cannot tell the two apart.
+  *Fix:* keep the two reasons; answer `reserve-failed` with
+  `data: { reason }`; assert `state_reason` in the race test; put
+  `code()` into `data` where `DealError` reaches a method.
+  *Status:* Open.
+
+- [ ] **R8 — minor.** *Where:* `crates/roym_transaction/src/app/hold.rs:18`.
+  *Problem:* `MAX_SLOT_CAPACITY` is now 100; on `main` it was 64
+  (`booking.rs:20`). The plan does not list this change, and the architecture
+  doc still says 64.
+  *Failure case:* a slot with capacity 80 now books 80 seats, not 64, with no
+  decision behind it.
+  *Fix:* keep 64, or record the change as a deviation and update the doc.
+  *Status:* Open.
+
+- [ ] **R9 — minor.** *Where:* `crates/roym_transaction/src/app/agreement_ops.rs:60`
+  and `:230`, `:360`; `crates/roym_web/tests/method_shapes/agreement_accept_already_accepted.json:2`;
+  `crates/roym_web/ui/src/screens/messages.ts:459`, `:490`, `:667`.
+  *Problem:* Two leftovers that the plan does not have. `agreement.accept`
+  still answers `"booking": null` (a field of type `Option<Option<()>>` that is
+  always `Some(None)`); it is not in the wire table of section 4. The Hub still
+  accepts card type `request` and the fields `request_id` and
+  `request_record_id` next to the new names. The product is not released, so
+  no old card exists to read.
+  *Failure case:* a client reads a field that means nothing; two names for
+  one thing stay in the Hub.
+  *Fix:* remove `booking` from the output and its shape files; remove the
+  `request` fallbacks from `messages.ts` and the `CardRow` type.
+  *Status:* Open.
+
+- [ ] **R10 — minor.** *Where:* `crates/roym_web/ui/src/screens/quote_terms.ts:53`;
+  `apps/roymctl/src/commands/roym/transaction.rs:357`;
+  `docs/planning/deferred-backlog.md:659`.
+  *Problem:* Both callers that can build a slot commitment build a `details`
+  that `DealTerms::validate` refuses. The Hub writes `data: { slot_id }` with
+  no `listing_id`; `roymctl` writes schema `"scheduling:slot:v1"` (the fixed
+  value is `"scheduling/slot@1"`) and no `listing_id`. The Hub form passes no
+  slot today, so its path is unused, but the unit test fixes the wrong shape.
+  The backlog row for `roymctl --slot` still gives the old cause
+  ("`slot requires listing_id`").
+  *Failure case:* `roymctl roym transaction quote --slot …` is refused with a
+  `details` error; the Hub's slot path will be refused when it is wired.
+  *Fix:* build `{ listing_id, slot_id }` and the constant schema in both
+  callers (export the constants to the Hub or test them against the Rust
+  ones); update the backlog row.
+  *Status:* Open.
+
+- [ ] **R11 — minor.** *Where:* `crates/roym_transaction/src/app/decide.rs:282`
+  and `:341`; `crates/roym_transaction/src/app/sync/receipts.rs:205` to `:206`.
+  *Problem:* The agreements doc (`change.md:571`) says `agreed_at_secs` is the
+  `issued_at_secs` of the writer's countersigned half, "so both parties have
+  the same value". The writer stores the sync's `now`, or in the repeat path
+  the snapshot row's `stored_at_secs`; the counterparty stores the
+  snapshot's `issued_at_secs`. These can differ, and `track_end` and
+  `track_ends[]` depend on them.
+  *Failure case:* the two Hubs show different track ends for one commitment,
+  and a commitment can end `ended-unconfirmed` earlier than the counterparty
+  expects.
+  *Fix:* use `half.issued_at_secs` of the writer's half on both nodes (the
+  counterparty holds it from the `agreement-receipt` card).
+  *Status:* Open.
+
+- [ ] **R12 — minor.** *Where:* `crates/roym_transaction/src/app/agreement_ops.rs:447`
+  to `:463`; `progress_ops.rs:262` to `:283`.
+  *Problem:* D-C1-5 says the counterparty releases the seat holds of its
+  expired, not-countersigned quotes "on each `transaction.sync` of the
+  conversation and in `agreement.get`". Only `agreement.get` does it;
+  `tick_conversation_at` handles only the writer. Also, the release at the
+  quote's expiry does not wait for a countersigned half that the writer made
+  before the expiry and that is still on its way (AG-43 says such a half
+  still forms the agreement).
+  *Failure case:* a counterparty who never opens the agreement keeps the seat
+  forever; or the counterparty frees its seat, the writer's half arrives, and
+  the agreed deal has no seat.
+  *Fix:* call the release from the sync path too. For the second case, release
+  at expiry only when the writer's `not-formed` snapshot arrives or after a
+  grace time, and record the rule (deviation or backlog row for C1b).
+  *Status:* Open.
+
+- [ ] **R13 — minor.** *Where:* `crates/roym_transaction/src/app/backup/sections.rs:289`
+  to `:316`; `crates/roym_transaction/src/app/ledger.rs:8` to `:45`.
+  *Problem:* The plan's backup import table (step 5a) is not built: a ledger
+  row is only parsed into `LedgerRow`, and only the dead `step` field is
+  verified. No check of the `decision` state, of `seat` against a `hold`, of
+  a `countersign` signature, or of the commitment of a `payreq`, `ack` or
+  `fulfil` row. The row is then written back from `LedgerRow`, which has no
+  `reason`, so a `not-formed` decision row loses its reason on restore.
+  `LedgerKind::Step` and `StepRow` belong to the removed booking code.
+  *Failure case:* a restore keeps a seat row with no hold (a seat that is lost
+  until someone deletes it by hand); a `not-formed` decision comes back with
+  no reason.
+  *Fix:* import each kind into its own row type (`DecisionRow`,
+  `CountersignRow`, `HoldLedgerRow`, `SeatLedgerRow`, the fence row) with the
+  table's checks, and delete `Step` and `StepRow`.
+  *Status:* Open.
+
+- [ ] **R14 — minor.** *Where:* `crates/roym_transaction/src/app/decide.rs:181`
+  to `:184` and `:105`; `progress_ops.rs:162` to `:166`;
+  `crates/roym_transaction/src/app/sync/receipts.rs:226` to `:253`.
+  *Problem:* Three differences from the plan's decisions. (1) D-C1-16 step 3
+  and the agreements doc (P35) say: on a failed reserve, store snapshot 1
+  `not-formed` first, then release. The code releases inside
+  `reserve_author_holds` before the snapshot exists, so C1b's recovery would
+  have to change this order, which the plan's "final step order" avoids.
+  (2) D-C1-4: `agreement.cancel` reads `clock::now_secs()` itself and has no
+  `cancel_at`. (3) `check_progress_fork` (`progress-fork`) is C1b's step 5; it
+  is built in C1a with no test, and its `put_row` error is ignored.
+  *Failure case:* (1) a crash between the release and the snapshot store in
+  C1b reruns `reserve` on released keys, the case P35 closed.
+  *Fix:* move the release after the snapshot store; add `cancel_at`; either
+  test the fork branch now or leave it to C1b.
+  *Status:* Open.
+
+- [ ] **R15 — minor.** *Where:* `docs/planning/deferred-backlog.md:532`, `:660`;
+  `crates/roym_web/ui/src/screens/messages.ts`; `status.md` C1a row.
+  *Problem:* (1) The backlog row "A countersigned card whose send fails is
+  never sent again" names `maybe_countersign`, which is gone; the row must
+  say what is true now (or be closed by R2 and R3). (2) The row "Two Roym
+  outputs carry …" now describes one output; its title still says two.
+  (3) `messages.ts` grew from 1016 to 1034 lines, though step 5b moved the
+  term building out so that it would not grow. (4) Exit criterion "Owner
+  reviewed the new Hindi messages" (section 7.10) is not recorded anywhere.
+  *Failure case:* the backlog sends a reader to a function that does not
+  exist; the Hindi text with legal weight merges unreviewed.
+  *Fix:* update the two rows; move one more piece out of `messages.ts`;
+  record the owner's Hindi review in the status row before merge.
+  *Status:* Open.
+
+**Open after round 1: 15 (1 blocker, 5 major, 9 minor).**
