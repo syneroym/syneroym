@@ -170,7 +170,7 @@ The owner accepted Q1 to Q6 on 2026-11-16. This is only the reviewer's view.
   can finish the decision.
   *Status:* Fixed (3462e4eb).
 
-- [ ] **P3 — major.** *Where:* D-C1-16; C1b step 3 and step 4; agreements
+- [x] **P3 — major.** *Where:* D-C1-16; C1b step 3 and step 4; agreements
   doc "The writer's decision" step 2 and "Recovery" (`change.md:597`,
   `:607` to `:613`). Reopens agreements review P35.
   *Problem:* Step 2 says: "If the row exists with the same agreement, this
@@ -194,7 +194,7 @@ The owner accepted Q1 to Q6 on 2026-11-16. This is only the reviewer's view.
   used and never decided again), because C1a already has the re-read path.
   Add an AG-14 test: crash after the `not-formed` snapshot is stored, then
   deliver the same half again (not the sweep), with the slot free.
-  *Status:* Fixed in part (3462e4eb); reopened in round 3. Open.
+  *Status:* Fixed (e2a3898b).
 
 - [x] **P4 — major.** *Where:* D-C1-16 ("C1a has no … step-1 refusal
   snapshots"), section 4 behaviour changes 1 to 9, section 8.
@@ -279,7 +279,7 @@ The owner accepted Q1 to Q6 on 2026-11-16. This is only the reviewer's view.
   classes that stay.
   *Status:* Fixed (3462e4eb).
 
-- [ ] **P8 — minor.** *Where:* section 9 (living docs).
+- [x] **P8 — minor.** *Where:* section 9 (living docs).
   *Problem:* Statements that C1a makes false are missing from the list:
   `docs/system-requirements-spec.md:356`, `:407`, `:447` (`AgreedTerms`,
   and a link to `transaction.rs:116` that is already stale);
@@ -289,7 +289,7 @@ The owner accepted Q1 to Q6 on 2026-11-16. This is only the reviewer's view.
   C1a.
   *Fix:* Add these to section 9. Also search the traceability matrix for
   `request` and `booking` rows.
-  *Status:* Fixed in part (3462e4eb); reopened in round 3. Open.
+  *Status:* Fixed (e2a3898b).
 
 - [x] **P9 — minor.** *Where:* step 3, section 7.8.
   *Problem:* Size facts that the plan misses. (1)
@@ -391,7 +391,7 @@ The owner accepted Q1 to Q6 on 2026-11-16. This is only the reviewer's view.
   verifies and is bound to the quote's signer) and what is kept.
   *Status:* Fixed (3462e4eb).
 
-- [ ] **P15 — minor.** *Where:* plan lines 71 to 74, 80 to 90, 179 to 180,
+- [x] **P15 — minor.** *Where:* plan lines 71 to 74, 80 to 90, 179 to 180,
   206; task.md line 5 and the C1 "Change docs" line; section 3 VX-12.
   *Problem:* Small inconsistencies. (1) Section 0 says "this plan writes
   nothing into [roym-extensions]"; "Change docs" says the deviation is
@@ -409,7 +409,7 @@ The owner accepted Q1 to Q6 on 2026-11-16. This is only the reviewer's view.
   *Fix:* Fix the five texts. For the CLI, use one shape, for example
   `transaction agreement get|cancel|progress`, in step 5a, the developer
   bullet, `cli_args.rs` and `docs/demo/demo.md`.
-  *Status:* Fixed in part (3462e4eb); reopened in round 3. Open.
+  *Status:* Fixed (e2a3898b).
 
 ## Plan review round 2 — Claude Sonnet 5.5 (Claude Code), 2026-11-16
 
@@ -587,7 +587,7 @@ the Hub does offer 13 record languages, which matters only for P17).
   test clock starts at or after the real "now" and only moves forward.
   *Status:* Fixed (3462e4eb).
 
-- [ ] **P19 — minor.** *Where:* C1b step 3 ("In `decide::run`, before step 2
+- [x] **P19 — minor.** *Where:* C1b step 3 ("In `decide::run`, before step 2
   of D-C1-16: the checks of the doc's step 1").
   *Problem:* Step 1's expiry and version checks run on every entry, also on
   a repeat of a half whose decision is already made. The doc's Recovery says
@@ -608,7 +608,7 @@ the Hub does offer 13 record languages, which matters only for P17).
   decision (this is also P3's fix). Add a test: crash after the countersign is
   stored, move the time past the expiry, sync, and check there is no `refused:`
   row.
-  *Status:* Fixed in part (3462e4eb); reopened in round 3. Open.
+  *Status:* Fixed (e2a3898b).
 
 - [x] **P20 — minor.** *Where:* step 5b, section 7.5, Q4.
   *Problem:* The Hub reads quote, receipt and enquiry text through
@@ -760,7 +760,7 @@ in `crates/app_host/src/lib.rs:239`.
 
 ### New findings
 
-- [ ] **P23 — minor.** *Where:* D-C1-16 step 6 ("A `conversation.send`
+- [x] **P23 — minor.** *Where:* D-C1-16 step 6 ("A `conversation.send`
   error returns `Err` from `decide::run`").
   *Problem:* Today a send error is ignored (`agreement_ops.rs:546`). The fix for P16 makes it return `Err`, and `sync` then returns
   before it saves the cursor (`sync.rs:97`, `:106`). A send error that does
@@ -775,9 +775,9 @@ in `crates/app_host/src/lib.rs:239`.
   and let C1b's sweep send it later; name this in the C1a backlog row "The
   writer's decision has no crash recovery". Add the case to
   `send_error_stops_decision_row_and_retries_on_next_sync`.
-  *Status:* Open.
+  *Status:* Fixed (e2a3898b).
 
-- [ ] **P24 — minor.** *Where:* section 2.1, Q1's "Owner answer" line and
+- [x] **P24 — minor.** *Where:* section 2.1, Q1's "Owner answer" line and
   Q4 option (a).
   *Problem:* The fix wrote new text into the owner's answers. Q1's answer
   line now says that C1a includes Recovery's check 1, and Q4 option (a) now
@@ -788,9 +788,9 @@ in `crates/app_host/src/lib.rs:239`.
   *Fix:* keep the answer lines as the owner gave them, and put the two
   additions in a note under each question: "Added by plan review fixes
   (P3, P4; P17), 2026-11-16; told to the owner." Tell the owner.
-  *Status:* Open.
+  *Status:* Fixed (e2a3898b).
 
-- [ ] **P25 — minor.** *Where:* step 5a import table (P14), D-C1-5 release
+- [x] **P25 — minor.** *Where:* step 5a import table (P14), D-C1-5 release
   points (P10).
   *Problem:* Two small gaps left by these fixes. (1) The import table has
   no rows for `refused:` and `decline:`, which C1b adds to `ledger`. (2) The
@@ -804,4 +804,6 @@ in `crates/app_host/src/lib.rs:239`.
   counterparty checks the expiry of its own accepted, not-countersigned
   quotes on each `transaction.sync` of the conversation and in
   `agreement.get`, and releases then.
-  *Status:* Open.
+  *Status:* Fixed (e2a3898b).
+
+**Open after round 3: 0 (0 blocker, 0 major, 0 minor).** All 25 items (P1 to P25) are Fixed (e2a3898b).
