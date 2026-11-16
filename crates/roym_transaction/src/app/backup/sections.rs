@@ -8,7 +8,7 @@ use serde_json::Value;
 use syneroym_app_host::AppHost;
 use syneroym_roym_core::{
     backup::{SECTION_AGREEMENT_PROGRESS, SECTION_FULFILMENTS, SECTION_LEDGER, SECTION_PAYMENTS},
-    deal::{Commitment, CommitmentKind, SettlementRole},
+    deal::{Commitment, CommitmentKind, ResourceKind, SettlementRole},
     envelope::Response,
     fulfilment, payment, progress,
     transaction::{DealRole, ReceiptHalf},
@@ -40,7 +40,6 @@ pub(crate) enum ValidatedLedgerRow {
     Hold(HoldLedgerRow),
     Seat(SeatLedgerRow),
     Fence(LedgerRow),
-    Other(Value),
 }
 
 pub(crate) struct ValidatedVerticalSections {
@@ -305,14 +304,37 @@ fn validate_fulfilments(
 fn validate_fence_entry(
     id: &str,
     payload: Value,
+    quotes_by_record_id: &QuotesByRecordId,
     now: u64,
 ) -> Result<ValidatedLedgerRow, Response> {
     let row: LedgerRow = serde_json::from_value(payload)
         .map_err(|e| Response::invalid_params(format!("ledger '{id}': invalid fence row: {e}")))?;
-    if id.starts_with("payreq:") && (row.agreement.is_empty() || row.commitment_id.is_none()) {
-        return Err(Response::invalid_params(format!("ledger '{id}': empty fields")));
-    }
-    if id.starts_with("ack:") {
+
+    let quote = quotes_by_record_id.get(&row.agreement).ok_or_else(|| {
+        Response::invalid_params(format!(
+            "ledger '{id}': names unheld agreement '{}'",
+            row.agreement
+        ))
+    })?;
+
+    let cid = row.commitment_id.as_deref().unwrap_or_default();
+    let commitment =
+        quote.payload.terms.commitments.iter().find(|c| c.commitment_id == cid).ok_or_else(
+            || Response::invalid_params(format!("ledger '{id}': unknown commitment id '{cid}'")),
+        )?;
+
+    if id.starts_with("payreq:") {
+        if commitment.resource_kind != ResourceKind::Currency {
+            return Err(Response::invalid_params(format!(
+                "ledger '{id}': payreq commitment '{cid}' is not currency"
+            )));
+        }
+    } else if id.starts_with("ack:") {
+        if commitment.resource_kind != ResourceKind::Currency {
+            return Err(Response::invalid_params(format!(
+                "ledger '{id}': ack commitment '{cid}' is not currency"
+            )));
+        }
         if let Some(ref half) = row.half {
             let v = payment::verify_payment_acknowledgement(&half.envelope, now);
             if !v.verified {
@@ -321,11 +343,30 @@ fn validate_fence_entry(
                     v.reason
                 )));
             }
-        } else {
-            // No half to verify
+            if let Some(ref p) = v.payload {
+                let expected_issuer = match (commitment.giver, p.role) {
+                    (DealRole::QuoteAuthor, SettlementRole::Giver)
+                    | (DealRole::Counterparty, SettlementRole::Receiver) => &quote.quote_author_did,
+                    (DealRole::Counterparty, SettlementRole::Giver)
+                    | (DealRole::QuoteAuthor, SettlementRole::Receiver) => {
+                        &quote.payload.counterparty_did
+                    }
+                };
+                if half.issuer != *expected_issuer {
+                    return Err(Response::invalid_params(format!(
+                        "ledger '{id}': ack issuer does not match role"
+                    )));
+                }
+            }
         }
-    }
-    if id.starts_with("fulfil:") {
+    } else if id.starts_with("fulfil:") {
+        if commitment.resource_kind != ResourceKind::GoodsOrService
+            && commitment.resource_kind != ResourceKind::ServiceInSlot
+        {
+            return Err(Response::invalid_params(format!(
+                "ledger '{id}': fulfil commitment '{cid}' is not goods-or-service"
+            )));
+        }
         if let Some(ref half) = row.half {
             let v = fulfilment::verify_fulfilment_receipt(&half.envelope, now);
             if !v.verified {
@@ -334,8 +375,21 @@ fn validate_fence_entry(
                     v.reason
                 )));
             }
-        } else {
-            // No half to verify
+            if let Some(ref p) = v.payload {
+                let expected_issuer = match (commitment.giver, p.role) {
+                    (DealRole::QuoteAuthor, SettlementRole::Giver)
+                    | (DealRole::Counterparty, SettlementRole::Receiver) => &quote.quote_author_did,
+                    (DealRole::Counterparty, SettlementRole::Giver)
+                    | (DealRole::QuoteAuthor, SettlementRole::Receiver) => {
+                        &quote.payload.counterparty_did
+                    }
+                };
+                if half.issuer != *expected_issuer {
+                    return Err(Response::invalid_params(format!(
+                        "ledger '{id}': fulfil issuer does not match role"
+                    )));
+                }
+            }
         }
     }
     Ok(ValidatedLedgerRow::Fence(row))
@@ -355,6 +409,18 @@ fn validate_non_seat_entry(
         if row.agreement.is_empty() || row.commitment_id.is_empty() {
             return Err(Response::invalid_params(format!("ledger '{id}': empty fields")));
         }
+        let quote = quotes_by_record_id.get(&row.agreement).ok_or_else(|| {
+            Response::invalid_params(format!(
+                "ledger '{id}': names unheld agreement '{}'",
+                row.agreement
+            ))
+        })?;
+        if !quote.payload.terms.commitments.iter().any(|c| c.commitment_id == row.commitment_id) {
+            return Err(Response::invalid_params(format!(
+                "ledger '{id}': unknown commitment id '{}'",
+                row.commitment_id
+            )));
+        }
         active_holds.insert((row.slot_id.clone(), row.seat, row.agreement.clone()));
         Ok(Some(ValidatedLedgerRow::Hold(row)))
     } else if id.starts_with("decision:") {
@@ -363,6 +429,12 @@ fn validate_non_seat_entry(
         })?;
         if row.agreement.is_empty() {
             return Err(Response::invalid_params(format!("ledger '{id}': empty agreement")));
+        }
+        if !quotes_by_record_id.contains_key(&row.agreement) {
+            return Err(Response::invalid_params(format!(
+                "ledger '{id}': names unheld agreement '{}'",
+                row.agreement
+            )));
         }
         if row.state != "deciding" && row.state != "agreed" && row.state != "not-formed" {
             return Err(Response::invalid_params(format!(
@@ -390,15 +462,15 @@ fn validate_non_seat_entry(
         }
         Ok(Some(ValidatedLedgerRow::Countersign(row)))
     } else if id.starts_with("payreq:") || id.starts_with("ack:") || id.starts_with("fulfil:") {
-        validate_fence_entry(id, payload, now).map(Some)
+        validate_fence_entry(id, payload, quotes_by_record_id, now).map(Some)
     } else if id.starts_with("seat:") {
         Ok(None)
     } else {
-        Ok(Some(ValidatedLedgerRow::Other(payload)))
+        Err(Response::invalid_params(format!("ledger '{id}': unknown ledger kind")))
     }
 }
 
-fn validate_ledger(
+pub(crate) fn validate_ledger(
     ledger_rows: Vec<Value>,
     quotes_by_record_id: &QuotesByRecordId,
     now: u64,

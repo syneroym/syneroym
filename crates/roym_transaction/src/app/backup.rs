@@ -1,6 +1,8 @@
 //! Transaction data backup: export and import.
 
 pub(crate) mod sections;
+#[cfg(test)]
+mod tests;
 
 use std::collections::{BTreeMap, HashMap};
 
