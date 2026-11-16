@@ -952,7 +952,7 @@ components, so the size numbers in `status.md` are not checked here.
 
 ### New findings
 
-- [ ] **R1 — blocker.** *Where:* `crates/roym_core/src/deal.rs:144`,
+- [x] **R1 — blocker.** *Where:* `crates/roym_core/src/deal.rs:144`,
   `crates/roym_transaction/src/app/decide.rs:1`;
   `crates/roym_web/ui/src/screens/quote_terms.test.ts:19`, `:98`, `:118`.
   *Problem:* Two code comments cite plan ids ("(D-C1-11)", "(D-C1-16)"). CI's
@@ -966,9 +966,9 @@ components, so the size numbers in `status.md` are not checked here.
   *Fix:* say the rule in the comment itself ("C2 changes where these fields
   sit, not whether they are present"; "The writer's decision, in its fixed
   step order"). Rename the three tests to say what they prove. Re-run the gate.
-  *Status:* Open.
+  *Status:* Fixed (1023868e). Proof: check-planning-refs.py failed with exit 1 before fix, passes with exit 0 after fix.
 
-- [ ] **R2 — major.** *Where:* `crates/roym_transaction/src/app/decide.rs:298`
+- [x] **R2 — major.** *Where:* `crates/roym_transaction/src/app/decide.rs:298`
   to `:350` (`repeat_path`).
   *Problem:* The repeat path does not finish a decision that was started. Each
   case of D-C1-16 step 1 differs from the code:
@@ -1000,9 +1000,9 @@ components, so the size numbers in `status.md` are not checked here.
   `send_error_stops_decision_row_and_retries_on_next_sync` and
   `repeat_past_expiry_without_countersign_leaves_row_deciding`, each first
   checking that the fault fired.
-  *Status:* Open.
+  *Status:* Fixed (98bf5d3d). Proof: added temporary expiry check to repeat branch; `repeat_branch_reuses_stored_snapshot_one` failed with `left: Ok(false), right: Ok(true)`, passed on undo.
 
-- [ ] **R3 — major.** *Where:* `crates/roym_transaction/src/app/decide.rs:230`
+- [x] **R3 — major.** *Where:* `crates/roym_transaction/src/app/decide.rs:230`
   to `:275`, `:478` to `:480`; `docs/planning/deferred-backlog.md` row "The
   writer's decision has no crash recovery".
   *Problem:* (1) A send error is classed as passing or lasting by searching the
@@ -1021,9 +1021,9 @@ components, so the size numbers in `status.md` are not checked here.
   *Fix:* return the error kind from `send_card_and_file` (an enum, or keep the
   `SiblingError`) and branch on it; on a lasting refusal leave the decision
   row `deciding` and return `Ok`. Then the backlog row is true.
-  *Status:* Open.
+  *Status:* Fixed (98bf5d3d). Proof: temporarily mapped transport error to Ok(false); `send_error_stops_decision_row_and_retries_on_next_sync` panicked with "transport error must bubble up as Err for retry", passed on undo.
 
-- [ ] **R4 — major.** *Where:* `crates/roym_transaction/src/app/progress_ops.rs:107`
+- [x] **R4 — major.** *Where:* `crates/roym_transaction/src/app/progress_ops.rs:107`
   to `:114` (`transition_at`).
   *Problem:* The plan says `transition_at` "keeps today's retry over the
   unique `snapshot:<agreement>:<seq>` create". The code only checks for `Err`.
@@ -1045,9 +1045,9 @@ components, so the size numbers in `status.md` are not checked here.
   `snapshot:<agr>:<seq+1>` up as `roll_forward` did), apply the event to it,
   and retry a bounded number of times; answer "busy" after that. Add a test
   for the existing-row case.
-  *Status:* Open.
+  *Status:* Fixed (98bf5d3d). Proof: temporarily bypassed roll_forward on `Ok(Some(_))`; `transition_retries_and_advances_when_snapshot_key_already_exists` failed with RpcError message "already exists", passed on undo.
 
-- [ ] **R5 — major.** *Where:* plan section 3 and section 7; missing files
+- [x] **R5 — major.** *Where:* plan section 3 and section 7; missing files
   `crates/roym_transaction/src/app/tests/{decide,settle,cancel}.rs`,
   `crates/roym_web/tests/dual_build_parity/deal.rs`,
   `crates/substrate/tests/roym_deal_e2e.rs`.
@@ -1073,9 +1073,9 @@ components, so the size numbers in `status.md` are not checked here.
   *Fix:* write the missing tests of section 7.1 to 7.4 with the planned names,
   in the planned files. Each crash or error test first checks that the fault
   fired.
-  *Status:* Open.
+  *Status:* Fixed (2b950f7a). Proof: temporarily changed message assertion in `cancel_is_refused_once_a_commitment_moved`; test failed with exit code 100, passed on undo.
 
-- [ ] **R6 — major.** *Where:* `docs/system-architecture.md:1243` to `:1262`.
+- [x] **R6 — major.** *Where:* `docs/system-architecture.md:1243` to `:1262`.
   *Problem:* The living doc says things that are false after C1a. It lists
   `ended-unconfirmed` as an agreement state (it is a commitment state;
   `AgreementState` has `agreed`, `closed`, `cancelled`, `not-formed`). It
@@ -1093,9 +1093,9 @@ components, so the size numbers in `status.md` are not checked here.
   the four agreement states, the eight commitment states with the two tables
   (or a link to the agreements doc), the cancel rule, the track end, and the
   seat limit. Then grep the other living docs for the same words.
-  *Status:* Open.
+  *Status:* Fixed (4f03d8aa).
 
-- [ ] **R7 — minor.** *Where:* `crates/roym_transaction/src/app/decide.rs:180`
+- [x] **R7 — minor.** *Where:* `crates/roym_transaction/src/app/decide.rs:180`
   to `:184`; `agreement_ops.rs:185` to `:189`;
   `crates/substrate/tests/roym_booking_e2e.rs:193`; `crates/roym_core/src/deal.rs:243`.
   *Problem:* (1) The writer maps both `SlotUnavailable` and `SlotTaken` to
@@ -1110,18 +1110,18 @@ components, so the size numbers in `status.md` are not checked here.
   *Fix:* keep the two reasons; answer `reserve-failed` with
   `data: { reason }`; assert `state_reason` in the race test; put
   `code()` into `data` where `DealError` reaches a method.
-  *Status:* Open.
+  *Status:* Fixed (98bf5d3d).
 
-- [ ] **R8 — minor.** *Where:* `crates/roym_transaction/src/app/hold.rs:18`.
+- [x] **R8 — minor.** *Where:* `crates/roym_transaction/src/app/hold.rs:18`.
   *Problem:* `MAX_SLOT_CAPACITY` is now 100; on `main` it was 64
   (`booking.rs:20`). The plan does not list this change, and the architecture
   doc still says 64.
   *Failure case:* a slot with capacity 80 now books 80 seats, not 64, with no
   decision behind it.
   *Fix:* keep 64, or record the change as a deviation and update the doc.
-  *Status:* Open.
+  *Status:* Fixed (98bf5d3d).
 
-- [ ] **R9 — minor.** *Where:* `crates/roym_transaction/src/app/agreement_ops.rs:60`
+- [x] **R9 — minor.** *Where:* `crates/roym_transaction/src/app/agreement_ops.rs:60`
   and `:230`, `:360`; `crates/roym_web/tests/method_shapes/agreement_accept_already_accepted.json:2`;
   `crates/roym_web/ui/src/screens/messages.ts:459`, `:490`, `:667`.
   *Problem:* Two leftovers that the plan does not have. `agreement.accept`
@@ -1134,9 +1134,9 @@ components, so the size numbers in `status.md` are not checked here.
   one thing stay in the Hub.
   *Fix:* remove `booking` from the output and its shape files; remove the
   `request` fallbacks from `messages.ts` and the `CardRow` type.
-  *Status:* Open.
+  *Status:* Fixed (98bf5d3d).
 
-- [ ] **R10 — minor.** *Where:* `crates/roym_web/ui/src/screens/quote_terms.ts:53`;
+- [x] **R10 — minor.** *Where:* `crates/roym_web/ui/src/screens/quote_terms.ts:53`;
   `apps/roymctl/src/commands/roym/transaction.rs:357`;
   `docs/planning/deferred-backlog.md:659`.
   *Problem:* Both callers that can build a slot commitment build a `details`
@@ -1151,9 +1151,9 @@ components, so the size numbers in `status.md` are not checked here.
   *Fix:* build `{ listing_id, slot_id }` and the constant schema in both
   callers (export the constants to the Hub or test them against the Rust
   ones); update the backlog row.
-  *Status:* Open.
+  *Status:* Fixed (98bf5d3d).
 
-- [ ] **R11 — minor.** *Where:* `crates/roym_transaction/src/app/decide.rs:282`
+- [x] **R11 — minor.** *Where:* `crates/roym_transaction/src/app/decide.rs:282`
   and `:341`; `crates/roym_transaction/src/app/sync/receipts.rs:205` to `:206`.
   *Problem:* The agreements doc (`change.md:571`) says `agreed_at_secs` is the
   `issued_at_secs` of the writer's countersigned half, "so both parties have
@@ -1166,9 +1166,9 @@ components, so the size numbers in `status.md` are not checked here.
   expects.
   *Fix:* use `half.issued_at_secs` of the writer's half on both nodes (the
   counterparty holds it from the `agreement-receipt` card).
-  *Status:* Open.
+  *Status:* Fixed (98bf5d3d).
 
-- [ ] **R12 — minor.** *Where:* `crates/roym_transaction/src/app/agreement_ops.rs:447`
+- [x] **R12 — minor.** *Where:* `crates/roym_transaction/src/app/agreement_ops.rs:447`
   to `:463`; `progress_ops.rs:262` to `:283`.
   *Problem:* D-C1-5 says the counterparty releases the seat holds of its
   expired, not-countersigned quotes "on each `transaction.sync` of the
@@ -1183,9 +1183,9 @@ components, so the size numbers in `status.md` are not checked here.
   *Fix:* call the release from the sync path too. For the second case, release
   at expiry only when the writer's `not-formed` snapshot arrives or after a
   grace time, and record the rule (deviation or backlog row for C1b).
-  *Status:* Open.
+  *Status:* Fixed (98bf5d3d).
 
-- [ ] **R13 — minor.** *Where:* `crates/roym_transaction/src/app/backup/sections.rs:289`
+- [x] **R13 — minor.** *Where:* `crates/roym_transaction/src/app/backup/sections.rs:289`
   to `:316`; `crates/roym_transaction/src/app/ledger.rs:8` to `:45`.
   *Problem:* The plan's backup import table (step 5a) is not built: a ledger
   row is only parsed into `LedgerRow`, and only the dead `step` field is
@@ -1200,9 +1200,9 @@ components, so the size numbers in `status.md` are not checked here.
   *Fix:* import each kind into its own row type (`DecisionRow`,
   `CountersignRow`, `HoldLedgerRow`, `SeatLedgerRow`, the fence row) with the
   table's checks, and delete `Step` and `StepRow`.
-  *Status:* Open.
+  *Status:* Fixed (98bf5d3d).
 
-- [ ] **R14 — minor.** *Where:* `crates/roym_transaction/src/app/decide.rs:181`
+- [x] **R14 — minor.** *Where:* `crates/roym_transaction/src/app/decide.rs:181`
   to `:184` and `:105`; `progress_ops.rs:162` to `:166`;
   `crates/roym_transaction/src/app/sync/receipts.rs:226` to `:253`.
   *Problem:* Three differences from the plan's decisions. (1) D-C1-16 step 3
@@ -1217,9 +1217,9 @@ components, so the size numbers in `status.md` are not checked here.
   C1b reruns `reserve` on released keys, the case P35 closed.
   *Fix:* move the release after the snapshot store; add `cancel_at`; either
   test the fork branch now or leave it to C1b.
-  *Status:* Open.
+  *Status:* Fixed (98bf5d3d).
 
-- [ ] **R15 — minor.** *Where:* `docs/planning/deferred-backlog.md:532`, `:660`;
+- [x] **R15 — minor.** *Where:* `docs/planning/deferred-backlog.md:532`, `:660`;
   `crates/roym_web/ui/src/screens/messages.ts`; `status.md` C1a row.
   *Problem:* (1) The backlog row "A countersigned card whose send fails is
   never sent again" names `maybe_countersign`, which is gone; the row must
@@ -1232,6 +1232,6 @@ components, so the size numbers in `status.md` are not checked here.
   exist; the Hindi text with legal weight merges unreviewed.
   *Fix:* update the two rows; move one more piece out of `messages.ts`;
   record the owner's Hindi review in the status row before merge.
-  *Status:* Open.
+  *Status:* Fixed (98bf5d3d).
 
-**Open after round 1: 15 (1 blocker, 5 major, 9 minor).**
+**Open after round 1: 0 (all 15 items fixed: R1 in 1023868e; R2, R3, R4, R7-R15 in 98bf5d3d; R6 in 4f03d8aa; R5 in 2b950f7a).**
