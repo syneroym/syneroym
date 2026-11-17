@@ -651,7 +651,7 @@ pub(crate) async fn is_deal_ended<H: AppHost>(
     }
     let dec_key = format!("decision:{quote_id}");
     if let Some(dec) = get_row::<decide::DecisionRow, _>(host, LEDGER, &dec_key).await?
-        && dec.state == "not-formed"
+        && dec.decision_state() == Some(decide::DecisionState::NotFormed)
     {
         return Ok(true);
     }

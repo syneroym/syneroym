@@ -1,12 +1,11 @@
 //! The writer's decision, in its fixed step order.
 
-use serde::{Deserialize, Serialize};
 use syneroym_app_host::{AppDataLayer, AppHost, AppSigning, types::data_layer::RecordWriteValue};
 use syneroym_roym_core::{
     deal::ResourceKind,
     progress::{
-        self as core_progress, AGREEMENT_PROGRESS_VERSION, AgreementProgressPayload,
-        AgreementState, CommitmentProgress, RECORD_AGREEMENT_PROGRESS,
+        self as core_progress, AGREEMENT_PROGRESS_VERSION, AgreementState, CommitmentProgress,
+        RECORD_AGREEMENT_PROGRESS,
     },
     record::{Envelope, RECORD_AGREEMENT_RECEIPT},
     signing,
@@ -16,58 +15,15 @@ use syneroym_roym_core::{
 };
 
 use super::{
-    AGREEMENT_PROGRESS, AGREEMENTS, AgreementRow, EVENT_PROGRESS, LEDGER, get_row,
+    AGREEMENT_PROGRESS, AGREEMENTS, AgreementRow, EVENT_PROGRESS, LEDGER, QUOTES, RecordPointerRow,
+    get_row,
     hold::{Reservations, ReserveOutcome, SeatLedger},
     progress, put_row, send_card_and_file,
 };
 
-pub(crate) fn decision_id(quote_id: &str) -> String {
-    format!("decision:{quote_id}")
-}
+pub(crate) mod rows;
 
-pub(crate) fn countersign_id(agreement: &str) -> String {
-    format!("countersign:{agreement}")
-}
-
-pub(crate) fn snapshot_id(agreement: &str, seq: u32) -> String {
-    format!("snapshot:{agreement}:{seq}")
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct DecisionRow {
-    pub(crate) kind: String,
-    pub(crate) state: String,
-    pub(crate) agreement: String,
-    pub(crate) quote_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) reason: Option<String>,
-    #[serde(alias = "at_secs")]
-    pub(crate) created_at_secs: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct CountersignRow {
-    pub(crate) kind: String,
-    pub(crate) agreement: String,
-    pub(crate) half: ReceiptHalf,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) message_id: Option<String>,
-    #[serde(alias = "at_secs")]
-    pub(crate) created_at_secs: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct SnapshotRow {
-    pub(crate) seq: u32,
-    pub(crate) agreement: String,
-    pub(crate) conversation: String,
-    pub(crate) snapshot: AgreementProgressPayload,
-    pub(crate) envelope: String,
-    pub(crate) record_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) message_id: Option<String>,
-    pub(crate) stored_at_secs: u64,
-}
+pub(crate) use rows::*;
 
 pub(crate) async fn run<H: AppHost>(
     host: &H,
@@ -75,28 +31,53 @@ pub(crate) async fn run<H: AppHost>(
     quote: &QuotePayload,
     now: u64,
 ) -> Result<bool, String> {
-    let dec_key = decision_id(&quote.quote_id);
+    let (cp_issuer, cp_record_id) = match row.counterparty.as_ref() {
+        Some(h) => (h.issuer.clone(), h.record_id.clone()),
+        None => return Ok(false),
+    };
 
-    // 1. Look up decision:<quote_id> first.
-    if let Ok(Some(existing_dec)) = super::get_row::<DecisionRow, _>(host, LEDGER, &dec_key).await {
-        if existing_dec.agreement != row.quote_record_id {
-            // Other agreement: leave half filed with no countersign and no snapshot
-            return Ok(false);
-        }
-        return continue_decision(host, row, quote, &existing_dec, now).await;
-    }
-
-    // 2. Step-1 validation: check signer and expiry before creating fence.
-    if !precheck_acceptance(row, quote, now) {
+    let ref_key = refused_id(&cp_record_id);
+    if get_row::<RefusedRow, _>(host, LEDGER, &ref_key).await?.is_some() {
         return Ok(false);
     }
 
+    let dec_key = decision_id(&quote.quote_id);
+    let cs_key = countersign_id(&row.quote_record_id);
+
+    let existing_dec: Option<DecisionRow> = get_row(host, LEDGER, &dec_key).await?;
+    let existing_cs: Option<CountersignRow> = get_row(host, LEDGER, &cs_key).await?;
+
+    if let Some(dec) = &existing_dec {
+        if dec.agreement == row.quote_record_id {
+            return continue_decision(host, row, quote, dec, now).await;
+        }
+        return handle_refusal(host, row, quote, &cp_record_id, "quote-already-agreed", now).await;
+    }
+    if existing_cs.is_some() {
+        return repeat_path(host, row, quote, now).await;
+    }
+
+    if cp_issuer != row.counterparty_did {
+        return Ok(false);
+    }
+
+    if let Some(ptr) = get_row::<RecordPointerRow, _>(host, QUOTES, &quote.quote_id).await?
+        && ptr.record_id != row.quote_record_id
+    {
+        return handle_refusal(host, row, quote, &cp_record_id, "quote-superseded", now).await;
+    }
+
+    if now >= quote.terms.quote_expires_at_secs {
+        return handle_refusal(host, row, quote, &cp_record_id, "quote-expired", now).await;
+    }
+
     if !claim_decision_fence(host, row, quote, &dec_key, now).await? {
-        if let Ok(Some(existing_dec)) =
-            super::get_row::<DecisionRow, _>(host, LEDGER, &dec_key).await
-            && existing_dec.agreement == row.quote_record_id
-        {
-            return continue_decision(host, row, quote, &existing_dec, now).await;
+        if let Ok(Some(existing_dec)) = get_row::<DecisionRow, _>(host, LEDGER, &dec_key).await {
+            if existing_dec.agreement == row.quote_record_id {
+                return continue_decision(host, row, quote, &existing_dec, now).await;
+            }
+            return handle_refusal(host, row, quote, &cp_record_id, "quote-already-agreed", now)
+                .await;
         }
         return Ok(false);
     }
@@ -115,6 +96,65 @@ pub(crate) async fn run<H: AppHost>(
 
     // 5-7. Store countersign, snapshots, send cards, and complete agreed state
     finalize_agreed_deal(host, row, quote, now).await
+}
+
+async fn handle_refusal<H: AppHost>(
+    host: &H,
+    row: &mut AgreementRow,
+    quote: &QuotePayload,
+    half_record_id: &str,
+    reason: &str,
+    now: u64,
+) -> Result<bool, String> {
+    let snapshot = core_progress::open(
+        row.quote_record_id.clone(),
+        row.conversation.clone(),
+        row.counterparty_did.clone(),
+        row.quote_author_did.clone(),
+        &row.terms,
+        Some(reason.to_string()),
+    );
+    let (snap_env, snap_rec_id) = progress::sign(host, &snapshot).await?;
+    let snap_key = snapshot_id(&row.quote_record_id, 1);
+    let mut snap_row = SnapshotRow {
+        seq: 1,
+        agreement: row.quote_record_id.clone(),
+        conversation: row.conversation.clone(),
+        snapshot: snapshot.clone(),
+        envelope: snap_env.clone(),
+        record_id: snap_rec_id,
+        message_id: None,
+        stored_at_secs: now,
+    };
+    put_row(host, AGREEMENT_PROGRESS, &snap_key, &snap_row).await?;
+
+    let _ = ensure_snapshot_sent(host, &row.conversation, &mut snap_row, now).await?;
+
+    row.state = Some(AgreementState::NotFormed);
+    row.state_reason = Some(reason.to_string());
+    row.cancel_reason = None;
+    row.seq = Some(1);
+    row.commitments = snapshot.commitments;
+    row.updated_at_secs = now;
+    put_row(host, AGREEMENTS, &row.quote_record_id, row).await?;
+
+    let ref_row = RefusedRow {
+        kind: "refused".to_string(),
+        quote_id: quote.quote_id.clone(),
+        code: reason.to_string(),
+        created_at_secs: now,
+    };
+    put_row(host, LEDGER, &refused_id(half_record_id), &ref_row).await?;
+
+    let _ = host
+        .record_event(
+            EVENT_PROGRESS.to_string(),
+            row.conversation.clone(),
+            Some(row.quote_record_id.clone()),
+        )
+        .await;
+
+    Ok(false)
 }
 
 async fn ensure_countersign_sent<H: AppHost>(
@@ -189,10 +229,11 @@ async fn continue_decision<H: AppHost>(
     existing_dec: &DecisionRow,
     now: u64,
 ) -> Result<bool, String> {
-    if existing_dec.state == "agreed" || existing_dec.state == "not-formed" {
-        resend_completed_decision(host, row, &existing_dec.state, now).await
-    } else {
-        repeat_path(host, row, quote, now).await
+    match existing_dec.decision_state() {
+        Some(DecisionState::Agreed) | Some(DecisionState::NotFormed) => {
+            resend_completed_decision(host, row, &existing_dec.state, now).await
+        }
+        _ => repeat_path(host, row, quote, now).await,
     }
 }
 
@@ -237,7 +278,7 @@ async fn mark_decision_agreed<H: AppHost>(
 
     let dec_agreed = DecisionRow {
         kind: "decision".to_string(),
-        state: "agreed".to_string(),
+        state: DecisionState::Agreed.as_str().to_string(),
         agreement: row.quote_record_id.clone(),
         quote_id: quote.quote_id.clone(),
         reason: None,
@@ -269,7 +310,7 @@ async fn resend_completed_decision<H: AppHost>(
     let cs_key = countersign_id(&row.quote_record_id);
     let mut stored_cs: Option<CountersignRow> = super::get_row(host, LEDGER, &cs_key).await?;
 
-    if state == "agreed" {
+    if state == DecisionState::Agreed.as_str() {
         if let Some(cs) = stored_cs.as_mut()
             && !ensure_countersign_sent(host, &row.conversation, cs, now).await?
         {
@@ -291,20 +332,6 @@ async fn resend_completed_decision<H: AppHost>(
     }
 }
 
-fn precheck_acceptance(row: &AgreementRow, quote: &QuotePayload, now: u64) -> bool {
-    let cp_half = match row.counterparty.as_ref() {
-        Some(h) => h,
-        None => return false,
-    };
-    if cp_half.issuer != row.counterparty_did {
-        return false;
-    }
-    if now >= quote.terms.quote_expires_at_secs {
-        return false;
-    }
-    true
-}
-
 async fn claim_decision_fence<H: AppHost>(
     host: &H,
     row: &AgreementRow,
@@ -314,7 +341,7 @@ async fn claim_decision_fence<H: AppHost>(
 ) -> Result<bool, String> {
     let dec_fence = DecisionRow {
         kind: "decision".to_string(),
-        state: "deciding".to_string(),
+        state: DecisionState::Deciding.as_str().to_string(),
         agreement: row.quote_record_id.clone(),
         quote_id: quote.quote_id.clone(),
         reason: None,
@@ -434,7 +461,7 @@ async fn repeat_not_formed<H: AppHost>(
 
     let dec_not_formed = DecisionRow {
         kind: "decision".to_string(),
-        state: "not-formed".to_string(),
+        state: DecisionState::NotFormed.as_str().to_string(),
         agreement: row.quote_record_id.clone(),
         quote_id: quote.quote_id.clone(),
         reason: snap_row.snapshot.state_reason.clone(),
@@ -608,7 +635,7 @@ async fn handle_not_formed<H: AppHost>(
 
     let dec_not_formed = DecisionRow {
         kind: "decision".to_string(),
-        state: "not-formed".to_string(),
+        state: DecisionState::NotFormed.as_str().to_string(),
         agreement: row.quote_record_id.clone(),
         quote_id: quote.quote_id.clone(),
         reason: Some(reason.to_string()),
