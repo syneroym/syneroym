@@ -736,7 +736,7 @@ unknown card type renders it safely and never executes sender-supplied code.
 service) and the participant (the Hub) are built in different slices, and a rule
 decided inside either one gets decided twice, differently.
 
-The first release has **seven card types**, and no others:
+The first release has **eight card types**, and no others:
 
 | Type | Signed by | Appears at |
 |---|---|---|
@@ -747,9 +747,10 @@ The first release has **seven card types**, and no others:
 | `payment-request` | Quote author | C17 — payee comes from the signed agreement, never from a later message |
 | `payment-acknowledgement` | Each side, separately | C19 — what each party observed |
 | `fulfilment-receipt` | Both | C20 — both agreed the work was done |
+| `deal-decline` | Decliner | Either side declines a quote or enquiry, or withdraws its own enquiry |
 
 Each renders through a **fixed template chosen by `(type, version)`**. The Hub
-ships seven templates plus one fallback; it is not a general interpreter.
+ships eight templates plus one fallback; it is not a general interpreter.
 
 "Renders it safely and never executes sender-supplied code" means, precisely:
 

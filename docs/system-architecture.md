@@ -1213,8 +1213,9 @@ A card is a signed record sent as a message with content type `application/vnd.r
 | `payment-request` | the quote author | The quote author asks to be paid. It carries currency, amount, and an optional note. It is optional. |
 | `payment-acknowledgement` | either party | A statement about a payment made outside Roym, with an optional method (a code from the agreed payment methods) and reference as text. |
 | `fulfilment-receipt` | either party | A statement that the work is done. It carries `terms` with `terms.lang`. |
+| `deal-decline` | the party who declines | Either party declines a quote or enquiry, or withdraws its own enquiry. It carries a decline note and ends the deal or enquiry. |
 
-The expiry of a quote is set by the quote author. It must be from 5 minutes to 90 days. An enquiry has no expiry. The counterparty can mark a quote as declined with `deal.decline`. Roym has no method for a quote author to reject an enquiry.
+The expiry of a quote is set by the quote author. It must be from 5 minutes to 90 days. An enquiry has no expiry. Either party can decline a quote or enquiry with `deal.decline`.
 
 #### Agreement State Machine
 
@@ -3117,7 +3118,7 @@ Syneroym has no central coordinator. To execute distributed sagas across indepen
 **Design Approach:** 
 Action Cards are typed JSON documents, rather than arbitrary portable WASM components. This prevents malicious UI execution on the client device. A card carries a signed record and nothing derived from it. The client template for the card type and version decides the layout and the buttons. When a user taps a button, the Hub calls a Roym JSON-RPC method, for example `agreement.accept` on a quote.
 
-Roym has seven card types: `enquiry`, `quote`, `agreement-receipt`, `agreement-progress`, `payment-request`, `payment-acknowledgement`, and `fulfilment-receipt`. The list is fixed. A card of an unlisted type or version shows as a neutral "unknown" block. See [Cards](roym-integrated-experience-spec.md#cards).
+Roym has eight card types: `enquiry`, `quote`, `agreement-receipt`, `agreement-progress`, `payment-request`, `payment-acknowledgement`, `fulfilment-receipt`, and `deal-decline`. The list is fixed. A card of an unlisted type or version shows as a neutral "unknown" block. See [Cards](roym-integrated-experience-spec.md#cards).
 
 ### 3. Flexible Payment Integration
 *Addresses integrating external gateways (Stripe/UPI) alongside the internal Mutual Credit ledger.*

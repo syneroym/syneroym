@@ -1167,6 +1167,24 @@ The plan did not state these rules. The code follows them now.
   and its commitments. For `ack:` and `fulfil:` it also checks that the
   issuer matches the commitment's giver and the half's role.
 
+**Rules and differences in C1b (2026-11-17).**
+
+- **DecisionState enum in decide.rs.** Replaces plain string comparisons
+  ("agreed", "not-formed", "deciding", refusal reasons) in `decide.rs`.
+- **Crash point and write order in recover.rs.** `recover.rs` follows C1a's
+  write order (agreement row written before decision row) and adds a crash
+  point between them. Every crash-point test verifies the injected error was
+  returned before asserting recovery on next sync.
+- **Superseded version does not end active deal.** An older quote version
+  refused with `quote-superseded` marks that version not formed, but does
+  not mark the active quote id as ended, allowing newer versions to be
+  revised or accepted.
+- **Delivery synchronization in multi-node tests.** In multi-node test
+  flows (`wait_and_verify_winner_scheduled`), the recipient waits with
+  `wait_until` while polling `transaction.sync` until `agreement.get`'s
+  state reaches `agreed`, ensuring both the countersigned receipt card
+  and the agreement-progress snapshot 1 card have arrived across the network.
+
 ## Close-out
 
 Before merge, update the living docs (requirements, architecture, integrated spec, developer guide, terminology) so they describe the result. Then set `status: done` and fill in `living-docs-touched` and `demo`. Record anything you postponed in [deferred-backlog.md](../../deferred-backlog.md).
