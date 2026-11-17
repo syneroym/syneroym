@@ -113,6 +113,7 @@ pub(crate) async fn file_payment_request_card<H: AppHost>(
                 deferred: false,
             });
         }
+        row.repeat = true;
     } else {
         let args = RecordPaymentRequestHalfArgs {
             p_id: &p_id,
@@ -216,31 +217,10 @@ pub(crate) async fn file_payment_ack_card<H: AppHost>(
         Err((reason, false)) => return refuse_card(host, row, reason).await,
     };
 
-    let commitment = match agr.terms.commitments.iter().find(|c| c.commitment_id == p.commitment_id)
-    {
-        Some(c) => c,
-        None => return refuse_card(host, row, "no-such-commitment").await,
+    let deal_role = match validate_ack_roles(&agr, &p.commitment_id, v.issuer.as_deref(), p.role) {
+        Ok(r) => r,
+        Err(reason) => return refuse_card(host, row, reason).await,
     };
-    if commitment.kind != CommitmentKind::Currency {
-        return refuse_card(host, row, "not-currency-commitment").await;
-    }
-
-    let deal_role = if v.issuer.as_deref() == Some(&agr.quote_author_did) {
-        DealRole::QuoteAuthor
-    } else if v.issuer.as_deref() == Some(&agr.counterparty_did) {
-        DealRole::Counterparty
-    } else {
-        return refuse_card(host, row, "not-a-party").await;
-    };
-
-    let expected_settlement_role = if deal_role == commitment.giver {
-        SettlementRole::Giver
-    } else {
-        SettlementRole::Receiver
-    };
-    if p.role != expected_settlement_role {
-        return refuse_card(host, row, "role-mismatch").await;
-    }
 
     let p_id = payment_id(&p.agreement, &p.commitment_id);
     let mut payments: PaymentsRow =
@@ -264,6 +244,8 @@ pub(crate) async fn file_payment_ack_card<H: AppHost>(
         DealRole::QuoteAuthor => &mut payments.quote_author,
     };
 
+    let is_repeat = versions.iter().any(|x| Some(x.record_id.as_str()) == v.record_id.as_deref());
+
     let _first = match append_ack_half(versions, env.supersedes.as_deref(), envelope, &v, p, now) {
         AckAppendResult::First => true,
         AckAppendResult::Subsequent => false,
@@ -278,6 +260,7 @@ pub(crate) async fn file_payment_ack_card<H: AppHost>(
 
     row.known = true;
     row.verified = true;
+    row.repeat = is_repeat;
     row.record_id = v.record_id.clone();
     row.data = serde_json::to_value(p).ok();
     put_card(host, &row).await?;
@@ -405,7 +388,9 @@ pub(crate) async fn file_fulfilment_card<H: AppHost>(
     };
     match record_fulfilment_half_card(host, args).await {
         Ok(true) => {}
-        Ok(false) => {}
+        Ok(false) => {
+            row.repeat = true;
+        }
         Err(e) => return refuse_card(host, row, e).await,
     }
 
@@ -501,6 +486,39 @@ fn validate_ack_agreement(
         return Err(("card names another conversation", false));
     }
     Ok(agr)
+}
+
+fn validate_ack_roles(
+    agr: &AgreementRow,
+    commitment_id: &str,
+    issuer: Option<&str>,
+    p_role: SettlementRole,
+) -> Result<DealRole, &'static str> {
+    let commitment = match agr.terms.commitments.iter().find(|c| c.commitment_id == commitment_id) {
+        Some(c) => c,
+        None => return Err("no-such-commitment"),
+    };
+    if commitment.kind != CommitmentKind::Currency {
+        return Err("not-currency-commitment");
+    }
+
+    let deal_role = if issuer == Some(&agr.quote_author_did) {
+        DealRole::QuoteAuthor
+    } else if issuer == Some(&agr.counterparty_did) {
+        DealRole::Counterparty
+    } else {
+        return Err("not-a-party");
+    };
+
+    let expected_settlement_role = if deal_role == commitment.giver {
+        SettlementRole::Giver
+    } else {
+        SettlementRole::Receiver
+    };
+    if p_role != expected_settlement_role {
+        return Err("role-mismatch");
+    }
+    Ok(deal_role)
 }
 
 enum AckAppendResult {

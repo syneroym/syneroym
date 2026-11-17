@@ -200,6 +200,7 @@ async fn file_card_and_move_cursor(f: &TestFixture, conv: &str, msg_id: &str, no
         known: true,
         verified: true,
         expired: false,
+        repeat: false,
         reason: None,
         issuer: None,
         record_id: None,

@@ -199,6 +199,12 @@ pub(crate) async fn file_progress_card<H: AppHost>(
     let snap_key = snapshot_id(&p.agreement, p.seq);
 
     if is_writer {
+        if let Ok(Some(existing_snap)) =
+            get_row::<SnapshotRow, _>(host, AGREEMENT_PROGRESS, &snap_key).await
+            && existing_snap.record_id == rec_id
+        {
+            row.repeat = true;
+        }
         let ctx = WriterProgressContext {
             snap_key: &snap_key,
             rec_id: &rec_id,
@@ -216,11 +222,14 @@ pub(crate) async fn file_progress_card<H: AppHost>(
             now,
         };
         apply_newer_snapshot(host, p, agr, ctx).await?;
-    } else if p.seq == agr.seq.unwrap_or(0)
-        && let Some(reason) =
+    } else if p.seq == agr.seq.unwrap_or(0) {
+        if let Some(reason) =
             check_progress_fork(host, p, &snap_key, &rec_id, envelope, now).await?
-    {
-        row.reason = Some(reason);
+        {
+            row.reason = Some(reason);
+        } else {
+            row.repeat = true;
+        }
     }
 
     row.known = true;

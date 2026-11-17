@@ -311,6 +311,7 @@ async fn counterparty_releases_holds_on_refusal_snapshot() {
         known: true,
         verified: true,
         expired: false,
+        repeat: false,
         reason: None,
         issuer: None,
         record_id: None,

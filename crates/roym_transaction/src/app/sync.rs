@@ -260,6 +260,7 @@ fn init_card_row(m: &Value, conversation: &str, now: u64) -> CardRow {
         known: false,
         verified: false,
         expired: false,
+        repeat: false,
         reason: None,
         issuer: None,
         record_id: None,
@@ -407,12 +408,17 @@ async fn file_enquiry_card<H: AppHost>(
     if payload.conversation != conversation {
         return refuse_card(host, row, "card names another conversation").await;
     }
+    let already_held = match &v.record_id {
+        Some(rid) => get_bytes(host, ENQUIRY_HISTORY, rid).await?.is_some(),
+        None => false,
+    };
     let version_count = match store_received_enquiry(host, envelope, &v, payload, now, owner).await
     {
         Ok(vc) => vc,
         Err(e) => return refuse_card(host, row, e).await,
     };
     row.verified = true;
+    row.repeat = already_held;
     row.version_count = Some(version_count);
     row.data = Some(serde_json::to_value(payload).unwrap_or(Value::Null));
     row.issuer = v.issuer;
@@ -471,11 +477,16 @@ async fn file_quote_card<H: AppHost>(
         return refuse_card(host, row, "quote counterparty_did does not match enquiry issuer")
             .await;
     }
+    let already_held = match &v.record_id {
+        Some(rid) => get_bytes(host, QUOTE_HISTORY, rid).await?.is_some(),
+        None => false,
+    };
     let version_count = match store_received_quote(host, envelope, &v, payload, now, owner).await {
         Ok(vc) => vc,
         Err(e) => return refuse_card(host, row, e).await,
     };
     row.verified = true;
+    row.repeat = already_held;
     row.expired = v.expired;
     row.version_count = Some(version_count);
     row.data = Some(serde_json::to_value(payload).unwrap_or(Value::Null));
@@ -572,6 +583,11 @@ async fn file_agreement_receipt_card<H: AppHost>(
                 updated_at_secs: now,
             },
         };
+    if let (Some(rid), Some(half)) = (&v.record_id, row_agr.half(payload.role))
+        && rid == &half.record_id
+    {
+        row.repeat = true;
+    }
     if row_agr.half(payload.role).is_none() {
         let half = ReceiptHalf {
             envelope: envelope.to_string(),
@@ -770,6 +786,13 @@ async fn file_deal_decline_card<H: AppHost>(
     }
 
     let dec_key = decline_ops::decline_id(&payload.deal);
+    if let (Some(rid), Ok(Some(existing_dec))) = (
+        v.record_id.as_deref(),
+        get_row::<decline_ops::DeclineRow, _>(host, LEDGER, &dec_key).await,
+    ) && rid == existing_dec.record_id
+    {
+        row.repeat = true;
+    }
     let dec_row = decline_ops::DeclineRow {
         kind: "decline".to_string(),
         deal: payload.deal.clone(),

@@ -690,4 +690,112 @@ describe("request form category picker reset", () => {
     expect(snippet).not.toBeNull();
     expect(snippet.getAttribute("lang")).toBe("hi");
   });
+
+  it("repeat card is not drawn in the conversation thread", async () => {
+    stubRpc({
+      whoami: () => ({ person_did: "did:key:me" }),
+      "conversation.list": () => ({
+        conversations: [{ id: "conv-1", peer_address: "peer-1", message_count: 2 }],
+      }),
+      "transaction.sync": () => ({}),
+      "transaction.thread": () => ({
+        cards: [
+          {
+            message_id: "m_card_1",
+            conversation: "conv-1",
+            direction: "incoming",
+            sender_timestamp_ms: 1000,
+            card_type: "enquiry",
+            version: 1,
+            known: true,
+            verified: true,
+            expired: false,
+            repeat: false,
+            record_id: "rec_c1",
+            data: { enquiry_id: "req_1" },
+            stored_at_secs: 1,
+          },
+          {
+            message_id: "m_card_2",
+            conversation: "conv-1",
+            direction: "incoming",
+            sender_timestamp_ms: 2000,
+            card_type: "enquiry",
+            version: 1,
+            known: true,
+            verified: true,
+            expired: false,
+            repeat: true,
+            record_id: "rec_c1",
+            data: { enquiry_id: "req_1" },
+            stored_at_secs: 2,
+          },
+        ],
+      }),
+      "conversation.history": () => ({
+        messages: [
+          {
+            id: "m_card_1",
+            conversation: "conv-1",
+            author: "peer-1",
+            direction: "incoming",
+            sender_timestamp_ms: 1000,
+            content_type: "application/vnd.roym.card+json",
+            body_encoding: "utf8",
+            body: "{}",
+            state: "delivered",
+          },
+          {
+            id: "m_card_2",
+            conversation: "conv-1",
+            author: "peer-1",
+            direction: "incoming",
+            sender_timestamp_ms: 2000,
+            content_type: "application/vnd.roym.card+json",
+            body_encoding: "utf8",
+            body: "{}",
+            state: "delivered",
+          },
+        ],
+      }),
+    });
+
+    const host = document.createElement("div");
+    await renderMessages(host);
+
+    const msgs = host.querySelectorAll(".message");
+    expect(msgs).toHaveLength(1);
+    expect(host.querySelector(".message-incoming")).not.toBeNull();
+  });
+
+  it("quote card with deal_state accepted hides accept and decline buttons and shows waiting notice", async () => {
+    const q: CardRow = {
+      message_id: "m_quote",
+      conversation: "conv-1",
+      direction: "incoming",
+      sender_timestamp_ms: 1000,
+      card_type: "quote",
+      version: 1,
+      known: true,
+      verified: true,
+      expired: false,
+      deal_state: "accepted",
+      record_id: "rec_q1",
+      data: {
+        quote_id: "q1",
+        counterparty_did: "did:key:me",
+        terms: { quote_expires_at_secs: 20000 },
+      },
+      stored_at_secs: 1,
+    };
+
+    const host = document.createElement("div");
+    renderCardActions(host, q, "conv-1", "did:key:me", async () => {});
+
+    expect(host.querySelector(".accept-quote-button")).toBeNull();
+    expect(host.querySelector(".decline-quote-button")).toBeNull();
+    const notice = host.querySelector(".quote-waiting-notice");
+    expect(notice).not.toBeNull();
+    expect(notice?.textContent).toContain("Waiting for the other side to confirm...");
+  });
 });

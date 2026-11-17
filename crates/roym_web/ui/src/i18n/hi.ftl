@@ -519,6 +519,7 @@ messages-retry-button = फिर भेजें
 messages-delete-button = हटाएँ
 quote-request-button = इस अनुरोध पर कोटेशन दें
 messages-accept-button = ये शर्तें स्वीकार करें
+messages-waiting-for-other-side = दूसरे पक्ष की पुष्टि की प्रतीक्षा है...
 messages-accept-mt-warning = आपने मशीन अनुवाद पढ़ा है। मूल विवरण, { $language } में, ही मान्य होगा।
 messages-accept-mt-confirm = मूल शर्तें स्वीकार करें
 messages-decline-button = अस्वीकार करें

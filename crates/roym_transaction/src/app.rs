@@ -202,6 +202,8 @@ pub struct CardRow {
     pub verified: bool,
     #[serde(default)]
     pub expired: bool,
+    #[serde(default)]
+    pub repeat: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -490,6 +492,7 @@ pub(crate) async fn file_own_card<H: AppHost>(
         known: true,
         verified: true,
         expired: false,
+        repeat: false,
         reason: None,
         issuer: Some(envelope.issuer),
         record_id: Some(record_id),

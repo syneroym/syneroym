@@ -96,6 +96,7 @@ export interface CardRow {
     [key: string]: unknown;
   };
   stored_at_secs: number;
+  repeat?: boolean;
   declined?: boolean;
   version_count?: number;
   deal_state?: string;
@@ -448,6 +449,9 @@ async function renderThread(
     }
 
     for (const m of messages) {
+      if (m.content_type === "application/vnd.roym.card+json" && cardMap.get(m.id)?.repeat) {
+        continue;
+      }
       into.appendChild(
         messageElement(m, cardMap, allCards, newestRequestMap, newestQuoteMap, conv.id, myDid, redraw.now),
       );
@@ -497,6 +501,10 @@ function messageElement(
 
   if (m.content_type === "application/vnd.roym.card+json") {
     const cardRow = cardMap.get(m.id);
+    if (cardRow?.repeat) {
+      wrap.style.display = "none";
+      return wrap;
+    }
     if (cardRow) {
       if (cardRow.known && cardRow.verified) {
         wrap.appendChild(
@@ -651,6 +659,10 @@ export function renderCardActions(
       : isExpired || isDeclined;
 
     if (forMe && isNewest && !isEndedOrAgreed) {
+      if (dState === "accepted") {
+        wrap.appendChild(text("p", t("messages-waiting-for-other-side"), "quote-waiting-notice"));
+        return;
+      }
       const actionsDiv = document.createElement("div");
       actionsDiv.className = "quote-actions";
 

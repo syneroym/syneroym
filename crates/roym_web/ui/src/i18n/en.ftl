@@ -532,6 +532,7 @@ messages-retry-button = Retry
 messages-delete-button = Delete
 quote-request-button = Quote this request
 messages-accept-button = Accept these terms
+messages-waiting-for-other-side = Waiting for the other side to confirm...
 messages-accept-mt-warning = You read a machine translation. The original, in { $language }, is what binds.
 messages-accept-mt-confirm = Accept the original terms
 messages-decline-button = Decline

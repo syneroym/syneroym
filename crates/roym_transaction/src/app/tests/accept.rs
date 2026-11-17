@@ -14,7 +14,7 @@ use syneroym_roym_core::{
 
 use super::fixture;
 use crate::app::{
-    AgreementRow, CardRow, LEDGER,
+    AgreementRow, CARDS, CardRow, LEDGER,
     agreement_ops::{self, AgreementAcceptInput, QuoteRecordInput},
     get_row,
     hold::{HoldLedgerRow, SeatLedgerRow, hold_id, seat_id},
@@ -181,6 +181,7 @@ fn make_progress_card(
         known: true,
         verified: true,
         expired: false,
+        repeat: false,
         reason: None,
         issuer: None,
         record_id: None,
@@ -435,4 +436,59 @@ async fn counterparty_releases_holds_on_not_formed_and_expiry() {
         .await
         .expect("query seat 2");
     assert!(seat2.is_none(), "expired quote must release seat");
+}
+
+#[tokio::test]
+async fn file_repeated_card_stores_repeat_true() {
+    let f = fixture();
+    let author = Identity::generate().expect("generate author");
+    let now = 1_000_000;
+    let (c1, _slot_id) = slot_commitment("c1", "listing_123", 1_000_000, 1_003_600);
+    let (payload, rec_id, env) =
+        build_and_sign_quote(&author, &f.master_did, vec![c1], now + 300, now);
+    let v = verify_quote(&env, now);
+    store_received_quote(&f.host, &env, &v, &payload, now, &f.master_did)
+        .await
+        .expect("store quote");
+
+    let (card_row1, snap_env) = make_progress_card(
+        &author,
+        &rec_id,
+        &f.master_did,
+        &payload.terms,
+        Some("slot-taken"),
+        now + 10,
+    );
+    let res1 = file_progress_card(&f.host, card_row1, &snap_env, "conv_1", now + 10, &f.master_did)
+        .await
+        .expect("file first progress card");
+    assert!(res1.filed, "res1: {:?}", res1);
+
+    let first_stored: CardRow = get_row(&f.host, CARDS, "msg_progress_1")
+        .await
+        .expect("query first card")
+        .expect("first card exists");
+    assert!(!first_stored.repeat, "first filed card must not be repeat");
+
+    let mut card_row2 = make_progress_card(
+        &author,
+        &rec_id,
+        &f.master_did,
+        &payload.terms,
+        Some("slot-taken"),
+        now + 10,
+    )
+    .0;
+    card_row2.message_id = "msg_snap_repeat".to_string();
+
+    let res2 = file_progress_card(&f.host, card_row2, &snap_env, "conv_1", now + 10, &f.master_did)
+        .await
+        .expect("file second progress card");
+    assert!(res2.filed);
+
+    let second_stored: CardRow = get_row(&f.host, CARDS, "msg_snap_repeat")
+        .await
+        .expect("query second card")
+        .expect("second card exists");
+    assert!(second_stored.repeat, "second filed card must have repeat: true");
 }
