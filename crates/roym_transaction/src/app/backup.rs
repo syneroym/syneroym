@@ -113,10 +113,13 @@ pub(crate) async fn import<H: AppHost>(
 
     let agreements_map: HashMap<String, AgreementRow> =
         verified_agreements.iter().cloned().collect();
+    let enquiries_by_record_id: HashMap<String, String> =
+        verified_requests.iter().map(|(id, ptr)| (ptr.record_id.clone(), id.clone())).collect();
     let validated_vertical = match sections::validate_vertical_sections(
         &bundle.sections,
         &agreements_map,
         &quotes_by_record_id,
+        &enquiries_by_record_id,
         &owner,
         now,
     ) {
