@@ -38,6 +38,19 @@ The agreements doc is the module doc that the old outline listed as "to write fi
 
 **Component size limit.** The M08B rule stays (see [M08B task.md](../M08B-language-and-structure/task.md), section 1; owner decision, 2026-11-15). Each slice that changes a `roym_*` crate reports the size of every Roym component for `wasm32-wasip2`, before and after, from one build folder. A component with no new record code may grow by at most 40 KB. A component with new record code may grow by at most 15%. Over a limit, stop and tell the owner. C3b adds a seventh component (scheduling); it reports its size alone.
 
+**C1a sizes** (`mise run build:roym`, one build folder, 2026-11-17; before on `main` at `34dbe9bd`, after on `feat/m08c-c1-commitment-model` at `f44b0e72`), in bytes:
+
+| Component | Before | After | Change | Limit |
+| --- | --- | --- | --- | --- |
+| `transaction` | 1,516,528 | 1,715,448 | +198,920 (+13.1%) | +15% (227,479), new record code |
+| `catalog` | 929,558 | 929,631 | +73 | +40 KB |
+| `conversation` | 811,880 | 811,953 | +73 | +40 KB |
+| `directory` | 1,467,413 | 1,467,518 | +105 | +40 KB |
+| `profile` | 771,718 | 771,791 | +73 | +40 KB |
+| `web` | 310,033 | 309,985 | −48 | +40 KB |
+
+Every component is within its limit.
+
 **Parity runs need a fresh WASM build.** The dual-build parity harness loads pre-built `wasm32-wasip2` components. Every slice that changes a `roym_*` crate runs `mise run build:roym` before it trusts a parity run.
 
 ## 2. Facts checked in the code for this plan

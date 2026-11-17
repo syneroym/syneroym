@@ -1148,6 +1148,25 @@ under "Owner decisions while planning C1" record them.
   `commitment-kind-not-supported` until C3a. The roym-extensions change
   doc records the EX-1 and EX-3 part.
 
+**Rules added in the C1a code review (2026-11-16 to 2026-11-17,
+[slice-c1-review.md](../../milestones/M08C-deal-core-and-extensions/slice-c1-review.md)).**
+The plan did not state these rules. The code follows them now.
+
+- **A final decision only resends cards.** When `decision:<quote_id>` is
+  `agreed` or `not-formed`, a repeat sync sends again only the stored
+  countersign and snapshot cards that have no message id. It does not write
+  the agreement row. So a cancel made after the decision stays.
+- **A moved agreement is kept.** When the writer marks the decision
+  `agreed` and the stored agreement row already has a `seq` above 1 (a
+  cancel ran while the decision was still `deciding`), the writer keeps
+  that row's state, `seq` and commitments. It fills only `quote_author` and
+  `agreed_at_secs` when they are empty, and then writes the decision row.
+- **The import checks every ledger row.** `transaction.import` refuses a
+  `ledger` row of an unknown kind. It checks `hold:`, `decision:`,
+  `payreq:`, `ack:` and `fulfil:` rows against a quote in the same backup
+  and its commitments. For `ack:` and `fulfil:` it also checks that the
+  issuer matches the commitment's giver and the half's role.
+
 ## Close-out
 
 Before merge, update the living docs (requirements, architecture, integrated spec, developer guide, terminology) so they describe the result. Then set `status: done` and fill in `living-docs-touched` and `demo`. Record anything you postponed in [deferred-backlog.md](../../deferred-backlog.md).

@@ -1592,13 +1592,13 @@ change docs' close-out lists.
 
 C1a:
 
-- [ ] Every C1a row of section 3 names a test that exists and passes.
-- [ ] Story 40 and story 50 pass; Hub cases 3, 4, 24 to 30 pass.
-- [ ] Component sizes recorded; `transaction` within +15%, others within
+- [x] Every C1a row of section 3 names a test that exists and passes.
+- [x] Story 40 and story 50 pass; Hub cases 3, 4, 24 to 30 pass.
+- [x] Component sizes recorded; `transaction` within +15%, others within
   +40 KB.
-- [ ] Deviations, backlog rows and living docs done.
-- [ ] `mise run verify` passes with no `--skip`.
-- [ ] Owner reviewed the new Hindi messages.
+- [x] Deviations, backlog rows and living docs done.
+- [x] `mise run verify` passes with no `--skip`.
+- [x] Owner reviewed the new Hindi messages.
 
 C1b:
 
