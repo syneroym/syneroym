@@ -295,7 +295,7 @@ async fn crash_after_the_fence_is_finished_on_the_next_sync() {
     // Decision row remains deciding
     let dec_key = decision_id(&quote.quote_id);
     let dec: Option<DecisionRow> = get_row(&f.host, LEDGER, &dec_key).await.unwrap();
-    assert_eq!(dec.unwrap().state, "deciding");
+    assert_eq!(dec.unwrap().state, DecisionState::Deciding);
 
     f.host.restart();
 
@@ -309,7 +309,7 @@ async fn crash_after_the_fence_is_finished_on_the_next_sync() {
     .unwrap();
 
     let dec_after: DecisionRow = get_row(&f.host, LEDGER, &dec_key).await.unwrap().unwrap();
-    assert_eq!(dec_after.state, DecisionState::Agreed.as_str());
+    assert_eq!(dec_after.state, DecisionState::Agreed);
 
     let agr_after: AgreementRow = get_row(&f.host, AGREEMENTS, &q_rec_id).await.unwrap().unwrap();
     assert_eq!(agr_after.state, Some(AgreementState::Agreed));
@@ -346,7 +346,7 @@ async fn crash_after_each_reserve_is_finished_on_the_next_sync() {
 
     let dec_key = decision_id(&quote.quote_id);
     let dec_after: DecisionRow = get_row(&f.host, LEDGER, &dec_key).await.unwrap().unwrap();
-    assert_eq!(dec_after.state, DecisionState::Agreed.as_str());
+    assert_eq!(dec_after.state, DecisionState::Agreed);
 }
 
 #[tokio::test]
@@ -382,7 +382,7 @@ async fn crash_after_the_countersign_row_is_finished_on_the_next_sync() {
 
     let dec_key = decision_id(&quote.quote_id);
     let dec_after: DecisionRow = get_row(&f.host, LEDGER, &dec_key).await.unwrap().unwrap();
-    assert_eq!(dec_after.state, DecisionState::Agreed.as_str());
+    assert_eq!(dec_after.state, DecisionState::Agreed);
 }
 
 #[tokio::test]
@@ -418,7 +418,7 @@ async fn crash_after_the_snapshot_row_is_finished_on_the_next_sync() {
 
     let dec_key = decision_id(&quote.quote_id);
     let dec_after: DecisionRow = get_row(&f.host, LEDGER, &dec_key).await.unwrap().unwrap();
-    assert_eq!(dec_after.state, DecisionState::Agreed.as_str());
+    assert_eq!(dec_after.state, DecisionState::Agreed);
 }
 
 #[tokio::test]
@@ -447,7 +447,7 @@ async fn crash_between_agreement_row_and_decision_row_is_finished_on_the_next_sy
     // But decision row remains deciding
     let dec_key = decision_id(&quote.quote_id);
     let dec: Option<DecisionRow> = get_row(&f.host, LEDGER, &dec_key).await.unwrap();
-    assert_eq!(dec.unwrap().state, "deciding");
+    assert_eq!(dec.unwrap().state, DecisionState::Deciding);
 
     f.host.restart();
 
@@ -460,7 +460,7 @@ async fn crash_between_agreement_row_and_decision_row_is_finished_on_the_next_sy
     .unwrap();
 
     let dec_after: DecisionRow = get_row(&f.host, LEDGER, &dec_key).await.unwrap().unwrap();
-    assert_eq!(dec_after.state, DecisionState::Agreed.as_str());
+    assert_eq!(dec_after.state, DecisionState::Agreed);
 }
 
 #[tokio::test]
@@ -492,7 +492,7 @@ async fn crash_after_fence_with_clock_moved_past_expiry_ends_not_formed() {
 
     let dec_key = decision_id(&quote.quote_id);
     let dec: DecisionRow = get_row(&f.host, LEDGER, &dec_key).await.unwrap().unwrap();
-    assert_eq!(dec.state, DecisionState::NotFormed.as_str());
+    assert_eq!(dec.state, DecisionState::NotFormed);
     assert_eq!(dec.reason.as_deref(), Some("quote-expired"));
 
     let agr: AgreementRow = get_row(&f.host, AGREEMENTS, &q_rec_id).await.unwrap().unwrap();
@@ -529,10 +529,10 @@ async fn crash_after_countersign_stored_with_clock_past_expiry_checks_no_refused
     .unwrap();
 
     let dec_key = decision_id(&quote.quote_id);
-    let dec: DecisionRow = get_row(&f.host, LEDGER, &dec_key).await.unwrap().unwrap();
-    assert_eq!(dec.state, DecisionState::Agreed.as_str());
+    let dec_after: DecisionRow = get_row(&f.host, LEDGER, &dec_key).await.unwrap().unwrap();
+    assert_eq!(dec_after.state, DecisionState::Agreed);
 
-    // P19 check: no refused: row created
+    // An agreed deal gets no refusal row
     let cp_rec_id = row.counterparty.unwrap().record_id;
     let ref_row: Option<RefusedRow> =
         get_row(&f.host, LEDGER, &refused_id(&cp_rec_id)).await.unwrap();
@@ -554,7 +554,7 @@ async fn refused_confirm_stub_ends_not_formed() {
 
     let dec_key = decision_id(&quote.quote_id);
     let dec: DecisionRow = get_row(&f.host, LEDGER, &dec_key).await.unwrap().unwrap();
-    assert_eq!(dec.state, DecisionState::NotFormed.as_str());
+    assert_eq!(dec.state, DecisionState::NotFormed);
     assert_eq!(dec.reason.as_deref(), Some("slot-expired"));
 
     // Holds are released
@@ -600,6 +600,6 @@ async fn refused_confirm_with_crash_after_not_formed_snapshot_stays_not_formed_o
     // Stays not-formed! Does not re-reserve!
     let dec_key = decision_id(&quote.quote_id);
     let dec: DecisionRow = get_row(&f.host, LEDGER, &dec_key).await.unwrap().unwrap();
-    assert_eq!(dec.state, DecisionState::NotFormed.as_str());
+    assert_eq!(dec.state, DecisionState::NotFormed);
     assert_eq!(dec.reason.as_deref(), Some("slot-expired"));
 }

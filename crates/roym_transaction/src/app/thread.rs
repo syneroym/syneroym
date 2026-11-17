@@ -11,7 +11,7 @@ use syneroym_roym_core::{
 
 use super::{
     AGREEMENTS, AgreementRow, CARDS, CardRow, ENQUIRIES, QUOTES, RecordPointerRow,
-    default_list_limit_u64, ensure_collections,
+    default_list_limit_u64, ensure_collections, is_deal_level_not_formed_reason,
 };
 
 #[derive(Debug, Deserialize)]
@@ -156,19 +156,8 @@ fn compute_quote_deal_state(
         match agr.state {
             Some(AgreementState::Closed) => return "closed".to_string(),
             Some(AgreementState::Cancelled) => return "cancelled".to_string(),
-            Some(AgreementState::NotFormed)
-                if agr.state_reason.as_deref() != Some("quote-superseded") =>
-            {
-                return "not-formed".to_string();
-            }
             _ => {}
         }
-    }
-
-    if let Some(agr) = this_agr
-        && agr.state == Some(AgreementState::NotFormed)
-    {
-        return "not-formed".to_string();
     }
 
     if let Some(agr) = this_agr
@@ -185,6 +174,20 @@ fn compute_quote_deal_state(
         }
     }
 
+    for agr in quote_agrs {
+        if agr.state == Some(AgreementState::NotFormed)
+            && is_deal_level_not_formed_reason(agr.state_reason.as_deref())
+        {
+            return "not-formed".to_string();
+        }
+    }
+
+    if let Some(agr) = this_agr
+        && agr.state == Some(AgreementState::NotFormed)
+    {
+        return "not-formed".to_string();
+    }
+
     if let Some(agr) = this_agr
         && agr.counterparty.is_some()
     {
@@ -199,4 +202,109 @@ fn compute_quote_deal_state(
     }
 
     "quoted".to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use syneroym_roym_core::{
+        deal::{DealTerms, LocalText},
+        lang::LangTag,
+        transaction::ReceiptHalf,
+    };
+
+    use super::*;
+    use crate::app::{put_row, tests::fixture};
+
+    #[tokio::test]
+    async fn agreed_deal_with_late_quote_already_agreed_refusal_stays_agreed() {
+        let f = fixture();
+        let now = 1000;
+        let en = LangTag::parse_canonical("en").expect("lang");
+        let terms = DealTerms {
+            currency: "EUR".to_string(),
+            commitments: vec![],
+            home_exchange: None,
+            listing_id: None,
+            scope: LocalText::plain(en.clone(), "Scope"),
+            cancellation_terms: LocalText::plain(en.clone(), "Terms"),
+            refund_terms: LocalText::plain(en.clone(), "Refund"),
+            dispute_path: LocalText::plain(en, "Dispute"),
+            quote_expires_at_secs: now + 3600,
+        };
+        let half = ReceiptHalf {
+            record_id: "rec_half".to_string(),
+            envelope: "{}".to_string(),
+            issuer: "did:key:alice".to_string(),
+            issued_at_secs: now,
+        };
+
+        let agr_v1 = AgreementRow {
+            quote_record_id: "rec_v1".to_string(),
+            quote_id: "q1".to_string(),
+            conversation: "conv_1".to_string(),
+            counterparty_did: "did:key:alice".to_string(),
+            quote_author_did: f.master_did.clone(),
+            terms: terms.clone(),
+            agreed_at_secs: Some(now),
+            counterparty: Some(half.clone()),
+            quote_author: Some(half),
+            state: Some(AgreementState::Agreed),
+            state_reason: None,
+            cancel_reason: None,
+            seq: Some(1),
+            commitments: vec![],
+            updated_at_secs: now,
+        };
+
+        let agr_v2 = AgreementRow {
+            quote_record_id: "rec_v2".to_string(),
+            quote_id: "q1".to_string(),
+            conversation: "conv_1".to_string(),
+            counterparty_did: "did:key:alice".to_string(),
+            quote_author_did: f.master_did.clone(),
+            terms: terms.clone(),
+            agreed_at_secs: None,
+            counterparty: None,
+            quote_author: None,
+            state: Some(AgreementState::NotFormed),
+            state_reason: Some("quote-already-agreed".to_string()),
+            cancel_reason: None,
+            seq: Some(1),
+            commitments: vec![],
+            updated_at_secs: now,
+        };
+
+        put_row(&f.host, AGREEMENTS, &agr_v1.quote_record_id, &agr_v1).await.unwrap();
+        put_row(&f.host, AGREEMENTS, &agr_v2.quote_record_id, &agr_v2).await.unwrap();
+
+        // is_deal_ended must be false because the deal is agreed
+        assert!(!crate::app::is_deal_ended(&f.host, "q1", None, now).await.unwrap());
+
+        let mut agreement_map = HashMap::new();
+        agreement_map.insert("rec_v1".to_string(), agr_v1.clone());
+        agreement_map.insert("rec_v2".to_string(), agr_v2.clone());
+
+        let mut agreements_by_quote_id = HashMap::new();
+        agreements_by_quote_id.insert("q1".to_string(), vec![&agr_v1, &agr_v2]);
+
+        let state_v1 = compute_quote_deal_state(
+            Some("rec_v1"),
+            Some("q1"),
+            None,
+            false,
+            &agreement_map,
+            &agreements_by_quote_id,
+        );
+        assert_eq!(state_v1, "agreed");
+
+        let state_v2 = compute_quote_deal_state(
+            Some("rec_v2"),
+            Some("q1"),
+            None,
+            false,
+            &agreement_map,
+            &agreements_by_quote_id,
+        );
+        assert_eq!(state_v2, "agreed");
+    }
 }

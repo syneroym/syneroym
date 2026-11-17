@@ -119,35 +119,58 @@ async fn handle_refusal<H: AppHost>(
     reason: &str,
     now: u64,
 ) -> Result<bool, String> {
-    let snapshot = core_progress::open(
-        row.quote_record_id.clone(),
-        row.conversation.clone(),
-        row.counterparty_did.clone(),
-        row.quote_author_did.clone(),
-        &row.terms,
-        Some(reason.to_string()),
-    );
-    let (snap_env, snap_rec_id) = progress::sign(host, &snapshot).await?;
     let snap_key = snapshot_id(&row.quote_record_id, 1);
-    let mut snap_row = SnapshotRow {
-        seq: 1,
-        agreement: row.quote_record_id.clone(),
-        conversation: row.conversation.clone(),
-        snapshot: snapshot.clone(),
-        envelope: snap_env.clone(),
-        record_id: snap_rec_id,
-        message_id: None,
-        stored_at_secs: now,
+    let mut snap_row: SnapshotRow = match get_row(host, AGREEMENT_PROGRESS, &snap_key).await? {
+        Some(stored) => stored,
+        None => {
+            let snapshot = core_progress::open(
+                row.quote_record_id.clone(),
+                row.conversation.clone(),
+                row.counterparty_did.clone(),
+                row.quote_author_did.clone(),
+                &row.terms,
+                Some(reason.to_string()),
+            );
+            let (snap_env, snap_rec_id) = progress::sign(host, &snapshot).await?;
+            let snap = SnapshotRow {
+                seq: 1,
+                agreement: row.quote_record_id.clone(),
+                conversation: row.conversation.clone(),
+                snapshot,
+                envelope: snap_env,
+                record_id: snap_rec_id,
+                message_id: None,
+                stored_at_secs: now,
+            };
+            let write = RecordWriteValue {
+                id: snap_key.clone(),
+                payload: serde_json::to_vec(&snap).map_err(|e| e.to_string())?,
+            };
+            if let Some(err) =
+                AppDataLayer::create(host, AGREEMENT_PROGRESS.to_string(), vec![write])
+                    .await
+                    .map_err(|e| e.to_string())?
+            {
+                if let Some(existing) = get_row(host, AGREEMENT_PROGRESS, &snap_key).await? {
+                    existing
+                } else {
+                    return Err(format!("failed to store refusal snapshot: {err:?}"));
+                }
+            } else {
+                snap
+            }
+        }
     };
-    put_row(host, AGREEMENT_PROGRESS, &snap_key, &snap_row).await?;
 
-    let _ = ensure_snapshot_sent(host, &row.conversation, &mut snap_row, now).await?;
+    if !ensure_snapshot_sent(host, &row.conversation, &mut snap_row, now).await? {
+        return Ok(false);
+    }
 
     row.state = Some(AgreementState::NotFormed);
     row.state_reason = Some(reason.to_string());
     row.cancel_reason = None;
     row.seq = Some(1);
-    row.commitments = snapshot.commitments;
+    row.commitments = snap_row.snapshot.commitments.clone();
     row.updated_at_secs = now;
     put_row(host, AGREEMENTS, &row.quote_record_id, row).await?;
 
@@ -242,9 +265,9 @@ async fn continue_decision<H: AppHost, R: Reservations>(
     reservations: &R,
     now: u64,
 ) -> Result<bool, String> {
-    match existing_dec.decision_state() {
-        Some(DecisionState::Agreed) | Some(DecisionState::NotFormed) => {
-            resend_completed_decision(host, row, &existing_dec.state, now).await
+    match existing_dec.state {
+        DecisionState::Agreed | DecisionState::NotFormed => {
+            resend_completed_decision(host, row, existing_dec.state, now).await
         }
         _ => repeat_path(host, row, reservations, now).await,
     }
@@ -290,7 +313,7 @@ pub(crate) async fn mark_decision_agreed<H: AppHost>(
 
     let dec_agreed = DecisionRow {
         kind: "decision".to_string(),
-        state: DecisionState::Agreed.as_str().to_string(),
+        state: DecisionState::Agreed,
         agreement: row.quote_record_id.clone(),
         quote_id: row.quote_id.clone(),
         reason: None,
@@ -312,7 +335,7 @@ pub(crate) async fn mark_decision_agreed<H: AppHost>(
 async fn resend_completed_decision<H: AppHost>(
     host: &H,
     row: &mut AgreementRow,
-    state: &str,
+    state: DecisionState,
     now: u64,
 ) -> Result<bool, String> {
     let snap_key = snapshot_id(&row.quote_record_id, 1);
@@ -322,7 +345,7 @@ async fn resend_completed_decision<H: AppHost>(
     let cs_key = countersign_id(&row.quote_record_id);
     let mut stored_cs: Option<CountersignRow> = super::get_row(host, LEDGER, &cs_key).await?;
 
-    if state == DecisionState::Agreed.as_str() {
+    if state == DecisionState::Agreed {
         if let Some(cs) = stored_cs.as_mut()
             && !ensure_countersign_sent(host, &row.conversation, cs, now).await?
         {
@@ -353,7 +376,7 @@ async fn claim_decision_fence<H: AppHost>(
 ) -> Result<bool, String> {
     let dec_fence = DecisionRow {
         kind: "decision".to_string(),
-        state: DecisionState::Deciding.as_str().to_string(),
+        state: DecisionState::Deciding,
         agreement: row.quote_record_id.clone(),
         quote_id: quote.quote_id.clone(),
         reason: None,
@@ -618,7 +641,7 @@ pub(crate) async fn handle_not_formed<H: AppHost, R: Reservations>(
 
     let dec_not_formed = DecisionRow {
         kind: "decision".to_string(),
-        state: DecisionState::NotFormed.as_str().to_string(),
+        state: DecisionState::NotFormed,
         agreement: row.quote_record_id.clone(),
         quote_id: row.quote_id.clone(),
         reason: Some(reason.to_string()),

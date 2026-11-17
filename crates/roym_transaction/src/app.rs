@@ -623,6 +623,10 @@ pub(crate) fn conversation_mine_filter(
 /// - decision row in state "not-formed"
 /// - terminal agreement state (closed, cancelled, not-formed)
 /// - refusal with quote-expired
+pub(crate) fn is_deal_level_not_formed_reason(reason: Option<&str>) -> bool {
+    !matches!(reason, Some("quote-superseded" | "quote-already-agreed"))
+}
+
 pub(crate) async fn is_deal_ended<H: AppHost>(
     host: &H,
     quote_id: &str,
@@ -651,7 +655,7 @@ pub(crate) async fn is_deal_ended<H: AppHost>(
     }
     let dec_key = format!("decision:{quote_id}");
     if let Some(dec) = get_row::<decide::DecisionRow, _>(host, LEDGER, &dec_key).await?
-        && dec.decision_state() == Some(decide::DecisionState::NotFormed)
+        && dec.state == decide::DecisionState::NotFormed
     {
         return Ok(true);
     }
@@ -664,7 +668,7 @@ pub(crate) async fn is_deal_ended<H: AppHost>(
     for agr in agr_rows {
         if let Some(state) = agr.state
             && state.is_terminal()
-            && agr.state_reason.as_deref() != Some("quote-superseded")
+            && is_deal_level_not_formed_reason(agr.state_reason.as_deref())
         {
             return Ok(true);
         }

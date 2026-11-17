@@ -12,7 +12,8 @@ use syneroym_roym_core::{
 
 use super::helpers::{build_and_sign_quote, make_counterparty_receipt, slot_commitment};
 use crate::app::{
-    AGREEMENT_PROGRESS, AGREEMENTS, AgreementRow, CardRow, Direction, LEDGER,
+    AGREEMENT_PROGRESS, AGREEMENTS, AgreementRow, CardRow, Direction, LEDGER, QUOTES,
+    RecordPointerRow,
     agreement_ops::{self, AgreementAcceptInput},
     decide::{
         self, CountersignRow, DecisionRow, DecisionState, RefusedRow, SnapshotRow, countersign_id,
@@ -160,7 +161,7 @@ async fn a_countersigned_half_before_expiry_still_forms_the_agreement() {
     let dec_key = decision_id(&quote_payload.quote_id);
     let dec_fence = DecisionRow {
         kind: "decision".to_string(),
-        state: DecisionState::Deciding.as_str().to_string(),
+        state: DecisionState::Deciding,
         agreement: q_rec_id.clone(),
         quote_id: quote_payload.quote_id.clone(),
         reason: None,
@@ -175,7 +176,7 @@ async fn a_countersigned_half_before_expiry_still_forms_the_agreement() {
 
     let dec: DecisionRow =
         get_row(&fix.host, LEDGER, &dec_key).await.expect("get dec").expect("dec exists");
-    assert_eq!(dec.state, DecisionState::Agreed.as_str());
+    assert_eq!(dec.state, DecisionState::Agreed);
 }
 
 fn make_signed_refusal_snapshot(
@@ -380,7 +381,7 @@ async fn acceptance_when_quote_already_agreed_is_refused() {
     let dec_key = decision_id(&quote_payload.quote_id);
     let existing_dec = DecisionRow {
         kind: "decision".to_string(),
-        state: DecisionState::Agreed.as_str().to_string(),
+        state: DecisionState::Agreed,
         agreement: "other_quote_record_id".to_string(),
         quote_id: quote_payload.quote_id.clone(),
         reason: None,
@@ -411,4 +412,94 @@ async fn acceptance_when_quote_already_agreed_is_refused() {
     let dec_after: DecisionRow =
         get_row(&fix.host, LEDGER, &dec_key).await.expect("get dec").unwrap();
     assert_eq!(dec_after.agreement, "other_quote_record_id");
+}
+
+#[tokio::test]
+async fn refusal_crash_on_refused_write_resends_no_second_snapshot() {
+    let fix = fixture();
+    let cp = Identity::generate().expect("cp identity");
+    let cp_did = substrate::derive_did_key(&cp.public_key());
+    let now = clock::now_secs();
+
+    // Author creates quote v1 expiring at now + 3600
+    let (quote_v1, q_rec_id, _) =
+        build_and_sign_quote(&fix.master, &cp_did, 1, None, now + 3600, now);
+
+    // CP accepts quote v1
+    let (cp_rec_id, cp_env) =
+        make_counterparty_receipt(&cp, &fix.master_did, &q_rec_id, &quote_v1.terms, now);
+
+    let mut row = AgreementRow {
+        quote_record_id: q_rec_id.clone(),
+        quote_id: quote_v1.quote_id.clone(),
+        conversation: "conv_1".to_string(),
+        counterparty_did: cp_did.clone(),
+        quote_author_did: fix.master_did.clone(),
+        terms: quote_v1.terms.clone(),
+        agreed_at_secs: None,
+        counterparty: Some(ReceiptHalf {
+            record_id: cp_rec_id.clone(),
+            envelope: cp_env,
+            issuer: cp_did.clone(),
+            issued_at_secs: now,
+        }),
+        quote_author: None,
+        state: None,
+        state_reason: None,
+        cancel_reason: None,
+        seq: None,
+        commitments: vec![],
+        updated_at_secs: now,
+    };
+
+    // QUOTES pointer points to a newer record_id (superseding quote v1)
+    let ptr = RecordPointerRow {
+        envelope: "".to_string(),
+        id: quote_v1.quote_id.clone(),
+        record_id: "rec_quote_v2".to_string(),
+        conversation: "conv_1".to_string(),
+        sequence: 2,
+        issuer: fix.master_did.clone(),
+        mine: true,
+        updated_at_secs: now,
+        version_count: 2,
+        issued_at_secs: now,
+        request_record_id: None,
+        counterparty_did: Some(cp_did.clone()),
+        declined_at_secs: None,
+        decline_note: None,
+    };
+    put_row(&fix.host, QUOTES, &quote_v1.quote_id, &ptr).await.expect("put ptr");
+
+    // Injected crash on write to refused: in ledger
+    let ref_key = refused_id(&cp_rec_id);
+    fix.host.crash_on_write("ledger", &ref_key);
+
+    let err = decide::run(&fix.host, &mut row, &quote_v1, now)
+        .await
+        .expect_err("fault must fire on writing refused row");
+    assert!(err.contains("injected crash"));
+
+    // Snapshot 1 was stored and 1 card was sent
+    let snap_key = snapshot_id(&q_rec_id, 1);
+    let snap_first: SnapshotRow =
+        get_row(&fix.host, AGREEMENT_PROGRESS, &snap_key).await.unwrap().expect("snapshot exists");
+    assert_eq!(snap_first.snapshot.state, AgreementState::NotFormed);
+    assert_eq!(snap_first.snapshot.state_reason.as_deref(), Some("quote-superseded"));
+    assert_eq!(fix.host.sent_cards().len(), 1);
+
+    // Restart and advance clock
+    fix.host.restart();
+    let res = decide::run(&fix.host, &mut row, &quote_v1, now + 1).await;
+    assert_eq!(res, Ok(false));
+
+    // Refusal snapshot is the exact same record_id and no second card was sent
+    let snap_second: SnapshotRow =
+        get_row(&fix.host, AGREEMENT_PROGRESS, &snap_key).await.unwrap().expect("snapshot exists");
+    assert_eq!(snap_second.record_id, snap_first.record_id);
+    assert_eq!(fix.host.sent_cards().len(), 1, "must not send a second card for refusal");
+
+    // The refused: row was now written
+    let ref_row: Option<RefusedRow> = get_row(&fix.host, LEDGER, &ref_key).await.expect("get ref");
+    assert!(ref_row.is_some());
 }

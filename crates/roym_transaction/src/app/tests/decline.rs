@@ -22,7 +22,7 @@ use crate::app::{
     decline_ops::{self, DealDeclineInput},
     get_row, put_bytes, put_row,
     sync::{self, SyncInput},
-    tests::fixture,
+    tests::{TestFixture, fixture},
 };
 
 fn sample_commitment(id: &str, listing_id: &str, start_secs: u64, end_secs: u64) -> Commitment {
@@ -217,14 +217,11 @@ async fn repeated_decline_returns_the_same_record() {
     assert_eq!(out1.deal, out2.deal);
 }
 
-#[tokio::test]
-async fn decline_filing_checks_refuse_invalid_signers_or_records() {
-    let f = fixture();
-    let now = f.host.now();
-    let third_party = Identity::generate().expect("third_party");
-
-    // f is quote author
-    let cp = Identity::generate().expect("cp");
+async fn setup_quote_for_decline_filing(
+    f: &TestFixture,
+    cp: &Identity,
+    now: u64,
+) -> (String, QuotePayload) {
     let cp_did = substrate::derive_did_key(&cp.public_key());
     let (q_json, q_rec_id, quote) = make_quote_envelope(&f.master, &cp_did, now);
     put_bytes(&f.host, QUOTE_HISTORY, &q_rec_id, q_json.as_bytes()).await.unwrap();
@@ -241,14 +238,22 @@ async fn decline_filing_checks_refuse_invalid_signers_or_records() {
         version_count: 1,
         issued_at_secs: now,
         request_record_id: None,
-        counterparty_did: Some(cp_did.clone()),
+        counterparty_did: Some(cp_did),
         declined_at_secs: None,
         decline_note: None,
     };
     put_row(&f.host, QUOTES, &quote.quote_id, &ptr).await.unwrap();
+    (q_rec_id, quote)
+}
 
-    // 1. Third party signs decline for quote -> refused: only counterparty can
-    //    decline
+#[tokio::test]
+async fn decline_filing_refuses_third_party_signer() {
+    let f = fixture();
+    let now = f.host.now();
+    let third_party = Identity::generate().expect("third_party");
+    let cp = Identity::generate().expect("cp");
+    let (q_rec_id, quote) = setup_quote_for_decline_filing(&f, &cp, now).await;
+
     let (bad_dec_json, _) =
         make_decline_envelope(&third_party, &q_rec_id, &quote.quote_id, "conv_1", now);
     let bad_card_body = card::card_body(RECORD_DEAL_DECLINE, DEAL_DECLINE_VERSION, &bad_dec_json)
@@ -290,8 +295,15 @@ async fn decline_filing_checks_refuse_invalid_signers_or_records() {
 
     let card: CardRow = get_row(&f.host, CARDS, "msg_bad_dec").await.unwrap().unwrap();
     assert_eq!(card.reason.as_deref(), Some("only the counterparty can decline this quote"));
+}
 
-    // 2. Card names another conversation
+#[tokio::test]
+async fn decline_filing_refuses_mismatched_conversation() {
+    let f = fixture();
+    let now = f.host.now();
+    let cp = Identity::generate().expect("cp");
+    let (q_rec_id, quote) = setup_quote_for_decline_filing(&f, &cp, now).await;
+
     let (bad_conv_json, _) =
         make_decline_envelope(&cp, &q_rec_id, &quote.quote_id, "other_conv", now);
     let bad_conv_body = card::card_body(RECORD_DEAL_DECLINE, DEAL_DECLINE_VERSION, &bad_conv_json)
@@ -313,27 +325,34 @@ async fn decline_filing_checks_refuse_invalid_signers_or_records() {
                         "restored": false,
                         "state": "delivered",
                         "stored_at_secs": now as i64,
-                        "visible_seq": 2,
+                        "visible_seq": 1,
                         "verified": true,
                         "body": bad_conv_body,
                     }
                 ],
-                "last_seq": 2,
+                "last_seq": 1,
                 "kind": "direct"
             }
         })
         .to_string())
     });
 
-    let sync_res2 =
+    let sync_res =
         sync::sync(&f.host, SyncInput { conversation: "conv_1".to_string(), full: false })
             .await
             .unwrap();
-    assert_eq!(sync_res2.refused, 1);
-    let card2: CardRow = get_row(&f.host, CARDS, "msg_bad_conv").await.unwrap().unwrap();
-    assert_eq!(card2.reason.as_deref(), Some("card names another conversation"));
+    assert_eq!(sync_res.refused, 1);
+    let card: CardRow = get_row(&f.host, CARDS, "msg_bad_conv").await.unwrap().unwrap();
+    assert_eq!(card.reason.as_deref(), Some("card names another conversation"));
+}
 
-    // 3. Deal does not match quote_id
+#[tokio::test]
+async fn decline_filing_refuses_mismatched_deal() {
+    let f = fixture();
+    let now = f.host.now();
+    let cp = Identity::generate().expect("cp");
+    let (q_rec_id, _quote) = setup_quote_for_decline_filing(&f, &cp, now).await;
+
     let (bad_deal_json, _) = make_decline_envelope(&cp, &q_rec_id, "wrong_quote_id", "conv_1", now);
     let bad_deal_body = card::card_body(RECORD_DEAL_DECLINE, DEAL_DECLINE_VERSION, &bad_deal_json)
         .expect("card body");
@@ -354,27 +373,35 @@ async fn decline_filing_checks_refuse_invalid_signers_or_records() {
                         "restored": false,
                         "state": "delivered",
                         "stored_at_secs": now as i64,
-                        "visible_seq": 3,
+                        "visible_seq": 1,
                         "verified": true,
                         "body": bad_deal_body,
                     }
                 ],
-                "last_seq": 3,
+                "last_seq": 1,
                 "kind": "direct"
             }
         })
         .to_string())
     });
 
-    let sync_res3 =
+    let sync_res =
         sync::sync(&f.host, SyncInput { conversation: "conv_1".to_string(), full: false })
             .await
             .unwrap();
-    assert_eq!(sync_res3.refused, 1);
-    let card3: CardRow = get_row(&f.host, CARDS, "msg_bad_deal").await.unwrap().unwrap();
-    assert_eq!(card3.reason.as_deref(), Some("deal does not match quote_id"));
+    assert_eq!(sync_res.refused, 1);
+    let card: CardRow = get_row(&f.host, CARDS, "msg_bad_deal").await.unwrap().unwrap();
+    assert_eq!(card.reason.as_deref(), Some("deal does not match quote_id"));
+}
 
-    // 4. Refused while an unrefused half exists
+#[tokio::test]
+async fn decline_filing_refuses_when_unrefused_half_exists() {
+    let f = fixture();
+    let now = f.host.now();
+    let cp = Identity::generate().expect("cp");
+    let cp_did = substrate::derive_did_key(&cp.public_key());
+    let (q_rec_id, quote) = setup_quote_for_decline_filing(&f, &cp, now).await;
+
     let agr_row = AgreementRow {
         quote_record_id: q_rec_id.clone(),
         quote_id: quote.quote_id.clone(),
@@ -421,28 +448,25 @@ async fn decline_filing_checks_refuse_invalid_signers_or_records() {
                         "restored": false,
                         "state": "delivered",
                         "stored_at_secs": now as i64,
-                        "visible_seq": 4,
+                        "visible_seq": 1,
                         "verified": true,
                         "body": unrefused_body,
                     }
                 ],
-                "last_seq": 4,
+                "last_seq": 1,
                 "kind": "direct"
             }
         })
         .to_string())
     });
 
-    let sync_res4 =
+    let sync_res =
         sync::sync(&f.host, SyncInput { conversation: "conv_1".to_string(), full: false })
             .await
             .unwrap();
-    assert_eq!(sync_res4.refused, 1);
-    let card4: CardRow = get_row(&f.host, CARDS, "msg_unrefused").await.unwrap().unwrap();
-    assert_eq!(
-        card4.reason.as_deref(),
-        Some("cannot decline a quote with an unrefused acceptance")
-    );
+    assert_eq!(sync_res.refused, 1);
+    let card: CardRow = get_row(&f.host, CARDS, "msg_unrefused").await.unwrap().unwrap();
+    assert_eq!(card.reason.as_deref(), Some("cannot decline a quote with an unrefused acceptance"));
 }
 
 #[tokio::test]

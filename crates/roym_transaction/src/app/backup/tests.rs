@@ -9,7 +9,7 @@ use syneroym_roym_core::{
 
 use crate::app::{
     backup::{ImportedQuote, QuotesByRecordId, sections::validate_ledger},
-    decide::{CountersignRow, DecisionRow},
+    decide::{CountersignRow, DecisionRow, DecisionState},
     hold::{HoldLedgerRow, SeatLedgerRow},
     ledger::{LedgerKind, LedgerRow},
 };
@@ -134,7 +134,7 @@ fn decision_row_refused_on_unheld_agreement_or_unknown_state() {
 
     let bad_agr_row = DecisionRow {
         kind: "decision".to_string(),
-        state: "agreed".to_string(),
+        state: DecisionState::Agreed,
         agreement: "unheld_quote".to_string(),
         quote_id: "q1".to_string(),
         reason: None,
@@ -145,21 +145,20 @@ fn decision_row_refused_on_unheld_agreement_or_unknown_state() {
     assert!(res.is_err());
     assert!(res.unwrap_err().error.unwrap().message.contains("names unheld agreement"));
 
-    let bad_state_row = DecisionRow {
-        kind: "decision".to_string(),
-        state: "invalid_state".to_string(),
-        agreement: "quote_held".to_string(),
-        quote_id: "q1".to_string(),
-        reason: None,
-        created_at_secs: 100,
-    };
+    let bad_state_json = json!({
+        "kind": "decision",
+        "state": "invalid_state",
+        "agreement": "quote_held",
+        "quote_id": "q1",
+        "created_at_secs": 100,
+    });
     let res2 = validate_ledger(
-        vec![json!({ "id": "decision:q1", "payload": bad_state_row })],
+        vec![json!({ "id": "decision:q1", "payload": bad_state_json })],
         &quotes,
         100,
     );
     assert!(res2.is_err());
-    assert!(res2.unwrap_err().error.unwrap().message.contains("unknown decision state"));
+    assert!(res2.unwrap_err().error.unwrap().message.contains("invalid decision row"));
 }
 
 #[test]

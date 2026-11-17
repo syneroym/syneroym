@@ -132,16 +132,6 @@ pub fn fixture() -> TestFixture {
         .to_string())
     });
 
-    // Default stub for conversation.send
-    host.on_call("conversation", "send", |_params| {
-        Ok(json!({
-            "message_id": "msg_mock_send_123",
-            "state": "delivered",
-            "sender_timestamp_ms": 1_000_000_000_i64
-        })
-        .to_string())
-    });
-
     TestFixture { host, master, master_did, service_key, service_did, cert_json }
 }
 

@@ -20,7 +20,8 @@ use super::{TestFixture, fixture};
 use crate::app::{
     AGREEMENT_PROGRESS, AGREEMENTS, AgreementRow, LEDGER,
     decide::{
-        self, CountersignRow, DecisionRow, SnapshotRow, countersign_id, decision_id, snapshot_id,
+        self, CountersignRow, DecisionRow, DecisionState, SnapshotRow, countersign_id, decision_id,
+        snapshot_id,
     },
     hold::{HoldLedgerRow, Reservations, SeatLedger, SeatLedgerRow, hold_id, seat_id},
     progress_ops,
@@ -267,7 +268,7 @@ async fn writer_countersigns_in_sync_and_sends_snapshot_one() {
     let dec: Option<DecisionRow> =
         crate::app::get_row(&f.host, LEDGER, &dec_key).await.expect("get dec");
     assert!(dec.is_some());
-    assert_eq!(dec.unwrap().state, "agreed");
+    assert_eq!(dec.unwrap().state, DecisionState::Agreed);
 
     // Verify agreed_at_secs set from countersign half
     assert_eq!(row.agreed_at_secs, Some(cs.half.issued_at_secs));
@@ -313,7 +314,7 @@ async fn losing_the_last_seat_ends_not_formed() {
         crate::app::get_row(&f.host, LEDGER, &dec_key).await.expect("get dec");
     assert!(dec.is_some());
     let dec = dec.unwrap();
-    assert_eq!(dec.state, "not-formed");
+    assert_eq!(dec.state, DecisionState::NotFormed);
     assert_eq!(dec.reason.as_deref(), Some("slot-taken"));
 
     // Snapshot 1 is not-formed
@@ -336,7 +337,7 @@ async fn repeat_branch_reuses_stored_snapshot_one() {
     let dec_key = decision_id(&quote.quote_id);
     let dec = DecisionRow {
         kind: "decision".to_string(),
-        state: "deciding".to_string(),
+        state: DecisionState::Deciding,
         agreement: quote_rec_id.clone(),
         quote_id: quote.quote_id.clone(),
         reason: None,
@@ -386,7 +387,11 @@ async fn send_error_stops_decision_row_and_retries_on_next_sync() {
     let dec: Option<DecisionRow> =
         crate::app::get_row(&f.host, LEDGER, &dec_key).await.expect("get dec");
     assert!(dec.is_some());
-    assert_eq!(dec.unwrap().state, "deciding", "lasting refusal must leave decision row deciding");
+    assert_eq!(
+        dec.unwrap().state,
+        DecisionState::Deciding,
+        "lasting refusal must leave decision row deciding"
+    );
 }
 
 #[tokio::test]
@@ -447,7 +452,7 @@ async fn repeat_past_expiry_without_countersign_leaves_row_deciding() {
     let dec_key = decision_id(&quote.quote_id);
     let dec = DecisionRow {
         kind: "decision".to_string(),
-        state: "deciding".to_string(),
+        state: DecisionState::Deciding,
         agreement: quote_rec_id.clone(),
         quote_id: quote.quote_id.clone(),
         reason: None,
@@ -464,7 +469,7 @@ async fn repeat_past_expiry_without_countersign_leaves_row_deciding() {
     let dec_after: Option<DecisionRow> =
         crate::app::get_row(&f.host, LEDGER, &dec_key).await.expect("get dec");
     assert!(dec_after.is_some());
-    assert_eq!(dec_after.unwrap().state, "deciding");
+    assert_eq!(dec_after.unwrap().state, DecisionState::Deciding);
 }
 
 async fn seed_snapshot_history(
@@ -664,7 +669,7 @@ async fn crash_before_the_decision_row_is_final_is_finished_on_the_next_sync() {
 
     let dec: Option<DecisionRow> =
         crate::app::get_row(&f.host, LEDGER, &decision_id(&quote.quote_id)).await.unwrap();
-    assert_eq!(dec.expect("decision row exists").state, "agreed");
+    assert_eq!(dec.expect("decision row exists").state, DecisionState::Agreed);
 }
 
 #[tokio::test]
@@ -707,5 +712,5 @@ async fn cancel_before_the_decision_row_is_final_is_kept() {
 
     let dec_key = decision_id(&quote.quote_id);
     let dec: Option<DecisionRow> = crate::app::get_row(&f.host, LEDGER, &dec_key).await.unwrap();
-    assert_eq!(dec.expect("decision exists").state, "agreed");
+    assert_eq!(dec.expect("decision exists").state, DecisionState::Agreed);
 }

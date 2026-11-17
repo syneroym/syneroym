@@ -19,15 +19,6 @@ impl DecisionState {
             Self::NotFormed => "not-formed",
         }
     }
-
-    pub(crate) fn parse(s: &str) -> Option<Self> {
-        match s {
-            "deciding" => Some(Self::Deciding),
-            "agreed" => Some(Self::Agreed),
-            "not-formed" => Some(Self::NotFormed),
-            _ => None,
-        }
-    }
 }
 
 pub(crate) fn decision_id(quote_id: &str) -> String {
@@ -58,19 +49,13 @@ pub(crate) struct RefusedRow {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct DecisionRow {
     pub(crate) kind: String,
-    pub(crate) state: String,
+    pub(crate) state: DecisionState,
     pub(crate) agreement: String,
     pub(crate) quote_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) reason: Option<String>,
     #[serde(alias = "at_secs")]
     pub(crate) created_at_secs: u64,
-}
-
-impl DecisionRow {
-    pub(crate) fn decision_state(&self) -> Option<DecisionState> {
-        DecisionState::parse(&self.state)
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

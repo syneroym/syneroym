@@ -11,8 +11,10 @@ use syneroym_roym_core::{
     },
     lang::LangTag,
     listing::derive_slot_id,
+    method::conversation::ChangesInput,
     progress::{
-        AGREEMENT_PROGRESS_VERSION, AgreementProgressPayload, AgreementState, CommitmentProgress,
+        AGREEMENT_PROGRESS_VERSION, AgreementProgressPayload, AgreementState, CancelReason,
+        CommitmentProgress,
     },
     record::{Envelope, RECORD_AGREEMENT_PROGRESS, RECORD_AGREEMENT_RECEIPT, RecordDraft},
     transaction::{
@@ -343,6 +345,23 @@ async fn restored_writer_continues_seq_from_its_cards() {
         get_row(&f.host, AGREEMENT_PROGRESS, &snapshot_id(&q_rec_id, 2)).await.unwrap();
     assert!(snap2.is_some());
     assert_eq!(snap2.unwrap().record_id, p2_rec_id);
+
+    // Cancel after restore: next snapshot is seq 3
+    let cancel_res = crate::app::progress_ops::cancel_at(
+        &f.host,
+        crate::app::progress_ops::AgreementCancelInput {
+            agreement: q_rec_id.clone(),
+            reason: CancelReason::CounterpartyAsked,
+        },
+        now + 20,
+    )
+    .await;
+    assert!(cancel_res.is_ok());
+
+    let snap3: Option<SnapshotRow> =
+        get_row(&f.host, AGREEMENT_PROGRESS, &snapshot_id(&q_rec_id, 3)).await.unwrap();
+    assert!(snap3.is_some());
+    assert_eq!(snap3.unwrap().seq, 3);
 }
 
 #[tokio::test]
@@ -360,7 +379,7 @@ async fn restored_writer_reuses_its_sent_countersign() {
     // missing!
     let dec_fence = DecisionRow {
         kind: "decision".to_string(),
-        state: DecisionState::Deciding.as_str().to_string(),
+        state: DecisionState::Deciding,
         agreement: q_rec_id.clone(),
         quote_id: quote.quote_id.clone(),
         reason: None,
@@ -435,5 +454,148 @@ async fn restored_writer_reuses_its_sent_countersign() {
     // Decision row ends agreed
     let dec_row: DecisionRow =
         get_row(&f.host, LEDGER, &decision_id(&quote.quote_id)).await.unwrap().unwrap();
-    assert_eq!(dec_row.state, DecisionState::Agreed.as_str());
+    assert_eq!(dec_row.state, DecisionState::Agreed);
+}
+
+fn make_dummy_chat_messages(start_seq: u64, end_seq: u64, now: u64) -> Vec<serde_json::Value> {
+    (start_seq..=end_seq)
+        .map(|seq| {
+            json!({
+                "id": format!("msg_{seq}"),
+                "conversation": "conv_1",
+                "author": "did:key:someone",
+                "direction": "incoming",
+                "sender_timestamp_ms": (now * 1000) as i64,
+                "content_type": "text/plain",
+                "languages": ["en"],
+                "body_encoding": "utf8",
+                "restored": false,
+                "state": "delivered",
+                "stored_at_secs": now as i64,
+                "visible_seq": seq,
+                "verified": true,
+                "body": "chat message",
+            })
+        })
+        .collect()
+}
+
+fn empty_agreement_row(
+    q_rec_id: &str,
+    quote: &QuotePayload,
+    cp_did: &str,
+    master_did: &str,
+    now: u64,
+) -> AgreementRow {
+    AgreementRow {
+        quote_record_id: q_rec_id.to_string(),
+        quote_id: quote.quote_id.clone(),
+        conversation: "conv_1".to_string(),
+        counterparty_did: cp_did.to_string(),
+        quote_author_did: master_did.to_string(),
+        terms: quote.terms.clone(),
+        agreed_at_secs: None,
+        counterparty: None,
+        quote_author: None,
+        state: None,
+        state_reason: None,
+        cancel_reason: None,
+        seq: None,
+        commitments: vec![],
+        updated_at_secs: now,
+    }
+}
+
+#[tokio::test]
+async fn restored_writer_paginates_to_find_countersign_after_sync_window() {
+    let f = fixture();
+    let now = f.host.now();
+    let cp = Identity::generate().expect("cp");
+    let cp_did = substrate::derive_did_key(&cp.public_key());
+
+    let (quote, q_rec_id, _) = build_test_quote(&f.master, &cp_did, now);
+    let (cs_json, cs_rec_id) =
+        make_countersign_envelope(&f.master, &q_rec_id, &cp_did, &quote.terms, now);
+
+    let dec_fence = DecisionRow {
+        kind: "decision".to_string(),
+        state: DecisionState::Deciding,
+        agreement: q_rec_id.clone(),
+        quote_id: quote.quote_id.clone(),
+        reason: None,
+        created_at_secs: now,
+    };
+    put_row(&f.host, LEDGER, &decision_id(&quote.quote_id), &dec_fence).await.unwrap();
+
+    let initial_row = empty_agreement_row(&q_rec_id, &quote, &cp_did, &f.master_did, now);
+    put_row(&f.host, AGREEMENTS, &q_rec_id, &initial_row).await.unwrap();
+
+    let cs_card_body =
+        card::card_body(RECORD_AGREEMENT_RECEIPT, AGREEMENT_RECEIPT_VERSION, &cs_json)
+            .expect("card body");
+
+    f.host.on_call("conversation", "conversation.changes", move |params| {
+        let input: ChangesInput = serde_json::from_str(&params).expect("parse changes input");
+        let after_seq = input.after_seq.unwrap_or(0);
+        if after_seq == 0 {
+            let msgs = make_dummy_chat_messages(1, 500, now);
+            Ok(json!({
+                "result": {
+                    "messages": msgs,
+                    "last_seq": 501,
+                    "kind": "direct"
+                }
+            })
+            .to_string())
+        } else if after_seq == 500 {
+            Ok(json!({
+                "result": {
+                    "messages": [
+                        {
+                            "id": "msg_sent_cs_paged",
+                            "conversation": "conv_1",
+                            "author": "did:key:author",
+                            "direction": "outgoing",
+                            "sender_timestamp_ms": (now * 1000) as i64,
+                            "content_type": CARD_CONTENT_TYPE,
+                            "languages": ["en"],
+                            "body_encoding": "utf8",
+                            "restored": false,
+                            "state": "delivered",
+                            "stored_at_secs": now as i64,
+                            "visible_seq": 501,
+                            "verified": true,
+                            "body": cs_card_body,
+                        }
+                    ],
+                    "last_seq": 501,
+                    "kind": "direct"
+                }
+            })
+            .to_string())
+        } else {
+            Ok(json!({
+                "result": {
+                    "messages": [],
+                    "last_seq": 501,
+                    "kind": "direct"
+                }
+            })
+            .to_string())
+        }
+    });
+
+    recover_deciding_rows(&f.host, now).await.unwrap();
+
+    let cs_row: CountersignRow =
+        get_row(&f.host, LEDGER, &countersign_id(&q_rec_id)).await.unwrap().unwrap();
+    assert_eq!(cs_row.half.record_id, cs_rec_id);
+    assert_eq!(cs_row.message_id.as_deref(), Some("msg_sent_cs_paged"));
+
+    let agr_row: AgreementRow = get_row(&f.host, AGREEMENTS, &q_rec_id).await.unwrap().unwrap();
+    assert_eq!(agr_row.quote_author.unwrap().record_id, cs_rec_id);
+
+    let dec_row: DecisionRow =
+        get_row(&f.host, LEDGER, &decision_id(&quote.quote_id)).await.unwrap().unwrap();
+    assert_eq!(dec_row.state, DecisionState::Agreed);
 }

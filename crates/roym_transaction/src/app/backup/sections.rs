@@ -18,7 +18,7 @@ use super::{
     super::{
         AGREEMENT_PROGRESS, AgreementRow, FULFILMENTS, FulfilmentsRow, LEDGER, PAYMENTS,
         PaymentsRow,
-        decide::{CountersignRow, DecisionRow, RefusedRow, SnapshotRow},
+        decide::{CountersignRow, DecisionRow, DecisionState, RefusedRow, SnapshotRow},
         decline_ops::DeclineRow,
         hold::{HoldLedgerRow, SeatLedgerRow},
         ledger::LedgerRow,
@@ -438,11 +438,8 @@ fn validate_non_seat_entry(
                 row.agreement
             )));
         }
-        if row.state != "deciding" && row.state != "agreed" && row.state != "not-formed" {
-            return Err(Response::invalid_params(format!(
-                "ledger '{id}': unknown decision state '{}'",
-                row.state
-            )));
+        match row.state {
+            DecisionState::Deciding | DecisionState::Agreed | DecisionState::NotFormed => {}
         }
         Ok(Some(ValidatedLedgerRow::Decision(row)))
     } else if id.starts_with("countersign:") {

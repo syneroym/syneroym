@@ -600,7 +600,7 @@ async fn file_agreement_receipt_card<H: AppHost>(
                 let dec_key = decide::decision_id(&q_payload.quote_id);
                 if let Ok(Some(dec)) =
                     get_row::<decide::DecisionRow, _>(host, LEDGER, &dec_key).await
-                    && dec.state == decide::DecisionState::Deciding.as_str()
+                    && dec.state == decide::DecisionState::Deciding
                 {
                     false
                 } else {

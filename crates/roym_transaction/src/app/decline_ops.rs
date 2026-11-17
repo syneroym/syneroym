@@ -144,74 +144,21 @@ pub(crate) async fn decline_at<H: AppHost>(
 
     // Idempotent through fence row decline:<deal>
     let dec_key = decline_id(&deal);
-    if let Ok(Some(mut existing)) = get_row::<DeclineRow, _>(host, LEDGER, &dec_key).await {
-        if existing.message_id.is_none() {
-            let (msg_id, _send_state, send_err) = send_card_and_file(
-                host,
-                &conversation,
-                RECORD_DEAL_DECLINE,
-                DEAL_DECLINE_VERSION,
-                &existing.envelope,
-                now,
-                None,
-            )
+    if let Ok(Some(existing)) = get_row::<DeclineRow, _>(host, LEDGER, &dec_key).await {
+        return repeat_decline(host, &dec_key, &conversation, existing, &deal, input.note, now)
             .await;
-            if let Some(err) = send_err {
-                return Err(Response::internal_error(format!(
-                    "failed to send decline card: {err:?}"
-                )));
-            }
-            if !msg_id.is_empty() {
-                existing.message_id = Some(msg_id);
-                put_row(host, LEDGER, &dec_key, &existing)
-                    .await
-                    .map_err(Response::internal_error)?;
-            }
-        }
-        mark_target_declined(host, &deal, &input.note, now).await?;
-        return Ok(DealDeclineOutput {
-            declines: existing.declines,
-            deal: existing.deal,
-            record_id: existing.record_id,
-            declined: true,
-            note: input.note,
-        });
     }
 
-    let reason = match &input.note {
-        Some(n) => {
-            let lang_tag = input.lang.as_deref().unwrap_or("en");
-            let lang = LangTag::parse_canonical(lang_tag)
-                .map_err(|e| Response::invalid_params(format!("invalid lang tag: {e}")))?;
-            Some(LocalText::plain(lang, n.clone()))
-        }
-        None => None,
-    };
-
-    let payload = DealDeclinePayload {
-        declines: input.declines.clone(),
-        deal: deal.clone(),
-        conversation: conversation.clone(),
-        reason,
-    };
-    let payload_str =
-        serde_json::to_string(&payload).map_err(|e| Response::internal_error(e.to_string()))?;
-
-    let draft = syneroym_app_host::types::signing::RecordDraft {
-        version: DEAL_DECLINE_VERSION,
-        record_type: RECORD_DEAL_DECLINE.to_string(),
-        subject: input.declines.clone(),
-        payload: payload_str,
-        expires_at_secs: None,
-        supersedes: None,
-    };
-
-    let envelope_json = AppSigning::sign_record(host, draft, principal)
-        .await
-        .map_err(|e| Response::internal_error(e.to_string()))?;
-    let envelope =
-        Envelope::from_json(&envelope_json).map_err(|e| Response::internal_error(e.to_string()))?;
-    let record_id = envelope.record_id().map_err(|e| Response::internal_error(e.to_string()))?;
+    let (envelope_json, record_id) = build_and_sign_decline(
+        host,
+        principal,
+        &input.declines,
+        &deal,
+        &conversation,
+        input.note.as_deref(),
+        input.lang.as_deref(),
+    )
+    .await?;
 
     let mut decline_row = DeclineRow {
         kind: "decline".to_string(),
@@ -236,14 +183,8 @@ pub(crate) async fn decline_at<H: AppHost>(
     if outcome.is_some() {
         // Race: another caller claimed the fence row
         if let Ok(Some(existing)) = get_row::<DeclineRow, _>(host, LEDGER, &dec_key).await {
-            mark_target_declined(host, &deal, &input.note, now).await?;
-            return Ok(DealDeclineOutput {
-                declines: existing.declines,
-                deal: existing.deal,
-                record_id: existing.record_id,
-                declined: true,
-                note: input.note,
-            });
+            return repeat_decline(host, &dec_key, &conversation, existing, &deal, input.note, now)
+                .await;
         }
     }
 
@@ -278,6 +219,90 @@ pub(crate) async fn decline_at<H: AppHost>(
         declined: true,
         note: input.note,
     })
+}
+
+async fn repeat_decline<H: AppHost>(
+    host: &H,
+    dec_key: &str,
+    conversation: &str,
+    mut existing: DeclineRow,
+    deal: &str,
+    note: Option<String>,
+    now: u64,
+) -> Reply<DealDeclineOutput> {
+    if existing.message_id.is_none() {
+        let (msg_id, _send_state, send_err) = send_card_and_file(
+            host,
+            conversation,
+            RECORD_DEAL_DECLINE,
+            DEAL_DECLINE_VERSION,
+            &existing.envelope,
+            now,
+            None,
+        )
+        .await;
+        if let Some(err) = send_err {
+            return Err(Response::internal_error(format!("failed to send decline card: {err:?}")));
+        }
+        if !msg_id.is_empty() {
+            existing.message_id = Some(msg_id);
+            put_row(host, LEDGER, dec_key, &existing).await.map_err(Response::internal_error)?;
+        }
+    }
+    mark_target_declined(host, deal, &note, now).await?;
+    Ok(DealDeclineOutput {
+        declines: existing.declines,
+        deal: existing.deal,
+        record_id: existing.record_id,
+        declined: true,
+        note,
+    })
+}
+
+async fn build_and_sign_decline<H: AppHost>(
+    host: &H,
+    principal: syneroym_app_host::types::signing::Principal,
+    declines: &str,
+    deal: &str,
+    conversation: &str,
+    note: Option<&str>,
+    lang: Option<&str>,
+) -> Reply<(String, String)> {
+    let reason = match note {
+        Some(n) => {
+            let lang_tag = lang.unwrap_or("en");
+            let lang = LangTag::parse_canonical(lang_tag)
+                .map_err(|e| Response::invalid_params(format!("invalid lang tag: {e}")))?;
+            Some(LocalText::plain(lang, n.to_string()))
+        }
+        None => None,
+    };
+
+    let payload = DealDeclinePayload {
+        declines: declines.to_string(),
+        deal: deal.to_string(),
+        conversation: conversation.to_string(),
+        reason,
+    };
+    let payload_str =
+        serde_json::to_string(&payload).map_err(|e| Response::internal_error(e.to_string()))?;
+
+    let draft = syneroym_app_host::types::signing::RecordDraft {
+        version: DEAL_DECLINE_VERSION,
+        record_type: RECORD_DEAL_DECLINE.to_string(),
+        subject: declines.to_string(),
+        payload: payload_str,
+        expires_at_secs: None,
+        supersedes: None,
+    };
+
+    let envelope_json = AppSigning::sign_record(host, draft, principal)
+        .await
+        .map_err(|e| Response::internal_error(e.to_string()))?;
+    let envelope =
+        Envelope::from_json(&envelope_json).map_err(|e| Response::internal_error(e.to_string()))?;
+    let record_id = envelope.record_id().map_err(|e| Response::internal_error(e.to_string()))?;
+    Ok((envelope_json, record_id))
 }
 
 async fn mark_target_declined<H: AppHost>(
@@ -340,10 +365,10 @@ pub(crate) async fn has_unrefused_counterparty_half_for_enquiry<H: AppHost>(
         paging::envelope_history(host, ENQUIRY_HISTORY, "enquiry_id", enquiry_id).await
     {
         for env_json in history {
-            if let Ok(env) = Envelope::from_json(&env_json) {
-                if let Ok(rid) = env.record_id() {
-                    record_ids.insert(rid);
-                }
+            if let Ok(env) = Envelope::from_json(&env_json)
+                && let Ok(rid) = env.record_id()
+            {
+                record_ids.insert(rid);
             }
         }
     }
