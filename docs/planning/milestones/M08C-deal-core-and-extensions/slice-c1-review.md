@@ -1633,3 +1633,34 @@ Confirmed fixed: R23, R24.
   (or add a second test) for the crash-before-the-first-write case and check
   both fields.
   *Status:* Fixed (721b1348). Proof: cancel_before_the_decision_row_is_final_is_kept failed with 'assertion failed: agr.quote_author.is_some()' before fix, passed after populating quote_author and agreed_at_secs from half when missing in seq > 1 branch.
+
+## Code review round 6 — Claude Opus 5.5 (Claude Code), 2026-11-17
+
+Reviewed sha: `7062a18f` (code fix in `721b1348`). This round checks the fix
+for R25 and the CI run on that sha.
+
+**Summary:** R25 is confirmed fixed. CI is green. No new findings.
+**Open after round 6: 0 (0 blocker, 0 major, 0 minor).**
+
+### How this was checked
+
+- `gh pr checks 367` on `7062a18f`: every check passes ("Lints, licenses &
+  checks", Tests 1/6 to 6/6, Playwright E2E, CLA, "CI Pipeline"). The PR is
+  still a draft.
+- `cargo nextest run -p syneroym-roym-transaction`: 34 passed.
+- I did not run the full suite or `mise run verify`.
+
+### Round-5 items
+
+Confirmed fixed: R25.
+
+- R25: in the `seq > 1` branch, `mark_decision_agreed` now fills
+  `agreed_at_secs` and `quote_author` from `half` when they are empty. It
+  keeps `state`, `seq` and `commitments`, and writes the agreement row before
+  the decision row. `cancel_before_the_decision_row_is_final_is_kept` now
+  uses the round-5 case (a crash on the first agreement-row write, then a
+  cancel). It checks that the crash fired and that both fields are set.
+  This test replaced the round-4 setup. The `seq > 1` branch is still
+  covered, so no test is needed for the old setup.
+
+C1a has no open review items.
