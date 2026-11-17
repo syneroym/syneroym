@@ -197,7 +197,7 @@ test.describe('Roym Hub', () => {
     await expect(page.locator('.search-hit')).toHaveCount(1);
   });
 
-  test('3. card gallery: seven known types and the unknown fallback render', async ({ page }) => {
+  test('3. card gallery: eight known types and the unknown fallback render', async ({ page }) => {
     await page.goto(HUB_URL);
     await page.waitForLoadState('networkidle');
     await loginWithDelegatedKey(page);
@@ -213,6 +213,7 @@ test.describe('Roym Hub', () => {
       'payment-request',
       'payment-acknowledgement',
       'fulfilment-receipt',
+      'deal-decline',
     ];
     for (const type of knownTypes) {
       await expect(page.locator(`.card-${type}`)).toHaveCount(1);
@@ -1122,7 +1123,7 @@ test.describe('Roym Hub', () => {
     await expect(quoteCard.locator('.decline-quote-button')).toHaveCount(0);
   });
 
-  test('31. declining a quote shows the "the other side is not told" sentence and hides accept', async ({ page }) => {
+  test('31. declining a quote shows the "They will see that you declined" sentence and hides accept', async ({ page }) => {
     await page.goto(HUB_URL);
     await page.waitForLoadState('networkidle');
 
@@ -1168,8 +1169,7 @@ test.describe('Roym Hub', () => {
 
     const declineNote = await host.locator('.decline-dialog .decline-note').innerText();
     expect(declineNote).toBe(
-      'This only changes what you see. The other side is not told, and no ' +
-        'record is signed. Send them a message if you want them to know.',
+      'They will see that you declined. To ask for changes, send a message instead.',
     );
 
     await page.evaluate(() => {

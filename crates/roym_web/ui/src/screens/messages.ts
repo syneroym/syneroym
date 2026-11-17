@@ -701,8 +701,8 @@ export function openDeclineDialog(anchor: HTMLElement, card: CardRow, refresh: (
   confirmBtn.onclick = async () => {
     confirmBtn.disabled = true;
     try {
-      await call("quote.decline", {
-        quote_record_id: card.record_id,
+      await call("deal.decline", {
+        declines: card.record_id,
         note: noteInput.value.trim() || undefined,
       });
       await refresh();

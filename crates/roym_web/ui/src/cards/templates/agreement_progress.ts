@@ -56,6 +56,9 @@ const COMMITMENT_STATE_WORDS = new Map<string, string>([
 const CONFLICT_SENTENCES = new Map<string, string>([
   ["slot-taken", messageId("progress-conflict-slot-taken")],
   ["slot-unavailable", messageId("progress-conflict-slot-unavailable")],
+  ["quote-superseded", messageId("quote-superseded")],
+  ["quote-expired", messageId("quote-expired")],
+  ["progress-fork", messageId("progress-fork")],
 ]);
 
 function trackSentence(track: string | undefined, claimed: string, acknowledged: string): string | undefined {

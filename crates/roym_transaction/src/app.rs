@@ -3,6 +3,7 @@
 pub mod agreement_ops;
 pub mod backup;
 pub mod decide;
+pub mod decline_ops;
 pub mod enquiry_ops;
 pub mod fulfilment_ops;
 pub mod hold;
@@ -334,7 +335,12 @@ pub(crate) async fn ensure_collections<H: AppHost>(host: &H) -> Result<(), Strin
     )
     .await?;
     ensure_coll(host, QUOTE_HISTORY, &[]).await?;
-    ensure_coll(host, AGREEMENTS, &[idx("conversation", IndexType::String)]).await?;
+    ensure_coll(
+        host,
+        AGREEMENTS,
+        &[idx("conversation", IndexType::String), idx("quote_id", IndexType::String)],
+    )
+    .await?;
     ensure_coll(
         host,
         CARDS,

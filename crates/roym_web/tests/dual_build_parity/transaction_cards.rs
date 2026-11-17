@@ -127,7 +127,7 @@ async fn scenario_140b_sync_at_cap_leaves_watermark_parity() {
 }
 
 #[tokio::test]
-async fn scenario_140c_quote_decline_parity() {
+async fn scenario_140c_deal_decline_parity() {
     let h = harness().await;
     enrol_signing(&h, "conversation").await;
     enrol_signing(&h, "transaction").await;
@@ -161,15 +161,15 @@ async fn scenario_140c_quote_decline_parity() {
 
     let (dw, dn) = both_rpc(
         &h,
-        "quote.decline",
+        "deal.decline",
         json!({
-            "quote_record_id": q_rec_id,
+            "declines": q_rec_id,
             "note": "Price too high for current budget",
         }),
     )
     .await;
     assert_eq!(stripped(&dw), stripped(&dn));
-    assert_eq!(dw["result"]["quote_record_id"], q_rec_id);
+    assert!(dw["result"]["record_id"].is_string());
 
     let q_id = transaction::derive_quote_id(&conv, &peer_did(), 1).unwrap();
     let (qg_w, qg_n) = both_rpc(&h, "quote.get", json!({ "quote_id": q_id })).await;
@@ -189,7 +189,7 @@ async fn scenario_140c_quote_decline_parity() {
     normalize_message_ids(&mut ch_n);
     assert_eq!(ch_w, ch_n);
     let msgs = ch_w["result"]["messages"].as_array().unwrap();
-    assert_eq!(msgs.len(), 2);
+    assert_eq!(msgs.len(), 3);
 
     let (mut th_w, mut th_n) =
         both_rpc(&h, "transaction.thread", json!({ "conversation": conv })).await;
@@ -629,6 +629,7 @@ async fn scenario_143_guard_transaction_verbs_local_admission() {
         ("quote.ping", json!({})),
         ("agreement.ping", json!({})),
         ("receipt.ping", json!({})),
+        ("deal.ping", json!({})),
         (
             "enquiry.set",
             json!({
@@ -653,7 +654,7 @@ async fn scenario_143_guard_transaction_verbs_local_admission() {
         ("quote.list", json!({})),
         ("quote.history", json!({ "quote_id": "quo_dummy" })),
         ("quote.verify", json!({ "envelope": peer_q_env })),
-        ("quote.decline", json!({ "quote_record_id": peer_q_rec_id })),
+        ("deal.decline", json!({ "declines": peer_q_rec_id })),
         ("agreement.accept", json!({ "quote_record_id": peer_q_rec_id })),
         ("agreement.get", json!({ "quote_record_id": peer_q_rec_id })),
         ("agreement.list", json!({})),

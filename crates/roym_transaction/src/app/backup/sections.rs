@@ -19,6 +19,7 @@ use super::{
         AGREEMENT_PROGRESS, AgreementRow, FULFILMENTS, FulfilmentsRow, LEDGER, PAYMENTS,
         PaymentsRow,
         decide::{CountersignRow, DecisionRow, SnapshotRow},
+        decline_ops::DeclineRow,
         hold::{HoldLedgerRow, SeatLedgerRow},
         ledger::LedgerRow,
         put_row,
@@ -40,6 +41,7 @@ pub(crate) enum ValidatedLedgerRow {
     Hold(HoldLedgerRow),
     Seat(SeatLedgerRow),
     Fence(LedgerRow),
+    Decline(DeclineRow),
 }
 
 pub(crate) struct ValidatedVerticalSections {
@@ -460,6 +462,25 @@ fn validate_non_seat_entry(
             )));
         }
         Ok(Some(ValidatedLedgerRow::Countersign(row)))
+    } else if id.starts_with("decline:") {
+        let row: DeclineRow = serde_json::from_value(payload).map_err(|e| {
+            Response::invalid_params(format!("ledger '{id}': invalid decline row: {e}"))
+        })?;
+        let v = syneroym_roym_core::transaction::verify_deal_decline(&row.envelope, now);
+        if !v.verified {
+            return Err(Response::invalid_params(format!(
+                "ledger '{id}': decline does not verify: {:?}",
+                v.reason
+            )));
+        }
+        let deal_from_id = id.strip_prefix("decline:").unwrap_or("");
+        if row.deal != deal_from_id {
+            return Err(Response::invalid_params(format!(
+                "ledger '{id}': deal id mismatch with row: '{}'",
+                row.deal
+            )));
+        }
+        Ok(Some(ValidatedLedgerRow::Decline(row)))
     } else if id.starts_with("payreq:") || id.starts_with("ack:") || id.starts_with("fulfil:") {
         validate_fence_entry(id, payload, quotes_by_record_id, now).map(Some)
     } else if id.starts_with("seat:") {

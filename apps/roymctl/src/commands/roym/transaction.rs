@@ -103,8 +103,7 @@ pub enum TransactionCommands {
         #[arg(long)]
         host: Option<String>,
     },
-    /// Decline a quote. A declined quote is hidden from view; the other side is
-    /// not told.
+    /// Decline a deal. A signed decline card is sent to the other side.
     Decline {
         #[arg(long)]
         quote: String,
@@ -395,12 +394,11 @@ async fn handle_decline(
     host: Option<&str>,
     ctx: RpcCtx<'_>,
 ) -> Result<()> {
-    println!("A declined quote is hidden from view; the other side is not told.");
-    let mut params = json!({ "quote_record_id": quote });
+    let mut params = json!({ "declines": quote });
     if let Some(n) = note {
         params["note"] = json!(n);
     }
-    call_and_print(ctx, gateway_url, host, "quote.decline", params).await
+    call_and_print(ctx, gateway_url, host, "deal.decline", params).await
 }
 
 /// Print a conversation's cards in three trust-tier blocks: verified,

@@ -266,7 +266,7 @@ describe("the messages screen, in Hindi", () => {
   });
 
   it("draws the decline dialog and a failure", async () => {
-    stubRpc({ "quote.decline": () => new RpcError(-32603, "Fake service error", "Other") });
+    stubRpc({ "deal.decline": () => new RpcError(-32603, "Fake service error", "Other") });
     const host = document.createElement("div");
     openDeclineDialog(host, REQUEST_CARD, async () => {});
     host.querySelector<HTMLButtonElement>("button.confirm-decline")!.click();

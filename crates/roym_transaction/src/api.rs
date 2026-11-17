@@ -14,7 +14,7 @@ use syneroym_roym_core::{
 };
 
 use crate::app::{
-    AgreementRef, HalfRecordedOutput, ListInput, agreement_ops, backup, enquiry_ops,
+    AgreementRef, HalfRecordedOutput, ListInput, agreement_ops, backup, decline_ops, enquiry_ops,
     fulfilment_ops, payment_ops, progress_ops, quote_ops, sync, thread,
 };
 
@@ -29,6 +29,7 @@ syneroym_roym_core::service_methods! {
     "receipt.ping": ping [NoParams => PingOutput],
     "payment.ping": ping [NoParams => PingOutput],
     "fulfilment.ping": ping [NoParams => PingOutput],
+    "deal.ping": ping [NoParams => PingOutput],
 
     "enquiry.set": enquiry_ops::set [enquiry_ops::EnquirySetInput => enquiry_ops::EnquirySetOutput],
     "enquiry.get": enquiry_ops::get [enquiry_ops::EnquiryKeyInput => Option<enquiry_ops::EnquiryView>],
@@ -41,7 +42,8 @@ syneroym_roym_core::service_methods! {
     "quote.list": quote_ops::list [ListInput => quote_ops::QuoteListOutput],
     "quote.history": quote_ops::history [quote_ops::QuoteKeyInput => EnvelopeHistoryOutput],
     "quote.verify": quote_ops::verify [VerifyInput => RecordVerdict<QuotePayload>],
-    "quote.decline": quote_ops::decline [quote_ops::QuoteDeclineInput => quote_ops::QuoteDeclineOutput],
+
+    "deal.decline": decline_ops::decline [decline_ops::DealDeclineInput => decline_ops::DealDeclineOutput],
 
     "agreement.accept": agreement_ops::accept [agreement_ops::AgreementAcceptInput => agreement_ops::AgreementAcceptOutput],
     "agreement.get": agreement_ops::get [agreement_ops::QuoteRecordInput => Option<agreement_ops::AgreementView>],
