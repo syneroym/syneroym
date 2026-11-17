@@ -16,7 +16,7 @@ use syneroym_roym_core::{
 };
 
 use super::{
-    AGREEMENT_PROGRESS, AGREEMENTS, AgreementRow, EVENT_PROGRESS, LEDGER,
+    AGREEMENT_PROGRESS, AGREEMENTS, AgreementRow, EVENT_PROGRESS, LEDGER, get_row,
     hold::{Reservations, ReserveOutcome, SeatLedger},
     progress, put_row, send_card_and_file,
 };
@@ -204,15 +204,23 @@ async fn mark_decision_agreed<H: AppHost>(
     commitments: Vec<CommitmentProgress>,
     now: u64,
 ) -> Result<bool, String> {
-    row.state = Some(AgreementState::Agreed);
-    row.state_reason = None;
-    row.cancel_reason = None;
-    row.seq = Some(1);
-    row.commitments = commitments;
-    row.agreed_at_secs = Some(half.issued_at_secs);
-    row.quote_author = Some(half);
-    row.updated_at_secs = now;
-    put_row(host, AGREEMENTS, &row.quote_record_id, row).await?;
+    let stored: Option<AgreementRow> = get_row(host, AGREEMENTS, &row.quote_record_id).await?;
+    let seq = stored.as_ref().and_then(|r| r.seq).unwrap_or(0);
+    if seq > 1 {
+        if let Some(s) = stored {
+            *row = s;
+        }
+    } else {
+        row.state = Some(AgreementState::Agreed);
+        row.state_reason = None;
+        row.cancel_reason = None;
+        row.seq = Some(1);
+        row.commitments = commitments;
+        row.agreed_at_secs = Some(half.issued_at_secs);
+        row.quote_author = Some(half);
+        row.updated_at_secs = now;
+        put_row(host, AGREEMENTS, &row.quote_record_id, row).await?;
+    }
 
     let dec_agreed = DecisionRow {
         kind: "decision".to_string(),

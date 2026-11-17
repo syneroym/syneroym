@@ -666,6 +666,7 @@ Slice C7 implements R1 row 4: signed request, quote, and agreement receipts, the
 | **Decline of a deal is local and unsigned** | Signed `deal-decline` record, cards, and refusal checks arrive in C1b. | M08C C1b | `crates/roym_core/src/transaction/decline.rs`, `crates/roym_transaction/src/app/decline_ops.rs` |
 | **Nobody can mark work as started** | `booking.start` was removed in C1a with no stand-in; scheduling steps arrive in C3a and C3b. | M08C C3b | `crates/roym_transaction/src/app/progress_ops.rs` |
 | **The Hub's quote form builds only one service and one payment** | The Hub quote form builds a single goods-or-service commitment and a single currency commitment; general multi-commitment builder lands in C6. | M08C C6 | `crates/roym_web/ui/src/screens/quote_terms.ts` |
+| **Decision states in `decide.rs` are compared as plain strings** | `DecisionState` enum replacing string comparisons (`"agreed"`, `"not-formed"`, `"deciding"`) in `decide.rs` arrives in C1b alongside refusal states. | M08C C1b | `crates/roym_transaction/src/app/decide.rs:192` |
 
 ## 13. Developer tooling & build pipeline
 

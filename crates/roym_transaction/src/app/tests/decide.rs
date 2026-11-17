@@ -16,7 +16,7 @@ use syneroym_roym_core::{
     },
 };
 
-use super::fixture;
+use super::{TestFixture, fixture};
 use crate::app::{
     AGREEMENT_PROGRESS, AGREEMENTS, AgreementRow, LEDGER,
     decide::{
@@ -210,9 +210,7 @@ fn unformed_agreement_row(
     }
 }
 
-#[tokio::test]
-async fn writer_countersigns_in_sync_and_sends_snapshot_one() {
-    let f = fixture();
+fn setup_service_agreement(f: &TestFixture) -> (QuotePayload, String, AgreementRow, u64) {
     let cp = Identity::generate().expect("generate cp");
     let cp_did = substrate::derive_did_key(&cp.public_key());
     let now = f.host.now();
@@ -227,7 +225,7 @@ async fn writer_countersigns_in_sync_and_sends_snapshot_one() {
     let (_cp_receipt, cp_rec_id, cp_envelope) =
         make_counterparty_receipt(&cp, &f.master_did, &quote_rec_id, &quote.terms, now);
 
-    let mut row = unformed_agreement_row(
+    let row = unformed_agreement_row(
         &quote_rec_id,
         &quote,
         &f.master_did,
@@ -236,6 +234,13 @@ async fn writer_countersigns_in_sync_and_sends_snapshot_one() {
         &cp_envelope,
         now,
     );
+    (quote, quote_rec_id, row, now)
+}
+
+#[tokio::test]
+async fn writer_countersigns_in_sync_and_sends_snapshot_one() {
+    let f = fixture();
+    let (quote, quote_rec_id, mut row, now) = setup_service_agreement(&f);
 
     let res = decide::run(&f.host, &mut row, &quote, now).await;
     assert_eq!(res, Ok(true));
@@ -325,29 +330,7 @@ async fn losing_the_last_seat_ends_not_formed() {
 #[tokio::test]
 async fn repeat_branch_reuses_stored_snapshot_one() {
     let f = fixture();
-    let cp = Identity::generate().expect("generate cp");
-    let cp_did = substrate::derive_did_key(&cp.public_key());
-    let now = f.host.now();
-
-    let (quote, quote_rec_id, _) = build_and_sign_author_quote(
-        &f.master,
-        &cp_did,
-        vec![author_service_commitment("c1")],
-        now + 3600,
-        now,
-    );
-    let (_cp_receipt, cp_rec_id, cp_envelope) =
-        make_counterparty_receipt(&cp, &f.master_did, &quote_rec_id, &quote.terms, now);
-
-    let mut row = unformed_agreement_row(
-        &quote_rec_id,
-        &quote,
-        &f.master_did,
-        &cp_did,
-        &cp_rec_id,
-        &cp_envelope,
-        now,
-    );
+    let (quote, quote_rec_id, mut row, now) = setup_service_agreement(&f);
 
     // Pre-populate decision row as deciding
     let dec_key = decision_id(&quote.quote_id);
@@ -375,34 +358,12 @@ async fn repeat_branch_reuses_stored_snapshot_one() {
 #[tokio::test]
 async fn send_error_stops_decision_row_and_retries_on_next_sync() {
     let f = fixture();
-    let cp = Identity::generate().expect("generate cp");
-    let cp_did = substrate::derive_did_key(&cp.public_key());
-    let now = f.host.now();
-
-    let (quote, quote_rec_id, _) = build_and_sign_author_quote(
-        &f.master,
-        &cp_did,
-        vec![author_service_commitment("c1")],
-        now + 3600,
-        now,
-    );
-    let (_cp_receipt, cp_rec_id, cp_envelope) =
-        make_counterparty_receipt(&cp, &f.master_did, &quote_rec_id, &quote.terms, now);
+    let (quote, _quote_rec_id, mut row, now) = setup_service_agreement(&f);
 
     // 1. Transport error triggers retry (returns Err)
     f.host.on_call("conversation", "send", |_| {
         Err(ProxyError::Transport("connection reset by peer".to_string()))
     });
-
-    let mut row = unformed_agreement_row(
-        &quote_rec_id,
-        &quote,
-        &f.master_did,
-        &cp_did,
-        &cp_rec_id,
-        &cp_envelope,
-        now,
-    );
 
     let res = decide::run(&f.host, &mut row, &quote, now).await;
     assert!(res.is_err(), "transport error must bubble up as Err for retry");
@@ -645,29 +606,7 @@ async fn transition_retries_and_advances_when_snapshot_key_already_exists() {
 #[tokio::test]
 async fn repeat_after_the_agreement_moved_keeps_its_state() {
     let f = fixture();
-    let cp = Identity::generate().expect("generate cp");
-    let cp_did = substrate::derive_did_key(&cp.public_key());
-    let now = f.host.now();
-
-    let (quote, quote_rec_id, _) = build_and_sign_author_quote(
-        &f.master,
-        &cp_did,
-        vec![author_service_commitment("c1")],
-        now + 3600,
-        now,
-    );
-    let (_cp_receipt, cp_rec_id, cp_envelope) =
-        make_counterparty_receipt(&cp, &f.master_did, &quote_rec_id, &quote.terms, now);
-
-    let mut row = unformed_agreement_row(
-        &quote_rec_id,
-        &quote,
-        &f.master_did,
-        &cp_did,
-        &cp_rec_id,
-        &cp_envelope,
-        now,
-    );
+    let (quote, quote_rec_id, mut row, now) = setup_service_agreement(&f);
     crate::app::put_row(&f.host, AGREEMENTS, &quote_rec_id, &row).await.unwrap();
 
     let agreed = decide::run(&f.host, &mut row, &quote, now).await.expect("initial decide");
@@ -699,29 +638,7 @@ async fn repeat_after_the_agreement_moved_keeps_its_state() {
 #[tokio::test]
 async fn crash_before_the_decision_row_is_final_is_finished_on_the_next_sync() {
     let f = fixture();
-    let cp = Identity::generate().expect("generate cp");
-    let cp_did = substrate::derive_did_key(&cp.public_key());
-    let now = f.host.now();
-
-    let (quote, quote_rec_id, _) = build_and_sign_author_quote(
-        &f.master,
-        &cp_did,
-        vec![author_service_commitment("c1")],
-        now + 3600,
-        now,
-    );
-    let (_cp_receipt, cp_rec_id, cp_envelope) =
-        make_counterparty_receipt(&cp, &f.master_did, &quote_rec_id, &quote.terms, now);
-
-    let mut row = unformed_agreement_row(
-        &quote_rec_id,
-        &quote,
-        &f.master_did,
-        &cp_did,
-        &cp_rec_id,
-        &cp_envelope,
-        now,
-    );
+    let (quote, quote_rec_id, mut row, now) = setup_service_agreement(&f);
     crate::app::put_row(&f.host, AGREEMENTS, &quote_rec_id, &row).await.unwrap();
 
     // Inject crash when writing to agreements collection
@@ -748,4 +665,50 @@ async fn crash_before_the_decision_row_is_final_is_finished_on_the_next_sync() {
     let dec: Option<DecisionRow> =
         crate::app::get_row(&f.host, LEDGER, &decision_id(&quote.quote_id)).await.unwrap();
     assert_eq!(dec.expect("decision row exists").state, "agreed");
+}
+
+#[tokio::test]
+async fn cancel_before_the_decision_row_is_final_is_kept() {
+    let f = fixture();
+    let (quote, quote_rec_id, mut row, now) = setup_service_agreement(&f);
+    crate::app::put_row(&f.host, AGREEMENTS, &quote_rec_id, &row).await.unwrap();
+
+    let agreed = decide::run(&f.host, &mut row, &quote, now).await.expect("initial decide");
+    assert!(agreed);
+
+    // Simulate crash right before the decision row was marked agreed:
+    // decision row is left as "deciding"
+    let dec_key = decision_id(&quote.quote_id);
+    let deciding = DecisionRow {
+        kind: "decision".to_string(),
+        state: "deciding".to_string(),
+        agreement: quote_rec_id.clone(),
+        quote_id: quote.quote_id.clone(),
+        reason: None,
+        created_at_secs: now,
+    };
+    crate::app::put_row(&f.host, LEDGER, &dec_key, &deciding).await.unwrap();
+
+    let cancelled = progress_ops::transition_at(
+        &f.host,
+        &quote_rec_id,
+        AgreementEvent::Cancel { reason: syneroym_roym_core::progress::CancelReason::Other },
+        now,
+    )
+    .await
+    .expect("cancel transition");
+    assert_eq!(cancelled.state, Some(AgreementState::Cancelled));
+    assert_eq!(cancelled.seq, Some(2));
+
+    let res = decide::run(&f.host, &mut row, &quote, now).await.expect("repeat decide");
+    assert!(res);
+
+    let stored: Option<AgreementRow> =
+        crate::app::get_row(&f.host, AGREEMENTS, &quote_rec_id).await.unwrap();
+    let agr = stored.expect("agreement exists");
+    assert_eq!(agr.state, Some(AgreementState::Cancelled));
+    assert_eq!(agr.seq, Some(2));
+
+    let dec: Option<DecisionRow> = crate::app::get_row(&f.host, LEDGER, &dec_key).await.unwrap();
+    assert_eq!(dec.expect("decision exists").state, "agreed");
 }
