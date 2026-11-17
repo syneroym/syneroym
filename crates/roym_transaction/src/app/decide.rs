@@ -21,14 +21,26 @@ use super::{
     progress, put_row, send_card_and_file,
 };
 
+pub(crate) mod recover;
 pub(crate) mod rows;
 
+pub(crate) use recover::*;
 pub(crate) use rows::*;
 
 pub(crate) async fn run<H: AppHost>(
     host: &H,
     row: &mut AgreementRow,
     quote: &QuotePayload,
+    now: u64,
+) -> Result<bool, String> {
+    run_with_reservations(host, row, quote, SeatLedger, now).await
+}
+
+pub(crate) async fn run_with_reservations<H: AppHost, R: Reservations>(
+    host: &H,
+    row: &mut AgreementRow,
+    quote: &QuotePayload,
+    reservations: R,
     now: u64,
 ) -> Result<bool, String> {
     let (cp_issuer, cp_record_id) = match row.counterparty.as_ref() {
@@ -49,12 +61,12 @@ pub(crate) async fn run<H: AppHost>(
 
     if let Some(dec) = &existing_dec {
         if dec.agreement == row.quote_record_id {
-            return continue_decision(host, row, quote, dec, now).await;
+            return continue_decision(host, row, dec, &reservations, now).await;
         }
         return handle_refusal(host, row, quote, &cp_record_id, "quote-already-agreed", now).await;
     }
     if existing_cs.is_some() {
-        return repeat_path(host, row, quote, now).await;
+        return repeat_path(host, row, &reservations, now).await;
     }
 
     if cp_issuer != row.counterparty_did {
@@ -74,7 +86,7 @@ pub(crate) async fn run<H: AppHost>(
     if !claim_decision_fence(host, row, quote, &dec_key, now).await? {
         if let Ok(Some(existing_dec)) = get_row::<DecisionRow, _>(host, LEDGER, &dec_key).await {
             if existing_dec.agreement == row.quote_record_id {
-                return continue_decision(host, row, quote, &existing_dec, now).await;
+                return continue_decision(host, row, &existing_dec, &reservations, now).await;
             }
             return handle_refusal(host, row, quote, &cp_record_id, "quote-already-agreed", now)
                 .await;
@@ -83,19 +95,20 @@ pub(crate) async fn run<H: AppHost>(
     }
 
     // 3. Reserve holds through Reservations
-    let (reserved, failed) = reserve_author_holds(host, row, now).await?;
+    let (reserved, failed) = reserve_author_holds(host, row, &reservations, now).await?;
     if let Some(reason) = failed {
-        return handle_not_formed(host, row, quote, &reserved, reason, now).await;
+        return handle_not_formed(host, row, &reservations, &reserved, reason, now).await;
     }
 
     // 4. Confirm holds
-    let reservations = SeatLedger;
     for cid in &reserved {
-        reservations.confirm(host, &row.quote_record_id, cid).await?;
+        if let Err(reason) = reservations.confirm(host, &row.quote_record_id, cid).await {
+            return handle_not_formed(host, row, &reservations, &reserved, &reason, now).await;
+        }
     }
 
     // 5-7. Store countersign, snapshots, send cards, and complete agreed state
-    finalize_agreed_deal(host, row, quote, now).await
+    finalize_agreed_deal(host, row, now).await
 }
 
 async fn handle_refusal<H: AppHost>(
@@ -222,25 +235,24 @@ async fn ensure_snapshot_sent<H: AppHost>(
     Ok(true)
 }
 
-async fn continue_decision<H: AppHost>(
+async fn continue_decision<H: AppHost, R: Reservations>(
     host: &H,
     row: &mut AgreementRow,
-    quote: &QuotePayload,
     existing_dec: &DecisionRow,
+    reservations: &R,
     now: u64,
 ) -> Result<bool, String> {
     match existing_dec.decision_state() {
         Some(DecisionState::Agreed) | Some(DecisionState::NotFormed) => {
             resend_completed_decision(host, row, &existing_dec.state, now).await
         }
-        _ => repeat_path(host, row, quote, now).await,
+        _ => repeat_path(host, row, reservations, now).await,
     }
 }
 
-async fn mark_decision_agreed<H: AppHost>(
+pub(crate) async fn mark_decision_agreed<H: AppHost>(
     host: &H,
     row: &mut AgreementRow,
-    quote: &QuotePayload,
     half: ReceiptHalf,
     commitments: Vec<CommitmentProgress>,
     now: u64,
@@ -280,11 +292,11 @@ async fn mark_decision_agreed<H: AppHost>(
         kind: "decision".to_string(),
         state: DecisionState::Agreed.as_str().to_string(),
         agreement: row.quote_record_id.clone(),
-        quote_id: quote.quote_id.clone(),
+        quote_id: row.quote_id.clone(),
         reason: None,
         created_at_secs: now,
     };
-    put_row(host, LEDGER, &decision_id(&quote.quote_id), &dec_agreed).await?;
+    put_row(host, LEDGER, &decision_id(&row.quote_id), &dec_agreed).await?;
 
     let _ = host
         .record_event(
@@ -357,12 +369,12 @@ async fn claim_decision_fence<H: AppHost>(
     Ok(outcome.is_none())
 }
 
-async fn reserve_author_holds<H: AppHost>(
+pub(crate) async fn reserve_author_holds<H: AppHost, R: Reservations>(
     host: &H,
     row: &AgreementRow,
+    reservations: &R,
     now: u64,
 ) -> Result<(Vec<String>, Option<&'static str>), String> {
-    let reservations = SeatLedger;
     let mut reserved = Vec::new();
     for c in &row.terms.commitments {
         if c.giver == DealRole::QuoteAuthor && c.resource_kind == ResourceKind::ServiceInSlot {
@@ -392,10 +404,9 @@ async fn reserve_author_holds<H: AppHost>(
     Ok((reserved, None))
 }
 
-async fn finalize_agreed_deal<H: AppHost>(
+pub(crate) async fn finalize_agreed_deal<H: AppHost>(
     host: &H,
     row: &mut AgreementRow,
-    quote: &QuotePayload,
     now: u64,
 ) -> Result<bool, String> {
     let half = sign_author_receipt_half(host, row, now).await?;
@@ -437,52 +448,12 @@ async fn finalize_agreed_deal<H: AppHost>(
         return Ok(false);
     }
 
-    mark_decision_agreed(host, row, quote, half, snapshot.commitments, now).await
+    mark_decision_agreed(host, row, half, snapshot.commitments, now).await
 }
 
-async fn repeat_not_formed<H: AppHost>(
+pub(crate) async fn repeat_both<H: AppHost>(
     host: &H,
     row: &mut AgreementRow,
-    quote: &QuotePayload,
-    mut snap_row: SnapshotRow,
-    now: u64,
-) -> Result<bool, String> {
-    if !ensure_snapshot_sent(host, &row.conversation, &mut snap_row, now).await? {
-        return Ok(false);
-    }
-
-    row.state = Some(AgreementState::NotFormed);
-    row.state_reason = snap_row.snapshot.state_reason.clone();
-    row.cancel_reason = None;
-    row.seq = Some(1);
-    row.commitments = snap_row.snapshot.commitments;
-    row.updated_at_secs = now;
-    put_row(host, AGREEMENTS, &row.quote_record_id, row).await?;
-
-    let dec_not_formed = DecisionRow {
-        kind: "decision".to_string(),
-        state: DecisionState::NotFormed.as_str().to_string(),
-        agreement: row.quote_record_id.clone(),
-        quote_id: quote.quote_id.clone(),
-        reason: snap_row.snapshot.state_reason.clone(),
-        created_at_secs: now,
-    };
-    put_row(host, LEDGER, &decision_id(&quote.quote_id), &dec_not_formed).await?;
-
-    let _ = host
-        .record_event(
-            EVENT_PROGRESS.to_string(),
-            row.conversation.clone(),
-            Some(row.quote_record_id.clone()),
-        )
-        .await;
-    Ok(false)
-}
-
-async fn repeat_both<H: AppHost>(
-    host: &H,
-    row: &mut AgreementRow,
-    quote: &QuotePayload,
     mut snap_row: SnapshotRow,
     mut cs: CountersignRow,
     now: u64,
@@ -493,13 +464,12 @@ async fn repeat_both<H: AppHost>(
     if !ensure_snapshot_sent(host, &row.conversation, &mut snap_row, now).await? {
         return Ok(false);
     }
-    mark_decision_agreed(host, row, quote, cs.half, snap_row.snapshot.commitments, now).await
+    mark_decision_agreed(host, row, cs.half, snap_row.snapshot.commitments, now).await
 }
 
-async fn repeat_countersigned<H: AppHost>(
+pub(crate) async fn repeat_countersigned<H: AppHost>(
     host: &H,
     row: &mut AgreementRow,
-    quote: &QuotePayload,
     mut cs: CountersignRow,
     now: u64,
 ) -> Result<bool, String> {
@@ -532,35 +502,36 @@ async fn repeat_countersigned<H: AppHost>(
         return Ok(false);
     }
 
-    mark_decision_agreed(host, row, quote, cs.half, snapshot.commitments, now).await
+    mark_decision_agreed(host, row, cs.half, snapshot.commitments, now).await
 }
 
-async fn repeat_fresh<H: AppHost>(
+pub(crate) async fn repeat_fresh<H: AppHost, R: Reservations>(
     host: &H,
     row: &mut AgreementRow,
-    quote: &QuotePayload,
+    reservations: &R,
     now: u64,
 ) -> Result<bool, String> {
-    if now >= quote.terms.quote_expires_at_secs {
+    if now >= row.terms.quote_expires_at_secs {
         return Ok(false);
     }
-    let (reserved, failed) = reserve_author_holds(host, row, now).await?;
+    let (reserved, failed) = reserve_author_holds(host, row, reservations, now).await?;
     if let Some(reason) = failed {
-        return handle_not_formed(host, row, quote, &reserved, reason, now).await;
+        return handle_not_formed(host, row, reservations, &reserved, reason, now).await;
     }
 
-    let reservations = SeatLedger;
     for cid in &reserved {
-        reservations.confirm(host, &row.quote_record_id, cid).await?;
+        if let Err(reason) = reservations.confirm(host, &row.quote_record_id, cid).await {
+            return handle_not_formed(host, row, reservations, &reserved, &reason, now).await;
+        }
     }
 
-    finalize_agreed_deal(host, row, quote, now).await
+    finalize_agreed_deal(host, row, now).await
 }
 
-async fn repeat_path<H: AppHost>(
+async fn repeat_path<H: AppHost, R: Reservations>(
     host: &H,
     row: &mut AgreementRow,
-    quote: &QuotePayload,
+    reservations: &R,
     now: u64,
 ) -> Result<bool, String> {
     let snap_key = snapshot_id(&row.quote_record_id, 1);
@@ -572,24 +543,24 @@ async fn repeat_path<H: AppHost>(
 
     if let Some(snap_row) = stored_snap {
         if snap_row.snapshot.state == AgreementState::NotFormed {
-            return repeat_not_formed(host, row, quote, snap_row, now).await;
+            return repeat_not_formed(host, row, snap_row, reservations, now).await;
         }
         if let Some(cs) = stored_cs {
-            return repeat_both(host, row, quote, snap_row, cs, now).await;
+            return repeat_both(host, row, snap_row, cs, now).await;
         }
     } else if let Some(cs) = stored_cs {
-        return repeat_countersigned(host, row, quote, cs, now).await;
+        return repeat_countersigned(host, row, cs, now).await;
     } else {
-        return repeat_fresh(host, row, quote, now).await;
+        return repeat_fresh(host, row, reservations, now).await;
     }
 
     Ok(false)
 }
 
-async fn handle_not_formed<H: AppHost>(
+pub(crate) async fn handle_not_formed<H: AppHost, R: Reservations>(
     host: &H,
     row: &mut AgreementRow,
-    quote: &QuotePayload,
+    reservations: &R,
     reserved_to_release: &[String],
     reason: &str,
     now: u64,
@@ -616,7 +587,6 @@ async fn handle_not_formed<H: AppHost>(
     };
     put_row(host, AGREEMENT_PROGRESS, &snap_key, &snap_row).await?;
 
-    let reservations = SeatLedger;
     for cid in reserved_to_release {
         let _ = reservations.release(host, &row.quote_record_id, cid).await;
     }
@@ -637,11 +607,11 @@ async fn handle_not_formed<H: AppHost>(
         kind: "decision".to_string(),
         state: DecisionState::NotFormed.as_str().to_string(),
         agreement: row.quote_record_id.clone(),
-        quote_id: quote.quote_id.clone(),
+        quote_id: row.quote_id.clone(),
         reason: Some(reason.to_string()),
         created_at_secs: now,
     };
-    put_row(host, LEDGER, &decision_id(&quote.quote_id), &dec_not_formed).await?;
+    put_row(host, LEDGER, &decision_id(&row.quote_id), &dec_not_formed).await?;
 
     let _ = host
         .record_event(

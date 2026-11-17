@@ -45,7 +45,7 @@ pub struct TestHost {
     pub(crate) last_call: Mutex<Option<RecordedCall>>,
     pub(crate) now_secs: Mutex<u64>,
     pub(crate) record_signer: Mutex<Option<SignerFn>>,
-    pub(crate) crash_prefix: Mutex<Option<(String, String)>>,
+    pub(crate) crash_prefix: Mutex<Option<(String, String, usize)>>,
     pub(crate) is_crashed: Mutex<bool>,
     pub(crate) call_handlers: Mutex<HashMap<(String, String), CallHandler>>,
     pub(crate) sent_cards: Mutex<Vec<String>>,
@@ -124,7 +124,16 @@ impl TestHost {
     }
 
     pub fn crash_on_write(&self, collection: impl Into<String>, key_prefix: impl Into<String>) {
-        *self.crash_prefix.lock().unwrap() = Some((collection.into(), key_prefix.into()));
+        *self.crash_prefix.lock().unwrap() = Some((collection.into(), key_prefix.into(), 0));
+    }
+
+    pub fn crash_on_write_skip(
+        &self,
+        collection: impl Into<String>,
+        key_prefix: impl Into<String>,
+        skip: usize,
+    ) {
+        *self.crash_prefix.lock().unwrap() = Some((collection.into(), key_prefix.into(), skip));
     }
 
     pub fn restart(&self) {
@@ -144,10 +153,15 @@ impl TestHost {
         if *self.is_crashed.lock().unwrap() {
             return Err(DataLayerError::Internal("test host crashed".to_string()));
         }
-        if let Some((target_col, target_prefix)) = self.crash_prefix.lock().unwrap().as_ref()
+        let mut crash = self.crash_prefix.lock().unwrap();
+        if let Some((target_col, target_prefix, skip)) = crash.as_mut()
             && collection == target_col
-            && (target_prefix == "*" || id.starts_with(target_prefix))
+            && (target_prefix == "*" || id.starts_with(target_prefix.as_str()))
         {
+            if *skip > 0 {
+                *skip -= 1;
+                return Ok(());
+            }
             *self.is_crashed.lock().unwrap() = true;
             return Err(DataLayerError::Internal(format!(
                 "injected crash on write to {collection}/{id}"
@@ -244,8 +258,8 @@ impl AppProxy for TestHost {
             return Ok(serde_json::json!({
                 "result": {
                     "messages": [],
-                    "next_seq": 0,
-                    "next_cursor": null
+                    "last_seq": 0,
+                    "kind": "direct"
                 }
             })
             .to_string());
