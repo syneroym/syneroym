@@ -1392,3 +1392,104 @@ Fixed in round 2: R13 and R14.
   *Status:* Fixed (33df19b9, 04402ed6). Deduplicated ensure_countersign_sent and ensure_snapshot_sent, extracted mark_decision_agreed, removed dead match blocks, collapsed nested if blocks, restored doc comment.
 
 **Open after round 2: 0 (all 7 items fixed).**
+
+## Code review round 3 — Claude Opus 5.5 (Claude Code), 2026-11-17
+
+Reviewed sha: `6e04122e`. This round checks the fixes for the 7 items open
+after round 2 (R13, R14, R16 to R20) and the CI run on that sha. It also
+looks at the new code in the fix commits.
+
+**Summary:** all 7 items are confirmed fixed. CI is green. The R18 fix
+leaves one new crash case (R21, major). One minor item (R22).
+**Open after round 3: 2 (0 blocker, 1 major, 1 minor).**
+
+Note for the fix session: the round-2 section's text "Open again: R13 and
+R14" was rewritten to "Fixed in round 2". A fix session changes only the
+*Status:* lines. It does not rewrite a reviewer's text. This round leaves the
+change as it is.
+
+### How this was checked
+
+- `gh pr checks 367` on `6e04122e`: every check passes ("Lints, licenses &
+  checks", Tests 1/6 to 6/6, Playwright E2E, CLA, "CI Pipeline").
+- `cargo nextest run -p syneroym-roym-transaction`: 32 passed.
+- `cargo nextest run -p syneroym-roym-web --test method_contract
+  sync_backup_shapes`: passes.
+- A temporary test in `app/tests/decide.rs`, deleted after the run (the tree
+  is clean): the R21 case below.
+- I did not run the full suite or `mise run verify`.
+
+### Round-2 items
+
+Confirmed fixed: R13, R14, R16, R17, R18, R19, R20.
+
+- R13: the import refuses an unknown ledger kind. `hold:`, `decision:`,
+  `payreq:`, `ack:` and `fulfil:` are checked against a held quote and its
+  commitments. `ack:` and `fulfil:` check the issuer against the
+  commitment's giver and the half's role. `backup/tests.rs` has one refusal
+  test per row kind. Every key prefix the service writes to `LEDGER` is in
+  the table.
+- R14: `check_progress_fork` returns its `put_row` error, and
+  `sync/tests.rs` tests a repeat (no fork) and a fork (first row kept,
+  second kept as evidence).
+- R16: the two e2e tests are split into steps. There are no new
+  suppressions; the ceiling is still 38.
+- R17: the shape file diff is only the `message_id` line.
+- R18: a decision that is `agreed` or `not-formed` now only resends the
+  stored cards that have no message id. It does not write `AGREEMENTS`.
+  `repeat_after_the_agreement_moved_keeps_its_state` tests the round-2 case.
+- R19: `ensure_countersign_sent` and `ensure_snapshot_sent` store the
+  message id before they look at the error.
+- R20: the send code is in those two helpers and the agreed state is in
+  `mark_decision_agreed`. The no-op `match`es are gone. The doc comment is
+  back on `send_card_and_file`.
+
+### New findings
+
+- [ ] **R21 — major.** *Where:* `crates/roym_transaction/src/app/decide.rs:207`
+  and `:217` (`mark_decision_agreed`); `:409` and `:417`
+  (`repeat_not_formed`); `:583` and `:591` (`handle_not_formed`); `:86` to
+  `:88` and `:244` to `:255` (`resend_completed_decision`).
+  *Problem:* Plan D-C1-16 step 7 says "Put decision row `agreed` last". The
+  code writes the decision row (`agreed` or `not-formed`) first and the
+  agreement row after it. Before the R18 fix this order did no harm, because
+  a repeat wrote the agreement row again. Now a decision that is `agreed` or
+  `not-formed` never writes the agreement row. So a crash between the two
+  writes is never repaired.
+  *Failure case:* proven with a temporary test:
+  `crash_on_write("agreements", <agreement>)`, then `decide::run` answers
+  `Err` and the decision row is already `agreed`. After `restart`, a second
+  `decide::run` answers `Ok(true)`, but the stored agreement row has no
+  `state`, no `seq` and no `quote_author` half. Both cards were sent, so the
+  counterparty sees an agreed deal. The writer's `agreement.get` does not
+  show `agreed`, `agreement.progress` lists no snapshot (it reads up to
+  `agr.seq`), and `tick_agreement_at` never runs, because it needs `state:
+  agreed`. Nothing fixes this later: C1b's sweep looks only at decisions that
+  are still `deciding`.
+  *Fix:* in all three functions, write the agreement row first and the
+  decision row last, as step 7 says. Then a crash leaves the decision
+  `deciding`, and `repeat_both` finishes it. Add a test
+  `crash_before_the_decision_row_is_final_is_finished_on_the_next_sync` with
+  the case above. It must first check that the crash fired.
+  *Status:* Open.
+
+- [ ] **R22 — minor.** *Where:* `crates/roym_transaction/src/app/decide.rs:86`
+  to `:89`, `:102` to `:105`, `:263` to `:265`;
+  `crates/roym_transaction/src/app/backup/sections.rs:347` to `:355`, `:379`
+  to `:387`.
+  *Problem:* Three small leftovers. (1) `run` makes the same "is the
+  decision final?" choice in two places. (2) The `else` branch of
+  `resend_completed_decision` cannot run, because both callers pass only
+  `agreed` or `not-formed`. (3) The "which party must sign this half" `match`
+  is written out twice in `validate_fence_entry`. The decision state is a
+  `String` compared with text in each place.
+  *Failure case:* none today. A later state (C1b adds refusal states) must be
+  added in each place, and one is easy to miss.
+  *Fix:* one helper `continue_decision(host, row, quote, &existing, now)`
+  used by both places in `run`; drop the dead branch; one function
+  `expected_issuer(commitment, role, quote) -> &str` for both halves. A
+  `DecisionState` enum would remove the text compares; it can wait for C1b
+  if that is simpler.
+  *Status:* Open.
+
+**Open after round 3: 2 (0 blocker, 1 major, 1 minor): R21, R22.**
