@@ -156,9 +156,19 @@ fn compute_quote_deal_state(
         match agr.state {
             Some(AgreementState::Closed) => return "closed".to_string(),
             Some(AgreementState::Cancelled) => return "cancelled".to_string(),
-            Some(AgreementState::NotFormed) => return "not-formed".to_string(),
+            Some(AgreementState::NotFormed)
+                if agr.state_reason.as_deref() != Some("quote-superseded") =>
+            {
+                return "not-formed".to_string();
+            }
             _ => {}
         }
+    }
+
+    if let Some(agr) = this_agr
+        && agr.state == Some(AgreementState::NotFormed)
+    {
+        return "not-formed".to_string();
     }
 
     if let Some(agr) = this_agr

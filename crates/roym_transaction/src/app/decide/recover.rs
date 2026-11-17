@@ -2,10 +2,16 @@
 
 use syneroym_app_host::AppHost;
 use syneroym_roym_core::{
+    card::{self, CARD_CONTENT_TYPE},
     deal::ResourceKind,
+    method::{
+        call_sibling,
+        conversation::{ChangesInput, ChangesOutput},
+    },
     paging,
     progress::{self as core_progress, AgreementState},
-    transaction::DealRole,
+    services, signing,
+    transaction::{self, DealRole, ReceiptHalf, SYNC_WINDOW},
 };
 
 use super::{
@@ -149,10 +155,16 @@ pub(crate) async fn finish_deciding_row_with_reservations<H: AppHost, R: Reserva
     };
 
     let snap_key = snapshot_id(&row.quote_record_id, 1);
-    let stored_snap: Option<SnapshotRow> = get_row(host, AGREEMENT_PROGRESS, &snap_key).await?;
+    let mut stored_snap: Option<SnapshotRow> = get_row(host, AGREEMENT_PROGRESS, &snap_key).await?;
 
     let cs_key = countersign_id(&row.quote_record_id);
-    let stored_cs: Option<CountersignRow> = get_row(host, LEDGER, &cs_key).await?;
+    let mut stored_cs: Option<CountersignRow> = get_row(host, LEDGER, &cs_key).await?;
+
+    if stored_cs.is_none() {
+        let _ = restore_writer_from_conversation(host, &mut row, now).await;
+        stored_cs = get_row(host, LEDGER, &cs_key).await?;
+        stored_snap = get_row(host, AGREEMENT_PROGRESS, &snap_key).await?;
+    }
 
     if let Some(snap_row) = stored_snap {
         if snap_row.snapshot.state == AgreementState::NotFormed {
@@ -202,6 +214,101 @@ pub(crate) async fn recover_deciding_rows<H: AppHost>(host: &H, now: u64) -> Res
     let deciding_rows: Vec<DecisionRow> = paging::query_all(host, LEDGER, Some(filter)).await?;
     for dec in deciding_rows {
         let _ = finish_deciding_row(host, &dec.quote_id, now).await;
+    }
+    Ok(())
+}
+
+async fn restore_writer_from_conversation<H: AppHost>(
+    host: &H,
+    row: &mut AgreementRow,
+    now: u64,
+) -> Result<(), String> {
+    let out = match call_sibling::<_, ChangesInput, ChangesOutput>(
+        host,
+        services::CONVERSATION,
+        "conversation.changes",
+        &ChangesInput {
+            conversation: row.conversation.clone(),
+            after_seq: Some(0),
+            limit: Some(SYNC_WINDOW),
+        },
+    )
+    .await
+    {
+        Ok(o) => o,
+        Err(_) => return Ok(()),
+    };
+
+    let owner = signing::owner_did(host).await.unwrap_or_default();
+    let cs_key = countersign_id(&row.quote_record_id);
+
+    for m in out.messages {
+        if m.content_type != CARD_CONTENT_TYPE {
+            continue;
+        }
+        let Some(ref body) = m.body else { continue };
+        let Ok(card) = card::parse_card(body) else { continue };
+
+        if card.card_type == "agreement-receipt" {
+            let v = transaction::verify_agreement_receipt(&card.envelope, now);
+            if v.verified
+                && let Some(p) = v.payload
+                && p.quote_record_id == row.quote_record_id
+                && p.role == DealRole::QuoteAuthor
+                && owner == p.quote_author_did
+            {
+                let half = ReceiptHalf {
+                    envelope: card.envelope.clone(),
+                    record_id: v.record_id.clone().unwrap_or_default(),
+                    issuer: v.issuer.clone().unwrap_or_default(),
+                    issued_at_secs: v.issued_at_secs.unwrap_or(now),
+                };
+                let cs_row = CountersignRow {
+                    kind: "countersign".to_string(),
+                    agreement: row.quote_record_id.clone(),
+                    half: half.clone(),
+                    message_id: Some(m.id.clone()),
+                    created_at_secs: half.issued_at_secs,
+                };
+                put_row(host, LEDGER, &cs_key, &cs_row).await?;
+                if row.quote_author.is_none() {
+                    row.quote_author = Some(half);
+                    row.agreed_at_secs = Some(cs_row.created_at_secs);
+                    put_row(host, AGREEMENTS, &row.quote_record_id, row).await?;
+                }
+            }
+        } else if card.card_type == "agreement-progress" {
+            let v = core_progress::verify_agreement_progress(&card.envelope, now);
+            if v.verified
+                && let Some(p) = v.payload
+                && p.agreement == row.quote_record_id
+                && owner == p.quote_author_did
+            {
+                let snap_key = snapshot_id(&row.quote_record_id, p.seq);
+                if get_row::<SnapshotRow, _>(host, AGREEMENT_PROGRESS, &snap_key).await?.is_none() {
+                    let snap_row = SnapshotRow {
+                        seq: p.seq,
+                        agreement: row.quote_record_id.clone(),
+                        conversation: row.conversation.clone(),
+                        snapshot: p.clone(),
+                        envelope: card.envelope.clone(),
+                        record_id: v.record_id.clone().unwrap_or_default(),
+                        message_id: Some(m.id.clone()),
+                        stored_at_secs: now,
+                    };
+                    put_row(host, AGREEMENT_PROGRESS, &snap_key, &snap_row).await?;
+                }
+                if row.seq.unwrap_or(0) < p.seq {
+                    row.seq = Some(p.seq);
+                    row.state = Some(p.state);
+                    row.state_reason = p.state_reason.clone();
+                    row.cancel_reason = p.cancel_reason;
+                    row.commitments = p.commitments.clone();
+                    row.updated_at_secs = now;
+                    put_row(host, AGREEMENTS, &row.quote_record_id, row).await?;
+                }
+            }
+        }
     }
     Ok(())
 }

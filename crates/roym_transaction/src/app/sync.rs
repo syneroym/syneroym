@@ -1,6 +1,7 @@
 //! Transaction synchronization across conversation history.
 
 pub(crate) mod receipts;
+pub(crate) mod settle_receipts;
 #[cfg(test)]
 mod tests;
 
@@ -291,16 +292,37 @@ async fn dispatch_known_card<H: AppHost>(
             receipts::file_progress_card(host, row, &card.envelope, conversation, now, owner).await
         }
         "payment-request" => {
-            receipts::file_payment_request_card(host, row, &card.envelope, conversation, now, owner)
-                .await
+            settle_receipts::file_payment_request_card(
+                host,
+                row,
+                &card.envelope,
+                conversation,
+                now,
+                owner,
+            )
+            .await
         }
         "payment-acknowledgement" => {
-            receipts::file_payment_ack_card(host, row, &card.envelope, conversation, now, owner)
-                .await
+            settle_receipts::file_payment_ack_card(
+                host,
+                row,
+                &card.envelope,
+                conversation,
+                now,
+                owner,
+            )
+            .await
         }
         "fulfilment-receipt" => {
-            receipts::file_fulfilment_card(host, row, &card.envelope, conversation, now, owner)
-                .await
+            settle_receipts::file_fulfilment_card(
+                host,
+                row,
+                &card.envelope,
+                conversation,
+                now,
+                owner,
+            )
+            .await
         }
         "deal-decline" => {
             file_deal_decline_card(host, row, &card.envelope, conversation, now, owner).await
@@ -645,6 +667,7 @@ async fn verify_and_apply_declined_enquiry<H: AppHost>(
     host: &H,
     payload: &DealDeclinePayload,
     e_bytes: &[u8],
+    signer: &str,
     conversation: &str,
     now: u64,
 ) -> Result<(), &'static str> {
@@ -666,6 +689,15 @@ async fn verify_and_apply_declined_enquiry<H: AppHost>(
     if payload.deal != ep.enquiry_id {
         return Err("deal does not match enquiry_id");
     }
+    let mut ptr = match get_row::<RecordPointerRow, _>(host, ENQUIRIES, &ep.enquiry_id).await {
+        Ok(Some(p)) => p,
+        _ => return Err("enquiry pointer not found"),
+    };
+    let enq_issuer = ev.issuer.as_deref().unwrap_or(&ptr.issuer);
+    let enq_cp = ptr.counterparty_did.as_deref().unwrap_or_default();
+    if signer != enq_issuer && signer != enq_cp {
+        return Err("only the counterparty or quote author can decline this enquiry");
+    }
     if decline_ops::has_unrefused_counterparty_half_for_enquiry(host, &ep.enquiry_id)
         .await
         .map_err(|_| "unrefused half check failed")?
@@ -673,13 +705,10 @@ async fn verify_and_apply_declined_enquiry<H: AppHost>(
         return Err("cannot decline an enquiry with an accepted quote");
     }
 
-    if let Ok(Some(mut ptr)) = get_row::<RecordPointerRow, _>(host, ENQUIRIES, &ep.enquiry_id).await
-    {
-        ptr.declined_at_secs = Some(now);
-        ptr.decline_note = payload.reason.as_ref().map(|r| r.text.clone());
-        ptr.updated_at_secs = now;
-        let _ = put_row(host, ENQUIRIES, &ep.enquiry_id, &ptr).await;
-    }
+    ptr.declined_at_secs = Some(now);
+    ptr.decline_note = payload.reason.as_ref().map(|r| r.text.clone());
+    ptr.updated_at_secs = now;
+    let _ = put_row(host, ENQUIRIES, &ep.enquiry_id, &ptr).await;
     Ok(())
 }
 
@@ -715,7 +744,8 @@ async fn file_deal_decline_card<H: AppHost>(
         }
     } else if let Some(e_bytes) = get_bytes(host, ENQUIRY_HISTORY, &payload.declines).await? {
         if let Err(reason) =
-            verify_and_apply_declined_enquiry(host, payload, &e_bytes, conversation, now).await
+            verify_and_apply_declined_enquiry(host, payload, &e_bytes, signer, conversation, now)
+                .await
         {
             return refuse_card(host, row, reason).await;
         }

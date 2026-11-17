@@ -664,6 +664,7 @@ pub(crate) async fn is_deal_ended<H: AppHost>(
     for agr in agr_rows {
         if let Some(state) = agr.state
             && state.is_terminal()
+            && agr.state_reason.as_deref() != Some("quote-superseded")
         {
             return Ok(true);
         }

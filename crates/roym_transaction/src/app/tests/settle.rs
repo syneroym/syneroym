@@ -25,7 +25,7 @@ use crate::app::{
     get_row,
     payment_ops::{self, PaymentAckInput, PaymentRequestInput},
     progress, progress_ops, put_row,
-    sync::receipts::file_fulfilment_card,
+    sync::settle_receipts::file_fulfilment_card,
 };
 
 fn make_service_commitment(id: &str) -> Commitment {

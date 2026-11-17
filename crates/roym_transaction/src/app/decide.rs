@@ -409,37 +409,50 @@ pub(crate) async fn finalize_agreed_deal<H: AppHost>(
     row: &mut AgreementRow,
     now: u64,
 ) -> Result<bool, String> {
-    let half = sign_author_receipt_half(host, row, now).await?;
-    let mut cs_row = CountersignRow {
-        kind: "countersign".to_string(),
-        agreement: row.quote_record_id.clone(),
-        half: half.clone(),
-        message_id: None,
-        created_at_secs: now,
+    let cs_key = countersign_id(&row.quote_record_id);
+    let mut cs_row = match get_row::<CountersignRow, _>(host, LEDGER, &cs_key).await? {
+        Some(cs) => cs,
+        None => {
+            let half = sign_author_receipt_half(host, row, now).await?;
+            let cs = CountersignRow {
+                kind: "countersign".to_string(),
+                agreement: row.quote_record_id.clone(),
+                half,
+                message_id: None,
+                created_at_secs: now,
+            };
+            put_row(host, LEDGER, &cs_key, &cs).await?;
+            cs
+        }
     };
-    put_row(host, LEDGER, &countersign_id(&row.quote_record_id), &cs_row).await?;
 
-    let snapshot = core_progress::open(
-        row.quote_record_id.clone(),
-        row.conversation.clone(),
-        row.counterparty_did.clone(),
-        row.quote_author_did.clone(),
-        &row.terms,
-        None,
-    );
-    let (snap_env, snap_rec_id) = progress::sign(host, &snapshot).await?;
     let snap_key = snapshot_id(&row.quote_record_id, 1);
-    let mut snap_row = SnapshotRow {
-        seq: 1,
-        agreement: row.quote_record_id.clone(),
-        conversation: row.conversation.clone(),
-        snapshot: snapshot.clone(),
-        envelope: snap_env.clone(),
-        record_id: snap_rec_id,
-        message_id: None,
-        stored_at_secs: now,
+    let mut snap_row = match get_row::<SnapshotRow, _>(host, AGREEMENT_PROGRESS, &snap_key).await? {
+        Some(s) => s,
+        None => {
+            let snapshot = core_progress::open(
+                row.quote_record_id.clone(),
+                row.conversation.clone(),
+                row.counterparty_did.clone(),
+                row.quote_author_did.clone(),
+                &row.terms,
+                None,
+            );
+            let (snap_env, snap_rec_id) = progress::sign(host, &snapshot).await?;
+            let s = SnapshotRow {
+                seq: 1,
+                agreement: row.quote_record_id.clone(),
+                conversation: row.conversation.clone(),
+                snapshot,
+                envelope: snap_env,
+                record_id: snap_rec_id,
+                message_id: None,
+                stored_at_secs: now,
+            };
+            put_row(host, AGREEMENT_PROGRESS, &snap_key, &s).await?;
+            s
+        }
     };
-    put_row(host, AGREEMENT_PROGRESS, &snap_key, &snap_row).await?;
 
     if !ensure_countersign_sent(host, &row.conversation, &mut cs_row, now).await? {
         return Ok(false);
@@ -448,7 +461,7 @@ pub(crate) async fn finalize_agreed_deal<H: AppHost>(
         return Ok(false);
     }
 
-    mark_decision_agreed(host, row, half, snapshot.commitments, now).await
+    mark_decision_agreed(host, row, cs_row.half, snap_row.snapshot.commitments, now).await
 }
 
 pub(crate) async fn repeat_both<H: AppHost>(
