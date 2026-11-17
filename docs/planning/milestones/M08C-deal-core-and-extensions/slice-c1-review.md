@@ -1493,3 +1493,85 @@ Confirmed fixed: R13, R14, R16, R17, R18, R19, R20.
   *Status:* Fixed (9a9a1f8b). Used continue_decision helper in run, removed dead branch in resend_completed_decision, extracted expected_issuer helper in backup/sections.rs.
 
 **Open after round 3: 0 (all 2 items fixed).**
+
+## Code review round 4 — Claude Opus 5.5 (Claude Code), 2026-11-17
+
+Reviewed sha: `9bb95133` (code fixes in `9a9a1f8b`). This round checks the
+fixes for R21 and R22 and the CI run on that sha.
+
+**Summary:** R21 and R22 are confirmed fixed. CI is green. One more path
+rolls a cancel back (R23, major). One minor item (R24).
+**Open after round 4: 2 (0 blocker, 1 major, 1 minor).**
+
+Note for the fix session: the line "Open after round 3: 2 (0 blocker, 1
+major, 1 minor): R21, R22." at the end of round 3 was rewritten. Please
+change only the *Status:* lines and the check boxes. The open count for a
+round is in the next round's text.
+
+### How this was checked
+
+- `gh pr checks 367` on `9bb95133`: every check passes ("Lints, licenses &
+  checks", Tests 1/6 to 6/6, Playwright E2E, CLA, "CI Pipeline"). The PR is
+  still a draft.
+- `cargo nextest run -p syneroym-roym-transaction`: 33 passed.
+- A temporary test in `app/tests/decide.rs`, deleted after the run (the tree
+  is clean): the R23 case below.
+- I did not run the full suite or `mise run verify`.
+
+### Round-3 items
+
+Confirmed fixed: R21, R22.
+
+- R21: `mark_decision_agreed`, `repeat_not_formed` and `handle_not_formed`
+  now write `AGREEMENTS` first and the decision row last. A crash between
+  the two leaves the decision `deciding`, and the next sync finishes it.
+  `crash_before_the_decision_row_is_final_is_finished_on_the_next_sync`
+  checks that the crash fired (`expect_err` and the error text) and then
+  checks the stored agreement and decision rows.
+- R22: `continue_decision` holds the one "is the decision final?" check.
+  The dead `else` branch and the unused `quote` argument are gone.
+  `expected_issuer` is used by both the `ack:` and the `fulfil:` checks. The
+  `DecisionState` enum was not added; see R24.
+
+### New findings
+
+- [ ] **R23 — major.** *Where:*
+  `crates/roym_transaction/src/app/decide.rs:199` to `:214`
+  (`mark_decision_agreed`), reached from `repeat_both` (`:448`);
+  `crates/roym_transaction/src/app/progress_ops.rs:149`
+  (`transition_at`).
+  *Problem:* R18 stopped a final decision from writing over a cancel. The
+  same overwrite still happens when the decision is still `deciding`.
+  `mark_decision_agreed` always writes the agreement row as `agreed` with
+  seq 1. `transition_at` does not look at the decision row. So a cancel can
+  run while the decision is `deciding`, and the next sync rolls it back. The
+  window is from the moment snapshot 1 is stored (`decide.rs:383`) to the
+  decision row `agreed`. After R21, a crash in that window leaves the
+  agreement row `agreed` seq 1 and the decision `deciding`, so the window is
+  easy to reach after a restart.
+  *Failure case (proven with a temporary test):* run `decide::run` to the
+  end. Set the decision row back to `deciding` (the state after a crash just
+  before the last write). Call `transition_at` with `Cancel`; it stores
+  snapshot 2 and the agreement row `cancelled` seq 2, and sends the cancel
+  card. Run `decide::run` again with the stored row. It answers `Ok(true)`,
+  and the stored agreement row is `agreed` seq 1 again. The counterparty has
+  the cancel card. The writer shows an agreed deal, and the seat is already
+  released. Only a later `transition_at` (for example a tick after the track
+  end) rolls forward to seq 2.
+  *Fix:* in `mark_decision_agreed`, read the stored `AGREEMENTS` row first.
+  If its `seq` is above 1, the agreement has moved on: keep the stored row
+  and write only the decision row `agreed`. Add a test
+  `cancel_before_the_decision_row_is_final_is_kept` with the case above. The
+  `not-formed` writers do not need this, because a `not-formed` snapshot
+  cannot move.
+  *Status:* Open.
+
+- [ ] **R24 — minor.** *Where:*
+  `crates/roym_transaction/src/app/decide.rs:192`;
+  `docs/planning/deferred-backlog.md`.
+  *Problem:* R22 said the `DecisionState` enum may wait for C1b. It was not
+  added, and the backlog has no row for it. The decision states are still
+  compared as text (`"agreed"`, `"not-formed"`, `"deciding"`).
+  *Fix:* add the enum now, or add a backlog row that names C1b as the target
+  and links `decide.rs:192`.
+  *Status:* Open.
