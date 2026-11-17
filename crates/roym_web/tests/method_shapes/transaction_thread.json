@@ -380,6 +380,7 @@
           }
         }
       },
+      "deal_state": "string",
       "direction": "outgoing",
       "expired": "boolean",
       "issuer": "string",
