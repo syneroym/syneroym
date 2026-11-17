@@ -1664,3 +1664,395 @@ Confirmed fixed: R25.
   covered, so no test is needed for the old setup.
 
 C1a has no open review items.
+
+## Code review round 7 — Claude Opus 5.5 (Claude Code), 2026-11-17
+
+Reviewed part C1b, PR [#368](https://github.com/syneroym/syneroym/pull/368),
+branch `feat/m08c-c1b-single-writer` at `b1011e81`, against `origin/main`
+(`git diff origin/main...HEAD`, 9 commits), in the main checkout (`.git` is a
+directory, not a worktree). `git pull` said "Already up to date". The code
+was written by Gemini 3.8 Flash, so this round meets the cross-tool rule.
+This is the first C1b round. Round 6 has 0 open items, so there is nothing to
+re-check.
+
+**Summary:** 0 blocker, 8 major, 9 minor, 17 items (R26 to R42).
+**Open after round 7: 17 (0 blocker, 8 major, 9 minor).**
+
+### How this was checked
+
+- I read the C1b parts of the plan (sections 3, 4, 5, 6 "C1b", 7, 8, 9, 10),
+  the three change docs, and every changed file in the diff.
+- CI (`gh pr checks 368` on `b1011e81`, run 44082419447): "Lints, licenses &
+  checks" passed, "Playwright E2E" passed (story 50 included, so there is no
+  story-50 flake to record), the CLA check passed. Tests 1/6 to 6/6 were
+  still pending when I wrote this. So CI is **not yet** proof that the full
+  suite passes.
+- `cargo nextest run -p syneroym-roym-transaction`: 54 passed. I did not run
+  the full suite or `mise run verify`, so the counts in `status.md` (hub-ui
+  559, nextest 4,704, e2e 46) are not checked here.
+- To prove R26, R27, R28 and R29, I added a temporary test file with four
+  tests in `crates/roym_transaction/src/app/tests/`, ran it (all four showed
+  the defect), and deleted it. The tree is clean. I changed no code.
+- Component sizes: I built the six components with `cargo component build
+  --release --target wasm32-wasip2` on the branch and on `main` at `3dfada58`,
+  in the same `target/` folder. (`mise run build:roym` stopped at its
+  `npm ci` step in my sandbox. The `web` component embeds no UI files, so the
+  UI step does not change any size.) See R41 for the numbers.
+
+### What was checked and found correct
+
+- **First commit.** `ba9af986` changes only the C1a row of `status.md`, to
+  "Merged" with "merged as 3dfada58 (squash, PR #367)".
+- **Rule 1 (a final decision only resends).** `resend_completed_decision`
+  (`decide.rs:312`) sends only the stored countersigned half and snapshot
+  whose rows have no `message_id`, and it never writes `AGREEMENTS`.
+- **Rule 2 (agreement row before decision row).** `mark_decision_agreed`,
+  `handle_not_formed`, `repeat_not_formed` and `finish_expired_deciding` each
+  write the `AGREEMENTS` row before the `decision:` row.
+- **Rule 3 (`seq > 1`).** `mark_decision_agreed` (`decide.rs:262` to `:278`)
+  keeps `state`, `seq` and `commitments`, and fills only an empty
+  `quote_author` and `agreed_at_secs`. The restore path
+  (`restore_writer_from_conversation`) reaches it through `repeat_both`, so
+  the rule holds there too.
+- **Crash tests.** `recover.rs` has a test for each crash point, including
+  `crash_between_agreement_row_and_decision_row_is_finished_on_the_next_sync`
+  (`crash_on_write_skip` lets the fence write through and fails the second
+  `decision:` write). Every crash test checks that the call returned
+  "injected crash" before it checks recovery. The expiry, P19 and refused
+  `confirm` cases exist.
+- **Recovery order.** `finish_deciding_row_with_reservations` follows the
+  doc's three checks in order: stored `not-formed` snapshot 1, then the expiry
+  when no countersigned half is stored, then steps 3 and 4 again. The sweep
+  runs after the cursor is saved, on every `transaction.sync`.
+- **Version checks.** `agreement.accept` refuses `quote-superseded` and
+  `quote-ended` after the repeat check, so a repeated accept still returns
+  the stored half (AG-13). `quote.set` refuses `quote-already-accepted` and
+  `quote-ended`. The writer refuses a late half with a `not-formed` snapshot
+  and a `refused:` row, and a later sync skips that half.
+- **Counterparty side.** A `not-formed` or `cancelled` snapshot releases the
+  counterparty's own seat holds. A second snapshot with the same `seq` and
+  another `record_id` is stored under `fork:<agreement>:<seq>:<record_id>`
+  and the card gets the reason `progress-fork`.
+- **Decline record.** `DealDeclinePayload` has the four fields of the doc,
+  the 512-byte reason limit, no expiry, and `subject == declines`. The
+  signature covers every field the receiving node acts on (`declines`,
+  `deal`, `conversation`, `reason`), and the node reads the signer from the
+  verified envelope, not from the card.
+- **Access.** `deal.` is an `Owner` route. `deal.decline` and `deal.ping` are
+  in the method table (37 methods) and in the wire-refusal tables of
+  scenarios 143 and 144.
+- **New wire items.** The `deal-decline` record and card, `deal.decline`,
+  `deal.ping`, the three new error codes and `deal_state` in
+  `transaction.thread` are all in the plan (section 4 and C1b step 2). The
+  Q5 limit and the corrected `quote-already-agreed` sentence are in the
+  agreements doc's `## Deviations` (written in C1a); C1b adds the backlog row
+  for Q5.
+- **Sizes.** The numbers in `status.md` are right (R41 is only about the
+  missing table).
+- **Rules.** No `mod.rs`; no new `.rs` file over 800 lines (`sync.rs` 781,
+  `decide.rs` 686); the planning-ref gate passes in CI.
+
+### New findings
+
+- [ ] **R26 — major.** *Where:* `crates/roym_transaction/src/app/sync.rs:696`
+  to `:700` (`verify_and_apply_declined_enquiry`);
+  `crates/roym_transaction/src/app/enquiry_ops.rs:248`, `:365`.
+  *Problem:* the filing check allows the signer only if it is the enquiry's
+  issuer or `ptr.counterparty_did`. Both enquiry pointer builders set
+  `counterparty_did: None`, so the second test compares with `""`. So the
+  only decline of an enquiry that any node files is a withdrawal by its own
+  author. AG-10's third case, "the quote author declines an enquiry", is
+  refused on the enquiry author's node.
+  *Failure case (proven):* the enquiry author's node holds its enquiry; the
+  other party signs a `deal-decline` of it; `transaction.sync` files the card
+  as refused with "only the counterparty or quote author can decline this
+  enquiry". The enquiry author never sees that the enquiry was declined,
+  while the decliner's own node shows it declined.
+  *Fix:* allow the signer when it is the other party of the 1:1 conversation
+  (the card's sender), or store the other party on the enquiry pointer when it
+  is filed. Add the AG-10 two-node cases for enquiry decline and enquiry
+  withdrawal (see R39).
+  *Status:* Open
+
+- [ ] **R27 — major.** *Where:*
+  `crates/roym_transaction/src/app/decline_ops.rs:270` to `:282`
+  (`has_unrefused_counterparty_half_for_enquiry`).
+  *Problem:* it queries `QUOTES` with `request_record_id = <enquiry_id>`. But
+  `request_record_id` holds the enquiry's `record_id` (`rec_…`,
+  `quote_ops.rs:410`), not its `enquiry_id` (`enq_…`). The filter never
+  matches, so the check always answers "no accepted quote". Both
+  `deal.decline` of an enquiry and the filing of an enquiry decline use it.
+  *Failure case (proven):* the writer holds an unrefused counterparty half for
+  a quote that answers enquiry E. `has_unrefused_counterparty_half(quote_id)`
+  is `true`, but `has_unrefused_counterparty_half_for_enquiry(E)` is `false`,
+  and `deal.decline` of E succeeds. The doc says neither party can decline
+  once the counterparty has signed.
+  *Fix:* filter on the enquiry's record id (or on every version's record id
+  of that `enquiry_id`), or store `enquiry_id` on the quote pointer and
+  filter on it. Add a test with an accepted quote.
+  *Status:* Open
+
+- [ ] **R28 — major.** *Where:* `crates/roym_transaction/src/app/decide.rs:114`
+  to `:171` (`handle_refusal`); also `finish_expired_deciding`
+  (`decide/recover.rs:78` to `:104`).
+  *Problem:* a refusal signs a new snapshot each time it runs and stores it
+  with `put_row`. It never reuses a stored `snapshot:<agreement>:1`. The doc
+  rule "a signed record is made once" is broken. A refusal has no decision
+  row, so the recovery sweep does not finish it; the only retry is the next
+  sync reading the same card again, because `file_agreement_receipt_card`
+  returns the error before `put_card`. Any error after the send (a failed
+  `put_row` of `AGREEMENTS` or of `refused:`, a crash, or "file own card
+  failed", which `ensure_snapshot_sent` turns into an `Err`) makes the next
+  sync sign and send a second, different snapshot 1. Also, a lasting send
+  refusal (`Ok(false)`) is ignored: the `refused:` row is still written, so
+  that snapshot is never sent.
+  *Failure case (proven):* `crash_on_write("ledger", "refused:")`, then
+  `decide::run` for a superseded half returns the injected error after the
+  snapshot was sent. After `restart()` and one more second on the clock, a
+  second `decide::run` stores a snapshot with another `record_id` and sends a
+  second card. The counterparty files the first, then sees the same `seq`
+  with other bytes and shows `progress-fork`, which the doc says the writer's
+  own code never makes.
+  *Fix:* in `handle_refusal` and `finish_expired_deciding`, use the stored
+  `snapshot:<agreement>:1` if it exists, and create it with a unique insert
+  otherwise; send only when its `message_id` is empty. Write `refused:` only
+  after the send succeeded, or let the sweep also finish refusals whose
+  snapshot is stored but unsent. Add a crash test for the refusal path that
+  checks one snapshot record and one sent card.
+  *Status:* Open
+
+- [ ] **R29 — major.** *Where:* `crates/roym_transaction/src/app/decline_ops.rs:90`
+  to `:97`, `:253` to `:268` (`has_unrefused_counterparty_half`).
+  *Problem:* a half counts as refused only when a `refused:<half>` row
+  exists. Only the writer writes those rows. On the counterparty's node, its
+  own half for a version that the writer refused stays "unrefused" forever,
+  even after the node filed the `not-formed` snapshot for that version.
+  *Failure case (proven):* Alice accepts v1, Bob already sent v2, Bob's node
+  refuses v1 with `quote-superseded`, and Alice's node files that snapshot.
+  Alice presses "Decline" on v2: `deal.decline` answers "cannot decline a
+  quote that has already been accepted". The Hub shows the button
+  (`deal_state` is `quoted`), so the person gets an error.
+  *Fix:* on the counterparty's node, treat its half as refused when the
+  agreement row of that version is `not-formed` with `quote-superseded` or
+  `quote-already-agreed` (from the writer's snapshot). Add a test.
+  *Status:* Open
+
+- [ ] **R30 — major.** *Where:* `crates/roym_transaction/src/app/decline_ops.rs:141`
+  to `:242`; `crates/roym_transaction/src/app/sync.rs:756` to `:765`, and the
+  pointer writes in `verify_and_apply_declined_quote` / `_enquiry`.
+  *Problem:* `deal.decline` creates the `decline:<deal>` fence, then ignores
+  the result of `send_card_and_file` (`let _`) and of the pointer `put_row`
+  (`let _`). A repeat call returns at `:143` from the stored row. So: (a) a
+  transport error on the send is never retried, and the caller still gets
+  `declined: true`; (b) after a crash or error between the fence and the
+  pointer write, the pointer never gets `declined_at_secs`, so `deal_state`
+  stays `quoted` and the Hub keeps "Accept"/"Decline" while `quote.set` and
+  `agreement.accept` already refuse (`is_deal_ended` reads the fence row). On
+  the receiving side, `file_deal_decline_card` also ignores the errors of
+  both writes and still files the card as verified, and the cursor moves.
+  *Failure case:* the conversation service is briefly unreachable when Alice
+  declines. Alice's Hub says declined; Bob is never told; a second
+  `deal.decline` returns the stored record and sends nothing. AG-10 fails.
+  *Fix:* store the decline's `message_id` on the fence row; on a repeat, send
+  again when it is empty (the same rule as the decision cards). Mark the
+  pointer before returning, also on the repeat path, and return storage
+  errors. In sync, return the write errors so the card is read again.
+  *Status:* Open
+
+- [ ] **R31 — major.** *Where:* `crates/roym_transaction/src/app/backup/sections.rs:466`
+  to `:495`.
+  *Problem:* backup import checks a `decline:` row only for a verifying
+  envelope and `row.deal == key`. It does not check that the declined
+  record (`row.declines`) or the deal is a quote or enquiry in the backup,
+  and it does not compare `row.deal`/`row.declines`/`row.record_id` with the
+  envelope's payload and record id. A `refused:` row is checked only for
+  non-empty fields: its `quote_id` is not looked up in the backup, and its
+  key is not matched to a counterparty half held there. The focus point and
+  plan step 1/step 3 ("add ... to the backup import validation table") ask
+  that every new row kind is checked against a quote in the backup.
+  *Failure case:* a backup with `refused:<half>` for a live half makes the
+  writer skip that half forever (`decide.rs:51` to `:54`), so the
+  counterparty waits with no answer. A `decline:` row whose envelope declines
+  another deal ends the deal named in the key (`is_deal_ended`).
+  *Fix:* for `decline:`, require that the envelope's `deal`, `declines` and
+  record id equal the row's, and that `declines` is a quote or enquiry record
+  in the backup with the same `deal`. For `refused:`, require that the quote id
+  is in the backup and that an agreement row in the backup holds a
+  counterparty half with that record id. Add import tests that refuse both.
+  *Status:* Open
+
+- [ ] **R32 — major.** *Where:* plan D-C1-14; the whole diff (no `repeat`
+  field on `CardRow`, nothing in `crates/roym_web/ui/src`).
+  *Problem:* D-C1-14 ("a node that files a card whose `record_id` it already
+  holds stores it with `repeat: true`, and the Hub does not draw it") is not
+  built, and no Deviation says so. The design sends the same stored card
+  again after some failures (for example `ensure_*_sent` ignores the error of
+  the `message_id` write, so the next run sends again; AG-14's test text says
+  "the counterparty then files the repeated cards as repeats"). No test covers
+  a repeated card.
+  *Failure case:* after a resend, both Hubs draw the same receipt half or
+  snapshot twice in the thread.
+  *Fix:* build D-C1-14 (flag in `CardRow`, set it in each filing function
+  when the `record_id` is already held; Hub skips such rows) with a sync test
+  and a Hub test, or record a Deviation with a backlog row if the owner agrees
+  to defer it.
+  *Status:* Open
+
+- [ ] **R33 — major.** *Where:* `crates/roym_transaction/src/app/decline_ops.rs:153`
+  to `:160`; `crates/roym_web/ui/src/screens/messages.ts` (`openDeclineDialog`).
+  *Problem:* the decline reason is signed as `LocalText` with the language tag
+  `en` always. The note is typed by the person in any language. Before C1b the
+  note was local and unsigned; now it goes into a signed record that the
+  other side reads, and the wrong tag cannot be fixed later.
+  *Failure case:* a Hindi user types a note in Hindi. The signed record says it
+  is English. Bob's Hub offers no translation (it thinks the text is in his
+  own language), and a machine translation would treat Hindi as English.
+  *Fix:* add a `lang` field to `DealDeclineInput` (canonical tag, checked like
+  the other text inputs); the Hub sends the language the person writes in
+  (the same choice the enquiry and quote forms use). Add a test with `hi`.
+  *Status:* Open
+
+- [ ] **R34 — minor.** *Where:* `crates/roym_transaction/src/app/decide.rs:247`,
+  `:315`, `:325`; `crates/roym_transaction/src/app/sync.rs:600`;
+  `crates/roym_transaction/src/app/backup/sections.rs:441`;
+  `decide/rows.rs:61`; `docs/planning/deferred-backlog.md` ("Recently
+  resolved").
+  *Problem:* the `DecisionState` enum exists, but `DecisionRow.state` is still
+  a `String`, and three places still compare the state as a string:
+  `resend_completed_decision(…, state: &str)` with
+  `state == DecisionState::Agreed.as_str()`, the error branch in
+  `file_agreement_receipt_card` (`dec.state == …Deciding.as_str()`), and the
+  backup check `row.state != "deciding" && …`. The backlog row was moved to
+  "Recently resolved" as if all were gone.
+  *Failure case:* a typo or a new state compiles and silently takes the wrong
+  branch.
+  *Fix:* make `DecisionRow.state` a `DecisionState` (serde already uses
+  kebab-case), pass the enum to `resend_completed_decision`, and match on it
+  in all three places; delete `as_str`/`parse` if nothing else needs them.
+  *Status:* Open
+
+- [ ] **R35 — minor.** *Where:* `crates/roym_transaction/src/app.rs:663` to
+  `:669` (`is_deal_ended`); `crates/roym_transaction/src/app/thread.rs:155`
+  to `:166` (`compute_quote_deal_state`).
+  *Problem:* both treat every `not-formed` agreement row as an end of the deal,
+  except `quote-superseded`. A `quote-already-agreed` refusal also "ends only
+  that acceptance" and "the deal stays `agreed`" (agreements doc, Reason codes
+  and Deal rules). In `compute_quote_deal_state` the loop over a `HashMap`
+  returns `not-formed` before it looks at `agreed`.
+  *Failure case:* after a restore, v1 is agreed and a late half for v2 is
+  refused with `quote-already-agreed`. Every quote card of that deal now shows
+  `deal_state: "not-formed"`, and `agreement.accept`/`quote.set` treat the
+  agreed deal as ended.
+  *Fix:* exclude both refusal codes (one helper used by both functions), and
+  check `agreed` before the refusal rows. Add a unit test.
+  *Status:* Open
+
+- [ ] **R36 — minor.** *Where:* `crates/roym_transaction/src/app/tests/refuse/writer.rs:30`,
+  `:102`; `crates/roym_transaction/src/app/tests/recover.rs:192` to `:216` and
+  each crash test; `crates/roym_transaction/src/app/tests/restore.rs:255`.
+  *Problem:* some tests prove less than their names say.
+  (a) `two_syncs_send_one_refusal` calls `decide::run` twice, not
+  `transaction.sync`, and does not count the sent cards, so a second refusal
+  send would still pass. (b) The crash tests write the card row and the cursor
+  by hand (`file_card_and_move_cursor`) and then assert them, so that check
+  cannot fail; no test shows that `sync` files the card and moves the cursor
+  when `decide::run` fails after the fence (the branch at `sync.rs:594` to
+  `:606`). (c) `a_countersigned_half_before_expiry_still_forms_the_agreement`
+  tests the writer's recovery past the expiry (the P19 case again); AG-43's
+  rule is about the counterparty's node filing a countersigned half that
+  arrives after the expiry. (d) `restored_writer_continues_seq_from_its_cards`
+  checks that `seq` becomes 2, but not that the writer's next snapshot is 3.
+  *Fix:* (a) run two `sync_at` calls and assert one sent card; (b) deliver the
+  half through a stubbed `conversation.changes` and a failing write, then
+  assert the stored card and `last_seq`; (c) add a counterparty-side filing
+  test with a half issued before and delivered after the expiry; (d) cancel or
+  tick after the restore and assert `seq` 3.
+  *Status:* Open
+
+- [ ] **R37 — minor.** *Where:* `crates/roym_transaction/src/app/decide/recover.rs:226`
+  to `:240`.
+  *Problem:* `restore_writer_from_conversation` reads one page of
+  `conversation.changes` (`after_seq: 0`, `limit: SYNC_WINDOW` = 500) and stops.
+  Cards after the first 500 messages are never seen.
+  *Failure case:* a restored writer in a conversation with more than 500
+  messages, whose countersigned half was sent after message 500, signs a
+  second, different half. The counterparty keeps the first one silently.
+  *Fix:* page with `after_seq = last seen seq` until `last_seq` is reached.
+  *Status:* Open
+
+- [ ] **R38 — minor.** *Where:* `crates/roym_web/ui/src/screens/messages.ts:646`
+  to `:653`.
+  *Problem:* the Hub hides the buttons for `agreed`, `declined`, `expired`,
+  `not-formed`, `closed` and `cancelled`, but not for `accepted`. After the
+  person accepts, "Decline" stays on the card, and the service refuses it
+  ("cannot decline a quote that has already been accepted"); "Accept" stays
+  too.
+  *Fix:* hide both buttons when `deal_state` is `accepted` (and say "waiting
+  for the other side"); extend the Hub test that lists the states.
+  *Status:* Open
+
+- [ ] **R39 — minor.** *Where:* plan sections 3, 6 (C1b step 1), 7.2, 7.3, 7.4, 8.
+  *Problem:* planned items that are missing:
+  (a) AG-10 two-node covers only the decline of a quote;
+  `decline_reaches_the_other_node` has no withdrawal of an enquiry and no
+  decline of an enquiry by the quote author (R26 shows the second is broken).
+  (b) `decline_filing_checks_refuse_invalid_signers_or_records` checks only a
+  third-party signer; filing checks 2 to 4 (record held in the same
+  conversation, `deal` matches, refused while an unrefused half exists) have
+  no test. (c) Parity scenario 167 (`bundles.rs:86` to `:105`) does not list
+  `deal.decline` and `deal.ping`. (d) The backlog row "Hub transaction action
+  panel … (cases 33-39)" was not narrowed (plan section 8 says C1b builds
+  quote accept and decline). (e) `DealDeclineInput` keeps
+  `#[serde(alias = "quote_record_id")]`, a compatibility alias the product
+  does not need before release.
+  *Fix:* add (a) to (c); narrow the backlog row; remove the alias.
+  *Status:* Open
+
+- [ ] **R40 — minor.** *Where:* `docs/system-architecture.md:1216`, `:1218`;
+  `docs/roym-integrated-experience-spec.md:750`; `docs/developer-guide.md`
+  (the `transaction.thread` paragraph).
+  *Problem:* the living docs say "Either party can decline a quote or
+  enquiry" and "Either side declines a quote". Only the counterparty declines
+  a quote. The architecture row also says the card "carries a decline note";
+  the note is optional. The developer guide lists the card fields of
+  `transaction.thread` but not the new `deal_state` and its values.
+  *Fix:* say who declines what (the counterparty a quote or its own enquiry,
+  the quote author an enquiry), "an optional note", and add `deal_state`
+  with its eight values.
+  *Status:* Open
+
+- [ ] **R41 — minor.** *Where:* `docs/planning/milestones/M08C-deal-core-and-extensions/task.md`
+  section 1; `status.md` C1b row.
+  *Problem:* there is no C1b size table (the plan, section 7.9, and the focus
+  of this round ask for one), and the status row names the "C1a baseline",
+  not `main` at `3dfada58`. My measurement (one `target/` folder, release
+  `wasm32-wasip2`):
+
+  | Component | `main` `3dfada58` | branch `b1011e81` | Change | Limit |
+  | --- | --- | --- | --- | --- |
+  | `transaction` | 1,715,448 | 1,809,581 | +94,133 (+5.49%) | +15% |
+  | `catalog` | 929,631 | 929,631 | 0 | +40 KB |
+  | `conversation` | 811,953 | 811,953 | 0 | +40 KB |
+  | `directory` | 1,467,518 | 1,467,518 | 0 | +40 KB |
+  | `profile` | 771,791 | 771,791 | 0 | +40 KB |
+  | `web` | 309,985 | 310,017 | +32 | +40 KB |
+
+  The numbers in `status.md` are right; all are within the limits.
+  *Fix:* add the table to task.md section 1 under "C1b sizes" with the two
+  shas, and name `main` at `3dfada58` as the base in the status row.
+  *Status:* Open
+
+- [ ] **R42 — minor.** *Where:* `status.md` C1b row;
+  `crates/roym_web/ui/src/i18n/hi.ftl:525` to `:532`;
+  `crates/roym_transaction/src/app/tests/recover.rs:535`; plan section 10.
+  *Problem:* (a) The Hindi review is listed as open ("ready for owner
+  review"), which is right, but the list misses two changed `hi.ftl` messages:
+  `decline-title` (new) and `messages-decline-note-placeholder` (changed).
+  (b) A test comment says "P19 check", a review id; AGENTS.md bans review ids
+  in code (the CI gate does not catch `P` ids). (c) Plan section 10 has no C1b
+  box checked; the status row says "Implemented", so this is fine for now, but
+  the boxes must be filled before "Merged".
+  *Fix:* list all six Hindi messages as open in `status.md` until the owner
+  reviews them; reword the comment to say what it checks ("an agreed deal
+  gets no refusal row").
+  *Status:* Open
