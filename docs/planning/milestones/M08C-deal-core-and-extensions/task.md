@@ -2,7 +2,7 @@
 
 *Reader: developers who build this sub-milestone, and the project owner.*
 
-**Status: started (2026-11-15). No slice is planned yet. The owner answered every question in section 6 on 2026-11-15.** Progress is in [status.md](status.md). Milestone overview and order: [M08-overview.md](../M08-overview.md).
+**Status: started (2026-11-15). C1 plan written and reviewed (2026-11-16). The owner answered every question in section 6 on 2026-11-15.** Progress is in [status.md](status.md). Milestone overview and order: [M08-overview.md](../M08-overview.md).
 
 ## Goal
 
@@ -37,6 +37,19 @@ The agreements doc is the module doc that the old outline listed as "to write fi
 | Z5 | **Reserve, confirm and release** local methods of an extension, with expiry and owner-side clean-up. | Scheduling (C3b); later any extension with a reserve hook | C3b |
 
 **Component size limit.** The M08B rule stays (see [M08B task.md](../M08B-language-and-structure/task.md), section 1; owner decision, 2026-11-15). Each slice that changes a `roym_*` crate reports the size of every Roym component for `wasm32-wasip2`, before and after, from one build folder. A component with no new record code may grow by at most 40 KB. A component with new record code may grow by at most 15%. Over a limit, stop and tell the owner. C3b adds a seventh component (scheduling); it reports its size alone.
+
+**C1a sizes** (`mise run build:roym`, one build folder, 2026-11-17; before on `main` at `34dbe9bd`, after on `feat/m08c-c1-commitment-model` at `f44b0e72`), in bytes:
+
+| Component | Before | After | Change | Limit |
+| --- | --- | --- | --- | --- |
+| `transaction` | 1,516,528 | 1,715,448 | +198,920 (+13.1%) | +15% (227,479), new record code |
+| `catalog` | 929,558 | 929,631 | +73 | +40 KB |
+| `conversation` | 811,880 | 811,953 | +73 | +40 KB |
+| `directory` | 1,467,413 | 1,467,518 | +105 | +40 KB |
+| `profile` | 771,718 | 771,791 | +73 | +40 KB |
+| `web` | 310,033 | 309,985 | −48 | +40 KB |
+
+Every component is within its limit.
 
 **Parity runs need a fresh WASM build.** The dual-build parity harness loads pre-built `wasm32-wasip2` components. Every slice that changes a `roym_*` crate runs `mise run build:roym` before it trusts a parity run.
 
@@ -107,8 +120,9 @@ Change docs: roym-message-forwarding.
 - Criteria: AG-1 to AG-13, AG-22, AG-31 to AG-33, AG-35 to AG-37, AG-39, AG-41 to AG-43. AG-14 and AG-15 with today's slot path inside `transaction`; C3b moves them to the extension. AG-23 for the range rule only; C6 adds the Hub part. AG-2 and AG-4 for the three M08C resource kinds.
 - Demo: starts story 50 (Bob quotes a lesson for wheat plus ₹100; Alice accepts).
 - The plan checks the size first. This is the largest slice. If the plan finds a clean cut that keeps a working system after each part, it splits C1, and records why.
+- **Split (owner decision, 2026-11-16, [C1 plan](slice-c1-implementation-plan.md), Q1):** C1a (deal shapes: every record and caller on the new shapes, the writer's decision in its final order) and C1b (single writer and signed decline: version checks, refusal snapshots, recovery, restore rules, `deal-decline`). Each is one PR.
 
-Change docs: roym-agreements, roym-value-exchange (VX-1, VX-2, VX-6 to VX-9, VX-12).
+Change docs: roym-agreements, roym-value-exchange (VX-1, VX-2, VX-6 to VX-9, VX-12), roym-extensions (EX-1, EX-3 shape only).
 
 ### C2 — Selective disclosure (L)
 

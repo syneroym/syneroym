@@ -204,13 +204,16 @@ export async function sendRequest(page: Page, description: string, category: str
 export async function sendQuote(
   page: Page,
   requestText: string,
-  quote: { scope: string; currency: string; amount: string; payee: string },
+  quote: { scope: string; currency: string; amount: string; payee: string; give?: string },
 ) {
   const card = threadMessage(page, requestText).first();
   await card.locator('.quote-request-button').click();
   const form = page.locator('.quote-form');
   await expect(form).toBeVisible();
   await form.locator('.quote-scope-input').fill(quote.scope);
+  if (quote.give) {
+    await form.locator('.quote-give-input').fill(quote.give);
+  }
   await form.locator('.quote-currency-input').fill(quote.currency);
   await form.locator('.quote-amount-input').fill(quote.amount);
   await form.locator('.quote-payee-input').fill(quote.payee);

@@ -8,18 +8,17 @@ use super::{fixtures::*, helpers::*};
 async fn scenario_144_every_transaction_verb_refused_over_wire_parity() {
     let h = harness().await;
     for method in [
-        "request.ping",
+        "enquiry.ping",
         "quote.ping",
         "agreement.ping",
         "receipt.ping",
-        "booking.ping",
         "payment.ping",
         "fulfilment.ping",
-        "request.set",
-        "request.get",
-        "request.list",
-        "request.history",
-        "request.verify",
+        "enquiry.set",
+        "enquiry.get",
+        "enquiry.list",
+        "enquiry.history",
+        "enquiry.verify",
         "quote.set",
         "quote.get",
         "quote.list",
@@ -29,13 +28,9 @@ async fn scenario_144_every_transaction_verb_refused_over_wire_parity() {
         "agreement.accept",
         "agreement.get",
         "agreement.list",
+        "agreement.cancel",
+        "agreement.progress",
         "agreement.verify",
-        "booking.get",
-        "booking.list",
-        "booking.start",
-        "booking.cancel",
-        "booking.history",
-        "booking.verify",
         "payment.request",
         "payment.acknowledge",
         "payment.get",
@@ -79,8 +74,8 @@ async fn scenario_145_currency_unknown_refused_and_jpy_accepted_parity() {
         &conv,
         &peer_did(),
         1_000,
-        transaction::RECORD_REQUEST,
-        transaction::REQUEST_VERSION,
+        transaction::RECORD_ENQUIRY,
+        transaction::ENQUIRY_VERSION,
         &req_env,
     );
     h.deliver(true, card_msg.clone()).await;
@@ -93,7 +88,7 @@ async fn scenario_145_currency_unknown_refused_and_jpy_accepted_parity() {
         &h,
         "quote.set",
         json!({
-            "request_record_id": req_rec_id,
+            "enquiry_record_id": req_rec_id,
             "expires_in_secs": 3600,
             "terms": xyz_terms,
         }),
@@ -106,14 +101,15 @@ async fn scenario_145_currency_unknown_refused_and_jpy_accepted_parity() {
     // 3. quote.set with "JPY" (minor exponent 0) is accepted and signed
     let mut jpy_terms = sample_quote_terms();
     jpy_terms["currency"] = json!("JPY");
-    jpy_terms["amount_minor"] = json!(5000);
-    jpy_terms["tax_minor"] = json!(0);
-    jpy_terms["fees_minor"] = json!(0);
+    jpy_terms["commitments"][0]["declared_value_minor"] = json!(5000);
+    jpy_terms["commitments"][1]["declared_value_minor"] = json!(5000);
+    jpy_terms["commitments"][1]["tax_minor"] = json!(0);
+    jpy_terms["commitments"][1]["fees_minor"] = json!(0);
     let (qw_jpy, qn_jpy) = both_rpc(
         &h,
         "quote.set",
         json!({
-            "request_record_id": req_rec_id,
+            "enquiry_record_id": req_rec_id,
             "expires_in_secs": 3600,
             "terms": jpy_terms,
         }),
@@ -127,9 +123,9 @@ async fn scenario_145_currency_unknown_refused_and_jpy_accepted_parity() {
     let q_data_w = Envelope::from_json(gw["result"]["envelope"].as_str().unwrap()).unwrap().payload;
     let q_data_n = Envelope::from_json(gn["result"]["envelope"].as_str().unwrap()).unwrap().payload;
     assert_eq!(q_data_w["terms"]["currency"], "JPY");
-    assert_eq!(q_data_w["terms"]["amount_minor"], 5000);
+    assert_eq!(q_data_w["terms"]["commitments"][1]["declared_value_minor"], 5000);
     assert_eq!(q_data_n["terms"]["currency"], "JPY");
-    assert_eq!(q_data_n["terms"]["amount_minor"], 5000);
+    assert_eq!(q_data_n["terms"]["commitments"][1]["declared_value_minor"], 5000);
 }
 
 #[tokio::test]
@@ -146,8 +142,8 @@ async fn scenario_146_peer_replaying_older_request_or_quote_refused_parity() {
         &conv,
         &peer_did(),
         2_000,
-        transaction::RECORD_REQUEST,
-        transaction::REQUEST_VERSION,
+        transaction::RECORD_ENQUIRY,
+        transaction::ENQUIRY_VERSION,
         &req_v2_env,
     );
     h.deliver(true, card_msg_v2.clone()).await;
@@ -166,8 +162,8 @@ async fn scenario_146_peer_replaying_older_request_or_quote_refused_parity() {
         &conv,
         &peer_did(),
         2_100,
-        transaction::RECORD_REQUEST,
-        transaction::REQUEST_VERSION,
+        transaction::RECORD_ENQUIRY,
+        transaction::ENQUIRY_VERSION,
         &req_v1_env,
     );
     h.deliver(true, card_msg_v1.clone()).await;
@@ -184,11 +180,15 @@ async fn scenario_146_peer_replaying_older_request_or_quote_refused_parity() {
     assert_eq!(refused_card["verified"], false);
     assert!(refused_card["reason"].as_str().unwrap().contains("newer or equal version"));
 
-    // 2. Quote: node creates a request, then peer sends quotes answering it
+    // 2. Quote: node creates an enquiry, then peer sends quotes answering it
     let (rw, _) = both_rpc(
         &h,
-        "request.set",
-        json!({ "conversation": conv, "description": "Replay quote test", "lang": "en", "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE }),
+        "enquiry.set",
+        json!({
+            "conversation": conv,
+            "description": { "lang": "en", "text": "Replay quote test" },
+            "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
+        }),
     )
     .await;
     let own_req_rec_id = rw["result"]["record_id"].as_str().unwrap();
@@ -254,11 +254,10 @@ async fn scenario_147_replaying_declined_quote_preserves_decline_parity() {
 
     let (rw, _) = both_rpc(
         &h,
-        "request.set",
+        "enquiry.set",
         json!({
             "conversation": conv,
-            "description": "Decline replay job",
-            "lang": "en",
+            "description": { "lang": "en", "text": "Decline replay job" },
             "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
         }),
     )
@@ -363,8 +362,8 @@ async fn scenario_148_request_or_receipt_with_expiry_is_refused_parity() {
         &conv,
         &peer_did(),
         1_000,
-        transaction::RECORD_REQUEST,
-        transaction::REQUEST_VERSION,
+        transaction::RECORD_ENQUIRY,
+        transaction::ENQUIRY_VERSION,
         &req_env,
     );
     h.deliver(true, card_req.clone()).await;
@@ -387,15 +386,14 @@ async fn scenario_148_request_or_receipt_with_expiry_is_refused_parity() {
     normalize_message_ids(&mut tn1);
     assert_eq!(tw1, tn1);
 
-    // 2. Setup a valid request and quote so we can test peer sending receipt with
+    // 2. Setup a valid enquiry and quote so we can test peer sending receipt with
     //    expiry
     let (rw, _) = both_rpc(
         &h,
-        "request.set",
+        "enquiry.set",
         json!({
             "conversation": conv,
-            "description": "Receipt expiry test",
-            "lang": "en",
+            "description": { "lang": "en", "text": "Receipt expiry test" },
             "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
         }),
     )
@@ -481,11 +479,10 @@ async fn scenario_149_quote_naming_wrong_counterparty_did_refused_parity() {
 
     let (rw, _) = both_rpc(
         &h,
-        "request.set",
+        "enquiry.set",
         json!({
             "conversation": conv,
-            "description": "Wrong counterparty DID test",
-            "lang": "en",
+            "description": { "lang": "en", "text": "Wrong counterparty DID test" },
             "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
         }),
     )
@@ -521,7 +518,7 @@ async fn scenario_149_quote_naming_wrong_counterparty_did_refused_parity() {
         q_card["reason"]
             .as_str()
             .unwrap()
-            .contains("counterparty_did does not match request issuer")
+            .contains("counterparty_did does not match enquiry issuer")
     );
 
     strip_volatile(&mut tw);

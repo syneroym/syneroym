@@ -1,6 +1,8 @@
 //! Transaction data backup: export and import.
 
 pub(crate) mod sections;
+#[cfg(test)]
+mod tests;
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -9,21 +11,21 @@ use serde_json::{Value, json};
 use syneroym_app_host::AppHost;
 use syneroym_roym_core::{
     backup::{
-        self, Bundle, ImportInput, SECTION_AGREEMENTS, SECTION_BOOKINGS, SECTION_CARDS,
-        SECTION_FULFILMENTS, SECTION_LEDGER, SECTION_PAYMENTS, SECTION_PROGRESS,
-        SECTION_QUOTE_HISTORY, SECTION_QUOTES, SECTION_REQUEST_HISTORY, SECTION_REQUESTS,
+        self, Bundle, ImportInput, SECTION_AGREEMENT_PROGRESS, SECTION_AGREEMENTS, SECTION_CARDS,
+        SECTION_ENQUIRIES, SECTION_ENQUIRY_HISTORY, SECTION_FULFILMENTS, SECTION_LEDGER,
+        SECTION_PAYMENTS, SECTION_QUOTE_HISTORY, SECTION_QUOTES,
     },
-    booking, clock,
+    clock,
     envelope::Response,
     fulfilment,
     method::{NoParams, Reply},
-    paging, payment, signing,
+    paging, payment, progress, signing,
     transaction::{self, DealRole, QuotePayload, ReceiptHalf},
 };
 
 use super::{
-    AGREEMENTS, AgreementRow, BOOKINGS, CARDS, CardRow, FULFILMENTS, LEDGER, PAYMENTS, PROGRESS,
-    QUOTE_HISTORY, QUOTES, REQUEST_HISTORY, REQUESTS, RecordPointerRow, SCHEMA_VERSION,
+    AGREEMENT_PROGRESS, AGREEMENTS, AgreementRow, CARDS, CardRow, ENQUIRIES, ENQUIRY_HISTORY,
+    FULFILMENTS, LEDGER, PAYMENTS, QUOTE_HISTORY, QUOTES, RecordPointerRow, SCHEMA_VERSION,
     ensure_collections, get_bytes, put_bytes, put_row,
 };
 
@@ -45,13 +47,12 @@ pub(crate) async fn export<H: AppHost>(host: &H, _input: NoParams) -> Reply<Bund
     let mut sections = match backup::collect_sections(
         host,
         &[
-            (SECTION_REQUESTS, REQUESTS),
+            (SECTION_ENQUIRIES, ENQUIRIES),
             (SECTION_QUOTES, QUOTES),
             (SECTION_AGREEMENTS, AGREEMENTS),
             (SECTION_CARDS, CARDS),
             (SECTION_LEDGER, LEDGER),
-            (SECTION_BOOKINGS, BOOKINGS),
-            (SECTION_PROGRESS, PROGRESS),
+            (SECTION_AGREEMENT_PROGRESS, AGREEMENT_PROGRESS),
             (SECTION_PAYMENTS, PAYMENTS),
             (SECTION_FULFILMENTS, FULFILMENTS),
         ],
@@ -62,7 +63,7 @@ pub(crate) async fn export<H: AppHost>(host: &H, _input: NoParams) -> Reply<Bund
         Err(e) => return Err(Response::internal_error(e)),
     };
     for (section, collection) in
-        [(SECTION_REQUEST_HISTORY, REQUEST_HISTORY), (SECTION_QUOTE_HISTORY, QUOTE_HISTORY)]
+        [(SECTION_ENQUIRY_HISTORY, ENQUIRY_HISTORY), (SECTION_QUOTE_HISTORY, QUOTE_HISTORY)]
     {
         match collect_history(host, collection).await {
             Ok(rows) => {
@@ -90,12 +91,12 @@ pub(crate) async fn import<H: AppHost>(
         return Err(Response::internal_error(e));
     }
 
-    let req_rows = bundle.sections.get(SECTION_REQUESTS).cloned().unwrap_or_default();
+    let req_rows = bundle.sections.get(SECTION_ENQUIRIES).cloned().unwrap_or_default();
     let quote_rows = bundle.sections.get(SECTION_QUOTES).cloned().unwrap_or_default();
     let agr_rows = bundle.sections.get(SECTION_AGREEMENTS).cloned().unwrap_or_default();
     let card_rows = bundle.sections.get(SECTION_CARDS).cloned().unwrap_or_default();
 
-    let verified_requests = match verify_imported_requests(req_rows, &owner, now) {
+    let verified_requests = match verify_imported_enquiries(req_rows, &owner, now) {
         Ok(v) => v,
         Err(e) => return Err(e),
     };
@@ -166,18 +167,18 @@ async fn import_negotiation_sections<H: AppHost>(
     imported_history: &mut HashMap<String, (String, String)>,
     now: u64,
 ) -> Result<(), Response> {
-    let req_hist_rows = sections.get(SECTION_REQUEST_HISTORY).cloned().unwrap_or_default();
+    let req_hist_rows = sections.get(SECTION_ENQUIRY_HISTORY).cloned().unwrap_or_default();
     let quote_hist_rows = sections.get(SECTION_QUOTE_HISTORY).cloned().unwrap_or_default();
 
-    import_history_section(host, REQUEST_HISTORY, "request", req_hist_rows, imported_history, now)
+    import_history_section(host, ENQUIRY_HISTORY, "enquiry", req_hist_rows, imported_history, now)
         .await?;
     import_history_section(host, QUOTE_HISTORY, "quote", quote_hist_rows, imported_history, now)
         .await?;
     write_imported_pointers(
         host,
-        REQUESTS,
-        REQUEST_HISTORY,
-        "request",
+        ENQUIRIES,
+        ENQUIRY_HISTORY,
+        "enquiry",
         verified_requests,
         imported_history,
     )
@@ -227,8 +228,8 @@ async fn import_history_section<H: AppHost>(
         };
 
         let (verified, reason, rec_id) = match kind {
-            "request" => {
-                let v = transaction::verify_request(env_str, now);
+            "enquiry" => {
+                let v = transaction::verify_enquiry(env_str, now);
                 (v.verified, v.reason, v.record_id)
             }
             "quote" => {
@@ -259,9 +260,9 @@ async fn import_history_section<H: AppHost>(
     Ok(())
 }
 
-/// Verifies each bundled request row's signed envelope and refreshes its
+/// Verifies each bundled enquiry row's signed envelope and refreshes its
 /// pointer fields from the verified payload.
-fn verify_imported_requests(
+fn verify_imported_enquiries(
     req_rows: Vec<Value>,
     owner: &str,
     now: u64,
@@ -273,13 +274,13 @@ fn verify_imported_requests(
         let mut row: RecordPointerRow = match serde_json::from_value(payload) {
             Ok(row) => row,
             Err(e) => {
-                return Err(Response::invalid_params(format!("request '{id}': invalid row: {e}")));
+                return Err(Response::invalid_params(format!("enquiry '{id}': invalid row: {e}")));
             }
         };
-        let v = transaction::verify_request(&row.envelope, now);
+        let v = transaction::verify_enquiry(&row.envelope, now);
         if !v.verified {
             return Err(Response::invalid_params(format!(
-                "request '{id}' envelope does not verify: {}",
+                "enquiry '{id}' envelope does not verify: {}",
                 v.reason.as_deref().unwrap_or("unknown")
             )));
         }
@@ -287,30 +288,30 @@ fn verify_imported_requests(
             Some(p) => p,
             None => {
                 return Err(Response::invalid_params(format!(
-                    "request '{id}' has missing payload"
+                    "enquiry '{id}' has missing payload"
                 )));
             }
         };
-        if id != p.request_id {
+        if id != p.enquiry_id {
             return Err(Response::invalid_params(format!(
-                "request '{id}' declared id does not match payload request_id '{}'",
-                p.request_id
+                "enquiry '{id}' declared id does not match payload enquiry_id '{}'",
+                p.enquiry_id
             )));
         }
         let verified_record_id = match v.record_id.as_deref() {
             Some(rid) => rid,
             None => {
-                return Err(Response::invalid_params(format!("request '{id}' has no record_id")));
+                return Err(Response::invalid_params(format!("enquiry '{id}' has no record_id")));
             }
         };
         row.record_id = verified_record_id.to_string();
-        row.id = p.request_id.clone();
+        row.id = p.enquiry_id.clone();
         row.conversation = p.conversation.clone();
         row.sequence = p.sequence;
         row.issuer = v.issuer.clone().unwrap_or_default();
         row.mine = v.issuer.as_deref() == Some(owner);
         row.issued_at_secs = v.issued_at_secs.unwrap_or(row.issued_at_secs);
-        verified_requests.push((p.request_id.clone(), row));
+        verified_requests.push((p.enquiry_id.clone(), row));
     }
     Ok(verified_requests)
 }
@@ -373,7 +374,11 @@ fn verify_imported_quotes(
         row.issuer = v.issuer.clone().unwrap_or_default();
         row.mine = v.issuer.as_deref() == Some(owner);
         row.issued_at_secs = v.issued_at_secs.unwrap_or(row.issued_at_secs);
-        row.request_record_id = Some(p.request_record_id.clone());
+        let request_record_id = match &p.answers {
+            transaction::Answers::Enquiry { record_id } => Some(record_id.clone()),
+            transaction::Answers::Want { .. } => None,
+        };
+        row.request_record_id = request_record_id;
         row.counterparty_did = Some(p.counterparty_did.clone());
 
         quotes_by_record_id.insert(
@@ -633,10 +638,10 @@ async fn write_imported_cards<H: AppHost>(
         if let Some(ref rec_id) = row.record_id {
             if let Some((kind, env)) = imported_history.get(rec_id) {
                 let is_verified = match kind.as_str() {
-                    "request" => transaction::verify_request(env, now).verified,
+                    "enquiry" => transaction::verify_enquiry(env, now).verified,
                     "quote" => transaction::verify_quote(env, now).verified,
                     "agreement-receipt" => transaction::verify_agreement_receipt(env, now).verified,
-                    "booking-progress" => booking::verify_booking_progress(env, now).verified,
+                    "agreement-progress" => progress::verify_agreement_progress(env, now).verified,
                     "payment-request" => payment::verify_payment_request(env, now).verified,
                     "payment-acknowledgement" => {
                         payment::verify_payment_acknowledgement(env, now).verified

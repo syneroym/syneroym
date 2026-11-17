@@ -57,7 +57,7 @@ fn every_catalog_method_has_typed_input_and_output() {
 #[test]
 fn every_transaction_method_has_typed_input_and_output() {
     let table = transaction_api::method_table();
-    assert_eq!(table.len(), 41);
+    assert_eq!(table.len(), 36);
     assert_service_table(
         services::TRANSACTION,
         &table,
@@ -546,13 +546,13 @@ async fn invalid_field_types_and_unknown_fields_in_catalog_and_transaction_are_r
     assert_eq!(w["error"]["code"], -32602);
     assert_eq!(w["error"]["data"]["field"], "envelope");
 
-    // request.list with unknown key agreement
-    let (w, _) = post_rpc(&h, "request.list", Some(json!({ "agreement": "agr1" }))).await;
+    // enquiry.list with unknown key agreement
+    let (w, _) = post_rpc(&h, "enquiry.list", Some(json!({ "agreement": "agr1" }))).await;
     assert_eq!(w["error"]["code"], -32602);
     assert_eq!(w["error"]["data"]["field"], "agreement");
 
-    // booking.list with agreement
-    let (w, _) = post_rpc(&h, "booking.list", Some(json!({ "agreement": "agr1" }))).await;
+    // agreement.list with unknown key agreement
+    let (w, _) = post_rpc(&h, "agreement.list", Some(json!({ "agreement": "agr1" }))).await;
     assert_eq!(w["error"]["code"], -32602);
     assert_eq!(w["error"]["data"]["field"], "agreement");
 
@@ -563,24 +563,31 @@ async fn invalid_field_types_and_unknown_fields_in_catalog_and_transaction_are_r
     assert_eq!(w["error"]["code"], -32602);
     assert_eq!(w["error"]["data"]["field"], "terms.quote_expires_at_secs");
 
-    // booking.list with state: "nonsense"
-    let (w, _) = post_rpc(&h, "booking.list", Some(json!({ "state": "nonsense" }))).await;
-    assert_eq!(w["error"]["code"], -32602);
-    assert_eq!(w["error"]["data"]["field"], "state");
-
-    // request.list with params absent works
-    let (w, _) = post_rpc(&h, "request.list", None).await;
-    assert!(w.get("error").is_none(), "request.list with no params must succeed: {w}");
-    assert!(w.get("result").is_some());
-
-    // request.set with malformed tagged area block
+    // agreement.cancel with bad reason
     let (w, _) = post_rpc(
         &h,
-        "request.set",
+        "agreement.cancel",
+        Some(json!({ "agreement": "agr1", "reason": "nonsense" })),
+    )
+    .await;
+    assert_eq!(w["error"]["code"], -32602);
+    assert_eq!(w["error"]["data"]["field"], "reason");
+
+    // enquiry.list with params absent works
+    let (w, _) = post_rpc(&h, "enquiry.list", None).await;
+    assert!(w.get("error").is_none(), "enquiry.list with no params must succeed: {w}");
+    assert!(w.get("result").is_some());
+
+    // enquiry.set with malformed tagged area block
+    let (w, _) = post_rpc(
+        &h,
+        "enquiry.set",
         Some(json!({
             "conversation": "c1",
-            "description": "Need help",
-            "lang": "en",
+            "description": {
+                "lang": "en",
+                "text": "Need help"
+            },
             "data_use_notice": "standard",
             "area": {
                 "kind": "circle",
@@ -648,12 +655,12 @@ async fn invalid_language_tags_in_record_set_methods_are_rejected() {
             .contains("language tag 'hi_IN' is not a well-formed BCP 47 tag")
     );
 
-    // quote.set with non-canonical terms.lang
+    // quote.set with non-canonical terms.scope.lang
     let mut q_params = super::fixtures::valid_quote_params("c1", "rec_req");
-    q_params["terms"]["lang"] = json!("hi-latn");
+    q_params["terms"]["scope"]["lang"] = json!("hi-latn");
     let (w, _) = post_rpc(&h, "quote.set", Some(q_params)).await;
     assert_eq!(w["error"]["code"], -32602);
-    assert_eq!(w["error"]["data"]["field"], "terms.lang");
+    assert_eq!(w["error"]["data"]["field"], "terms.scope.lang");
     assert!(
         w["error"]["message"]
             .as_str()

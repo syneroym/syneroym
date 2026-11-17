@@ -12,8 +12,8 @@ pub(crate) async fn setup_peer_request(h: &Harness, conv: &str) -> (String, Stri
         &format!("m-req-{req_id}"),
         conv,
         &peer_did(),
-        transaction::RECORD_REQUEST,
-        transaction::REQUEST_VERSION,
+        transaction::RECORD_ENQUIRY,
+        transaction::ENQUIRY_VERSION,
         &req_env,
     )
     .await;
@@ -28,7 +28,13 @@ pub(crate) async fn setup_active_agreement(
 ) -> (String, Value) {
     let (req_rec_id, _req_env) = setup_peer_request(h, conv).await;
     let mut q_params = valid_quote_params(conv, &req_rec_id);
-    q_params["terms"]["payment_timing"] = json!(timing);
+    if timing == "before-work" {
+        q_params["terms"]["commitments"][0]["after"] = json!(["c2"]);
+        q_params["terms"]["commitments"][1]["after"] = json!([]);
+    } else {
+        q_params["terms"]["commitments"][0]["after"] = json!([]);
+        q_params["terms"]["commitments"][1]["after"] = json!(["c1"]);
+    }
     let (qw, qn) = both_rpc(h, "quote.set", q_params).await;
     assert_eq!(
         qw["result"]["record_id"], qn["result"]["record_id"],
@@ -93,9 +99,18 @@ pub(crate) async fn setup_author_slot_quote_accepted_by_peer(
     let (listing_id, slot_id) = setup_listing_with_slot(h, listing_name, start, end, 1).await;
     let (peer_req_id, _) = setup_peer_request(h, conv).await;
     let mut q_slot_params = valid_quote_params(conv, &peer_req_id);
-    q_slot_params["listing_id"] = json!(listing_id);
-    q_slot_params["slot_id"] = json!(slot_id);
-    q_slot_params["terms"]["schedule"] = json!({ "earliest_secs": start, "latest_secs": end });
+    q_slot_params["terms"]["listing_id"] = json!(listing_id);
+    let c0 = &mut q_slot_params["terms"]["commitments"][0];
+    c0["resource_kind"] = json!("service-in-slot");
+    c0["kind"] = json!("fulfilment");
+    c0["extension"] = json!({ "id": "scheduling", "version": 1 });
+    c0["details"] = json!({
+        "extension": "scheduling",
+        "schema": "scheduling/slot@1",
+        "data": { "slot_id": slot_id, "listing_id": listing_id },
+        "extra": []
+    });
+    c0["window"] = json!({ "earliest_secs": start, "latest_secs": end });
     let (_, q_slot_set_nat) = both_rpc(h, "quote.set", q_slot_params).await;
     let q_slot_rec_id = q_slot_set_nat["result"]["record_id"].as_str().unwrap().to_string();
 
@@ -138,11 +153,10 @@ pub(crate) async fn setup_synced_counterparty_quote(
 ) -> String {
     let req = both_rpc(
         h,
-        "request.set",
+        "enquiry.set",
         json!({
             "conversation": conv,
-            "description": "Counterparty deal",
-            "lang": "en",
+            "description": { "lang": "en", "text": "Counterparty deal" },
             "categories": ["gardening"],
             "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
         }),
@@ -185,4 +199,35 @@ pub(crate) async fn seed_row(
     let db = storage.open_service_db(&did_for_service(service), ks).await.unwrap();
     let write = RecordWriteValue { id: id.to_string(), payload: serde_json::to_vec(&row).unwrap() };
     db.put(collection, &write, "seed", None).await.unwrap();
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn peer_signed_progress(
+    conv: &str,
+    agreement: &str,
+    counterparty_did: &str,
+    quote_author_did: &str,
+    seq: u32,
+    state: &str,
+    commitments: Value,
+    signer_identity: &syneroym_identity::Identity,
+    issued_at: u64,
+) -> (String, String) {
+    let payload = json!({
+        "agreement": agreement, "conversation": conv, "counterparty_did": counterparty_did,
+        "quote_author_did": quote_author_did, "seq": seq, "state": state,
+        "commitments": commitments,
+    });
+    let draft = syneroym_signed_record::RecordDraft {
+        version: syneroym_roym_core::progress::AGREEMENT_PROGRESS_VERSION,
+        record_type: syneroym_roym_core::record::RECORD_AGREEMENT_PROGRESS.to_string(),
+        subject: agreement.to_string(),
+        payload,
+        expires_at_secs: None,
+        supersedes: None,
+    };
+    let issuer = syneroym_identity::substrate::derive_did_key(&signer_identity.public_key());
+    let (mut env, bytes) = Envelope::unsigned(draft, issuer, None, issued_at).unwrap();
+    env.attach_signature(z32::encode(&signer_identity.sign(&bytes).to_bytes())).unwrap();
+    (env.record_id().unwrap(), env.to_json().unwrap())
 }

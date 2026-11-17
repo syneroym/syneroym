@@ -1,6 +1,4 @@
 use serde_json::json;
-use syneroym_roym_core::transaction;
-use syneroym_signed_record::Envelope;
 
 use super::{deal_fixtures::*, fixtures::*, helpers::*};
 
@@ -11,19 +9,18 @@ async fn scenario_163_fulfilment_halves_and_completion_orders_parity() {
     enrol_signing(&h, "transaction").await;
     let conv = open_conv(&h, &peer_did()).await;
 
-    let (agr_rec, terms) = setup_active_agreement(&h, &conv, "after-work").await;
-    let amount_minor = terms["amount_minor"].as_i64().unwrap();
-    let curr = terms["currency"].as_str().unwrap();
-
-    // Quote author starts booking
-    both_rpc(&h, "booking.start", json!({ "agreement": agr_rec })).await;
+    let (agr_rec, _terms) = setup_active_agreement(&h, &conv, "after-work").await;
 
     // Quote author fulfilment half -> claimed
-    let (fw, fn_) = both_rpc(&h, "fulfilment.sign", json!({ "agreement": agr_rec })).await;
+    let (fw, fn_) =
+        both_rpc(&h, "fulfilment.sign", json!({ "agreement": agr_rec, "commitment_id": "c1" }))
+            .await;
     assert_eq!(fw["result"]["role"], "quote-author");
     assert_eq!(fn_["result"]["role"], "quote-author");
 
-    let (fg_w, fg_n) = both_rpc(&h, "fulfilment.get", json!({ "agreement": agr_rec })).await;
+    let (fg_w, fg_n) =
+        both_rpc(&h, "fulfilment.get", json!({ "agreement": agr_rec, "commitment_id": "c1" }))
+            .await;
     assert_eq!(fg_w["result"]["track"], "claimed");
     assert_eq!(fg_n["result"]["track"], "claimed");
 
@@ -33,8 +30,8 @@ async fn scenario_163_fulfilment_halves_and_completion_orders_parity() {
         &agr_rec,
         &peer_did(),
         &owner_did(),
-        "counterparty",
-        terms.clone(),
+        "receiver",
+        "c1",
         1_002_000,
     );
     deliver_peer_card(
@@ -49,19 +46,20 @@ async fn scenario_163_fulfilment_halves_and_completion_orders_parity() {
     .await;
     both_rpc(&h, "transaction.sync", json!({ "conversation": conv, "full": true })).await;
 
-    let (fg2_w, fg2_n) = both_rpc(&h, "fulfilment.get", json!({ "agreement": agr_rec })).await;
-    assert_eq!(fg2_w["result"]["track"], "acknowledged");
-    assert_eq!(fg2_n["result"]["track"], "acknowledged");
+    let (fg2_w, fg2_n) =
+        both_rpc(&h, "fulfilment.get", json!({ "agreement": agr_rec, "commitment_id": "c1" }))
+            .await;
+    assert_eq!(fg2_w["result"]["track"], "fulfilled");
+    assert_eq!(fg2_n["result"]["track"], "fulfilled");
 
-    // Both tracks acknowledged completes booking
+    // Both tracks acknowledged completes agreement
     let (c_ack_id, c_ack_env) = peer_signed_payment_ack(
         &conv,
         &agr_rec,
         &peer_did(),
         &owner_did(),
-        "counterparty",
-        curr,
-        amount_minor,
+        "giver",
+        "c2",
         1_003_000,
         Some("cash"),
         None,
@@ -80,15 +78,16 @@ async fn scenario_163_fulfilment_halves_and_completion_orders_parity() {
     .await;
     both_rpc(&h, "transaction.sync", json!({ "conversation": conv, "full": true })).await;
 
-    both_rpc(&h, "payment.acknowledge", json!({ "agreement": agr_rec, "method": "cash" })).await;
+    both_rpc(
+        &h,
+        "payment.acknowledge",
+        json!({ "agreement": agr_rec, "commitment_id": "c2", "method": "cash" }),
+    )
+    .await;
 
-    let (bw, bn) = both_rpc(&h, "booking.get", json!({ "agreement": agr_rec })).await;
-    assert_eq!(bw["result"]["state"], "completed");
-    assert_eq!(bn["result"]["state"], "completed");
-    assert_eq!(bw["result"]["payment"], "acknowledged");
-    assert_eq!(bn["result"]["payment"], "acknowledged");
-    assert_eq!(bw["result"]["fulfilment"], "acknowledged");
-    assert_eq!(bn["result"]["fulfilment"], "acknowledged");
+    let (bw, bn) = both_rpc(&h, "agreement.get", json!({ "agreement": agr_rec })).await;
+    assert_eq!(bw["result"]["state"], "closed");
+    assert_eq!(bn["result"]["state"], "closed");
 }
 
 #[tokio::test]
@@ -98,11 +97,15 @@ async fn scenario_164_fulfilment_halves_wrong_agreement_refused_parity() {
     enrol_signing(&h, "transaction").await;
     let conv = open_conv(&h, &peer_did()).await;
 
-    let (agr_rec, terms) = setup_active_agreement(&h, &conv, "after-work").await;
+    let (agr_rec, _terms) = setup_active_agreement(&h, &conv, "after-work").await;
 
     // Fulfilment with non-existent agreement is refused
-    let (bad_w, bad_n) =
-        both_rpc(&h, "fulfilment.sign", json!({ "agreement": "rec_nonexistent" })).await;
+    let (bad_w, bad_n) = both_rpc(
+        &h,
+        "fulfilment.sign",
+        json!({ "agreement": "rec_nonexistent", "commitment_id": "c1" }),
+    )
+    .await;
     assert!(is_err(&bad_w, -32602));
     assert!(is_err(&bad_n, -32602));
 
@@ -112,8 +115,8 @@ async fn scenario_164_fulfilment_halves_wrong_agreement_refused_parity() {
         &agr_rec,
         "did:key:zWrong",
         &owner_did(),
-        "counterparty",
-        terms,
+        "receiver",
+        "c1",
         1_002_000,
     );
     deliver_peer_card(
@@ -147,68 +150,32 @@ async fn scenario_164_fulfilment_halves_wrong_agreement_refused_parity() {
 }
 
 #[tokio::test]
-async fn scenario_165_track_window_expiration_and_late_half_parity() {
+async fn scenario_165_late_half_after_terminal_state_parity() {
     let h = harness().await;
     enrol_signing(&h, "conversation").await;
     enrol_signing(&h, "transaction").await;
     let conv = open_conv(&h, &peer_did()).await;
 
-    let (req_rec_id, _req_env) = setup_peer_request(&h, &conv).await;
-    let mut q_params = valid_quote_params(&conv, &req_rec_id);
-    // Schedule ended in the distant past (more than 30 days ago)
-    q_params["terms"]["schedule"] = json!({
-        "earliest_secs": 1_000,
-        "latest_secs": 2_000,
-    });
-    let (qw, qn) = both_rpc(&h, "quote.set", q_params).await;
-    assert_eq!(
-        qw["result"]["record_id"], qn["result"]["record_id"],
-        "quote.set record_id parity failed: qw: {qw}, qn: {qn}"
-    );
-    let quote_rec_id = qw["result"]["record_id"].as_str().unwrap().to_string();
-    let quote_id = qw["result"]["quote_id"].as_str().unwrap().to_string();
+    let (agr_rec, _terms) = setup_active_agreement(&h, &conv, "after-work").await;
 
-    let (get_q, _) = both_rpc(&h, "quote.get", json!({ "quote_id": quote_id })).await;
-    let quote_env = Envelope::from_json(get_q["result"]["envelope"].as_str().unwrap()).unwrap();
-    let q_payload = &quote_env.payload;
-
-    let (agr_id, agr_env) = peer_counterparty_receipt(
-        &conv,
-        &quote_rec_id,
-        &peer_did(),
-        &owner_did(),
-        q_payload["terms"].clone(),
-        1_001_000,
-    );
-    deliver_peer_card(
+    // Writer cancels agreement -> terminal state "cancelled"
+    let (cw, cn) = both_rpc(
         &h,
-        &format!("m-agr-{agr_id}"),
-        &conv,
-        &peer_did(),
-        transaction::RECORD_AGREEMENT_RECEIPT,
-        transaction::AGREEMENT_RECEIPT_VERSION,
-        &agr_env,
+        "agreement.cancel",
+        json!({ "agreement": agr_rec, "reason": "counterparty-asked" }),
     )
     .await;
-    both_rpc(&h, "transaction.sync", json!({ "conversation": conv, "full": true })).await;
+    assert_eq!(cw["result"]["state"], "cancelled");
+    assert_eq!(cn["result"]["state"], "cancelled");
 
-    // Booking.get detects track window expiration
-    let (bw, bn) = both_rpc(&h, "booking.get", json!({ "agreement": quote_rec_id })).await;
-    assert_eq!(bw["result"]["state"], "ended-unconfirmed", "bw: {bw}");
-    assert_eq!(bn["result"]["state"], "ended-unconfirmed", "bn: {bn}");
-    assert_eq!(bw["result"]["payment"], "unconfirmed", "bw: {bw}");
-    assert_eq!(bn["result"]["payment"], "unconfirmed", "bn: {bn}");
-    assert_eq!(bw["result"]["fulfilment"], "unconfirmed", "bw: {bw}");
-    assert_eq!(bn["result"]["fulfilment"], "unconfirmed", "bn: {bn}");
-
-    // Late half arriving after terminal state does not alter terminal state
+    // Late fulfilment arriving after terminal state does not alter terminal state
     let (late_cf_id, late_cf_env) = peer_signed_fulfilment(
         &conv,
-        &quote_rec_id,
+        &agr_rec,
         &peer_did(),
         &owner_did(),
-        "counterparty",
-        q_payload["terms"].clone(),
+        "receiver",
+        "c1",
         20_000_000,
     );
     deliver_peer_card(
@@ -223,9 +190,9 @@ async fn scenario_165_track_window_expiration_and_late_half_parity() {
     .await;
     both_rpc(&h, "transaction.sync", json!({ "conversation": conv, "full": true })).await;
 
-    let (b2w, b2n) = both_rpc(&h, "booking.get", json!({ "agreement": quote_rec_id })).await;
-    assert_eq!(b2w["result"]["state"], "ended-unconfirmed", "b2w: {b2w}");
-    assert_eq!(b2n["result"]["state"], "ended-unconfirmed", "b2n: {b2n}");
+    let (aw, an) = both_rpc(&h, "agreement.get", json!({ "agreement": agr_rec })).await;
+    assert_eq!(aw["result"]["state"], "cancelled", "aw: {aw}");
+    assert_eq!(an["result"]["state"], "cancelled", "an: {an}");
 }
 
 #[tokio::test]
@@ -236,15 +203,18 @@ async fn scenario_172_fulfilment_sign_retry_returns_the_fenced_record_parity() {
     let conv = open_conv(&h, &peer_did()).await;
 
     let (agr_rec, _terms) = setup_active_agreement(&h, &conv, "after-work").await;
-    both_rpc(&h, "booking.start", json!({ "agreement": agr_rec })).await;
 
-    let (fw1, fn1) = both_rpc(&h, "fulfilment.sign", json!({ "agreement": agr_rec })).await;
+    let (fw1, fn1) =
+        both_rpc(&h, "fulfilment.sign", json!({ "agreement": agr_rec, "commitment_id": "c1" }))
+            .await;
     assert_eq!(fw1["result"]["record_id"], fn1["result"]["record_id"]);
     assert_eq!(fw1["result"]["state"], fn1["result"]["state"]);
 
     // A retry -- the fenced record, not a freshly signed one -- comes back
     // with the same record id on both builds.
-    let (fw2, fn2) = both_rpc(&h, "fulfilment.sign", json!({ "agreement": agr_rec })).await;
+    let (fw2, fn2) =
+        both_rpc(&h, "fulfilment.sign", json!({ "agreement": agr_rec, "commitment_id": "c1" }))
+            .await;
     assert_eq!(fw2["result"]["record_id"], fw1["result"]["record_id"]);
     assert_eq!(fn2["result"]["record_id"], fn1["result"]["record_id"]);
     assert_eq!(fw2["result"]["state"], "already-recorded");

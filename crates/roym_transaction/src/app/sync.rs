@@ -1,6 +1,8 @@
 //! Transaction synchronization across conversation history.
 
 pub(crate) mod receipts;
+#[cfg(test)]
+mod tests;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -19,9 +21,9 @@ use syneroym_roym_core::{
 };
 
 use super::{
-    AGREEMENTS, AgreementRow, CARDS, CardRow, QUOTE_HISTORY, REQUEST_HISTORY, SYNC_STATE,
-    SyncStateRow, agreement_ops::maybe_countersign, ensure_collections, get_bytes, get_row,
-    put_card, put_row, quote_ops::store_received_quote, request_ops::store_received_request,
+    AGREEMENTS, AgreementRow, CARDS, CardRow, ENQUIRY_HISTORY, QUOTE_HISTORY, SYNC_STATE,
+    SyncStateRow, decide, enquiry_ops::store_received_enquiry, ensure_collections, get_bytes,
+    get_row, progress_ops, put_card, put_row, quote_ops::store_received_quote,
 };
 
 #[derive(Debug, Deserialize)]
@@ -108,6 +110,8 @@ pub(crate) async fn sync<H: AppHost>(host: &H, input: SyncInput) -> Reply<SyncOu
     {
         return Err(Response::internal_error(e));
     }
+
+    let _ = progress_ops::tick_conversation_at(host, &input.conversation, now).await;
 
     Ok(SyncOutput {
         scanned: stats.scanned,
@@ -269,12 +273,12 @@ async fn dispatch_known_card<H: AppHost>(
     owner: &str,
 ) -> Result<FileCardResult, String> {
     match card.card_type.as_str() {
-        "request" => file_request_card(host, row, &card.envelope, conversation, now, owner).await,
+        "enquiry" => file_enquiry_card(host, row, &card.envelope, conversation, now, owner).await,
         "quote" => file_quote_card(host, row, &card.envelope, conversation, now, owner).await,
         "agreement-receipt" => {
             file_agreement_receipt_card(host, row, &card.envelope, conversation, now, owner).await
         }
-        "booking-progress" => {
+        "agreement-progress" => {
             receipts::file_progress_card(host, row, &card.envelope, conversation, now, owner).await
         }
         "payment-request" => {
@@ -293,7 +297,7 @@ async fn dispatch_known_card<H: AppHost>(
     }
 }
 
-async fn file_incoming_card<H: AppHost>(
+pub(crate) async fn file_incoming_card<H: AppHost>(
     host: &H,
     m: &Value,
     conversation: &str,
@@ -346,7 +350,7 @@ pub(crate) async fn refuse_card<H: AppHost>(
     })
 }
 
-async fn file_request_card<H: AppHost>(
+async fn file_enquiry_card<H: AppHost>(
     host: &H,
     mut row: CardRow,
     envelope: &str,
@@ -354,9 +358,9 @@ async fn file_request_card<H: AppHost>(
     now: u64,
     owner: &str,
 ) -> Result<FileCardResult, String> {
-    let v = transaction::verify_request(envelope, now);
+    let v = transaction::verify_enquiry(envelope, now);
     if !v.verified {
-        let reason = v.reason.unwrap_or_else(|| "request does not verify".to_string());
+        let reason = v.reason.unwrap_or_else(|| "enquiry does not verify".to_string());
         return refuse_card(host, row, reason).await;
     }
     let payload = match v.payload.as_ref() {
@@ -366,7 +370,7 @@ async fn file_request_card<H: AppHost>(
     if payload.conversation != conversation {
         return refuse_card(host, row, "card names another conversation").await;
     }
-    let version_count = match store_received_request(host, envelope, &v, payload, now, owner).await
+    let version_count = match store_received_enquiry(host, envelope, &v, payload, now, owner).await
     {
         Ok(vc) => vc,
         Err(e) => return refuse_card(host, row, e).await,
@@ -407,21 +411,27 @@ async fn file_quote_card<H: AppHost>(
     if payload.conversation != conversation {
         return refuse_card(host, row, "card names another conversation").await;
     }
-    let req_bytes = match get_bytes(host, REQUEST_HISTORY, &payload.request_record_id).await? {
+    let enquiry_rec_id = match &payload.answers {
+        transaction::Answers::Enquiry { record_id } => record_id,
+        transaction::Answers::Want { .. } => {
+            return refuse_card(host, row, "answers a want, which is not supported").await;
+        }
+    };
+    let req_bytes = match get_bytes(host, ENQUIRY_HISTORY, enquiry_rec_id).await? {
         Some(b) => b,
         None => {
-            return refuse_card(host, row, "answers a request this node does not hold").await;
+            return refuse_card(host, row, "answers an enquiry this node does not hold").await;
         }
     };
     let req_str = match String::from_utf8(req_bytes) {
         Ok(s) => s,
         Err(_) => {
-            return refuse_card(host, row, "stored request envelope is invalid utf8").await;
+            return refuse_card(host, row, "stored enquiry envelope is invalid utf8").await;
         }
     };
-    let req_v = transaction::verify_request(&req_str, now);
+    let req_v = transaction::verify_enquiry(&req_str, now);
     if !req_v.verified || req_v.issuer.as_deref() != Some(payload.counterparty_did.as_str()) {
-        return refuse_card(host, row, "quote counterparty_did does not match request issuer")
+        return refuse_card(host, row, "quote counterparty_did does not match enquiry issuer")
             .await;
     }
     let version_count = match store_received_quote(host, envelope, &v, payload, now, owner).await {
@@ -499,10 +509,17 @@ async fn file_agreement_receipt_card<H: AppHost>(
             Some(r) => r,
             None => AgreementRow {
                 quote_record_id: payload.quote_record_id.clone(),
+                quote_id: q_payload.quote_id.clone(),
                 conversation: conversation.to_string(),
                 counterparty_did: payload.counterparty_did.clone(),
                 quote_author_did: payload.quote_author_did.clone(),
                 terms: q_payload.terms.clone(),
+                state: None,
+                state_reason: None,
+                cancel_reason: None,
+                seq: None,
+                commitments: Vec::new(),
+                agreed_at_secs: None,
                 counterparty: None,
                 quote_author: None,
                 updated_at_secs: now,
@@ -516,6 +533,9 @@ async fn file_agreement_receipt_card<H: AppHost>(
             issued_at_secs: issued_at,
         };
         row_agr.set_half(payload.role, half);
+        if payload.role == transaction::DealRole::QuoteAuthor {
+            row_agr.agreed_at_secs = Some(issued_at);
+        }
         row_agr.updated_at_secs = now;
         put_row(host, AGREEMENTS, &payload.quote_record_id, &row_agr).await?;
     }
@@ -524,7 +544,13 @@ async fn file_agreement_receipt_card<H: AppHost>(
     row.issuer = v.issuer;
     row.record_id = v.record_id;
     row.revocation_status = v.revocation_status;
-    let countersigned = maybe_countersign(host, &mut row_agr, &qv, now, owner).await?;
+    let countersigned = if payload.role == transaction::DealRole::Counterparty
+        && owner == row_agr.quote_author_did
+    {
+        decide::run(host, &mut row_agr, q_payload, now).await?
+    } else {
+        false
+    };
     put_card(host, &row).await?;
     Ok(FileCardResult {
         filed: true,

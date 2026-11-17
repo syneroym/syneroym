@@ -17,7 +17,7 @@ pub(crate) fn normalize_message_ids(val: &mut Value) -> usize {
     map.len()
 }
 
-/// Replaces every `booking-progress` card's `record_id` with
+/// Replaces every `agreement-progress` card's `record_id` with
 /// `<progress:N>`, N being the card's position once `cards` rows are in
 /// their own sort order. A snapshot the quote author's own node signs embeds
 /// `track_window_ends_at_secs` (computed from `clock::now_secs()`, not the
@@ -36,7 +36,7 @@ pub(crate) fn normalize_progress_record_ids(val: &mut Value) -> usize {
 fn collect_ordered_progress_ids(val: &Value, out: &mut Vec<String>) {
     match val {
         Value::Object(map) => {
-            if map.get("card_type").and_then(Value::as_str) == Some("booking-progress")
+            if map.get("card_type").and_then(Value::as_str) == Some("agreement-progress")
                 && let Some(id) = map.get("record_id").and_then(Value::as_str)
                 && !out.iter().any(|e| e == id)
             {

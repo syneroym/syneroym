@@ -129,8 +129,8 @@ pub(crate) fn full_listing_params(slug: &str, title: &str) -> Value {
 /// others report 1.
 pub(crate) fn expected_schema_version(service: &str) -> u32 {
     match service {
-        "directory" => 5,
-        "conversation" | "transaction" => 4,
+        "directory" | "transaction" => 5,
+        "conversation" => 4,
         "catalog" => 3,
         "profile" => 2,
         _ => 1,
@@ -243,37 +243,41 @@ pub(crate) fn inbound_card(
 
 pub(crate) fn sample_quote_terms() -> Value {
     json!({
-        "lang": "en", "scope": "Garden repair",
         "currency": "EUR",
-        "amount_minor": 50000,
-        "tax_minor": 5000,
-        "fees_minor": 2000,
-        "payment_methods": ["card", "cash"],
-        "payee": "Garden Services Ltd",
-        "payment_timing": "after-work",
-        "location": {
-            "where": "at-receiver",
-            "address": "123 Flower St",
-        },
-        "cancellation_terms": "Cancel 24h prior for full refund",
-        "refund_terms": "Full refund if unsatisfactory",
-        "dispute_path": "Contact disputes@example.com",
+        "commitments": [
+            {
+                "giver": "quote-author", "resource_kind": "goods-or-service", "kind": "fulfilment",
+                "after": [], "description": { "lang": "en", "text": "Garden repair" },
+                "declared_value_minor": 50000,
+                "location": { "where": "at-receiver", "address": "123 Flower St" }
+            },
+            {
+                "giver": "counterparty", "resource_kind": "currency", "kind": "currency",
+                "after": ["c1"], "description": { "lang": "en", "text": "EUR 500.00" },
+                "declared_value_minor": 50000, "payee": "Garden Services Ltd",
+                "payment_methods": ["card", "cash"], "tax_minor": 5000, "fees_minor": 2000
+            }
+        ],
+        "scope": { "lang": "en", "text": "Garden repair" },
+        "cancellation_terms": { "lang": "en", "text": "Cancel 24h prior for full refund" },
+        "refund_terms": { "lang": "en", "text": "Full refund if unsatisfactory" },
+        "dispute_path": { "lang": "en", "text": "Contact disputes@example.com" }
     })
 }
 
 pub(crate) fn peer_signed_request(conv: &str, seq: u32, issued_at: u64) -> (String, String) {
-    let req_id = transaction::derive_request_id(conv, &peer_did(), seq).unwrap();
+    let req_id = transaction::derive_enquiry_id(conv, &peer_did(), seq).unwrap();
     let payload = json!({
-        "request_id": req_id,
+        "enquiry_id": req_id,
         "conversation": conv,
         "sequence": seq,
-        "categories": ["gardening"], "lang": "en",
-        "description": "Prune apple tree",
+        "categories": ["gardening"],
+        "description": { "lang": "en", "text": "Prune apple tree" },
         "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
     });
     let env_json = sign_as_peer(
-        transaction::RECORD_REQUEST,
-        transaction::REQUEST_VERSION,
+        transaction::RECORD_ENQUIRY,
+        transaction::ENQUIRY_VERSION,
         &req_id,
         payload,
         None,
@@ -304,11 +308,16 @@ pub(crate) fn peer_signed_quote(
     let quote_id = transaction::derive_quote_id(conv, &peer_did(), seq).unwrap();
     let mut terms = sample_quote_terms();
     terms["quote_expires_at_secs"] = json!(exp_secs);
+    if let Some(arr) = terms["commitments"].as_array_mut() {
+        for (i, c) in arr.iter_mut().enumerate() {
+            c["commitment_id"] = json!(syneroym_roym_core::deal::commitment_id(i));
+        }
+    }
     let payload = json!({
         "quote_id": quote_id,
         "conversation": conv,
         "sequence": seq,
-        "request_record_id": req_record_id,
+        "answers": { "kind": "enquiry", "record_id": req_record_id },
         "counterparty_did": counterparty_did,
         "terms": terms,
     });
@@ -339,7 +348,7 @@ pub(crate) fn peer_counterparty_receipt(
         "counterparty_did": counterparty_did,
         "quote_author_did": quote_author_did,
         "role": "counterparty",
-        "terms": terms, "viewed_lang": terms["lang"], "viewed_via_mt": false,
+        "terms": terms, "viewed_lang": "en", "viewed_via_mt": false,
     });
     let env_json = sign_as_peer(
         transaction::RECORD_AGREEMENT_RECEIPT,
@@ -361,20 +370,20 @@ pub(crate) fn peer_signed_request_with(
     expires_at_secs: Option<u64>,
     supersedes: Option<String>,
 ) -> (String, String) {
-    let req_id = transaction::derive_request_id(conv, &peer_did(), seq).unwrap();
+    let req_id = transaction::derive_enquiry_id(conv, &peer_did(), seq).unwrap();
     let payload = json!({
-        "request_id": req_id,
+        "enquiry_id": req_id,
         "conversation": conv,
         "sequence": seq,
-        "categories": ["gardening"], "lang": "en",
-        "description": "Prune apple tree",
+        "categories": ["gardening"],
+        "description": { "lang": "en", "text": "Prune apple tree" },
         "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
     });
     let peer = peer_identity();
     let issuer = peer_did();
     let draft = RecordDraft {
-        version: transaction::REQUEST_VERSION,
-        record_type: transaction::RECORD_REQUEST.to_string(),
+        version: transaction::ENQUIRY_VERSION,
+        record_type: transaction::RECORD_ENQUIRY.to_string(),
         subject: req_id,
         payload,
         expires_at_secs,
@@ -401,11 +410,16 @@ pub(crate) fn peer_signed_quote_with(
     let exp_secs = expires_at.unwrap_or(issued_at + 3600);
     let mut terms = sample_quote_terms();
     terms["quote_expires_at_secs"] = json!(exp_secs);
+    if let Some(arr) = terms["commitments"].as_array_mut() {
+        for (i, c) in arr.iter_mut().enumerate() {
+            c["commitment_id"] = json!(syneroym_roym_core::deal::commitment_id(i));
+        }
+    }
     let payload = json!({
         "quote_id": quote_id,
         "conversation": conv,
         "sequence": seq,
-        "request_record_id": req_record_id,
+        "answers": { "kind": "enquiry", "record_id": req_record_id },
         "counterparty_did": counterparty_did,
         "terms": terms,
     });
@@ -442,7 +456,7 @@ pub(crate) fn peer_counterparty_receipt_with_expiry(
         "counterparty_did": counterparty_did,
         "quote_author_did": quote_author_did,
         "role": "counterparty",
-        "terms": terms, "viewed_lang": terms["lang"], "viewed_via_mt": false,
+        "terms": terms, "viewed_lang": "en", "viewed_via_mt": false,
     });
     let peer = peer_identity();
     let issuer = peer_did();
@@ -477,7 +491,7 @@ pub(crate) const WIRE_REFUSED_VERBS: [(services::Service, &str); 6] = [
     (services::CONVERSATION, "conversation.history"),
     (services::PROFILE, "profile.get"),
     (services::CATALOG, "listing.get"),
-    (services::TRANSACTION, "request.ping"),
+    (services::TRANSACTION, "enquiry.ping"),
     (services::DIRECTORY, "directory.ping"),
 ];
 
@@ -685,8 +699,7 @@ pub(crate) fn peer_signed_payment_ack(
     counterparty_did: &str,
     quote_author_did: &str,
     role: &str,
-    currency: &str,
-    amount_minor: i64,
+    commitment_id: &str,
     observed_at_secs: u64,
     method: Option<&str>,
     reference: Option<&str>,
@@ -695,9 +708,8 @@ pub(crate) fn peer_signed_payment_ack(
 ) -> (String, String) {
     let payload = json!({
         "agreement": agreement, "conversation": conv, "counterparty_did": counterparty_did,
-        "quote_author_did": quote_author_did, "role": role, "currency": currency,
-        "amount_minor": amount_minor, "observed_at_secs": observed_at_secs,
-        "method": method, "reference": reference,
+        "quote_author_did": quote_author_did, "role": role, "commitment_id": commitment_id,
+        "observed_at_secs": observed_at_secs, "method": method, "reference": reference,
     });
     let draft = RecordDraft {
         version: syneroym_roym_core::payment::PAYMENT_ACKNOWLEDGEMENT_VERSION,
@@ -712,19 +724,18 @@ pub(crate) fn peer_signed_payment_ack(
     (env.record_id().unwrap(), env.to_json().unwrap())
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn peer_signed_fulfilment(
     conv: &str,
     agreement: &str,
     counterparty_did: &str,
     quote_author_did: &str,
     role: &str,
-    terms: Value,
+    commitment_id: &str,
     issued_at: u64,
 ) -> (String, String) {
     let payload = json!({
         "agreement": agreement, "conversation": conv, "counterparty_did": counterparty_did,
-        "quote_author_did": quote_author_did, "role": role, "terms": terms,
+        "quote_author_did": quote_author_did, "role": role, "commitment_id": commitment_id,
     });
     let draft = RecordDraft {
         version: syneroym_roym_core::fulfilment::FULFILMENT_RECEIPT_VERSION,
@@ -739,46 +750,9 @@ pub(crate) fn peer_signed_fulfilment(
     (env.record_id().unwrap(), env.to_json().unwrap())
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn peer_signed_progress(
-    conv: &str,
-    agreement: &str,
-    counterparty_did: &str,
-    quote_author_did: &str,
-    seq: u32,
-    state: &str,
-    conflict: Option<&str>,
-    payment: &str,
-    fulfilment: &str,
-    window_ends: u64,
-    signer_identity: &Identity,
-    issued_at: u64,
-) -> (String, String) {
-    let mut payload = json!({
-        "agreement": agreement, "conversation": conv, "counterparty_did": counterparty_did,
-        "quote_author_did": quote_author_did, "seq": seq, "state": state,
-        "payment": payment, "fulfilment": fulfilment, "track_window_ends_at_secs": window_ends,
-    });
-    if let Some(c) = conflict {
-        payload["conflict"] = json!(c);
-    }
-    let draft = RecordDraft {
-        version: syneroym_roym_core::booking::BOOKING_PROGRESS_VERSION,
-        record_type: syneroym_roym_core::record::RECORD_BOOKING_PROGRESS.to_string(),
-        subject: agreement.to_string(),
-        payload,
-        expires_at_secs: None,
-        supersedes: None,
-    };
-    let issuer = derive_did_key(&signer_identity.public_key());
-    let (mut env, bytes) = Envelope::unsigned(draft, issuer, None, issued_at).unwrap();
-    env.attach_signature(z32::encode(&signer_identity.sign(&bytes).to_bytes())).unwrap();
-    (env.record_id().unwrap(), env.to_json().unwrap())
-}
-
 pub(crate) fn valid_quote_params(conv: &str, req_rec_id: &str) -> Value {
     let _ = conv;
-    json!({ "request_record_id": req_rec_id, "expires_in_secs": 3600, "terms": sample_quote_terms() })
+    json!({ "enquiry_record_id": req_rec_id, "expires_in_secs": 3600, "terms": sample_quote_terms() })
 }
 
 pub(crate) async fn deliver_peer_card(

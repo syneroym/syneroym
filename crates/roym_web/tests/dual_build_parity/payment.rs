@@ -17,7 +17,11 @@ async fn scenario_158_payment_request_carries_no_payee_parity() {
     let (pr_w, pr_n) = both_rpc(
         &h,
         "payment.request",
-        json!({ "agreement": agr_rec, "note": "Please pay via bank transfer" }),
+        json!({
+            "agreement": agr_rec,
+            "commitment_id": "c2",
+            "note": { "lang": "en", "text": "Please pay via bank transfer" },
+        }),
     )
     .await;
     assert_eq!(pr_w["result"]["record_id"], pr_n["result"]["record_id"]);
@@ -49,9 +53,7 @@ async fn scenario_159_payment_track_states_parity() {
     enrol_signing(&h, "transaction").await;
     let conv = open_conv(&h, &peer_did()).await;
 
-    let (agr_rec, terms) = setup_active_agreement(&h, &conv, "after-work").await;
-    let amount_minor = terms["amount_minor"].as_i64().unwrap();
-    let curr = terms["currency"].as_str().unwrap();
+    let (agr_rec, _terms) = setup_active_agreement(&h, &conv, "after-work").await;
 
     // Counterparty's half alone -> track claimed
     let (c_ack_id, c_ack_env) = peer_signed_payment_ack(
@@ -59,9 +61,8 @@ async fn scenario_159_payment_track_states_parity() {
         &agr_rec,
         &peer_did(),
         &owner_did(),
-        "counterparty",
-        curr,
-        amount_minor,
+        "giver",
+        "c2",
         1_002_000,
         Some("cash"),
         Some("tx-123"),
@@ -80,7 +81,8 @@ async fn scenario_159_payment_track_states_parity() {
     .await;
     both_rpc(&h, "transaction.sync", json!({ "conversation": conv, "full": true })).await;
 
-    let (pw, pn) = both_rpc(&h, "payment.get", json!({ "agreement": agr_rec })).await;
+    let (pw, pn) =
+        both_rpc(&h, "payment.get", json!({ "agreement": agr_rec, "commitment_id": "c2" })).await;
     assert_eq!(pw["result"]["track"], "claimed");
     assert_eq!(pn["result"]["track"], "claimed");
 
@@ -90,6 +92,7 @@ async fn scenario_159_payment_track_states_parity() {
         "payment.acknowledge",
         json!({
             "agreement": agr_rec,
+            "commitment_id": "c2",
             "method": "cash",
             "reference": "tx-123",
             "observed_at_secs": 1_002_500
@@ -99,7 +102,8 @@ async fn scenario_159_payment_track_states_parity() {
     assert_eq!(ack_w["result"]["role"], "quote-author");
     assert_eq!(ack_n["result"]["role"], "quote-author");
 
-    let (p2w, p2n) = both_rpc(&h, "payment.get", json!({ "agreement": agr_rec })).await;
+    let (p2w, p2n) =
+        both_rpc(&h, "payment.get", json!({ "agreement": agr_rec, "commitment_id": "c2" })).await;
     assert_eq!(p2w["result"]["track"], "acknowledged");
     assert_eq!(p2n["result"]["track"], "acknowledged");
 }
@@ -111,25 +115,26 @@ async fn scenario_160_payment_wrong_amount_or_method_refused_parity() {
     enrol_signing(&h, "transaction").await;
     let conv = open_conv(&h, &peer_did()).await;
 
-    let (agr_rec, terms) = setup_active_agreement(&h, &conv, "after-work").await;
-    let amount_minor = terms["amount_minor"].as_i64().unwrap();
+    let (agr_rec, _terms) = setup_active_agreement(&h, &conv, "after-work").await;
 
     // Method outside terms via verb
-    let (bad_amt_w, bad_amt_n) =
-        both_rpc(&h, "payment.acknowledge", json!({ "agreement": agr_rec, "method": "crypto" }))
-            .await;
+    let (bad_amt_w, bad_amt_n) = both_rpc(
+        &h,
+        "payment.acknowledge",
+        json!({ "agreement": agr_rec, "commitment_id": "c2", "method": "crypto" }),
+    )
+    .await;
     assert!(is_err(&bad_amt_w, -32602));
     assert!(is_err(&bad_amt_n, -32602));
 
-    // Wrong currency in card from peer
+    // Wrong commitment in card from peer
     let (bad_curr_id, bad_curr_env) = peer_signed_payment_ack(
         &conv,
         &agr_rec,
         &peer_did(),
         &owner_did(),
-        "counterparty",
-        "XYZ",
-        amount_minor,
+        "giver",
+        "c99",
         1_002_000,
         Some("cash"),
         None,
@@ -182,7 +187,7 @@ async fn scenario_161_payment_correction_round_trip_parity() {
         &h,
         "payment.acknowledge",
         json!({
-            "agreement": agr_rec, "method": "cash", "reference": "receipt-001",
+            "agreement": agr_rec, "commitment_id": "c2", "method": "cash", "reference": "receipt-001",
             "observed_at_secs": 1_002_000,
         }),
     )
@@ -198,8 +203,7 @@ async fn scenario_161_payment_correction_round_trip_parity() {
         &h,
         "payment.acknowledge",
         json!({
-            "agreement": agr_rec,
-            "method": "cash",
+            "agreement": agr_rec, "commitment_id": "c2", "method": "cash",
             "reference": "receipt-001-corrected",
             "observed_at_secs": 1_002_100,
             "supersedes": rec1
@@ -218,14 +222,15 @@ async fn scenario_161_payment_correction_round_trip_parity() {
     let (stale_w, stale_n) = both_rpc(
         &h,
         "payment.acknowledge",
-        json!({ "agreement": agr_rec, "method": "cash", "supersedes": rec1 }),
+        json!({ "agreement": agr_rec, "commitment_id": "c2", "method": "cash", "supersedes": rec1 }),
     )
     .await;
     assert!(is_err(&stale_w, -32602));
     assert!(is_err(&stale_n, -32602));
 
     // Both versions kept in payment.get
-    let (gw, gn) = both_rpc(&h, "payment.get", json!({ "agreement": agr_rec })).await;
+    let (gw, gn) =
+        both_rpc(&h, "payment.get", json!({ "agreement": agr_rec, "commitment_id": "c2" })).await;
     assert_eq!(gw, gn);
     let prov_acks = gw["result"]["quote_author"].as_array().unwrap();
     assert_eq!(prov_acks.len(), 2);
@@ -246,7 +251,7 @@ async fn scenario_162_payment_acknowledge_duplicate_already_recorded_parity() {
     let (a1w, a1n) = both_rpc(
         &h,
         "payment.acknowledge",
-        json!({ "agreement": agr_rec, "method": "cash", "reference": "tx-1" }),
+        json!({ "agreement": agr_rec, "commitment_id": "c2", "method": "cash", "reference": "tx-1" }),
     )
     .await;
     assert_eq!(a1w["result"]["role"], "quote-author", "a1w: {a1w}");
@@ -256,7 +261,7 @@ async fn scenario_162_payment_acknowledge_duplicate_already_recorded_parity() {
     let (a2w, a2n) = both_rpc(
         &h,
         "payment.acknowledge",
-        json!({ "agreement": agr_rec, "method": "cash", "reference": "tx-1" }),
+        json!({ "agreement": agr_rec, "commitment_id": "c2", "method": "cash", "reference": "tx-1" }),
     )
     .await;
     assert_eq!(a2w["result"]["state"], "already-recorded", "a2w: {a2w}");
@@ -285,8 +290,6 @@ async fn scenario_166_payment_half_before_agreement_deferred_parity() {
     let (get_q, _) = both_rpc(&h, "quote.get", json!({ "quote_id": quote_id })).await;
     let quote_env = Envelope::from_json(get_q["result"]["envelope"].as_str().unwrap()).unwrap();
     let terms = quote_env.payload["terms"].clone();
-    let amount_minor = terms["amount_minor"].as_i64().unwrap();
-    let curr = terms["currency"].as_str().unwrap();
 
     // `issued_at` must be recent (within `MAX_DEFER_SECS` of real now) --
     // a tiny literal epoch second would already be older than the defer
@@ -298,9 +301,8 @@ async fn scenario_166_payment_half_before_agreement_deferred_parity() {
         &quote_rec_id,
         &peer_did(),
         &owner_did(),
-        "counterparty",
-        curr,
-        amount_minor,
+        "giver",
+        "c2",
         recent,
         Some("cash"),
         None,
@@ -360,7 +362,9 @@ async fn scenario_166_payment_half_before_agreement_deferred_parity() {
     assert_eq!(s3w["result"]["filed"], 1, "s3w: {s3w}");
     assert_eq!(s3n["result"]["filed"], 1, "s3n: {s3n}");
 
-    let (pw, pn) = both_rpc(&h, "payment.get", json!({ "agreement": quote_rec_id })).await;
+    let (pw, pn) =
+        both_rpc(&h, "payment.get", json!({ "agreement": quote_rec_id, "commitment_id": "c2" }))
+            .await;
     assert_eq!(pw["result"]["track"], "claimed", "pw: {pw}");
     assert_eq!(pn["result"]["track"], "claimed", "pn: {pn}");
 }
@@ -376,16 +380,31 @@ async fn scenario_171_payment_fence_unblocks_after_refused_call_parity() {
 
     // 1. Refused payment.request (note exceeds 512 chars)
     let long_note = "a".repeat(513);
-    let (err_w, err_n) =
-        both_rpc(&h, "payment.request", json!({ "agreement": agr_rec, "note": long_note })).await;
+    let (err_w, err_n) = both_rpc(
+        &h,
+        "payment.request",
+        json!({
+            "agreement": agr_rec,
+            "commitment_id": "c2",
+            "note": { "lang": "en", "text": long_note },
+        }),
+    )
+    .await;
     assert_eq!(err_w["error"]["code"], -32602, "err_w: {err_w}");
     assert_eq!(err_n["error"]["code"], -32602, "err_n: {err_n}");
     assert!(err_w["error"]["message"].as_str().unwrap().contains("512"));
 
     // 2. Valid retry succeeds (fence was not leaked)
-    let (req_w, req_n) =
-        both_rpc(&h, "payment.request", json!({ "agreement": agr_rec, "note": "Valid note" }))
-            .await;
+    let (req_w, req_n) = both_rpc(
+        &h,
+        "payment.request",
+        json!({
+            "agreement": agr_rec,
+            "commitment_id": "c2",
+            "note": { "lang": "en", "text": "Valid note" },
+        }),
+    )
+    .await;
     assert_eq!(
         req_w["result"]["record_id"], req_n["result"]["record_id"],
         "req_w: {req_w}, req_n: {req_n}"
@@ -399,7 +418,11 @@ async fn scenario_171_payment_fence_unblocks_after_refused_call_parity() {
     let (ack_err_w, ack_err_n) = both_rpc(
         &h,
         "payment.acknowledge",
-        json!({ "agreement": agr_rec, "method": "unsupported-payment-method-xyz" }),
+        json!({
+            "agreement": agr_rec,
+            "commitment_id": "c2",
+            "method": "unsupported-payment-method-xyz",
+        }),
     )
     .await;
     assert_eq!(ack_err_w["error"]["code"], -32602, "ack_err_w: {ack_err_w}");
@@ -410,7 +433,11 @@ async fn scenario_171_payment_fence_unblocks_after_refused_call_parity() {
     let (ack_w, ack_n) = both_rpc(
         &h,
         "payment.acknowledge",
-        json!({ "agreement": agr_rec, "observed_at_secs": 1_002_000 }),
+        json!({
+            "agreement": agr_rec,
+            "commitment_id": "c2",
+            "observed_at_secs": 1_002_000,
+        }),
     )
     .await;
     assert_eq!(

@@ -1136,7 +1136,7 @@ Escrow and dispute-mediated fund custody are deferred; see [Decentralized Escrow
 ## Layer 4 — SynApp Specifications
 
 ### SynApp 1: Roym
-Roym is the SynApp built so far. A deal between two people is a chain of signed records that they exchange as cards over their conversation. The chain has three records: `request` (the counterparty asks), `quote` (the quote author offers) and `agreement-receipt` (each side signs one half). After that, a booking exists on the quote author's node. Its status travels as `booking-progress` cards. Payment and fulfilment add three more records: `payment-request`, `payment-acknowledgement`, and `fulfilment-receipt`. Signed records (`profile`, `listing`, `request`, `quote`) carry a required canonical `lang` tag and up to 4 author `translations`; `profile` carries `languages` (up to 8 preferred tags). The [Roym spec](roym-integrated-experience-spec.md) describes the product. [Phase 6](#phase-6-high-level-applications-synapps) lists the card types and what is not built.
+Roym is the SynApp built so far. A deal between two people is a chain of signed records that they exchange as cards over their conversation. The chain has three records: `enquiry` (the counterparty asks), `quote` (the quote author offers) and `agreement-receipt` (each side signs one half). After that, an agreement exists on the quote author's node. Its status travels as `agreement-progress` cards. Payment and fulfilment add three more records: `payment-request`, `payment-acknowledgement`, and `fulfilment-receipt`. Signed records (`profile`, `listing`, `enquiry`, `quote`) carry a required canonical `lang` tag and up to 4 author `translations`; `profile` carries `languages` (up to 8 preferred tags). The [Roym spec](roym-integrated-experience-spec.md) describes the product. [Phase 6](#phase-6-high-level-applications-synapps) lists the card types and what is not built.
 
 #### Component Architecture
 
@@ -1148,7 +1148,7 @@ The manifest of Roym declares six services: `web`, `profile`, `conversation`, `c
 | `profile` | The person's own profile, contacts, block list, and reports. | none |
 | `conversation` | One-to-one messages and private groups. It uses the conversation interface of the substrate for encryption, the outbox and delivery. | `profile` |
 | `catalog` | The listing owner's listings and availability slots. | `profile` |
-| `transaction` | Requests, quotes, agreements, bookings, payments, and fulfilments. Booking logic and payment records are code inside this service. A quote that names a slot reads that slot from `catalog`. | `conversation`, `catalog` |
+| `transaction` | Enquiries, quotes, agreements, progress, payments, and fulfilments. Agreement logic and settlement records are code inside this service. A quote that names a slot reads that slot from `catalog`. | `conversation`, `catalog` |
 | `directory` | A SynOrg's member list, published listings, search index, and membership credentials. On every installation it also keeps that node's own list of directories and its search runs. | `catalog` |
 
 A call to the `invoke` export of a service that does not come from inside the installation is answered with error `-32013`, except for four `directory` methods. `directory.search`, `directory.info` and `directory.standing` accept any caller. `directory.publish` accepts a caller whose identity the router verified. These four methods ignore unknown fields, so a newer node can call an older one. So `transaction` and `catalog` cannot be called by another node. The `status` export stays open on every service, so health checks work. Two nodes talk in two ways. They use the conversation transport of the substrate, which carries the cards (the `prekey-bundle` and `deliver` calls). They also use the four `directory` methods. Inside the installation, `web` checks the session before it forwards a call.
@@ -1206,63 +1206,56 @@ A card is a signed record sent as a message with content type `application/vnd.r
 
 | Card | Signed by | Meaning |
 |---|---|---|
-| `request` | the counterparty | The counterparty asks for a service. It carries a description, a required `lang` tag, optional author `translations`, and may name a listing, category codes (from the base taxonomy or custom codes), an area, and a time window. |
-| `quote` | the quote author | An offer. It carries agreed terms (with a required `terms.lang`), optional author `translations`, scope, currency, amount, payment methods as codes, payee, when payment is due, schedule, location, cancellation terms, refund terms, and a dispute path as text. It may name one slot of the listing. It has an expiry. |
+| `enquiry` | the counterparty | The counterparty asks for a service. It carries a description, a required `lang` tag, optional author `translations`, and may name a listing, category codes (from the base taxonomy or custom codes), an area, and a time window. |
+| `quote` | the quote author | An offer. It carries agreed terms (with a required `terms.lang`), optional author `translations`, scope, commitments (service, currency), payment methods as codes, payee, when payment is due, schedule, location, cancellation terms, refund terms, and a dispute path as text. It may name one slot of the listing. It has an expiry. |
 | `agreement-receipt` | each party signs one half | Each side signs the quote terms (including `terms.lang`) and says which text it read: `viewed_lang` (a language tag) and `viewed_via_mt` (true when that text was a machine translation). These two fields are outside the terms, so the two halves may differ in them. A deal exists when both halves exist. |
-| `booking-progress` | the quote author's service | A snapshot of the booking. The counterparty's node accepts it only when the signer is the one that signed the quote. |
+| `agreement-progress` | the quote author's service | A snapshot of the agreement and its commitments. The counterparty's node accepts it only when the signer is the one that signed the quote. |
 | `payment-request` | the quote author | The quote author asks to be paid. It carries currency, amount, and an optional note. It is optional. |
 | `payment-acknowledgement` | either party | A statement about a payment made outside Roym, with an optional method (a code from the agreed payment methods) and reference as text. |
 | `fulfilment-receipt` | either party | A statement that the work is done. It carries `terms` with `terms.lang`. |
 
-The expiry of a quote is set by the quote author. It must be from 5 minutes to 90 days. A request has no expiry. The counterparty can mark a quote as declined with `quote.decline`. This mark stays on the counterparty's own node and sends nothing. It is refused after either half of the agreement is signed. Roym has no method for a quote author to reject a request.
+The expiry of a quote is set by the quote author. It must be from 5 minutes to 90 days. An enquiry has no expiry. The counterparty can mark a quote as declined with `deal.decline`. Roym has no method for a quote author to reject an enquiry.
 
-#### Booking State Machine
+#### Agreement State Machine
 
-Roym has no single order record. A deal is the record chain above, and the booking that follows it. The quote author's node is the only writer of the booking. Every other node reads the signed snapshots of that writer. Each snapshot has a number `seq` that counts up from 1. A snapshot is written with the create fence of the data layer, so two writers of the same `seq` cannot both win. The writer retries a lost write up to three times.
+Roym has no single order record. A deal is the record chain above, and the agreement that follows it. The quote author's node is the only writer of the agreement progress. Every other node reads the signed snapshots of that writer. Each snapshot has a number `seq` that counts up from 1. A snapshot is written with the create fence of the data layer, so two writers of the same `seq` cannot both win. The writer retries a lost write up to three times.
 
-The booking opens on the quote author's node once the counterparty has accepted. When the counterparty's `agreement-receipt` card is filed there and the quote has not expired, the node does three things on its own. It claims a seat or a decision (see below). It opens the booking. It countersigns the agreement. This happens when `transaction.sync` runs on the quote author's node, for example when the quote author opens the conversation in the Hub. The quote author can also accept by hand with `agreement.accept`. A quote that names a slot is booked by the acceptance of the counterparty. The quote author cannot accept such a quote before the counterparty.
+The agreement opens on the quote author's node once the counterparty has accepted. When the counterparty's `agreement-receipt` card is filed there and the quote has not expired, the node does three things on its own. It claims a seat or a decision. It countersigns the agreement. It publishes the first snapshot. This happens when `transaction.sync` runs on the quote author's node, for example when the quote author opens the conversation in the Hub. The quote author can also accept by hand with `agreement.accept`. A quote that names a slot is agreed by the acceptance of the counterparty. The quote author cannot accept such a quote before the counterparty.
 
 ```mermaid
 stateDiagram-v2
-    state "in-progress" as InProgress
-    state "ended-unconfirmed" as EndedUnconfirmed
+    state "agreed" as Agreed
 
-    [*] --> scheduled : seat or decision claimed
-    [*] --> conflict : no seat free
+    [*] --> Agreed : seat and decision claimed
+    [*] --> not_formed : quote expired or no seat free
 
-    scheduled --> InProgress : booking.start, or the first payment or fulfilment half
-    scheduled --> cancelled : quote author cancels, both tracks none
-    scheduled --> EndedUnconfirmed : track window closes, nothing acknowledged
-    InProgress --> cancelled : quote author cancels, both tracks none
-    InProgress --> completed : payment and fulfilment both acknowledged
-    InProgress --> EndedUnconfirmed : track window closes, not both acknowledged
+    Agreed --> closed : every commitment final
+    Agreed --> cancelled : quote author cancels, all commitments open
 
-    completed --> [*]
+    closed --> [*]
     cancelled --> [*]
-    conflict --> [*]
-    EndedUnconfirmed --> [*]
+    not_formed --> [*]
 ```
 
-The six states are `scheduled`, `in-progress`, `completed`, `cancelled`, `conflict`, and `ended-unconfirmed`. The last four are final. A booking opens as `scheduled`, or as `conflict` when no seat is free. A `conflict` booking carries the reason `slot-taken` or `slot-unavailable`. In that case the quote author's node does not countersign the agreement.
+The four agreement states are `agreed`, `closed`, `cancelled`, and `not-formed`. The last three are final. An agreement opens as `agreed`, or as `not-formed` when no seat is free or the quote expired.
 
-**Two tracks.** Payment and fulfilment are two separate tracks. They are not states of the booking. Each track is `none`, `claimed`, `acknowledged`, or `unconfirmed`. Both parties can write to both tracks.
+**Commitment tracks.** Each agreed quote binds bilateral commitments (`Commitment`). Each commitment progresses through its own state machine: `promised`, `payment-requested`, `claimed`, `fulfilled`, `acknowledged`, `ended-unconfirmed`, `failed`, and `cancelled`. The final states are `acknowledged`, `fulfilled`, `ended-unconfirmed`, `failed`, and `cancelled`.
 
-| Track | Who makes the claim | Who acknowledges |
+| Commitment kind | Who claims | Who confirms |
 |---|---|---|
-| Payment | The counterparty says they paid (`payment-acknowledgement`). | The quote author confirms they received the payment (`payment-acknowledgement`). |
-| Fulfilment | The quote author says the work is done (`fulfilment-receipt`). | The counterparty confirms the work is done (`fulfilment-receipt`). |
+| Currency | The giver says they paid (`payment-acknowledgement`), reaching `claimed`. | The receiver confirms they received the payment (`payment-acknowledgement`), reaching `acknowledged`. |
+| Goods / Service | The giver says the work is done (`fulfilment-receipt`), reaching `claimed`. | The receiver confirms the work is done (`fulfilment-receipt`), reaching `fulfilled`. |
 
 Money moves outside Roym. Roym records what each side says and cannot confirm that a payment happened. The quote says whether payment is due before or after the work. That term only decides what the Hub suggests next. It never blocks a step.
 
-The rules of the booking:
+The rules of the agreement:
 
-- **Against interest.** A statement that goes against the interest of the person who signs it moves the track to `acknowledged` at once: the quote author's payment half, and the counterparty's fulfilment half. A statement in favor of the signer only makes the track `claimed`. A track that is `acknowledged` or `unconfirmed` does not change again. A repeated statement changes nothing.
-- **First half.** The first payment or fulfilment half moves `scheduled` to `in-progress`. The quote author can also move it with `booking.start`.
-- **Completed.** The booking is `completed` only when both tracks are `acknowledged`.
-- **Track window.** Each track stays open for 30 days after the end of the quote's schedule. With no schedule, it is 30 days after the booking opens. After that, a track that is `none` or `claimed` becomes `unconfirmed`. When both tracks are final and not both are `acknowledged`, the booking is `ended-unconfirmed`. It holds whatever claims exist.
-- **Cancel.** Only the quote author can cancel, with `booking.cancel` and a reason. It is possible only while both tracks are `none`. A counterparty asks in the conversation. A cancel frees the claimed seat.
+- **Against interest.** A statement that goes against the interest of the person who signs it moves the track to final (`acknowledged` or `fulfilled`) at once: the quote author's payment half, and the counterparty's fulfilment half. A statement in favor of the signer only makes the track `claimed`. A track that is final does not change again. A repeated statement changes nothing.
+- **Closed.** The agreement reaches `closed` once every commitment reaches a final state (`acknowledged`, `fulfilled`, `ended-unconfirmed`, `failed`, or `cancelled`).
+- **Track window.** Each track stays open for 30 days after the later of the commitment's schedule window and the agreement time. With no schedule window, it is 30 days after the agreement opens. After that, a track that is `promised`, `payment-requested`, or `claimed` becomes `ended-unconfirmed` (recording `claimed: true` if the giver claimed, `claimed: false` otherwise).
+- **Cancel.** Only the quote author can cancel, with `agreement.cancel` and a reason. It is possible only while all commitments are open (`promised` or `payment-requested`). A counterparty asks in the conversation. A cancel frees claimed seats and holds.
 
-**Slot claiming.** One slot of the catalog can have more than one seat, up to 64. The quote author's node claims the seats of a slot in order, with the create fence of the data layer. The first claim wins. When every seat is taken, the booking is `conflict` with `slot-taken`. When the slot no longer exists or has no seats, the reason is `slot-unavailable`. A quote with no slot gets one decision per agreement in the same way. A second attempt is answered with the first result. The quote author's node is the only writer of a booking, so a race is two requests that reach one writer. The code names the two outcomes `AlreadyDecided` and `SlotTaken`. The signed `booking-progress` snapshot writes the second one as `slot-taken`.
+**Slot claiming.** One slot of the catalog can have more than one seat, up to 64. The quote author's node claims the seats of a slot in order, with the create fence of the data layer. The first claim wins. When every seat is taken, the agreement is `not-formed` with `slot-taken`. When the slot no longer exists or has no seats, the reason is `slot-unavailable`. A quote with no slot gets one decision per agreement in the same way. A second attempt is answered with the first result. The quote author's node is the only writer of an agreement, so a race is two requests that reach one writer. The signed `agreement-progress` snapshot writes the refusal reason if not formed.
 
 **Listing and message rules.** The catalog saves the whole listing with `put`, so the last write wins for the listing. Each version is also kept in a history collection. The listing owner owns the catalog. A message log is append-only. An entry that is already stored is ignored. Messages are immutable once sent.
 
@@ -1286,40 +1279,40 @@ sequenceDiagram
     CN->>CN: verify each listing, merge hits
     CN-->>Counterparty: verified hits, each with its signed listing
 
-    Counterparty->>CN: request.set
-    CN->>PN: request card over the conversation
+    Counterparty->>CN: enquiry.set
+    CN->>PN: enquiry card over the conversation
     QuoteAuthor->>PN: quote.set with terms, expiry and optional slot
     PN->>CN: quote card
     Counterparty->>CN: agreement.accept
     CN->>PN: agreement-receipt card, counterparty half
-    PN->>PN: claim seat or decision, open booking
-    PN->>CN: booking-progress card, scheduled
+    PN->>PN: claim seat or decision, form agreement
+    PN->>CN: agreement-progress card, agreed
     PN->>PN: countersign
     PN->>CN: agreement-receipt card, quote author half
 
     Note over CN,PN: Payment happens outside Roym
     QuoteAuthor->>PN: payment.request, optional
     PN->>CN: payment-request card
-    Counterparty->>CN: payment.acknowledge, the counterparty's claim
+    Counterparty->>CN: payment.acknowledge, the giver's claim
     CN->>PN: payment-acknowledgement card
     QuoteAuthor->>PN: payment.acknowledge, receipt confirmed
-    PN->>CN: payment-acknowledgement card and booking-progress card
+    PN->>CN: payment-acknowledgement card and agreement-progress card
 
-    QuoteAuthor->>PN: fulfilment.sign, the quote author's claim
+    QuoteAuthor->>PN: fulfilment.sign, the giver's claim
     PN->>CN: fulfilment-receipt card
     Counterparty->>CN: fulfilment.sign, work confirmed
     CN->>PN: fulfilment-receipt card
-    PN->>CN: booking-progress card, completed
+    PN->>CN: agreement-progress card, closed
 ```
 
 Notes on the flow:
 
 - **Search.** The hit carries the signed listing, so the searcher needs no call to the listing owner's catalog. `catalog` refuses a caller from another node. The searcher's node verifies the listing itself. See [Cross-Substrate Discovery Flow](#cross-substrate-discovery-flow).
-- **Request and quote.** `request.set` signs the request and sends it in one step. The quote author's node files the card when it runs `transaction.sync`, and the quote author answers with `quote.set`.
-- **Agreement.** The counterparty accepts the quote with `agreement.accept`, which takes what the person read (`viewed_lang`, `viewed_via_mt`; without them the original is meant). The quote author's node decides the booking and countersigns, and its automatic countersignature says the original was read. If the slot is full, it does not countersign, and the booking is `conflict`.
+- **Enquiry and quote.** `enquiry.set` signs the enquiry and sends it in one step. The quote author's node files the card when it runs `transaction.sync`, and the quote author answers with `quote.set`.
+- **Agreement.** The counterparty accepts the quote with `agreement.accept`, which takes what the person read (`viewed_lang`, `viewed_via_mt`; without them the original is meant). The quote author's node decides the agreement and countersigns, and its automatic countersignature says the original was read. If the slot is full, it does not countersign, and the agreement is `not-formed`.
 - **Notices.** Each node shows the card in the conversation. No push notification is sent.
 - **Payment.** The quote author may send a `payment-request`. The counterparty pays outside Roym. Either party then records a `payment-acknowledgement`. The Hub shows a notice that Roym does not see the money move.
-- **Fulfilment.** The booking is complete when the payment track and the fulfilment track are both acknowledged. The counterparty's confirmation acknowledges the fulfilment track at once, even if the quote author has not claimed the work. It takes effect on the quote author's node when the card is filed there.
+- **Fulfilment.** The commitment is complete when the claim and confirmation halves are both filed. The counterparty's confirmation closes the fulfilment commitment at once, even if the quote author has not claimed the work. It takes effect on the quote author's node when the card is filed there.
 
 > **Envisioned.** Not built yet. A payment through an external gateway: a Stripe `PaymentIntent`, a client secret, a card confirmed with the Stripe SDK and a webhook that marks the booking as paid. Also a review that the counterparty submits after the booking. Roym has no gateway code and no review record. See [Payments](#payments) and [Flexible Payment Integration](#3-flexible-payment-integration).
 
@@ -3124,7 +3117,7 @@ Syneroym has no central coordinator. To execute distributed sagas across indepen
 **Design Approach:** 
 Action Cards are typed JSON documents, rather than arbitrary portable WASM components. This prevents malicious UI execution on the client device. A card carries a signed record and nothing derived from it. The client template for the card type and version decides the layout and the buttons. When a user taps a button, the Hub calls a Roym JSON-RPC method, for example `agreement.accept` on a quote.
 
-Roym has seven card types: `request`, `quote`, `agreement-receipt`, `booking-progress`, `payment-request`, `payment-acknowledgement`, and `fulfilment-receipt`. The list is fixed. A card of an unlisted type or version shows as a neutral "unknown" block. See [Cards](roym-integrated-experience-spec.md#cards).
+Roym has seven card types: `enquiry`, `quote`, `agreement-receipt`, `agreement-progress`, `payment-request`, `payment-acknowledgement`, and `fulfilment-receipt`. The list is fixed. A card of an unlisted type or version shows as a neutral "unknown" block. See [Cards](roym-integrated-experience-spec.md#cards).
 
 ### 3. Flexible Payment Integration
 *Addresses integrating external gateways (Stripe/UPI) alongside the internal Mutual Credit ledger.*

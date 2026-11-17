@@ -1,0 +1,24 @@
+{
+  "snapshots": [
+    {
+      "envelope": "string",
+      "message_id": "string",
+      "record_id": "string",
+      "seq": "number",
+      "snapshot": {
+        "agreement": "string",
+        "commitments": [
+          {
+            "commitment_id": "string",
+            "state": "promised"
+          }
+        ],
+        "conversation": "string",
+        "counterparty_did": "string",
+        "quote_author_did": "string",
+        "seq": "number",
+        "state": "agreed"
+      }
+    }
+  ]
+}

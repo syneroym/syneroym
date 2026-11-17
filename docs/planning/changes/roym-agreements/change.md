@@ -1,7 +1,15 @@
 ---
 status: draft
 living-docs-touched:
+  - docs/system-requirements-spec.md
+  - docs/roym-integrated-experience-spec.md
+  - docs/developer-guide.md
+  - docs/system-architecture.md
+  - docs/planning/traceability-matrix.md
+  - docs/TERMINOLOGY.md
+  - docs/demo/demo.md
 demo:
+  - crates/substrate/tests/e2e/demo/50-roym-deal.spec.ts
 ---
 # Roym agreements
 
@@ -114,7 +122,7 @@ Kinds of test:
 | AG-13 | Every state-changing call is idempotent. A repeated `agreement.accept`, `fulfilment.sign`, `payment.acknowledge` or `deal.decline` returns the record already made (today's `D-C8-6`). | Service. |
 | AG-42 | After a restore from an old backup, the writer's next snapshot has a `seq` higher than any of its own snapshots in the conversation. A restored writer whose decision row is `deciding` reuses the countersigned half and snapshot it already sent, and signs no second one. | Service: restore an old backup, then sync. The same with a backup taken after the fence and before the countersign was stored, while the cards were already sent. |
 | **Reserve, confirm, release (agreement side)** | | |
-| AG-14 | When the writer gives a resource that needs a reservation, it takes the fence and reserves in the order of [The writer's decision](#the-writers-decision). Two counterparties who accept quotes for the last seat: one agreement reaches `agreed`, the other ends `not-formed` with reason `slot-taken` (VX-10, EX-6). A crash after any step ends, after the next sync, in the same state as no crash, with two exceptions: a recovery after the quote's expiry ends `not-formed` with `quote-expired` and countersigns nothing, and a recovery whose `confirm` is refused ends `not-formed` with the extension's reason. After a refused `confirm`, every other reservation of the agreement is released, also a confirmed one. | Two-node: today's booking race test, moved to the scheduling extension. Service: a test host that fails the next write after each step, and also between the send of the cards and the last `put` of the decision row (the counterparty then files the repeated cards as repeats). The same test with a controllable clock moved past the expiry before the recovery, and with an extension stub that refuses `confirm` after another `confirm` succeeded. The same stub with a crash after the `not-formed` snapshot is stored and before the last `put`, where the slot is free again on the rerun: the deal still ends `not-formed`. |
+| AG-14 | When the writer gives a resource that needs a reservation, it takes the fence and reserves in the order of [The writer's decision](#the-writers-decision). Two counterparties who accept quotes for the last seat: one agreement reaches `agreed`, the other ends `not-formed` with reason `slot-taken` (VX-10, EX-6). A crash after any step ends, after the next sync, in the same state as no crash, with two exceptions: a recovery after the quote's expiry ends `not-formed` with `quote-expired` and countersigns nothing, and a recovery whose `confirm` is refused ends `not-formed` with the extension's reason. After a refused `confirm`, every other reservation of the agreement is released, also a confirmed one. | Two-node: today's booking race test, moved to the scheduling extension. Service: a test host that fails the next write after each step, and also between the send of the cards and the last `put` of the decision row (the counterparty then files the repeated cards as repeats). The same test with a controllable clock moved past the expiry before the recovery, and with an extension stub that refuses `confirm` after another `confirm` succeeded. The same stub with a crash after the `not-formed` snapshot is stored and before the last `put`, where the slot is free again on the rerun, and the case of the same half delivered again after the `not-formed` snapshot is stored: the deal still ends `not-formed`. |
 | AG-15 | When the counterparty gives a resource that needs a reservation (for example a service in a booked slot), its node reserves it before it signs its acceptance. If the reserve fails, it signs nothing, and `agreement.accept` answers `reserve-failed` with the extension's reason (VX-10, EX-5). | Service. |
 | AG-16 | If the counterparty's confirm is refused after its reservation expired and the resource was given away, its node sends a signed `commitment-failure`. The writer marks that commitment `failed` with reason `reservation-lost` (EX-22). | Two-node with a controllable clock. |
 | AG-36 | When a commitment ends `failed`, the writer ends every other commitment of the agreement that is still `promised` or `payment-requested` as `cancelled`, with reason `other-commitment-failed`, in the same snapshot. A commitment that already has a half keeps its own path. The giver's node releases the reservation of each commitment that ends `failed` or `cancelled`. | Unit for the transition tables; service for the snapshot and for the release. |
@@ -594,7 +602,7 @@ When the writer's `transaction.sync` files an acceptance half, it runs these ste
 
 1. **Checks.** The half is signed by the counterparty the quote names. The accepted version is the latest one the writer holds; otherwise the code is `quote-superseded` (see [Deal rules](#deal-rules)). The writer's clock is before the quote's expiry; otherwise the code is `quote-expired`.
    **A refusal** in this step writes no fence row. The writer signs and stores a snapshot with `seq` 1, state `not-formed`, the code in `state_reason`, and the refused version's `record_id` as `agreement`. It sends that snapshot. Last, it creates the row `refused:<half record_id>` = `{ quote_id, code, at_secs }` in `ledger`. A later sync that finds this row skips the half, so two syncs send one refusal.
-2. **Fence.** `create` the row `decision:<quote_id>` = `{ state: "deciding", agreement: <version record_id>, at_secs }` in the `ledger` collection. If the row exists with the same agreement, this is a repeat: continue from the row's state. If it exists with another agreement: refuse this acceptance with `quote-already-agreed`, in the same way as a refusal in step 1. The decision row does not change.
+2. **Fence.** `create` the row `decision:<quote_id>` = `{ state: "deciding", agreement: <version record_id>, at_secs }` in the `ledger` collection. If the row exists with the same agreement, this is a repeat: a repeat of a `deciding` row runs Recovery's three checks. If it exists with another agreement: refuse this acceptance with `quote-already-agreed`, in the same way as a refusal in step 1. The decision row does not change.
 3. **Reserve.** For each commitment the writer gives whose extension has a reserve hook, call the extension's local `reserve`, keyed by (agreement id, commitment id). Reserve is idempotent (EX-21). This is not one write with step 2: the reservation is in the extension service's own data, and a data-layer write covers one collection of one service.
 4. **Finish.**
    - **If every reserve succeeded,** `confirm` each reservation.
@@ -1045,6 +1053,119 @@ This document does not write the two ADRs. They must decide:
 - [ ] Demo story for enquiry, quote and agreement, as the M08C `task.md` asks.
 
 ## Deviations
+
+Written when the M08C C1 slice was planned (2026-11-15,
+[slice-c1-implementation-plan.md](../../milestones/M08C-deal-core-and-extensions/slice-c1-implementation-plan.md)).
+The owner answered that plan's questions Q1 to Q6 on 2026-11-16; the rows
+under "Owner decisions while planning C1" record them.
+
+**Criteria finished later.**
+
+- **AG-2, AG-4, AG-6:** M08C builds the kinds `service-in-slot`,
+  `goods-or-service` and `currency`. The EEP kinds and their transition
+  tables come in M08E (`eep-issue`, `eep-return`) and M08H
+  (`eep-transfer`).
+- **AG-3:** M08C builds only quotes that answer an enquiry, and the unit
+  test that compares both `answers` forms. `quote.set` and the verifier
+  refuse `answers.kind = "want"` with `answers-kind-not-supported` until
+  M08F, which adds the Want-Bid end-to-end test.
+- **AG-8:** C1 proves the snapshot's words. Verifying them inside a
+  presentation comes with C2.
+- **AG-14, AG-15:** until C3b, the reservation is a seat hold in
+  `transaction`'s own `ledger` (rows `hold:<agreement>:<commitment_id>` and
+  `seat:<slot>:<n>`), behind the same reserve, confirm and release steps.
+  A seat hold has no expiry, so `confirm` never fails before C3b. C3b moves
+  both criteria to the scheduling extension.
+- **AG-23:** C1 checks the value range. The Hub's totals and difference
+  come in C6.
+- **AG-33:** C1 proves that a `settlement_note` settles and keeps the
+  value. The check that the note is hidden comes in C2, and the statement
+  row in C6.
+- **AG-36:** C1 proves the cascade in the transition tables. The snapshot
+  and the release come in C3b, because no commitment can end `failed`
+  before `commitment-failure` exists.
+
+**Facts corrected while planning C1.**
+
+- **Tick.** "Track window" says the writer applies a `tick` on each sync
+  "as today". Today the writer ticks only in `booking.get`
+  (`crates/roym_transaction/src/app/booking_ops.rs`, `get`). C1 ticks on
+  every `transaction.sync` of the conversation, and in `agreement.get` and
+  `agreement.progress` on the writer's node.
+- **AG-12's test.** The two-node test uses a hand-signed acceptance half
+  for the superseded version, delivered as a card, in place of "a test
+  hook that skips the method check". No production code path exists only
+  for tests.
+- **`supersedes` of a payment acknowledgement** stays the envelope's
+  `supersedes` field, as today (`payment_ops.rs`, `acknowledge`). The
+  sketch in "Settlement records" shows it inside the payload; the rule is
+  unchanged.
+- **`quote-already-agreed`.** "Reason codes" says only a bug or a restored
+  backup can cause it. A `quote.set` that runs at the same time as the
+  writer's sync can also sign a new version after an older one was
+  countersigned. The fence refuses that version's acceptance, so the
+  outcome is the same.
+
+**Owner decisions while planning C1 (2026-11-16).**
+
+- **Slice cut (C1 plan, Q1).** C1 is built as two PRs. C1a gives every
+  record its new shape and moves every caller to it; the writer's decision
+  runs in its final step order, with no crash recovery yet. C1b adds the
+  version checks, the refusal snapshots, the recovery of `deciding` rows,
+  the restore rules and the signed `deal-decline`. This refines open
+  question 12's cut.
+- **AG-39, one original language (Q4).** Every `LocalText` in one record
+  has the same `lang`, as well as the same set of translation languages.
+  The same check enforces both. So "the original's language", which the
+  `viewed_via_mt` rule and the Hub's `bestVersion` use, is one language
+  per record.
+- **AG-42, the limit of the restore rules (Q5).** "The writer's `seq` after
+  a restore" and "The writer's records after a restore" find the writer's
+  own cards in the conversation. The conversation history is in the same
+  backup set (`conversation.export`), and a 1:1 conversation does not fetch
+  old messages again from the peer. So the rules work when `transaction` is
+  restored alone, or when the conversation data is newer than the
+  `transaction` data. After a full restore from an old backup, the writer
+  can sign a second countersigned half or reuse a `seq`. The counterparty's
+  node keeps the first countersigned half it filed silently; for snapshots
+  with the same `seq` and different bytes it shows `progress-fork` (AG-12).
+  AG-42's tests cover the case the rules handle. A deferred-backlog row
+  records the full-restore case (C1b).
+- **Deal rules and version check (P11).** Only unrefused counterparty halves
+  count against the version check (`quote-already-accepted`) and the decline
+  rule. A half that the writer refused with `quote-superseded` is not an
+  acceptance of that quote id; the deal stays `quoted` and can still be revised
+  or declined. Refuse `agreement.accept` on an ended deal (`declined`,
+  `expired`, `not-formed`) with `quote-ended`.
+- **`booking.start` (Q6).** C1a removes `booking.start` with no stand-in.
+  From C1a until the scheduling steps of C3a and C3b, nobody can mark work
+  as started. A commitment settles from `promised` directly, so no rule
+  depends on it. A deferred-backlog row (target C3b) records the gap.
+- **The slot in C1 (Q3).** C1a adds a commitment's `extension` and
+  `details` in their final shape, with one case checked in code:
+  extension `scheduling` version 1, schema `scheduling/slot@1`, data
+  `{ listing_id, slot_id }`. Any other extension is refused with
+  `commitment-kind-not-supported` until C3a. The roym-extensions change
+  doc records the EX-1 and EX-3 part.
+
+**Rules added in the C1a code review (2026-11-16 to 2026-11-17,
+[slice-c1-review.md](../../milestones/M08C-deal-core-and-extensions/slice-c1-review.md)).**
+The plan did not state these rules. The code follows them now.
+
+- **A final decision only resends cards.** When `decision:<quote_id>` is
+  `agreed` or `not-formed`, a repeat sync sends again only the stored
+  countersign and snapshot cards that have no message id. It does not write
+  the agreement row. So a cancel made after the decision stays.
+- **A moved agreement is kept.** When the writer marks the decision
+  `agreed` and the stored agreement row already has a `seq` above 1 (a
+  cancel ran while the decision was still `deciding`), the writer keeps
+  that row's state, `seq` and commitments. It fills only `quote_author` and
+  `agreed_at_secs` when they are empty, and then writes the decision row.
+- **The import checks every ledger row.** `transaction.import` refuses a
+  `ledger` row of an unknown kind. It checks `hold:`, `decision:`,
+  `payreq:`, `ack:` and `fulfil:` rows against a quote in the same backup
+  and its commitments. For `ack:` and `fulfil:` it also checks that the
+  issuer matches the commitment's giver and the half's role.
 
 ## Close-out
 

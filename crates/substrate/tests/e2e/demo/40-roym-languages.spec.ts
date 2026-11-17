@@ -115,10 +115,13 @@ async function pairState(page: Page, conversation: string, runTag: string): Prom
   await rpcCall(page, 'transaction.sync', { conversation });
   const listed = await rpcCall(page, 'agreement.list', { conversation });
   const agreements = (listed.result?.agreements ?? []) as Array<{
-    terms: { scope: string };
+    terms: { scope: string | { text?: string } };
     pair: { state: string };
   }>;
-  return agreements.find((a) => a.terms.scope.includes(runTag))?.pair.state;
+  return agreements.find((a) => {
+    const scopeStr = typeof a.terms.scope === 'object' && a.terms.scope !== null ? a.terms.scope.text : a.terms.scope;
+    return typeof scopeStr === 'string' && scopeStr.includes(runTag);
+  })?.pair.state;
 }
 
 /** The id of the conversation a node already has with an address. */
@@ -205,7 +208,7 @@ test('Roym languages story: Alice, in Hindi, finds an English listing and accept
       await openMessages(page, 'hi');
       await openConversation(page, bob.addr, 'hi');
       await sendRequest(page, requestText, 'gardening', 'hi');
-      await expect(threadMessage(page, requestText).locator('.card-request')).toBeVisible({ timeout: 15_000 });
+      await expect(threadMessage(page, requestText).locator('.card-enquiry')).toBeVisible({ timeout: 15_000 });
     });
 
     await step(bobPage, "Bob's screen: read the request and send a quote in rupees", async () => {
@@ -254,9 +257,12 @@ test('Roym languages story: Alice, in Hindi, finds an English listing and accept
       const aliceConversation = await conversationWith(page, bob.addr);
       const listed = await rpcCall(page, 'agreement.list', { conversation: aliceConversation });
       const agreement = (listed.result.agreements as Array<{
-        terms: { scope: string };
+        terms: { scope: string | { text?: string } };
         counterparty: { envelope: string };
-      }>).find((a) => a.terms.scope.includes(runTag))!;
+      }>).find((a) => {
+        const scopeStr = typeof a.terms.scope === 'object' && a.terms.scope !== null ? a.terms.scope.text : a.terms.scope;
+        return typeof scopeStr === 'string' && scopeStr.includes(runTag);
+      })!;
       const verdict = await rpcCall(page, 'agreement.verify', { envelope: agreement.counterparty.envelope });
       expect(verdict.result.verified).toBe(true);
       // Bob's countersigned half says the same about the language, so the signer is checked too.

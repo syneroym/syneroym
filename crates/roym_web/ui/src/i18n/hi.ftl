@@ -52,7 +52,7 @@ payment-acknowledged = पैसे पाने वाला पुष्टि
 fulfilment-claimed = काम करने वाले का कहना है कि काम पूरा हो गया।
 fulfilment-acknowledged = काम पाने वाला पुष्टि करता है कि काम पूरा हो गया।
 track-unconfirmed = समय-सीमा खत्म होने से पहले कोई पुष्टि दर्ज नहीं हुई।
-one-payment-notice = इस कोटेशन का भुगतान एक ही बार में होता है। अग्रिम और किस्तों में भुगतान की सुविधा नहीं है।
+one-payment-notice = इस कोटेशन में प्रत्येक भुगतान एक ही बार में होता है। अग्रिम अपना स्वयं का भुगतान है।
 
 group-owner-can-read-notice = इस समूह का मालिक समूह की कुंजी बनाता और साझा करता है, इसलिए जब तक वह मालिक है, वह भेजा गया हर संदेश पढ़ सकता है। किसी सदस्य को जोड़ना या हटाना समूह में सभी को दिखता है।
 group-key-trust-notice = हर सदस्य के संदेश उस कुंजी से हस्ताक्षरित होते हैं जो इस इंस्टॉलेशन ने सदस्य के जुड़ते समय पहली बार देखी थी। यह हस्ताक्षरित रिकॉर्ड से कमज़ोर जाँच है, इसलिए यहाँ के संदेश कभी "सत्यापित" नहीं माने जाते।
@@ -132,14 +132,35 @@ request-listing = लिस्टिंग: { $id }
 request-window-label = समय-सीमा:
 request-notice-label = सूचना:
 
-progress-title = बुकिंग की स्थिति
+progress-title = समझौते की प्रगति
 progress-status = स्थिति: { $state }
+progress-state-agreed = सहमति बनी
+progress-state-closed = समाप्त
+progress-state-cancelled = रद्द किया गया
+progress-state-not-formed = नहीं बना
 progress-state-scheduled = तय हुआ
 progress-state-in-progress = जारी है
 progress-state-completed = पूरा हुआ
-progress-state-cancelled = रद्द
 progress-state-conflict = टकराव
 progress-state-ended-unconfirmed = खत्म, पुष्टि नहीं हुई
+
+commitment-state-promised = वादा किया
+commitment-state-payment-requested = भुगतान का अनुरोध किया
+commitment-state-fulfilled = पूरा हुआ
+commitment-state-acknowledged = स्वीकार किया
+commitment-state-ended-unconfirmed = समाप्त, अपुष्ट
+commitment-state-other-failed = अन्य विफल
+
+commitment-you-give = आप देते हैं: { $description }
+commitment-other-gives = { $name } देते हैं: { $description }
+commitment-declared-value = घोषित मूल्य: { $amount }
+
+role-giver = देने वाला
+role-receiver = प्राप्तकर्ता
+
+receipt-read-in = { $name } ने इसे { $language } में पढ़ा
+receipt-read-in-mt = { $name } ने इसे { $language } में पढ़ा, मशीनी अनुवाद
+
 progress-conflict-slot-taken = इस समय पर पहले किसी और की बुकिंग हो गई।
 progress-conflict-slot-unavailable = लिस्टिंग के मालिक ने यह समय हटा दिया।
 progress-cancel-reason = रद्द करने का कारण: { $reason }
@@ -508,6 +529,9 @@ messages-decline-failed = अस्वीकार नहीं हो सका
 common-cancel = रद्द करें
 quote-text-language = भाषा
 quote-scope-placeholder = काम का ब्योरा
+quote-give-label = आप क्या देते हैं
+quote-give-placeholder = आप क्या देते हैं
+quote-payment-description = भुगतान
 quote-currency-placeholder = मुद्रा (जैसे EUR, USD)
 quote-amount-placeholder = कुल राशि (जैसे 45.00)
 quote-tax-placeholder = कर शामिल (ज़रूरी नहीं, जैसे 5.00)

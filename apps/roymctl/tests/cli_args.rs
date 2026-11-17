@@ -443,7 +443,7 @@ fn roym_transaction_subcommands_help() -> Result<(), Box<dyn Error>> {
         .arg("--help")
         .assert()
         .success()
-        .stdout(contains("request"))
+        .stdout(contains("enquiry"))
         .stdout(contains("quote"))
         .stdout(contains("accept"))
         .stdout(contains("decline"))
@@ -454,7 +454,7 @@ fn roym_transaction_subcommands_help() -> Result<(), Box<dyn Error>> {
     let mut cmd = Command::cargo_bin("roymctl")?;
     cmd.arg("roym")
         .arg("transaction")
-        .arg("request")
+        .arg("enquiry")
         .arg("--help")
         .assert()
         .success()
@@ -473,7 +473,7 @@ fn roym_transaction_subcommands_help() -> Result<(), Box<dyn Error>> {
         .arg("--help")
         .assert()
         .success()
-        .stdout(contains("--request"))
+        .stdout(contains("--enquiry"))
         .stdout(contains("--scope"))
         .stdout(contains("--currency"))
         .stdout(contains("--amount"))
@@ -489,6 +489,39 @@ fn roym_transaction_subcommands_help() -> Result<(), Box<dyn Error>> {
         .stdout(contains("--refund-file"))
         .stdout(contains("--dispute"))
         .stdout(contains("--expires-hours"));
+
+    let mut cmd = Command::cargo_bin("roymctl")?;
+    cmd.arg("roym")
+        .arg("transaction")
+        .arg("agreement")
+        .arg("get")
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(contains("--agreement"))
+        .stdout(contains("--quote"));
+
+    let mut cmd = Command::cargo_bin("roymctl")?;
+    cmd.arg("roym")
+        .arg("transaction")
+        .arg("payment")
+        .arg("request")
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(contains("--agreement"))
+        .stdout(contains("--commitment"));
+
+    let mut cmd = Command::cargo_bin("roymctl")?;
+    cmd.arg("roym")
+        .arg("transaction")
+        .arg("fulfilment")
+        .arg("sign")
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(contains("--agreement"))
+        .stdout(contains("--commitment"));
 
     Ok(())
 }

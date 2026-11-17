@@ -226,4 +226,30 @@ describe("kept translations", () => {
     expect(keptTranslation(["t1"], null, "en")).toBeDefined();
     expect(keptTranslation(["t200"], null, "en")).toBeDefined();
   });
+
+  it("batches translation requests at most 8 texts per request", async () => {
+    const batches: string[][] = [];
+    stubRpc({
+      "translation.translate": (params) => {
+        const p = params as { texts: string[] };
+        batches.push(p.texts);
+        return {
+          items: p.texts.map((t: string) => ({
+            text: `T:${t}`,
+            source_lang: "hi",
+            engine: { name: ENGINE, remote: false },
+          })),
+        };
+      },
+    });
+
+    const inputs = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"];
+    const res = await translateTexts(inputs, "hi", "en");
+    expect(batches).toHaveLength(2);
+    expect(batches[0]).toHaveLength(8);
+    expect(batches[1]).toHaveLength(2);
+    expect(res.texts).toHaveLength(10);
+    expect(res.texts[0]).toBe("T:1");
+    expect(res.texts[9]).toBe("T:10");
+  });
 });

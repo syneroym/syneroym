@@ -353,11 +353,11 @@ Integration and end-to-end test harnesses MUST dynamically allocate network port
 - Before production use, the system must have a reviewed threat model and privacy data inventory. These documents cover malicious packages, peers, clients, and operators. They also cover compromised keys, metadata leakage, denial of service, backup exposure, and recovery abuse. Documentation states residual risks and unsupported deployment profiles.
   > **Envisioned.** Not built yet. Formal reviewed threat model documents and privacy data inventories. Today technical protections include Wasmtime fuel limits, mlock memory protection, TLS 1.3 QUIC transports, and Double Ratchet messaging encryption.
 - Syneroym supplies evidence and workflow primitives. The system does not imply that the Syneroym project has vetted every listed participant, guild, credential issuer, or facilitator.
-- The quote's terms, price, cancellation rules, data use, payment method, and named dispute paths are recorded before agreement in `AgreedTerms` (`crates/roym_core/src/transaction.rs:116`). Any material change requires renewed consent and produces a new version.
+- The quote's terms, price, cancellation rules, data use, payment method, and named dispute paths are recorded before agreement in agreement terms (`DealTerms`, `crates/roym_core/src/deal.rs`). Any material change requires renewed consent and produces a new version.
 - Users can report impersonation, fraud, harassment, unsafe service, and illegal content to the relevant operator or community. Reports include a status, an appeal or correction path when appropriate, and safeguards against publishing unverified allegations as fact. Submitting nodes store reports locally and track report status (`crates/roym_profile/src/app/moderation.rs:188`).
   > **Envisioned.** Not built yet. Community-level appeal, dispute arbitration, and public correction workflows. Today moderation reports are stored locally with status tracked on the submitting node.
-- Emergency response, guaranteed refunds, insurance, professional licensing, and legal arbitration are not platform services. When a guild or facilitator offers these services, it must state the jurisdiction, limits, and responsible legal entity in `AgreedTerms`.
-  > **Envisioned.** Not built yet. Decentralized dispute resolution, independent arbiter panels, and smart-contract escrow custody. Today agreements capture a named dispute path as a text policy term within AgreedTerms.
+- Emergency response, guaranteed refunds, insurance, professional licensing, and legal arbitration are not platform services. When a guild or facilitator offers these services, it must state the jurisdiction, limits, and responsible legal entity in agreement terms (`DealTerms`).
+  > **Envisioned.** Not built yet. Decentralized dispute resolution, independent arbiter panels, and smart-contract escrow custody. Today agreements capture a named dispute path as a text policy term within agreement terms (`DealTerms`).
 
 ---
 
@@ -404,7 +404,7 @@ When a searcher discovers a listing owner through Syneroym, they have no existin
 
 Minimum requirements at transaction time:
 
-- Before accepting an agreement, the searcher can inspect the listing owner's stable identity, the provenance and freshness of trust signals, material terms in `AgreedTerms`, the payment recipient, and dispute or cancellation paths. The system displays missing trust signals as unknown. It never converts a missing signal into a positive default.
+- Before accepting an agreement, the searcher can inspect the listing owner's stable identity, the provenance and freshness of trust signals, material terms in agreement terms (`DealTerms`), the payment recipient, and dispute or cancellation paths. The system displays missing trust signals as unknown. It never converts a missing signal into a positive default.
 - The product avoids collecting stronger identity details than risk warrants. Searchers use lightweight device-bound Ed25519 session keys. Listing owners configure contact rate limits and block lists (`crates/roym_core/src/safety.rs`).
   > **Envisioned.** Not built yet. Dynamic configuration, by listing owners, of searcher-side gates (mandatory deposits, required prior receipts, verified external contacts, or named facilitators). Today searchers use lightweight session identities with recipient-configurable rate limits and block lists.
 - Trust displays present separate facts (credentials, receipts from completed interactions, recency) rather than hiding facts behind a single score. Directory search ranking uses open, explainable deterministic recency and round-robin merging (`crates/roym_federated_query/src/merge.rs`).
@@ -444,7 +444,7 @@ The system does not provide legal liability protection like centralized platform
 
 Requirements:
 
-- The substrate allows a Listing owner or Aggregator (directory-type SynOrg) to show terms of service, cancellation policies, and refund rules to searchers through `AgreedTerms` structures.
+- The substrate allows a Listing owner or Aggregator (directory-type SynOrg) to show terms of service, cancellation policies, and refund rules to searchers through agreement terms (`DealTerms`) structures.
 - The substrate must not state or imply to searchers that the Syneroym project vetted a federated node.
 - A separate document will outline recommended legal structures for Directory SynOrgs and Aggregators operating at scale. [Legal guidance: Out of scope for this spec]
 

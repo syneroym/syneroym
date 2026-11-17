@@ -1,4 +1,7 @@
-#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
+#![cfg_attr(
+    any(test, feature = "test-host"),
+    allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)
+)]
 //! `syneroym-roym-core`: shared service constants, envelopes, method router,
 //! card definitions, data-layer paging, and dual-build helpers for the Roym
 //! SynApp.
@@ -6,10 +9,10 @@
 pub mod admit;
 pub mod area;
 pub mod backup;
-pub mod booking;
 pub mod card;
 pub mod clock;
 pub mod conversation;
+pub mod deal;
 pub mod directory;
 pub mod dual_build;
 pub mod envelope;
@@ -22,11 +25,14 @@ pub mod money;
 pub mod paging;
 pub mod payment;
 pub mod person;
+pub mod progress;
 pub mod record;
 pub mod router;
 pub mod safety;
 pub mod services;
 pub mod signing;
 pub mod taxonomy;
+#[cfg(any(test, feature = "test-host"))]
+pub mod testing;
 pub mod transaction;
 pub mod verdict;

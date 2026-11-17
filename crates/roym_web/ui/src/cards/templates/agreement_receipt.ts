@@ -17,6 +17,7 @@ import { serviceLocationCardLabel } from "../../listings/labels";
 import { labelled } from "../../dom";
 import { timeElement } from "../../i18n/format";
 import { t } from "../../i18n/i18n";
+import { languageName } from "../../i18n/text_lang";
 import { formatMinor } from "../../money";
 import { recordValue } from "../../records/record_text";
 import { renderLink } from "../link";
@@ -26,6 +27,12 @@ export interface AgreementReceiptData {
   quote_record_id?: string;
   counterparty_did?: string;
   quote_author_did?: string;
+  counterparty_name?: string;
+  quote_author_name?: string;
+  viewed_lang?: string;
+  viewed_via_mt?: boolean;
+  quote_author?: { viewed_lang?: string; viewed_via_mt?: boolean };
+  counterparty?: { viewed_lang?: string; viewed_via_mt?: boolean };
   role?: "counterparty" | "quote-author";
   pair_state?: "none" | "half" | "complete" | { state: string; role?: string };
   pair?: "none" | "half" | "complete" | { state: string; role?: string };
@@ -111,6 +118,31 @@ export function renderAgreementReceipt(data?: AgreementReceiptData): HTMLElement
     card.appendChild(qidP);
   }
 
+  const addReadLine = (name: string, lang?: string, mt?: boolean) => {
+    if (!lang) return;
+    const p = document.createElement("p");
+    p.className = "receipt-read-in";
+    const language = languageName(lang);
+    p.textContent = mt
+      ? t("receipt-read-in-mt", { name, language })
+      : t("receipt-read-in", { name, language });
+    card.appendChild(p);
+  };
+
+  const authorName = data?.quote_author_name ?? t("receipt-role-author");
+  const recipientName = data?.counterparty_name ?? t("receipt-role-recipient");
+
+  if (data?.viewed_lang) {
+    const isAuthor = data.role === "quote-author";
+    addReadLine(isAuthor ? authorName : recipientName, data.viewed_lang, data.viewed_via_mt);
+  }
+  if (data?.quote_author?.viewed_lang) {
+    addReadLine(authorName, data.quote_author.viewed_lang, data.quote_author.viewed_via_mt);
+  }
+  if (data?.counterparty?.viewed_lang) {
+    addReadLine(recipientName, data.counterparty.viewed_lang, data.counterparty.viewed_via_mt);
+  }
+
   const terms: AgreedTermsData = {
     ...data?.terms,
     ...(data?.scope !== undefined ? { scope: data.scope } : {}),
@@ -128,10 +160,33 @@ export function renderAgreementReceipt(data?: AgreementReceiptData): HTMLElement
     ...(data?.quote_expires_at_secs !== undefined ? { quote_expires_at_secs: data.quote_expires_at_secs } : {}),
   };
 
-  if (terms.scope) {
+  const scopeText =
+    typeof terms.scope === "object" && terms.scope !== null
+      ? (terms.scope as { text?: string }).text
+      : terms.scope;
+  const cancText =
+    typeof terms.cancellation_terms === "object" && terms.cancellation_terms !== null
+      ? (terms.cancellation_terms as { text?: string }).text
+      : terms.cancellation_terms;
+  const refText =
+    typeof terms.refund_terms === "object" && terms.refund_terms !== null
+      ? (terms.refund_terms as { text?: string }).text
+      : terms.refund_terms;
+  const dispText =
+    typeof terms.dispute_path === "object" && terms.dispute_path !== null
+      ? (terms.dispute_path as { text?: string }).text
+      : terms.dispute_path;
+  const termsLang =
+    (typeof terms.scope === "object" && terms.scope !== null
+      ? (terms.scope as { lang?: string }).lang
+      : undefined) ??
+    terms.lang ??
+    "";
+
+  if (scopeText) {
     const scopeP = document.createElement("p");
     scopeP.className = "receipt-scope";
-    labelled(scopeP, t("terms-scope-label"), recordValue(terms.lang ?? "", terms.scope));
+    labelled(scopeP, t("terms-scope-label"), recordValue(termsLang, scopeText));
     card.appendChild(scopeP);
   }
 
@@ -202,24 +257,24 @@ export function renderAgreementReceipt(data?: AgreementReceiptData): HTMLElement
     }
   }
 
-  if (terms.cancellation_terms) {
+  if (cancText) {
     const cancP = document.createElement("p");
     cancP.className = "receipt-cancellation";
-    labelled(cancP, t("terms-cancellation-label"), recordValue(terms.lang ?? "", terms.cancellation_terms));
+    labelled(cancP, t("terms-cancellation-label"), recordValue(termsLang, cancText));
     card.appendChild(cancP);
   }
-  if (terms.refund_terms) {
+  if (refText) {
     const refP = document.createElement("p");
     refP.className = "receipt-refund";
-    labelled(refP, t("terms-refund-label"), recordValue(terms.lang ?? "", terms.refund_terms));
+    labelled(refP, t("terms-refund-label"), recordValue(termsLang, refText));
     card.appendChild(refP);
   }
-  if (terms.dispute_path) {
+  if (dispText) {
     const dispP = document.createElement("p");
     dispP.className = "receipt-dispute";
-    const isLink = terms.dispute_path.startsWith("http://") || terms.dispute_path.startsWith("https://");
-    const val = isLink ? renderLink(terms.dispute_path) : terms.dispute_path;
-    labelled(dispP, t("terms-dispute-label"), recordValue(terms.lang ?? "", val));
+    const isLink = dispText.startsWith("http://") || dispText.startsWith("https://");
+    const val = isLink ? renderLink(dispText) : dispText;
+    labelled(dispP, t("terms-dispute-label"), recordValue(termsLang, val));
     card.appendChild(dispP);
   }
 

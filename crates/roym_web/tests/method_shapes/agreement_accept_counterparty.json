@@ -1,5 +1,4 @@
 {
-  "booking": "null",
   "message_id": "string",
   "pair": {
     "role": "counterparty",

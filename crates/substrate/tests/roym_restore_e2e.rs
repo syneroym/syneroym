@@ -200,17 +200,16 @@ async fn setup_scheduled_transaction(
     let x_conv_id = opened["conversation_id"].as_str().unwrap().to_string();
     let req = node_x
         .rpc_ok(
-            "request.set",
+            "enquiry.set",
             json!({
                 "conversation": x_conv_id,
-                "description": description,
-                "lang": "en",
+                "description": { "lang": "en", "text": description },
                 "categories": ["cleaning"],
                 "data_use_notice": DEFAULT_DATA_USE_NOTICE,
             }),
         )
         .await;
-    let req_id = req["request_id"].as_str().unwrap().to_string();
+    let req_id = req["enquiry_id"].as_str().unwrap().to_string();
     let req_record_id = req["record_id"].as_str().unwrap().to_string();
     let req_msg_id = req["message_id"].as_str().unwrap().to_string();
     assert!(wait_delivered(node_x, &req_msg_id).await, "request delivered");
@@ -225,20 +224,45 @@ async fn setup_scheduled_transaction(
         .rpc_ok(
             "quote.set",
             json!({
-                "request_record_id": req_record_id,
-                "listing_id": listing_id,
-                "slot_id": slot_id,
+                "enquiry_record_id": req_record_id,
                 "expires_in_secs": 3600,
                 "terms": {
-                    "lang": "en",
-                    "scope": description,
-                    "currency": "EUR", "amount_minor": 8000, "tax_minor": 0, "fees_minor": 0,
-                    "payment_methods": ["cash"], "payee": "Y Cleaning",
-                    "payment_timing": "after-work",
-                    "location": { "where": "at-receiver", "address": "1 Kitchen Way" },
-                    "cancellation_terms": "24 hours notice required",
-                    "refund_terms": "Full refund if work not completed",
-                    "dispute_path": "Informal mediation",
+                    "currency": "EUR",
+                    "commitments": [
+                        {
+                            "giver": "quote-author",
+                            "resource_kind": "service-in-slot",
+                            "kind": "fulfilment",
+                            "extension": { "id": "scheduling", "version": 1 },
+                            "after": [],
+                            "description": { "lang": "en", "text": description },
+                            "declared_value_minor": 8000,
+                            "details": {
+                                "extension": "scheduling",
+                                "schema": "scheduling/slot@1",
+                                "data": { "listing_id": listing_id, "slot_id": slot_id },
+                                "extra": []
+                            },
+                            "location": { "where": "at-receiver", "address": "1 Kitchen Way" },
+                        },
+                        {
+                            "giver": "counterparty",
+                            "resource_kind": "currency",
+                            "kind": "currency",
+                            "after": ["c1"],
+                            "description": { "lang": "en", "text": "EUR 80.00" },
+                            "declared_value_minor": 8000,
+                            "payee": "Y Cleaning",
+                            "payment_methods": ["cash"],
+                            "tax_minor": 0,
+                            "fees_minor": 0,
+                        }
+                    ],
+                    "listing_id": listing_id,
+                    "scope": { "lang": "en", "text": description },
+                    "cancellation_terms": { "lang": "en", "text": "24 hours notice required" },
+                    "refund_terms": { "lang": "en", "text": "Full refund if work not completed" },
+                    "dispute_path": { "lang": "en", "text": "Informal mediation" },
                 },
             }),
         )
@@ -255,9 +279,10 @@ async fn setup_scheduled_transaction(
     assert!(wait_delivered(node_x, &accept_msg_id).await, "accept delivered");
     node_y.rpc_ok("transaction.sync", json!({ "conversation": y_conv_id })).await;
 
-    let booking = node_y.rpc_ok("booking.get", json!({ "agreement": quote_record_id })).await;
-    assert_eq!(booking["state"], "scheduled");
-    assert_eq!(booking["seq"], 1);
+    let agreement =
+        node_y.rpc_ok("agreement.get", json!({ "quote_record_id": quote_record_id })).await;
+    assert_eq!(agreement["state"], "agreed");
+    assert_eq!(agreement["seq"], 1);
 
     ActiveTransaction { quote_record_id, req_id, quote_id, y_conv_id }
 }
@@ -267,14 +292,22 @@ async fn advance_transaction(node_x: &Node, node_y: &Node, tx: &ActiveTransactio
         let list = node_x.rpc_ok("conversation.list", json!({})).await;
         list["conversations"][0]["id"].as_str().unwrap().to_string()
     };
-    let pay_req =
-        node_y.rpc_ok("payment.request", json!({ "agreement": tx.quote_record_id })).await;
+    let pay_req = node_y
+        .rpc_ok(
+            "payment.request",
+            json!({ "agreement": tx.quote_record_id, "commitment_id": "c2" }),
+        )
+        .await;
     let pay_req_msg = pay_req["message_id"].as_str().unwrap().to_string();
     assert!(wait_delivered(node_y, &pay_req_msg).await, "payment request delivered");
     node_x.rpc_ok("transaction.sync", json!({ "conversation": x_conv_id })).await;
 
-    let x_ack =
-        node_x.rpc_ok("payment.acknowledge", json!({ "agreement": tx.quote_record_id })).await;
+    let x_ack = node_x
+        .rpc_ok(
+            "payment.acknowledge",
+            json!({ "agreement": tx.quote_record_id, "commitment_id": "c2" }),
+        )
+        .await;
     let x_ack_msg = x_ack["message_id"].as_str().unwrap().to_string();
     assert!(wait_delivered(node_x, &x_ack_msg).await, "counterparty payment ack delivered");
     node_y.rpc_ok("transaction.sync", json!({ "conversation": tx.y_conv_id })).await;
@@ -282,7 +315,12 @@ async fn advance_transaction(node_x: &Node, node_y: &Node, tx: &ActiveTransactio
     let y_ack1 = node_y
         .rpc_ok(
             "payment.acknowledge",
-            json!({ "agreement": tx.quote_record_id, "method": "cash", "reference": "first" }),
+            json!({
+                "agreement": tx.quote_record_id,
+                "commitment_id": "c2",
+                "method": "cash",
+                "reference": "first"
+            }),
         )
         .await;
     let y_ack1_id = y_ack1["record_id"].as_str().unwrap().to_string();
@@ -290,15 +328,22 @@ async fn advance_transaction(node_x: &Node, node_y: &Node, tx: &ActiveTransactio
         .rpc_ok(
             "payment.acknowledge",
             json!({
-                "agreement": tx.quote_record_id, "method": "cash", "reference": "corrected",
+                "agreement": tx.quote_record_id,
+                "commitment_id": "c2",
+                "method": "cash",
+                "reference": "corrected",
                 "supersedes": y_ack1_id,
             }),
         )
         .await;
     assert_ne!(y_ack_corrected["record_id"], y_ack1_id);
 
-    let y_fulfil =
-        node_y.rpc_ok("fulfilment.sign", json!({ "agreement": tx.quote_record_id })).await;
+    let y_fulfil = node_y
+        .rpc_ok(
+            "fulfilment.sign",
+            json!({ "agreement": tx.quote_record_id, "commitment_id": "c1" }),
+        )
+        .await;
     assert!(
         wait_delivered(node_y, y_fulfil["message_id"].as_str().unwrap()).await,
         "fulfilment sign delivered"
@@ -306,8 +351,7 @@ async fn advance_transaction(node_x: &Node, node_y: &Node, tx: &ActiveTransactio
 }
 
 struct BeforeSnapshot {
-    booking: Value,
-    history: Value,
+    agreement: Value,
     payment: Value,
     fulfilment: Value,
     request_history: Value,
@@ -317,23 +361,24 @@ struct BeforeSnapshot {
 }
 
 async fn capture_before_snapshot(node_y: &Node, tx: &ActiveTransaction) -> BeforeSnapshot {
-    let booking = node_y.rpc_ok("booking.get", json!({ "agreement": tx.quote_record_id })).await;
-    let history =
-        node_y.rpc_ok("booking.history", json!({ "agreement": tx.quote_record_id })).await;
-    let payment = node_y.rpc_ok("payment.get", json!({ "agreement": tx.quote_record_id })).await;
+    let agreement =
+        node_y.rpc_ok("agreement.get", json!({ "quote_record_id": tx.quote_record_id })).await;
+    let payment = node_y
+        .rpc_ok("payment.get", json!({ "agreement": tx.quote_record_id, "commitment_id": "c2" }))
+        .await;
     assert_eq!(payment["track"], "acknowledged");
-    let fulfilment =
-        node_y.rpc_ok("fulfilment.get", json!({ "agreement": tx.quote_record_id })).await;
+    let fulfilment = node_y
+        .rpc_ok("fulfilment.get", json!({ "agreement": tx.quote_record_id, "commitment_id": "c1" }))
+        .await;
     assert_eq!(fulfilment["track"], "claimed");
     let request_history =
-        node_y.rpc_ok("request.history", json!({ "request_id": tx.req_id })).await;
+        node_y.rpc_ok("enquiry.history", json!({ "enquiry_id": tx.req_id })).await;
     let quote_history = node_y.rpc_ok("quote.history", json!({ "quote_id": tx.quote_id })).await;
     let thread = node_y.rpc_ok("transaction.thread", json!({ "conversation": tx.y_conv_id })).await;
     let conv_history =
         node_y.rpc_ok("conversation.history", json!({ "conversation": tx.y_conv_id })).await;
     BeforeSnapshot {
-        booking,
-        history,
+        agreement,
         payment,
         fulfilment,
         request_history,
@@ -344,30 +389,27 @@ async fn capture_before_snapshot(node_y: &Node, tx: &ActiveTransaction) -> Befor
 }
 
 async fn assert_durability_parity(node_y2: &Node, before: &BeforeSnapshot, tx: &ActiveTransaction) {
-    let booking_after =
-        node_y2.rpc_ok("booking.get", json!({ "agreement": tx.quote_record_id })).await;
-    assert_eq!(booking_after["state"], before.booking["state"]);
-    assert_eq!(booking_after["payment"], before.booking["payment"]);
-    assert_eq!(booking_after["fulfilment"], before.booking["fulfilment"]);
-    assert_eq!(booking_after["seq"], before.booking["seq"]);
+    let agreement_after =
+        node_y2.rpc_ok("agreement.get", json!({ "quote_record_id": tx.quote_record_id })).await;
+    assert_eq!(agreement_after["state"], before.agreement["state"]);
+    assert_eq!(agreement_after["seq"], before.agreement["seq"]);
+    assert_eq!(agreement_after["commitments"], before.agreement["commitments"]);
 
-    let history_after =
-        node_y2.rpc_ok("booking.history", json!({ "agreement": tx.quote_record_id })).await;
-    assert_eq!(history_after["history"], before.history["history"]);
-
-    let payment_after =
-        node_y2.rpc_ok("payment.get", json!({ "agreement": tx.quote_record_id })).await;
+    let payment_after = node_y2
+        .rpc_ok("payment.get", json!({ "agreement": tx.quote_record_id, "commitment_id": "c2" }))
+        .await;
     assert_eq!(payment_after["track"], before.payment["track"]);
     assert_eq!(payment_after["quote_author"], before.payment["quote_author"]);
     assert_eq!(payment_after["counterparty"], before.payment["counterparty"]);
 
-    let fulfilment_after =
-        node_y2.rpc_ok("fulfilment.get", json!({ "agreement": tx.quote_record_id })).await;
+    let fulfilment_after = node_y2
+        .rpc_ok("fulfilment.get", json!({ "agreement": tx.quote_record_id, "commitment_id": "c1" }))
+        .await;
     assert_eq!(fulfilment_after["track"], before.fulfilment["track"]);
     assert_eq!(fulfilment_after["quote_author"], before.fulfilment["quote_author"]);
 
     let request_history_after =
-        node_y2.rpc_ok("request.history", json!({ "request_id": tx.req_id })).await;
+        node_y2.rpc_ok("enquiry.history", json!({ "enquiry_id": tx.req_id })).await;
     assert_eq!(request_history_after["history"], before.request_history["history"]);
     let quote_history_after =
         node_y2.rpc_ok("quote.history", json!({ "quote_id": tx.quote_id })).await;
@@ -394,7 +436,7 @@ async fn assert_durability_parity(node_y2: &Node, before: &BeforeSnapshot, tx: &
     assert_eq!(bodies_after, bodies_before);
 
     let req_verify = node_y2
-        .rpc_ok("request.verify", json!({ "envelope": request_history_after["history"][0] }))
+        .rpc_ok("enquiry.verify", json!({ "envelope": request_history_after["history"][0] }))
         .await;
     assert_eq!(req_verify["verified"], true);
     let quote_verify = node_y2
@@ -420,24 +462,39 @@ async fn assert_post_restore_operations(
     recovery_key: &[u8; 32],
     bundles: &serde_json::Map<String, Value>,
 ) -> serde_json::Map<String, Value> {
-    let tick_view =
-        node_y2.rpc_ok("booking.get", json!({ "agreement": tx_sched.quote_record_id })).await;
+    let tick_view = node_y2
+        .rpc_ok("agreement.get", json!({ "quote_record_id": tx_sched.quote_record_id }))
+        .await;
     assert_eq!(tick_view["seq"], 1);
-    assert_eq!(tick_view["state"], "scheduled");
+    assert_eq!(tick_view["state"], "agreed");
 
-    let start_view =
-        node_y2.rpc_ok("booking.start", json!({ "agreement": tx_sched.quote_record_id })).await;
-    assert_eq!(start_view["state"], "in-progress");
-    assert_eq!(start_view["seq"], 2);
+    let start_view = node_y2
+        .rpc_ok(
+            "payment.request",
+            json!({ "agreement": tx_sched.quote_record_id, "commitment_id": "c2" }),
+        )
+        .await;
+    assert!(
+        start_view["state"] == "pending"
+            || start_view["state"] == "sent"
+            || start_view["state"] == "recorded"
+    );
 
-    let payment_after =
-        node_y2.rpc_ok("payment.get", json!({ "agreement": tx_active.quote_record_id })).await;
+    let payment_after = node_y2
+        .rpc_ok(
+            "payment.get",
+            json!({ "agreement": tx_active.quote_record_id, "commitment_id": "c2" }),
+        )
+        .await;
     let latest_quote_author_ack = payment_after["quote_author"].as_array().unwrap().last().unwrap();
     let post_restore_correction = node_y2
         .rpc_ok(
             "payment.acknowledge",
             json!({
-                "agreement": tx_active.quote_record_id, "method": "cash", "reference": "post-restore",
+                "agreement": tx_active.quote_record_id,
+                "commitment_id": "c2",
+                "method": "cash",
+                "reference": "post-restore",
                 "supersedes": latest_quote_author_ack["record_id"],
             }),
         )
@@ -447,7 +504,7 @@ async fn assert_post_restore_operations(
         post_restore_correction_envelope(node_y2, &tx_active.quote_record_id).await;
     let post_restore_verify =
         node_y2.rpc_ok("payment.verify", json!({ "envelope": post_restore_envelope })).await;
-    assert_eq!(post_restore_verify["verified"], true);
+    assert_eq!(post_restore_verify["verdict"]["verified"], true);
 
     let second_export = export_bundles(node_y2).await;
     for svc in ["profile", "catalog", "transaction"] {
@@ -468,9 +525,10 @@ async fn assert_post_restore_operations(
     let tampered_open = open_archive_bundles(&tampered, recovery_key);
     assert!(tampered_open.is_err(), "a flipped ciphertext byte must not decrypt");
 
-    let unchanged =
-        node_y2.rpc_ok("booking.get", json!({ "agreement": tx_sched.quote_record_id })).await;
-    assert_eq!(unchanged["seq"], start_view["seq"]);
+    let unchanged = node_y2
+        .rpc_ok("agreement.get", json!({ "quote_record_id": tx_sched.quote_record_id }))
+        .await;
+    assert_eq!(unchanged["seq"], 2);
     second_export
 }
 
@@ -539,8 +597,12 @@ async fn a_quote_author_transaction_survives_an_encrypted_backup_and_restore() {
     // run (e.g. after an interrupted restore). Re-run the same import and
     // check it neither errors nor duplicates state.
     import_bundles(&node_y2, &restore_bundles).await;
-    let payment_after_reimport =
-        node_y2.rpc_ok("payment.get", json!({ "agreement": tx_active.quote_record_id })).await;
+    let payment_after_reimport = node_y2
+        .rpc_ok(
+            "payment.get",
+            json!({ "agreement": tx_active.quote_record_id, "commitment_id": "c2" }),
+        )
+        .await;
     assert_eq!(
         payment_after_reimport["quote_author"].as_array().unwrap().len(),
         before.payment["quote_author"].as_array().unwrap().len(),
@@ -554,9 +616,10 @@ async fn a_quote_author_transaction_survives_an_encrypted_backup_and_restore() {
 
     // Step 4: the durability suite.
     assert_durability_parity(&node_y2, &before, &tx_active).await;
-    let sched_restored =
-        node_y2.rpc_ok("booking.get", json!({ "agreement": tx_sched.quote_record_id })).await;
-    assert_eq!(sched_restored["state"], "scheduled");
+    let sched_restored = node_y2
+        .rpc_ok("agreement.get", json!({ "quote_record_id": tx_sched.quote_record_id }))
+        .await;
+    assert_eq!(sched_restored["state"], "agreed");
     assert_eq!(sched_restored["seq"], 1);
 
     let second_export = assert_post_restore_operations(
@@ -570,14 +633,37 @@ async fn a_quote_author_transaction_survives_an_encrypted_backup_and_restore() {
     .await;
 
     // Step 5: export from Y2 and verify import onto a clean node Y3.
-    let (archive_y2, recovery_key_y2) = seal_archive(&node_y2.owner, &owner_y_did, second_export);
+    verify_node_y3_import(
+        &node_y2,
+        &owner_y_did,
+        second_export,
+        cluster.shared_registry,
+        &tx_active,
+        &tx_sched,
+    )
+    .await;
+
+    node_x.teardown().await;
+    node_y.teardown().await;
+    node_y2.teardown().await;
+}
+
+async fn verify_node_y3_import(
+    node_y2: &Node,
+    owner_y_did: &str,
+    second_export: serde_json::Map<String, Value>,
+    shared_registry: Option<String>,
+    tx_active: &ActiveTransaction,
+    tx_sched: &ActiveTransaction,
+) {
+    let (archive_y2, recovery_key_y2) = seal_archive(&node_y2.owner, owner_y_did, second_export);
     let restored_identity_y3 =
         identity_backup::import(&archive_y2.identity, &recovery_key_y2).unwrap();
     let dir_y3 = tempfile::tempdir().unwrap();
     let mut node_y3 = Node::boot(
         "node-y3",
         dir_y3.path().to_path_buf(),
-        cluster.shared_registry,
+        shared_registry,
         restored_identity_y3,
         fast_conversation_role(3600),
     )
@@ -586,23 +672,23 @@ async fn a_quote_author_transaction_survives_an_encrypted_backup_and_restore() {
     let restore_bundles_y3 = open_archive_bundles(&archive_y2, &recovery_key_y2).unwrap();
     import_bundles(&node_y3, &restore_bundles_y3).await;
 
-    let y3_active =
-        node_y3.rpc_ok("booking.get", json!({ "agreement": tx_active.quote_record_id })).await;
-    assert_eq!(y3_active["state"], "in-progress");
+    let y3_active = node_y3
+        .rpc_ok("agreement.get", json!({ "quote_record_id": tx_active.quote_record_id }))
+        .await;
+    assert_eq!(y3_active["state"], "agreed");
 
-    let y3_sched =
-        node_y3.rpc_ok("booking.get", json!({ "agreement": tx_sched.quote_record_id })).await;
-    assert_eq!(y3_sched["state"], "in-progress");
+    let y3_sched = node_y3
+        .rpc_ok("agreement.get", json!({ "quote_record_id": tx_sched.quote_record_id }))
+        .await;
+    assert_eq!(y3_sched["state"], "agreed");
     assert_eq!(y3_sched["seq"], 2);
 
-    node_x.teardown().await;
-    node_y.teardown().await;
-    node_y2.teardown().await;
     node_y3.teardown().await;
 }
 
 async fn post_restore_correction_envelope(node: &Node, agreement: &str) -> String {
-    let payment = node.rpc_ok("payment.get", json!({ "agreement": agreement })).await;
+    let payment =
+        node.rpc_ok("payment.get", json!({ "agreement": agreement, "commitment_id": "c2" })).await;
     let last = payment["quote_author"].as_array().unwrap().last().unwrap();
     last["envelope"].as_str().unwrap().to_string()
 }

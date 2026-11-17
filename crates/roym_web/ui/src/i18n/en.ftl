@@ -55,7 +55,7 @@ payment-acknowledged = The payee confirms they received the payment.
 fulfilment-claimed = The person doing the work says it is done.
 fulfilment-acknowledged = The person receiving the work confirms it is done.
 track-unconfirmed = No confirmation was recorded before the window closed.
-one-payment-notice = This quote is paid in one payment. Deposits and part payments are not supported.
+one-payment-notice = Each payment in this quote is paid once. A deposit is its own payment.
 
 group-owner-can-read-notice = The owner of this group makes and shares the group's key, so the owner can read every message sent while they own it. Adding or removing a member is shown to everyone in the group.
 group-key-trust-notice = Each member's messages are signed with a key this installation first saw when they joined. That is a weaker check than a signed record, so messages here are never marked as verified.
@@ -139,14 +139,35 @@ request-listing = Listing: { $id }
 request-window-label = Window:
 request-notice-label = Notice:
 
-progress-title = Booking Progress
+progress-title = Agreement progress
 progress-status = Status: { $state }
+progress-state-agreed = Agreed
+progress-state-closed = Closed
+progress-state-cancelled = Cancelled
+progress-state-not-formed = Not formed
 progress-state-scheduled = Scheduled
 progress-state-in-progress = In progress
 progress-state-completed = Completed
-progress-state-cancelled = Cancelled
 progress-state-conflict = Conflict
 progress-state-ended-unconfirmed = Ended, unconfirmed
+
+commitment-state-promised = Promised
+commitment-state-payment-requested = Payment requested
+commitment-state-fulfilled = Fulfilled
+commitment-state-acknowledged = Acknowledged
+commitment-state-ended-unconfirmed = Ended, unconfirmed
+commitment-state-other-failed = Other failed
+
+commitment-you-give = You give: { $description }
+commitment-other-gives = { $name } gives: { $description }
+commitment-declared-value = Declared value: { $amount }
+
+role-giver = Giver
+role-receiver = Receiver
+
+receipt-read-in = { $name } read this in { $language }
+receipt-read-in-mt = { $name } read this in { $language }, machine translation
+
 progress-conflict-slot-taken = Another booking took this slot first.
 progress-conflict-slot-unavailable = The listing owner removed this slot.
 progress-cancel-reason = Cancellation reason: { $reason }
@@ -521,6 +542,9 @@ messages-decline-failed = Decline failed: { $detail }
 common-cancel = Cancel
 quote-text-language = Text language
 quote-scope-placeholder = Scope of work
+quote-give-label = What you give
+quote-give-placeholder = What you give
+quote-payment-description = Payment
 quote-currency-placeholder = Currency (e.g. EUR, USD)
 quote-amount-placeholder = Total amount (e.g. 45.00)
 quote-tax-placeholder = Tax included (optional, e.g. 5.00)

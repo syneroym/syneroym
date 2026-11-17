@@ -2,15 +2,20 @@
 
 pub mod agreement_ops;
 pub mod backup;
-pub mod booking_ops;
+pub mod decide;
+pub mod enquiry_ops;
 pub mod fulfilment_ops;
+pub mod hold;
 pub mod ledger;
 pub mod payment_ops;
 pub mod progress;
+pub mod progress_ops;
 pub mod quote_ops;
-pub mod request_ops;
 pub mod sync;
 pub mod thread;
+
+#[cfg(test)]
+pub mod tests;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
@@ -23,38 +28,37 @@ use syneroym_app_host::{
 };
 use syneroym_roym_core::{
     admit,
-    booking::{BookingProgressPayload, BookingState},
     card::{self, CARD_CONTENT_TYPE},
     conversation::{Direction, StoredState},
+    deal::DealTerms,
     envelope::{Request, Response},
     method::{
         SiblingError, call_sibling,
         conversation::{SendInput, SendOutput},
     },
     paging,
+    progress::{AgreementState, CancelReason, CommitmentProgress},
     record::Envelope,
     services,
     signing::{self, CertificateError},
-    transaction::{AgreedTerms, DealRole, EVENT_BOOKING, EVENT_CARD, ReceiptHalf},
+    transaction::{DealRole, EVENT_CARD, EVENT_PROGRESS, ReceiptHalf},
 };
 
 use crate::api;
 
-// Schema version 4 names the deal roles by action (counterparty, quote
-// author). Version 3 added the booking vertical, payments, fulfilments and
-// the ledger.
-pub const SCHEMA_VERSION: u32 = 4;
+// Schema version 5 transitions the booking vertical to pure deal records,
+// multi-commitment models, and agreement progress snapshots.
+pub const SCHEMA_VERSION: u32 = 5;
 
-pub(crate) const REQUESTS: &str = "requests";
-pub(crate) const REQUEST_HISTORY: &str = "request_history";
+pub(crate) const ENQUIRIES: &str = "enquiries";
+pub(crate) const ENQUIRY_HISTORY: &str = "enquiry_history";
 pub(crate) const QUOTES: &str = "quotes";
 pub(crate) const QUOTE_HISTORY: &str = "quote_history";
 pub(crate) const AGREEMENTS: &str = "agreements";
 pub(crate) const CARDS: &str = "cards";
 pub(crate) const SYNC_STATE: &str = "sync_state";
 pub(crate) const LEDGER: &str = "ledger";
-pub(crate) const BOOKINGS: &str = "bookings";
-pub(crate) const PROGRESS: &str = "progress";
+pub(crate) const AGREEMENT_PROGRESS: &str = "agreement_progress";
 pub(crate) const PAYMENTS: &str = "payments";
 pub(crate) const FULFILMENTS: &str = "fulfilments";
 
@@ -81,17 +85,10 @@ impl From<StoredState> for SendState {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum BookingWriter {
-    #[serde(rename = "self")]
-    Mine,
-    Peer,
-}
-
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgreementRef {
+    #[serde(alias = "quote_record_id")]
     pub agreement: String,
 }
 
@@ -152,10 +149,23 @@ pub(crate) struct RecordPointerRow {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct AgreementRow {
     pub(crate) quote_record_id: String,
+    pub(crate) quote_id: String,
     pub(crate) conversation: String,
     pub(crate) counterparty_did: String,
     pub(crate) quote_author_did: String,
-    pub(crate) terms: AgreedTerms,
+    pub(crate) terms: DealTerms,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) state: Option<AgreementState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) state_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) cancel_reason: Option<CancelReason>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) seq: Option<u32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) commitments: Vec<CommitmentProgress>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) agreed_at_secs: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) counterparty: Option<ReceiptHalf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -217,35 +227,11 @@ pub(crate) struct SyncStateRow {
     pub(crate) last_seq: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct BookingRow {
-    pub(crate) agreement: String,
-    pub(crate) conversation: String,
-    pub(crate) state: BookingState,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) slot_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) seat: Option<u32>,
-    pub(crate) snapshot: BookingProgressPayload,
-    pub(crate) progress_record_id: String,
-    pub(crate) updated_at_secs: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct ProgressRow {
-    pub(crate) agreement: String,
-    pub(crate) conversation: String,
-    pub(crate) seq: u32,
-    pub(crate) snapshot: BookingProgressPayload,
-    pub(crate) envelope: String,
-    pub(crate) record_id: String,
-    pub(crate) writer: String,
-    pub(crate) received_at_secs: u64,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub(crate) struct PaymentsRow {
     pub(crate) agreement: String,
+    #[serde(default)]
+    pub(crate) commitment_id: String,
     pub(crate) conversation: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) request: Option<ReceiptHalf>,
@@ -259,6 +245,8 @@ pub(crate) struct PaymentsRow {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub(crate) struct FulfilmentsRow {
     pub(crate) agreement: String,
+    #[serde(default)]
+    pub(crate) commitment_id: String,
     pub(crate) conversation: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) counterparty: Option<ReceiptHalf>,
@@ -334,11 +322,11 @@ fn idx(field: &str, ty: IndexType) -> IndexDefinition {
 pub(crate) async fn ensure_collections<H: AppHost>(host: &H) -> Result<(), String> {
     ensure_coll(
         host,
-        REQUESTS,
+        ENQUIRIES,
         &[idx("conversation", IndexType::String), idx("updated_at_secs", IndexType::Numeric)],
     )
     .await?;
-    ensure_coll(host, REQUEST_HISTORY, &[]).await?;
+    ensure_coll(host, ENQUIRY_HISTORY, &[]).await?;
     ensure_coll(
         host,
         QUOTES,
@@ -357,22 +345,32 @@ pub(crate) async fn ensure_collections<H: AppHost>(host: &H) -> Result<(), Strin
     ensure_coll(
         host,
         LEDGER,
-        &[idx("kind", IndexType::String), idx("agreement", IndexType::String)],
+        &[
+            idx("kind", IndexType::String),
+            idx("agreement", IndexType::String),
+            idx("quote_id", IndexType::String),
+            idx("state", IndexType::String),
+        ],
     )
     .await?;
     ensure_coll(
         host,
-        BOOKINGS,
-        &[
-            idx("conversation", IndexType::String),
-            idx("state", IndexType::String),
-            idx("slot_id", IndexType::String),
-        ],
+        AGREEMENT_PROGRESS,
+        &[idx("conversation", IndexType::String), idx("agreement", IndexType::String)],
     )
     .await?;
-    ensure_coll(host, PROGRESS, &[idx("conversation", IndexType::String)]).await?;
-    ensure_coll(host, PAYMENTS, &[idx("conversation", IndexType::String)]).await?;
-    ensure_coll(host, FULFILMENTS, &[idx("conversation", IndexType::String)]).await?;
+    ensure_coll(
+        host,
+        PAYMENTS,
+        &[idx("conversation", IndexType::String), idx("agreement", IndexType::String)],
+    )
+    .await?;
+    ensure_coll(
+        host,
+        FULFILMENTS,
+        &[idx("conversation", IndexType::String), idx("agreement", IndexType::String)],
+    )
+    .await?;
     Ok(())
 }
 
@@ -400,19 +398,6 @@ pub(crate) async fn put_card<H: AppHost>(host: &H, card: &CardRow) -> Result<(),
             EVENT_CARD.to_string(),
             card.conversation.clone(),
             Some(card.message_id.clone()),
-        )
-        .await;
-    Ok(())
-}
-
-pub(crate) async fn put_booking<H: AppHost>(host: &H, booking: &BookingRow) -> Result<(), String> {
-    put_row(host, BOOKINGS, &booking.agreement, booking).await?;
-    // The row is stored either way; a missed event only delays a client's refresh.
-    let _ = host
-        .record_event(
-            EVENT_BOOKING.to_string(),
-            booking.conversation.clone(),
-            Some(booking.agreement.clone()),
         )
         .await;
     Ok(())
@@ -511,6 +496,26 @@ pub(crate) async fn file_own_card<H: AppHost>(
     put_card(host, &card_row).await
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SendCardError {
+    Transport(String),
+    Refused(String),
+}
+
+impl SendCardError {
+    pub(crate) fn is_transport(&self) -> bool {
+        matches!(self, Self::Transport(_))
+    }
+}
+
+impl std::fmt::Display for SendCardError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Transport(s) | Self::Refused(s) => write!(f, "{s}"),
+        }
+    }
+}
+
 /// Sends a record as a card on `conversation`, then files this node's own
 /// copy of that card under the message id the send returned. A send or
 /// file-own-card failure is reported back as `send_error` rather than
@@ -525,10 +530,16 @@ pub(crate) async fn send_card_and_file<H: AppHost>(
     envelope_json: &str,
     now: u64,
     version_count: Option<u64>,
-) -> (String, SendState, Option<String>) {
+) -> (String, SendState, Option<SendCardError>) {
     let body = match card::card_body(card_type, version, envelope_json) {
         Ok(b) => b,
-        Err(e) => return (String::new(), SendState::NotSent, Some(e.to_string())),
+        Err(e) => {
+            return (
+                String::new(),
+                SendState::NotSent,
+                Some(SendCardError::Refused(e.to_string())),
+            );
+        }
     };
 
     let send_resp = call_sibling::<_, SendInput, SendOutput>(
@@ -546,12 +557,18 @@ pub(crate) async fn send_card_and_file<H: AppHost>(
 
     let (message_id, state, sender_timestamp_ms, mut send_error) = match send_resp {
         Ok(out) => (out.message_id, SendState::from(out.state), out.sender_timestamp_ms, None),
-        Err(SiblingError::Refused(err)) => {
-            (String::new(), SendState::NotSent, now as i64 * 1000, Some(err.message))
-        }
-        Err(SiblingError::Transport(e) | SiblingError::BadReply(e)) => {
-            (String::new(), SendState::NotSent, now as i64 * 1000, Some(e))
-        }
+        Err(SiblingError::Refused(err)) => (
+            String::new(),
+            SendState::NotSent,
+            now as i64 * 1000,
+            Some(SendCardError::Refused(err.message)),
+        ),
+        Err(SiblingError::Transport(e) | SiblingError::BadReply(e)) => (
+            String::new(),
+            SendState::NotSent,
+            now as i64 * 1000,
+            Some(SendCardError::Transport(e)),
+        ),
     };
 
     if !message_id.is_empty()
@@ -568,7 +585,8 @@ pub(crate) async fn send_card_and_file<H: AppHost>(
         )
         .await
     {
-        send_error = send_error.or(Some(format!("file own card failed: {e}")));
+        send_error = send_error
+            .or_else(|| Some(SendCardError::Transport(format!("file own card failed: {e}"))));
     }
 
     (message_id, state, send_error)

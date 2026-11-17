@@ -65,7 +65,7 @@ export function toMinorUnits(input: string, exponent = 2): number | undefined {
 
 /// Integer minor units as an exact decimal string, e.g. 3550, 2 -> "35.50".
 /// A string keeps every digit of a large amount, which a float would not.
-function minorToDecimal(minor: number, exp: number): `${number}` {
+export function minorToDecimal(minor: number, exp: number): `${number}` {
   if (exp === 0) return `${minor}`;
   const sign = minor < 0 ? "-" : "";
   const abs = Math.abs(minor).toString().padStart(exp + 1, "0");

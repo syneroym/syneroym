@@ -1,17 +1,19 @@
 //! Fulfilment receipt records: attestations by quote author or counterparty
-//! that work was done.
+//! that work for a commitment was done.
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
+    deal::{LocalText, SettlementRole},
+    lang::TranslationError,
     listing, person,
     record::{self, RECORD_FULFILMENT_RECEIPT, VerifyOptions},
-    transaction::{AgreedTerms, DealRole, TransactionError},
     verdict::RecordVerdict,
 };
 
 pub const FULFILMENT_RECEIPT_VERSION: u32 = 1;
+pub const MAX_SETTLEMENT_NOTE_LEN: usize = 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum FulfilmentError {
@@ -25,20 +27,23 @@ pub enum FulfilmentError {
     SamePartyDid,
     #[error("conversation is empty")]
     ConversationEmpty,
-    #[error("terms: {0}")]
-    Terms(#[from] TransactionError),
+    #[error("commitment_id is empty")]
+    CommitmentIdEmpty,
+    #[error("settlement_note: {0}")]
+    SettlementNote(#[from] TranslationError),
 }
 
-/// Both halves are identical apart from `role`, and carry the agreed
-/// terms so a receipt reads on its own.
+/// One party's attestation regarding fulfilment of a commitment.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FulfilmentReceiptPayload {
     pub agreement: String,
     pub conversation: String,
+    pub commitment_id: String,
     pub counterparty_did: String,
     pub quote_author_did: String,
-    pub role: DealRole,
-    pub terms: AgreedTerms,
+    pub role: SettlementRole,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settlement_note: Option<LocalText>,
 }
 
 impl FulfilmentReceiptPayload {
@@ -58,20 +63,25 @@ impl FulfilmentReceiptPayload {
         if self.conversation.is_empty() {
             return Err(FulfilmentError::ConversationEmpty);
         }
-        self.terms.validate()?;
+        if self.commitment_id.is_empty() {
+            return Err(FulfilmentError::CommitmentIdEmpty);
+        }
+        if let Some(note) = &self.settlement_note {
+            note.validate("settlement_note", MAX_SETTLEMENT_NOTE_LEN)?;
+        }
         Ok(())
     }
 }
 
-/// Both halves must agree on agreement, conversation, parties, and terms,
-/// and come from opposite roles.
+/// Both halves must agree on agreement, conversation, parties, and
+/// commitment_id, and come from opposite roles.
 #[must_use]
 pub fn fulfilment_halves_agree(a: &FulfilmentReceiptPayload, b: &FulfilmentReceiptPayload) -> bool {
     a.agreement == b.agreement
         && a.conversation == b.conversation
         && a.counterparty_did == b.counterparty_did
         && a.quote_author_did == b.quote_author_did
-        && a.terms == b.terms
+        && a.commitment_id == b.commitment_id
         && a.role != b.role
 }
 
@@ -102,15 +112,8 @@ pub fn verify_fulfilment_receipt(
     if verified.expires_at_secs.is_some() {
         return RecordVerdict::refused("a fulfilment receipt may not declare an expiry");
     }
-    if verified.supersedes.is_some() {
-        return RecordVerdict::refused("a fulfilment receipt cannot be corrected");
-    }
-    let expected_issuer = match payload.role {
-        DealRole::Counterparty => &payload.counterparty_did,
-        DealRole::QuoteAuthor => &payload.quote_author_did,
-    };
-    if verified.issuer != *expected_issuer {
-        return RecordVerdict::refused("fulfilment receipt issuer does not match role's DID");
+    if verified.issuer != payload.quote_author_did && verified.issuer != payload.counterparty_did {
+        return RecordVerdict::refused("fulfilment receipt issuer is not a party to the agreement");
     }
     RecordVerdict {
         verified: true,

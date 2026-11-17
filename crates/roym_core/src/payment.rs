@@ -1,20 +1,22 @@
-//! Payment records: payment requests from quote authors, and payment
-//! acknowledgements from either party.
+//! Payment records: payment requests from receivers, and payment
+//! acknowledgements from either party per commitment.
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
+    deal::{Commitment, LocalText, SettlementRole},
+    lang::TranslationError,
     listing::{self, MAX_PAYMENT_METHOD_LEN},
-    money, person,
+    person,
     record::{self, RECORD_PAYMENT_ACKNOWLEDGEMENT, RECORD_PAYMENT_REQUEST, VerifyOptions},
-    transaction::{AgreedTerms, DealRole},
     verdict::RecordVerdict,
 };
 
 pub const PAYMENT_REQUEST_VERSION: u32 = 1;
 pub const PAYMENT_ACKNOWLEDGEMENT_VERSION: u32 = 1;
 pub const MAX_NOTE_LEN: usize = 512;
+pub const MAX_SETTLEMENT_NOTE_LEN: usize = 1024;
 pub const MAX_REFERENCE_LEN: usize = 512;
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -29,32 +31,28 @@ pub enum PaymentError {
     SamePartyDid,
     #[error("conversation is empty")]
     ConversationEmpty,
-    #[error("currency '{0}' is not a valid ISO currency code")]
-    UnknownCurrency(String),
-    #[error("amount_minor ({0}) cannot be negative")]
-    NegativeAmount(i64),
+    #[error("commitment_id is empty")]
+    CommitmentIdEmpty,
     #[error("observed_at_secs must be greater than zero")]
     ZeroObservedTime,
     #[error("payment method '{0}' is not 1..={MAX_PAYMENT_METHOD_LEN} chars of [a-z0-9-]")]
     MethodShape(String),
     #[error("reference is over {MAX_REFERENCE_LEN} characters")]
     ReferenceTooLong,
-    #[error("note is over {MAX_NOTE_LEN} characters")]
-    NoteTooLong,
+    #[error("note: {0}")]
+    Note(#[from] TranslationError),
 }
 
-/// The quote author asking to be paid. No payee: the payee is the one the
-/// signed agreement binds, and nothing else may name one.
+/// A request to be paid for a currency commitment.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaymentRequestPayload {
     pub agreement: String,
     pub conversation: String,
-    pub counterparty_did: String,
+    pub commitment_id: String,
     pub quote_author_did: String,
-    pub currency: String,
-    pub amount_minor: i64,
+    pub counterparty_did: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub note: Option<String>,
+    pub note: Option<LocalText>,
 }
 
 impl PaymentRequestPayload {
@@ -74,38 +72,32 @@ impl PaymentRequestPayload {
         if self.conversation.is_empty() {
             return Err(PaymentError::ConversationEmpty);
         }
-        if money::currency_minor_exponent(&self.currency).is_none() {
-            return Err(PaymentError::UnknownCurrency(self.currency.clone()));
+        if self.commitment_id.is_empty() {
+            return Err(PaymentError::CommitmentIdEmpty);
         }
-        if self.amount_minor < 0 {
-            return Err(PaymentError::NegativeAmount(self.amount_minor));
-        }
-        if self.note.as_ref().is_some_and(|note| note.len() > MAX_NOTE_LEN) {
-            return Err(PaymentError::NoteTooLong);
+        if let Some(note) = &self.note {
+            note.validate("note", MAX_NOTE_LEN)?;
         }
         Ok(())
     }
 }
 
-/// One party's statement about a payment. The quote author's half is the
-/// payee confirming receipt; the counterparty's half is the payer saying
-/// they paid. Neither proves money moved.
+/// One party's statement about a payment for a specific commitment.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaymentAcknowledgementPayload {
     pub agreement: String,
     pub conversation: String,
-    pub counterparty_did: String,
+    pub commitment_id: String,
     pub quote_author_did: String,
-    pub role: DealRole,
-    pub currency: String,
-    pub amount_minor: i64,
-    /// When the issuer says the payment happened. The issuer's own word.
+    pub counterparty_did: String,
+    pub role: SettlementRole,
     pub observed_at_secs: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub method: Option<String>,
-    /// Whatever proof the issuer has, as text. Never fetched.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reference: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settlement_note: Option<LocalText>,
 }
 
 impl PaymentAcknowledgementPayload {
@@ -125,11 +117,8 @@ impl PaymentAcknowledgementPayload {
         if self.conversation.is_empty() {
             return Err(PaymentError::ConversationEmpty);
         }
-        if money::currency_minor_exponent(&self.currency).is_none() {
-            return Err(PaymentError::UnknownCurrency(self.currency.clone()));
-        }
-        if self.amount_minor < 0 {
-            return Err(PaymentError::NegativeAmount(self.amount_minor));
+        if self.commitment_id.is_empty() {
+            return Err(PaymentError::CommitmentIdEmpty);
         }
         if self.observed_at_secs == 0 {
             return Err(PaymentError::ZeroObservedTime);
@@ -142,33 +131,24 @@ impl PaymentAcknowledgementPayload {
         if self.reference.as_ref().is_some_and(|r| r.len() > MAX_REFERENCE_LEN) {
             return Err(PaymentError::ReferenceTooLong);
         }
+        if let Some(note) = &self.settlement_note {
+            note.validate("settlement_note", MAX_SETTLEMENT_NOTE_LEN)?;
+        }
         Ok(())
     }
 }
 
-/// One payment per agreement: the amount and currency are the agreed ones,
-/// and a named method is one the terms list (when they list any).
+/// Checks whether a commitment accepts a given payment method.
 #[must_use]
-pub fn matches_terms(
-    currency: &str,
-    amount_minor: i64,
-    method: Option<&str>,
-    terms: &AgreedTerms,
-) -> bool {
-    if terms.currency != currency || terms.amount_minor != amount_minor {
-        return false;
-    }
-    if let Some(m) = method
-        && !terms.payment_methods.is_empty()
-        && !terms.payment_methods.iter().any(|tm| tm == m)
-    {
-        return false;
-    }
-    true
+pub fn commitment_accepts(commitment: &Commitment, method: &str) -> bool {
+    commitment
+        .payment_methods
+        .as_ref()
+        .is_none_or(|methods| methods.is_empty() || methods.iter().any(|m| m == method))
 }
 
 /// The relaxed pair equality allowed for payment halves:
-/// agreement, parties, amount and currency agree; roles differ.
+/// agreement, parties, commitment agree; roles differ.
 #[must_use]
 pub fn acknowledgements_agree(
     a: &PaymentAcknowledgementPayload,
@@ -178,8 +158,7 @@ pub fn acknowledgements_agree(
         && a.conversation == b.conversation
         && a.counterparty_did == b.counterparty_did
         && a.quote_author_did == b.quote_author_did
-        && a.currency == b.currency
-        && a.amount_minor == b.amount_minor
+        && a.commitment_id == b.commitment_id
         && a.role != b.role
 }
 
@@ -193,9 +172,8 @@ pub fn is_valid_correction(
         && old.conversation == new.conversation
         && old.counterparty_did == new.counterparty_did
         && old.quote_author_did == new.quote_author_did
+        && old.commitment_id == new.commitment_id
         && old.role == new.role
-        && old.currency == new.currency
-        && old.amount_minor == new.amount_minor
 }
 
 pub fn verify_payment_request(
@@ -227,8 +205,8 @@ pub fn verify_payment_request(
     if verified.supersedes.is_some() {
         return RecordVerdict::refused("a payment request cannot be corrected");
     }
-    if verified.issuer != payload.quote_author_did {
-        return RecordVerdict::refused("payment request issuer does not match quote_author_did");
+    if verified.issuer != payload.quote_author_did && verified.issuer != payload.counterparty_did {
+        return RecordVerdict::refused("payment request issuer is not a party to the agreement");
     }
     RecordVerdict {
         verified: true,
@@ -275,12 +253,8 @@ pub fn verify_payment_acknowledgement(
     if verified.expires_at_secs.is_some() {
         return RecordVerdict::refused("a payment acknowledgement may not declare an expiry");
     }
-    let expected_issuer = match payload.role {
-        DealRole::Counterparty => &payload.counterparty_did,
-        DealRole::QuoteAuthor => &payload.quote_author_did,
-    };
-    if verified.issuer != *expected_issuer {
-        return RecordVerdict::refused("acknowledgement issuer does not match role's DID");
+    if verified.issuer != payload.quote_author_did && verified.issuer != payload.counterparty_did {
+        return RecordVerdict::refused("acknowledgement issuer is not a party to the agreement");
     }
     RecordVerdict {
         verified: true,

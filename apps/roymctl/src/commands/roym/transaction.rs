@@ -19,7 +19,7 @@ use crate::{DEFAULT_GATEWAY_URL, commands::session};
 #[derive(Args, Debug, Clone)]
 pub struct QuoteArgs {
     #[arg(long)]
-    pub request: String,
+    pub enquiry: String,
     #[arg(long)]
     pub scope: String,
     #[arg(long)]
@@ -54,6 +54,8 @@ pub struct QuoteArgs {
     #[arg(long)]
     pub expires_hours: u64,
     #[arg(long)]
+    pub listing_id: Option<String>,
+    #[arg(long)]
     pub slot: Option<String>,
     #[arg(long, default_value = DEFAULT_GATEWAY_URL)]
     pub gateway_url: String,
@@ -63,8 +65,8 @@ pub struct QuoteArgs {
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum TransactionCommands {
-    /// Send a signed request card in a conversation.
-    Request {
+    /// Send a signed enquiry card in a conversation.
+    Enquiry {
         #[arg(long)]
         conversation: String,
         #[arg(long)]
@@ -133,33 +135,24 @@ pub enum TransactionCommands {
         #[arg(long)]
         host: Option<String>,
     },
-    /// View the agreement receipt for a quote.
+    /// Agreement operations: get, cancel, progress, list.
     Agreement {
-        #[arg(long)]
-        quote: String,
-        #[arg(long, default_value = DEFAULT_GATEWAY_URL)]
-        gateway_url: String,
-        #[arg(long)]
-        host: Option<String>,
-    },
-    /// Booking operations: get, list, start, cancel, history.
-    Booking {
         #[command(subcommand)]
-        command: super::booking::BookingCommands,
+        command: super::agreement::AgreementCommands,
     },
     /// Payment operations: request, ack, get, verify.
     Payment {
         #[command(subcommand)]
-        command: super::booking::PaymentCommands,
+        command: super::agreement::PaymentCommands,
     },
     /// Fulfilment operations: sign, get.
     Fulfilment {
         #[command(subcommand)]
-        command: super::booking::FulfilmentCommands,
+        command: super::agreement::FulfilmentCommands,
     },
 }
 
-struct RequestParamsArgs<'a> {
+struct EnquiryParamsArgs<'a> {
     conversation: &'a str,
     description: &'a str,
     lang: &'a str,
@@ -170,7 +163,7 @@ struct RequestParamsArgs<'a> {
     notice: Option<&'a str>,
 }
 
-fn build_request_params(args: RequestParamsArgs<'_>) -> Result<Value> {
+fn build_enquiry_params(args: EnquiryParamsArgs<'_>) -> Result<Value> {
     let parsed_lang = LangTag::parse(args.lang)?;
     let data_use_notice = args
         .notice
@@ -179,8 +172,10 @@ fn build_request_params(args: RequestParamsArgs<'_>) -> Result<Value> {
 
     let mut params = json!({
         "conversation": args.conversation,
-        "description": args.description,
-        "lang": parsed_lang.as_str(),
+        "description": {
+            "lang": parsed_lang.as_str(),
+            "text": args.description,
+        },
         "categories": args.categories,
         "data_use_notice": data_use_notice,
     });
@@ -198,7 +193,7 @@ fn build_request_params(args: RequestParamsArgs<'_>) -> Result<Value> {
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn handle_request(
+async fn handle_enquiry(
     conversation: &str,
     description: &str,
     lang: &str,
@@ -214,7 +209,7 @@ async fn handle_request(
     let data_use_notice = notice.unwrap_or(transaction::DEFAULT_DATA_USE_NOTICE);
     println!("{data_use_notice}");
 
-    let params = build_request_params(RequestParamsArgs {
+    let params = build_enquiry_params(EnquiryParamsArgs {
         conversation,
         description,
         lang,
@@ -225,7 +220,7 @@ async fn handle_request(
         notice,
     })?;
 
-    call_and_print(ctx, gateway_url, host, "request.set", params).await
+    call_and_print(ctx, gateway_url, host, "enquiry.set", params).await
 }
 
 /// Validate a quote's terms and build the `quote.set` params object:
@@ -234,7 +229,7 @@ async fn handle_request(
 /// and read the cancellation/refund terms files.
 #[allow(clippy::too_many_arguments)]
 fn build_quote_params(
-    request: &str,
+    enquiry: &str,
     scope: &str,
     lang: &str,
     currency: &str,
@@ -251,6 +246,7 @@ fn build_quote_params(
     refund_file: &Path,
     dispute: &str,
     expires_hours: u64,
+    listing_id: Option<&str>,
     slot: Option<&str>,
 ) -> Result<Value> {
     let parsed_lang = LangTag::parse(lang)?;
@@ -292,35 +288,104 @@ fn build_quote_params(
         location["address"] = json!(addr);
     }
 
-    let mut terms = json!({
-        "lang": parsed_lang.as_str(),
-        "scope": scope,
-        "currency": curr,
-        "amount_minor": amount_minor,
-        "tax_minor": tax_minor,
-        "fees_minor": fees_minor,
-        "payment_methods": methods,
-        "payee": payee,
-        "payment_timing": timing_str,
-        "location": location,
-        "cancellation_terms": cancellation_terms,
-        "refund_terms": refund_terms,
-        "dispute_path": dispute,
-    });
-    if let Some(s) = schedule {
-        terms["schedule"] = parse_window(s)?;
-    }
+    let schedule_val = match schedule {
+        Some(s) => Some(parse_window(s)?),
+        None => None,
+    };
+    let commitments = build_quote_commitments(
+        &parsed_lang,
+        scope,
+        &curr,
+        amount,
+        amount_minor,
+        payee,
+        tax_minor,
+        fees_minor,
+        methods,
+        &timing_str,
+        location,
+        schedule_val,
+        listing_id,
+        slot,
+    );
 
-    let mut quote_params = json!({
-        "request_record_id": request,
+    let terms = json!({
+        "currency": curr,
+        "commitments": commitments,
+        "scope": { "lang": parsed_lang.as_str(), "text": scope },
+        "cancellation_terms": { "lang": parsed_lang.as_str(), "text": cancellation_terms },
+        "refund_terms": { "lang": parsed_lang.as_str(), "text": refund_terms },
+        "dispute_path": { "lang": parsed_lang.as_str(), "text": dispute },
+    });
+    let quote_params = json!({
+        "enquiry_record_id": enquiry,
         "expires_in_secs": expires_hours * 3600,
         "terms": terms,
     });
-    if let Some(sl) = slot {
-        quote_params["slot_id"] = json!(sl);
-    }
 
     Ok(quote_params)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_quote_commitments(
+    parsed_lang: &LangTag,
+    scope: &str,
+    curr: &str,
+    amount: &str,
+    amount_minor: i64,
+    payee: &str,
+    tax_minor: i64,
+    fees_minor: i64,
+    methods: &[String],
+    timing_str: &str,
+    location: Value,
+    schedule: Option<Value>,
+    listing_id: Option<&str>,
+    slot: Option<&str>,
+) -> Vec<Value> {
+    let mut c1 = json!({
+        "giver": "quote-author",
+        "description": { "lang": parsed_lang.as_str(), "text": scope },
+        "declared_value_minor": amount_minor,
+        "after": if timing_str == "before-work" && amount_minor > 0 { vec!["c2"] } else { vec![] },
+        "location": location,
+    });
+    if let Some(w) = schedule {
+        c1["window"] = w;
+    }
+    if let Some(sl) = slot {
+        c1["resource_kind"] = json!("service-in-slot");
+        c1["kind"] = json!("fulfilment");
+        c1["extension"] =
+            json!({ "id": syneroym_roym_core::deal::SCHEDULING_EXTENSION, "version": 1 });
+        c1["details"] = json!({
+            "extension": syneroym_roym_core::deal::SCHEDULING_EXTENSION,
+            "schema": syneroym_roym_core::deal::SCHEDULING_SLOT_SCHEMA,
+            "data": { "listing_id": listing_id.unwrap_or_default(), "slot_id": sl },
+        });
+    } else {
+        c1["resource_kind"] = json!("goods-or-service");
+        c1["kind"] = json!("fulfilment");
+    }
+
+    if amount_minor > 0 {
+        let curr_desc = format!("{curr} {amount}");
+        let c2 = json!({
+            "giver": "counterparty",
+            "resource_kind": "currency",
+            "kind": "currency",
+            "description": { "lang": parsed_lang.as_str(), "text": curr_desc },
+            "declared_value_minor": amount_minor,
+            "payee": payee,
+            "payment_methods": methods,
+            "tax_minor": tax_minor,
+            "fees_minor": fees_minor,
+            "after": if timing_str == "after-work" { vec!["c1"] } else { vec![] },
+        });
+        vec![c1, c2]
+    } else {
+        vec![c1]
+    }
 }
 
 async fn handle_decline(
@@ -432,7 +497,7 @@ pub(super) async fn handle_transaction(
 ) -> Result<()> {
     let ctx = RpcCtx { run_as, ucan_path, dir };
     match command {
-        TransactionCommands::Request {
+        TransactionCommands::Enquiry {
             conversation,
             description,
             lang,
@@ -444,7 +509,7 @@ pub(super) async fn handle_transaction(
             gateway_url,
             host,
         } => {
-            handle_request(
+            handle_enquiry(
                 conversation,
                 description,
                 lang,
@@ -461,7 +526,7 @@ pub(super) async fn handle_transaction(
         }
         TransactionCommands::Quote(args) => {
             let params = build_quote_params(
-                &args.request,
+                &args.enquiry,
                 &args.scope,
                 &args.lang,
                 &args.currency,
@@ -478,6 +543,7 @@ pub(super) async fn handle_transaction(
                 &args.refund_file,
                 &args.dispute,
                 args.expires_hours,
+                args.listing_id.as_deref(),
                 args.slot.as_deref(),
             )?;
             call_and_print(ctx, &args.gateway_url, args.host.as_deref(), "quote.set", params)
@@ -497,18 +563,14 @@ pub(super) async fn handle_transaction(
         TransactionCommands::Thread { conversation, gateway_url, host } => {
             handle_thread(conversation, gateway_url, host.as_deref(), ctx).await?;
         }
-        TransactionCommands::Agreement { quote, gateway_url, host } => {
-            let params = json!({ "quote_record_id": quote });
-            call_and_print(ctx, gateway_url, host.as_deref(), "agreement.get", params).await?;
-        }
-        TransactionCommands::Booking { command } => {
-            super::booking::handle_booking(command, dir, run_as, ucan_path).await?;
+        TransactionCommands::Agreement { command } => {
+            super::agreement::handle_agreement(command, dir, run_as, ucan_path).await?;
         }
         TransactionCommands::Payment { command } => {
-            super::booking::handle_payment(command, dir, run_as, ucan_path).await?;
+            super::agreement::handle_payment(command, dir, run_as, ucan_path).await?;
         }
         TransactionCommands::Fulfilment { command } => {
-            super::booking::handle_fulfilment(command, dir, run_as, ucan_path).await?;
+            super::agreement::handle_fulfilment(command, dir, run_as, ucan_path).await?;
         }
     }
     Ok(())
@@ -574,8 +636,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn build_request_params_validates_lang() {
-        let params = build_request_params(RequestParamsArgs {
+    fn build_enquiry_params_validates_lang() {
+        let params = build_enquiry_params(EnquiryParamsArgs {
             conversation: "conv1",
             description: "desc",
             lang: "HI-latn",
@@ -587,10 +649,10 @@ mod tests {
         });
         assert!(params.is_ok());
         if let Ok(p) = params {
-            assert_eq!(p["lang"], "hi-Latn");
+            assert_eq!(p["description"]["lang"], "hi-Latn");
         }
 
-        let err = build_request_params(RequestParamsArgs {
+        let err = build_enquiry_params(EnquiryParamsArgs {
             conversation: "conv1",
             description: "desc",
             lang: "hi_IN",
@@ -635,10 +697,11 @@ mod tests {
             "arbitration",
             24,
             None,
+            None,
         );
         assert!(params.is_ok());
         if let Ok(p) = params {
-            assert_eq!(p["terms"]["lang"], "hi-Latn");
+            assert_eq!(p["terms"]["scope"]["lang"], "hi-Latn");
         }
 
         let err = build_quote_params(
@@ -659,6 +722,7 @@ mod tests {
             &refund_path,
             "arbitration",
             24,
+            None,
             None,
         );
         assert!(err.is_err());

@@ -20,7 +20,7 @@ pub const RECORD_TYPES: &[(&str, u32)] = &[
     ("listing", 1),
     ("membership-credential", 1),
     ("revocation", 1),
-    ("request", 1),
+    ("enquiry", 1),
     ("quote", 1),
     ("agreement-receipt", 1),
     ("payment-acknowledgement", 1),
@@ -35,7 +35,7 @@ pub const RECORD_LISTING: &str = "listing";
 pub const RECORD_MEMBERSHIP_CREDENTIAL: &str = "membership-credential";
 pub const RECORD_REVOCATION: &str = "revocation";
 pub const RECORD_MODERATION_DECISION: &str = "moderation-decision";
-pub const RECORD_REQUEST: &str = "request";
+pub const RECORD_ENQUIRY: &str = "enquiry";
 pub const RECORD_QUOTE: &str = "quote";
 pub const RECORD_AGREEMENT_RECEIPT: &str = "agreement-receipt";
 pub const RECORD_PAYMENT_REQUEST: &str = "payment-request";
@@ -45,7 +45,7 @@ pub const RECORD_BUNDLE_MANIFEST: &str = "bundle-manifest";
 /// Signed by the quote author's transaction service, not by a person, and
 /// deliberately absent from `RECORD_TYPES`: it is derived state that
 /// names its writer, never evidence of anything.
-pub const RECORD_BOOKING_PROGRESS: &str = "booking-progress";
+pub const RECORD_AGREEMENT_PROGRESS: &str = "agreement-progress";
 
 pub fn is_known_record(record_type: &str, version: u32) -> bool {
     RECORD_TYPES.iter().any(|&(t, v)| t == record_type && v == version)

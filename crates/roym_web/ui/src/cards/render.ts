@@ -1,12 +1,12 @@
 import { CARD_TYPES } from "./registry";
 import { renderUnknown } from "./unknown";
 import { AgreementReceiptData, renderAgreementReceipt } from "./templates/agreement_receipt";
-import { BookingProgressData, renderBookingProgress } from "./templates/booking_progress";
+import { AgreementProgressData, renderAgreementProgress } from "./templates/agreement_progress";
+import { EnquiryData, renderEnquiry } from "./templates/enquiry";
 import { FulfilmentReceiptData, renderFulfilmentReceipt } from "./templates/fulfilment_receipt";
 import { PaymentAcknowledgementData, renderPaymentAcknowledgement } from "./templates/payment_acknowledgement";
 import { PaymentRequestData, renderPaymentRequest } from "./templates/payment_request";
 import { QuoteData, renderQuote } from "./templates/quote";
-import { RequestData, renderRequest } from "./templates/request";
 
 export interface CardObject {
   type: string;
@@ -25,14 +25,15 @@ export function renderCard(card: CardObject): HTMLElement {
   }
 
   switch (card.type) {
-    case "request":
-      return renderRequest(card.data as RequestData | undefined);
+    case "enquiry":
+      return renderEnquiry(card.data as EnquiryData | undefined);
     case "quote":
       return renderQuote(card.data as QuoteData | undefined);
     case "agreement-receipt":
       return renderAgreementReceipt(card.data as AgreementReceiptData | undefined);
+    case "agreement-progress":
     case "booking-progress":
-      return renderBookingProgress(card.data as BookingProgressData | undefined);
+      return renderAgreementProgress(card.data as AgreementProgressData | undefined);
     case "payment-request":
       return renderPaymentRequest({
         ...(card.data as PaymentRequestData | undefined),

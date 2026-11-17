@@ -39,6 +39,10 @@ fn is_closed_word_key(k: &str) -> bool {
             | "where"
             | "event"
             | "auth"
+            | "giver"
+            | "resource_kind"
+            | "cancel_reason"
+            | "state_reason"
     )
 }
 
@@ -106,6 +110,13 @@ pub(super) async fn rpc(h: &Harness, method: &str, params: Value) -> Value {
         panic!("rpc {method} returned error: {err}");
     }
     resp.get("result").cloned().unwrap_or(Value::Null)
+}
+
+pub(super) async fn rpc_err(h: &Harness, method: &str, params: Value) -> Value {
+    let req = json!({ "method": method, "params": params }).to_string().into_bytes();
+    let r = h.native_http.post("/rpc", req, Some(h.caller())).await;
+    let resp: Value = serde_json::from_slice(&r.body).unwrap();
+    resp.get("error").cloned().unwrap_or(Value::Null)
 }
 
 pub(super) async fn enrol_native_signing(h: &Harness, service: &str) -> (Value, Value, Value) {

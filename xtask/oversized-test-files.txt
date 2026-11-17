@@ -20,7 +20,7 @@ crates/router/tests/proxy_dispatch.rs 979
 crates/roym_web/tests/dual_build_parity/directory.rs 981
 crates/roym_web/tests/dual_build_parity/helpers.rs 1290
 crates/roym_web/tests/dual_build_parity/profile.rs 1112
-crates/roym_web/tests/dual_build_parity/transaction.rs 846
+crates/roym_web/tests/dual_build_parity/transaction.rs 821
 crates/sandbox_wasm/src/engine/tests.rs 821
 crates/sandbox_wasm/tests/abac_integration.rs 809
 crates/substrate/tests/gateway_session_e2e.rs 1419

@@ -4,48 +4,85 @@ use syneroym_identity::{Identity, substrate};
 use syneroym_signed_record::{Envelope, RecordDraft};
 
 use super::*;
+use crate::{
+    deal::{Commitment, CommitmentKind, DealTerms, ResourceKind},
+    lang::TranslationError,
+};
 
 mod lang;
 mod verify;
 mod viewed;
 
-pub(super) fn sample_terms() -> AgreedTerms {
-    AgreedTerms {
-        lang: LangTag::parse("en").unwrap(),
-        scope: "Install garden fence".to_string(),
+pub(super) fn sample_terms() -> DealTerms {
+    DealTerms {
         currency: "EUR".to_string(),
-        amount_minor: 50000,
-        tax_minor: 5000,
-        fees_minor: 2000,
-        payment_methods: vec!["card".to_string(), "cash".to_string()],
-        payee: "Garden Services Ltd".to_string(),
-        payment_timing: PaymentTiming::AfterWork,
-        schedule: Some(TimeWindow { earliest_secs: 10000, latest_secs: 20000 }),
-        location: QuoteLocation {
-            where_: ServiceLocation::AtReceiver,
-            area: None,
-            address: Some("123 Flower St".to_string()),
-        },
-        cancellation_terms: "Cancel 24h prior for full refund".to_string(),
-        refund_terms: "Full refund if unsatisfactory".to_string(),
-        dispute_path: "Contact disputes@example.com".to_string(),
         quote_expires_at_secs: 15000,
+        home_exchange: None,
+        commitments: vec![Commitment {
+            commitment_id: "c1".to_string(),
+            giver: DealRole::QuoteAuthor,
+            resource_kind: ResourceKind::GoodsOrService,
+            kind: CommitmentKind::Fulfilment,
+            extension: None,
+            after: Vec::new(),
+            description: LocalText {
+                lang: LangTag::parse("en").unwrap(),
+                text: "Install garden fence".to_string(),
+                translations: vec![],
+            },
+            declared_value_minor: 50000,
+            details: None,
+            window: Some(TimeWindow { earliest_secs: 10000, latest_secs: 20000 }),
+            location: Some(QuoteLocation {
+                where_: ServiceLocation::AtReceiver,
+                area: None,
+                address: Some("123 Flower St".to_string()),
+            }),
+            payee: None,
+            payment_methods: None,
+            tax_minor: None,
+            fees_minor: None,
+            eep: None,
+        }],
+        listing_id: Some("lst_abc123".to_string()),
+        scope: LocalText {
+            lang: LangTag::parse("en").unwrap(),
+            text: "Install garden fence".to_string(),
+            translations: vec![],
+        },
+        cancellation_terms: LocalText {
+            lang: LangTag::parse("en").unwrap(),
+            text: "Cancel 24h prior for full refund".to_string(),
+            translations: vec![],
+        },
+        refund_terms: LocalText {
+            lang: LangTag::parse("en").unwrap(),
+            text: "Full refund if unsatisfactory".to_string(),
+            translations: vec![],
+        },
+        dispute_path: LocalText {
+            lang: LangTag::parse("en").unwrap(),
+            text: "Contact disputes@example.com".to_string(),
+            translations: vec![],
+        },
     }
 }
 
-pub(super) fn sample_request(issuer: &str) -> RequestPayload {
+pub(super) fn sample_enquiry(issuer: &str) -> EnquiryPayload {
     let conversation = "conv_123456";
     let sequence = 1;
-    let request_id = derive_request_id(conversation, issuer, sequence).unwrap();
-    RequestPayload {
-        request_id,
+    let enquiry_id = derive_enquiry_id(conversation, issuer, sequence).unwrap();
+    EnquiryPayload {
+        enquiry_id,
         conversation: conversation.to_string(),
         sequence,
         listing_id: Some("lst_abc123".to_string()),
         categories: vec!["gardening".to_string()],
-        description: "Need fence installed".to_string(),
-        lang: LangTag::parse("en").unwrap(),
-        translations: vec![],
+        description: LocalText {
+            lang: LangTag::parse("en").unwrap(),
+            text: "Need fence installed".to_string(),
+            translations: vec![],
+        },
         area: None,
         window: Some(TimeWindow { earliest_secs: 10000, latest_secs: 20000 }),
         data_use_notice: DEFAULT_DATA_USE_NOTICE.to_string(),
@@ -60,12 +97,9 @@ pub(super) fn sample_quote(issuer: &str, counterparty_did: &str) -> QuotePayload
         quote_id,
         conversation: conversation.to_string(),
         sequence,
-        request_record_id: "rec_req123".to_string(),
-        listing_id: Some("lst_abc123".to_string()),
-        slot_id: None,
+        answers: Answers::Enquiry { record_id: "rec_req123".to_string() },
         counterparty_did: counterparty_did.to_string(),
         terms: sample_terms(),
-        translations: vec![],
     }
 }
 
@@ -128,99 +162,15 @@ fn quote_location_validate() {
 }
 
 #[test]
-fn agreed_terms_validate_rules() {
-    let mut t = sample_terms();
-    assert!(t.validate().is_ok());
-
-    // Scope empty / too long
-    t.scope = "   ".to_string();
-    assert_eq!(t.validate(), Err(TransactionError::ScopeEmpty));
-    t.scope = "a".repeat(MAX_SCOPE_LEN + 1);
-    assert_eq!(t.validate(), Err(TransactionError::ScopeTooLong));
-    t.scope = "Valid scope".to_string();
-
-    // Currency unknown
-    t.currency = "XYZ".to_string();
-    assert!(matches!(t.validate(), Err(TransactionError::CurrencyUnknown(_))));
-    t.currency = "EUR".to_string();
-
-    // Negative amounts
-    t.amount_minor = -1;
-    assert!(matches!(t.validate(), Err(TransactionError::NegativeAmount(-1))));
-    t.amount_minor = 50000;
-
-    t.tax_minor = -1;
-    assert!(matches!(t.validate(), Err(TransactionError::NegativeTax(-1))));
-    t.tax_minor = 5000;
-
-    t.fees_minor = -1;
-    assert!(matches!(t.validate(), Err(TransactionError::NegativeFees(-1))));
-    t.fees_minor = 2000;
-
-    // Breakdown exceeds total (including checked_add overflow)
-    t.tax_minor = 40000;
-    t.fees_minor = 20000; // 40000 + 20000 = 60000 > 50000
-    assert!(matches!(t.validate(), Err(TransactionError::BreakdownExceedsTotal { .. })));
-    t.tax_minor = i64::MAX;
-    t.fees_minor = 1;
-    assert!(matches!(t.validate(), Err(TransactionError::BreakdownExceedsTotal { .. })));
-    t.tax_minor = 5000;
-    t.fees_minor = 2000;
-
-    // Payee
-    t.payee = "".to_string();
-    assert_eq!(t.validate(), Err(TransactionError::PayeeEmpty));
-    t.payee = "p".repeat(MAX_PAYEE_LEN + 1);
-    assert_eq!(t.validate(), Err(TransactionError::PayeeTooLong));
-    t.payee = "Valid Payee".to_string();
-
-    // Payment methods
-    t.payment_methods = (0..MAX_PAYMENT_METHODS + 1).map(|i| format!("m{i}")).collect();
-    assert_eq!(t.validate(), Err(TransactionError::TooManyPaymentMethods));
-    for bad in ["x".repeat(MAX_PAYMENT_METHOD_LEN + 1), "UPI".into(), " ".into()] {
-        t.payment_methods = vec![bad.clone()];
-        assert_eq!(t.validate(), Err(TransactionError::PaymentMethodShape(bad)));
-    }
-    t.payment_methods = vec!["card".to_string()];
-
-    // Cancellation terms
-    t.cancellation_terms = "".to_string();
-    assert_eq!(t.validate(), Err(TransactionError::CancellationTermsEmpty));
-    t.cancellation_terms = "x".repeat(MAX_TERMS_TEXT_LEN + 1);
-    assert_eq!(t.validate(), Err(TransactionError::CancellationTermsTooLong));
-    t.cancellation_terms = "Valid cancel".to_string();
-
-    // Refund terms
-    t.refund_terms = "".to_string();
-    assert_eq!(t.validate(), Err(TransactionError::RefundTermsEmpty));
-    t.refund_terms = "x".repeat(MAX_TERMS_TEXT_LEN + 1);
-    assert_eq!(t.validate(), Err(TransactionError::RefundTermsTooLong));
-    t.refund_terms = "Valid refund".to_string();
-
-    // Dispute path
-    t.dispute_path = "".to_string();
-    assert_eq!(t.validate(), Err(TransactionError::DisputePathEmpty));
-    t.dispute_path = "x".repeat(MAX_TERMS_TEXT_LEN + 1);
-    assert_eq!(t.validate(), Err(TransactionError::DisputePathTooLong));
-    t.dispute_path = "Valid dispute".to_string();
-
-    // Quote expiry zero
-    t.quote_expires_at_secs = 0;
-    assert_eq!(t.validate(), Err(TransactionError::QuoteExpiryZero));
-    t.quote_expires_at_secs = 1000;
-    assert!(t.validate().is_ok());
-}
-
-#[test]
-fn request_payload_validate_rules() {
+fn enquiry_payload_validate_rules() {
     let key = Identity::generate().unwrap();
     let issuer = substrate::derive_did_key(&key.public_key());
-    let mut r = sample_request(&issuer);
+    let mut r = sample_enquiry(&issuer);
     assert!(r.validate().is_ok());
 
-    r.request_id = "".to_string();
-    assert_eq!(r.validate(), Err(TransactionError::RequestIdEmpty));
-    r.request_id = "req_123".to_string();
+    r.enquiry_id = "".to_string();
+    assert_eq!(r.validate(), Err(TransactionError::EnquiryIdEmpty));
+    r.enquiry_id = "enq_123".to_string();
 
     r.conversation = "".to_string();
     assert_eq!(r.validate(), Err(TransactionError::ConversationEmpty));
@@ -230,11 +180,17 @@ fn request_payload_validate_rules() {
     assert_eq!(r.validate(), Err(TransactionError::InvalidSequence(0)));
     r.sequence = 1;
 
-    r.description = "   ".to_string();
-    assert_eq!(r.validate(), Err(TransactionError::DescriptionEmpty));
-    r.description = "d".repeat(MAX_DESCRIPTION_LEN + 1);
-    assert_eq!(r.validate(), Err(TransactionError::DescriptionTooLong));
-    r.description = "Valid description".to_string();
+    r.description.text = "   ".to_string();
+    assert!(matches!(
+        r.validate(),
+        Err(TransactionError::Translation(TranslationError::Empty { .. }))
+    ));
+    r.description.text = "d".repeat(MAX_DESCRIPTION_LEN + 1);
+    assert!(matches!(
+        r.validate(),
+        Err(TransactionError::Translation(TranslationError::TooLong { .. }))
+    ));
+    r.description.text = "Valid description".to_string();
 
     r.categories = (0..MAX_CATEGORIES + 1).map(|i| format!("c{i}")).collect();
     assert_eq!(r.validate(), Err(TransactionError::TooManyCategories));
@@ -272,9 +228,9 @@ fn quote_payload_validate_rules() {
     assert_eq!(q.validate(), Err(TransactionError::InvalidSequence(0)));
     q.sequence = 1;
 
-    q.request_record_id = "bad_prefix".to_string();
+    q.answers = Answers::Enquiry { record_id: "bad_prefix".to_string() };
     assert!(matches!(q.validate(), Err(TransactionError::InvalidRecordId(_))));
-    q.request_record_id = "rec_req123".to_string();
+    q.answers = Answers::Enquiry { record_id: "rec_req123".to_string() };
 
     q.counterparty_did = "not-a-did".to_string();
     assert!(matches!(q.validate(), Err(TransactionError::InvalidDid(_))));
@@ -295,7 +251,7 @@ fn agreement_receipt_payload_validate_rules() {
         quote_author_did: quote_author_did.clone(),
         role: DealRole::Counterparty,
         terms: sample_terms(),
-        viewed_lang: sample_terms().lang,
+        viewed_lang: sample_terms().scope.lang,
         viewed_via_mt: false,
     };
     assert!(a.validate().is_ok());
@@ -319,18 +275,18 @@ fn agreement_receipt_payload_validate_rules() {
 }
 
 #[test]
-fn derive_request_id_and_quote_id_are_stable_and_differ_on_any_input_change() {
-    let id1 = derive_request_id("c1", "did:key:1", 1).unwrap();
-    let id2 = derive_request_id("c1", "did:key:1", 1).unwrap();
+fn derive_enquiry_id_and_quote_id_are_stable_and_differ_on_any_input_change() {
+    let id1 = derive_enquiry_id("c1", "did:key:1", 1).unwrap();
+    let id2 = derive_enquiry_id("c1", "did:key:1", 1).unwrap();
     assert_eq!(id1, id2);
-    assert!(id1.starts_with(REQUEST_ID_PREFIX));
+    assert!(id1.starts_with(ENQUIRY_ID_PREFIX));
 
     // Changing conversation
-    assert_ne!(id1, derive_request_id("c2", "did:key:1", 1).unwrap());
+    assert_ne!(id1, derive_enquiry_id("c2", "did:key:1", 1).unwrap());
     // Changing issuer
-    assert_ne!(id1, derive_request_id("c1", "did:key:2", 1).unwrap());
+    assert_ne!(id1, derive_enquiry_id("c1", "did:key:2", 1).unwrap());
     // Changing sequence
-    assert_ne!(id1, derive_request_id("c1", "did:key:1", 2).unwrap());
+    assert_ne!(id1, derive_enquiry_id("c1", "did:key:1", 2).unwrap());
 
     // Quote id
     let q1 = derive_quote_id("c1", "did:key:1", 1).unwrap();
@@ -353,7 +309,7 @@ fn halves_agree_table_test() {
         quote_author_did: quote_author_did.clone(),
         role: DealRole::Counterparty,
         terms: terms.clone(),
-        viewed_lang: terms.lang.clone(),
+        viewed_lang: terms.scope.lang.clone(),
         viewed_via_mt: false,
     };
     let base_quote_author = AgreementReceiptPayload {
@@ -362,7 +318,7 @@ fn halves_agree_table_test() {
         quote_author_did: quote_author_did.clone(),
         role: DealRole::QuoteAuthor,
         terms: terms.clone(),
-        viewed_lang: terms.lang.clone(),
+        viewed_lang: terms.scope.lang.clone(),
         viewed_via_mt: false,
     };
 
@@ -389,17 +345,10 @@ fn halves_agree_table_test() {
     diff_pdid.quote_author_did = "did:key:zOther".to_string();
     assert!(!halves_agree(&base_counterparty, &diff_pdid));
 
-    // Differ in terms (e.g. amount) -> false
+    // Differ in terms (e.g. currency) -> false
     let mut diff_terms = base_quote_author.clone();
-    diff_terms.terms.amount_minor = 99999;
+    diff_terms.terms.currency = "USD".to_string();
     assert!(!halves_agree(&base_counterparty, &diff_terms));
-}
-
-#[test]
-fn agreed_terms_validate_refuses_xyz_as_currency() {
-    let mut t = sample_terms();
-    t.currency = "XYZ".to_string();
-    assert!(matches!(t.validate(), Err(TransactionError::CurrencyUnknown(c)) if c == "XYZ"));
 }
 
 #[test]
@@ -442,4 +391,50 @@ fn the_ui_notices_match_this_crate() {
             "en.ftl must hold the whole line `{id} = <the Rust notice>`"
         );
     }
+}
+
+#[test]
+fn halves_differ_only_in_role_and_what_was_read() {
+    let terms = sample_terms();
+
+    let half_author = AgreementReceiptPayload {
+        quote_record_id: "rec_quote_123".to_string(),
+        counterparty_did: "did:key:z6MkuCounterparty".to_string(),
+        quote_author_did: "did:key:z6MkuAuthor".to_string(),
+        role: DealRole::QuoteAuthor,
+        terms: terms.clone(),
+        viewed_lang: LangTag::parse("en").unwrap(),
+        viewed_via_mt: false,
+    };
+
+    let half_counterparty = AgreementReceiptPayload {
+        quote_record_id: "rec_quote_123".to_string(),
+        counterparty_did: "did:key:z6MkuCounterparty".to_string(),
+        quote_author_did: "did:key:z6MkuAuthor".to_string(),
+        role: DealRole::Counterparty,
+        terms: terms.clone(),
+        viewed_lang: LangTag::parse("hi").unwrap(),
+        viewed_via_mt: true,
+    };
+
+    assert_ne!(half_author.role, half_counterparty.role);
+    assert_ne!(half_author.viewed_lang, half_counterparty.viewed_lang);
+    assert_ne!(half_author.viewed_via_mt, half_counterparty.viewed_via_mt);
+    assert!(halves_agree(&half_author, &half_counterparty));
+
+    let mut diff_rec = half_counterparty.clone();
+    diff_rec.quote_record_id = "rec_other".to_string();
+    assert!(!halves_agree(&half_author, &diff_rec));
+
+    let mut diff_author_did = half_counterparty.clone();
+    diff_author_did.quote_author_did = "did:key:z6MkuOther".to_string();
+    assert!(!halves_agree(&half_author, &diff_author_did));
+
+    let mut diff_cp_did = half_counterparty.clone();
+    diff_cp_did.counterparty_did = "did:key:z6MkuOther".to_string();
+    assert!(!halves_agree(&half_author, &diff_cp_did));
+
+    let mut same_role = half_counterparty.clone();
+    same_role.role = DealRole::QuoteAuthor;
+    assert!(!halves_agree(&half_author, &same_role));
 }

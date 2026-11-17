@@ -6,8 +6,8 @@ use std::{
 use serde_json::json;
 use syneroym_core::event_bus::{Cursor, Event, EventBus, ReadOutcome};
 use syneroym_roym_core::transaction::{
-    AGREEMENT_RECEIPT_VERSION, DEFAULT_DATA_USE_NOTICE, RECORD_AGREEMENT_RECEIPT, RECORD_REQUEST,
-    REQUEST_VERSION,
+    AGREEMENT_RECEIPT_VERSION, DEFAULT_DATA_USE_NOTICE, ENQUIRY_VERSION, RECORD_AGREEMENT_RECEIPT,
+    RECORD_ENQUIRY,
 };
 use syneroym_signed_record::Envelope;
 
@@ -80,13 +80,12 @@ async fn a_request_card_records_a_card_event_in_both_builds() {
 
     let params = json!({
         "conversation": conv,
-        "description": "Paint fence",
-        "lang": "en",
+        "description": { "lang": "en", "text": "Paint fence" },
         "data_use_notice": DEFAULT_DATA_USE_NOTICE,
     });
-    let (rw, rn) = both_rpc(&h, "request.set", params).await;
-    assert!(rw["result"]["request_id"].is_string());
-    assert!(rn["result"]["request_id"].is_string());
+    let (rw, rn) = both_rpc(&h, "enquiry.set", params).await;
+    assert!(rw["result"]["enquiry_id"].is_string());
+    assert!(rn["result"]["enquiry_id"].is_string());
     let wasm_msg_id = rw["result"]["message_id"].as_str().unwrap();
     let native_msg_id = rn["result"]["message_id"].as_str().unwrap();
 
@@ -114,8 +113,7 @@ async fn accepting_an_agreement_records_card_and_booking_events_in_both_builds()
     let conv = open_conv(&h, &peer_did()).await;
 
     let (req_rec_id, _) = deal_fixtures::setup_peer_request(&h, &conv).await;
-    let mut q_params = valid_quote_params(&conv, &req_rec_id);
-    q_params["terms"]["payment_timing"] = json!("after-work");
+    let q_params = valid_quote_params(&conv, &req_rec_id);
     let (qw, _) = both_rpc(&h, "quote.set", q_params).await;
     let quote_rec_id = qw["result"]["record_id"].as_str().unwrap().to_string();
     let quote_id = qw["result"]["quote_id"].as_str().unwrap().to_string();
@@ -182,7 +180,7 @@ async fn accepting_an_agreement_records_card_and_booking_events_in_both_builds()
     assert_eq!(tuples_w, tuples_n);
     let kinds: Vec<&str> = tuples_w.iter().map(|(k, ..)| k.as_str()).collect();
     assert!(kinds.contains(&"transaction.card"));
-    assert!(kinds.contains(&"transaction.booking"));
+    assert!(kinds.contains(&"transaction.progress"));
 }
 
 #[tokio::test]
@@ -198,8 +196,8 @@ async fn syncing_an_inbound_card_records_one_card_event_and_a_second_sync_none()
         &format!("m-req-{req_id}"),
         &conv,
         &peer_did(),
-        RECORD_REQUEST,
-        REQUEST_VERSION,
+        RECORD_ENQUIRY,
+        ENQUIRY_VERSION,
         &req_env,
     )
     .await;
@@ -240,11 +238,10 @@ async fn a_transaction_import_records_no_event() {
 
     let params = json!({
         "conversation": conv,
-        "description": "Request for import test",
-        "lang": "en",
+        "description": { "lang": "en", "text": "Request for import test" },
         "data_use_notice": DEFAULT_DATA_USE_NOTICE,
     });
-    both_rpc(&h, "request.set", params).await;
+    both_rpc(&h, "enquiry.set", params).await;
 
     let (exp_w, exp_n) = both_rpc(&h, "transaction.export", json!({})).await;
 

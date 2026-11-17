@@ -2,46 +2,23 @@ use syneroym_identity::{Identity, substrate};
 use syneroym_signed_record::{Envelope, RecordDraft};
 
 use super::*;
-use crate::{
-    lang::LangTag,
-    listing::ServiceLocation,
-    transaction::{PaymentTiming, QuoteLocation},
-};
+use crate::deal::SettlementRole;
 
-fn sample_terms() -> AgreedTerms {
-    AgreedTerms {
-        lang: LangTag::parse("en").unwrap(),
-        scope: "All work".to_string(),
-        currency: "USD".to_string(),
-        amount_minor: 10_000,
-        tax_minor: 0,
-        fees_minor: 0,
-        payment_methods: vec!["card".to_string(), "cash".to_string()],
-        payee: "Test Payee".to_string(),
-        payment_timing: PaymentTiming::BeforeWork,
-        schedule: None,
-        location: QuoteLocation { where_: ServiceLocation::Remote, area: None, address: None },
-        cancellation_terms: "Standard cancellation".to_string(),
-        refund_terms: "Standard refund".to_string(),
-        dispute_path: "Contact the quote author".to_string(),
-        quote_expires_at_secs: 2000,
-    }
-}
-
-fn sample_receipt(role: DealRole) -> FulfilmentReceiptPayload {
+fn sample_receipt(role: SettlementRole) -> FulfilmentReceiptPayload {
     FulfilmentReceiptPayload {
         agreement: "rec_quote123".to_string(),
         conversation: "conv_123".to_string(),
+        commitment_id: "c1".to_string(),
         counterparty_did: "did:key:zCounterparty".to_string(),
         quote_author_did: "did:key:zQuoteAuthor".to_string(),
         role,
-        terms: sample_terms(),
+        settlement_note: None,
     }
 }
 
 #[test]
 fn fulfilment_receipt_validation() {
-    let mut receipt = sample_receipt(DealRole::Counterparty);
+    let mut receipt = sample_receipt(SettlementRole::Giver);
     assert!(receipt.validate().is_ok());
 
     receipt.agreement = "bad_prefix".to_string();
@@ -58,16 +35,20 @@ fn fulfilment_receipt_validation() {
 
     receipt.conversation = String::new();
     assert!(matches!(receipt.validate(), Err(FulfilmentError::ConversationEmpty)));
+    receipt.conversation = "conv_123".to_string();
+
+    receipt.commitment_id = String::new();
+    assert!(matches!(receipt.validate(), Err(FulfilmentError::CommitmentIdEmpty)));
 }
 
 #[test]
 fn test_fulfilment_halves_agree() {
-    let counterparty_half = sample_receipt(DealRole::Counterparty);
-    let quote_author_half = sample_receipt(DealRole::QuoteAuthor);
+    let counterparty_half = sample_receipt(SettlementRole::Receiver);
+    let quote_author_half = sample_receipt(SettlementRole::Giver);
     assert!(fulfilment_halves_agree(&counterparty_half, &quote_author_half));
 
     let mut mismatched = quote_author_half.clone();
-    mismatched.terms.amount_minor = 20_000;
+    mismatched.commitment_id = "c2".to_string();
     assert!(!fulfilment_halves_agree(&counterparty_half, &mismatched));
 
     let same_role = counterparty_half.clone();
@@ -79,7 +60,7 @@ fn verify_fulfilment_envelopes() {
     let key = Identity::generate().unwrap();
     let issuer = substrate::derive_did_key(&key.public_key());
 
-    let mut receipt = sample_receipt(DealRole::QuoteAuthor);
+    let mut receipt = sample_receipt(SettlementRole::Giver);
     receipt.quote_author_did = issuer.clone();
     let draft = RecordDraft {
         version: FULFILMENT_RECEIPT_VERSION,

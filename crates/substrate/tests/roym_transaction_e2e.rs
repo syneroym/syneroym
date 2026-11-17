@@ -24,8 +24,8 @@ use serde_json::{Value, json};
 use syneroym_identity::{Identity, substrate};
 use syneroym_roym_core::{
     card::{CARD_CONTENT_TYPE, card_body},
-    record::RECORD_REQUEST,
-    transaction::{DEFAULT_DATA_USE_NOTICE, REQUEST_VERSION},
+    record::RECORD_ENQUIRY,
+    transaction::{DEFAULT_DATA_USE_NOTICE, ENQUIRY_VERSION},
 };
 use syneroym_signed_record::Envelope;
 
@@ -37,7 +37,7 @@ use common::{
         wait_until,
     },
     roym_flow::{
-        accept_quote_with, open_request_conv, quote_author_conv_for, quote_terms,
+        accept_quote_with, open_request_conv, quote_author_conv_for,
         request_record_on_quote_author, send_quote_with,
     },
 };
@@ -131,14 +131,13 @@ async fn an_offer_is_agreed_across_two_installations() {
     let opened = node_x.rpc_ok("conversation.open", json!({ "address": y_conv_address })).await;
     let x_conv_id = opened["conversation_id"].as_str().unwrap().to_string();
 
-    // Step 4: X request.set -> a card is sent. Wait for delivered.
+    // Step 4: X enquiry.set -> a card is sent. Wait for delivered.
     let req_res = node_x
         .rpc_ok(
-            "request.set",
+            "enquiry.set",
             json!({
                 "conversation": x_conv_id,
-                "description": "Fix my front brake cable",
-                "lang": "en",
+                "description": { "lang": "en", "text": "Fix my front brake cable" },
                 "categories": ["cycling"],
                 "data_use_notice": DEFAULT_DATA_USE_NOTICE,
             }),
@@ -168,7 +167,7 @@ async fn an_offer_is_agreed_across_two_installations() {
     let y_cards = y_thread["cards"].as_array().unwrap();
     assert_eq!(y_cards.len(), 1);
     assert_eq!(y_cards[0]["verified"], true);
-    assert_eq!(y_cards[0]["card_type"], "request");
+    assert_eq!(y_cards[0]["card_type"], "enquiry");
     assert_eq!(y_cards[0]["issuer"], owner_x_did);
 
     // Step 6: Y quote.set with every AgreedTerms field filled and expires_in_secs =
@@ -177,29 +176,44 @@ async fn an_offer_is_agreed_across_two_installations() {
         .rpc_ok(
             "quote.set",
             json!({
-                "request_record_id": req_record_id,
+                "enquiry_record_id": req_record_id,
                 "expires_in_secs": 3600,
                 "terms": {
-                    "lang": "en",
-                    "scope": "Replace brake cable and adjust pads",
                     "currency": "EUR",
-                    "amount_minor": 4500,
-                    "tax_minor": 500,
-                    "fees_minor": 0,
-                    "payment_methods": ["cash", "sepa"],
-                    "payee": "Y Repairs",
-                    "payment_timing": "after-work",
-                    "schedule": {
-                        "earliest_secs": 1800000000,
-                        "latest_secs": 1800003600
-                    },
-                    "location": {
-                        "where": "at-receiver",
-                        "address": "123 High Street"
-                    },
-                    "cancellation_terms": "24 hours notice required for full refund",
-                    "refund_terms": "Full refund if work not completed",
-                    "dispute_path": "Small claims court or informal mediation"
+                    "commitments": [
+                        {
+                            "giver": "quote-author",
+                            "resource_kind": "goods-or-service",
+                            "kind": "fulfilment",
+                            "after": [],
+                            "description": { "lang": "en", "text": "Replace brake cable and adjust pads" },
+                            "declared_value_minor": 4500,
+                            "window": {
+                                "earliest_secs": 1800000000,
+                                "latest_secs": 1800003600
+                            },
+                            "location": {
+                                "where": "at-receiver",
+                                "address": "123 High Street"
+                            }
+                        },
+                        {
+                            "giver": "counterparty",
+                            "resource_kind": "currency",
+                            "kind": "currency",
+                            "after": ["c1"],
+                            "description": { "lang": "en", "text": "EUR 45.00" },
+                            "declared_value_minor": 4500,
+                            "payee": "Y Repairs",
+                            "payment_methods": ["cash", "sepa"],
+                            "tax_minor": 500,
+                            "fees_minor": 0
+                        }
+                    ],
+                    "scope": { "lang": "en", "text": "Replace brake cable and adjust pads" },
+                    "cancellation_terms": { "lang": "en", "text": "24 hours notice required for full refund" },
+                    "refund_terms": { "lang": "en", "text": "Full refund if work not completed" },
+                    "dispute_path": { "lang": "en", "text": "Small claims court or informal mediation" }
                 }
             }),
         )
@@ -281,22 +295,22 @@ async fn an_offer_is_agreed_across_two_installations() {
         assert_eq!(half_payload["quote_author_did"], owner_y_did);
         assert_eq!(half_payload["quote_record_id"], quote_record_id);
         let terms = &half_payload["terms"];
-        assert!(terms["payee"].is_string() && !terms["payee"].as_str().unwrap().is_empty());
+        assert_eq!(terms["commitments"][1]["payee"], "Y Repairs");
         assert!(
             terms["quote_expires_at_secs"].is_u64()
                 && terms["quote_expires_at_secs"].as_u64().unwrap() > 0
         );
-        assert!(
-            terms["cancellation_terms"].is_string()
-                && !terms["cancellation_terms"].as_str().unwrap().is_empty()
+        assert_eq!(
+            terms["cancellation_terms"]["text"].as_str().unwrap(),
+            "24 hours notice required for full refund"
         );
-        assert!(
-            terms["refund_terms"].is_string()
-                && !terms["refund_terms"].as_str().unwrap().is_empty()
+        assert_eq!(
+            terms["refund_terms"]["text"].as_str().unwrap(),
+            "Full refund if work not completed"
         );
-        assert!(
-            terms["dispute_path"].is_string()
-                && !terms["dispute_path"].as_str().unwrap().is_empty()
+        assert_eq!(
+            terms["dispute_path"]["text"].as_str().unwrap(),
+            "Small claims court or informal mediation"
         );
     }
 
@@ -327,7 +341,7 @@ async fn an_offer_is_agreed_across_two_installations() {
 
     let x_agr_check =
         node_x.rpc_ok("agreement.get", json!({ "quote_record_id": quote_record_id })).await;
-    assert_eq!(x_agr_check["terms"]["payee"], "Y Repairs");
+    assert_eq!(x_agr_check["terms"]["commitments"][1]["payee"], "Y Repairs");
 
     // Step 14: No directory source configured on either installation; sources is
     // empty.
@@ -394,12 +408,14 @@ async fn a_tampered_card_is_filed_refused_and_never_verified() {
     let x_conv_id = opened["conversation_id"].as_str().unwrap().to_string();
 
     let req_params = json!({
-        "conversation": x_conv_id, "description": "Legitimate request description",
-        "lang": "en", "categories": ["cycling"], "data_use_notice": DEFAULT_DATA_USE_NOTICE,
+        "conversation": x_conv_id,
+        "description": { "lang": "en", "text": "Legitimate request description" },
+        "categories": ["cycling"],
+        "data_use_notice": DEFAULT_DATA_USE_NOTICE,
     });
-    let req_res = node_x.rpc_ok("request.set", req_params).await;
-    let req_id = req_res["request_id"].as_str().unwrap().to_string();
-    let req_get = node_x.rpc_ok("request.get", json!({ "request_id": req_id })).await;
+    let req_res = node_x.rpc_ok("enquiry.set", req_params).await;
+    let req_id = req_res["enquiry_id"].as_str().unwrap().to_string();
+    let req_get = node_x.rpc_ok("enquiry.get", json!({ "enquiry_id": req_id })).await;
     let valid_envelope_str = req_get["envelope"].as_str().unwrap();
 
     // Tamper the payload of the envelope: change one field without updating
@@ -408,11 +424,11 @@ async fn a_tampered_card_is_filed_refused_and_never_verified() {
     if let Some(p) = env_val.get_mut("payload")
         && let Some(desc) = p.get_mut("description")
     {
-        *desc = json!("Tampered description");
+        *desc = json!({ "lang": "en", "text": "Tampered description" });
     }
     let tampered_env_str = serde_json::to_string(&env_val).unwrap();
 
-    let tampered_card = card_body(RECORD_REQUEST, REQUEST_VERSION, &tampered_env_str).unwrap();
+    let tampered_card = card_body(RECORD_ENQUIRY, ENQUIRY_VERSION, &tampered_env_str).unwrap();
 
     let send_params = json!({ "conversation": x_conv_id, "body": tampered_card, "content_type": CARD_CONTENT_TYPE });
     let sent = node_x.rpc_ok("conversation.send", send_params).await;
@@ -443,8 +459,8 @@ async fn a_tampered_card_is_filed_refused_and_never_verified() {
     );
     assert!(tampered_card_row["data"].is_null());
 
-    let y_req_list = node_y.rpc_ok("request.list", json!({ "conversation": y_conv_id })).await;
-    let y_requests = y_req_list["requests"].as_array().unwrap();
+    let y_req_list = node_y.rpc_ok("enquiry.list", json!({ "conversation": y_conv_id })).await;
+    let y_requests = y_req_list["enquiries"].as_array().unwrap();
     assert!(y_requests.iter().all(|r| r["envelope"] != tampered_env_str));
 
     node_x.teardown().await;
@@ -517,21 +533,13 @@ async fn accepting_an_author_translation_is_signed_and_the_pair_completes() {
     let y_conv_id = quote_author_conv_for(&node_y, &x_address).await;
     let request_record_id = request_record_on_quote_author(&node_y, &y_conv_id).await;
 
-    let mut terms = quote_terms("Y Repairs", 4500);
-    terms["lang"] = json!("hi");
+    let terms = sample_hindi_terms();
     let quote_record_id = send_quote_with(
         &node_y,
         json!({
-            "request_record_id": request_record_id,
+            "enquiry_record_id": request_record_id,
             "expires_in_secs": 3600,
             "terms": terms,
-            "translations": [{
-                "lang": "en",
-                "scope": "Clear garden waste and green bin collection",
-                "cancellation_terms": "24 hours notice required",
-                "refund_terms": "Full refund if work not completed",
-                "dispute_path": "Informal mediation",
-            }],
         }),
     )
     .await;
@@ -568,4 +576,61 @@ async fn accepting_an_author_translation_is_signed_and_the_pair_completes() {
 
     node_x.teardown().await;
     node_y.teardown().await;
+}
+
+fn sample_hindi_terms() -> serde_json::Value {
+    json!({
+        "currency": "EUR",
+        "commitments": [
+            {
+                "giver": "quote-author",
+                "resource_kind": "goods-or-service",
+                "kind": "fulfilment",
+                "after": [],
+                "description": {
+                    "lang": "hi",
+                    "text": "बगीचे का कचरा साफ करना",
+                    "translations": [{ "lang": "en", "text": "Clear garden waste and green bin collection" }]
+                },
+                "declared_value_minor": 4500,
+                "location": { "where": "at-receiver", "address": "1 Garden Lane" },
+            },
+            {
+                "giver": "counterparty",
+                "resource_kind": "currency",
+                "kind": "currency",
+                "after": ["c1"],
+                "description": {
+                    "lang": "hi",
+                    "text": "EUR 45.00",
+                    "translations": [{ "lang": "en", "text": "EUR 45.00" }]
+                },
+                "declared_value_minor": 4500,
+                "payee": "Y Repairs",
+                "payment_methods": ["cash"],
+                "tax_minor": 0,
+                "fees_minor": 0,
+            }
+        ],
+        "scope": {
+            "lang": "hi",
+            "text": "बगीचे का कचरा साफ करना",
+            "translations": [{ "lang": "en", "text": "Clear garden waste and green bin collection" }]
+        },
+        "cancellation_terms": {
+            "lang": "hi",
+            "text": "24 घंटे का नोटिस आवश्यक",
+            "translations": [{ "lang": "en", "text": "24 hours notice required" }]
+        },
+        "refund_terms": {
+            "lang": "hi",
+            "text": "पूरा रिफंड यदि काम पूरा नहीं हुआ",
+            "translations": [{ "lang": "en", "text": "Full refund if work not completed" }]
+        },
+        "dispute_path": {
+            "lang": "hi",
+            "text": "अनौपचारिक मध्यस्थता",
+            "translations": [{ "lang": "en", "text": "Informal mediation" }]
+        }
+    })
 }

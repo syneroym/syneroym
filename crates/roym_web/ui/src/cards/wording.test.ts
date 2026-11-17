@@ -97,8 +97,8 @@ describe("the words on deal cards", () => {
     expect(request).not.toMatch(OLD_WORDS);
   });
 
-  it("keeps a booking card free of the old words in every state", () => {
-    const states = ["scheduled", "in-progress", "completed", "cancelled", "conflict", "ended-unconfirmed"];
+  it("keeps an agreement progress card free of the old words in every state", () => {
+    const states = ["agreed", "closed", "cancelled", "not-formed", "scheduled", "in-progress", "completed", "conflict", "ended-unconfirmed"];
     const tracks = ["none", "claimed", "acknowledged", "unconfirmed"];
     for (const state of states) {
       for (const conflict of ["slot-taken", "slot-unavailable"]) {
@@ -106,7 +106,7 @@ describe("the words on deal cards", () => {
           for (const fulfilment of tracks) {
             for (const cancelled_by of ROLES) {
               const text = textOf({
-                type: "booking-progress",
+                type: "agreement-progress",
                 data: {
                   agreement: "rec_agreement",
                   counterparty_did: DID_A,
@@ -116,6 +116,7 @@ describe("the words on deal cards", () => {
                   conflict,
                   payment,
                   fulfilment,
+                  commitments: [{ commitment_id: "c1", state: "promised" }],
                   track_window_ends_at_secs: 1700000000,
                   cancelled_by,
                   cancel_reason: "changed my mind",
@@ -131,7 +132,7 @@ describe("the words on deal cards", () => {
 
   it("keeps a request card free of the old words", () => {
     const text = textOf({
-      type: "request",
+      type: "enquiry",
       data: { description: "Trim the hedge", data_use_notice: t("payment-notice"), categories: ["gardening"] },
     });
     expect(text).not.toMatch(OLD_WORDS);

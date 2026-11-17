@@ -14,6 +14,8 @@ import { serviceLocationEditorLabel } from "../listings/labels";
 import { type SearchMatch, searchHits } from "./message_search";
 import { waitingRedraw } from "./thread_redraw";
 import { categoryPicker } from "../taxonomy/category_picker";
+import { buildDealTerms } from "./quote_terms";
+import { computeNewestRequestMap, isQuoteSuperseded } from "./thread_enquiry";
 
 /// Things the person has started inside a thread. A redraw from the event
 /// feed waits until they are gone, so it never throws away typed text. An
@@ -77,8 +79,8 @@ export interface CardRow {
   issuer?: string;
   record_id?: string;
   data?: {
-    request_id?: string;
-    request_record_id?: string;
+    enquiry_id?: string;
+    enquiry_record_id?: string;
     sequence?: number;
     counterparty_did?: string;
     terms?: {
@@ -381,10 +383,12 @@ async function renderThread(
     reqErr.textContent = "";
     try {
       const categories = catsPicker.codes();
-      await call("request.set", {
+      await call("enquiry.set", {
         conversation: conv.id,
-        description: desc,
-        lang: reqLang.value,
+        description: {
+          lang: reqLang.value,
+          text: desc,
+        },
         categories,
         listing_id: listingInput.value.trim() || undefined,
         data_use_notice: dataUseNotice,
@@ -448,51 +452,7 @@ async function renderThread(
   await redraw.now();
 }
 
-export function computeNewestRequestMap(allCards: CardRow[]): Map<string, string> {
-  const newestRequestMap = new Map<string, string>();
-  for (const c of allCards) {
-    if (c.card_type === "request" && c.verified && c.data?.request_id && c.record_id) {
-      const reqId = c.data.request_id;
-      const currNewestRecord = newestRequestMap.get(reqId);
-      if (!currNewestRecord) {
-        newestRequestMap.set(reqId, c.record_id);
-      } else {
-        const existing = allCards.find((x) => x.record_id === currNewestRecord);
-        const cVer = c.version_count ?? 0;
-        const exVer = existing?.version_count ?? 0;
-        if (
-          cVer > exVer ||
-          (cVer === exVer && c.sender_timestamp_ms > (existing?.sender_timestamp_ms ?? 0))
-        ) {
-          newestRequestMap.set(reqId, c.record_id);
-        }
-      }
-    }
-  }
-  return newestRequestMap;
-}
-
-export function isQuoteSuperseded(
-  cardRow: CardRow,
-  allCards: CardRow[],
-  newestRequestMap: Map<string, string>,
-): boolean {
-  const reqRecordId = cardRow.data?.request_record_id;
-  if (cardRow.card_type === "quote" && cardRow.verified && reqRecordId) {
-    const matchingReq = allCards.find(
-      (c) =>
-        c.card_type === "request" &&
-        (c.record_id === reqRecordId || c.data?.request_id === cardRow.data?.request_id),
-    );
-    if (matchingReq && matchingReq.data?.request_id) {
-      const newestRecordId = newestRequestMap.get(matchingReq.data.request_id);
-      if (newestRecordId && newestRecordId !== reqRecordId) {
-        return true;
-      }
-    }
-  }
-  return false;
-}
+export { computeNewestRequestMap, isQuoteSuperseded };
 
 /** What a sender is told when the other side turned a delivered message away. */
 /** A short explanation for a state word that needs one, else null. */
@@ -654,8 +614,8 @@ export function renderCardActions(
   myDid: string,
   refresh: () => Promise<void>,
 ) {
-  // Quote this request: on verified request not issued by me
-  if (card.card_type === "request" && card.verified) {
+  // Quote this enquiry: on verified enquiry not issued by me
+  if (card.card_type === "enquiry" && card.verified) {
     const notIssuedByMe = card.direction === "incoming" || (myDid && card.issuer !== myDid);
     if (notIssuedByMe) {
       const quoteBtn = text("button", t("quote-request-button"), "button quote-request-button") as HTMLButtonElement;
@@ -776,6 +736,11 @@ export function openQuoteForm(
   const scopeInput = document.createElement("input");
   scopeInput.placeholder = t("quote-scope-placeholder");
   scopeInput.className = "quote-scope-input";
+
+  const giveInput = document.createElement("input");
+  giveInput.placeholder = t("quote-give-placeholder");
+  giveInput.setAttribute("aria-label", t("quote-give-label"));
+  giveInput.className = "quote-give-input";
 
   const currencyInput = document.createElement("input");
   currencyInput.placeholder = t("quote-currency-placeholder");
@@ -921,28 +886,31 @@ export function openQuoteForm(
     const where = whereSelect.value as ServiceLocationKind;
     const address = where === "at-receiver" ? addressInput.value.trim() : undefined;
 
+    const terms = buildDealTerms(
+      {
+        give: giveInput.value.trim() || undefined,
+        scope,
+        currency,
+        amountMinor,
+        taxMinor,
+        feesMinor,
+        payee,
+        timing: timingSelect.value as "before-work" | "after-work",
+        where,
+        address,
+        cancellation: cancInput.value.trim(),
+        refund: refInput.value.trim(),
+        dispute: dispInput.value.trim(),
+      },
+      quoteLang.value,
+    );
+
     submitBtn.disabled = true;
     try {
       await call("quote.set", {
-        request_record_id: reqCard.record_id,
+        enquiry_record_id: reqCard.record_id,
         expires_in_secs,
-        terms: {
-          lang: quoteLang.value,
-          scope,
-          currency,
-          amount_minor: amountMinor,
-          tax_minor: taxMinor,
-          fees_minor: feesMinor,
-          payee,
-          payment_timing: timingSelect.value,
-          location: {
-            where,
-            address,
-          },
-          cancellation_terms: cancInput.value.trim(),
-          refund_terms: refInput.value.trim(),
-          dispute_path: dispInput.value.trim(),
-        },
+        terms,
       });
       form.remove();
       await refresh();
@@ -955,6 +923,7 @@ export function openQuoteForm(
   form.append(
     field(t("quote-text-language"), quoteLang),
     scopeInput,
+    giveInput,
     currencyInput,
     amountInput,
     taxInput,

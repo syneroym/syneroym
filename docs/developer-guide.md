@@ -2487,7 +2487,7 @@ An event carries no content. It says what changed, and you fetch the content wit
 | `conversation.message` | conversation id | message id | `conversation.changes` with `after_seq`. If the message is a card, see 6.7. |
 | `conversation.delivery` | conversation id | message id | `conversation.delivery-status` with the `message_id` |
 | `transaction.card` | conversation id | message id of the card | `transaction.thread` |
-| `transaction.booking` | conversation id | agreement id | `booking.get` with `{"agreement": "…"}` |
+| `transaction.agreement` | conversation id | agreement id | `agreement.get` with `{"agreement": "…"}` |
 
 A card from the other person arrives first as a `conversation.message` event. The `transaction.card` event comes after your client calls `transaction.sync` (6.7).
 
@@ -2536,7 +2536,7 @@ roym directory.reindex | jq .result     # {"rebuilt": <rows>, "standing": <n>}
 
 ### 6.7. Show cards
 
-A card is a message with the content type `application/vnd.roym.card+json`. Deals between two people are cards: a request, a quote and so on. A conversation holds them together with the normal messages.
+A card is a message with the content type `application/vnd.roym.card+json`. Deals between two people are cards: an enquiry, a quote and so on. A conversation holds them together with the normal messages.
 
 To get the cards of a conversation, first ask `transaction` to read the new messages and file the cards it finds. Then read the cards:
 
@@ -2547,7 +2547,7 @@ roym transaction.thread "{\"conversation\":\"$CONV\"}" | jq .result.cards
 
 `agreement.accept` takes `{quote_record_id, viewed_lang?, viewed_via_mt?}`. The two optional fields say what the person read, and the node signs them into the acceptance. Without them the node signs the quote's own language and `false`. `viewed_lang` must be a canonical tag. When `viewed_via_mt` is `false`, it must be the quote's `terms.lang` or the tag of one of its author translations. When `viewed_via_mt` is `true`, it can be any language except `terms.lang`. A value that breaks this rule answers `-32602` with `data.field` set to `viewed_lang` or `viewed_via_mt`.
 
-`transaction.thread` takes `{conversation, limit?, cursor?}`. Each card has `message_id`, `direction`, `card_type`, `version`, `known`, `verified`, `expired`, `reason` and `data`. Show a card only when `known` and `verified` are true. The card types of the first version, all with `version` 1, are `request`, `quote`, `agreement-receipt`, `booking-progress`, `payment-request`, `payment-acknowledgement` and `fulfilment-receipt`. For any other type or version, and for a card that is not verified, show a plain notice with the `reason`, and do not guess what the `data` means.
+`transaction.thread` takes `{conversation, limit?, cursor?}`. Each card has `message_id`, `direction`, `card_type`, `version`, `known`, `verified`, `expired`, `reason` and `data`. Show a card only when `known` and `verified` are true. The card types of the first version, all with `version` 1, are `enquiry`, `quote`, `agreement-receipt`, `agreement-progress`, `payment-request`, `payment-acknowledgement` and `fulfilment-receipt`. For any other type or version, and for a card that is not verified, show a plain notice with the `reason`, and do not guess what the `data` means.
 
 ### 6.8. Errors and unknown fields
 

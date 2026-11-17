@@ -395,4 +395,14 @@ describe("textFields", () => {
   it("sends an absent field as an empty text", () => {
     expect(fields.get({ a: "one" })).toEqual(["one", "", ""]);
   });
+
+  it("supports dynamic extraction of keys from fields function", () => {
+    const dynamic = textFields<{ [key: string]: string }>((f) => Object.keys(f));
+    const obj = { x: "first", y: "second" };
+    expect(dynamic.get(obj)).toEqual(["first", "second"]);
+    expect(dynamic.set(obj, ["T:first", "T:second"])).toEqual({
+      x: "T:first",
+      y: "T:second",
+    });
+  });
 });

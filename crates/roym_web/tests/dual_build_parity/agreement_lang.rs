@@ -7,32 +7,64 @@ use syneroym_signed_record::Envelope;
 
 use super::{deal_fixtures::setup_peer_request, fixtures::*, helpers::*};
 
-fn english_version() -> Value {
+fn hi_text(hi: &str, en: &str) -> Value {
     json!({
-        "lang": "en", "scope": "Garden repair",
-        "cancellation_terms": "Cancel 24h prior for full refund",
-        "refund_terms": "Full refund if unsatisfactory",
-        "dispute_path": "Contact disputes@example.com",
+        "lang": "hi",
+        "text": hi,
+        "translations": [
+            { "lang": "en", "text": en }
+        ]
     })
 }
 
-/// A quote the peer signed with `terms.lang` Hindi and one English author
-/// translation. Only this quote has a translation; the shared fixture does
-/// not.
+/// A quote the peer signed with `terms.scope.lang` Hindi and one English author
+/// translation on each text field.
 fn peer_quote_hindi_with_english(conv: &str, req_record_id: &str) -> (String, String) {
     let now = wall_now();
     let quote_id = transaction::derive_quote_id(conv, &peer_did(), 1).unwrap();
-    let mut terms = sample_quote_terms();
-    terms["lang"] = json!("hi");
-    terms["quote_expires_at_secs"] = json!(now + 3600);
+    let terms = json!({
+        "currency": "EUR",
+        "quote_expires_at_secs": now + 3600,
+        "commitments": [
+            {
+                "commitment_id": "c1",
+                "giver": "quote-author",
+                "resource_kind": "goods-or-service",
+                "kind": "fulfilment",
+                "after": [],
+                "description": hi_text("बगीचे की मरम्मत", "Garden repair"),
+                "declared_value_minor": 50000,
+                "location": { "where": "at-receiver", "address": "123 Flower St" }
+            },
+            {
+                "commitment_id": "c2",
+                "giver": "counterparty",
+                "resource_kind": "currency",
+                "kind": "currency",
+                "after": ["c1"],
+                "description": hi_text("EUR 500.00", "EUR 500.00"),
+                "declared_value_minor": 50000,
+                "payee": "Garden Services Ltd",
+                "payment_methods": ["card", "cash"],
+                "tax_minor": 5000,
+                "fees_minor": 2000
+            }
+        ],
+        "scope": hi_text("बगीचे की मरम्मत", "Garden repair"),
+        "cancellation_terms": hi_text("रद्द करने की शर्तें", "Cancel 24h prior for full refund"),
+        "refund_terms": hi_text("वापसी की शर्तें", "Full refund if unsatisfactory"),
+        "dispute_path": hi_text("विवाद निवारण", "Contact disputes@example.com")
+    });
     let payload = json!({
         "quote_id": quote_id,
         "conversation": conv,
         "sequence": 1,
-        "request_record_id": req_record_id,
+        "answers": {
+            "kind": "enquiry",
+            "record_id": req_record_id
+        },
         "counterparty_did": owner_did(),
         "terms": terms,
-        "translations": [english_version()],
     });
     let env_json = sign_as_peer(
         transaction::RECORD_QUOTE,
@@ -51,11 +83,10 @@ async fn synced_quote(h: &Harness, name: &str) -> String {
     let conv = format!("conv-237-{name}");
     let request = both_rpc(
         h,
-        "request.set",
+        "enquiry.set",
         json!({
             "conversation": conv,
-            "description": "Counterparty deal",
-            "lang": "en",
+            "description": { "lang": "en", "text": "Counterparty deal" },
             "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
         }),
     )
@@ -176,12 +207,43 @@ async fn author_countersigns_the_original_when_the_peer_read_a_translation() {
     let h = harness().await;
     enrol_signing(&h, "conversation").await;
     enrol_signing(&h, "transaction").await;
-    let conv = "conv-237-author";
-    let (req_rec_id, _) = setup_peer_request(&h, conv).await;
+    let conv = open_conv(&h, &peer_did()).await;
+    let (req_rec_id, _) = setup_peer_request(&h, &conv).await;
 
-    let mut params = valid_quote_params(conv, &req_rec_id);
-    params["terms"]["lang"] = json!("hi");
-    params["translations"] = json!([english_version()]);
+    let params = json!({
+        "enquiry_record_id": req_rec_id,
+        "expires_in_secs": 3600,
+        "terms": {
+            "currency": "EUR",
+            "commitments": [
+                {
+                    "giver": "quote-author",
+                    "resource_kind": "goods-or-service",
+                    "kind": "fulfilment",
+                    "after": [],
+                    "description": hi_text("बगीचे की मरम्मत", "Garden repair"),
+                    "declared_value_minor": 50000,
+                    "location": { "where": "at-receiver", "address": "123 Flower St" }
+                },
+                {
+                    "giver": "counterparty",
+                    "resource_kind": "currency",
+                    "kind": "currency",
+                    "after": ["c1"],
+                    "description": hi_text("EUR 500.00", "EUR 500.00"),
+                    "declared_value_minor": 50000,
+                    "payee": "Garden Services Ltd",
+                    "payment_methods": ["card", "cash"],
+                    "tax_minor": 5000,
+                    "fees_minor": 2000
+                }
+            ],
+            "scope": hi_text("बगीचे की मरम्मत", "Garden repair"),
+            "cancellation_terms": hi_text("रद्द करने की शर्तें", "Cancel 24h prior for full refund"),
+            "refund_terms": hi_text("वापसी की शर्तें", "Full refund if unsatisfactory"),
+            "dispute_path": hi_text("विवाद निवारण", "Contact disputes@example.com")
+        }
+    });
     let (quote_set, _) = both_rpc(&h, "quote.set", params).await;
     let quote_record_id = quote_set["result"]["record_id"].as_str().unwrap().to_string();
     let (quote, _) =
@@ -190,27 +252,18 @@ async fn author_countersigns_the_original_when_the_peer_read_a_translation() {
         ["terms"]
         .clone();
 
-    let payload = json!({
-        "quote_record_id": quote_record_id,
-        "counterparty_did": peer_did(),
-        "quote_author_did": owner_did(),
-        "role": "counterparty",
-        "terms": terms,
-        "viewed_lang": "en",
-        "viewed_via_mt": false,
-    });
-    let receipt = sign_as_peer(
-        transaction::RECORD_AGREEMENT_RECEIPT,
-        transaction::AGREEMENT_RECEIPT_VERSION,
+    let (agr_id, receipt) = peer_counterparty_receipt(
+        &conv,
         &quote_record_id,
-        payload,
-        None,
+        &peer_did(),
+        &owner_did(),
+        terms,
         1_001_000,
     );
     deliver_peer_card(
         &h,
-        "m-agr-237-author",
-        conv,
+        &format!("m-agr-{agr_id}"),
+        &conv,
         &peer_did(),
         transaction::RECORD_AGREEMENT_RECEIPT,
         transaction::AGREEMENT_RECEIPT_VERSION,
