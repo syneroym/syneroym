@@ -177,6 +177,39 @@ fn make_counterparty_receipt(
     (payload, record_id, envelope_json)
 }
 
+fn unformed_agreement_row(
+    quote_rec_id: &str,
+    quote: &QuotePayload,
+    author_did: &str,
+    cp_did: &str,
+    cp_rec_id: &str,
+    cp_envelope: &str,
+    now: u64,
+) -> AgreementRow {
+    AgreementRow {
+        quote_record_id: quote_rec_id.to_string(),
+        quote_id: quote.quote_id.clone(),
+        conversation: "conv_1".to_string(),
+        counterparty_did: cp_did.to_string(),
+        quote_author_did: author_did.to_string(),
+        terms: quote.terms.clone(),
+        agreed_at_secs: None,
+        counterparty: Some(ReceiptHalf {
+            envelope: cp_envelope.to_string(),
+            record_id: cp_rec_id.to_string(),
+            issuer: cp_did.to_string(),
+            issued_at_secs: now,
+        }),
+        quote_author: None,
+        state: None,
+        state_reason: None,
+        cancel_reason: None,
+        seq: None,
+        commitments: vec![],
+        updated_at_secs: now,
+    }
+}
+
 #[tokio::test]
 async fn writer_countersigns_in_sync_and_sends_snapshot_one() {
     let f = fixture();
@@ -194,28 +227,15 @@ async fn writer_countersigns_in_sync_and_sends_snapshot_one() {
     let (_cp_receipt, cp_rec_id, cp_envelope) =
         make_counterparty_receipt(&cp, &f.master_did, &quote_rec_id, &quote.terms, now);
 
-    let mut row = AgreementRow {
-        quote_record_id: quote_rec_id.clone(),
-        quote_id: quote.quote_id.clone(),
-        conversation: "conv_1".to_string(),
-        counterparty_did: cp_did.clone(),
-        quote_author_did: f.master_did.clone(),
-        terms: quote.terms.clone(),
-        agreed_at_secs: None,
-        counterparty: Some(ReceiptHalf {
-            envelope: cp_envelope,
-            record_id: cp_rec_id,
-            issuer: cp_did.clone(),
-            issued_at_secs: now,
-        }),
-        quote_author: None,
-        state: None,
-        state_reason: None,
-        cancel_reason: None,
-        seq: None,
-        commitments: vec![],
-        updated_at_secs: now,
-    };
+    let mut row = unformed_agreement_row(
+        &quote_rec_id,
+        &quote,
+        &f.master_did,
+        &cp_did,
+        &cp_rec_id,
+        &cp_envelope,
+        now,
+    );
 
     let res = decide::run(&f.host, &mut row, &quote, now).await;
     assert_eq!(res, Ok(true));
@@ -269,28 +289,15 @@ async fn losing_the_last_seat_ends_not_formed() {
         .expect("reserve initial seat");
     SeatLedger.confirm(&f.host, "other_agreement", "c1").await.expect("confirm initial seat");
 
-    let mut row = AgreementRow {
-        quote_record_id: quote_rec_id.clone(),
-        quote_id: quote.quote_id.clone(),
-        conversation: "conv_1".to_string(),
-        counterparty_did: cp_did.clone(),
-        quote_author_did: f.master_did.clone(),
-        terms: quote.terms.clone(),
-        agreed_at_secs: None,
-        counterparty: Some(ReceiptHalf {
-            envelope: cp_envelope,
-            record_id: cp_rec_id,
-            issuer: cp_did.clone(),
-            issued_at_secs: now,
-        }),
-        quote_author: None,
-        state: None,
-        state_reason: None,
-        cancel_reason: None,
-        seq: None,
-        commitments: vec![],
-        updated_at_secs: now,
-    };
+    let mut row = unformed_agreement_row(
+        &quote_rec_id,
+        &quote,
+        &f.master_did,
+        &cp_did,
+        &cp_rec_id,
+        &cp_envelope,
+        now,
+    );
 
     let res = decide::run(&f.host, &mut row, &quote, now).await;
     assert_eq!(res, Ok(false));
@@ -332,28 +339,15 @@ async fn repeat_branch_reuses_stored_snapshot_one() {
     let (_cp_receipt, cp_rec_id, cp_envelope) =
         make_counterparty_receipt(&cp, &f.master_did, &quote_rec_id, &quote.terms, now);
 
-    let mut row = AgreementRow {
-        quote_record_id: quote_rec_id.clone(),
-        quote_id: quote.quote_id.clone(),
-        conversation: "conv_1".to_string(),
-        counterparty_did: cp_did.clone(),
-        quote_author_did: f.master_did.clone(),
-        terms: quote.terms.clone(),
-        agreed_at_secs: None,
-        counterparty: Some(ReceiptHalf {
-            envelope: cp_envelope,
-            record_id: cp_rec_id,
-            issuer: cp_did.clone(),
-            issued_at_secs: now,
-        }),
-        quote_author: None,
-        state: None,
-        state_reason: None,
-        cancel_reason: None,
-        seq: None,
-        commitments: vec![],
-        updated_at_secs: now,
-    };
+    let mut row = unformed_agreement_row(
+        &quote_rec_id,
+        &quote,
+        &f.master_did,
+        &cp_did,
+        &cp_rec_id,
+        &cp_envelope,
+        now,
+    );
 
     // Pre-populate decision row as deciding
     let dec_key = decision_id(&quote.quote_id);
@@ -400,28 +394,15 @@ async fn send_error_stops_decision_row_and_retries_on_next_sync() {
         Err(ProxyError::Transport("connection reset by peer".to_string()))
     });
 
-    let mut row = AgreementRow {
-        quote_record_id: quote_rec_id.clone(),
-        quote_id: quote.quote_id.clone(),
-        conversation: "conv_1".to_string(),
-        counterparty_did: cp_did.clone(),
-        quote_author_did: f.master_did.clone(),
-        terms: quote.terms.clone(),
-        agreed_at_secs: None,
-        counterparty: Some(ReceiptHalf {
-            envelope: cp_envelope.clone(),
-            record_id: cp_rec_id.clone(),
-            issuer: cp_did.clone(),
-            issued_at_secs: now,
-        }),
-        quote_author: None,
-        state: None,
-        state_reason: None,
-        cancel_reason: None,
-        seq: None,
-        commitments: vec![],
-        updated_at_secs: now,
-    };
+    let mut row = unformed_agreement_row(
+        &quote_rec_id,
+        &quote,
+        &f.master_did,
+        &cp_did,
+        &cp_rec_id,
+        &cp_envelope,
+        now,
+    );
 
     let res = decide::run(&f.host, &mut row, &quote, now).await;
     assert!(res.is_err(), "transport error must bubble up as Err for retry");
@@ -491,28 +472,15 @@ async fn repeat_past_expiry_without_countersign_leaves_row_deciding() {
     let (_cp_receipt, cp_rec_id, cp_envelope) =
         make_counterparty_receipt(&cp, &f.master_did, &quote_rec_id, &quote.terms, now);
 
-    let mut row = AgreementRow {
-        quote_record_id: quote_rec_id.clone(),
-        quote_id: quote.quote_id.clone(),
-        conversation: "conv_1".to_string(),
-        counterparty_did: cp_did.clone(),
-        quote_author_did: f.master_did.clone(),
-        terms: quote.terms.clone(),
-        agreed_at_secs: None,
-        counterparty: Some(ReceiptHalf {
-            envelope: cp_envelope,
-            record_id: cp_rec_id,
-            issuer: cp_did.clone(),
-            issued_at_secs: now,
-        }),
-        quote_author: None,
-        state: None,
-        state_reason: None,
-        cancel_reason: None,
-        seq: None,
-        commitments: vec![],
-        updated_at_secs: now,
-    };
+    let mut row = unformed_agreement_row(
+        &quote_rec_id,
+        &quote,
+        &f.master_did,
+        &cp_did,
+        &cp_rec_id,
+        &cp_envelope,
+        now,
+    );
 
     // Pre-populate decision row as deciding
     let dec_key = decision_id(&quote.quote_id);
@@ -691,28 +659,15 @@ async fn repeat_after_the_agreement_moved_keeps_its_state() {
     let (_cp_receipt, cp_rec_id, cp_envelope) =
         make_counterparty_receipt(&cp, &f.master_did, &quote_rec_id, &quote.terms, now);
 
-    let mut row = AgreementRow {
-        quote_record_id: quote_rec_id.clone(),
-        quote_id: quote.quote_id.clone(),
-        conversation: "conv_1".to_string(),
-        counterparty_did: cp_did.clone(),
-        quote_author_did: f.master_did.clone(),
-        terms: quote.terms.clone(),
-        agreed_at_secs: None,
-        counterparty: Some(ReceiptHalf {
-            envelope: cp_envelope,
-            record_id: cp_rec_id,
-            issuer: cp_did.clone(),
-            issued_at_secs: now,
-        }),
-        quote_author: None,
-        state: None,
-        state_reason: None,
-        cancel_reason: None,
-        seq: None,
-        commitments: vec![],
-        updated_at_secs: now,
-    };
+    let mut row = unformed_agreement_row(
+        &quote_rec_id,
+        &quote,
+        &f.master_did,
+        &cp_did,
+        &cp_rec_id,
+        &cp_envelope,
+        now,
+    );
     crate::app::put_row(&f.host, AGREEMENTS, &quote_rec_id, &row).await.unwrap();
 
     let agreed = decide::run(&f.host, &mut row, &quote, now).await.expect("initial decide");
@@ -739,4 +694,58 @@ async fn repeat_after_the_agreement_moved_keeps_its_state() {
     let agr = stored.expect("agreement exists");
     assert_eq!(agr.state, Some(AgreementState::Cancelled));
     assert_eq!(agr.seq, Some(2));
+}
+
+#[tokio::test]
+async fn crash_before_the_decision_row_is_final_is_finished_on_the_next_sync() {
+    let f = fixture();
+    let cp = Identity::generate().expect("generate cp");
+    let cp_did = substrate::derive_did_key(&cp.public_key());
+    let now = f.host.now();
+
+    let (quote, quote_rec_id, _) = build_and_sign_author_quote(
+        &f.master,
+        &cp_did,
+        vec![author_service_commitment("c1")],
+        now + 3600,
+        now,
+    );
+    let (_cp_receipt, cp_rec_id, cp_envelope) =
+        make_counterparty_receipt(&cp, &f.master_did, &quote_rec_id, &quote.terms, now);
+
+    let mut row = unformed_agreement_row(
+        &quote_rec_id,
+        &quote,
+        &f.master_did,
+        &cp_did,
+        &cp_rec_id,
+        &cp_envelope,
+        now,
+    );
+    crate::app::put_row(&f.host, AGREEMENTS, &quote_rec_id, &row).await.unwrap();
+
+    // Inject crash when writing to agreements collection
+    f.host.crash_on_write("agreements", &quote_rec_id);
+
+    let err = decide::run(&f.host, &mut row, &quote, now)
+        .await
+        .expect_err("initial decide must fail due to injected crash");
+    assert!(err.contains("injected crash on write to agreements"));
+
+    f.host.restart();
+
+    let res =
+        decide::run(&f.host, &mut row, &quote, now).await.expect("next sync finishes decision");
+    assert!(res);
+
+    let stored: Option<AgreementRow> =
+        crate::app::get_row(&f.host, AGREEMENTS, &quote_rec_id).await.unwrap();
+    let agr = stored.expect("agreement must be stored");
+    assert_eq!(agr.state, Some(AgreementState::Agreed));
+    assert_eq!(agr.seq, Some(1));
+    assert!(agr.quote_author.is_some());
+
+    let dec: Option<DecisionRow> =
+        crate::app::get_row(&f.host, LEDGER, &decision_id(&quote.quote_id)).await.unwrap();
+    assert_eq!(dec.expect("decision row exists").state, "agreed");
 }

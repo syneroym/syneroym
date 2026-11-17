@@ -83,10 +83,7 @@ pub(crate) async fn run<H: AppHost>(
             // Other agreement: leave half filed with no countersign and no snapshot
             return Ok(false);
         }
-        if existing_dec.state == "agreed" || existing_dec.state == "not-formed" {
-            return resend_completed_decision(host, row, quote, &existing_dec.state, now).await;
-        }
-        return repeat_path(host, row, quote, now).await;
+        return continue_decision(host, row, quote, &existing_dec, now).await;
     }
 
     // 2. Step-1 validation: check signer and expiry before creating fence.
@@ -99,10 +96,7 @@ pub(crate) async fn run<H: AppHost>(
             super::get_row::<DecisionRow, _>(host, LEDGER, &dec_key).await
             && existing_dec.agreement == row.quote_record_id
         {
-            if existing_dec.state == "agreed" || existing_dec.state == "not-formed" {
-                return resend_completed_decision(host, row, quote, &existing_dec.state, now).await;
-            }
-            return repeat_path(host, row, quote, now).await;
+            return continue_decision(host, row, quote, &existing_dec, now).await;
         }
         return Ok(false);
     }
@@ -188,6 +182,20 @@ async fn ensure_snapshot_sent<H: AppHost>(
     Ok(true)
 }
 
+async fn continue_decision<H: AppHost>(
+    host: &H,
+    row: &mut AgreementRow,
+    quote: &QuotePayload,
+    existing_dec: &DecisionRow,
+    now: u64,
+) -> Result<bool, String> {
+    if existing_dec.state == "agreed" || existing_dec.state == "not-formed" {
+        resend_completed_decision(host, row, &existing_dec.state, now).await
+    } else {
+        repeat_path(host, row, quote, now).await
+    }
+}
+
 async fn mark_decision_agreed<H: AppHost>(
     host: &H,
     row: &mut AgreementRow,
@@ -196,16 +204,6 @@ async fn mark_decision_agreed<H: AppHost>(
     commitments: Vec<CommitmentProgress>,
     now: u64,
 ) -> Result<bool, String> {
-    let dec_agreed = DecisionRow {
-        kind: "decision".to_string(),
-        state: "agreed".to_string(),
-        agreement: row.quote_record_id.clone(),
-        quote_id: quote.quote_id.clone(),
-        reason: None,
-        created_at_secs: now,
-    };
-    put_row(host, LEDGER, &decision_id(&quote.quote_id), &dec_agreed).await?;
-
     row.state = Some(AgreementState::Agreed);
     row.state_reason = None;
     row.cancel_reason = None;
@@ -215,6 +213,16 @@ async fn mark_decision_agreed<H: AppHost>(
     row.quote_author = Some(half);
     row.updated_at_secs = now;
     put_row(host, AGREEMENTS, &row.quote_record_id, row).await?;
+
+    let dec_agreed = DecisionRow {
+        kind: "decision".to_string(),
+        state: "agreed".to_string(),
+        agreement: row.quote_record_id.clone(),
+        quote_id: quote.quote_id.clone(),
+        reason: None,
+        created_at_secs: now,
+    };
+    put_row(host, LEDGER, &decision_id(&quote.quote_id), &dec_agreed).await?;
 
     let _ = host
         .record_event(
@@ -230,7 +238,6 @@ async fn mark_decision_agreed<H: AppHost>(
 async fn resend_completed_decision<H: AppHost>(
     host: &H,
     row: &mut AgreementRow,
-    quote: &QuotePayload,
     state: &str,
     now: u64,
 ) -> Result<bool, String> {
@@ -253,15 +260,13 @@ async fn resend_completed_decision<H: AppHost>(
             return Ok(false);
         }
         Ok(true)
-    } else if state == "not-formed" {
+    } else {
         if let Some(snap) = stored_snap.as_mut()
             && !ensure_snapshot_sent(host, &row.conversation, snap, now).await?
         {
             return Ok(false);
         }
         Ok(false)
-    } else {
-        repeat_path(host, row, quote, now).await
     }
 }
 
@@ -398,6 +403,14 @@ async fn repeat_not_formed<H: AppHost>(
         return Ok(false);
     }
 
+    row.state = Some(AgreementState::NotFormed);
+    row.state_reason = snap_row.snapshot.state_reason.clone();
+    row.cancel_reason = None;
+    row.seq = Some(1);
+    row.commitments = snap_row.snapshot.commitments;
+    row.updated_at_secs = now;
+    put_row(host, AGREEMENTS, &row.quote_record_id, row).await?;
+
     let dec_not_formed = DecisionRow {
         kind: "decision".to_string(),
         state: "not-formed".to_string(),
@@ -407,14 +420,6 @@ async fn repeat_not_formed<H: AppHost>(
         created_at_secs: now,
     };
     put_row(host, LEDGER, &decision_id(&quote.quote_id), &dec_not_formed).await?;
-
-    row.state = Some(AgreementState::NotFormed);
-    row.state_reason = snap_row.snapshot.state_reason.clone();
-    row.cancel_reason = None;
-    row.seq = Some(1);
-    row.commitments = snap_row.snapshot.commitments;
-    row.updated_at_secs = now;
-    put_row(host, AGREEMENTS, &row.quote_record_id, row).await?;
 
     let _ = host
         .record_event(
@@ -572,6 +577,14 @@ async fn handle_not_formed<H: AppHost>(
         return Ok(false);
     }
 
+    row.state = Some(AgreementState::NotFormed);
+    row.state_reason = Some(reason.to_string());
+    row.cancel_reason = None;
+    row.seq = Some(1);
+    row.commitments = snapshot.commitments;
+    row.updated_at_secs = now;
+    put_row(host, AGREEMENTS, &row.quote_record_id, row).await?;
+
     let dec_not_formed = DecisionRow {
         kind: "decision".to_string(),
         state: "not-formed".to_string(),
@@ -581,14 +594,6 @@ async fn handle_not_formed<H: AppHost>(
         created_at_secs: now,
     };
     put_row(host, LEDGER, &decision_id(&quote.quote_id), &dec_not_formed).await?;
-
-    row.state = Some(AgreementState::NotFormed);
-    row.state_reason = Some(reason.to_string());
-    row.cancel_reason = None;
-    row.seq = Some(1);
-    row.commitments = snapshot.commitments;
-    row.updated_at_secs = now;
-    put_row(host, AGREEMENTS, &row.quote_record_id, row).await?;
 
     let _ = host
         .record_event(

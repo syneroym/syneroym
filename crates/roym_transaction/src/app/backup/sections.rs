@@ -23,7 +23,7 @@ use super::{
         ledger::LedgerRow,
         put_row,
     },
-    QuotesByRecordId,
+    ImportedQuote, QuotesByRecordId,
 };
 
 type HistoryEntry = (String, String, String);
@@ -301,6 +301,19 @@ fn validate_fulfilments(
     Ok((validated, history))
 }
 
+fn expected_issuer<'a>(
+    commitment: &Commitment,
+    role: SettlementRole,
+    quote: &'a ImportedQuote,
+) -> &'a str {
+    match (commitment.giver, role) {
+        (DealRole::QuoteAuthor, SettlementRole::Giver)
+        | (DealRole::Counterparty, SettlementRole::Receiver) => &quote.quote_author_did,
+        (DealRole::Counterparty, SettlementRole::Giver)
+        | (DealRole::QuoteAuthor, SettlementRole::Receiver) => &quote.payload.counterparty_did,
+    }
+}
+
 fn validate_fence_entry(
     id: &str,
     payload: Value,
@@ -344,15 +357,8 @@ fn validate_fence_entry(
                 )));
             }
             if let Some(ref p) = v.payload {
-                let expected_issuer = match (commitment.giver, p.role) {
-                    (DealRole::QuoteAuthor, SettlementRole::Giver)
-                    | (DealRole::Counterparty, SettlementRole::Receiver) => &quote.quote_author_did,
-                    (DealRole::Counterparty, SettlementRole::Giver)
-                    | (DealRole::QuoteAuthor, SettlementRole::Receiver) => {
-                        &quote.payload.counterparty_did
-                    }
-                };
-                if half.issuer != *expected_issuer {
+                let expected = expected_issuer(commitment, p.role, quote);
+                if half.issuer != expected {
                     return Err(Response::invalid_params(format!(
                         "ledger '{id}': ack issuer does not match role"
                     )));
@@ -376,15 +382,8 @@ fn validate_fence_entry(
                 )));
             }
             if let Some(ref p) = v.payload {
-                let expected_issuer = match (commitment.giver, p.role) {
-                    (DealRole::QuoteAuthor, SettlementRole::Giver)
-                    | (DealRole::Counterparty, SettlementRole::Receiver) => &quote.quote_author_did,
-                    (DealRole::Counterparty, SettlementRole::Giver)
-                    | (DealRole::QuoteAuthor, SettlementRole::Receiver) => {
-                        &quote.payload.counterparty_did
-                    }
-                };
-                if half.issuer != *expected_issuer {
+                let expected = expected_issuer(commitment, p.role, quote);
+                if half.issuer != expected {
                     return Err(Response::invalid_params(format!(
                         "ledger '{id}': fulfil issuer does not match role"
                     )));
