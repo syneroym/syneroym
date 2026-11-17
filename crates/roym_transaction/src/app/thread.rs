@@ -5,7 +5,9 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use syneroym_app_host::AppHost;
-use syneroym_roym_core::{clock, envelope::Response, method::Reply, paging};
+use syneroym_roym_core::{
+    clock, envelope::Response, method::Reply, paging, progress::AgreementState,
+};
 
 use super::{
     AGREEMENTS, AgreementRow, CARDS, CardRow, ENQUIRIES, QUOTES, RecordPointerRow,
@@ -56,6 +58,10 @@ pub(crate) async fn thread<H: AppHost>(host: &H, input: ThreadInput) -> Reply<Th
         };
     let agreement_map: HashMap<String, AgreementRow> =
         agreement_rows.into_iter().map(|a| (a.quote_record_id.clone(), a)).collect();
+    let mut agreements_by_quote_id: HashMap<String, Vec<&AgreementRow>> = HashMap::new();
+    for agr in agreement_map.values() {
+        agreements_by_quote_id.entry(agr.quote_id.clone()).or_default().push(agr);
+    }
 
     let mut rows: Vec<CardRow> = match paging::query_all(host, CARDS, Some(filter.clone())).await {
         Ok(v) => v,
@@ -63,15 +69,14 @@ pub(crate) async fn thread<H: AppHost>(host: &H, input: ThreadInput) -> Reply<Th
     };
     for row in &mut rows {
         if row.card_type == "quote" && row.verified {
-            if let Some(qid) =
-                row.data.as_ref().and_then(|q| q.get("quote_id")).and_then(Value::as_str)
-                && let Some(pointer) = quote_map.get(qid)
-            {
-                if pointer.declined_at_secs.is_some() {
+            let qid = row.data.as_ref().and_then(|q| q.get("quote_id")).and_then(Value::as_str);
+            let pointer = qid.and_then(|id| quote_map.get(id));
+            if let Some(ptr) = pointer {
+                if ptr.declined_at_secs.is_some() {
                     row.declined = Some(true);
                 }
                 if row.version_count.is_none() {
-                    row.version_count = Some(pointer.version_count);
+                    row.version_count = Some(ptr.version_count);
                 }
             }
             if let Some(exp) = row
@@ -83,6 +88,15 @@ pub(crate) async fn thread<H: AppHost>(host: &H, input: ThreadInput) -> Reply<Th
             {
                 row.expired = now >= exp;
             }
+            let d_state = compute_quote_deal_state(
+                row.record_id.as_deref(),
+                qid,
+                pointer,
+                row.expired,
+                &agreement_map,
+                &agreements_by_quote_id,
+            );
+            row.deal_state = Some(d_state);
         } else if row.card_type == "enquiry"
             && row.verified
             && let Some(eid) =
@@ -118,4 +132,61 @@ pub(crate) async fn thread<H: AppHost>(host: &H, input: ThreadInput) -> Reply<Th
     let limit = usize::try_from(input.limit).unwrap_or(usize::MAX);
     let page: Vec<CardRow> = rows.into_iter().skip(cursor).take(limit).collect();
     Ok(ThreadOutput { cards: page })
+}
+
+fn compute_quote_deal_state(
+    record_id: Option<&str>,
+    quote_id: Option<&str>,
+    pointer: Option<&RecordPointerRow>,
+    is_expired: bool,
+    agreement_map: &HashMap<String, AgreementRow>,
+    agreements_by_quote_id: &HashMap<String, Vec<&AgreementRow>>,
+) -> String {
+    if pointer.and_then(|p| p.declined_at_secs).is_some() {
+        return "declined".to_string();
+    }
+
+    let this_agr = record_id.and_then(|rid| agreement_map.get(rid));
+    let quote_agrs = quote_id
+        .and_then(|qid| agreements_by_quote_id.get(qid))
+        .map(|v| v.as_slice())
+        .unwrap_or_default();
+
+    for agr in quote_agrs {
+        match agr.state {
+            Some(AgreementState::Closed) => return "closed".to_string(),
+            Some(AgreementState::Cancelled) => return "cancelled".to_string(),
+            Some(AgreementState::NotFormed) => return "not-formed".to_string(),
+            _ => {}
+        }
+    }
+
+    if let Some(agr) = this_agr
+        && (agr.state == Some(AgreementState::Agreed)
+            || (agr.counterparty.is_some() && agr.quote_author.is_some()))
+    {
+        return "agreed".to_string();
+    }
+    for agr in quote_agrs {
+        if agr.state == Some(AgreementState::Agreed)
+            || (agr.counterparty.is_some() && agr.quote_author.is_some())
+        {
+            return "agreed".to_string();
+        }
+    }
+
+    if let Some(agr) = this_agr
+        && agr.counterparty.is_some()
+    {
+        if is_expired {
+            return "expired".to_string();
+        }
+        return "accepted".to_string();
+    }
+
+    if is_expired {
+        return "expired".to_string();
+    }
+
+    "quoted".to_string()
 }

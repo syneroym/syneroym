@@ -188,6 +188,7 @@ fn make_progress_card(
         data: None,
         stored_at_secs: now,
         declined: None,
+        deal_state: None,
         version_count: None,
         agreement_payee: None,
         agreement_payment_methods: vec![],

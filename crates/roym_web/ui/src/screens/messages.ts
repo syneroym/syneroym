@@ -15,7 +15,12 @@ import { type SearchMatch, searchHits } from "./message_search";
 import { waitingRedraw } from "./thread_redraw";
 import { categoryPicker } from "../taxonomy/category_picker";
 import { buildDealTerms } from "./quote_terms";
-import { computeNewestRequestMap, isQuoteSuperseded } from "./thread_enquiry";
+import {
+  computeNewestQuoteMap,
+  computeNewestRequestMap,
+  isQuoteSuperseded,
+  newestVersionMap,
+} from "./thread_enquiry";
 
 /// Things the person has started inside a thread. A redraw from the event
 /// feed waits until they are gone, so it never throws away typed text. An
@@ -93,6 +98,7 @@ export interface CardRow {
   stored_at_secs: number;
   declined?: boolean;
   version_count?: number;
+  deal_state?: string;
   agreement_payee?: string;
   agreement_payment_methods?: string[];
 }
@@ -428,6 +434,7 @@ async function renderThread(
     }
 
     const newestRequestMap = computeNewestRequestMap(allCards);
+    const newestQuoteMap = computeNewestQuoteMap(allCards);
 
     let messages: MessageRow[] = [];
     try {
@@ -442,7 +449,7 @@ async function renderThread(
 
     for (const m of messages) {
       into.appendChild(
-        messageElement(m, cardMap, allCards, newestRequestMap, conv.id, myDid, redraw.now),
+        messageElement(m, cardMap, allCards, newestRequestMap, newestQuoteMap, conv.id, myDid, redraw.now),
       );
     }
   };
@@ -452,7 +459,7 @@ async function renderThread(
   await redraw.now();
 }
 
-export { computeNewestRequestMap, isQuoteSuperseded };
+export { computeNewestQuoteMap, computeNewestRequestMap, isQuoteSuperseded, newestVersionMap };
 
 /** What a sender is told when the other side turned a delivered message away. */
 /** A short explanation for a state word that needs one, else null. */
@@ -479,6 +486,7 @@ function messageElement(
   cardMap: Map<string, CardRow>,
   allCards: CardRow[],
   newestRequestMap: Map<string, string>,
+  newestQuoteMap: Map<string, string>,
   convId: string,
   myDid: string,
   refresh: () => Promise<void>,
@@ -515,7 +523,7 @@ function messageElement(
       }
 
       // Render contextual card action buttons
-      renderCardActions(wrap, cardRow, convId, myDid, refresh);
+      renderCardActions(wrap, cardRow, convId, myDid, refresh, newestQuoteMap);
     } else {
       wrap.appendChild(renderRefusedCard("card", 1, t("messages-unfiled-card")));
     }
@@ -613,6 +621,7 @@ export function renderCardActions(
   convId: string,
   myDid: string,
   refresh: () => Promise<void>,
+  newestQuoteMap?: Map<string, string>,
 ) {
   // Quote this enquiry: on verified enquiry not issued by me
   if (card.card_type === "enquiry" && card.verified) {
@@ -624,7 +633,8 @@ export function renderCardActions(
     }
   }
 
-  // Accept / Decline: on verified quote for me, not expired, not declined
+  // Accept / Decline: on verified quote for me, only on newest version of quote_id,
+  // not when deal is agreed, declined, expired, or not-formed
   if (card.card_type === "quote" && card.verified) {
     const forMe = !!myDid && card.data?.counterparty_did === myDid;
     const nowSecs = Math.floor(Date.now() / 1000);
@@ -632,7 +642,15 @@ export function renderCardActions(
     const isExpired = card.expired || (expSecs !== undefined && nowSecs > expSecs);
     const isDeclined = card.declined === true;
 
-    if (forMe && !isExpired && !isDeclined) {
+    const quoteId = (card.data as Record<string, unknown> | undefined)?.quote_id as string | undefined;
+    const isNewest = !newestQuoteMap || !quoteId || !card.record_id || newestQuoteMap.get(quoteId) === card.record_id;
+
+    const dState = card.deal_state;
+    const isEndedOrAgreed = dState
+      ? ["agreed", "declined", "expired", "not-formed", "closed", "cancelled"].includes(dState)
+      : isExpired || isDeclined;
+
+    if (forMe && isNewest && !isEndedOrAgreed) {
       const actionsDiv = document.createElement("div");
       actionsDiv.className = "quote-actions";
 

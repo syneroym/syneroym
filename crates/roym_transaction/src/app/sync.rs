@@ -259,6 +259,7 @@ fn init_card_row(m: &Value, conversation: &str, now: u64) -> CardRow {
         data: None,
         stored_at_secs: now,
         declined: None,
+        deal_state: None,
         version_count: None,
         agreement_payee: None,
         agreement_payment_methods: Vec::new(),

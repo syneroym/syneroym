@@ -4,11 +4,13 @@ import { activate, activateWith, t } from "../i18n/i18n";
 import {
   type CardRow,
   canRetry,
+  computeNewestQuoteMap,
   computeNewestRequestMap,
   isQuoteSuperseded,
   messageStateWord,
   openQuoteForm,
   refusalText,
+  renderCardActions,
   renderMessages,
   stateHint,
 } from "./messages.js";
@@ -105,6 +107,87 @@ describe("newestRequestMap and quote superseded notice", () => {
 
     expect(isQuoteSuperseded(quoteAgainstV1, allCards, map)).toBe(true);
     expect(isQuoteSuperseded(quoteAgainstV2, allCards, map)).toBe(false);
+  });
+
+  it("identifies newest quote version and shows accept/decline only on the newest", () => {
+    const quoteV1: CardRow = {
+      message_id: "m_q1",
+      conversation: "conv1",
+      direction: "incoming",
+      sender_timestamp_ms: 1000,
+      card_type: "quote",
+      version: 1,
+      known: true,
+      verified: true,
+      expired: false,
+      record_id: "rec_q1",
+      version_count: 1,
+      data: {
+        quote_id: "quo_1",
+        counterparty_did: "did:key:me",
+      },
+      stored_at_secs: 1,
+    };
+    const quoteV2: CardRow = {
+      message_id: "m_q2",
+      conversation: "conv1",
+      direction: "incoming",
+      sender_timestamp_ms: 2000,
+      card_type: "quote",
+      version: 1,
+      known: true,
+      verified: true,
+      expired: false,
+      record_id: "rec_q2",
+      version_count: 2,
+      data: {
+        quote_id: "quo_1",
+        counterparty_did: "did:key:me",
+      },
+      stored_at_secs: 2,
+    };
+
+    const allQuotes = [quoteV1, quoteV2];
+    const qMap = computeNewestQuoteMap(allQuotes);
+    expect(qMap.get("quo_1")).toBe("rec_q2");
+
+    const host1 = document.createElement("div");
+    renderCardActions(host1, quoteV1, "conv1", "did:key:me", async () => {}, qMap);
+    expect(host1.querySelector(".accept-quote-button")).toBeNull();
+    expect(host1.querySelector(".decline-quote-button")).toBeNull();
+
+    const host2 = document.createElement("div");
+    renderCardActions(host2, quoteV2, "conv1", "did:key:me", async () => {}, qMap);
+    expect(host2.querySelector(".accept-quote-button")).not.toBeNull();
+    expect(host2.querySelector(".decline-quote-button")).not.toBeNull();
+  });
+
+  it("hides accept/decline when deal_state is agreed, declined, expired, or not-formed", () => {
+    const states = ["agreed", "declined", "expired", "not-formed", "closed", "cancelled"];
+    for (const st of states) {
+      const q: CardRow = {
+        message_id: "m_q",
+        conversation: "conv1",
+        direction: "incoming",
+        sender_timestamp_ms: 1000,
+        card_type: "quote",
+        version: 1,
+        known: true,
+        verified: true,
+        expired: false,
+        record_id: "rec_q",
+        deal_state: st,
+        data: {
+          quote_id: "quo_1",
+          counterparty_did: "did:key:me",
+        },
+        stored_at_secs: 1,
+      };
+      const host = document.createElement("div");
+      renderCardActions(host, q, "conv1", "did:key:me", async () => {});
+      expect(host.querySelector(".accept-quote-button")).toBeNull();
+      expect(host.querySelector(".decline-quote-button")).toBeNull();
+    }
   });
 });
 

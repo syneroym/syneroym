@@ -218,6 +218,8 @@ pub struct CardRow {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version_count: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deal_state: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agreement_payee: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub agreement_payment_methods: Vec<String>,
@@ -495,6 +497,7 @@ pub(crate) async fn file_own_card<H: AppHost>(
         data: Some(envelope.payload),
         stored_at_secs: now,
         declined: None,
+        deal_state: None,
         agreement_payee: None,
         agreement_payment_methods: Vec::new(),
         version_count,
@@ -612,4 +615,58 @@ pub(crate) fn conversation_mine_filter(
         filter_obj.insert("mine".to_string(), json!(m));
     }
     if filter_obj.is_empty() { None } else { Some(Value::Object(filter_obj).to_string()) }
+}
+
+/// Checks whether a deal (quote id) has ended by any of:
+/// - clock expiry
+/// - decline (pointer declined_at_secs or decline:<deal> in LEDGER)
+/// - decision row in state "not-formed"
+/// - terminal agreement state (closed, cancelled, not-formed)
+/// - refusal with quote-expired
+pub(crate) async fn is_deal_ended<H: AppHost>(
+    host: &H,
+    quote_id: &str,
+    quote_expires_at_secs: Option<u64>,
+    now: u64,
+) -> Result<bool, String> {
+    if let Some(exp) = quote_expires_at_secs
+        && now >= exp
+    {
+        return Ok(true);
+    }
+    if let Some(ptr) = get_row::<RecordPointerRow, _>(host, QUOTES, quote_id).await? {
+        if ptr.declined_at_secs.is_some() {
+            return Ok(true);
+        }
+        if let Ok(env) = Envelope::from_json(&ptr.envelope)
+            && let Some(exp) = env
+                .payload
+                .get("terms")
+                .and_then(|t| t.get("quote_expires_at_secs"))
+                .and_then(Value::as_u64)
+            && now >= exp
+        {
+            return Ok(true);
+        }
+    }
+    let dec_key = format!("decision:{quote_id}");
+    if let Some(dec) = get_row::<decide::DecisionRow, _>(host, LEDGER, &dec_key).await?
+        && dec.state == "not-formed"
+    {
+        return Ok(true);
+    }
+    let dec_id = decline_ops::decline_id(quote_id);
+    if get_row::<decline_ops::DeclineRow, _>(host, LEDGER, &dec_id).await?.is_some() {
+        return Ok(true);
+    }
+    let filter = serde_json::json!({ "quote_id": quote_id }).to_string();
+    let agr_rows: Vec<AgreementRow> = paging::query_all(host, AGREEMENTS, Some(filter)).await?;
+    for agr in agr_rows {
+        if let Some(state) = agr.state
+            && state.is_terminal()
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }

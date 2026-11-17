@@ -32,8 +32,8 @@ use syneroym_roym_core::{
 
 use super::{
     ENQUIRY_HISTORY, ListInput, QUOTE_HISTORY, QUOTES, RecordPointerRow, SendState,
-    conversation_mine_filter, count_mine, ensure_collections, get_bytes, get_row, put_bytes,
-    put_row, resolve_principal_and_owner, send_card_and_file,
+    conversation_mine_filter, count_mine, decline_ops, ensure_collections, get_bytes, get_row,
+    is_deal_ended, put_bytes, put_row, resolve_principal_and_owner, send_card_and_file,
 };
 
 #[derive(Debug, Deserialize)]
@@ -119,7 +119,7 @@ pub(crate) async fn set_at<H: AppHost>(
     let conversation = req_payload.conversation;
 
     let (sequence, supersedes, next_count) =
-        resolve_quote_sequence(host, &input, &conversation, &owner).await?;
+        resolve_quote_sequence(host, &input, &conversation, &owner, now).await?;
 
     let expires_at_secs = now + input.expires_in_secs;
     let quote_id = match input.quote_id.take() {
@@ -241,6 +241,7 @@ async fn resolve_quote_sequence<H: AppHost>(
     params: &QuoteSetInput,
     conversation: &str,
     owner: &str,
+    now: u64,
 ) -> Result<(u32, Option<String>, u64), Response> {
     if let Some(ref id) = params.quote_id {
         let prior: RecordPointerRow = match get_row(host, QUOTES, id).await {
@@ -259,6 +260,21 @@ async fn resolve_quote_sequence<H: AppHost>(
                 "a new version of a quote answers the same enquiry",
             ));
         }
+
+        if decline_ops::has_unrefused_counterparty_half(host, id)
+            .await
+            .map_err(Response::internal_error)?
+        {
+            return Err(Response::invalid_params("quote-already-accepted")
+                .with_data(serde_json::json!("quote-already-accepted")));
+        }
+
+        if is_deal_ended(host, id, None, now).await.map_err(Response::internal_error)? {
+            return Err(
+                Response::invalid_params("quote-ended").with_data(serde_json::json!("quote-ended"))
+            );
+        }
+
         Ok((prior.sequence, Some(prior.record_id), prior.version_count + 1))
     } else {
         let count = match count_mine(host, QUOTES, conversation, owner).await {
