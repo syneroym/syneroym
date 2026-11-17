@@ -1575,3 +1575,61 @@ Confirmed fixed: R21, R22.
   *Fix:* add the enum now, or add a backlog row that names C1b as the target
   and links `decide.rs:192`.
   *Status:* Fixed (9d205386). Added row to docs/planning/deferred-backlog.md targeting C1b and linking decide.rs:192.
+
+## Code review round 5 — Claude Opus 5.5 (Claude Code), 2026-11-17
+
+Reviewed sha: `c26739a2` (code fixes in `9d205386`). This round checks the
+fixes for R23 and R24 and the CI run on that sha.
+
+**Summary:** R23 and R24 are confirmed fixed. CI is green. One minor item
+(R25). No blocker or major is open.
+**Open after round 5: 1 (0 blocker, 0 major, 1 minor).**
+
+This time the fix session changed only the *Status:* lines and the check
+boxes. Thank you.
+
+### How this was checked
+
+- `gh pr checks 367` on `c26739a2`: every check passes ("Lints, licenses &
+  checks", Tests 1/6 to 6/6, Playwright E2E, CLA, "CI Pipeline"). The PR is
+  still a draft.
+- `cargo nextest run -p syneroym-roym-transaction`: 34 passed.
+- A temporary test in `app/tests/decide.rs`, deleted after the run (the tree
+  is clean): the R25 case below.
+- I did not run the full suite or `mise run verify`.
+
+### Round-4 items
+
+Confirmed fixed: R23, R24.
+
+- R23: `mark_decision_agreed` reads the stored agreement row first. When its
+  `seq` is above 1, it keeps that row and writes only the decision row.
+  `cancel_before_the_decision_row_is_final_is_kept` tests the round-4 case
+  and checks that the decision row ends `agreed`. The test setup is now in
+  `setup_service_agreement`; no test lost an assertion.
+- R24: `docs/planning/deferred-backlog.md` has a row for the
+  `DecisionState` enum, target C1b, linking `decide.rs:192`.
+
+### New findings
+
+- [ ] **R25 — minor.** *Where:*
+  `crates/roym_transaction/src/app/decide.rs:209` to `:212`
+  (`mark_decision_agreed`, the `seq > 1` branch).
+  *Problem:* the kept row may never have had the agreed fields. If the node
+  stops before the first agreement-row write, the stored row still has
+  `quote_author: None` and `agreed_at_secs: None`. A cancel then moves it
+  to seq 2 (`transition_at` does not check `row.state`). The next sync keeps
+  that row as it is, so these two fields stay empty for good. The author's
+  signed half is still in the `countersign:` row in `LEDGER`, but the
+  agreement row and its view do not show it.
+  *Failure case (proven with a temporary test):* `crash_on_write("agreements",
+  rec)`, run `decide::run` (it fails), `restart`. The stored row is state
+  None, seq None. `transition_at` with `Cancel` gives `cancelled` seq 2. Run
+  `decide::run` again: `Ok(true)`, decision `agreed`, agreement `cancelled`
+  seq 2 with `quote_author` None and `agreed_at_secs` None.
+  *Fix:* in the `seq > 1` branch, set `quote_author` and `agreed_at_secs`
+  from `half` when they are `None`, keep `state`, `seq` and `commitments`,
+  and write the row. Extend `cancel_before_the_decision_row_is_final_is_kept`
+  (or add a second test) for the crash-before-the-first-write case and check
+  both fields.
+  *Status:* Open.
