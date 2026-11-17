@@ -8,15 +8,17 @@ use syneroym_roym_core::{
     deal::{Commitment, CommitmentKind, DealTerms, Details, ExtensionRef, LocalText, ResourceKind},
     lang::LangTag,
     listing::derive_slot_id,
-    record::{Envelope, RECORD_DEAL_DECLINE, RecordDraft},
+    progress::AgreementState,
+    record::{Envelope, RECORD_DEAL_DECLINE, RECORD_ENQUIRY, RecordDraft},
     transaction::{
-        Answers, DEAL_DECLINE_VERSION, DealDeclinePayload, DealRole, QUOTE_VERSION, QuotePayload,
-        TimeWindow, derive_quote_id,
+        Answers, DEAL_DECLINE_VERSION, DealDeclinePayload, DealRole, ENQUIRY_VERSION,
+        EnquiryPayload, QUOTE_VERSION, QuotePayload, ReceiptHalf, TimeWindow, derive_quote_id,
     },
 };
 
 use crate::app::{
-    CARDS, CardRow, QUOTE_HISTORY, QUOTES, RecordPointerRow,
+    AGREEMENTS, AgreementRow, CARDS, CardRow, ENQUIRIES, ENQUIRY_HISTORY, LEDGER, QUOTE_HISTORY,
+    QUOTES, RecordPointerRow,
     decline_ops::{self, DealDeclineInput},
     get_row, put_bytes, put_row,
     sync::{self, SyncInput},
@@ -123,6 +125,40 @@ fn make_decline_envelope(
     (env.to_json().expect("json"), rec_id)
 }
 
+fn make_enquiry_envelope(
+    author: &Identity,
+    conv: &str,
+    now: u64,
+) -> (String, String, EnquiryPayload) {
+    let author_did = substrate::derive_did_key(&author.public_key());
+    let enquiry_id = syneroym_roym_core::transaction::derive_enquiry_id(conv, &author_did, 1)
+        .expect("enquiry id");
+    let payload = EnquiryPayload {
+        enquiry_id: enquiry_id.clone(),
+        conversation: conv.to_string(),
+        sequence: 1,
+        listing_id: None,
+        categories: vec![],
+        description: LocalText::plain(LangTag::parse_canonical("en").expect("lang"), "Need repair"),
+        area: None,
+        window: None,
+        data_use_notice: "notice".to_string(),
+    };
+    let draft = RecordDraft {
+        version: ENQUIRY_VERSION,
+        record_type: RECORD_ENQUIRY.to_string(),
+        subject: enquiry_id,
+        payload: serde_json::to_value(&payload).expect("payload"),
+        expires_at_secs: None,
+        supersedes: None,
+    };
+    let (mut env, bytes) = Envelope::unsigned(draft, author_did, None, now).expect("env");
+    let sig = author.sign(&bytes).to_bytes();
+    env.attach_signature(z32::encode(&sig)).expect("sig");
+    let rec_id = env.record_id().expect("rec id");
+    (env.to_json().expect("json"), rec_id, payload)
+}
+
 #[tokio::test]
 async fn repeated_decline_returns_the_same_record() {
     let f = fixture();
@@ -154,7 +190,11 @@ async fn repeated_decline_returns_the_same_record() {
 
     let out1 = decline_ops::decline_at(
         &f.host,
-        DealDeclineInput { declines: q_rec_id.clone(), note: Some("not today".to_string()) },
+        DealDeclineInput {
+            declines: q_rec_id.clone(),
+            note: Some("not today".to_string()),
+            lang: None,
+        },
         now,
     )
     .await
@@ -163,7 +203,11 @@ async fn repeated_decline_returns_the_same_record() {
 
     let out2 = decline_ops::decline_at(
         &f.host,
-        DealDeclineInput { declines: q_rec_id.clone(), note: Some("not today".to_string()) },
+        DealDeclineInput {
+            declines: q_rec_id.clone(),
+            note: Some("not today".to_string()),
+            lang: None,
+        },
         now + 10,
     )
     .await
@@ -246,4 +290,480 @@ async fn decline_filing_checks_refuse_invalid_signers_or_records() {
 
     let card: CardRow = get_row(&f.host, CARDS, "msg_bad_dec").await.unwrap().unwrap();
     assert_eq!(card.reason.as_deref(), Some("only the counterparty can decline this quote"));
+
+    // 2. Card names another conversation
+    let (bad_conv_json, _) =
+        make_decline_envelope(&cp, &q_rec_id, &quote.quote_id, "other_conv", now);
+    let bad_conv_body = card::card_body(RECORD_DEAL_DECLINE, DEAL_DECLINE_VERSION, &bad_conv_json)
+        .expect("card body");
+
+    f.host.on_call("conversation", "conversation.changes", move |_| {
+        Ok(json!({
+            "result": {
+                "messages": [
+                    {
+                        "id": "msg_bad_conv",
+                        "conversation": "conv_1",
+                        "author": "did:key:cp",
+                        "direction": "incoming",
+                        "sender_timestamp_ms": (now * 1000) as i64,
+                        "content_type": CARD_CONTENT_TYPE,
+                        "languages": ["en"],
+                        "body_encoding": "utf8",
+                        "restored": false,
+                        "state": "delivered",
+                        "stored_at_secs": now as i64,
+                        "visible_seq": 2,
+                        "verified": true,
+                        "body": bad_conv_body,
+                    }
+                ],
+                "last_seq": 2,
+                "kind": "direct"
+            }
+        })
+        .to_string())
+    });
+
+    let sync_res2 =
+        sync::sync(&f.host, SyncInput { conversation: "conv_1".to_string(), full: false })
+            .await
+            .unwrap();
+    assert_eq!(sync_res2.refused, 1);
+    let card2: CardRow = get_row(&f.host, CARDS, "msg_bad_conv").await.unwrap().unwrap();
+    assert_eq!(card2.reason.as_deref(), Some("card names another conversation"));
+
+    // 3. Deal does not match quote_id
+    let (bad_deal_json, _) = make_decline_envelope(&cp, &q_rec_id, "wrong_quote_id", "conv_1", now);
+    let bad_deal_body = card::card_body(RECORD_DEAL_DECLINE, DEAL_DECLINE_VERSION, &bad_deal_json)
+        .expect("card body");
+
+    f.host.on_call("conversation", "conversation.changes", move |_| {
+        Ok(json!({
+            "result": {
+                "messages": [
+                    {
+                        "id": "msg_bad_deal",
+                        "conversation": "conv_1",
+                        "author": "did:key:cp",
+                        "direction": "incoming",
+                        "sender_timestamp_ms": (now * 1000) as i64,
+                        "content_type": CARD_CONTENT_TYPE,
+                        "languages": ["en"],
+                        "body_encoding": "utf8",
+                        "restored": false,
+                        "state": "delivered",
+                        "stored_at_secs": now as i64,
+                        "visible_seq": 3,
+                        "verified": true,
+                        "body": bad_deal_body,
+                    }
+                ],
+                "last_seq": 3,
+                "kind": "direct"
+            }
+        })
+        .to_string())
+    });
+
+    let sync_res3 =
+        sync::sync(&f.host, SyncInput { conversation: "conv_1".to_string(), full: false })
+            .await
+            .unwrap();
+    assert_eq!(sync_res3.refused, 1);
+    let card3: CardRow = get_row(&f.host, CARDS, "msg_bad_deal").await.unwrap().unwrap();
+    assert_eq!(card3.reason.as_deref(), Some("deal does not match quote_id"));
+
+    // 4. Refused while an unrefused half exists
+    let agr_row = AgreementRow {
+        quote_record_id: q_rec_id.clone(),
+        quote_id: quote.quote_id.clone(),
+        conversation: "conv_1".to_string(),
+        counterparty_did: cp_did.clone(),
+        quote_author_did: f.master_did.clone(),
+        terms: quote.terms.clone(),
+        agreed_at_secs: None,
+        counterparty: Some(ReceiptHalf {
+            record_id: "rec_cp_half".to_string(),
+            envelope: "{}".to_string(),
+            issuer: cp_did.clone(),
+            issued_at_secs: now,
+        }),
+        quote_author: None,
+        state: None,
+        state_reason: None,
+        cancel_reason: None,
+        seq: None,
+        commitments: vec![],
+        updated_at_secs: now,
+    };
+    put_row(&f.host, AGREEMENTS, &q_rec_id, &agr_row).await.unwrap();
+
+    let (unrefused_dec_json, _) =
+        make_decline_envelope(&cp, &q_rec_id, &quote.quote_id, "conv_1", now);
+    let unrefused_body =
+        card::card_body(RECORD_DEAL_DECLINE, DEAL_DECLINE_VERSION, &unrefused_dec_json)
+            .expect("card body");
+
+    f.host.on_call("conversation", "conversation.changes", move |_| {
+        Ok(json!({
+            "result": {
+                "messages": [
+                    {
+                        "id": "msg_unrefused",
+                        "conversation": "conv_1",
+                        "author": "did:key:cp",
+                        "direction": "incoming",
+                        "sender_timestamp_ms": (now * 1000) as i64,
+                        "content_type": CARD_CONTENT_TYPE,
+                        "languages": ["en"],
+                        "body_encoding": "utf8",
+                        "restored": false,
+                        "state": "delivered",
+                        "stored_at_secs": now as i64,
+                        "visible_seq": 4,
+                        "verified": true,
+                        "body": unrefused_body,
+                    }
+                ],
+                "last_seq": 4,
+                "kind": "direct"
+            }
+        })
+        .to_string())
+    });
+
+    let sync_res4 =
+        sync::sync(&f.host, SyncInput { conversation: "conv_1".to_string(), full: false })
+            .await
+            .unwrap();
+    assert_eq!(sync_res4.refused, 1);
+    let card4: CardRow = get_row(&f.host, CARDS, "msg_unrefused").await.unwrap().unwrap();
+    assert_eq!(
+        card4.reason.as_deref(),
+        Some("cannot decline a quote with an unrefused acceptance")
+    );
+}
+
+#[tokio::test]
+async fn decline_with_hindi_lang() {
+    let f = fixture();
+    let now = f.host.now();
+    let cp = Identity::generate().expect("cp");
+    let (q_json, q_rec_id, quote) = make_quote_envelope(&cp, &f.master_did, now);
+    put_bytes(&f.host, QUOTE_HISTORY, &q_rec_id, q_json.as_bytes()).await.unwrap();
+
+    let ptr = RecordPointerRow {
+        envelope: q_json,
+        record_id: q_rec_id.clone(),
+        id: quote.quote_id.clone(),
+        conversation: "conv_1".to_string(),
+        sequence: 1,
+        issuer: substrate::derive_did_key(&cp.public_key()),
+        mine: false,
+        updated_at_secs: now,
+        version_count: 1,
+        issued_at_secs: now,
+        request_record_id: None,
+        counterparty_did: Some(f.master_did.clone()),
+        declined_at_secs: None,
+        decline_note: None,
+    };
+    put_row(&f.host, QUOTES, &quote.quote_id, &ptr).await.unwrap();
+
+    // Invalid lang tag fails
+    let err = decline_ops::decline_at(
+        &f.host,
+        DealDeclineInput {
+            declines: q_rec_id.clone(),
+            note: Some("अस्वीकार".to_string()),
+            lang: Some("invalid_lang_tag_!@#".to_string()),
+        },
+        now,
+    )
+    .await
+    .unwrap_err();
+    assert!(err.error.as_ref().unwrap().message.contains("invalid lang tag"));
+
+    // Valid Hindi lang tag succeeds
+    let out = decline_ops::decline_at(
+        &f.host,
+        DealDeclineInput {
+            declines: q_rec_id.clone(),
+            note: Some("अस्वीकार".to_string()),
+            lang: Some("hi".to_string()),
+        },
+        now,
+    )
+    .await
+    .unwrap();
+    assert!(out.declined);
+
+    let dec_row: decline_ops::DeclineRow =
+        get_row(&f.host, LEDGER, &decline_ops::decline_id(&quote.quote_id)).await.unwrap().unwrap();
+    let v = syneroym_roym_core::transaction::verify_deal_decline(&dec_row.envelope, now);
+    assert!(v.verified);
+    let payload = v.payload.unwrap();
+    let reason = payload.reason.unwrap();
+    assert_eq!(reason.lang.as_str(), "hi");
+    assert_eq!(reason.text, "अस्वीकार");
+}
+
+#[tokio::test]
+async fn decline_resends_if_message_id_is_empty() {
+    let f = fixture();
+    let now = f.host.now();
+    let cp = Identity::generate().expect("cp");
+    let (q_json, q_rec_id, quote) = make_quote_envelope(&cp, &f.master_did, now);
+    put_bytes(&f.host, QUOTE_HISTORY, &q_rec_id, q_json.as_bytes()).await.unwrap();
+
+    let ptr = RecordPointerRow {
+        envelope: q_json,
+        record_id: q_rec_id.clone(),
+        id: quote.quote_id.clone(),
+        conversation: "conv_1".to_string(),
+        sequence: 1,
+        issuer: substrate::derive_did_key(&cp.public_key()),
+        mine: false,
+        updated_at_secs: now,
+        version_count: 1,
+        issued_at_secs: now,
+        request_record_id: None,
+        counterparty_did: Some(f.master_did.clone()),
+        declined_at_secs: None,
+        decline_note: None,
+    };
+    put_row(&f.host, QUOTES, &quote.quote_id, &ptr).await.unwrap();
+
+    // Seed existing fence row with message_id: None
+    let dec_key = decline_ops::decline_id(&quote.quote_id);
+    let (dec_env, dec_rec_id) =
+        make_decline_envelope(&f.master, &q_rec_id, &quote.quote_id, "conv_1", now);
+    put_row(
+        &f.host,
+        LEDGER,
+        &dec_key,
+        &decline_ops::DeclineRow {
+            kind: "decline".to_string(),
+            deal: quote.quote_id.clone(),
+            declines: q_rec_id.clone(),
+            record_id: dec_rec_id,
+            envelope: dec_env,
+            created_at_secs: now,
+            message_id: None,
+        },
+    )
+    .await
+    .unwrap();
+
+    // Calling decline_at should resend and populate message_id
+    let out = decline_ops::decline_at(
+        &f.host,
+        DealDeclineInput {
+            declines: q_rec_id.clone(),
+            note: Some("resend test".to_string()),
+            lang: None,
+        },
+        now + 10,
+    )
+    .await
+    .unwrap();
+    assert!(out.declined);
+
+    let updated: decline_ops::DeclineRow =
+        get_row(&f.host, LEDGER, &dec_key).await.unwrap().unwrap();
+    assert!(updated.message_id.is_some());
+}
+
+#[tokio::test]
+async fn cannot_decline_enquiry_with_accepted_quote() {
+    let f = fixture();
+    let now = f.host.now();
+    let (enq_json, enq_rec_id, enq_payload) = make_enquiry_envelope(&f.master, "conv_1", now);
+    let enquiry_id = enq_payload.enquiry_id.clone();
+    put_bytes(&f.host, ENQUIRY_HISTORY, &enq_rec_id, enq_json.as_bytes()).await.unwrap();
+
+    let enq_ptr = RecordPointerRow {
+        envelope: enq_json,
+        record_id: enq_rec_id.clone(),
+        id: enquiry_id.clone(),
+        conversation: "conv_1".to_string(),
+        sequence: 1,
+        issuer: f.master_did.clone(),
+        mine: true,
+        updated_at_secs: now,
+        version_count: 1,
+        issued_at_secs: now,
+        request_record_id: None,
+        counterparty_did: None,
+        declined_at_secs: None,
+        decline_note: None,
+    };
+    put_row(&f.host, ENQUIRIES, &enquiry_id, &enq_ptr).await.unwrap();
+
+    // Create quote answering enq_rec_id
+    let cp = Identity::generate().expect("cp");
+    let cp_did = substrate::derive_did_key(&cp.public_key());
+    let (q_json, q_rec_id, quote) = make_quote_envelope(&f.master, &cp_did, now);
+    put_bytes(&f.host, QUOTE_HISTORY, &q_rec_id, q_json.as_bytes()).await.unwrap();
+
+    let q_ptr = RecordPointerRow {
+        envelope: q_json,
+        record_id: q_rec_id.clone(),
+        id: quote.quote_id.clone(),
+        conversation: "conv_1".to_string(),
+        sequence: 1,
+        issuer: f.master_did.clone(),
+        mine: true,
+        updated_at_secs: now,
+        version_count: 1,
+        issued_at_secs: now,
+        request_record_id: Some(enq_rec_id.clone()),
+        counterparty_did: Some(cp_did.clone()),
+        declined_at_secs: None,
+        decline_note: None,
+    };
+    put_row(&f.host, QUOTES, &quote.quote_id, &q_ptr).await.unwrap();
+
+    // Create unrefused counterparty half
+    let agr_row = AgreementRow {
+        quote_record_id: q_rec_id.clone(),
+        quote_id: quote.quote_id.clone(),
+        conversation: "conv_1".to_string(),
+        counterparty_did: cp_did.clone(),
+        quote_author_did: f.master_did.clone(),
+        terms: quote.terms.clone(),
+        agreed_at_secs: None,
+        counterparty: Some(ReceiptHalf {
+            record_id: "rec_cp_half_enq".to_string(),
+            envelope: "{}".to_string(),
+            issuer: cp_did.clone(),
+            issued_at_secs: now,
+        }),
+        quote_author: None,
+        state: None,
+        state_reason: None,
+        cancel_reason: None,
+        seq: None,
+        commitments: vec![],
+        updated_at_secs: now,
+    };
+    put_row(&f.host, AGREEMENTS, &q_rec_id, &agr_row).await.unwrap();
+
+    // has_unrefused_counterparty_half_for_enquiry returns true
+    assert!(
+        decline_ops::has_unrefused_counterparty_half_for_enquiry(&f.host, &enquiry_id)
+            .await
+            .unwrap()
+    );
+
+    // Declining enquiry fails
+    let err = decline_ops::decline_at(
+        &f.host,
+        DealDeclineInput {
+            declines: enq_rec_id,
+            note: Some("cancel enquiry".to_string()),
+            lang: None,
+        },
+        now + 10,
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        err.error
+            .as_ref()
+            .unwrap()
+            .message
+            .contains("cannot decline an enquiry with an accepted quote")
+    );
+}
+
+#[tokio::test]
+async fn counterparty_can_decline_quote_v2_after_v1_refused() {
+    let f = fixture();
+    let now = f.host.now();
+    let cp = Identity::generate().expect("cp");
+    let cp_did = substrate::derive_did_key(&cp.public_key());
+
+    // Quote v1 and v2 have the same quote_id
+    let (q1_json, q1_rec_id, q1_payload) = make_quote_envelope(&cp, &f.master_did, now);
+    let quote_id = q1_payload.quote_id.clone();
+    put_bytes(&f.host, QUOTE_HISTORY, &q1_rec_id, q1_json.as_bytes()).await.unwrap();
+
+    let (mut env2, bytes2) = Envelope::unsigned(
+        RecordDraft {
+            version: QUOTE_VERSION,
+            record_type: syneroym_roym_core::record::RECORD_QUOTE.to_string(),
+            subject: quote_id.clone(),
+            payload: serde_json::to_value(&q1_payload).unwrap(),
+            expires_at_secs: Some(now + 3600),
+            supersedes: Some(q1_rec_id.clone()),
+        },
+        cp_did.clone(),
+        None,
+        now + 10,
+    )
+    .unwrap();
+    let sig2 = cp.sign(&bytes2).to_bytes();
+    env2.attach_signature(z32::encode(&sig2)).unwrap();
+    let q2_rec_id = env2.record_id().unwrap();
+    let q2_json = env2.to_json().unwrap();
+    put_bytes(&f.host, QUOTE_HISTORY, &q2_rec_id, q2_json.as_bytes()).await.unwrap();
+
+    let ptr2 = RecordPointerRow {
+        envelope: q2_json,
+        record_id: q2_rec_id.clone(),
+        id: quote_id.clone(),
+        conversation: "conv_1".to_string(),
+        sequence: 2,
+        issuer: cp_did.clone(),
+        mine: false,
+        updated_at_secs: now + 10,
+        version_count: 2,
+        issued_at_secs: now + 10,
+        request_record_id: None,
+        counterparty_did: Some(f.master_did.clone()),
+        declined_at_secs: None,
+        decline_note: None,
+    };
+    put_row(&f.host, QUOTES, &quote_id, &ptr2).await.unwrap();
+
+    // v1 was accepted by counterparty, but writer refused it with quote-superseded
+    // snapshot
+    let agr_v1 = AgreementRow {
+        quote_record_id: q1_rec_id.clone(),
+        quote_id: quote_id.clone(),
+        conversation: "conv_1".to_string(),
+        counterparty_did: f.master_did.clone(),
+        quote_author_did: cp_did.clone(),
+        terms: q1_payload.terms.clone(),
+        agreed_at_secs: None,
+        counterparty: Some(ReceiptHalf {
+            record_id: "rec_cp_half_v1".to_string(),
+            envelope: "{}".to_string(),
+            issuer: f.master_did.clone(),
+            issued_at_secs: now,
+        }),
+        quote_author: None,
+        state: Some(AgreementState::NotFormed),
+        state_reason: Some("quote-superseded".to_string()),
+        cancel_reason: None,
+        seq: Some(1),
+        commitments: vec![],
+        updated_at_secs: now + 5,
+    };
+    put_row(&f.host, AGREEMENTS, &q1_rec_id, &agr_v1).await.unwrap();
+
+    // has_unrefused_counterparty_half must answer false
+    assert!(!decline_ops::has_unrefused_counterparty_half(&f.host, &quote_id).await.unwrap());
+
+    // Counterparty can decline v2
+    let out = decline_ops::decline_at(
+        &f.host,
+        DealDeclineInput { declines: q2_rec_id, note: Some("decline v2".to_string()), lang: None },
+        now + 20,
+    )
+    .await
+    .unwrap();
+    assert!(out.declined);
 }

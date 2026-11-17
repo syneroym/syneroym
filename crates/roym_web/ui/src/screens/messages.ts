@@ -707,6 +707,8 @@ export function openDeclineDialog(anchor: HTMLElement, card: CardRow, refresh: (
   dialog.className = "decline-dialog";
   dialog.appendChild(text("p", t("messages-decline-note"), "decline-note"));
 
+  const declineLang = textLangSelect("decline-text-lang", currentLanguage());
+
   const noteInput = document.createElement("input");
   noteInput.placeholder = t("messages-decline-note-placeholder");
   noteInput.className = "decline-note-input";
@@ -722,6 +724,7 @@ export function openDeclineDialog(anchor: HTMLElement, card: CardRow, refresh: (
       await call("deal.decline", {
         declines: card.record_id,
         note: noteInput.value.trim() || undefined,
+        lang: declineLang.value || currentLanguage(),
       });
       await refresh();
     } catch (e) {
@@ -730,7 +733,7 @@ export function openDeclineDialog(anchor: HTMLElement, card: CardRow, refresh: (
     }
   };
 
-  dialog.append(noteInput, confirmBtn, cancelBtn, err);
+  dialog.append(field(t("request-text-language"), declineLang), noteInput, confirmBtn, cancelBtn, err);
   anchor.appendChild(dialog);
 }
 

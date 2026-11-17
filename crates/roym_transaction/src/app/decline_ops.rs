@@ -9,6 +9,7 @@ use syneroym_roym_core::{
     lang::LangTag,
     method::Reply,
     paging,
+    progress::AgreementState,
     record::{Envelope, RECORD_DEAL_DECLINE},
     transaction::{self, DEAL_DECLINE_VERSION, DealDeclinePayload},
 };
@@ -32,15 +33,18 @@ pub(crate) struct DeclineRow {
     pub(crate) envelope: String,
     #[serde(alias = "at_secs")]
     pub(crate) created_at_secs: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) message_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DealDeclineInput {
-    #[serde(alias = "quote_record_id")]
     pub declines: String,
     #[serde(default)]
     pub note: Option<String>,
+    #[serde(default)]
+    pub lang: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -140,7 +144,31 @@ pub(crate) async fn decline_at<H: AppHost>(
 
     // Idempotent through fence row decline:<deal>
     let dec_key = decline_id(&deal);
-    if let Ok(Some(existing)) = get_row::<DeclineRow, _>(host, LEDGER, &dec_key).await {
+    if let Ok(Some(mut existing)) = get_row::<DeclineRow, _>(host, LEDGER, &dec_key).await {
+        if existing.message_id.is_none() {
+            let (msg_id, _send_state, send_err) = send_card_and_file(
+                host,
+                &conversation,
+                RECORD_DEAL_DECLINE,
+                DEAL_DECLINE_VERSION,
+                &existing.envelope,
+                now,
+                None,
+            )
+            .await;
+            if let Some(err) = send_err {
+                return Err(Response::internal_error(format!(
+                    "failed to send decline card: {err:?}"
+                )));
+            }
+            if !msg_id.is_empty() {
+                existing.message_id = Some(msg_id);
+                put_row(host, LEDGER, &dec_key, &existing)
+                    .await
+                    .map_err(Response::internal_error)?;
+            }
+        }
+        mark_target_declined(host, &deal, &input.note, now).await?;
         return Ok(DealDeclineOutput {
             declines: existing.declines,
             deal: existing.deal,
@@ -152,8 +180,9 @@ pub(crate) async fn decline_at<H: AppHost>(
 
     let reason = match &input.note {
         Some(n) => {
-            let lang = LangTag::parse_canonical("en")
-                .map_err(|e| Response::internal_error(e.to_string()))?;
+            let lang_tag = input.lang.as_deref().unwrap_or("en");
+            let lang = LangTag::parse_canonical(lang_tag)
+                .map_err(|e| Response::invalid_params(format!("invalid lang tag: {e}")))?;
             Some(LocalText::plain(lang, n.clone()))
         }
         None => None,
@@ -184,13 +213,14 @@ pub(crate) async fn decline_at<H: AppHost>(
         Envelope::from_json(&envelope_json).map_err(|e| Response::internal_error(e.to_string()))?;
     let record_id = envelope.record_id().map_err(|e| Response::internal_error(e.to_string()))?;
 
-    let decline_row = DeclineRow {
+    let mut decline_row = DeclineRow {
         kind: "decline".to_string(),
         deal: deal.clone(),
         declines: input.declines.clone(),
         record_id: record_id.clone(),
         envelope: envelope_json.clone(),
         created_at_secs: now,
+        message_id: None,
     };
 
     let write_val = RecordWriteValue {
@@ -206,6 +236,7 @@ pub(crate) async fn decline_at<H: AppHost>(
     if outcome.is_some() {
         // Race: another caller claimed the fence row
         if let Ok(Some(existing)) = get_row::<DeclineRow, _>(host, LEDGER, &dec_key).await {
+            mark_target_declined(host, &deal, &input.note, now).await?;
             return Ok(DealDeclineOutput {
                 declines: existing.declines,
                 deal: existing.deal,
@@ -217,7 +248,7 @@ pub(crate) async fn decline_at<H: AppHost>(
     }
 
     // Send the card and file it
-    let _ = send_card_and_file(
+    let (msg_id, _send_state, send_err) = send_card_and_file(
         host,
         &conversation,
         RECORD_DEAL_DECLINE,
@@ -228,18 +259,17 @@ pub(crate) async fn decline_at<H: AppHost>(
     )
     .await;
 
-    // Mark deal or enquiry declined in local state
-    if let Ok(Some(mut ptr)) = get_row::<RecordPointerRow, _>(host, QUOTES, &deal).await {
-        ptr.declined_at_secs = Some(now);
-        ptr.decline_note = input.note.clone();
-        ptr.updated_at_secs = now;
-        let _ = put_row(host, QUOTES, &deal, &ptr).await;
-    } else if let Ok(Some(mut ptr)) = get_row::<RecordPointerRow, _>(host, ENQUIRIES, &deal).await {
-        ptr.declined_at_secs = Some(now);
-        ptr.decline_note = input.note.clone();
-        ptr.updated_at_secs = now;
-        let _ = put_row(host, ENQUIRIES, &deal, &ptr).await;
+    if let Some(err) = send_err {
+        return Err(Response::internal_error(format!("failed to send decline card: {err:?}")));
     }
+
+    if !msg_id.is_empty() {
+        decline_row.message_id = Some(msg_id);
+        put_row(host, LEDGER, &dec_key, &decline_row).await.map_err(Response::internal_error)?;
+    }
+
+    // Mark deal or enquiry declined in local state
+    mark_target_declined(host, &deal, &input.note, now).await?;
 
     Ok(DealDeclineOutput {
         declines: input.declines,
@@ -248,6 +278,32 @@ pub(crate) async fn decline_at<H: AppHost>(
         declined: true,
         note: input.note,
     })
+}
+
+async fn mark_target_declined<H: AppHost>(
+    host: &H,
+    deal: &str,
+    note: &Option<String>,
+    now: u64,
+) -> Result<(), Response> {
+    if let Some(mut ptr) = get_row::<RecordPointerRow, _>(host, QUOTES, deal)
+        .await
+        .map_err(Response::internal_error)?
+    {
+        ptr.declined_at_secs = Some(now);
+        ptr.decline_note = note.clone();
+        ptr.updated_at_secs = now;
+        put_row(host, QUOTES, deal, &ptr).await.map_err(Response::internal_error)?;
+    } else if let Some(mut ptr) = get_row::<RecordPointerRow, _>(host, ENQUIRIES, deal)
+        .await
+        .map_err(Response::internal_error)?
+    {
+        ptr.declined_at_secs = Some(now);
+        ptr.decline_note = note.clone();
+        ptr.updated_at_secs = now;
+        put_row(host, ENQUIRIES, deal, &ptr).await.map_err(Response::internal_error)?;
+    }
+    Ok(())
 }
 
 pub(crate) async fn has_unrefused_counterparty_half<H: AppHost>(
@@ -260,7 +316,12 @@ pub(crate) async fn has_unrefused_counterparty_half<H: AppHost>(
         if let Some(cp_half) = &agr.counterparty {
             let ref_key = format!("refused:{}", cp_half.record_id);
             if get_row::<serde_json::Value, _>(host, LEDGER, &ref_key).await?.is_none() {
-                return Ok(true);
+                let is_refused_by_snapshot = agr.state == Some(AgreementState::NotFormed)
+                    && (agr.state_reason.as_deref() == Some("quote-superseded")
+                        || agr.state_reason.as_deref() == Some("quote-already-agreed"));
+                if !is_refused_by_snapshot {
+                    return Ok(true);
+                }
             }
         }
     }
@@ -271,11 +332,28 @@ pub(crate) async fn has_unrefused_counterparty_half_for_enquiry<H: AppHost>(
     host: &H,
     enquiry_id: &str,
 ) -> Result<bool, String> {
-    let filter = serde_json::json!({ "request_record_id": enquiry_id }).to_string();
-    let quotes: Vec<RecordPointerRow> = paging::query_all(host, QUOTES, Some(filter)).await?;
-    for q in quotes {
-        if has_unrefused_counterparty_half(host, &q.id).await? {
-            return Ok(true);
+    let mut record_ids = std::collections::HashSet::new();
+    if let Some(ptr) = get_row::<RecordPointerRow, _>(host, ENQUIRIES, enquiry_id).await? {
+        record_ids.insert(ptr.record_id);
+    }
+    if let Ok(history) =
+        paging::envelope_history(host, ENQUIRY_HISTORY, "enquiry_id", enquiry_id).await
+    {
+        for env_json in history {
+            if let Ok(env) = Envelope::from_json(&env_json) {
+                if let Ok(rid) = env.record_id() {
+                    record_ids.insert(rid);
+                }
+            }
+        }
+    }
+    for rec_id in record_ids {
+        let filter = serde_json::json!({ "request_record_id": rec_id }).to_string();
+        let quotes: Vec<RecordPointerRow> = paging::query_all(host, QUOTES, Some(filter)).await?;
+        for q in quotes {
+            if has_unrefused_counterparty_half(host, &q.id).await? {
+                return Ok(true);
+            }
         }
     }
     Ok(false)

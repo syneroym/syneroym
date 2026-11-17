@@ -255,6 +255,7 @@ async fn revision_after_an_end_is_refused() {
             record_id: "rec_dec".to_string(),
             envelope: "{}".to_string(),
             created_at_secs: now,
+            message_id: None,
         },
     )
     .await

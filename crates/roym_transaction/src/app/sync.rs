@@ -277,6 +277,7 @@ fn init_card_row(m: &Value, conversation: &str, now: u64) -> CardRow {
 async fn dispatch_known_card<H: AppHost>(
     host: &H,
     row: CardRow,
+    sender: &str,
     card: &card::Card,
     conversation: &str,
     now: u64,
@@ -325,7 +326,8 @@ async fn dispatch_known_card<H: AppHost>(
             .await
         }
         "deal-decline" => {
-            file_deal_decline_card(host, row, &card.envelope, conversation, now, owner).await
+            file_deal_decline_card(host, row, sender, &card.envelope, conversation, now, owner)
+                .await
         }
         _ => refuse_card(host, row, "a known card type this build does not file").await,
     }
@@ -339,6 +341,7 @@ pub(crate) async fn file_incoming_card<H: AppHost>(
     owner: &str,
 ) -> Result<FileCardResult, String> {
     let mut row = init_card_row(m, conversation, now);
+    let sender = m.get("author").and_then(Value::as_str).unwrap_or_default();
 
     let body = match m.get("body").and_then(Value::as_str) {
         Some(b) => b,
@@ -364,7 +367,7 @@ pub(crate) async fn file_incoming_card<H: AppHost>(
         });
     }
 
-    dispatch_known_card(host, row, &card, conversation, now, owner).await
+    dispatch_known_card(host, row, sender, &card, conversation, now, owner).await
 }
 
 /// Stores `row` with `reason` and reports it as filed-but-refused.
@@ -658,7 +661,9 @@ async fn verify_and_apply_declined_quote<H: AppHost>(
         ptr.declined_at_secs = Some(now);
         ptr.decline_note = payload.reason.as_ref().map(|r| r.text.clone());
         ptr.updated_at_secs = now;
-        let _ = put_row(host, QUOTES, &qp.quote_id, &ptr).await;
+        put_row(host, QUOTES, &qp.quote_id, &ptr)
+            .await
+            .map_err(|_| "failed to write quote pointer")?;
     }
     Ok(())
 }
@@ -668,6 +673,7 @@ async fn verify_and_apply_declined_enquiry<H: AppHost>(
     payload: &DealDeclinePayload,
     e_bytes: &[u8],
     signer: &str,
+    sender: &str,
     conversation: &str,
     now: u64,
 ) -> Result<(), &'static str> {
@@ -695,7 +701,7 @@ async fn verify_and_apply_declined_enquiry<H: AppHost>(
     };
     let enq_issuer = ev.issuer.as_deref().unwrap_or(&ptr.issuer);
     let enq_cp = ptr.counterparty_did.as_deref().unwrap_or_default();
-    if signer != enq_issuer && signer != enq_cp {
+    if signer != enq_issuer && signer != enq_cp && signer != sender {
         return Err("only the counterparty or quote author can decline this enquiry");
     }
     if decline_ops::has_unrefused_counterparty_half_for_enquiry(host, &ep.enquiry_id)
@@ -708,13 +714,16 @@ async fn verify_and_apply_declined_enquiry<H: AppHost>(
     ptr.declined_at_secs = Some(now);
     ptr.decline_note = payload.reason.as_ref().map(|r| r.text.clone());
     ptr.updated_at_secs = now;
-    let _ = put_row(host, ENQUIRIES, &ep.enquiry_id, &ptr).await;
+    put_row(host, ENQUIRIES, &ep.enquiry_id, &ptr)
+        .await
+        .map_err(|_| "failed to write enquiry pointer")?;
     Ok(())
 }
 
 async fn file_deal_decline_card<H: AppHost>(
     host: &H,
     mut row: CardRow,
+    sender: &str,
     envelope: &str,
     conversation: &str,
     now: u64,
@@ -743,9 +752,16 @@ async fn file_deal_decline_card<H: AppHost>(
             return refuse_card(host, row, reason).await;
         }
     } else if let Some(e_bytes) = get_bytes(host, ENQUIRY_HISTORY, &payload.declines).await? {
-        if let Err(reason) =
-            verify_and_apply_declined_enquiry(host, payload, &e_bytes, signer, conversation, now)
-                .await
+        if let Err(reason) = verify_and_apply_declined_enquiry(
+            host,
+            payload,
+            &e_bytes,
+            signer,
+            sender,
+            conversation,
+            now,
+        )
+        .await
         {
             return refuse_card(host, row, reason).await;
         }
@@ -761,8 +777,9 @@ async fn file_deal_decline_card<H: AppHost>(
         record_id: v.record_id.clone().unwrap_or_default(),
         envelope: envelope.to_string(),
         created_at_secs: now,
+        message_id: Some(row.message_id.clone()),
     };
-    let _ = put_row(host, LEDGER, &dec_key, &dec_row).await;
+    put_row(host, LEDGER, &dec_key, &dec_row).await?;
 
     row.verified = true;
     row.data = Some(serde_json::to_value(payload).unwrap_or(Value::Null));

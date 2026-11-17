@@ -350,6 +350,7 @@ pub(crate) async fn store_received_enquiry<H: AppHost>(
         1
     };
     let mine = !owner.is_empty() && v.issuer.as_deref() == Some(owner);
+    let counterparty_did = if !mine && !owner.is_empty() { Some(owner.to_string()) } else { None };
     let pointer = RecordPointerRow {
         envelope: envelope.to_string(),
         record_id: record_id.to_string(),
@@ -362,7 +363,7 @@ pub(crate) async fn store_received_enquiry<H: AppHost>(
         version_count,
         issued_at_secs: incoming_issued,
         request_record_id: None,
-        counterparty_did: None,
+        counterparty_did,
         declined_at_secs: None,
         decline_note: None,
     };
