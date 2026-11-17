@@ -207,7 +207,20 @@ async fn mark_decision_agreed<H: AppHost>(
     let stored: Option<AgreementRow> = get_row(host, AGREEMENTS, &row.quote_record_id).await?;
     let seq = stored.as_ref().and_then(|r| r.seq).unwrap_or(0);
     if seq > 1 {
-        if let Some(s) = stored {
+        if let Some(mut s) = stored {
+            let mut changed = false;
+            if s.agreed_at_secs.is_none() {
+                s.agreed_at_secs = Some(half.issued_at_secs);
+                changed = true;
+            }
+            if s.quote_author.is_none() {
+                s.quote_author = Some(half);
+                changed = true;
+            }
+            if changed {
+                s.updated_at_secs = now;
+                put_row(host, AGREEMENTS, &row.quote_record_id, &s).await?;
+            }
             *row = s;
         }
     } else {

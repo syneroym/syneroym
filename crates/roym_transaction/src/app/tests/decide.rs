@@ -673,21 +673,15 @@ async fn cancel_before_the_decision_row_is_final_is_kept() {
     let (quote, quote_rec_id, mut row, now) = setup_service_agreement(&f);
     crate::app::put_row(&f.host, AGREEMENTS, &quote_rec_id, &row).await.unwrap();
 
-    let agreed = decide::run(&f.host, &mut row, &quote, now).await.expect("initial decide");
-    assert!(agreed);
+    // Inject crash when writing to agreements collection on initial decide
+    f.host.crash_on_write("agreements", &quote_rec_id);
 
-    // Simulate crash right before the decision row was marked agreed:
-    // decision row is left as "deciding"
-    let dec_key = decision_id(&quote.quote_id);
-    let deciding = DecisionRow {
-        kind: "decision".to_string(),
-        state: "deciding".to_string(),
-        agreement: quote_rec_id.clone(),
-        quote_id: quote.quote_id.clone(),
-        reason: None,
-        created_at_secs: now,
-    };
-    crate::app::put_row(&f.host, LEDGER, &dec_key, &deciding).await.unwrap();
+    let err = decide::run(&f.host, &mut row, &quote, now)
+        .await
+        .expect_err("initial decide must fail due to injected crash");
+    assert!(err.contains("injected crash on write to agreements"));
+
+    f.host.restart();
 
     let cancelled = progress_ops::transition_at(
         &f.host,
@@ -708,7 +702,10 @@ async fn cancel_before_the_decision_row_is_final_is_kept() {
     let agr = stored.expect("agreement exists");
     assert_eq!(agr.state, Some(AgreementState::Cancelled));
     assert_eq!(agr.seq, Some(2));
+    assert!(agr.quote_author.is_some());
+    assert!(agr.agreed_at_secs.is_some());
 
+    let dec_key = decision_id(&quote.quote_id);
     let dec: Option<DecisionRow> = crate::app::get_row(&f.host, LEDGER, &dec_key).await.unwrap();
     assert_eq!(dec.expect("decision exists").state, "agreed");
 }
