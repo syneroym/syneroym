@@ -1535,7 +1535,7 @@ Confirmed fixed: R21, R22.
 
 ### New findings
 
-- [ ] **R23 — major.** *Where:*
+- [x] **R23 — major.** *Where:*
   `crates/roym_transaction/src/app/decide.rs:199` to `:214`
   (`mark_decision_agreed`), reached from `repeat_both` (`:448`);
   `crates/roym_transaction/src/app/progress_ops.rs:149`
@@ -1564,9 +1564,9 @@ Confirmed fixed: R21, R22.
   `cancel_before_the_decision_row_is_final_is_kept` with the case above. The
   `not-formed` writers do not need this, because a `not-formed` snapshot
   cannot move.
-  *Status:* Open.
+  *Status:* Fixed (9d205386). Proof: cancel_before_the_decision_row_is_final_is_kept failed with 'assertion left == right failed: left: Some(Agreed), right: Some(Cancelled)' when stored row was overwritten, passed after checking stored seq > 1 and writing only decision row.
 
-- [ ] **R24 — minor.** *Where:*
+- [x] **R24 — minor.** *Where:*
   `crates/roym_transaction/src/app/decide.rs:192`;
   `docs/planning/deferred-backlog.md`.
   *Problem:* R22 said the `DecisionState` enum may wait for C1b. It was not
@@ -1574,4 +1574,4 @@ Confirmed fixed: R21, R22.
   compared as text (`"agreed"`, `"not-formed"`, `"deciding"`).
   *Fix:* add the enum now, or add a backlog row that names C1b as the target
   and links `decide.rs:192`.
-  *Status:* Open.
+  *Status:* Fixed (9d205386). Added row to docs/planning/deferred-backlog.md targeting C1b and linking decide.rs:192.
