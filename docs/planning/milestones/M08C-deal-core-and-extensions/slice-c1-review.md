@@ -1446,7 +1446,7 @@ Confirmed fixed: R13, R14, R16, R17, R18, R19, R20.
 
 ### New findings
 
-- [ ] **R21 — major.** *Where:* `crates/roym_transaction/src/app/decide.rs:207`
+- [x] **R21 — major.** *Where:* `crates/roym_transaction/src/app/decide.rs:207`
   and `:217` (`mark_decision_agreed`); `:409` and `:417`
   (`repeat_not_formed`); `:583` and `:591` (`handle_not_formed`); `:86` to
   `:88` and `:244` to `:255` (`resend_completed_decision`).
@@ -1471,9 +1471,9 @@ Confirmed fixed: R13, R14, R16, R17, R18, R19, R20.
   `deciding`, and `repeat_both` finishes it. Add a test
   `crash_before_the_decision_row_is_final_is_finished_on_the_next_sync` with
   the case above. It must first check that the crash fired.
-  *Status:* Open.
+  *Status:* Fixed (9a9a1f8b). Proof: crash_before_the_decision_row_is_final_is_finished_on_the_next_sync failed with 'assertion left == right failed: left: None, right: Some(Agreed)' when decision row was written before agreement row, passed after writing agreement row first and decision row last.
 
-- [ ] **R22 — minor.** *Where:* `crates/roym_transaction/src/app/decide.rs:86`
+- [x] **R22 — minor.** *Where:* `crates/roym_transaction/src/app/decide.rs:86`
   to `:89`, `:102` to `:105`, `:263` to `:265`;
   `crates/roym_transaction/src/app/backup/sections.rs:347` to `:355`, `:379`
   to `:387`.
@@ -1490,6 +1490,6 @@ Confirmed fixed: R13, R14, R16, R17, R18, R19, R20.
   `expected_issuer(commitment, role, quote) -> &str` for both halves. A
   `DecisionState` enum would remove the text compares; it can wait for C1b
   if that is simpler.
-  *Status:* Open.
+  *Status:* Fixed (9a9a1f8b). Used continue_decision helper in run, removed dead branch in resend_completed_decision, extracted expected_issuer helper in backup/sections.rs.
 
-**Open after round 3: 2 (0 blocker, 1 major, 1 minor): R21, R22.**
+**Open after round 3: 0 (all 2 items fixed).**
