@@ -1612,7 +1612,7 @@ Confirmed fixed: R23, R24.
 
 ### New findings
 
-- [ ] **R25 — minor.** *Where:*
+- [x] **R25 — minor.** *Where:*
   `crates/roym_transaction/src/app/decide.rs:209` to `:212`
   (`mark_decision_agreed`, the `seq > 1` branch).
   *Problem:* the kept row may never have had the agreed fields. If the node
@@ -1632,4 +1632,4 @@ Confirmed fixed: R23, R24.
   and write the row. Extend `cancel_before_the_decision_row_is_final_is_kept`
   (or add a second test) for the crash-before-the-first-write case and check
   both fields.
-  *Status:* Open.
+  *Status:* Fixed (721b1348). Proof: cancel_before_the_decision_row_is_final_is_kept failed with 'assertion failed: agr.quote_author.is_some()' before fix, passed after populating quote_author and agreed_at_secs from half when missing in seq > 1 branch.
