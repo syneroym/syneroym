@@ -26,7 +26,7 @@ pub(crate) use syneroym_conversation::{ConversationConfig, ConversationService};
 pub(crate) use syneroym_core::{
     config::{RetryPolicy, SubstrateConfig},
     local_registry::EndpointRegistry,
-    record_signer::{NodeRecordSigner, RecordClock},
+    record_signer::{NodeRecordSigner, RecordClock, RecordSalts},
     storage::MockStorage,
     test_constants,
 };
@@ -462,6 +462,7 @@ pub(crate) async fn harness_with_config(custom_config: Option<SubstrateConfig>) 
     let node_identity = Arc::new(Identity::generate().unwrap());
     let master_identity = Arc::new(Identity::generate().unwrap());
     let clock = RecordClock::Fixed(1_800_000_000);
+    let salts = RecordSalts::Seeded(42);
 
     let (wasm_engine, wasm_conversation, wasm_ws_senders) = build_wasm_stack(
         wasm_dir.path(),
@@ -470,6 +471,7 @@ pub(crate) async fn harness_with_config(custom_config: Option<SubstrateConfig>) 
         node_identity.clone(),
         &master_identity,
         clock,
+        salts,
         custom_config.clone(),
     )
     .await;
@@ -486,6 +488,7 @@ pub(crate) async fn harness_with_config(custom_config: Option<SubstrateConfig>) 
         node_identity.clone(),
         &master_identity,
         clock,
+        salts,
         custom_config,
     )
     .await;
@@ -608,6 +611,7 @@ async fn seed_test_config(storage_provider: &Arc<dyn StorageProvider>, key_store
         .unwrap();
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn build_wasm_stack(
     dir: &Path,
     wasm_bytes: &[u8],
@@ -615,6 +619,7 @@ pub(crate) async fn build_wasm_stack(
     node_identity: Arc<Identity>,
     master: &Identity,
     clock: RecordClock,
+    salts: RecordSalts,
     config: Option<SubstrateConfig>,
 ) -> (Arc<AppSandboxEngine>, Arc<ConversationService>, Arc<WebSocketSenders>) {
     let mut config = config.unwrap_or_default();
@@ -671,7 +676,7 @@ pub(crate) async fn build_wasm_stack(
         .set(Arc::downgrade(&conversation) as Weak<dyn ConversationHost>)
         .expect("conversation set once");
     conversation.set_notifier(Arc::downgrade(&engine) as Weak<dyn ConversationNotifier>);
-    let record_signer = NodeRecordSigner::with_clock(node_identity, registry.clone(), clock);
+    let record_signer = NodeRecordSigner::with_clock(node_identity, registry.clone(), clock, salts);
     engine.record_signer.set(record_signer).expect("set record_signer");
     engine.deploy_wasm(SERVICE_ID, &wasm_deploy_manifest(wasm_bytes.to_vec())).await.unwrap();
     (engine, conversation, ws_senders)
@@ -692,6 +697,7 @@ pub(crate) async fn build_native_stack(
     node_identity: Arc<Identity>,
     master: &Identity,
     clock: RecordClock,
+    salts: RecordSalts,
     config: Option<SubstrateConfig>,
 ) -> NativeStack {
     let key_store = Arc::new(KeyStore::new());
@@ -738,7 +744,7 @@ pub(crate) async fn build_native_stack(
     ));
     factory.set_service_proxy(Arc::downgrade(stub_proxy) as Weak<dyn ServiceProxy>);
     let record_signer =
-        NodeRecordSigner::with_clock(node_identity, endpoint_registry.clone(), clock);
+        NodeRecordSigner::with_clock(node_identity, endpoint_registry.clone(), clock, salts);
     factory.set_record_signer(record_signer);
     factory.set_sink(Arc::downgrade(&fixture) as Weak<dyn MessageSink>);
     factory.set_conversation_sink(Arc::downgrade(&fixture) as Weak<dyn ConversationSink>);

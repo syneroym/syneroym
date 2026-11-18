@@ -71,6 +71,16 @@ impl signing::Host for HostState {
             .map_err(convert_signing_error_out)
     }
 
+    async fn fresh_salts(&mut self, count: u32) -> Result<Vec<Vec<u8>>, WitSigningError> {
+        let Some(signer) = self.record_signer.clone() else {
+            return Err(WitSigningError::Internal(
+                "this node has no record signer configured".to_string(),
+            ));
+        };
+        let salts = signer.fresh_salts(count).map_err(convert_signing_error_out)?;
+        Ok(salts.into_iter().map(|s| s.to_vec()).collect())
+    }
+
     async fn identity(&mut self) -> Result<WitSigningIdentity, WitSigningError> {
         let Some(signer) = self.record_signer.clone() else {
             return Err(WitSigningError::Internal(

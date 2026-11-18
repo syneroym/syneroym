@@ -22,7 +22,7 @@ use syneroym_core::{
     config::{AppSandboxRole, RetryPolicy, SubstrateConfig},
     event_bus::EventBus,
     local_registry::EndpointRegistry,
-    record_signer::{NodeRecordSigner, RecordClock},
+    record_signer::{NodeRecordSigner, RecordClock, RecordSalts},
     storage::MockStorage,
     test_constants,
 };
@@ -1040,9 +1040,10 @@ pub(crate) async fn harness_with_unbound(skip: Option<&'static str>) -> Harness 
     // half of the harness is left, so the budget covers the scenario body.
     let wall_now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
     let fixed_clock = RecordClock::Fixed(wall_now + 240);
+    let seeded_salts = RecordSalts::Seeded(42);
 
     let wasm_record_signer =
-        NodeRecordSigner::with_clock(node_identity.clone(), wasm_reg, fixed_clock);
+        NodeRecordSigner::with_clock(node_identity.clone(), wasm_reg, fixed_clock, seeded_salts);
     wasm_engine.record_signer.set(wasm_record_signer).expect("set wasm record_signer");
 
     // 2. Native Stack setup
@@ -1069,7 +1070,7 @@ pub(crate) async fn harness_with_unbound(skip: Option<&'static str>) -> Harness 
     native_conversation.set_event_bus(native_event_bus.clone());
 
     let native_record_signer =
-        NodeRecordSigner::with_clock(node_identity, native_reg.clone(), fixed_clock);
+        NodeRecordSigner::with_clock(node_identity, native_reg.clone(), fixed_clock, seeded_salts);
 
     let make_factory = |name: &str| {
         NativeHostFactory::new(

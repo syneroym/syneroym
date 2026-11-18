@@ -311,3 +311,39 @@ async fn caller_origin_is_identical_on_both_builds() {
     );
     assert_eq!(wasm_anon, json!({ "ok": { "arm": "anonymous" } }));
 }
+
+#[tokio::test]
+async fn fresh_salts_match_on_both_builds() {
+    let h = harness().await;
+    let req = json!({
+        "op": "fresh-salts",
+        "count": 5,
+    });
+    let wasm_res = h.wasm.run(&req.to_string()).await.unwrap();
+    let native_res = h.native.run(&req.to_string()).await.unwrap();
+    let wasm_v: Value = serde_json::from_str(&wasm_res).unwrap();
+    let native_v: Value = serde_json::from_str(&native_res).unwrap();
+    assert!(wasm_v["ok"]["salts"].is_array(), "wasm salts must be array: {wasm_v}");
+    assert_eq!(wasm_v["ok"]["salts"].as_array().unwrap().len(), 5, "expected 5 salts");
+    assert_eq!(wasm_v, native_v, "fresh_salts output must be identical across builds");
+}
+
+#[tokio::test]
+async fn fresh_salts_count_zero_and_257_fail_the_same_way() {
+    let h = harness().await;
+    for count in [0, 257] {
+        let req = json!({
+            "op": "fresh-salts",
+            "count": count,
+        });
+        let wasm_res = h.wasm.run(&req.to_string()).await.unwrap();
+        let native_res = h.native.run(&req.to_string()).await.unwrap();
+        let wasm_v: Value = serde_json::from_str(&wasm_res).unwrap();
+        let native_v: Value = serde_json::from_str(&native_res).unwrap();
+        assert!(wasm_v["err"].is_string(), "wasm: expected err for count {count}, got {wasm_v}");
+        assert_eq!(
+            wasm_v, native_v,
+            "fresh_salts failure for count {count} must match on both builds"
+        );
+    }
+}
