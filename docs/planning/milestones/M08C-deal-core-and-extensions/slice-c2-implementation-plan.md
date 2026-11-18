@@ -6,8 +6,9 @@ planning conversation. This plan is meant to stand alone.*
 
 **Status: plan written, 2026-11-18, by Claude Opus 5.5. Plan review round 1
 (Claude Sonnet 5.5, [slice-c2-review.md](slice-c2-review.md), P1 to P12)
-folded the same day. The owner has not answered Q1 to Q8 yet. The plan is
-written for the recommended answer of each question.**
+folded the same day. The owner accepted the recommended answer (a) of every
+question, Q1 to Q8, on 2026-11-18. Plan review round 2 (Claude Opus 5.5,
+P13 to P17) folded the same day.**
 
 **Size and PRs.** C2 is an L slice. This plan splits it in two parts, and
 each part is one PR that passes `mise run verify` (Q1):
@@ -189,9 +190,10 @@ How a developer can see it work:
 - `cargo nextest run -p syneroym-signed-record disclosure` and
   `cargo nextest run -p syneroym-roym-core disclosure`: the RFC 9901 test
   vectors and the refusal tables.
-- C2a: `cargo nextest run -p syneroym-substrate --test roym_disclosure_e2e`:
-  a quote of the mailbox size reaches an offline peer through its mailbox,
-  and a larger one arrives when the peer comes back.
+- C2a: `cargo nextest run -p syneroym-substrate --test mailbox_conversation_e2e`:
+  a real quote card of the mailbox size waits at an offline peer's
+  mailbox, and a card 2 KiB larger waits at the sender and arrives when
+  the peer comes back (review P13).
 - C2b: `cargo nextest run -p syneroym-substrate --test roym_disclosure_e2e`:
   Bob shows his agreement with Alice to Carol's node, with the price
   hidden and the scope shown; Carol's node verifies both halves and the
@@ -201,9 +203,10 @@ How a developer can see it work:
 
 ### 2.1 Questions
 
-Each question has options and a recommendation. The plan is written for the
-recommended answer. Answer-dependent rows go into the change docs'
-`## Deviations` when the owner answers.
+Each question has options and a recommendation. **The owner accepted the
+recommendation (a) of every question on 2026-11-18.** The options stay
+below as the record of what was weighed. The answer-dependent rows are in
+the agreements doc's `## Deviations`.
 
 #### Q1. Split C2 into C2a (hide) and C2b (show)?
 
@@ -211,7 +214,8 @@ recommended answer. Answer-dependent rows go into the change docs'
   own and has one kind of risk. C2a stays large: about 3,800 changed
   lines by estimate, of which about 1,000 are the migration of ~20 test
   files to the shared builder (section 2.2 point 12, review P2) and the
-  mailbox tests of Q8. C2b is about 1,200.
+  mailbox test of Q8 (one case in an existing conversation test, review
+  P13). C2b is about 1,200.
 - (b) Keep one C2: one PR of roughly 5,000 changed lines (estimate:
   `roym_core` and `signed_record` +1,400 with tests, `transaction` ±1,200,
   existing test migration ±1,000, parity and shape files ±900, two-node
@@ -552,7 +556,7 @@ says which PR proves it.
 | AG-33 | C2a | The hidden-field part: AG-17's test covers `settlement_note` in both settlement records. | Statement row: C6 |
 | AG-34 | C2b | Unit: a quote alone, price hidden, scope shown, verifies; a quote and a half with different `terms` are refused. Two-node: Carol verifies a quote before any agreement. | |
 | AG-38 | C2b | Unit: a snapshot bound to the quote author's half or the quote is "the writer's"; a snapshot from any other key is "writer not checked". | |
-| AG-40 | C2a | Unit: an 8 KiB-plus `details` and a 96 KiB-plus record are refused. Service: `quote.set` answers `quote-too-large`; the largest card fits the card body. Delivery (Q8): a card of `MAILBOX_CARD_BODY_BYTES` seals for a mailbox; two-node, a quote over that size reaches an offline peer after it comes back online. E2E: story 50 shows the size line. Hub unit test: the over-limit line and the mailbox note. | |
+| AG-40 | C2a | Unit: an 8 KiB-plus `details` and a 96 KiB-plus record are refused. Service: `quote.set` answers `quote-too-large`; the largest card fits the card body. Service: `quote.measure` gives `mailbox_fits: true` for a typical quote and false for a large one. Delivery (Q8), two-node at the conversation layer: a real quote card body of `MAILBOX_CARD_BODY_BYTES` waits at the offline peer's mailbox (`deposited`); one 2 KiB larger waits at the sender and is `delivered` after the peer comes back. E2E: story 50 shows the size line. Hub unit test: the over-limit line and the mailbox note. | |
 | AG-8 | C2b | The presentation part that C1 left (agreements doc `## Deviations`, AG-8): a presentation with only the snapshot and the halves words `claimed: true/false` and the reason codes. | |
 
 From [roym-value-exchange](../../changes/roym-value-exchange/change.md):
@@ -713,10 +717,14 @@ differs from the doc's text (marked "deviation").
   a quote, before the fence row for a settlement record, before the half
   on filing. A crash after the disclosures and before the record leaves an
   unused row, which is harmless. A receipt has no row; its disclosures are
-  the quote's. **A row is never replaced by a different set** (review
-  P11): the write is `AppDataLayer::create`; when the row exists, the
-  stored set is kept, and a new set that is not equal to it is refused as
-  `disclosures-differ`.
+  the quote's. **A row is never replaced** (review P11): the write is
+  `AppDataLayer::create`; when the row exists, the stored set is kept.
+  There is no "different set" case to refuse (review P15): a set passes the
+  strict reveal only if every digest in the record has its disclosure, no
+  digest is used twice, and no disclosure is left over. Each digest is the
+  SHA-256 of exactly one disclosure string, so only one set (in any order)
+  can pass for one `record_id`. The `create` write still guards the stored
+  row at no cost.
 - **D-C2-5. `send_card_and_file` takes an `OutgoingCard`.**
   `pub(crate) struct OutgoingCard<'a> { card_type: &'a str, version: u32,
   envelope: &'a str, send: &'a [String], view: &'a [String] }`. `send` goes
@@ -739,11 +747,11 @@ differs from the doc's text (marked "deviation").
   never a value (a refused card's reason is stored and shown; a value in it
   would leak). **Repeats** (review P11): the strict reveal runs on the
   card's own set only, never mixed with the stored set, so a valid repeat
-  is not refused as "salt repeated". A repeat that carries a set equal to
-  the stored one (in any order) is filed as a repeat. A repeat with no
-  disclosures, of a record whose set is stored, is filed as a repeat with
-  the stored set. A repeat with a different valid set is refused
-  (`disclosures-differ`); the first set stays.
+  is not refused as "salt repeated". A repeat whose set passes the strict
+  reveal is filed as a repeat; that set is the stored one (D-C2-4). A
+  repeat with no disclosures, of a record whose set is stored, is filed as
+  a repeat with the stored set. A repeat whose set fails the strict reveal
+  is refused with that check's code; the stored set stays.
 - **D-C2-8. Salts are fetched first, then concealed by a pure function.**
   `DealTerms::hidden_field_count()` is `5 + 10 × commitments`. The service
   asks the host for that many salts in one call (`AppSigning::fresh_salts`),
@@ -776,9 +784,17 @@ differs from the doc's text (marked "deviation").
   commitment_id, bytes, limit }], fits: bool, card_bytes: u64,
   mailbox_fits: bool }`. `card_bytes` is an upper bound of the card body:
   the length of `card_body` built with the concealed payload, the
-  disclosures and a placeholder envelope whose issuer, signature and
-  delegation certificate have their longest lengths
-  (`roym_core::card::card_body_upper_bound`). `mailbox_fits` is
+  disclosures and a placeholder envelope
+  (`roym_core::card::card_body_upper_bound`). The placeholder carries the
+  delegation certificate this node really signs with now: `measure` calls
+  `resolve_principal_and_owner` (`app.rs:281`), as `quote.set` does
+  (`quote_ops.rs:106`), and passes its `delegation_json`, or none for a
+  service principal (review P14). The longest certificate the signer
+  accepts is 16 KiB (`crates/core/src/record_signer.rs:121`), more than the
+  mailbox size by itself, so a longest-length placeholder would make
+  `mailbox_fits` false for every quote. The issuer (`did:key`) and the
+  signature have fixed lengths; the timestamps, the record id and a
+  `supersedes` take their longest values. `mailbox_fits` is
   `card_bytes <= MAILBOX_CARD_BODY_BYTES` (Q8, D-C2-22). It does not
   validate the terms (the form is half filled while the person types). A
   body that does not parse, or a slot step that fails, answers the same
@@ -793,9 +809,16 @@ differs from the doc's text (marked "deviation").
   reason "disclosures missing").
 - **D-C2-13. Seeded salts for tests (Q2).** `RecordSalts { System,
   Seeded(u64) }` in `crates/core/src/record_signer.rs`, beside
-  `RecordClock`. Seeded salt number `n` is the first 16 bytes of
-  `SHA-256(seed as 8 little-endian bytes ‖ n as 8 little-endian bytes)`,
-  with `n` from an `AtomicU64`. `NodeRecordSigner::with_clock` gains a
+  `RecordClock`. Seeded salt number `n` is
+  `syneroym_signed_record::disclosure::seeded_salt(seed, n)`: the first 16
+  bytes of `SHA-256(seed as 8 little-endian bytes ‖ n as 8 little-endian
+  bytes)`, with `n` from an `AtomicU64`. That one function is the only
+  copy of the rule (review P16): `RecordSalts::Seeded`, `TestHost` and
+  `roym_core::testing::sd` all call it. `roym_core` cannot add `sha2`
+  (`check-roym-deps`, `xtask/src/main.rs:182` to `:196`, also covers
+  `test-host` code), but both `syneroym-core` and `roym_core` already
+  depend on `syneroym-signed-record`, which has `sha2`.
+  `NodeRecordSigner::with_clock` gains a
   `salts` argument; its callers are `crates/core/src/record_signer.rs:420`,
   `:425` (tests), `crates/roym_web/tests/dual_build_parity/helpers.rs:1045`,
   `:1072`, and `crates/app_host_native/tests/dual_build_parity/helpers.rs:674`,
@@ -803,7 +826,8 @@ differs from the doc's text (marked "deviation").
   value. `System` salts come from `rand::rng().fill_bytes`: `rand` is
   already a dependency of `syneroym-core` (`crates/core/Cargo.toml:31`,
   used at `event_bus.rs:112`), so no new dependency (review P10).
-  `TestHost` keeps its own counter, settable with `set_salt_seed(u64)`.
+  `TestHost` keeps its own counter `n`, settable with `set_salt_seed(u64)`,
+  and calls `seeded_salt`.
 - **D-C2-14. Presentation (C2b).** `deal.present { record_id, include:
   { quote: bool = true, receipt: bool = true, progress: bool = false,
   settlement: bool = false }, show: [field path] }`. `record_id` is the
@@ -841,7 +865,7 @@ differs from the doc's text (marked "deviation").
   every test that signs a deal record by hand, in `roym_core`,
   `roym_transaction` and the parity harness:
   ```rust
-  /// Salts 0, 1, 2, … from `seed`, the same rule as `RecordSalts::Seeded`.
+  /// Salts 0, 1, 2, … from `seed`: `(0..).map(|n| seeded_salt(seed, n))`.
   pub fn seeded_salts(seed: u64) -> impl Iterator<Item = Salt>;
   pub fn conceal_quote(payload: PlainQuote, seed: u64) -> (QuotePayload, Vec<String>);
   pub fn conceal_payment_request(p: PlainPaymentRequest, seed: u64) -> (PaymentRequestPayload, Vec<String>);
@@ -866,13 +890,18 @@ differs from the doc's text (marked "deviation").
   decoded.
 - **D-C2-22. The mailbox size (Q8).** `pub const MAILBOX_CARD_BODY_BYTES:
   usize` in `crates/roym_core/src/card.rs`, beside `MAX_CARD_BODY_BYTES`.
-  Its value is the largest card body that step 6's test can seal through
-  the real conversation encoding and `mailbox_format`'s seal, rounded down
-  to a whole KiB, less 1 KiB of margin. The plan's estimate is 13 KiB; the
-  test sets the number. The constant is a delivery hint only: no record is
-  refused for passing it. If `conversation` later gets a compact body
-  encoding, the test still passes and the backlog row says to raise the
-  number.
+  Its value comes from the real delivery path only, never from a copy of
+  the encoding steps (review P17). Step 6's two-node case sends a real
+  quote card through `conversation` to an offline peer with a mailbox. The
+  plan's estimate is 13 KiB. If a card of that size is not `deposited`,
+  the sender's warning "could not deposit at the receiver's mailbox"
+  (`crates/router/src/proxy/mailbox.rs:268`) names the sealed size and the
+  64 KiB limit; set the value from that factor, rounded down to a whole
+  KiB, less 1 KiB of margin. The test then pins it: a card of this size is
+  deposited, and one 2 KiB larger is not. The constant is a delivery hint
+  only: no record is refused for passing it. If `conversation` later gets
+  a compact body encoding, the larger card is deposited too, the test
+  fails, and the backlog row says to raise the number.
 
 ## 6. Step-by-step changes
 
@@ -910,6 +939,10 @@ impl Salt {
 pub fn encode_disclosure(salt: &Salt, name: &str, value: &Value) -> Result<String, DisclosureError>;
 /// `base64url(SHA-256(ASCII bytes of `disclosure`))`, 43 chars.
 pub fn disclosure_digest(disclosure: &str) -> String;
+/// Test salt `n` for `seed`: the first 16 bytes of
+/// SHA-256(seed as 8 LE bytes ‖ n as 8 LE bytes). The one copy of this
+/// rule; the host's seeded signer and the Roym test host both call it.
+pub fn seeded_salt(seed: u64, n: u64) -> Salt;
 
 pub struct DecodedDisclosure { pub salt: String, pub name: String, pub value: Value, pub digest: String }
 /// Accepts any JSON spacing (the RFC's own example has spaces). Refuses:
@@ -942,10 +975,10 @@ Tests: section 7.1.
   calls `HostSigning::fresh_salts`), `HostState`
   (`capabilities_services.rs:52`, calls `NodeRecordSigner::fresh_salts`),
   and `TestHost` (`crates/roym_core/src/testing.rs:213`, the seeded counter
-  of D-C2-13).
+  of D-C2-13, calling `seeded_salt`).
 - `NodeRecordSigner::fresh_salts(&self, count) -> Result<Vec<[u8; 16]>,
   SigningError>`: `System` uses `rand::rng().fill_bytes` (D-C2-13);
-  `Seeded` as D-C2-13. A read-only instance may ask for salts (it cannot
+  `Seeded` calls `seeded_salt` (D-C2-13). A read-only instance may ask for salts (it cannot
   sign, so they are useless, but harmless).
 - Every caller of `with_clock` passes the new `salts` argument (D-C2-13
   lists the six call sites); `permitted_differences.rs:23`, `:89` keep
@@ -1012,8 +1045,7 @@ pub struct FieldPath { /* Terms(field) | Commitment(id, field) | Record(record_i
 pub enum SdError { /* each with code(): "sd-shape", "disclosure-unknown-digest",
     "digest-repeated", "disclosure-name", "disclosure-visible-name",
     "disclosure-value", "salt-length", "salt-repeated", "quote-too-large",
-    "details-too-large", "disclosure-missing", "disclosure-count-too-high",
-    "disclosures-differ" */ }
+    "details-too-large", "disclosure-missing", "disclosure-count-too-high" */ }
 ```
 
 `crates/roym_core/src/deal/sd.rs`:
@@ -1062,7 +1094,8 @@ Vec<String>), SdError>` (digests, disclosures) and
 
 `card.rs`: `Card.disclosures`, `card_body(card_type, version, envelope,
 disclosures: &[String])`, `card_body_upper_bound(card_type, payload:
-&Value, disclosures: &[String]) -> usize` (D-C2-11), and
+&Value, disclosures: &[String], delegation_json: Option<&str>) -> usize`
+(D-C2-11: the real certificate, review P14), and
 `MAILBOX_CARD_BODY_BYTES` with a first value of 13 KiB that step 6's test
 corrects (D-C2-22).
 
@@ -1170,27 +1203,38 @@ In-crate tests: section 7.2.
   `method_contract/shapes_transaction.rs`. The `transaction` method count
   in `method_contract/contract.rs:60` goes from 37 to 38 (review P6);
   check the new row in the table, not only the number.
-- **The mailbox size** (Q8, review P1). A test in `crates/substrate/tests`
-  (its dev-dependencies already hold `syneroym-conversation` with
-  `test-support`, `syneroym-mailbox-format` and `syneroym-roym-core`)
-  builds, for a card body of `MAILBOX_CARD_BODY_BYTES` bytes of base64url
-  text, the same `DeliveryPayload` encoding, Olm encryption and `deliver`
-  request that `crates/conversation/src/transport.rs:210` to `:230`
-  builds, and seals it with `mailbox_format`'s `seal`:
-  `a_card_of_the_mailbox_size_seals` passes, and
-  `a_card_two_kib_larger_does_not_seal` fails with `TooLarge`. If the
-  encoding steps are not reachable from outside `conversation`, add one
-  `test-support` function there that returns the sealed size for a body,
-  rather than copying the steps. Set
-  `MAILBOX_CARD_BODY_BYTES` from it (D-C2-22) and record in the
-  agreements doc's C2 deviation row the measured factor and the size of a
-  typical two-commitment quote card (from
-  `quote_card_carries_every_disclosure_and_the_peer_files_plain_terms`).
-- Two-node (Q8): `roym_disclosure_e2e.rs` (new in C2a, extended in C2b)
-  gets `a_quote_larger_than_a_mailbox_reaches_an_offline_peer_when_it_returns`
-  and `a_quote_of_the_mailbox_size_reaches_an_offline_peer_through_the_mailbox`,
-  using `common/mailbox_world.rs` for the mailbox and `Restart` for the
-  peer that goes offline.
+- **The mailbox size** (Q8, review P1, P13, P17). The delivery facts
+  belong to `conversation`, so they are tested there, with the real
+  encoding, encryption and seal, and no copy of them. Add one case to
+  `crates/substrate/tests/mailbox_conversation_e2e.rs` (226 lines). Its
+  `World` (`:45`, `world()` at `:81`) already has a sender, a mailbox node
+  and a peer B with a mailbox that can stop and start again
+  (`stop_b`, `restart_b_and_pull`), using `conversation_fixture` and
+  `conversation_peer::Peer`. No new harness, and no Roym app is needed:
+  - `a_card_of_the_mailbox_size_waits_at_the_mailbox_and_a_larger_one_at_the_sender`:
+    one exchange while both are up (so a session exists); stop B; send
+    two bodies with `send_message`. The first is a real quote card body
+    of at most `MAILBOX_CARD_BODY_BYTES` and within 64 bytes of it; it
+    reaches `deposited`. The second is a real card about 2 KiB larger; it
+    does not reach `deposited` within `DEPOSIT_BUDGET`, and
+    `deposits_so_far()` grew by one only. Restart B; both reach
+    `delivered` (the first from the mailbox, the second by the outbox's
+    direct retry).
+  - The card bodies are real: built with `roym_core::testing::sd`
+    (D-C2-20) and `card_body`, with one text grown until the body has the
+    wanted length. `crates/substrate/Cargo.toml`'s dev-dependency on
+    `syneroym-roym-core` (`:134`) gains `features = ["test-host"]`.
+  - One case, not two, so the test boots one world and waits once
+    (`DEPOSIT_BUDGET` 60 s, `ANSWER_BUDGET` 150 s, `:36` to `:38`).
+  - Set `MAILBOX_CARD_BODY_BYTES` from this run (D-C2-22) and record in
+    the agreements doc's C2 deviation row the measured factor and the
+    size of a typical two-commitment quote card (from
+    `quote_card_carries_every_disclosure_and_the_peer_files_plain_terms`).
+- The Roym side of Q8 stays in-crate:
+  `quote_measure_says_when_a_card_does_not_fit_a_mailbox` (section 7.2)
+  checks `mailbox_fits` for a typical and a large quote. No Roym-level
+  mailbox test: no test world has Roym and a mailbox together, and the
+  delivery does not depend on what the body holds.
 - Two-node: `roym_transaction_e2e.rs:293` to `:310` as section 2.2 point 8;
   `roym_restore_e2e.rs` gains the `agreement.get` check.
 - `card.rs` test `quote_dense_envelope_near_max_payload_fits_in_card_body`
@@ -1297,8 +1341,8 @@ Rules, in order:
 
 #### Step 3 — Two-node with a third node
 
-Extend `crates/substrate/tests/roym_disclosure_e2e.rs`, which C2a starts
-(the deal file is at 714 lines). Three installations as in `roym_trust_e2e.rs:8` to `:57`,
+Add `crates/substrate/tests/roym_disclosure_e2e.rs` (a new file, because
+the deal file is at 714 lines). Three installations as in `roym_trust_e2e.rs:8` to `:57`,
 using the shared harness (`SubstrateTestContext`, `alloc_ports`). Section
 7.4.
 
@@ -1324,6 +1368,10 @@ Test names say what they prove, with no planning ids.
 - `decoder_refuses_padding_and_non_base64url`, `decoder_refuses_two_and_four_elements`,
   `decoder_refuses_a_non_string_salt_or_name`,
   `decoder_refuses_a_fractional_number_deep_in_the_value` (AG-19 (4), last case).
+- `seeded_salt_first_output_is_pinned`: `seeded_salt(0, 0)` and
+  `seeded_salt(7, 3)` give fixed bytes, written once from the first run
+  (review P16). Every seeded salt in both parity harnesses and the test
+  host comes from this one function.
 
 `crates/roym_core/src/disclosure/tests.rs` (C2a):
 
@@ -1392,10 +1440,16 @@ New file `disclosure.rs` (C2a):
 - `a_settlement_card_note_is_filed_plain_and_signed_hidden` (AG-33).
 - `quote_measure_matches_quote_set`, with one quote-author slot
   commitment whose `window` the slot step fills (review P4).
-- `quote_measure_says_when_a_card_does_not_fit_a_mailbox` (Q8).
-- Repeats (D-C2-7, review P11): `a_repeat_quote_card_with_the_same_set_is_a_repeat`,
+- `quote_measure_says_when_a_card_does_not_fit_a_mailbox` (Q8, review
+  P14): with the test host's real delegation certificate, a typical
+  two-commitment quote gives `mailbox_fits: true`, and `card_bytes` is at
+  least the length of the real card `quote.set` then sends for the same
+  terms; a quote with long texts in several languages gives
+  `mailbox_fits: false` and `fits: true`.
+- Repeats (D-C2-7, review P11, P15): `a_repeat_quote_card_with_the_same_set_is_a_repeat`
+  (also with the set in another order),
   `a_repeat_quote_card_without_disclosures_uses_the_stored_set`,
-  `a_repeat_with_a_different_set_is_refused_and_the_first_set_stays`.
+  `a_repeat_with_a_bad_set_is_refused_and_the_stored_set_stays`.
 
 `backup/tests.rs` gains `mod disclosures;` → `backup/tests/disclosures.rs`:
 `export_import_keeps_disclosures`, `import_rebuilds_card_data_from_disclosures`,
@@ -1418,13 +1472,12 @@ answers. Admission tables list every new method (AG-31).
 
 C2a: `roym_transaction_e2e.rs` checks plain values through `agreement.get`
 and that the signed halves hold no `payee` (AG-17 on real cards);
-`roym_restore_e2e.rs` checks plain terms after a restore. New file
-`roym_disclosure_e2e.rs` (Q8): `a_card_of_the_mailbox_size_seals`,
-`a_card_two_kib_larger_does_not_seal`,
-`a_quote_of_the_mailbox_size_reaches_an_offline_peer_through_the_mailbox`,
-`a_quote_larger_than_a_mailbox_reaches_an_offline_peer_when_it_returns`.
+`roym_restore_e2e.rs` checks plain terms after a restore.
+`mailbox_conversation_e2e.rs` (Q8, review P13):
+`a_card_of_the_mailbox_size_waits_at_the_mailbox_and_a_larger_one_at_the_sender`
+(step 6).
 
-C2b, the same file:
+C2b, new file `roym_disclosure_e2e.rs`:
 
 - `a_third_node_verifies_an_agreement_with_the_price_hidden` (AG-18): Bob
   and Alice agree; Bob calls `deal.present` with `show:
@@ -1485,6 +1538,10 @@ C2b: none.
   If a scenario fails only on digests, check this first.
 - `messages.ts` is 1018 lines: step 7 moves term building out, so it
   should shrink.
+- The mailbox case adds one more world to nextest's `substrate-e2e`
+  group: about 1 to 4 minutes (one deposit wait, one restart, one answer
+  wait), like the file's first case. It runs in that group's pool, beside
+  the other mailbox tests.
 
 ### 7.9 Component size
 
@@ -1574,8 +1631,9 @@ C2a:
 - [ ] Story 50 shows the size line; story 40 and Hub cases pass unchanged.
 - [ ] Parity passes with seeded salts and no new normalisation, in both
   parity harnesses (`roym_web` and `app_host_native`).
-- [ ] `MAILBOX_CARD_BODY_BYTES` is set from the measurement, and the
-  agreements doc's C2 row records the measured numbers (Q8).
+- [ ] `MAILBOX_CARD_BODY_BYTES` is set from the real delivery path, the
+  conversation mailbox case passes, and the agreements doc's C2 row
+  records the measured numbers (Q8).
 - [ ] Component sizes recorded; `transaction` within +15%, others within
   +40 KB.
 - [ ] Deviations, backlog rows and living docs done.

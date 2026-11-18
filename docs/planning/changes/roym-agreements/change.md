@@ -1197,8 +1197,9 @@ The plan did not state these rules. The code follows them now.
 
 **Written when the M08C C2 slice was planned (2026-11-18,
 [slice-c2-implementation-plan.md](../../milestones/M08C-deal-core-and-extensions/slice-c2-implementation-plan.md)).**
-The plan's questions Q1 to Q8 are not answered yet. Rows that depend on an
-answer are added when the owner answers.
+The owner accepted the plan's recommendation for each of its questions, Q1
+to Q8, on 2026-11-18. The rows that come from those answers are marked
+with the question.
 
 - **The 96 KiB limit against the card body (checked).** "Where disclosures
   travel" asks C2's plan to check 96 KiB against a real envelope. Worst
@@ -1212,8 +1213,31 @@ answer are added when the owner answers.
   message deposited at an offline receiver's mailbox may be at most
   64 KiB sealed, so a card reaches a mailbox only when its body is about
   14 KiB or less. A larger card stays in the sender's outbox and is
-  delivered directly once both nodes are online. What C2 does about this
-  is the C2 plan's Q8, open; C2a records the measured numbers here.
+  delivered directly once both nodes are online. C2a records the measured
+  numbers here.
+- **The 96 KiB limit stays (Q8).** The mailbox is a delivery shortcut,
+  not a limit on what a quote may be. A quote whose card is too large for
+  a mailbox reaches an offline peer only when both nodes are online, and
+  the Hub's quote form says so under the size line. A backlog row asks
+  `conversation` for a compact message body encoding.
+- **`quote.measure` (Q4).** A new local-only method that the method table
+  does not list. It runs the same preparation and encoding as `quote.set`
+  and answers the disclosure size, the limits, an upper bound of the card
+  body and whether that body fits a mailbox. The Hub's size line uses it.
+- **Salts come from a new host function (Q2).** `syneroym:signing` gains
+  `fresh-salts(count)`, served by the node's record signer from the
+  system's secure random source. Tests and the parity harnesses seed it,
+  so both builds make the same salts. This does not change "16 bytes from
+  the host's secure random source"; it names the host interface.
+- **Rules that read a hidden field run where the plain terms are held
+  (Q5).** ML-18's `viewed_via_mt` rule and AG-39's one-language rule run
+  in full on the parties' own nodes (accept, filing, import, `quote.set`).
+  A third party's verifier runs each only over the fields that are shown,
+  and reports the rest as not checked.
+- **The decline note stays visible (Q7).** "Hidden always: the free text"
+  does not cover `deal-decline`: the field tables hide nothing there, a
+  decline is never part of a presentation, and its only reader is the
+  other party.
 - **The 96 KiB limit binds before the 8 KiB one.** Texts at their maximum
   in five languages give about 218 KiB of disclosures, so `quote-too-large`
   can come from long texts, not only from large `details`.
@@ -1227,9 +1251,12 @@ answer are added when the owner answers.
   record whose disclosures break the 96 KiB or 8 KiB limit. It also
   refuses a list longer than the record's number of hidden fields before
   it decodes any disclosure.
-- **A stored set of disclosures is never replaced.** A repeat of a record
-  with the same set, or with none, is filed as a repeat. A repeat with a
-  different set is refused, and the first set stays.
+- **A stored set of disclosures is never replaced.** A repeat with the
+  same set, or with none, is filed as a repeat. A repeat whose set fails
+  the strict reveal is refused. The stored set is never replaced. Only
+  one set can pass the strict reveal for a record, because each digest is
+  the SHA-256 of exactly one disclosure and no disclosure may be left
+  over.
 - **The backup import rebuilds plain values.** The import checks each
   disclosures row against its record, and builds the agreement's plain
   terms and each card's shown data from the signed records and the

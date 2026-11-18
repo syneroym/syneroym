@@ -143,6 +143,7 @@ Change docs: roym-agreements, roym-value-exchange (VX-1, VX-2, VX-6 to VX-9, VX-
 - `deal.present` and `deal.verify-presentation`. `quote.verify` and `agreement.verify` take disclosures.
 - Criteria: AG-17 to AG-21, AG-34, AG-38, AG-40. AG-33's check that `settlement_note` is hidden.
 - Demo: the plan decides. An end user sees only the size line on the quote form.
+- **Split (owner decision, 2026-11-18, [C2 plan](slice-c2-implementation-plan.md), Q1):** C2a (hide: digests in every signed deal record, disclosures in the card, checked, stored and backed up, the size line) and C2b (show: `deal.present`, `deal.verify-presentation` and the `*.verify` methods that take disclosures). Each is one PR. The owner accepted the plan's recommendation for Q2 to Q8 the same day.
 
 Change docs: roym-agreements, roym-value-exchange (VX-11).
 
