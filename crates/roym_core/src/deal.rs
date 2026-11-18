@@ -11,6 +11,7 @@ use crate::{
 };
 
 pub mod sd;
+pub use sd::{SignedCommitment, SignedTerms};
 pub mod transition;
 
 #[cfg(test)]
@@ -142,7 +143,6 @@ pub struct Commitment {
     pub extension: Option<ExtensionRef>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub after: Vec<String>,
-    // C2 changes where these fields sit, not whether they are present.
     pub description: LocalText,
     pub declared_value_minor: i64,
     #[serde(default)]

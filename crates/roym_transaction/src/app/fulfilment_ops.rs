@@ -11,8 +11,9 @@ use syneroym_app_host::{
 use syneroym_roym_core::{
     clock,
     deal::{CommitmentKind, LocalText, SettlementRole, transition::CommitmentState},
+    disclosure::{FULFILMENT_SET, conceal_hidden},
     envelope::Response,
-    fulfilment::{self, FulfilmentReceiptPayload},
+    fulfilment::{self, FulfilmentHidden, FulfilmentReceiptPayload},
     method::{self, Reply, VerifyInput},
     progress::AgreementEvent,
     record::{Envelope, RECORD_FULFILMENT_RECEIPT},
@@ -21,7 +22,7 @@ use syneroym_roym_core::{
 
 use super::{
     AGREEMENTS, AgreementRow, FULFILMENTS, FenceOutcome, FulfilmentsRow, HalfRecordedOutput,
-    LEDGER, SendState, get_row,
+    LEDGER, OutgoingCard, SendState, disclosures, get_row,
     ledger::{LedgerKind, LedgerRow},
     progress_ops, put_row, resolve_principal_and_owner, send_card_and_file,
 };
@@ -127,18 +128,7 @@ pub(crate) async fn sign_at<H: AppHost>(
         return already_recorded_fulfilment_response(host, deal_role, author_ctx).await;
     }
 
-    let payload = FulfilmentReceiptPayload {
-        agreement: input.agreement.clone(),
-        conversation: agr.conversation.clone(),
-        commitment_id: input.commitment_id.clone(),
-        counterparty_did: agr.counterparty_did.clone(),
-        quote_author_did: agr.quote_author_did.clone(),
-        role: settlement_role,
-        settlement_note: input.settlement_note,
-    };
-    if let Err(e) = payload.validate() {
-        return Err(Response::invalid_params(e.to_string()));
-    }
+    let (payload, disc) = prepare_fulfilment_payload(host, &input, &agr, settlement_role).await?;
 
     let (env_json, env, record_id) =
         sign_fulfilment_receipt(host, &input.agreement, &payload, principal).await?;
@@ -149,6 +139,10 @@ pub(crate) async fn sign_at<H: AppHost>(
         issuer: env.issuer,
         issued_at_secs: env.issued_at_secs,
     };
+
+    disclosures::store(host, &record_id, RECORD_FULFILMENT_RECEIPT, &disc, now)
+        .await
+        .map_err(Response::internal_error)?;
 
     let fence_claim = FulfilmentFenceClaim {
         agreement: &input.agreement,
@@ -173,16 +167,14 @@ pub(crate) async fn sign_at<H: AppHost>(
         quote_author_did: &agr.quote_author_did,
         now,
     };
-    record_and_send_fulfilment(
-        host,
-        &f_id,
-        fulfilments,
-        deal_role,
-        half,
-        &agr.conversation,
-        author_ctx,
-    )
-    .await
+    let send_ctx = FulfilmentSendContext { conversation: &agr.conversation, disclosures: &disc };
+    record_and_send_fulfilment(host, &f_id, fulfilments, deal_role, half, send_ctx, author_ctx)
+        .await
+}
+
+struct FulfilmentSendContext<'a> {
+    conversation: &'a str,
+    disclosures: &'a [String],
 }
 
 struct FulfilmentAuthorContext<'a> {
@@ -201,7 +193,7 @@ async fn record_and_send_fulfilment<H: AppHost>(
     mut fulfilments: FulfilmentsRow,
     deal_role: DealRole,
     half: ReceiptHalf,
-    conversation: &str,
+    send_ctx: FulfilmentSendContext<'_>,
     author_ctx: FulfilmentAuthorContext<'_>,
 ) -> Reply<HalfRecordedOutput> {
     let now = author_ctx.now;
@@ -215,9 +207,16 @@ async fn record_and_send_fulfilment<H: AppHost>(
         return Err(Response::internal_error(e));
     }
 
+    let card = OutgoingCard {
+        card_type: "fulfilment-receipt",
+        version: 1,
+        envelope: &half.envelope,
+        send: send_ctx.disclosures,
+        view: send_ctx.disclosures,
+    };
+
     let (message_id, send_state, _) =
-        send_card_and_file(host, conversation, "fulfilment-receipt", 1, &half.envelope, now, None)
-            .await;
+        send_card_and_file(host, send_ctx.conversation, &card, now, None).await;
 
     maybe_transition_author_fulfilment(host, &author_ctx).await;
 
@@ -227,6 +226,35 @@ async fn record_and_send_fulfilment<H: AppHost>(
         message_id: Some(message_id),
         state: send_state,
     })
+}
+
+async fn prepare_fulfilment_payload<H: AppHost>(
+    host: &H,
+    input: &FulfilmentSignInput,
+    agr: &AgreementRow,
+    settlement_role: SettlementRole,
+) -> Result<(FulfilmentReceiptPayload, Vec<String>), Response> {
+    let hidden = FulfilmentHidden { settlement_note: input.settlement_note.clone() };
+    if let Err(e) = hidden.validate() {
+        return Err(Response::invalid_params(e.to_string()));
+    }
+    let mut salts = disclosures::fresh_salts(host, 1).await?.into_iter();
+    let (sd, disc) = conceal_hidden(&hidden, &FULFILMENT_SET, &mut salts)
+        .map_err(|e| Response::invalid_params(e.to_string()))?;
+
+    let payload = FulfilmentReceiptPayload {
+        agreement: input.agreement.clone(),
+        conversation: agr.conversation.clone(),
+        commitment_id: input.commitment_id.clone(),
+        counterparty_did: agr.counterparty_did.clone(),
+        quote_author_did: agr.quote_author_did.clone(),
+        role: settlement_role,
+        sd,
+    };
+    if let Err(e) = payload.validate() {
+        return Err(Response::invalid_params(e.to_string()));
+    }
+    Ok((payload, disc))
 }
 
 async fn maybe_transition_author_fulfilment<H: AppHost>(
@@ -519,9 +547,19 @@ pub(crate) async fn ensure_fulfilment_recorded<H: AppHost>(
             state: SendState::AlreadyRecorded,
         });
     }
+    let stored_disc = disclosures::load(host, &half.record_id)
+        .await
+        .map_err(Response::internal_error)?
+        .unwrap_or_default();
+    let card = OutgoingCard {
+        card_type: "fulfilment-receipt",
+        version: 1,
+        envelope: &half.envelope,
+        send: &stored_disc,
+        view: &stored_disc,
+    };
     let (message_id, send_state, _) =
-        send_card_and_file(host, conversation, "fulfilment-receipt", 1, &half.envelope, now, None)
-            .await;
+        send_card_and_file(host, conversation, &card, now, None).await;
     Ok(HalfRecordedOutput {
         record_id: half.record_id.clone(),
         role: deal_role,

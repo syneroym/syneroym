@@ -38,6 +38,7 @@ pub const SECTION_LEDGER: &str = "ledger";
 pub const SECTION_AGREEMENT_PROGRESS: &str = "agreement_progress";
 pub const SECTION_PAYMENTS: &str = "payments";
 pub const SECTION_FULFILMENTS: &str = "fulfilments";
+pub const SECTION_DISCLOSURES: &str = "disclosures";
 pub const SECTION_CREDENTIALS: &str = "credentials";
 pub const SECTION_REVOCATIONS: &str = "revocations";
 pub const SECTION_DECISIONS: &str = "moderation_decisions";
@@ -461,6 +462,7 @@ mod tests {
             SECTION_AGREEMENT_PROGRESS,
             SECTION_PAYMENTS,
             SECTION_FULFILMENTS,
+            SECTION_DISCLOSURES,
         ] {
             assert!(
                 single_section_bundle(section).check_integrity().is_ok(),

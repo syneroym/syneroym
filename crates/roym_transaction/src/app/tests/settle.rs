@@ -11,7 +11,8 @@ use syneroym_roym_core::{
     progress::AgreementState,
     record::{Envelope, RECORD_AGREEMENT_RECEIPT, RECORD_FULFILMENT_RECEIPT, RecordDraft},
     transaction::{
-        AGREEMENT_RECEIPT_VERSION, AgreementReceiptPayload, DealRole, ReceiptHalf, derive_quote_id,
+        AGREEMENT_RECEIPT_VERSION, AgreementReceiptPayload, Answers, DealRole, ReceiptHalf,
+        SignedTerms, derive_quote_id,
     },
 };
 use z32;
@@ -84,7 +85,7 @@ fn make_receipt_half(
     signer: &Identity,
     role: DealRole,
     quote_record_id: &str,
-    terms: &DealTerms,
+    terms: &SignedTerms,
     counterparty_did: &str,
     quote_author_did: &str,
     now: u64,
@@ -114,6 +115,93 @@ fn make_receipt_half(
     let envelope_json = env.to_json().expect("envelope to json");
     let record_id = env.record_id().expect("record id");
     ReceiptHalf { record_id, envelope: envelope_json, issuer: signer_did, issued_at_secs: now }
+}
+
+async fn store_open_snapshot(
+    fix: &super::TestFixture,
+    quote_record_id: &str,
+    terms: &DealTerms,
+    counterparty_did: &str,
+    agreed_at: u64,
+) -> syneroym_roym_core::progress::AgreementProgressPayload {
+    let snap1_payload = syneroym_roym_core::progress::open(
+        quote_record_id.to_string(),
+        "conv_1".to_string(),
+        counterparty_did.to_string(),
+        fix.master_did.clone(),
+        terms,
+        None,
+    );
+    let (snap1_env, snap1_rec_id) =
+        progress::sign(&fix.host, &snap1_payload).await.expect("sign snapshot 1");
+    let snap_key = snapshot_id(quote_record_id, 1);
+    let snap_row = SnapshotRow {
+        seq: 1,
+        agreement: quote_record_id.to_string(),
+        conversation: "conv_1".to_string(),
+        snapshot: snap1_payload.clone(),
+        envelope: snap1_env,
+        record_id: snap1_rec_id,
+        message_id: None,
+        stored_at_secs: agreed_at,
+    };
+    put_row(&fix.host, AGREEMENT_PROGRESS, &snap_key, &snap_row).await.expect("put snapshot row");
+    snap1_payload
+}
+
+fn incoming_card_row(
+    message_id: &str,
+    conversation: &str,
+    card_type: &str,
+    version: u32,
+    issuer: &str,
+    now: u64,
+) -> CardRow {
+    CardRow {
+        message_id: message_id.to_string(),
+        conversation: conversation.to_string(),
+        direction: Direction::Incoming,
+        sender_timestamp_ms: (now * 1000) as i64,
+        card_type: card_type.to_string(),
+        version,
+        known: true,
+        verified: true,
+        expired: false,
+        repeat: false,
+        reason: None,
+        issuer: Some(issuer.to_string()),
+        record_id: None,
+        revocation_status: None,
+        data: None,
+        stored_at_secs: now,
+        declined: None,
+        deal_state: None,
+        agreement_payee: None,
+        agreement_payment_methods: Vec::new(),
+        version_count: None,
+    }
+}
+
+fn make_signed_fulfilment_envelope(
+    counterparty: &Identity,
+    cp_did: &str,
+    agreement: &str,
+    payload: &syneroym_roym_core::fulfilment::FulfilmentReceiptPayload,
+    issued_at_secs: u64,
+) -> String {
+    let draft = RecordDraft {
+        version: FULFILMENT_RECEIPT_VERSION,
+        record_type: RECORD_FULFILMENT_RECEIPT.to_string(),
+        subject: agreement.to_string(),
+        payload: serde_json::to_value(payload).expect("payload to value"),
+        expires_at_secs: None,
+        supersedes: None,
+    };
+    let (mut env, bytes) = Envelope::unsigned(draft, cp_did.to_string(), None, issued_at_secs)
+        .expect("draft envelope");
+    let sig = counterparty.sign(&bytes).to_bytes();
+    env.attach_signature(z32::encode(&sig)).expect("attach signature");
+    env.to_json().expect("envelope to json")
 }
 
 async fn setup_agreed_deal(
@@ -149,11 +237,30 @@ async fn setup_agreed_deal(
         quote_expires_at_secs: agreed_at + 3600,
     };
 
+    let plain = syneroym_roym_core::testing::sd::PlainQuote {
+        quote_id: quote_id.clone(),
+        conversation: "conv_1".to_string(),
+        sequence: 1,
+        answers: Answers::Enquiry { record_id: "rec_enq_1".to_string() },
+        counterparty_did: counterparty_did.clone(),
+        terms: terms.clone(),
+    };
+    let (payload, disclosures) = syneroym_roym_core::testing::sd::conceal_quote(plain, 1);
+    crate::app::disclosures::store(
+        &fix.host,
+        &quote_record_id,
+        syneroym_roym_core::record::RECORD_QUOTE,
+        &disclosures,
+        agreed_at,
+    )
+    .await
+    .unwrap();
+
     let author_half = make_receipt_half(
         &fix.master,
         DealRole::QuoteAuthor,
         &quote_record_id,
-        &terms,
+        &payload.terms,
         &counterparty_did,
         &fix.master_did,
         agreed_at,
@@ -162,36 +269,14 @@ async fn setup_agreed_deal(
         counterparty,
         DealRole::Counterparty,
         &quote_record_id,
-        &terms,
+        &payload.terms,
         &counterparty_did,
         &fix.master_did,
         agreed_at,
     );
 
-    let snap1_payload = syneroym_roym_core::progress::open(
-        quote_record_id.clone(),
-        "conv_1".to_string(),
-        counterparty_did.clone(),
-        fix.master_did.clone(),
-        &terms,
-        None,
-    );
-
-    let (snap1_env, snap1_rec_id) =
-        progress::sign(&fix.host, &snap1_payload).await.expect("sign snapshot 1");
-
-    let snap_key = snapshot_id(&quote_record_id, 1);
-    let snap_row = SnapshotRow {
-        seq: 1,
-        agreement: quote_record_id.clone(),
-        conversation: "conv_1".to_string(),
-        snapshot: snap1_payload.clone(),
-        envelope: snap1_env,
-        record_id: snap1_rec_id,
-        message_id: None,
-        stored_at_secs: agreed_at,
-    };
-    put_row(&fix.host, AGREEMENT_PROGRESS, &snap_key, &snap_row).await.expect("put snapshot row");
+    let snap1_payload =
+        store_open_snapshot(fix, &quote_record_id, &terms, &counterparty_did, agreed_at).await;
 
     let agr_row = AgreementRow {
         quote_record_id: quote_record_id.clone(),
@@ -241,7 +326,7 @@ async fn receiver_half_settles_with_a_settlement_note() {
     // Counterparty receiver delivers fulfilment card with a settlement note
     let cp_did = substrate::derive_did_key(&counterparty.public_key());
     let note_text = "Piano was tuned excellently and sounds wonderful";
-    let rc_payload = FulfilmentReceiptPayload {
+    let plain_fulfilment = syneroym_roym_core::testing::sd::PlainFulfilment {
         agreement: agreement.clone(),
         conversation: "conv_1".to_string(),
         commitment_id: "c1".to_string(),
@@ -250,48 +335,30 @@ async fn receiver_half_settles_with_a_settlement_note() {
         role: SettlementRole::Receiver,
         settlement_note: Some(sample_note(note_text)),
     };
-    let draft = RecordDraft {
-        version: FULFILMENT_RECEIPT_VERSION,
-        record_type: RECORD_FULFILMENT_RECEIPT.to_string(),
-        subject: agreement.clone(),
-        payload: serde_json::to_value(&rc_payload).expect("payload to value"),
-        expires_at_secs: None,
-        supersedes: None,
-    };
-    let (mut env, bytes) =
-        Envelope::unsigned(draft, cp_did.clone(), None, agreed_at + 20).expect("draft envelope");
-    let sig = counterparty.sign(&bytes).to_bytes();
-    env.attach_signature(z32::encode(&sig)).expect("attach signature");
-    let envelope_json = env.to_json().expect("envelope to json");
+    let (rc_payload, rc_disclosures) =
+        syneroym_roym_core::testing::sd::conceal_fulfilment(plain_fulfilment, 1);
+    let envelope_json = make_signed_fulfilment_envelope(
+        &counterparty,
+        &cp_did,
+        &agreement,
+        &rc_payload,
+        agreed_at + 20,
+    );
 
-    let card_row = CardRow {
-        message_id: "msg_fulfil_rc".to_string(),
-        conversation: "conv_1".to_string(),
-        direction: Direction::Incoming,
-        sender_timestamp_ms: ((agreed_at + 20) * 1000) as i64,
-        card_type: RECORD_FULFILMENT_RECEIPT.to_string(),
-        version: FULFILMENT_RECEIPT_VERSION,
-        known: true,
-        verified: true,
-        expired: false,
-        repeat: false,
-        reason: None,
-        issuer: Some(cp_did.clone()),
-        record_id: None,
-        revocation_status: None,
-        data: None,
-        stored_at_secs: agreed_at + 20,
-        declined: None,
-        deal_state: None,
-        agreement_payee: None,
-        agreement_payment_methods: Vec::new(),
-        version_count: None,
-    };
+    let card_row = incoming_card_row(
+        "msg_fulfil_rc",
+        "conv_1",
+        RECORD_FULFILMENT_RECEIPT,
+        FULFILMENT_RECEIPT_VERSION,
+        &cp_did,
+        agreed_at + 20,
+    );
 
     let file_res = file_fulfilment_card(
         &fix.host,
         card_row,
         &envelope_json,
+        &rc_disclosures,
         "conv_1",
         agreed_at + 20,
         &fix.master_did,
@@ -306,9 +373,17 @@ async fn receiver_half_settles_with_a_settlement_note() {
     let f_row: Option<FulfilmentsRow> = get_row(&fix.host, FULFILMENTS, &f_id).await.unwrap();
     assert!(f_row.is_some());
     let r_half = f_row.unwrap().counterparty.expect("counterparty half stored");
+    let disc = crate::app::disclosures::load(&fix.host, &r_half.record_id).await.unwrap().unwrap();
     let env_parsed = Envelope::from_json(&r_half.envelope).unwrap();
     let parsed: FulfilmentReceiptPayload = serde_json::from_value(env_parsed.payload).unwrap();
-    assert_eq!(parsed.settlement_note.map(|n| n.text), Some(note_text.to_string()));
+    let revealed: syneroym_roym_core::fulfilment::FulfilmentHidden =
+        syneroym_roym_core::disclosure::reveal_hidden_strict(
+            &parsed.sd,
+            &syneroym_roym_core::disclosure::FULFILMENT_SET,
+            &disc,
+        )
+        .expect("reveal fulfilment");
+    assert_eq!(revealed.settlement_note.map(|n| n.text), Some(note_text.to_string()));
 
     // Progress snapshot advances to Fulfilled and Closed
     let prog = progress_ops::progress_at(
@@ -472,8 +547,8 @@ fn sign_bad_fulfilment_env(
     master_did: &str,
     role: SettlementRole,
     at: u64,
-) -> String {
-    let payload = FulfilmentReceiptPayload {
+) -> (String, Vec<String>) {
+    let plain = syneroym_roym_core::testing::sd::PlainFulfilment {
         agreement: agreement.to_string(),
         conversation: "conv_1".to_string(),
         commitment_id: "c1".to_string(),
@@ -482,6 +557,7 @@ fn sign_bad_fulfilment_env(
         role,
         settlement_note: None,
     };
+    let (payload, disclosures) = syneroym_roym_core::testing::sd::conceal_fulfilment(plain, 1);
     let draft = RecordDraft {
         version: FULFILMENT_RECEIPT_VERSION,
         record_type: RECORD_FULFILMENT_RECEIPT.to_string(),
@@ -494,7 +570,7 @@ fn sign_bad_fulfilment_env(
         Envelope::unsigned(draft, signer_did.to_string(), None, at).expect("draft envelope");
     let sig = signer.sign(&bytes).to_bytes();
     env.attach_signature(z32::encode(&sig)).expect("attach signature");
-    env.to_json().expect("envelope to json")
+    (env.to_json().expect("envelope to json"), disclosures)
 }
 
 #[tokio::test]
@@ -511,7 +587,7 @@ async fn a_half_from_the_wrong_party_is_not_filed() {
     let cp_did = substrate::derive_did_key(&counterparty.public_key());
 
     // 1. A stranger (neither author nor counterparty) signs a fulfilment card
-    let bad_env_json = sign_bad_fulfilment_env(
+    let (bad_env_json, bad_disc) = sign_bad_fulfilment_env(
         &stranger,
         &stranger_did,
         &agreement,
@@ -526,6 +602,7 @@ async fn a_half_from_the_wrong_party_is_not_filed() {
         &fix.host,
         card_row,
         &bad_env_json,
+        &bad_disc,
         "conv_1",
         agreed_at + 20,
         &fix.master_did,
@@ -545,7 +622,7 @@ async fn a_half_from_the_wrong_party_is_not_filed() {
 
     // 2. Counterparty signs a fulfilment card claiming Giver role (when author is
     //    giver)
-    let bad_role_env_json = sign_bad_fulfilment_env(
+    let (bad_role_env_json, bad_role_disc) = sign_bad_fulfilment_env(
         &counterparty,
         &cp_did,
         &agreement,
@@ -560,6 +637,7 @@ async fn a_half_from_the_wrong_party_is_not_filed() {
         &fix.host,
         card_row2,
         &bad_role_env_json,
+        &bad_role_disc,
         "conv_1",
         agreed_at + 25,
         &fix.master_did,

@@ -6,10 +6,20 @@ async fn setup_quote_for_decline_filing(
     f: &TestFixture,
     cp: &Identity,
     now: u64,
-) -> (String, QuotePayload) {
+) -> (String, QuotePayload, DealTerms) {
     let cp_did = substrate::derive_did_key(&cp.public_key());
-    let (q_json, q_rec_id, quote) = make_quote_envelope(&f.master, &cp_did, now);
+    let (q_json, q_rec_id, quote, terms, disclosures) =
+        make_quote_envelope(&f.master, &cp_did, now);
     put_bytes(&f.host, QUOTE_HISTORY, &q_rec_id, q_json.as_bytes()).await.unwrap();
+    crate::app::disclosures::store(
+        &f.host,
+        &q_rec_id,
+        syneroym_roym_core::record::RECORD_QUOTE,
+        &disclosures,
+        now,
+    )
+    .await
+    .unwrap();
 
     let ptr = RecordPointerRow {
         envelope: q_json,
@@ -28,7 +38,7 @@ async fn setup_quote_for_decline_filing(
         decline_note: None,
     };
     put_row(&f.host, QUOTES, &quote.quote_id, &ptr).await.unwrap();
-    (q_rec_id, quote)
+    (q_rec_id, quote, terms)
 }
 
 #[tokio::test]
@@ -37,7 +47,7 @@ async fn decline_filing_refuses_third_party_signer() {
     let now = f.host.now();
     let third_party = Identity::generate().expect("third_party");
     let cp = Identity::generate().expect("cp");
-    let (q_rec_id, quote) = setup_quote_for_decline_filing(&f, &cp, now).await;
+    let (q_rec_id, quote, _terms) = setup_quote_for_decline_filing(&f, &cp, now).await;
 
     let (bad_dec_json, _) =
         make_decline_envelope(&third_party, &q_rec_id, &quote.quote_id, "conv_1", now);
@@ -88,7 +98,7 @@ async fn decline_filing_refuses_mismatched_conversation() {
     let f = fixture();
     let now = f.host.now();
     let cp = Identity::generate().expect("cp");
-    let (q_rec_id, quote) = setup_quote_for_decline_filing(&f, &cp, now).await;
+    let (q_rec_id, quote, _terms) = setup_quote_for_decline_filing(&f, &cp, now).await;
 
     let (bad_conv_json, _) =
         make_decline_envelope(&cp, &q_rec_id, &quote.quote_id, "other_conv", now);
@@ -138,7 +148,7 @@ async fn decline_filing_refuses_mismatched_deal() {
     let f = fixture();
     let now = f.host.now();
     let cp = Identity::generate().expect("cp");
-    let (q_rec_id, _quote) = setup_quote_for_decline_filing(&f, &cp, now).await;
+    let (q_rec_id, _quote, _terms) = setup_quote_for_decline_filing(&f, &cp, now).await;
 
     let (bad_deal_json, _) = make_decline_envelope(&cp, &q_rec_id, "wrong_quote_id", "conv_1", now);
     let bad_deal_body =
@@ -188,7 +198,7 @@ async fn decline_filing_refuses_when_unrefused_half_exists() {
     let now = f.host.now();
     let cp = Identity::generate().expect("cp");
     let cp_did = substrate::derive_did_key(&cp.public_key());
-    let (q_rec_id, quote) = setup_quote_for_decline_filing(&f, &cp, now).await;
+    let (q_rec_id, quote, terms) = setup_quote_for_decline_filing(&f, &cp, now).await;
 
     let agr_row = AgreementRow {
         quote_record_id: q_rec_id.clone(),
@@ -196,7 +206,7 @@ async fn decline_filing_refuses_when_unrefused_half_exists() {
         conversation: "conv_1".to_string(),
         counterparty_did: cp_did.clone(),
         quote_author_did: f.master_did.clone(),
-        terms: quote.terms.clone(),
+        terms,
         agreed_at_secs: None,
         counterparty: Some(ReceiptHalf {
             record_id: "rec_cp_half".to_string(),
@@ -262,7 +272,7 @@ async fn decline_filing_retries_on_write_failure() {
     let f = fixture();
     let now = f.host.now();
     let cp = Identity::generate().expect("cp");
-    let (q_rec_id, quote) = setup_quote_for_decline_filing(&f, &cp, now).await;
+    let (q_rec_id, quote, _terms) = setup_quote_for_decline_filing(&f, &cp, now).await;
 
     let (dec_json, _) = make_decline_envelope(&cp, &q_rec_id, &quote.quote_id, "conv_1", now);
     let dec_body = card::card_body(RECORD_DEAL_DECLINE, DEAL_DECLINE_VERSION, &dec_json, &[])

@@ -1,3 +1,5 @@
+mod disclosures;
+
 use std::collections::{BTreeMap, HashMap};
 
 use serde_json::json;
@@ -23,9 +25,8 @@ use crate::app::{
     tests::fixture,
 };
 
-fn sample_quote_context(quote_rec_id: &str) -> QuotesByRecordId {
-    let mut quotes = HashMap::new();
-    let terms = DealTerms {
+fn sample_deal_terms() -> DealTerms {
+    DealTerms {
         currency: "EUR".to_string(),
         commitments: vec![
             Commitment {
@@ -81,21 +82,25 @@ fn sample_quote_context(quote_rec_id: &str) -> QuotesByRecordId {
         refund_terms: LocalText::plain(LangTag::parse_canonical("en").expect("lang"), "Refund"),
         dispute_path: LocalText::plain(LangTag::parse_canonical("en").expect("lang"), "Dispute"),
         quote_expires_at_secs: 10000,
+    }
+}
+
+fn sample_quote_context(quote_rec_id: &str) -> QuotesByRecordId {
+    let mut quotes = HashMap::new();
+    let terms = sample_deal_terms();
+    let plain = syneroym_roym_core::testing::sd::PlainQuote {
+        quote_id: "quote_1".to_string(),
+        conversation: "conv_1".to_string(),
+        sequence: 1,
+        counterparty_did: "did:key:cp".to_string(),
+        terms,
+        answers: Answers::Enquiry { record_id: "enq_1".to_string() },
     };
+    let (payload, _disclosures) = syneroym_roym_core::testing::sd::conceal_quote(plain, 1);
 
     quotes.insert(
         quote_rec_id.to_string(),
-        ImportedQuote {
-            quote_author_did: "did:key:author".to_string(),
-            payload: QuotePayload {
-                quote_id: "quote_1".to_string(),
-                conversation: "conv_1".to_string(),
-                sequence: 1,
-                counterparty_did: "did:key:cp".to_string(),
-                terms,
-                answers: Answers::Enquiry { record_id: "enq_1".to_string() },
-            },
-        },
+        ImportedQuote { quote_author_did: "did:key:author".to_string(), payload },
     );
     quotes
 }
@@ -490,14 +495,14 @@ fn refused_row_refused_on_unheld_quote_or_counterparty_half() {
     );
     assert!(err3.unwrap_err().error.unwrap().message.contains("names unheld counterparty half"));
 
-    let sample_quote = quotes.get("rec_quote_1").expect("quote");
+    let _sample_quote = quotes.get("rec_quote_1").expect("quote");
     let held_agreement = AgreementRow {
         quote_record_id: "rec_quote_1".to_string(),
         quote_id: "quote_1".to_string(),
         conversation: "conv_1".to_string(),
         counterparty_did: "did:key:cp".to_string(),
         quote_author_did: "did:key:author".to_string(),
-        terms: sample_quote.payload.terms.clone(),
+        terms: sample_deal_terms(),
         state: None,
         state_reason: None,
         cancel_reason: None,
@@ -564,14 +569,15 @@ fn make_test_quote_envelope(
         dispute_path: LocalText::plain(LangTag::parse_canonical("en").expect("lang"), "Dispute"),
         quote_expires_at_secs: now + 3600,
     };
-    let payload = QuotePayload {
+    let plain = syneroym_roym_core::testing::sd::PlainQuote {
         quote_id,
         conversation: "conv_1".to_string(),
         sequence: 1,
+        answers: Answers::Enquiry { record_id: "rec_enq_1".to_string() },
         counterparty_did: cp_did.to_string(),
         terms,
-        answers: Answers::Enquiry { record_id: "rec_enq_1".to_string() },
     };
+    let (payload, _disclosures) = syneroym_roym_core::testing::sd::conceal_quote(plain, 1);
     let draft = RecordDraft {
         version: QUOTE_VERSION,
         record_type: "quote".to_string(),

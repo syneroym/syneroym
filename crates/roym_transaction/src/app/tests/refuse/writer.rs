@@ -7,9 +7,7 @@ use syneroym_roym_core::{
     lang::LangTag,
     progress::{self, AgreementState, RECORD_AGREEMENT_PROGRESS},
     record::{Envelope, RECORD_QUOTE, RecordDraft},
-    transaction::{
-        Answers, QUOTE_VERSION, QuotePayload, ReceiptHalf, derive_quote_id, verify_quote,
-    },
+    transaction::{Answers, QUOTE_VERSION, ReceiptHalf, derive_quote_id, verify_quote},
 };
 
 use super::helpers::{build_and_sign_quote, make_counterparty_receipt, slot_commitment};
@@ -21,6 +19,7 @@ use crate::app::{
         self, CountersignRow, DecisionRow, DecisionState, RefusedRow, SnapshotRow, countersign_id,
         decision_id, refused_id, snapshot_id,
     },
+    disclosures::HeldQuote,
     get_row,
     hold::{HoldLedgerRow, hold_id},
     put_bytes, put_row,
@@ -115,10 +114,19 @@ async fn two_syncs_send_one_refusal() {
         build_and_sign_quote(&fix.master, &counterparty_did, 1, None, now + 300, now);
 
     put_bytes(&fix.host, QUOTE_HISTORY, &q_rec_id, q_env.as_bytes()).await.unwrap();
+    crate::app::disclosures::store(
+        &fix.host,
+        &q_rec_id,
+        RECORD_QUOTE,
+        &quote_payload.disclosures,
+        now,
+    )
+    .await
+    .unwrap();
     let ptr = RecordPointerRow {
         envelope: q_env,
         record_id: q_rec_id.clone(),
-        id: quote_payload.quote_id.clone(),
+        id: quote_payload.signed.quote_id.clone(),
         conversation: "conv_1".to_string(),
         sequence: 1,
         issuer: fix.master_did.clone(),
@@ -131,13 +139,13 @@ async fn two_syncs_send_one_refusal() {
         declined_at_secs: None,
         decline_note: None,
     };
-    put_row(&fix.host, QUOTES, &quote_payload.quote_id, &ptr).await.unwrap();
+    put_row(&fix.host, QUOTES, &quote_payload.signed.quote_id, &ptr).await.unwrap();
 
     let (cp_rec_id, cp_env) = make_counterparty_receipt(
         &counterparty,
         &fix.master_did,
         &q_rec_id,
-        &quote_payload.terms,
+        &quote_payload.signed.terms,
         now,
     );
     let card_body = card::card_body(
@@ -181,7 +189,7 @@ async fn two_syncs_send_one_refusal() {
     assert_eq!(ref_row.unwrap().code, "quote-expired");
 
     // Decision row was NOT created
-    let dec_key = decision_id(&quote_payload.quote_id);
+    let dec_key = decision_id(&quote_payload.signed.quote_id);
     let dec: Option<DecisionRow> = get_row(&fix.host, LEDGER, &dec_key).await.expect("get dec");
     assert!(dec.is_none());
 
@@ -213,13 +221,13 @@ async fn a_countersigned_half_before_expiry_still_forms_the_agreement() {
         &counterparty,
         &fix.master_did,
         &q_rec_id,
-        &quote_payload.terms,
+        &quote_payload.signed.terms,
         now + 10,
     );
 
     let mut row = AgreementRow {
         quote_record_id: q_rec_id.clone(),
-        quote_id: quote_payload.quote_id.clone(),
+        quote_id: quote_payload.signed.quote_id.clone(),
         conversation: "conv_1".to_string(),
         counterparty_did: counterparty_did.clone(),
         quote_author_did: fix.master_did.clone(),
@@ -257,12 +265,12 @@ async fn a_countersigned_half_before_expiry_still_forms_the_agreement() {
     put_row(&fix.host, LEDGER, &cs_key, &cs_row).await.expect("put cs");
 
     // Decision fence exists in deciding state
-    let dec_key = decision_id(&quote_payload.quote_id);
+    let dec_key = decision_id(&quote_payload.signed.quote_id);
     let dec_fence = DecisionRow {
         kind: "decision".to_string(),
         state: DecisionState::Deciding,
         agreement: q_rec_id.clone(),
-        quote_id: quote_payload.quote_id.clone(),
+        quote_id: quote_payload.signed.quote_id.clone(),
         reason: None,
         created_at_secs: now + 20,
     };
@@ -315,35 +323,35 @@ async fn store_sample_slot_quote(
     author: &Identity,
     author_did: &str,
     now: u64,
-) -> (QuotePayload, String) {
+) -> (HeldQuote, String) {
     let (slot_comm, _) = slot_commitment("c1", "listing_99", now + 1000, now + 4600);
-    let quote_payload = QuotePayload {
-        quote_id: derive_quote_id("conv_1", author_did, 1).expect("quote id"),
+    let quote_id = derive_quote_id("conv_1", author_did, 1).expect("quote id");
+    let terms = DealTerms {
+        currency: "EUR".to_string(),
+        commitments: vec![slot_comm],
+        home_exchange: None,
+        listing_id: None,
+        scope: LocalText::plain(LangTag::parse_canonical("en").expect("lang"), "Lesson"),
+        cancellation_terms: LocalText::plain(LangTag::parse_canonical("en").expect("lang"), "24h"),
+        refund_terms: LocalText::plain(LangTag::parse_canonical("en").expect("lang"), "Full"),
+        dispute_path: LocalText::plain(LangTag::parse_canonical("en").expect("lang"), "Arb"),
+        quote_expires_at_secs: now + 3600,
+    };
+    let plain = syneroym_roym_core::testing::sd::PlainQuote {
+        quote_id,
         conversation: "conv_1".to_string(),
         sequence: 1,
-        counterparty_did: fix.master_did.clone(),
-        terms: DealTerms {
-            currency: "EUR".to_string(),
-            commitments: vec![slot_comm],
-            home_exchange: None,
-            listing_id: None,
-            scope: LocalText::plain(LangTag::parse_canonical("en").expect("lang"), "Lesson"),
-            cancellation_terms: LocalText::plain(
-                LangTag::parse_canonical("en").expect("lang"),
-                "24h",
-            ),
-            refund_terms: LocalText::plain(LangTag::parse_canonical("en").expect("lang"), "Full"),
-            dispute_path: LocalText::plain(LangTag::parse_canonical("en").expect("lang"), "Arb"),
-            quote_expires_at_secs: now + 3600,
-        },
         answers: Answers::Enquiry { record_id: "rec_enq_1".to_string() },
+        counterparty_did: fix.master_did.clone(),
+        terms: terms.clone(),
     };
+    let (payload, disclosures) = syneroym_roym_core::testing::sd::conceal_quote(plain, 1);
 
     let draft = RecordDraft {
         version: QUOTE_VERSION,
         record_type: RECORD_QUOTE.to_string(),
         subject: "conv_1".to_string(),
-        payload: serde_json::to_value(&quote_payload).expect("serialize quote"),
+        payload: serde_json::to_value(&payload).expect("serialize quote"),
         expires_at_secs: Some(now + 3600),
         supersedes: None,
     };
@@ -355,10 +363,14 @@ async fn store_sample_slot_quote(
     let env_json = env.to_json().expect("env json");
 
     let v_q = verify_quote(&env_json, now);
-    store_received_quote(&fix.host, &env_json, &v_q, &quote_payload, now, &fix.master_did)
+    store_received_quote(&fix.host, &env_json, &v_q, &payload, now, &fix.master_did)
         .await
         .expect("store quote");
-    (quote_payload, q_rec_id)
+    crate::app::disclosures::store(&fix.host, &q_rec_id, RECORD_QUOTE, &disclosures, now)
+        .await
+        .expect("store disclosures");
+    let held = HeldQuote { verdict: v_q, signed: payload, terms, disclosures };
+    (held, q_rec_id)
 }
 
 #[tokio::test]
@@ -424,10 +436,17 @@ async fn counterparty_releases_holds_on_refusal_snapshot() {
         agreement_payment_methods: vec![],
     };
 
-    let res =
-        file_progress_card(&fix.host, card_row, &snap_json, "conv_1", now + 20, &fix.master_did)
-            .await
-            .expect("file progress card");
+    let res = file_progress_card(
+        &fix.host,
+        card_row,
+        &snap_json,
+        &[],
+        "conv_1",
+        now + 20,
+        &fix.master_did,
+    )
+    .await
+    .expect("file progress card");
     assert!(res.filed);
 
     // Verify hold is released
@@ -451,12 +470,17 @@ async fn acceptance_when_quote_already_agreed_is_refused() {
     let (quote_payload, q_rec_id, _) =
         build_and_sign_quote(&fix.master, &cp_did, 1, None, now + 3600, now);
 
-    let (cp_rec_id, cp_env) =
-        make_counterparty_receipt(&cp, &fix.master_did, &q_rec_id, &quote_payload.terms, now);
+    let (cp_rec_id, cp_env) = make_counterparty_receipt(
+        &cp,
+        &fix.master_did,
+        &q_rec_id,
+        &quote_payload.signed.terms,
+        now,
+    );
 
     let mut row = AgreementRow {
         quote_record_id: q_rec_id.clone(),
-        quote_id: quote_payload.quote_id.clone(),
+        quote_id: quote_payload.signed.quote_id.clone(),
         conversation: "conv_1".to_string(),
         counterparty_did: cp_did.clone(),
         quote_author_did: fix.master_did.clone(),
@@ -478,12 +502,12 @@ async fn acceptance_when_quote_already_agreed_is_refused() {
     };
 
     // Another agreement was already formed for this quote_id
-    let dec_key = decision_id(&quote_payload.quote_id);
+    let dec_key = decision_id(&quote_payload.signed.quote_id);
     let existing_dec = DecisionRow {
         kind: "decision".to_string(),
         state: DecisionState::Agreed,
         agreement: "other_quote_record_id".to_string(),
-        quote_id: quote_payload.quote_id.clone(),
+        quote_id: quote_payload.signed.quote_id.clone(),
         reason: None,
         created_at_secs: now - 10,
     };
@@ -527,11 +551,11 @@ async fn refusal_crash_on_refused_write_resends_no_second_snapshot() {
 
     // CP accepts quote v1
     let (cp_rec_id, cp_env) =
-        make_counterparty_receipt(&cp, &fix.master_did, &q_rec_id, &quote_v1.terms, now);
+        make_counterparty_receipt(&cp, &fix.master_did, &q_rec_id, &quote_v1.signed.terms, now);
 
     let mut row = AgreementRow {
         quote_record_id: q_rec_id.clone(),
-        quote_id: quote_v1.quote_id.clone(),
+        quote_id: quote_v1.signed.quote_id.clone(),
         conversation: "conv_1".to_string(),
         counterparty_did: cp_did.clone(),
         quote_author_did: fix.master_did.clone(),
@@ -555,7 +579,7 @@ async fn refusal_crash_on_refused_write_resends_no_second_snapshot() {
     // QUOTES pointer points to a newer record_id (superseding quote v1)
     let ptr = RecordPointerRow {
         envelope: "".to_string(),
-        id: quote_v1.quote_id.clone(),
+        id: quote_v1.signed.quote_id.clone(),
         record_id: "rec_quote_v2".to_string(),
         conversation: "conv_1".to_string(),
         sequence: 2,
@@ -569,7 +593,7 @@ async fn refusal_crash_on_refused_write_resends_no_second_snapshot() {
         declined_at_secs: None,
         decline_note: None,
     };
-    put_row(&fix.host, QUOTES, &quote_v1.quote_id, &ptr).await.expect("put ptr");
+    put_row(&fix.host, QUOTES, &quote_v1.signed.quote_id, &ptr).await.expect("put ptr");
 
     // Injected crash on write to refused: in ledger
     let ref_key = refused_id(&cp_rec_id);

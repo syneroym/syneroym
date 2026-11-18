@@ -41,18 +41,21 @@ pub enum PaymentError {
     ReferenceTooLong,
     #[error("note: {0}")]
     Note(#[from] TranslationError),
+    #[error("selective disclosure shape invalid: {0}")]
+    SdShape(String),
 }
 
 /// A request to be paid for a currency commitment.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PaymentRequestPayload {
     pub agreement: String,
     pub conversation: String,
     pub commitment_id: String,
     pub quote_author_did: String,
     pub counterparty_did: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub note: Option<LocalText>,
+    #[serde(rename = "_sd")]
+    pub sd: Vec<String>,
 }
 
 impl PaymentRequestPayload {
@@ -75,9 +78,8 @@ impl PaymentRequestPayload {
         if self.commitment_id.is_empty() {
             return Err(PaymentError::CommitmentIdEmpty);
         }
-        if let Some(note) = &self.note {
-            note.validate("note", MAX_NOTE_LEN)?;
-        }
+        crate::disclosure::check_sd_shape(&self.sd, 1, "payment-request")
+            .map_err(PaymentError::SdShape)?;
         Ok(())
     }
 }
@@ -99,6 +101,7 @@ impl PaymentRequestHidden {
 
 /// One party's statement about a payment for a specific commitment.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PaymentAcknowledgementPayload {
     pub agreement: String,
     pub conversation: String,
@@ -107,12 +110,8 @@ pub struct PaymentAcknowledgementPayload {
     pub counterparty_did: String,
     pub role: SettlementRole,
     pub observed_at_secs: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub method: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reference: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub settlement_note: Option<LocalText>,
+    #[serde(rename = "_sd")]
+    pub sd: Vec<String>,
 }
 
 impl PaymentAcknowledgementPayload {
@@ -138,17 +137,8 @@ impl PaymentAcknowledgementPayload {
         if self.observed_at_secs == 0 {
             return Err(PaymentError::ZeroObservedTime);
         }
-        if let Some(m) = &self.method
-            && !listing::valid_token(m, MAX_PAYMENT_METHOD_LEN)
-        {
-            return Err(PaymentError::MethodShape(m.clone()));
-        }
-        if self.reference.as_ref().is_some_and(|r| r.len() > MAX_REFERENCE_LEN) {
-            return Err(PaymentError::ReferenceTooLong);
-        }
-        if let Some(note) = &self.settlement_note {
-            note.validate("settlement_note", MAX_SETTLEMENT_NOTE_LEN)?;
-        }
+        crate::disclosure::check_sd_shape(&self.sd, 3, "payment-acknowledgement")
+            .map_err(PaymentError::SdShape)?;
         Ok(())
     }
 }

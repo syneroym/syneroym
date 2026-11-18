@@ -6,12 +6,9 @@ use super::*;
 use crate::{
     deal::{
         Commitment, CommitmentKind, Details, DetailsExtra, ExtensionRef, LocalText, ResourceKind,
-        TextTranslation, TimeWindow,
+        SettlementRole, TextTranslation, TimeWindow,
     },
-    disclosure::conceal_hidden,
-    fulfilment::FulfilmentHidden,
     lang::LangTag,
-    payment::{PaymentAckHidden, PaymentRequestHidden},
     transaction::DealRole,
 };
 
@@ -108,31 +105,62 @@ fn no_signed_payload_holds_a_hidden_value() {
     assert!(!signed_terms_canonical.contains(&track_end_str));
 
     // Settlement payloads
-    let pay_req_hidden =
-        PaymentRequestHidden { note: Some(LocalText::plain(tag("en"), "note-marker-73")) };
-    let (req_sd, _) =
-        conceal_hidden(&pay_req_hidden, &crate::disclosure::PAYMENT_REQUEST_SET, &mut salts)
+    let pay_req = crate::testing::sd::conceal_payment_request(
+        crate::testing::sd::PlainPaymentRequest {
+            agreement: "rec_agr".to_string(),
+            conversation: "conv".to_string(),
+            commitment_id: "c1".to_string(),
+            quote_author_did: "did:key:zAuthor".to_string(),
+            counterparty_did: "did:key:zCounterparty".to_string(),
+            note: Some(LocalText::plain(tag("en"), "note-marker-73")),
+        },
+        50,
+    )
+    .0;
+    let req_canon =
+        serde_json::to_string(&canonicalize_json_value(&serde_json::to_value(&pay_req).unwrap()))
             .unwrap();
-    let req_canon = serde_json::to_string(&json!({ "_sd": req_sd })).unwrap();
     assert!(!req_canon.contains("note-marker-73"));
 
-    let pay_ack_hidden = PaymentAckHidden {
-        method: Some("method-marker".to_string()),
-        reference: Some("ref-marker-74".to_string()),
-        settlement_note: Some(LocalText::plain(tag("en"), "note-marker-73")),
-    };
-    let (ack_sd, _) =
-        conceal_hidden(&pay_ack_hidden, &crate::disclosure::PAYMENT_ACK_SET, &mut salts).unwrap();
-    let ack_canon = serde_json::to_string(&json!({ "_sd": ack_sd })).unwrap();
+    let pay_ack = crate::testing::sd::conceal_payment_ack(
+        crate::testing::sd::PlainPaymentAck {
+            agreement: "rec_agr".to_string(),
+            conversation: "conv".to_string(),
+            commitment_id: "c1".to_string(),
+            quote_author_did: "did:key:zAuthor".to_string(),
+            counterparty_did: "did:key:zCounterparty".to_string(),
+            role: SettlementRole::Giver,
+            observed_at_secs: 1000,
+            method: Some("method-marker".to_string()),
+            reference: Some("ref-marker-74".to_string()),
+            settlement_note: Some(LocalText::plain(tag("en"), "note-marker-73")),
+        },
+        51,
+    )
+    .0;
+    let ack_canon =
+        serde_json::to_string(&canonicalize_json_value(&serde_json::to_value(&pay_ack).unwrap()))
+            .unwrap();
     assert!(!ack_canon.contains("method-marker"));
     assert!(!ack_canon.contains("ref-marker-74"));
     assert!(!ack_canon.contains("note-marker-73"));
 
-    let ful_hidden =
-        FulfilmentHidden { settlement_note: Some(LocalText::plain(tag("en"), "note-marker-73")) };
-    let (ful_sd, _) =
-        conceal_hidden(&ful_hidden, &crate::disclosure::FULFILMENT_SET, &mut salts).unwrap();
-    let ful_canon = serde_json::to_string(&json!({ "_sd": ful_sd })).unwrap();
+    let ful = crate::testing::sd::conceal_fulfilment(
+        crate::testing::sd::PlainFulfilment {
+            agreement: "rec_agr".to_string(),
+            conversation: "conv".to_string(),
+            commitment_id: "c1".to_string(),
+            counterparty_did: "did:key:zCounterparty".to_string(),
+            quote_author_did: "did:key:zAuthor".to_string(),
+            role: SettlementRole::Giver,
+            settlement_note: Some(LocalText::plain(tag("en"), "note-marker-73")),
+        },
+        52,
+    )
+    .0;
+    let ful_canon =
+        serde_json::to_string(&canonicalize_json_value(&serde_json::to_value(&ful).unwrap()))
+            .unwrap();
     assert!(!ful_canon.contains("note-marker-73"));
 }
 

@@ -19,9 +19,9 @@ use syneroym_roym_core::{
 };
 
 use super::{
-    ENQUIRIES, ENQUIRY_HISTORY, ListInput, RecordPointerRow, SendState, conversation_mine_filter,
-    count_mine, ensure_collections, get_row, put_bytes, put_row, resolve_principal_and_owner,
-    send_card_and_file,
+    ENQUIRIES, ENQUIRY_HISTORY, ListInput, OutgoingCard, RecordPointerRow, SendState,
+    conversation_mine_filter, count_mine, ensure_collections, get_row, put_bytes, put_row,
+    resolve_principal_and_owner, send_card_and_file,
 };
 
 #[derive(Debug, Deserialize)]
@@ -112,16 +112,15 @@ pub(crate) async fn set<H: AppHost>(host: &H, input: EnquirySetInput) -> Reply<E
         return Err(Response::internal_error(e));
     }
 
-    let (message_id, state, send_error) = send_card_and_file(
-        host,
-        &input.conversation,
-        RECORD_ENQUIRY,
-        ENQUIRY_VERSION,
-        &signed.envelope_json,
-        now,
-        Some(next_count),
-    )
-    .await;
+    let card = OutgoingCard {
+        card_type: RECORD_ENQUIRY,
+        version: ENQUIRY_VERSION,
+        envelope: &signed.envelope_json,
+        send: &[],
+        view: &[],
+    };
+    let (message_id, state, send_error) =
+        send_card_and_file(host, &input.conversation, &card, now, Some(next_count)).await;
 
     Ok(EnquirySetOutput {
         enquiry_id,

@@ -4,7 +4,7 @@ use syneroym_identity::{Identity, substrate};
 use syneroym_roym_core::{
     deal::{
         Commitment, CommitmentKind, DealTerms, Details, ExtensionRef, LocalText, ResourceKind,
-        SettlementRole, transition::CommitmentState,
+        SettlementRole, SignedTerms, transition::CommitmentState,
     },
     lang::LangTag,
     listing::derive_slot_id,
@@ -12,7 +12,7 @@ use syneroym_roym_core::{
     record::{Envelope, RECORD_AGREEMENT_RECEIPT, RECORD_QUOTE, RecordDraft},
     transaction::{
         AGREEMENT_RECEIPT_VERSION, AgreementReceiptPayload, Answers, DealRole, QUOTE_VERSION,
-        QuotePayload, ReceiptHalf, TimeWindow, derive_quote_id,
+        ReceiptHalf, TimeWindow, derive_quote_id,
     },
 };
 
@@ -23,6 +23,7 @@ use crate::app::{
         self, CountersignRow, DecisionRow, DecisionState, SnapshotRow, countersign_id, decision_id,
         snapshot_id,
     },
+    disclosures::HeldQuote,
     hold::{HoldLedgerRow, Reservations, SeatLedger, SeatLedgerRow, hold_id, seat_id},
     progress_ops,
 };
@@ -93,39 +94,38 @@ fn build_and_sign_author_quote(
     commitments: Vec<Commitment>,
     expires_at_secs: u64,
     now: u64,
-) -> (QuotePayload, String, String) {
+) -> (HeldQuote, String, String) {
     let author_did = substrate::derive_did_key(&author.public_key());
     let quote_id = derive_quote_id("conv_1", &author_did, 1).expect("derive quote id");
-    let payload = QuotePayload {
+    let terms = DealTerms {
+        currency: "EUR".to_string(),
+        commitments,
+        home_exchange: None,
+        listing_id: None,
+        scope: LocalText::plain(LangTag::parse_canonical("en").expect("parse lang"), "Lesson deal"),
+        cancellation_terms: LocalText::plain(
+            LangTag::parse_canonical("en").expect("parse lang"),
+            "24h notice",
+        ),
+        refund_terms: LocalText::plain(
+            LangTag::parse_canonical("en").expect("parse lang"),
+            "Full refund",
+        ),
+        dispute_path: LocalText::plain(
+            LangTag::parse_canonical("en").expect("parse lang"),
+            "Arbitration",
+        ),
+        quote_expires_at_secs: expires_at_secs,
+    };
+    let plain = syneroym_roym_core::testing::sd::PlainQuote {
         quote_id,
         conversation: "conv_1".to_string(),
         sequence: 1,
-        counterparty_did: counterparty_did.to_string(),
-        terms: DealTerms {
-            currency: "EUR".to_string(),
-            commitments,
-            home_exchange: None,
-            listing_id: None,
-            scope: LocalText::plain(
-                LangTag::parse_canonical("en").expect("parse lang"),
-                "Lesson deal",
-            ),
-            cancellation_terms: LocalText::plain(
-                LangTag::parse_canonical("en").expect("parse lang"),
-                "24h notice",
-            ),
-            refund_terms: LocalText::plain(
-                LangTag::parse_canonical("en").expect("parse lang"),
-                "Full refund",
-            ),
-            dispute_path: LocalText::plain(
-                LangTag::parse_canonical("en").expect("parse lang"),
-                "Arbitration",
-            ),
-            quote_expires_at_secs: expires_at_secs,
-        },
         answers: Answers::Enquiry { record_id: "rec_enq_1".to_string() },
+        counterparty_did: counterparty_did.to_string(),
+        terms: terms.clone(),
     };
+    let (payload, disclosures) = syneroym_roym_core::testing::sd::conceal_quote(plain, 1);
 
     let draft = RecordDraft {
         version: QUOTE_VERSION,
@@ -141,14 +141,16 @@ fn build_and_sign_author_quote(
     env.attach_signature(z32::encode(&sig)).expect("attach signature");
     let record_id = env.record_id().expect("record id");
     let envelope_json = env.to_json().expect("envelope json");
-    (payload, record_id, envelope_json)
+    let verdict = syneroym_roym_core::transaction::verify_quote(&envelope_json, now);
+    let held = HeldQuote { verdict, signed: payload, terms, disclosures };
+    (held, record_id, envelope_json)
 }
 
 fn make_counterparty_receipt(
     cp: &Identity,
     author_did: &str,
     quote_record_id: &str,
-    terms: &DealTerms,
+    terms: &SignedTerms,
     now: u64,
 ) -> (AgreementReceiptPayload, String, String) {
     let cp_did = substrate::derive_did_key(&cp.public_key());
@@ -180,7 +182,7 @@ fn make_counterparty_receipt(
 
 fn unformed_agreement_row(
     quote_rec_id: &str,
-    quote: &QuotePayload,
+    quote: &HeldQuote,
     author_did: &str,
     cp_did: &str,
     cp_rec_id: &str,
@@ -189,7 +191,7 @@ fn unformed_agreement_row(
 ) -> AgreementRow {
     AgreementRow {
         quote_record_id: quote_rec_id.to_string(),
-        quote_id: quote.quote_id.clone(),
+        quote_id: quote.signed.quote_id.clone(),
         conversation: "conv_1".to_string(),
         counterparty_did: cp_did.to_string(),
         quote_author_did: author_did.to_string(),
@@ -211,7 +213,7 @@ fn unformed_agreement_row(
     }
 }
 
-fn setup_service_agreement(f: &TestFixture) -> (QuotePayload, String, AgreementRow, u64) {
+fn setup_service_agreement(f: &TestFixture) -> (HeldQuote, String, AgreementRow, u64) {
     let cp = Identity::generate().expect("generate cp");
     let cp_did = substrate::derive_did_key(&cp.public_key());
     let now = f.host.now();
@@ -224,7 +226,7 @@ fn setup_service_agreement(f: &TestFixture) -> (QuotePayload, String, AgreementR
         now,
     );
     let (_cp_receipt, cp_rec_id, cp_envelope) =
-        make_counterparty_receipt(&cp, &f.master_did, &quote_rec_id, &quote.terms, now);
+        make_counterparty_receipt(&cp, &f.master_did, &quote_rec_id, &quote.signed.terms, now);
 
     let row = unformed_agreement_row(
         &quote_rec_id,
@@ -264,7 +266,7 @@ async fn writer_countersigns_in_sync_and_sends_snapshot_one() {
     assert_eq!(snap.seq, 1);
 
     // Verify decision row
-    let dec_key = decision_id(&quote.quote_id);
+    let dec_key = decision_id(&quote.signed.quote_id);
     let dec: Option<DecisionRow> =
         crate::app::get_row(&f.host, LEDGER, &dec_key).await.expect("get dec");
     assert!(dec.is_some());
@@ -286,7 +288,7 @@ async fn losing_the_last_seat_ends_not_formed() {
     let (quote, quote_rec_id, _) =
         build_and_sign_author_quote(&f.master, &cp_did, vec![commitment], now + 3600, now);
     let (_cp_receipt, cp_rec_id, cp_envelope) =
-        make_counterparty_receipt(&cp, &f.master_did, &quote_rec_id, &quote.terms, now);
+        make_counterparty_receipt(&cp, &f.master_did, &quote_rec_id, &quote.signed.terms, now);
 
     // Take the seat beforehand so capacity 1 is exhausted
     SeatLedger
@@ -309,7 +311,7 @@ async fn losing_the_last_seat_ends_not_formed() {
     assert_eq!(res, Ok(false));
 
     // Decision row is not-formed with reason slot-taken
-    let dec_key = decision_id(&quote.quote_id);
+    let dec_key = decision_id(&quote.signed.quote_id);
     let dec: Option<DecisionRow> =
         crate::app::get_row(&f.host, LEDGER, &dec_key).await.expect("get dec");
     assert!(dec.is_some());
@@ -334,12 +336,12 @@ async fn repeat_branch_reuses_stored_snapshot_one() {
     let (quote, quote_rec_id, mut row, now) = setup_service_agreement(&f);
 
     // Pre-populate decision row as deciding
-    let dec_key = decision_id(&quote.quote_id);
+    let dec_key = decision_id(&quote.signed.quote_id);
     let dec = DecisionRow {
         kind: "decision".to_string(),
         state: DecisionState::Deciding,
         agreement: quote_rec_id.clone(),
-        quote_id: quote.quote_id.clone(),
+        quote_id: quote.signed.quote_id.clone(),
         reason: None,
         created_at_secs: now,
     };
@@ -383,7 +385,7 @@ async fn send_error_stops_decision_row_and_retries_on_next_sync() {
     let res2 = decide::run(&f.host, &mut row, &quote, now).await;
     assert_eq!(res2, Ok(false));
 
-    let dec_key = decision_id(&quote.quote_id);
+    let dec_key = decision_id(&quote.signed.quote_id);
     let dec: Option<DecisionRow> =
         crate::app::get_row(&f.host, LEDGER, &dec_key).await.expect("get dec");
     assert!(dec.is_some());
@@ -436,7 +438,7 @@ async fn repeat_past_expiry_without_countersign_leaves_row_deciding() {
         now,
     );
     let (_cp_receipt, cp_rec_id, cp_envelope) =
-        make_counterparty_receipt(&cp, &f.master_did, &quote_rec_id, &quote.terms, now);
+        make_counterparty_receipt(&cp, &f.master_did, &quote_rec_id, &quote.signed.terms, now);
 
     let mut row = unformed_agreement_row(
         &quote_rec_id,
@@ -449,12 +451,12 @@ async fn repeat_past_expiry_without_countersign_leaves_row_deciding() {
     );
 
     // Pre-populate decision row as deciding
-    let dec_key = decision_id(&quote.quote_id);
+    let dec_key = decision_id(&quote.signed.quote_id);
     let dec = DecisionRow {
         kind: "decision".to_string(),
         state: DecisionState::Deciding,
         agreement: quote_rec_id.clone(),
-        quote_id: quote.quote_id.clone(),
+        quote_id: quote.signed.quote_id.clone(),
         reason: None,
         created_at_secs: now,
     };
@@ -559,7 +561,7 @@ async fn transition_retries_and_advances_when_snapshot_key_already_exists() {
 
     let row = AgreementRow {
         quote_record_id: quote_rec_id.clone(),
-        quote_id: quote.quote_id.clone(),
+        quote_id: quote.signed.quote_id.clone(),
         conversation: "conv_1".to_string(),
         counterparty_did: cp_did.clone(),
         quote_author_did: f.master_did.clone(),
@@ -668,7 +670,7 @@ async fn crash_before_the_decision_row_is_final_is_finished_on_the_next_sync() {
     assert!(agr.quote_author.is_some());
 
     let dec: Option<DecisionRow> =
-        crate::app::get_row(&f.host, LEDGER, &decision_id(&quote.quote_id)).await.unwrap();
+        crate::app::get_row(&f.host, LEDGER, &decision_id(&quote.signed.quote_id)).await.unwrap();
     assert_eq!(dec.expect("decision row exists").state, DecisionState::Agreed);
 }
 
@@ -710,7 +712,7 @@ async fn cancel_before_the_decision_row_is_final_is_kept() {
     assert!(agr.quote_author.is_some());
     assert!(agr.agreed_at_secs.is_some());
 
-    let dec_key = decision_id(&quote.quote_id);
+    let dec_key = decision_id(&quote.signed.quote_id);
     let dec: Option<DecisionRow> = crate::app::get_row(&f.host, LEDGER, &dec_key).await.unwrap();
     assert_eq!(dec.expect("decision exists").state, DecisionState::Agreed);
 }

@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use syneroym_signed_record::{DIGEST_CHARS, Salt, encode_disclosure};
+use syneroym_signed_record::{Salt, encode_disclosure};
 
 use crate::{
     deal::{
@@ -150,24 +150,10 @@ impl DealTerms {
                     .map_err(|e| SdError::DisclosureValue(e.to_string()))?;
                 if name == "details" {
                     let d_len = disc.len();
-                    if d_len > MAX_DETAILS_DISCLOSURE_BYTES {
-                        return Err(SdError::DetailsTooLarge {
-                            commitment_id: c.commitment_id.clone(),
-                            bytes: d_len,
-                            limit: MAX_DETAILS_DISCLOSURE_BYTES,
-                        });
-                    }
                     details_sizes.push((c.commitment_id.clone(), d_len));
                 }
                 total_bytes += disc.len();
             }
-        }
-
-        if total_bytes > MAX_RECORD_DISCLOSURE_BYTES {
-            return Err(SdError::QuoteTooLarge {
-                bytes: total_bytes,
-                limit: MAX_RECORD_DISCLOSURE_BYTES,
-            });
         }
 
         Ok(DisclosureSize { total_bytes, details: details_sizes })
@@ -181,8 +167,31 @@ impl DealTerms {
         &self,
         salts: &mut impl Iterator<Item = Salt>,
     ) -> Result<ConcealedTerms, SdError> {
-        self.disclosure_size()?;
+        let size = self.disclosure_size()?;
+        if let Some((cid, bytes)) =
+            size.details.iter().find(|(_, b)| *b > MAX_DETAILS_DISCLOSURE_BYTES)
+        {
+            return Err(SdError::DetailsTooLarge {
+                commitment_id: cid.clone(),
+                bytes: *bytes,
+                limit: MAX_DETAILS_DISCLOSURE_BYTES,
+            });
+        }
+        if size.total_bytes > MAX_RECORD_DISCLOSURE_BYTES {
+            return Err(SdError::QuoteTooLarge {
+                bytes: size.total_bytes,
+                limit: MAX_RECORD_DISCLOSURE_BYTES,
+            });
+        }
+        self.conceal_unbounded(salts)
+    }
 
+    /// Conceals these terms into `SignedTerms` and disclosures without applying
+    /// size limits (used for sizing and upper-bound measurements).
+    pub fn conceal_unbounded(
+        &self,
+        salts: &mut impl Iterator<Item = Salt>,
+    ) -> Result<ConcealedTerms, SdError> {
         let mut all_disclosures = Vec::with_capacity(self.hidden_field_count());
 
         let mut terms_val =
@@ -328,33 +337,7 @@ impl SignedTerms {
 }
 
 fn validate_sd_list(sd: &[String], expected_len: usize, context: &str) -> Result<(), DealError> {
-    if sd.len() != expected_len {
-        return Err(DealError::SdShape(format!(
-            "{context} _sd length {} does not match expected {expected_len}",
-            sd.len()
-        )));
-    }
-    for d in sd {
-        if d.len() != DIGEST_CHARS {
-            return Err(DealError::SdShape(format!(
-                "{context} digest length {} does not match {DIGEST_CHARS}",
-                d.len()
-            )));
-        }
-        if !d.bytes().all(|b| matches!(b, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_')) {
-            return Err(DealError::SdShape(format!(
-                "{context} digest is not valid unpadded base64url"
-            )));
-        }
-    }
-    for window in sd.windows(2) {
-        if window[0] >= window[1] {
-            return Err(DealError::SdShape(format!(
-                "{context} _sd digests not strictly ascending"
-            )));
-        }
-    }
-    Ok(())
+    crate::disclosure::check_sd_shape(sd, expected_len, context).map_err(DealError::SdShape)
 }
 
 /// Strict reveal for filing: builds index, checks salts, checks limits,

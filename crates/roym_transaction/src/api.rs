@@ -38,9 +38,10 @@ syneroym_roym_core::service_methods! {
     "enquiry.verify": enquiry_ops::verify [VerifyInput => RecordVerdict<EnquiryPayload>],
 
     "quote.set": quote_ops::set [quote_ops::QuoteSetInput => quote_ops::QuoteSetOutput],
+    "quote.measure": quote_ops::measure [quote_ops::QuoteMeasureInput => quote_ops::QuoteMeasureOutput],
     "quote.get": quote_ops::get [quote_ops::QuoteKeyInput => Option<quote_ops::QuoteView>],
     "quote.list": quote_ops::list [ListInput => quote_ops::QuoteListOutput],
-    "quote.history": quote_ops::history [quote_ops::QuoteKeyInput => EnvelopeHistoryOutput],
+    "quote.history": quote_ops::history [quote_ops::QuoteKeyInput => quote_ops::QuoteHistoryOutput],
     "quote.verify": quote_ops::verify [VerifyInput => RecordVerdict<QuotePayload>],
 
     "deal.decline": decline_ops::decline [decline_ops::DealDeclineInput => decline_ops::DealDeclineOutput],

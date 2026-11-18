@@ -382,6 +382,10 @@ fn quote_for_an_enquiry_and_for_a_want_give_equal_receipts() {
         sample_service_commitment("c1", DealRole::QuoteAuthor, 100),
         sample_currency_commitment("c2", DealRole::Counterparty, 100),
     ]);
+    let signed_terms = terms
+        .conceal(&mut crate::testing::sd::seeded_salts(42))
+        .expect("conceal terms for test")
+        .signed;
 
     let quote_enquiry = QuotePayload {
         quote_id: "quo_1".to_string(),
@@ -389,7 +393,7 @@ fn quote_for_an_enquiry_and_for_a_want_give_equal_receipts() {
         sequence: 1,
         answers: Answers::Enquiry { record_id: "rec_enquiry_123".to_string() },
         counterparty_did: cp_did.to_string(),
-        terms: terms.clone(),
+        terms: signed_terms.clone(),
     };
     let quote_want = QuotePayload {
         quote_id: "quo_2".to_string(),
@@ -397,7 +401,7 @@ fn quote_for_an_enquiry_and_for_a_want_give_equal_receipts() {
         sequence: 1,
         answers: Answers::Want { intent_id: "int_want_456".to_string(), version: 1 },
         counterparty_did: cp_did.to_string(),
-        terms: terms.clone(),
+        terms: signed_terms.clone(),
     };
     assert_ne!(quote_enquiry.answers, quote_want.answers);
     let rec_enquiry_id = "rec_quote_enquiry";
@@ -408,7 +412,7 @@ fn quote_for_an_enquiry_and_for_a_want_give_equal_receipts() {
         counterparty_did: cp_did.to_string(),
         quote_author_did: author_did.to_string(),
         role: DealRole::Counterparty,
-        terms: terms.clone(),
+        terms: signed_terms.clone(),
         viewed_lang: sample_tag("en"),
         viewed_via_mt: false,
     };
@@ -417,7 +421,7 @@ fn quote_for_an_enquiry_and_for_a_want_give_equal_receipts() {
         counterparty_did: cp_did.to_string(),
         quote_author_did: author_did.to_string(),
         role: DealRole::Counterparty,
-        terms: terms.clone(),
+        terms: signed_terms,
         viewed_lang: sample_tag("en"),
         viewed_via_mt: false,
     };

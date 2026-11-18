@@ -24,7 +24,7 @@ use crate::{
     person, record,
 };
 pub use crate::{
-    deal::{Answers, DealTerms},
+    deal::{Answers, DealTerms, SignedTerms},
     record::{RECORD_AGREEMENT_RECEIPT, RECORD_DEAL_DECLINE, RECORD_ENQUIRY, RECORD_QUOTE},
 };
 
@@ -160,7 +160,7 @@ pub struct QuotePayload {
     pub sequence: u32,
     pub answers: Answers,
     pub counterparty_did: String,
-    pub terms: DealTerms,
+    pub terms: SignedTerms,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -172,7 +172,7 @@ pub struct AgreementReceiptPayload {
     pub quote_author_did: String,
     /// The only field the two halves of a complete pair differ in.
     pub role: DealRole,
-    pub terms: DealTerms,
+    pub terms: SignedTerms,
     /// The language of the text this party read before it signed. It is
     /// outside `terms`, so the two halves may differ in it.
     pub viewed_lang: LangTag,
@@ -309,7 +309,7 @@ impl QuotePayload {
         if !person::is_did_key(&self.counterparty_did) {
             return Err(TransactionError::InvalidDid(self.counterparty_did.clone()));
         }
-        self.terms.validate()?;
+        self.terms.validate_visible()?;
         Ok(())
     }
 }
@@ -328,12 +328,22 @@ impl AgreementReceiptPayload {
         if self.counterparty_did == self.quote_author_did {
             return Err(TransactionError::SamePartyDid);
         }
-        self.terms.validate()?;
-        if self.viewed_via_mt && self.viewed_lang == self.terms.scope.lang {
-            return Err(TransactionError::ViewedMtOfOriginal);
-        }
+        self.terms.validate_visible()?;
         Ok(())
     }
+}
+
+/// ML-18: verifies that if viewed_via_mt is true, viewed_lang is not the
+/// language of the original terms.
+pub fn check_viewed(
+    viewed_lang: &LangTag,
+    viewed_via_mt: bool,
+    terms: &DealTerms,
+) -> Result<(), TransactionError> {
+    if viewed_via_mt && *viewed_lang == terms.scope.lang {
+        return Err(TransactionError::ViewedMtOfOriginal);
+    }
+    Ok(())
 }
 
 pub fn derive_enquiry_id(

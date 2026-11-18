@@ -4,6 +4,7 @@ pub mod accept;
 pub mod cancel;
 pub mod decide;
 pub mod decline;
+pub mod disclosure;
 pub mod recover;
 pub mod refuse;
 pub mod restore;
@@ -49,6 +50,10 @@ impl std::fmt::Debug for TestFixture {
 
 pub fn fixture() -> TestFixture {
     let master = Arc::new(Identity::generate().expect("generate master key"));
+    fixture_with_master(master)
+}
+
+pub fn fixture_with_master(master: Arc<Identity>) -> TestFixture {
     let master_did = substrate::derive_did_key(&master.public_key());
 
     let service_key = Arc::new(Identity::generate().expect("generate service key"));

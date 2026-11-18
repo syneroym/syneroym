@@ -7,9 +7,10 @@ use std::{
 
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Map, Value};
-use syneroym_signed_record::{
-    DIGEST_CHARS, DecodedDisclosure, DisclosureError, Salt, decode_base64url, decode_disclosure,
-    disclosure_digest, encode_disclosure,
+use syneroym_signed_record::{DIGEST_CHARS, DecodedDisclosure, DisclosureError};
+pub use syneroym_signed_record::{
+    Salt, decode_base64url, decode_disclosure, disclosure_digest, encode_base64url,
+    encode_disclosure,
 };
 use thiserror::Error;
 
@@ -18,6 +19,35 @@ mod tests;
 
 pub const MAX_RECORD_DISCLOSURE_BYTES: usize = 96 * 1024;
 pub const MAX_DETAILS_DISCLOSURE_BYTES: usize = 8 * 1024;
+
+/// Verifies that `_sd` has exactly `expected_len` digests, each is 43
+/// characters of unpadded base64url, and they are strictly ascending with no
+/// duplicates.
+pub fn check_sd_shape(sd: &[String], expected_len: usize, context: &str) -> Result<(), String> {
+    if sd.len() != expected_len {
+        return Err(format!(
+            "{context} _sd length {} does not match expected {expected_len}",
+            sd.len()
+        ));
+    }
+    for d in sd {
+        if d.len() != DIGEST_CHARS {
+            return Err(format!(
+                "{context} digest length {} does not match {DIGEST_CHARS}",
+                d.len()
+            ));
+        }
+        if !d.bytes().all(|b| matches!(b, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_')) {
+            return Err(format!("{context} digest is not valid unpadded base64url"));
+        }
+    }
+    for window in sd.windows(2) {
+        if window[0] >= window[1] {
+            return Err(format!("{context} _sd digests not strictly ascending"));
+        }
+    }
+    Ok(())
+}
 
 /// Specification of visible and hidden fields for a record or sub-object.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

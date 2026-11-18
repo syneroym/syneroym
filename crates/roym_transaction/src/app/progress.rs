@@ -10,7 +10,9 @@ use syneroym_roym_core::{
     record::Envelope,
 };
 
-use super::{AGREEMENT_PROGRESS, decide::SnapshotRow, get_row, put_row, send_card_and_file};
+use super::{
+    AGREEMENT_PROGRESS, OutgoingCard, decide::SnapshotRow, get_row, put_row, send_card_and_file,
+};
 
 pub(crate) async fn sign<H: AppHost>(
     host: &H,
@@ -44,16 +46,14 @@ pub(crate) async fn resend_if_unsent<H: AppHost>(
         && sr.message_id.is_none()
     {
         let now = clock::now_secs();
-        let (message_id, _, _) = send_card_and_file(
-            host,
-            conversation,
-            "agreement-progress",
-            1,
-            &sr.envelope,
-            now,
-            None,
-        )
-        .await;
+        let card = OutgoingCard {
+            card_type: RECORD_AGREEMENT_PROGRESS,
+            version: AGREEMENT_PROGRESS_VERSION,
+            envelope: &sr.envelope,
+            send: &[],
+            view: &[],
+        };
+        let (message_id, _, _) = send_card_and_file(host, conversation, &card, now, None).await;
         if !message_id.is_empty() {
             sr.message_id = Some(message_id);
             let _ = put_row(host, AGREEMENT_PROGRESS, &snap_key, &sr).await;

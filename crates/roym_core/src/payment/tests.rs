@@ -34,7 +34,7 @@ fn sample_commitment() -> Commitment {
 }
 
 fn sample_request() -> PaymentRequestPayload {
-    PaymentRequestPayload {
+    let plain = crate::testing::sd::PlainPaymentRequest {
         agreement: "rec_quote123".to_string(),
         conversation: "conv_123".to_string(),
         commitment_id: "c1".to_string(),
@@ -45,11 +45,12 @@ fn sample_request() -> PaymentRequestPayload {
             text: "Initial payment".to_string(),
             translations: Vec::new(),
         }),
-    }
+    };
+    crate::testing::sd::conceal_payment_request(plain, 10).0
 }
 
 fn sample_ack(role: SettlementRole) -> PaymentAcknowledgementPayload {
-    PaymentAcknowledgementPayload {
+    let plain = crate::testing::sd::PlainPaymentAck {
         agreement: "rec_quote123".to_string(),
         conversation: "conv_123".to_string(),
         commitment_id: "c1".to_string(),
@@ -60,7 +61,8 @@ fn sample_ack(role: SettlementRole) -> PaymentAcknowledgementPayload {
         method: Some("card".to_string()),
         reference: Some("ref_tx_999".to_string()),
         settlement_note: None,
-    }
+    };
+    crate::testing::sd::conceal_payment_ack(plain, 11).0
 }
 
 #[test]
@@ -84,13 +86,18 @@ fn payment_request_validation() {
     assert!(matches!(req.validate(), Err(PaymentError::CommitmentIdEmpty)));
     req.commitment_id = "c1".to_string();
 
+    req.sd = Vec::new();
+    assert!(matches!(req.validate(), Err(PaymentError::SdShape(_))));
+
     let long_note = "n".repeat(MAX_NOTE_LEN + 1);
-    req.note = Some(LocalText {
-        lang: LangTag::parse("en").unwrap(),
-        text: long_note,
-        translations: Vec::new(),
-    });
-    assert!(matches!(req.validate(), Err(PaymentError::Note(_))));
+    let bad_hidden = PaymentRequestHidden {
+        note: Some(LocalText {
+            lang: LangTag::parse("en").unwrap(),
+            text: long_note,
+            translations: Vec::new(),
+        }),
+    };
+    assert!(matches!(bad_hidden.validate(), Err(PaymentError::Note(_))));
 }
 
 #[test]
@@ -102,18 +109,30 @@ fn payment_acknowledgement_validation() {
     assert!(matches!(ack.validate(), Err(PaymentError::ZeroObservedTime)));
     ack.observed_at_secs = 1000;
 
-    ack.method = Some(String::new());
-    assert!(matches!(ack.validate(), Err(PaymentError::MethodShape(_))));
-    ack.method = Some("Cash".to_string());
+    ack.sd = Vec::new();
+    assert!(matches!(ack.validate(), Err(PaymentError::SdShape(_))));
+
+    let bad_method = PaymentAckHidden {
+        method: Some("Cash".to_string()),
+        reference: None,
+        settlement_note: None,
+    };
     assert!(matches!(
-        ack.validate(),
+        bad_hidden_err(bad_method),
         Err(PaymentError::MethodShape(m)) if m == "Cash"
     ));
-    ack.method = Some("card".to_string());
 
     let long_ref = "r".repeat(MAX_REFERENCE_LEN + 1);
-    ack.reference = Some(long_ref);
-    assert!(matches!(ack.validate(), Err(PaymentError::ReferenceTooLong)));
+    let bad_ref = PaymentAckHidden {
+        method: Some("card".to_string()),
+        reference: Some(long_ref),
+        settlement_note: None,
+    };
+    assert!(matches!(bad_ref.validate(), Err(PaymentError::ReferenceTooLong)));
+}
+
+fn bad_hidden_err(h: PaymentAckHidden) -> Result<(), PaymentError> {
+    h.validate()
 }
 
 #[test]
@@ -139,8 +158,6 @@ fn test_acknowledgements_agree() {
 fn test_is_valid_correction() {
     let old = sample_ack(SettlementRole::Giver);
     let mut new = old.clone();
-    new.reference = Some("corrected_ref".to_string());
-    new.method = Some("cash".to_string());
     new.observed_at_secs = 1005;
     assert!(is_valid_correction(&old, &new));
 

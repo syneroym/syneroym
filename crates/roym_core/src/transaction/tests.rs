@@ -89,6 +89,11 @@ pub(super) fn sample_enquiry(issuer: &str) -> EnquiryPayload {
     }
 }
 
+pub(super) fn sample_signed_terms() -> SignedTerms {
+    let mut salts = crate::testing::sd::seeded_salts(20);
+    sample_terms().conceal(&mut salts).unwrap().signed
+}
+
 pub(super) fn sample_quote(issuer: &str, counterparty_did: &str) -> QuotePayload {
     let conversation = "conv_123456";
     let sequence = 1;
@@ -99,7 +104,7 @@ pub(super) fn sample_quote(issuer: &str, counterparty_did: &str) -> QuotePayload
         sequence,
         answers: Answers::Enquiry { record_id: "rec_req123".to_string() },
         counterparty_did: counterparty_did.to_string(),
-        terms: sample_terms(),
+        terms: sample_signed_terms(),
     }
 }
 
@@ -250,8 +255,8 @@ fn agreement_receipt_payload_validate_rules() {
         counterparty_did: counterparty_did.clone(),
         quote_author_did: quote_author_did.clone(),
         role: DealRole::Counterparty,
-        terms: sample_terms(),
-        viewed_lang: sample_terms().scope.lang,
+        terms: sample_signed_terms(),
+        viewed_lang: LangTag::parse("en").unwrap(),
         viewed_via_mt: false,
     };
     assert!(a.validate().is_ok());
@@ -301,7 +306,8 @@ fn derive_enquiry_id_and_quote_id_are_stable_and_differ_on_any_input_change() {
 fn halves_agree_table_test() {
     let counterparty_did = "did:key:zCounterparty".to_string();
     let quote_author_did = "did:key:zQuoteAuthor".to_string();
-    let terms = sample_terms();
+    let terms = sample_signed_terms();
+    let lang = LangTag::parse("en").unwrap();
 
     let base_counterparty = AgreementReceiptPayload {
         quote_record_id: "rec_quo123".to_string(),
@@ -309,7 +315,7 @@ fn halves_agree_table_test() {
         quote_author_did: quote_author_did.clone(),
         role: DealRole::Counterparty,
         terms: terms.clone(),
-        viewed_lang: terms.scope.lang.clone(),
+        viewed_lang: lang.clone(),
         viewed_via_mt: false,
     };
     let base_quote_author = AgreementReceiptPayload {
@@ -317,8 +323,8 @@ fn halves_agree_table_test() {
         counterparty_did: counterparty_did.clone(),
         quote_author_did: quote_author_did.clone(),
         role: DealRole::QuoteAuthor,
-        terms: terms.clone(),
-        viewed_lang: terms.scope.lang.clone(),
+        terms,
+        viewed_lang: lang,
         viewed_via_mt: false,
     };
 
@@ -395,7 +401,7 @@ fn the_ui_notices_match_this_crate() {
 
 #[test]
 fn halves_differ_only_in_role_and_what_was_read() {
-    let terms = sample_terms();
+    let terms = sample_signed_terms();
 
     let half_author = AgreementReceiptPayload {
         quote_record_id: "rec_quote_123".to_string(),
@@ -412,7 +418,7 @@ fn halves_differ_only_in_role_and_what_was_read() {
         counterparty_did: "did:key:z6MkuCounterparty".to_string(),
         quote_author_did: "did:key:z6MkuAuthor".to_string(),
         role: DealRole::Counterparty,
-        terms: terms.clone(),
+        terms,
         viewed_lang: LangTag::parse("hi").unwrap(),
         viewed_via_mt: true,
     };

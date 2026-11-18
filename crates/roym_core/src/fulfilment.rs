@@ -31,10 +31,13 @@ pub enum FulfilmentError {
     CommitmentIdEmpty,
     #[error("settlement_note: {0}")]
     SettlementNote(#[from] TranslationError),
+    #[error("selective disclosure shape invalid: {0}")]
+    SdShape(String),
 }
 
 /// One party's attestation regarding fulfilment of a commitment.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FulfilmentReceiptPayload {
     pub agreement: String,
     pub conversation: String,
@@ -42,8 +45,8 @@ pub struct FulfilmentReceiptPayload {
     pub counterparty_did: String,
     pub quote_author_did: String,
     pub role: SettlementRole,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub settlement_note: Option<LocalText>,
+    #[serde(rename = "_sd")]
+    pub sd: Vec<String>,
 }
 
 impl FulfilmentReceiptPayload {
@@ -66,9 +69,8 @@ impl FulfilmentReceiptPayload {
         if self.commitment_id.is_empty() {
             return Err(FulfilmentError::CommitmentIdEmpty);
         }
-        if let Some(note) = &self.settlement_note {
-            note.validate("settlement_note", MAX_SETTLEMENT_NOTE_LEN)?;
-        }
+        crate::disclosure::check_sd_shape(&self.sd, 1, "fulfilment-receipt")
+            .map_err(FulfilmentError::SdShape)?;
         Ok(())
     }
 }

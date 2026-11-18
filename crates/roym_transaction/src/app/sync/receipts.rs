@@ -5,14 +5,15 @@ use syneroym_roym_core::{
     deal::ResourceKind,
     progress::{self, AgreementState, MAX_DEFER_SECS},
     record::Envelope,
-    transaction::{self, DealRole},
+    transaction::DealRole,
 };
 
 use super::{
     super::{
-        AGREEMENT_PROGRESS, AGREEMENTS, AgreementRow, CardRow, EVENT_PROGRESS, QUOTE_HISTORY,
+        AGREEMENT_PROGRESS, AGREEMENTS, AgreementRow, CardRow, EVENT_PROGRESS,
         decide::{SnapshotRow, snapshot_id},
-        get_bytes, get_row,
+        disclosures::{self, HeldQuote, LoadQuoteError},
+        get_row,
         hold::{Reservations, SeatLedger},
         put_card, put_row,
     },
@@ -44,33 +45,27 @@ async fn load_progress_quote<H: AppHost>(
     host: &H,
     agreement: &str,
     now: u64,
-) -> Result<Result<transaction::RecordVerdict<transaction::QuotePayload>, Option<String>>, String> {
-    let quote_bytes = match get_bytes(host, QUOTE_HISTORY, agreement).await? {
-        Some(b) => b,
-        None => return Ok(Err(None)),
-    };
-    let quote_env = String::from_utf8_lossy(&quote_bytes);
-    let qv = transaction::verify_quote(&quote_env, now);
-    if !qv.verified {
-        return Ok(Err(Some("stored quote does not verify".to_string())));
+) -> Result<Result<HeldQuote, Option<String>>, String> {
+    match disclosures::load_quote(host, agreement, now).await {
+        Ok(held) => Ok(Ok(held)),
+        Err(LoadQuoteError::Missing) => Ok(Err(None)),
+        Err(LoadQuoteError::Invalid(e)) => {
+            Ok(Err(Some(format!("stored quote does not verify: {e}"))))
+        }
+        Err(LoadQuoteError::Storage(e)) => Err(e),
     }
-    Ok(Ok(qv))
 }
 
-fn validate_progress_parties<'a>(
-    qv: &'a transaction::RecordVerdict<transaction::QuotePayload>,
+fn validate_progress_parties(
+    held: &HeldQuote,
     p: &progress::AgreementProgressPayload,
-) -> Result<&'a transaction::QuotePayload, &'static str> {
-    let qp = match qv.payload.as_ref() {
-        Some(q) => q,
-        None => return Err("stored quote has no payload"),
-    };
-    if p.quote_author_did != qv.issuer.as_deref().unwrap_or_default()
-        || p.counterparty_did != qp.counterparty_did
+) -> Result<(), &'static str> {
+    if p.quote_author_did != held.verdict.issuer.as_deref().unwrap_or_default()
+        || p.counterparty_did != held.signed.counterparty_did
     {
         return Err("names the wrong parties");
     }
-    Ok(qp)
+    Ok(())
 }
 
 struct WriterProgressContext<'a> {
@@ -115,17 +110,17 @@ async fn apply_writer_progress<H: AppHost>(
 
 fn init_progress_agreement_row(
     p: &progress::AgreementProgressPayload,
-    qp: &transaction::QuotePayload,
+    held: &HeldQuote,
     conversation: &str,
     now: u64,
 ) -> AgreementRow {
     AgreementRow {
         quote_record_id: p.agreement.clone(),
-        quote_id: qp.quote_id.clone(),
+        quote_id: held.signed.quote_id.clone(),
         conversation: conversation.to_string(),
         counterparty_did: p.counterparty_did.clone(),
         quote_author_did: p.quote_author_did.clone(),
-        terms: qp.terms.clone(),
+        terms: held.terms.clone(),
         state: None,
         state_reason: None,
         cancel_reason: None,
@@ -142,10 +137,15 @@ pub(crate) async fn file_progress_card<H: AppHost>(
     host: &H,
     mut row: CardRow,
     envelope: &str,
+    disclosures: &[String],
     conversation: &str,
     now: u64,
     owner: &str,
 ) -> Result<FileCardResult, String> {
+    if !disclosures.is_empty() {
+        return refuse_card(host, row, "disclosures not permitted on agreement progress card")
+            .await;
+    }
     let v = progress::verify_agreement_progress(envelope, now);
     if !v.verified {
         let reason = v.reason.unwrap_or_else(|| "agreement progress does not verify".to_string());
@@ -168,8 +168,8 @@ pub(crate) async fn file_progress_card<H: AppHost>(
         )
         .await;
     }
-    let qv = match load_progress_quote(host, &p.agreement, now).await? {
-        Ok(qv) => qv,
+    let held = match load_progress_quote(host, &p.agreement, now).await? {
+        Ok(held) => held,
         Err(Some(err)) => return refuse_card(host, row, err).await,
         Err(None) => {
             return defer_or_refuse(
@@ -182,17 +182,16 @@ pub(crate) async fn file_progress_card<H: AppHost>(
             .await;
         }
     };
-    if v.issuer != qv.signer_did {
+    if v.issuer != held.verdict.signer_did {
         return refuse_card(host, row, "not signed by the service that signed the quote").await;
     }
-    let qp = match validate_progress_parties(&qv, p) {
-        Ok(qp) => qp,
-        Err(err) => return refuse_card(host, row, err).await,
-    };
+    if let Err(err) = validate_progress_parties(&held, p) {
+        return refuse_card(host, row, err).await;
+    }
 
     let agr: AgreementRow = match get_row(host, AGREEMENTS, &p.agreement).await? {
         Some(a) => a,
-        None => init_progress_agreement_row(p, qp, conversation, now),
+        None => init_progress_agreement_row(p, &held, conversation, now),
     };
 
     let rec_id = v.record_id.clone().unwrap_or_default();

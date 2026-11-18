@@ -27,9 +27,18 @@ async fn accepting_a_superseded_version_is_refused() {
         build_and_sign_quote(&author, &counterparty_did, 1, None, now + 3600, now);
     let v_q1 = verify_quote(&env_q1, now);
     assert!(v_q1.verified, "v_q1 must verify: {:?}", v_q1.reason);
-    store_received_quote(&fix.host, &env_q1, &v_q1, &pay_q1, now, &counterparty_did)
+    store_received_quote(&fix.host, &env_q1, &v_q1, &pay_q1.signed, now, &counterparty_did)
         .await
         .expect("store quote v1");
+    crate::app::disclosures::store(
+        &fix.host,
+        &rec_q1,
+        syneroym_roym_core::record::RECORD_QUOTE,
+        &pay_q1.disclosures,
+        now,
+    )
+    .await
+    .unwrap();
 
     // Author creates quote v2 superseding v1 (same quote_id sequence 1)
     let (pay_q2, rec_q2, env_q2) = build_and_sign_quote(
@@ -42,9 +51,18 @@ async fn accepting_a_superseded_version_is_refused() {
     );
     let v_q2 = verify_quote(&env_q2, now + 10);
     assert!(v_q2.verified, "v_q2 must verify: {:?}", v_q2.reason);
-    store_received_quote(&fix.host, &env_q2, &v_q2, &pay_q2, now + 10, &counterparty_did)
+    store_received_quote(&fix.host, &env_q2, &v_q2, &pay_q2.signed, now + 10, &counterparty_did)
         .await
         .expect("store quote v2");
+    crate::app::disclosures::store(
+        &fix.host,
+        &rec_q2,
+        syneroym_roym_core::record::RECORD_QUOTE,
+        &pay_q2.disclosures,
+        now + 10,
+    )
+    .await
+    .unwrap();
 
     // Counterparty tries to accept superseded v1
     let accept_v1_err = agreement_ops::accept_at(

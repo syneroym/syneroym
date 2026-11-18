@@ -10,7 +10,7 @@ fn receipt(counterparty_did: &str, role: DealRole, lang: &str, via_mt: bool) -> 
         "counterparty_did": counterparty_did,
         "quote_author_did": "did:key:zQuoteAuthorViewed",
         "role": role,
-        "terms": sample_terms(),
+        "terms": sample_signed_terms(),
         "viewed_lang": lang,
         "viewed_via_mt": via_mt,
     })
@@ -41,19 +41,12 @@ fn receipt_refuses_non_canonical_viewed_lang() {
 
 #[test]
 fn receipt_refuses_mt_of_the_original() {
-    let mut payload = AgreementReceiptPayload {
-        quote_record_id: "rec_quote123".to_string(),
-        counterparty_did: "did:key:zCounterpartyViewed".to_string(),
-        quote_author_did: "did:key:zQuoteAuthorViewed".to_string(),
-        role: DealRole::Counterparty,
-        terms: sample_terms(),
-        viewed_lang: sample_tag("en"),
-        viewed_via_mt: true,
-    };
-    assert_eq!(payload.validate(), Err(TransactionError::ViewedMtOfOriginal));
-
-    payload.viewed_lang = sample_tag("hi");
-    assert_eq!(payload.validate(), Ok(()));
+    let terms = sample_terms();
+    assert_eq!(
+        check_viewed(&sample_tag("en"), true, &terms),
+        Err(TransactionError::ViewedMtOfOriginal)
+    );
+    assert_eq!(check_viewed(&sample_tag("hi"), true, &terms), Ok(()));
 }
 
 #[test]
@@ -63,7 +56,7 @@ fn halves_differing_in_viewed_fields_still_agree() {
         counterparty_did: "did:key:zCounterpartyViewed".to_string(),
         quote_author_did: "did:key:zQuoteAuthorViewed".to_string(),
         role,
-        terms: sample_terms(),
+        terms: sample_signed_terms(),
         viewed_lang: sample_tag(lang),
         viewed_via_mt: via_mt,
     };

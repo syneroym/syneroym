@@ -6,8 +6,9 @@ use syneroym_roym_core::transaction::{self, DealDeclinePayload};
 
 use super::{FileCardResult, refuse_card};
 use crate::app::{
-    CardRow, ENQUIRIES, ENQUIRY_HISTORY, LEDGER, QUOTE_HISTORY, QUOTES, RecordPointerRow,
-    decline_ops, get_bytes, get_row, put_card, put_row,
+    CardRow, ENQUIRIES, ENQUIRY_HISTORY, LEDGER, QUOTES, RecordPointerRow, decline_ops,
+    disclosures::{self, HeldQuote, LoadQuoteError},
+    get_bytes, get_row, put_card, put_row,
 };
 
 #[derive(Debug)]
@@ -19,43 +20,33 @@ enum DeclineVerification {
 async fn verify_and_apply_declined_quote<H: AppHost>(
     host: &H,
     payload: &DealDeclinePayload,
-    q_bytes: &[u8],
+    held: &HeldQuote,
     signer: &str,
     conversation: &str,
     now: u64,
 ) -> Result<DeclineVerification, String> {
-    let q_str = match String::from_utf8(q_bytes.to_vec()) {
-        Ok(s) => s,
-        Err(_) => return Ok(DeclineVerification::Refused("stored quote envelope is invalid utf8")),
-    };
-    let qv = transaction::verify_quote(&q_str, now);
-    if !qv.verified {
-        return Ok(DeclineVerification::Refused("the quote it declines does not verify"));
-    }
-    let qp = match qv.payload.as_ref() {
-        Some(qp) => qp,
-        None => return Ok(DeclineVerification::Refused("quote missing payload")),
-    };
-    if qp.conversation != conversation {
+    if held.signed.conversation != conversation {
         return Ok(DeclineVerification::Refused("declined quote belongs to another conversation"));
     }
-    if payload.deal != qp.quote_id {
+    if payload.deal != held.signed.quote_id {
         return Ok(DeclineVerification::Refused("deal does not match quote_id"));
     }
-    if signer != qp.counterparty_did {
+    if signer != held.signed.counterparty_did {
         return Ok(DeclineVerification::Refused("only the counterparty can decline this quote"));
     }
-    if decline_ops::has_unrefused_counterparty_half(host, &qp.quote_id).await? {
+    if decline_ops::has_unrefused_counterparty_half(host, &held.signed.quote_id).await? {
         return Ok(DeclineVerification::Refused(
             "cannot decline a quote with an unrefused acceptance",
         ));
     }
 
-    if let Some(mut ptr) = get_row::<RecordPointerRow, _>(host, QUOTES, &qp.quote_id).await? {
+    if let Some(mut ptr) =
+        get_row::<RecordPointerRow, _>(host, QUOTES, &held.signed.quote_id).await?
+    {
         ptr.declined_at_secs = Some(now);
         ptr.decline_note = payload.reason.as_ref().map(|r| r.text.clone());
         ptr.updated_at_secs = now;
-        put_row(host, QUOTES, &qp.quote_id, &ptr).await?;
+        put_row(host, QUOTES, &held.signed.quote_id, &ptr).await?;
     }
     Ok(DeclineVerification::Valid)
 }
@@ -127,9 +118,13 @@ pub(crate) async fn file_deal_decline_card<H: AppHost>(
     host: &H,
     mut row: CardRow,
     envelope: &str,
+    disclosures: &[String],
     conversation: &str,
     now: u64,
 ) -> Result<FileCardResult, String> {
+    if !disclosures.is_empty() {
+        return refuse_card(host, row, "disclosures not permitted on deal decline card").await;
+    }
     let v = transaction::verify_deal_decline(envelope, now);
     if !v.verified {
         let reason = v.reason.unwrap_or_else(|| "deal decline does not verify".to_string());
@@ -145,22 +140,43 @@ pub(crate) async fn file_deal_decline_card<H: AppHost>(
 
     let signer = v.issuer.as_deref().unwrap_or_default();
 
-    if let Some(q_bytes) = get_bytes(host, QUOTE_HISTORY, &payload.declines).await? {
-        match verify_and_apply_declined_quote(host, payload, &q_bytes, signer, conversation, now)
-            .await?
-        {
-            DeclineVerification::Valid => {}
-            DeclineVerification::Refused(reason) => return refuse_card(host, row, reason).await,
+    match disclosures::load_quote(host, &payload.declines, now).await {
+        Ok(held) => {
+            match verify_and_apply_declined_quote(host, payload, &held, signer, conversation, now)
+                .await?
+            {
+                DeclineVerification::Valid => {}
+                DeclineVerification::Refused(reason) => {
+                    return refuse_card(host, row, reason).await;
+                }
+            }
         }
-    } else if let Some(e_bytes) = get_bytes(host, ENQUIRY_HISTORY, &payload.declines).await? {
-        match verify_and_apply_declined_enquiry(host, payload, &e_bytes, signer, conversation, now)
-            .await?
-        {
-            DeclineVerification::Valid => {}
-            DeclineVerification::Refused(reason) => return refuse_card(host, row, reason).await,
+        Err(LoadQuoteError::Invalid(e)) => {
+            return refuse_card(host, row, format!("the quote it declines does not verify: {e}"))
+                .await;
         }
-    } else {
-        return refuse_card(host, row, "declined record this node does not hold").await;
+        Err(LoadQuoteError::Storage(e)) => return Err(e),
+        Err(LoadQuoteError::Missing) => {
+            if let Some(e_bytes) = get_bytes(host, ENQUIRY_HISTORY, &payload.declines).await? {
+                match verify_and_apply_declined_enquiry(
+                    host,
+                    payload,
+                    &e_bytes,
+                    signer,
+                    conversation,
+                    now,
+                )
+                .await?
+                {
+                    DeclineVerification::Valid => {}
+                    DeclineVerification::Refused(reason) => {
+                        return refuse_card(host, row, reason).await;
+                    }
+                }
+            } else {
+                return refuse_card(host, row, "declined record this node does not hold").await;
+            }
+        }
     }
 
     let dec_key = decline_ops::decline_id(&payload.deal);

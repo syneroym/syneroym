@@ -107,7 +107,8 @@ pub enum PaymentCommands {
         #[arg(long)]
         host: Option<String>,
     },
-    /// Verify a payment record envelope.
+    /// Verify a payment record envelope (output is the signed form, with
+    /// digests in place of hidden fields).
     Verify {
         #[arg(long)]
         envelope: Option<String>,

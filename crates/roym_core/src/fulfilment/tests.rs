@@ -5,7 +5,7 @@ use super::*;
 use crate::deal::SettlementRole;
 
 fn sample_receipt(role: SettlementRole) -> FulfilmentReceiptPayload {
-    FulfilmentReceiptPayload {
+    let plain = crate::testing::sd::PlainFulfilment {
         agreement: "rec_quote123".to_string(),
         conversation: "conv_123".to_string(),
         commitment_id: "c1".to_string(),
@@ -13,7 +13,8 @@ fn sample_receipt(role: SettlementRole) -> FulfilmentReceiptPayload {
         quote_author_did: "did:key:zQuoteAuthor".to_string(),
         role,
         settlement_note: None,
-    }
+    };
+    crate::testing::sd::conceal_fulfilment(plain, 12).0
 }
 
 #[test]
@@ -39,6 +40,10 @@ fn fulfilment_receipt_validation() {
 
     receipt.commitment_id = String::new();
     assert!(matches!(receipt.validate(), Err(FulfilmentError::CommitmentIdEmpty)));
+    receipt.commitment_id = "c1".to_string();
+
+    receipt.sd = Vec::new();
+    assert!(matches!(receipt.validate(), Err(FulfilmentError::SdShape(_))));
 }
 
 #[test]

@@ -134,6 +134,11 @@ pub(crate) async fn finish_deciding_row_with_reservations<H: AppHost, R: Reserva
         None => return Ok(false),
     };
 
+    let held = match crate::app::disclosures::load_quote(host, &row.quote_record_id, now).await {
+        Ok(h) => h,
+        Err(_) => return Ok(false),
+    };
+
     let snap_key = snapshot_id(&row.quote_record_id, 1);
     let mut stored_snap: Option<SnapshotRow> = get_row(host, AGREEMENT_PROGRESS, &snap_key).await?;
 
@@ -151,7 +156,7 @@ pub(crate) async fn finish_deciding_row_with_reservations<H: AppHost, R: Reserva
             return repeat_not_formed(host, &mut row, snap_row, &reservations, now).await;
         }
         if let Some(cs) = stored_cs {
-            return repeat_both(host, &mut row, snap_row, cs, now).await;
+            return repeat_both(host, &mut row, snap_row, cs, &held.disclosures, now).await;
         }
     }
 
@@ -160,7 +165,7 @@ pub(crate) async fn finish_deciding_row_with_reservations<H: AppHost, R: Reserva
     }
 
     if let Some(cs) = stored_cs {
-        return repeat_countersigned(host, &mut row, cs, now).await;
+        return repeat_countersigned(host, &mut row, cs, &held.disclosures, now).await;
     }
 
     let (reserved, failed) = reserve_author_holds(host, &row, &reservations, now).await?;
@@ -174,7 +179,7 @@ pub(crate) async fn finish_deciding_row_with_reservations<H: AppHost, R: Reserva
         }
     }
 
-    finalize_agreed_deal(host, &mut row, now).await
+    finalize_agreed_deal(host, &mut row, &held.signed.terms, &held.disclosures, now).await
 }
 
 pub(crate) async fn finish_deciding_row<H: AppHost>(
