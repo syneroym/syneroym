@@ -68,4 +68,11 @@ ignore = [
     # Delete when `deadpool-sqlite` supports `rusqlite` >= 0.41 and SQLCipher
     # updates to SQLite >= 3.54.0.
     "RUSTSEC-2026-0459",
+
+    # --- chrono 0.4 / humantime 2.4 unmaintained warnings ---
+    # chrono 0.4.45 and humantime 2.4.0 are flagged as unmaintained (RUSTSEC-2026-0543
+    # and RUSTSEC-2026-0542). Both are pulled transitively via iroh/netwatch/croner.
+    # Neither has an active vulnerability.
+    "RUSTSEC-2026-0542",
+    "RUSTSEC-2026-0543",
 ]

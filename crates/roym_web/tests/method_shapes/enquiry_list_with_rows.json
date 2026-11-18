@@ -2,6 +2,8 @@
   "enquiries": [
     {
       "conversation": "string",
+      "decline_note": "null",
+      "declined_at_secs": "null",
       "enquiry_id": "string",
       "envelope": "string",
       "mine": "boolean",
