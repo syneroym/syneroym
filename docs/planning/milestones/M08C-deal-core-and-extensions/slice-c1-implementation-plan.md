@@ -1606,7 +1606,7 @@ C1b:
   including one test per crash point.
 - [x] Hub case 31 checks the new sentence.
 - [x] Q5's limit is written in the agreements doc and the backlog.
-- [ ] `mise run verify` passes with no `--skip`.
+- [x] `mise run verify` passes with no `--skip`.
 
 ## 11. What C1 does not do
 

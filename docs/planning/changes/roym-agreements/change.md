@@ -1167,8 +1167,18 @@ The plan did not state these rules. The code follows them now.
   and its commitments. For `ack:` and `fulfil:` it also checks that the
   issuer matches the commitment's giver and the half's role.
 
-**Rules and differences in C1b (2026-11-17).**
+**Rules and differences in C1b (2026-11-17 to 2026-11-18).**
 
+- **Enquiry decline sets counterparty_did.** When the enquirer's node files an
+  incoming decline card for an enquiry with an empty `counterparty_did`, it
+  stores the first non-issuer signer of the card as the enquiry's
+  `counterparty_did`.
+- **`deal.decline` takes `lang`.** `deal.decline` accepts an optional `lang`
+  parameter to set the language tag of the decline note, defaulting to the
+  current Hub language.
+- **`repeat` is set on every card type.** When filing an incoming card whose
+  record id matches an already filed card, `row.repeat` is set to `true` for
+  every card type, not only receipts.
 - **DecisionState enum in decide.rs.** Replaces plain string comparisons
   ("agreed", "not-formed", "deciding", refusal reasons) in `decide.rs`.
 - **Crash point and write order in recover.rs.** `recover.rs` follows C1a's

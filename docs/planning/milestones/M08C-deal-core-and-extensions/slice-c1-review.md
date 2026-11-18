@@ -2246,7 +2246,7 @@ Confirmed fixed: R30, R43, R44, R45.
 
 ### New findings
 
-- [ ] **R46 — minor.** *Where:* `crates/roym_transaction/src/app/sync.rs:281`
+- [x] **R46 — minor.** *Where:* `crates/roym_transaction/src/app/sync.rs:281`
   (`dispatch_known_card`) and `:344` (`file_incoming_card`).
   *Problem:* the unused sender parameter from R44 (e) moved up one level.
   `file_incoming_card` still reads `author` from the message only to pass it
@@ -2254,7 +2254,7 @@ Confirmed fixed: R30, R43, R44, R45.
   *Failure case:* none at run time. A reader expects the sender to be checked
   somewhere, and it is not.
   *Fix:* remove the parameter and the `sender` variable.
-  *Status:* Open
+  *Status:* Fixed (eb52fb8b)
 
 ### Before merge
 

@@ -49,11 +49,11 @@ The agreements doc is the module doc that the old outline listed as "to write fi
 | `profile` | 771,718 | 771,791 | +73 | +40 KB |
 | `web` | 310,033 | 309,985 | −48 | +40 KB |
 
-**C1b sizes** (release `wasm32-wasip2`, one `target/` folder, 2026-11-17; base on `main` at `3dfada58`, branch at `b1011e81`), in bytes:
+**C1b sizes** (release `wasm32-wasip2`, one `target/` folder, 2026-11-18; base on `main` at `3dfada58`, branch at `14b96999`), in bytes:
 
-| Component | `main` `3dfada58` | branch `b1011e81` | Change | Limit |
+| Component | `main` `3dfada58` | branch `14b96999` | Change | Limit |
 | --- | --- | --- | --- | --- |
-| `transaction` | 1,715,448 | 1,809,581 | +94,133 (+5.49%) | +15% (257,317), new record code |
+| `transaction` | 1,715,448 | 1,833,741 | +118,293 (+6.90%) | +15% (257,317), new record code |
 | `catalog` | 929,631 | 929,631 | 0 | +40 KB |
 | `conversation` | 811,953 | 811,953 | 0 | +40 KB |
 | `directory` | 1,467,518 | 1,467,518 | 0 | +40 KB |
