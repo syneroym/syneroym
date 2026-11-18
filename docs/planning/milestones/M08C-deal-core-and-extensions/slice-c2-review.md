@@ -617,7 +617,7 @@ reviewed again for new problems.
 
 ### New findings
 
-- [ ] **P18 — minor.** *Where:* step 6, "The mailbox size", the case
+- [x] **P18 — minor.** *Where:* step 6, "The mailbox size", the case
   `a_card_of_the_mailbox_size_waits_at_the_mailbox_and_a_larger_one_at_the_sender`;
   7.8 (time).
   *Problem:* The case proves that the larger card is not deposited by
@@ -634,9 +634,9 @@ reviewed again for new problems.
   that the larger card's state is `pending` and that
   `deposits_so_far()` grew by one only. Drop the 60 s wait from 7.8's
   estimate.
-  *Status:* Open
+  *Status:* Fixed (393669ec): step 6 reads `deposit_failed` before the larger card and waits until it grows, then checks `pending` and one deposit only; 7.8 drops the fixed wait. The budget lines (`:37` to `:39`), the retry timing and the content-type note from the round 3 confirmations are also in step 6.
 
-- [ ] **P19 — minor.** *Where:* D-C2-11 (`quote.measure`'s errors and the
+- [x] **P19 — minor.** *Where:* D-C2-11 (`quote.measure`'s errors and the
   "service principal" branch).
   *Problem:* `measure` now calls `resolve_principal_and_owner`. That
   function refuses when the node has no owner, when signing is not
@@ -652,4 +652,4 @@ reviewed again for new problems.
   as `quote.set`, and that the Hub hides the size line on any error.
   Remove the "service principal" branch, and make
   `card_body_upper_bound`'s `delegation_json` a `&str`, not an `Option`.
-  *Status:* Open
+  *Status:* Fixed (393669ec): D-C2-11 lists the parse, slot and signing errors and says the Hub hides the line on any of them; the service principal branch is gone and `delegation_json` is `&str`; new service test `quote_measure_answers_signing_not_enrolled_like_quote_set` and a `signing-not-enrolled` Hub case.
