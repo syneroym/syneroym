@@ -67,37 +67,7 @@ impl RecordDraft {
             _ => return Err(DraftError::PayloadNotObject),
         }
 
-        fn walk(val: &Value, depth: usize, path: &str) -> Result<(), DraftError> {
-            if depth > MAX_PAYLOAD_DEPTH {
-                return Err(DraftError::PayloadTooDeep { depth, max: MAX_PAYLOAD_DEPTH });
-            }
-
-            match val {
-                Value::Number(n) => {
-                    if !n.is_i64() && !n.is_u64() {
-                        return Err(DraftError::PayloadNonIntegerNumber(path.to_string()));
-                    }
-                }
-                Value::Object(map) => {
-                    for (k, v) in map {
-                        let field_path =
-                            if path.is_empty() { k.clone() } else { format!("{path}.{k}") };
-                        walk(v, depth + 1, &field_path)?;
-                    }
-                }
-                Value::Array(arr) => {
-                    for (i, v) in arr.iter().enumerate() {
-                        let elem_path = format!("{path}[{i}]");
-                        walk(v, depth + 1, &elem_path)?;
-                    }
-                }
-                _ => (),
-            }
-
-            Ok(())
-        }
-
-        walk(&self.payload, 1, "")?;
+        walk_integers(&self.payload, 1, "")?;
 
         let canonical_payload = substrate::canonicalize_json_value(&self.payload);
         let bytes =
@@ -126,6 +96,35 @@ impl RecordDraft {
 
         Ok(())
     }
+}
+
+pub(crate) fn walk_integers(val: &Value, depth: usize, path: &str) -> Result<(), DraftError> {
+    if depth > MAX_PAYLOAD_DEPTH {
+        return Err(DraftError::PayloadTooDeep { depth, max: MAX_PAYLOAD_DEPTH });
+    }
+
+    match val {
+        Value::Number(n) => {
+            if !n.is_i64() && !n.is_u64() {
+                return Err(DraftError::PayloadNonIntegerNumber(path.to_string()));
+            }
+        }
+        Value::Object(map) => {
+            for (k, v) in map {
+                let field_path = if path.is_empty() { k.clone() } else { format!("{path}.{k}") };
+                walk_integers(v, depth + 1, &field_path)?;
+            }
+        }
+        Value::Array(arr) => {
+            for (i, v) in arr.iter().enumerate() {
+                let elem_path = format!("{path}[{i}]");
+                walk_integers(v, depth + 1, &elem_path)?;
+            }
+        }
+        _ => (),
+    }
+
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

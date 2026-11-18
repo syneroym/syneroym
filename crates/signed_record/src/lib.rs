@@ -8,9 +8,14 @@
 //! side of the `syneroym:signing` WIT boundary. A component linking this
 //! crate can build a draft and verify an envelope; it cannot sign one.
 
+pub mod disclosure;
 pub mod envelope;
 pub mod verify;
 
+pub use disclosure::{
+    DIGEST_CHARS, DecodedDisclosure, DisclosureError, SALT_BYTES, SALT_CHARS, Salt,
+    decode_disclosure, disclosure_digest, encode_disclosure, seeded_salt,
+};
 pub use envelope::{
     DraftError, ENVELOPE_VERSION, Envelope, EnvelopeError, MAX_PAYLOAD_BYTES, MAX_PAYLOAD_DEPTH,
     MAX_RECORD_TYPE_LEN, MAX_SUBJECT_LEN, RECORD_ID_PREFIX, RecordDraft, content_digest,
