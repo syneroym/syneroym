@@ -1212,9 +1212,13 @@ with the question.
   encrypts and base64-encodes it: about ×4.5 in a measured sample. A
   message deposited at an offline receiver's mailbox may be at most
   64 KiB sealed, so a card reaches a mailbox only when its body is about
-  14 KiB or less. A larger card stays in the sender's outbox and is
-  delivered directly once both nodes are online. C2a records the measured
-  numbers here.
+  13 KiB or less. A larger card stays in the sender's outbox and is
+  delivered directly once both nodes are online. Measured in C2a:
+  `MAILBOX_CARD_BODY_BYTES` is set to 13 KiB (13,312 bytes). A typical
+  two-commitment quote card body is 4,960 bytes (~5 KiB) and easily fits
+  a mailbox (`mailbox_fits: true`). A card body of 13 KiB deposits
+  successfully; one 2 KiB larger (15 KiB) fails deposit, waits in the
+  outbox as `pending`, and delivers directly once the peer reconnects.
 - **The 96 KiB limit stays (Q8).** The mailbox is a delivery shortcut,
   not a limit on what a quote may be. A quote whose card is too large for
   a mailbox reaches an offline peer only when both nodes are online, and

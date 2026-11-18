@@ -474,7 +474,7 @@ one.
 | `revocation` | SynOrg | This SynOrg withdrew a credential at a stated time. A revocation is permanent; a suspension is a `moderation-decision`, and the searcher's check shows either | That every cached copy is gone |
 | `enquiry` | Counterparty | What the counterparty asked for | — |
 | `quote` | Quote author | The exact terms offered, at a version | — |
-| `agreement-receipt` | Both | Both parties accepted these exact terms, including payee, expiry, cancellation and refund terms, and dispute path. Each party also states which language it read and whether that text was a machine translation | That either side will perform, or that the two parties read the same language |
+| `agreement-receipt` | Both | Both parties accepted these exact terms (signing their digests via selective disclosure), including payee, expiry, cancellation and refund terms, and dispute path. Each party also states which language it read and whether that text was a machine translation | That either side will perform, or that the two parties read the same language |
 | `payment-acknowledgement` | Each side, separately | Each party stated what they observed about a payment | **That money moved.** Only a supported payment provider's own attestation could show that, and none is integrated |
 | `fulfilment-receipt` | Both | Both parties agreed the work was done | Quality, or that no dispute follows |
 | `moderation-decision` | SynOrg | This group applied this rule to this member at this time | Global truth; another group is free to disagree |
@@ -751,6 +751,9 @@ The first release has **eight card types**, and no others:
 
 Each renders through a **fixed template chosen by `(type, version)`**. The Hub
 ships eight templates plus one fallback; it is not a general interpreter.
+For quotes and settlement cards, the card wrapper carries RFC 9901 `disclosures`
+that reveal concealed fields to the filing node. The card row stores and draws
+the verified plain form.
 
 "Renders it safely and never executes sender-supplied code" means, precisely:
 
