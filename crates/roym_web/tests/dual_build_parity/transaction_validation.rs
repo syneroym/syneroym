@@ -24,6 +24,7 @@ async fn scenario_144_every_transaction_verb_refused_over_wire_parity() {
         "quote.list",
         "quote.history",
         "quote.verify",
+        "quote.measure",
         "deal.ping",
         "deal.decline",
         "agreement.accept",
@@ -123,10 +124,12 @@ async fn scenario_145_currency_unknown_refused_and_jpy_accepted_parity() {
     assert_eq!(gw["result"]["quote_id"], gn["result"]["quote_id"]);
     let q_data_w = Envelope::from_json(gw["result"]["envelope"].as_str().unwrap()).unwrap().payload;
     let q_data_n = Envelope::from_json(gn["result"]["envelope"].as_str().unwrap()).unwrap().payload;
+    assert_eq!(gw["result"]["terms"]["currency"], "JPY");
+    assert_eq!(gw["result"]["terms"]["commitments"][1]["declared_value_minor"], 5000);
+    assert_eq!(gn["result"]["terms"]["currency"], "JPY");
+    assert_eq!(gn["result"]["terms"]["commitments"][1]["declared_value_minor"], 5000);
     assert_eq!(q_data_w["terms"]["currency"], "JPY");
-    assert_eq!(q_data_w["terms"]["commitments"][1]["declared_value_minor"], 5000);
     assert_eq!(q_data_n["terms"]["currency"], "JPY");
-    assert_eq!(q_data_n["terms"]["commitments"][1]["declared_value_minor"], 5000);
 }
 
 #[tokio::test]
@@ -181,9 +184,14 @@ async fn scenario_146_peer_replaying_older_request_or_quote_refused_parity() {
     assert_eq!(refused_card["verified"], false);
     assert!(refused_card["reason"].as_str().unwrap().contains("newer or equal version"));
 
-    // 2. Quote: node creates an enquiry, then peer sends quotes answering it
+    // 2. Quote replay check
+    assert_quote_replay_refused(&h, &conv).await;
+}
+
+async fn assert_quote_replay_refused(h: &Harness, conv: &str) {
+    // Node creates an enquiry, then peer sends quotes answering it
     let (rw, _) = both_rpc(
-        &h,
+        h,
         "enquiry.set",
         json!({
             "conversation": conv,
@@ -194,46 +202,48 @@ async fn scenario_146_peer_replaying_older_request_or_quote_refused_parity() {
     .await;
     let own_req_rec_id = rw["result"]["record_id"].as_str().unwrap();
 
-    let (q_v2_rec_id, q_v2_env) =
-        peer_signed_quote_with(&conv, 1, own_req_rec_id, &owner_did(), Some(10_000), 2_000, None);
-    let card_q_v2 = inbound_card(
+    let (q_v2_rec_id, q_v2_env, q_v2_disc) =
+        peer_signed_quote_with(conv, 1, own_req_rec_id, &owner_did(), Some(10_000), 2_000, None);
+    let card_q_v2 = inbound_card_with_disclosures(
         "m-quote-146-v2",
-        &conv,
+        conv,
         &peer_did(),
         2_000,
         transaction::RECORD_QUOTE,
         transaction::QUOTE_VERSION,
         &q_v2_env,
+        &q_v2_disc,
     );
     h.deliver(true, card_q_v2.clone()).await;
     h.deliver(false, card_q_v2).await;
-    let (sw3, sn3) = both_rpc(&h, "transaction.sync", json!({ "conversation": conv })).await;
+    let (sw3, sn3) = both_rpc(h, "transaction.sync", json!({ "conversation": conv })).await;
     assert_eq!(sw3, sn3);
     assert_eq!(sw3["result"]["filed"], 1);
     assert_eq!(sw3["result"]["refused"], 0);
 
     // Peer replaying older Quote version 1 (issued_at 1_000) is refused
-    let (q_v1_rec_id, q_v1_env) =
-        peer_signed_quote_with(&conv, 1, own_req_rec_id, &owner_did(), Some(10_000), 1_000, None);
+    let (q_v1_rec_id, q_v1_env, q_v1_disc) =
+        peer_signed_quote_with(conv, 1, own_req_rec_id, &owner_did(), Some(10_000), 1_000, None);
     assert_ne!(q_v1_rec_id, q_v2_rec_id);
-    let card_q_v1 = inbound_card(
+    let card_q_v1 = inbound_card_with_disclosures(
         "m-quote-146-v1",
-        &conv,
+        conv,
         &peer_did(),
         2_200,
         transaction::RECORD_QUOTE,
         transaction::QUOTE_VERSION,
         &q_v1_env,
+        &q_v1_disc,
     );
     h.deliver(true, card_q_v1.clone()).await;
     h.deliver(false, card_q_v1).await;
-    let (sw4, sn4) = both_rpc(&h, "transaction.sync", json!({ "conversation": conv })).await;
+    let (sw4, sn4) = both_rpc(h, "transaction.sync", json!({ "conversation": conv })).await;
     assert_eq!(sw4, sn4);
     assert_eq!(sw4["result"]["filed"], 1);
     assert_eq!(sw4["result"]["refused"], 1);
 
     let (mut tw2, mut tn2) =
-        both_rpc(&h, "transaction.thread", json!({ "conversation": conv })).await;
+        both_rpc(h, "transaction.thread", json!({ "conversation": conv })).await;
     let cards2 = tw2["result"]["cards"].as_array().unwrap();
     let refused_quote_card = cards2.iter().find(|c| c["message_id"] == "m-quote-146-v1").unwrap();
     assert_eq!(refused_quote_card["verified"], false);
@@ -265,8 +275,9 @@ async fn scenario_147_replaying_declined_quote_preserves_decline_parity() {
     .await;
     let req_rec_id = rw["result"]["record_id"].as_str().unwrap();
 
-    let (q_rec_id, q_env) = peer_signed_quote(&conv, 1, req_rec_id, &owner_did(), None, 1_000);
-    let card_msg = inbound_card(
+    let (q_rec_id, q_env, q_disc) =
+        peer_signed_quote(&conv, 1, req_rec_id, &owner_did(), None, 1_000);
+    let card_msg = inbound_card_with_disclosures(
         "m-quote-147",
         &conv,
         &peer_did(),
@@ -274,6 +285,7 @@ async fn scenario_147_replaying_declined_quote_preserves_decline_parity() {
         transaction::RECORD_QUOTE,
         transaction::QUOTE_VERSION,
         &q_env,
+        &q_disc,
     );
     h.deliver(true, card_msg.clone()).await;
     h.deliver(false, card_msg).await;
@@ -401,8 +413,9 @@ async fn scenario_148_request_or_receipt_with_expiry_is_refused_parity() {
     .await;
     let valid_req_id = rw["result"]["record_id"].as_str().unwrap();
 
-    let (q_rec_id, q_env) = peer_signed_quote(&conv, 2, valid_req_id, &owner_did(), None, 1_000);
-    let card_q = inbound_card(
+    let (q_rec_id, q_env, q_disc) =
+        peer_signed_quote(&conv, 2, valid_req_id, &owner_did(), None, 1_000);
+    let card_q = inbound_card_with_disclosures(
         "m-quote-148",
         &conv,
         &peer_did(),
@@ -410,6 +423,7 @@ async fn scenario_148_request_or_receipt_with_expiry_is_refused_parity() {
         transaction::RECORD_QUOTE,
         transaction::QUOTE_VERSION,
         &q_env,
+        &q_disc,
     );
     h.deliver(true, card_q.clone()).await;
     h.deliver(false, card_q).await;
@@ -493,8 +507,9 @@ async fn scenario_149_quote_naming_wrong_counterparty_did_refused_parity() {
     // Peer creates quote for req_rec_id, but sets counterparty_did to a stranger
     // DID
     let stranger_did = "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK";
-    let (q_rec_id, q_env) = peer_signed_quote(&conv, 1, req_rec_id, stranger_did, None, 1_000);
-    let card_msg = inbound_card(
+    let (q_rec_id, q_env, q_disc) =
+        peer_signed_quote(&conv, 1, req_rec_id, stranger_did, None, 1_000);
+    let card_msg = inbound_card_with_disclosures(
         "m-quote-149",
         &conv,
         &peer_did(),
@@ -502,6 +517,7 @@ async fn scenario_149_quote_naming_wrong_counterparty_did_refused_parity() {
         transaction::RECORD_QUOTE,
         transaction::QUOTE_VERSION,
         &q_env,
+        &q_disc,
     );
     h.deliver(true, card_msg.clone()).await;
     h.deliver(false, card_msg).await;

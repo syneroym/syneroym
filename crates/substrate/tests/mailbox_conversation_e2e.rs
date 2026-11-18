@@ -78,6 +78,17 @@ fn deposits_so_far() -> u64 {
         .unwrap_or(0)
 }
 
+/// How many times mailbox deposit sealing has failed.
+fn deposit_failed_so_far() -> u64 {
+    MemoryRecorder::global()
+        .expect("the substrate under test installs the recorder")
+        .snapshot()
+        .counters
+        .get("substrate.proxy.mailbox.deposit_failed")
+        .copied()
+        .unwrap_or(0)
+}
+
 async fn world() -> World {
     let _ = ring::default_provider().install_default();
     let wasm = fixture_wasm().expect("dual-build-fixture wasm artifact not built");
@@ -222,5 +233,157 @@ async fn a_group_push_from_the_mailbox_reaches_the_member() {
         "every member settled, so the message is delivered"
     );
     c.teardown().await;
+    world.teardown().await;
+}
+
+fn make_real_quote_card_body(target_bytes: usize) -> String {
+    use syneroym_identity::substrate::derive_did_key;
+    use syneroym_roym_core::{
+        card::card_body,
+        deal::{Answers, DealTerms},
+        testing::sd::{PlainQuote, conceal_quote},
+        transaction::{QUOTE_VERSION, RECORD_QUOTE},
+    };
+    use syneroym_signed_record::{Envelope, RecordDraft};
+
+    let signer = Identity::generate().unwrap();
+    let issuer = derive_did_key(&signer.public_key());
+    let now = 1_700_000_000;
+    let exp_secs = now + 3600;
+
+    let build = |pad_len: usize| -> (String, usize) {
+        let padding = "x".repeat(pad_len);
+        let terms_val = json!({
+            "currency": "EUR",
+            "quote_expires_at_secs": exp_secs,
+            "scope": { "lang": "en", "text": padding },
+            "cancellation_terms": { "lang": "en", "text": "Cancel 24h prior" },
+            "refund_terms": { "lang": "en", "text": "Full refund" },
+            "dispute_path": { "lang": "en", "text": "disputes@example.com" },
+            "commitments": [
+                {
+                    "commitment_id": "c1",
+                    "giver": "quote-author",
+                    "resource_kind": "goods-or-service",
+                    "kind": "fulfilment",
+                    "description": { "lang": "en", "text": "Task description" },
+                    "declared_value_minor": 50_000,
+                    "after": [],
+                },
+                {
+                    "commitment_id": "c2",
+                    "giver": "counterparty",
+                    "resource_kind": "currency",
+                    "kind": "currency",
+                    "description": { "lang": "en", "text": "Payment" },
+                    "declared_value_minor": 50_000,
+                    "payee": "did:key:z6Mks4PayeePlaceholderToReachExactLength53Chars",
+                    "payment_methods": ["card", "cash"],
+                    "tax_minor": 5_000,
+                    "fees_minor": 2_000,
+                    "after": ["c1"],
+                }
+            ]
+        });
+        let terms: DealTerms = serde_json::from_value(terms_val).unwrap();
+        let plain = PlainQuote {
+            quote_id: "quo_z6Mks4PlaceholderQuoteIdToFitFixedFieldLengthZBase32".to_string(),
+            conversation: "conv_z6Mks4PlaceholderConversationIdFixedLength".to_string(),
+            sequence: 1,
+            answers: Answers::Enquiry {
+                record_id: "rec_z6Mks4PlaceholderRecordIdToFitFixedLength".to_string(),
+            },
+            counterparty_did: "did:key:z6Mks4PlaceholderCounterpartyDidKeyToFit".to_string(),
+            terms,
+        };
+        let (payload, disclosures) = conceal_quote(plain, 1);
+        let payload_val = serde_json::to_value(&payload).unwrap();
+        let draft = RecordDraft {
+            version: QUOTE_VERSION,
+            record_type: RECORD_QUOTE.to_string(),
+            subject: "quo_z6Mks4PlaceholderQuoteIdToFitFixedFieldLengthZBase32".to_string(),
+            payload: payload_val,
+            expires_at_secs: Some(exp_secs),
+            supersedes: None,
+        };
+        let (mut env, bytes) = Envelope::unsigned(draft, issuer.clone(), None, now).unwrap();
+        let sig = z32::encode(&signer.sign(&bytes).to_bytes());
+        env.attach_signature(sig).unwrap();
+        let env_json = env.to_json().unwrap();
+        let body = card_body(RECORD_QUOTE, QUOTE_VERSION, &env_json, &disclosures).unwrap();
+        let len = body.len();
+        (body, len)
+    };
+
+    let mut low = 0;
+    let mut high = target_bytes;
+    let mut best = build(low).0;
+    while low <= high {
+        let mid = (low + high) / 2;
+        let (candidate, len) = build(mid);
+        if len <= target_bytes {
+            best = candidate;
+            low = mid + 1;
+        } else {
+            high = mid - 1;
+        }
+    }
+    best
+}
+
+#[tokio::test]
+async fn a_card_of_the_mailbox_size_waits_at_the_mailbox_and_a_larger_one_at_the_sender() {
+    let mut world = world().await;
+    let conv = open_conversation(&world.a.node, &world.a.did, &world.b().did).await;
+    let first = send_message(&world.a.node, &world.a.did, &conv, "first, while both are up").await;
+    assert!(wait_for_state(&world.a.node, &world.a.did, &first, "delivered", DELIVER_BUDGET).await);
+
+    world.stop_b().await;
+
+    // Send a real quote card of at most MAILBOX_CARD_BODY_BYTES and within 64 bytes
+    // of it
+    let target = syneroym_roym_core::card::MAILBOX_CARD_BODY_BYTES;
+    let fit_body = make_real_quote_card_body(target);
+    assert!(
+        fit_body.len() <= target && fit_body.len() >= target.saturating_sub(64),
+        "fit body length {} not within 64 bytes of target {}",
+        fit_body.len(),
+        target
+    );
+
+    let deposits_before = deposits_so_far();
+    let fit_msg = send_message(&world.a.node, &world.a.did, &conv, &fit_body).await;
+    assert!(
+        wait_for_state(&world.a.node, &world.a.did, &fit_msg, "deposited", DEPOSIT_BUDGET).await,
+        "fitting card must wait at the mailbox"
+    );
+    assert_eq!(deposits_so_far(), deposits_before + 1);
+
+    // Send a real quote card ~2 KiB larger
+    let failed_before = deposit_failed_so_far();
+    let large_body = make_real_quote_card_body(target + 2048);
+    let large_msg = send_message(&world.a.node, &world.a.did, &conv, &large_body).await;
+
+    assert!(
+        wait_until(DEPOSIT_BUDGET, || async { deposit_failed_so_far() > failed_before }).await,
+        "larger card must fail mailbox deposit"
+    );
+
+    let row = message_row(&world.a.node, &world.a.did, &conv, &large_msg).await.unwrap();
+    assert_eq!(row["state"], "pending", "{row}");
+    assert_eq!(deposits_so_far(), deposits_before + 1);
+
+    // B restarts; both messages reach delivered
+    world.restart_b_and_pull().await;
+
+    assert!(
+        wait_for_state(&world.a.node, &world.a.did, &fit_msg, "delivered", ANSWER_BUDGET).await,
+        "first message must be delivered from mailbox"
+    );
+    assert!(
+        wait_for_state(&world.a.node, &world.a.did, &large_msg, "delivered", ANSWER_BUDGET).await,
+        "second message must be delivered by outbox direct retry"
+    );
+
     world.teardown().await;
 }

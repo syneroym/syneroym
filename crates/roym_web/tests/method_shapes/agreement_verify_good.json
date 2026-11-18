@@ -8,72 +8,34 @@
     "quote_record_id": "string",
     "role": "counterparty",
     "terms": {
-      "cancellation_terms": {
-        "lang": "string",
-        "text": "string"
-      },
+      "_sd": [
+        "string"
+      ],
       "commitments": [
         {
+          "_sd": [
+            "string"
+          ],
           "after": [
             "string"
           ],
           "commitment_id": "string",
-          "declared_value_minor": "number",
-          "description": {
-            "lang": "string",
-            "text": "string"
-          },
-          "details": "null",
-          "eep": "null",
-          "fees_minor": "number",
           "giver": "counterparty",
           "kind": "currency",
-          "location": "null",
-          "payee": "string",
-          "payment_methods": [
-            "string"
-          ],
-          "resource_kind": "currency",
-          "tax_minor": "number",
-          "window": "null"
+          "resource_kind": "currency"
         },
         {
+          "_sd": [
+            "string"
+          ],
           "commitment_id": "string",
-          "declared_value_minor": "number",
-          "description": {
-            "lang": "string",
-            "text": "string"
-          },
-          "details": "null",
-          "eep": "null",
-          "fees_minor": "null",
           "giver": "quote-author",
           "kind": "fulfilment",
-          "location": {
-            "address": "string",
-            "where": "at-receiver"
-          },
-          "payee": "null",
-          "payment_methods": "null",
-          "resource_kind": "goods-or-service",
-          "tax_minor": "null",
-          "window": "null"
+          "resource_kind": "goods-or-service"
         }
       ],
       "currency": "string",
-      "dispute_path": {
-        "lang": "string",
-        "text": "string"
-      },
-      "quote_expires_at_secs": "number",
-      "refund_terms": {
-        "lang": "string",
-        "text": "string"
-      },
-      "scope": {
-        "lang": "string",
-        "text": "string"
-      }
+      "quote_expires_at_secs": "number"
     },
     "viewed_lang": "string",
     "viewed_via_mt": "boolean"

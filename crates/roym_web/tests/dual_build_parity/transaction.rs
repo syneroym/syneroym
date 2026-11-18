@@ -288,19 +288,19 @@ async fn scenario_129_agreement_accept_quote_author_and_counterparty_halves_pari
     .await;
     let my_req_rec_id = my_req_w["result"]["record_id"].as_str().unwrap();
 
-    let (peer_q_rec_id, peer_q_env) =
+    let (peer_q_rec_id, peer_q_env, peer_q_disc) =
         peer_signed_quote(&conv, 1, my_req_rec_id, &owner_did(), None, 1_000);
-    let q_card_msg = inbound_card(
+    deliver_peer_card_with_disclosures(
+        &h,
         "m-peer-quote-129",
         &conv,
         &peer_did(),
-        1_000,
         transaction::RECORD_QUOTE,
         transaction::QUOTE_VERSION,
         &peer_q_env,
-    );
-    h.deliver(true, q_card_msg.clone()).await;
-    h.deliver(false, q_card_msg).await;
+        &peer_q_disc,
+    )
+    .await;
     both_rpc(&h, "transaction.sync", json!({ "conversation": conv })).await;
 
     let (mut cw, mut cn) =
@@ -555,19 +555,19 @@ async fn scenario_133_expired_quote_card_filed_verified_with_terms_accept_refuse
     .await;
     let my_req_rec_id = my_req_w["result"]["record_id"].as_str().unwrap();
 
-    let (q_rec_id, q_env) =
+    let (q_rec_id, q_env, q_disc) =
         peer_signed_quote(&conv, 1, my_req_rec_id, &owner_did(), Some(500), 100);
-    let card_msg = inbound_card(
+    deliver_peer_card_with_disclosures(
+        &h,
         "m-expired-quote-133",
         &conv,
         &peer_did(),
-        1_000,
         transaction::RECORD_QUOTE,
         transaction::QUOTE_VERSION,
         &q_env,
-    );
-    h.deliver(true, card_msg.clone()).await;
-    h.deliver(false, card_msg).await;
+        &q_disc,
+    )
+    .await;
 
     let (sw, sn) = both_rpc(&h, "transaction.sync", json!({ "conversation": conv })).await;
     assert_eq!(sw, sn);

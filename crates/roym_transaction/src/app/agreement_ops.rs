@@ -314,8 +314,7 @@ fn viewed(input: &AgreementAcceptInput, terms: &DealTerms) -> Result<(LangTag, b
         })?,
     };
     if let Err(e) = transaction::check_viewed(&lang, via_mt, terms) {
-        let resp = Response::invalid_params(e.to_string());
-        return Err(resp);
+        return Err(viewed_error("viewed_via_mt", e.to_string()));
     }
     if !via_mt && lang != *original && !terms.scope.translations.iter().any(|t| t.lang == lang) {
         return Err(viewed_error("viewed_lang", "viewed_lang names no version of this quote"));

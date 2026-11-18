@@ -1,6 +1,6 @@
 use serde_json::json;
 
-use super::{deal_fixtures::*, fixtures::*, helpers::*};
+use super::{fixtures::*, helpers::*};
 
 #[tokio::test]
 async fn scenario_163_fulfilment_halves_and_completion_orders_parity() {
@@ -25,7 +25,7 @@ async fn scenario_163_fulfilment_halves_and_completion_orders_parity() {
     assert_eq!(fg_n["result"]["track"], "claimed");
 
     // Counterparty fulfilment half -> acknowledged
-    let (cf_id, cf_env) = peer_signed_fulfilment(
+    let (cf_id, cf_env, cf_disc) = peer_signed_fulfilment(
         &conv,
         &agr_rec,
         &peer_did(),
@@ -34,7 +34,7 @@ async fn scenario_163_fulfilment_halves_and_completion_orders_parity() {
         "c1",
         1_002_000,
     );
-    deliver_peer_card(
+    deliver_peer_card_with_disclosures(
         &h,
         &format!("m-ful-{cf_id}"),
         &conv,
@@ -42,6 +42,7 @@ async fn scenario_163_fulfilment_halves_and_completion_orders_parity() {
         syneroym_roym_core::record::RECORD_FULFILMENT_RECEIPT,
         syneroym_roym_core::fulfilment::FULFILMENT_RECEIPT_VERSION,
         &cf_env,
+        &cf_disc,
     )
     .await;
     both_rpc(&h, "transaction.sync", json!({ "conversation": conv, "full": true })).await;
@@ -53,7 +54,7 @@ async fn scenario_163_fulfilment_halves_and_completion_orders_parity() {
     assert_eq!(fg2_n["result"]["track"], "fulfilled");
 
     // Both tracks acknowledged completes agreement
-    let (c_ack_id, c_ack_env) = peer_signed_payment_ack(
+    let (c_ack_id, c_ack_env, c_ack_disc) = peer_signed_payment_ack(
         &conv,
         &agr_rec,
         &peer_did(),
@@ -66,7 +67,7 @@ async fn scenario_163_fulfilment_halves_and_completion_orders_parity() {
         None,
         1_003_000,
     );
-    deliver_peer_card(
+    deliver_peer_card_with_disclosures(
         &h,
         &format!("m-pay-{c_ack_id}"),
         &conv,
@@ -74,6 +75,7 @@ async fn scenario_163_fulfilment_halves_and_completion_orders_parity() {
         syneroym_roym_core::record::RECORD_PAYMENT_ACKNOWLEDGEMENT,
         syneroym_roym_core::payment::PAYMENT_ACKNOWLEDGEMENT_VERSION,
         &c_ack_env,
+        &c_ack_disc,
     )
     .await;
     both_rpc(&h, "transaction.sync", json!({ "conversation": conv, "full": true })).await;
@@ -110,7 +112,7 @@ async fn scenario_164_fulfilment_halves_wrong_agreement_refused_parity() {
     assert!(is_err(&bad_n, -32602));
 
     // Peer fulfilment with wrong counterparty_did
-    let (bad_cf_id, bad_cf_env) = peer_signed_fulfilment(
+    let (bad_cf_id, bad_cf_env, bad_cf_disc) = peer_signed_fulfilment(
         &conv,
         &agr_rec,
         "did:key:zWrong",
@@ -119,7 +121,7 @@ async fn scenario_164_fulfilment_halves_wrong_agreement_refused_parity() {
         "c1",
         1_002_000,
     );
-    deliver_peer_card(
+    deliver_peer_card_with_disclosures(
         &h,
         &format!("m-badful-{bad_cf_id}"),
         &conv,
@@ -127,6 +129,7 @@ async fn scenario_164_fulfilment_halves_wrong_agreement_refused_parity() {
         syneroym_roym_core::record::RECORD_FULFILMENT_RECEIPT,
         syneroym_roym_core::fulfilment::FULFILMENT_RECEIPT_VERSION,
         &bad_cf_env,
+        &bad_cf_disc,
     )
     .await;
     both_rpc(&h, "transaction.sync", json!({ "conversation": conv, "full": true })).await;
@@ -169,7 +172,7 @@ async fn scenario_165_late_half_after_terminal_state_parity() {
     assert_eq!(cn["result"]["state"], "cancelled");
 
     // Late fulfilment arriving after terminal state does not alter terminal state
-    let (late_cf_id, late_cf_env) = peer_signed_fulfilment(
+    let (late_cf_id, late_cf_env, late_cf_disc) = peer_signed_fulfilment(
         &conv,
         &agr_rec,
         &peer_did(),
@@ -178,7 +181,7 @@ async fn scenario_165_late_half_after_terminal_state_parity() {
         "c1",
         20_000_000,
     );
-    deliver_peer_card(
+    deliver_peer_card_with_disclosures(
         &h,
         &format!("m-lateful-{late_cf_id}"),
         &conv,
@@ -186,6 +189,7 @@ async fn scenario_165_late_half_after_terminal_state_parity() {
         syneroym_roym_core::record::RECORD_FULFILMENT_RECEIPT,
         syneroym_roym_core::fulfilment::FULFILMENT_RECEIPT_VERSION,
         &late_cf_env,
+        &late_cf_disc,
     )
     .await;
     both_rpc(&h, "transaction.sync", json!({ "conversation": conv, "full": true })).await;

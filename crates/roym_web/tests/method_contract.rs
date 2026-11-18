@@ -8,10 +8,10 @@
 
 #[allow(dead_code)]
 #[path = "dual_build_parity/deal_fixtures.rs"]
-mod deal_fixtures;
+pub(crate) mod deal_fixtures;
 #[allow(dead_code)]
 #[path = "dual_build_parity/fixtures.rs"]
-mod fixtures;
+pub(crate) mod fixtures;
 #[allow(dead_code)]
 #[path = "dual_build_parity/helpers.rs"]
 mod helpers;
