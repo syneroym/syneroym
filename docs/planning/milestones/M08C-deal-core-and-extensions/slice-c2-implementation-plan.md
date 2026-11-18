@@ -8,7 +8,8 @@ planning conversation. This plan is meant to stand alone.*
 (Claude Sonnet 5.5, [slice-c2-review.md](slice-c2-review.md), P1 to P12)
 folded the same day. The owner accepted the recommended answer (a) of every
 question, Q1 to Q8, on 2026-11-18. Plan review round 2 (Claude Opus 5.5,
-P13 to P17) folded the same day.**
+P13 to P17) and round 3 (Claude Opus 5.5, P18 and P19) folded the same
+day.**
 
 **Size and PRs.** C2 is an L slice. This plan splits it in two parts, and
 each part is one PR that passes `mise run verify` (Q1):
@@ -788,17 +789,27 @@ differs from the doc's text (marked "deviation").
   (`roym_core::card::card_body_upper_bound`). The placeholder carries the
   delegation certificate this node really signs with now: `measure` calls
   `resolve_principal_and_owner` (`app.rs:281`), as `quote.set` does
-  (`quote_ops.rs:106`), and passes its `delegation_json`, or none for a
-  service principal (review P14). The longest certificate the signer
+  (`quote_ops.rs:106`), and passes its certificate JSON (review P14). The
+  principal is always a delegated one: `person_principal` returns only
+  `Principal::Delegated` (`crates/roym_core/src/signing.rs:211`), so the
+  argument is a plain `&str` (review P19). The longest certificate the signer
   accepts is 16 KiB (`crates/core/src/record_signer.rs:121`), more than the
   mailbox size by itself, so a longest-length placeholder would make
   `mailbox_fits` false for every quote. The issuer (`did:key`) and the
   signature have fixed lengths; the timestamps, the record id and a
   `supersedes` take their longest values. `mailbox_fits` is
   `card_bytes <= MAILBOX_CARD_BODY_BYTES` (Q8, D-C2-22). It does not
-  validate the terms (the form is half filled while the person types). A
-  body that does not parse, or a slot step that fails, answers the same
-  error `quote.set` would give; the Hub then hides the line.
+  validate the terms (the form is half filled while the person types).
+  Its errors are the same as `quote.set`'s, with the same words, and the
+  Hub hides the line on any of them (review P19):
+  - a body that does not parse, or a slot step that fails;
+  - the signing errors of `resolve_principal_and_owner` (`app.rs:281` to
+    `:305`): "this installation has no recorded owner",
+    `signing-not-enrolled`, `signing-certificate-expired at <t>` and
+    `signing-certificate-stale: …` (all `-32602`), and a storage error
+    (`-32603`).
+  The person sees the signing error when they press Send, from
+  `quote.set`, as today.
 - **D-C2-12. Import rebuilds plain data.** `transaction.import` checks the
   `disclosures` section first (each row names a record in the bundle; each
   disclosure matches a digest of that record; a quote's set is complete and
@@ -1094,7 +1105,7 @@ Vec<String>), SdError>` (digests, disclosures) and
 
 `card.rs`: `Card.disclosures`, `card_body(card_type, version, envelope,
 disclosures: &[String])`, `card_body_upper_bound(card_type, payload:
-&Value, disclosures: &[String], delegation_json: Option<&str>) -> usize`
+&Value, disclosures: &[String], delegation_json: &str) -> usize`
 (D-C2-11: the real certificate, review P14), and
 `MAILBOX_CARD_BODY_BYTES` with a first value of 13 KiB that step 6's test
 corrects (D-C2-22).
@@ -1212,12 +1223,19 @@ In-crate tests: section 7.2.
   (`stop_b`, `restart_b_and_pull`), using `conversation_fixture` and
   `conversation_peer::Peer`. No new harness, and no Roym app is needed:
   - `a_card_of_the_mailbox_size_waits_at_the_mailbox_and_a_larger_one_at_the_sender`:
-    one exchange while both are up (so a session exists); stop B; send
-    two bodies with `send_message`. The first is a real quote card body
-    of at most `MAILBOX_CARD_BODY_BYTES` and within 64 bytes of it; it
-    reaches `deposited`. The second is a real card about 2 KiB larger; it
-    does not reach `deposited` within `DEPOSIT_BUDGET`, and
-    `deposits_so_far()` grew by one only. Restart B; both reach
+    one exchange while both are up (so a session exists); stop B. Send a
+    real quote card body of at most `MAILBOX_CARD_BODY_BYTES` and within
+    64 bytes of it with `send_message`; it reaches `deposited`. Read the
+    router's counter `substrate.proxy.mailbox.deposit_failed`
+    (`crates/router/src/proxy/mailbox.rs:269`) from the same
+    `MemoryRecorder` that `deposits_so_far()` reads (`:71`). Send a real
+    card about 2 KiB larger. Wait until `deposit_failed` is above the
+    value read before (review P18): this proves the sender tried the
+    mailbox and the seal failed, which "not `deposited` after 60 s"
+    cannot tell apart from "never tried", and it needs no fixed wait.
+    Then the larger message's state is `pending`, and
+    `deposits_so_far()` grew by one only. A helper beside
+    `deposits_so_far()` reads the new counter. Restart B; both reach
     `delivered` (the first from the mailbox, the second by the outbox's
     direct retry).
   - The card bodies are real: built with `roym_core::testing::sd`
@@ -1225,7 +1243,17 @@ In-crate tests: section 7.2.
     wanted length. `crates/substrate/Cargo.toml`'s dev-dependency on
     `syneroym-roym-core` (`:134`) gains `features = ["test-host"]`.
   - One case, not two, so the test boots one world and waits once
-    (`DEPOSIT_BUDGET` 60 s, `ANSWER_BUDGET` 150 s, `:36` to `:38`).
+    (`DEPOSIT_BUDGET` 60 s and `ANSWER_BUDGET` 150 s, `:37` to `:39`, are
+    upper bounds; each wait ends as soon as its state or counter is seen).
+    The direct retry after the restart fits `ANSWER_BUDGET`: the outbox's
+    backoff step is 128 s between 127 s and 255 s of age
+    (`crates/conversation/src/outbox.rs:655`), and each try takes at most
+    5 s (`MAILBOX_DIRECT_ATTEMPT_TIMEOUT`, `router/src/proxy/mailbox.rs:30`).
+  - The fixture sends `text/plain` (`dual-build-fixture/src/app/dispatch.rs:198`);
+    Roym sends `application/vnd.roym.card+json` (`roym_core/src/card.rs:27`),
+    20 bytes longer in `DeliveryPayload.content_type`. So the measured
+    value is about 20 body bytes high for a real card. D-C2-22's 1 KiB
+    margin covers it.
   - Set `MAILBOX_CARD_BODY_BYTES` from this run (D-C2-22) and record in
     the agreements doc's C2 deviation row the measured factor and the
     size of a typical two-commitment quote card (from
@@ -1446,6 +1474,9 @@ New file `disclosure.rs` (C2a):
   least the length of the real card `quote.set` then sends for the same
   terms; a quote with long texts in several languages gives
   `mailbox_fits: false` and `fits: true`.
+- `quote_measure_answers_signing_not_enrolled_like_quote_set` (review
+  P19): on a test host with no signing certificate, `quote.measure` and
+  `quote.set` give the same code and words.
 - Repeats (D-C2-7, review P11, P15): `a_repeat_quote_card_with_the_same_set_is_a_repeat`
   (also with the set in another order),
   `a_repeat_quote_card_without_disclosures_uses_the_stored_set`,
@@ -1490,7 +1521,9 @@ C2b, new file `roym_disclosure_e2e.rs`:
 
 - `quote_size.test.ts`: the line shows used and limit; the over class and
   text when `fits` is false; the mailbox note when `fits` is true and
-  `mailbox_fits` is false; hidden on an error; one call after typing stops
+  `mailbox_fits` is false; hidden on an error, with one case for a parse
+  error and one for `signing-not-enrolled` (review P19); one call after
+  typing stops
   (fake timers).
 - `messages.test.ts`: `readQuoteForm` gives the same terms submit sends.
 - `templates.test.ts`: remove the `booking-progress` case.
@@ -1539,9 +1572,10 @@ C2b: none.
 - `messages.ts` is 1018 lines: step 7 moves term building out, so it
   should shrink.
 - The mailbox case adds one more world to nextest's `substrate-e2e`
-  group: about 1 to 4 minutes (one deposit wait, one restart, one answer
-  wait), like the file's first case. It runs in that group's pool, beside
-  the other mailbox tests.
+  group: about 1 to 3 minutes (one restart and one answer wait; no fixed
+  wait, since the larger card is shown by the `deposit_failed` counter,
+  review P18), like the file's first case. It runs in that group's pool,
+  beside the other mailbox tests.
 
 ### 7.9 Component size
 
