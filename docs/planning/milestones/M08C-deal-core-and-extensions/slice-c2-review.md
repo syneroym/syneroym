@@ -445,7 +445,7 @@ Q1 to Q7: no change from round 1.
 
 ### New findings
 
-- [ ] **P13 — major.** *Where:* step 6 ("Two-node (Q8)"), 7.4, AG-40 in
+- [x] **P13 — major.** *Where:* step 6 ("Two-node (Q8)"), 7.4, AG-40 in
   section 3, "How this is shown to an end user" (developer bullet), exit
   criteria.
   *Problem:* The two new two-node tests use "`common/mailbox_world.rs` for
@@ -476,9 +476,9 @@ Q1 to Q7: no change from round 1.
   `mailbox_fits`. Update the AG-40 row, the developer bullet and 7.4 to
   match. If the owner wants a Roym-level mailbox test anyway, add the new
   world to Q1's estimate and to 7.8's time risks.
-  *Status:* Open
+  *Status:* Fixed differently (38ca7afb): no Roym-level mailbox test. Step 6 adds one case (not two) to `mailbox_conversation_e2e.rs`, using its own `World`, with real quote card bodies from the shared builder; the in-crate `quote_measure_says_when_a_card_does_not_fit_a_mailbox` keeps the Roym side. AG-40, the developer bullet, 7.4, 7.8 and the exit criteria updated; `roym_disclosure_e2e.rs` is now a C2b file only.
 
-- [ ] **P14 — major.** *Where:* D-C2-11 (`card_bytes`,
+- [x] **P14 — major.** *Where:* D-C2-11 (`card_bytes`,
   `card_body_upper_bound`), step 4 (`card.rs`), step 7, Q8 (a).
   *Problem:* `card_bytes` is "the length of `card_body` built with … a
   placeholder envelope whose issuer, signature and delegation certificate
@@ -501,9 +501,9 @@ Q1 to Q7: no change from round 1.
   value. Add a case to `quote_measure_says_when_a_card_does_not_fit_a_mailbox`:
   a typical two-commitment quote has `mailbox_fits: true`, and
   `card_bytes` is at least the real card's length for the same terms.
-  *Status:* Open
+  *Status:* Fixed (38ca7afb): D-C2-11 measures with the certificate from `resolve_principal_and_owner`; `card_body_upper_bound` takes `delegation_json`; the 7.2 test gains the typical-quote and upper-bound cases.
 
-- [ ] **P15 — minor.** *Where:* D-C2-4, D-C2-7 (`disclosures-differ`),
+- [x] **P15 — minor.** *Where:* D-C2-4, D-C2-7 (`disclosures-differ`),
   the 7.2 test `a_repeat_with_a_different_set_is_refused_and_the_first_set_stays`,
   and the agreements doc's new row "A stored set of disclosures is never
   replaced".
@@ -524,9 +524,9 @@ Q1 to Q7: no change from round 1.
   doc row to: "A repeat with the same set, or with none, is filed as a
   repeat; a repeat whose set fails the strict reveal is refused; the
   stored set is never replaced."
-  *Status:* Open
+  *Status:* Fixed (38ca7afb): `disclosures-differ` dropped from `SdError`, D-C2-4, D-C2-7 and the agreements doc row, with the reason; test renamed to `a_repeat_with_a_bad_set_is_refused_and_the_stored_set_stays`; the same-set test also tries another order.
 
-- [ ] **P16 — minor.** *Where:* D-C2-13, D-C2-20 (`seeded_salts`, "the same
+- [x] **P16 — minor.** *Where:* D-C2-13, D-C2-20 (`seeded_salts`, "the same
   rule as `RecordSalts::Seeded`"), `TestHost`'s counter.
   *Problem:* The seeded rule (`SHA-256(seed ‖ n)`, first 16 bytes) is to
   exist in three places: `RecordSalts::Seeded` in `crates/core`,
@@ -542,9 +542,9 @@ Q1 to Q7: no change from round 1.
   `syneroym-core` and `roym_core` already depend on it). Call it from
   `RecordSalts::Seeded`, `TestHost` and `testing::sd`. Add one unit test
   that pins its first output.
-  *Status:* Open
+  *Status:* Fixed (38ca7afb): one `seeded_salt(seed, n)` in `syneroym_signed_record::disclosure`, called by `RecordSalts::Seeded`, `TestHost` and `testing::sd`; pinned by `seeded_salt_first_output_is_pinned`.
 
-- [ ] **P17 — minor.** *Where:* step 6, "The mailbox size" (the
+- [x] **P17 — minor.** *Where:* step 6, "The mailbox size" (the
   measurement test).
   *Problem:* The test "builds the same `DeliveryPayload` encoding, Olm
   encryption and `deliver` request that `transport.rs:210` to `:230`
@@ -562,4 +562,4 @@ Q1 to Q7: no change from round 1.
   `conversation`, which calls the real encode and encrypt functions. Feed
   it a real quote card built with the shared builder (D-C2-20), not
   synthetic text.
-  *Status:* Open
+  *Status:* Fixed (38ca7afb): the hand-built copy and its fallback are gone. D-C2-22 sets the value from the real delivery path (P13's case and the router's deposit warning, which names the sealed size); the bodies are real quote cards.
