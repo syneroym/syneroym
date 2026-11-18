@@ -653,3 +653,51 @@ reviewed again for new problems.
   Remove the "service principal" branch, and make
   `card_body_upper_bound`'s `delegation_json` a `&str`, not an `Option`.
   *Status:* Fixed (393669ec): D-C2-11 lists the parse, slot and signing errors and says the Hub hides the line on any of them; the service principal branch is gone and `delegation_json` is `&str`; new service test `quote_measure_answers_signing_not_enrolled_like_quote_set` and a `signing-not-enrolled` Hub case.
+
+## Plan review round 4 — Claude Opus 5.5 (Claude Code), 2026-11-18
+
+**Reviewer note.** This round also runs on Claude Opus 5.5, the plan's own
+model. The same note as round 2 applies.
+
+Checked the plan at `31553df7` (fixes in `393669ec`) against the code on
+this checkout. Only the parts that the fix commit changed were reviewed:
+the status line, D-C2-11, step 4 (`card.rs`), step 6, 7.2, 7.6 and 7.8.
+
+**Summary: round 3 items: 2 of 2 fixed and confirmed. New findings: 0.
+Open: 0.**
+
+### Round 3 items
+
+- **P18.** Confirmed. `substrate.proxy.mailbox.deposit_failed` is counted
+  at `router/src/proxy/mailbox.rs:269`, through the same `metrics` recorder
+  that `deposits_so_far()` reads (`mailbox_conversation_e2e.rs:71`). The
+  counter grows for any failed deposit, whether the seal fails at the
+  sender or the mailbox refuses the deposit. Both cases mean that the
+  sender tried. The value is read after the first card is `deposited`,
+  so the first card cannot move it. A deferred message's state is
+  `pending`, as the file's group case already checks (`:216`). The new
+  budget lines (`:37` to `:39`), the retry timing and the content-type
+  note match the code.
+- **P19.** Confirmed. The four signing messages are the ones at
+  `roym_transaction/src/app.rs:288` to `:303`, with `-32602`, and the
+  storage error is `-32603` (`roym_core/src/envelope.rs:62` to `:68`).
+  `person_principal` returns only `Principal::Delegated`
+  (`roym_core/src/signing.rs:211`), so `delegation_json: &str` is right.
+  For a delegated principal the issuer is the master `did:key`
+  (`roym_transaction/src/app/tests.rs:91` to `:95`), so its length is
+  fixed, as D-C2-11 says.
+  A note for the implementer of
+  `quote_measure_answers_signing_not_enrolled_like_quote_set`: a bare
+  `TestHost::default()` has no signing identity
+  (`roym_core/src/testing.rs:214` to `:217`), so both methods would fail
+  in `owner_did` with the storage error (`-32603`), not with
+  `signing-not-enrolled`. The test must call `set_signing_id` with an
+  owner, as the shared setup does (`app/tests.rs:73`), and leave out the
+  `CERTIFICATES` row. It should also check the code is
+  `signing-not-enrolled`, not only that the two answers are equal. This
+  is a detail of the test's setup, not a gap in the plan, so it is not a
+  finding.
+
+### New findings
+
+None.
