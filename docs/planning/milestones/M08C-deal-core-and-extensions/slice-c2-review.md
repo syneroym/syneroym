@@ -563,3 +563,93 @@ Q1 to Q7: no change from round 1.
   it a real quote card built with the shared builder (D-C2-20), not
   synthetic text.
   *Status:* Fixed (38ca7afb): the hand-built copy and its fallback are gone. D-C2-22 sets the value from the real delivery path (P13's case and the router's deposit warning, which names the sealed size); the bodies are real quote cards.
+
+## Plan review round 3 — Claude Opus 5.5 (Claude Code), 2026-11-18
+
+**Reviewer note.** This round also runs on Claude Opus 5.5, the plan's own
+model. The same note as round 2 applies.
+
+Checked the plan at `7e791833` (fixes in `38ca7afb`) against the code on
+this checkout. First each round 2 item was checked against the code. Then
+the parts that the fix commit changed (the status line, 2.1, Q1, AG-40 in
+section 3, D-C2-4, D-C2-7, D-C2-11, D-C2-13, D-C2-20, D-C2-22, steps 1, 3,
+4 and 6, 7.1, 7.2, 7.4, 7.8, 10, and the agreements doc's new rows) were
+reviewed again for new problems.
+
+**Summary: round 2 items: 5 of 5 fixed and confirmed. New findings: 2
+(0 blocker, 0 major, 2 minor). Open: 2.**
+
+### Round 2 items
+
+- **P13.** Confirmed. `mailbox_conversation_e2e.rs` is 226 lines. `World`
+  is at `:45` and `world()` at `:81`. It has `stop_b`,
+  `restart_b_and_pull` and `deposits_so_far`. `send_message` takes any
+  body text (`common/conversation_fixture.rs:194`). The budgets are at
+  `:37` to `:39`, not `:36` to `:38` (no effect).
+  `crates/substrate/Cargo.toml:134` is the `syneroym-roym-core`
+  dev-dependency, and its `test-host` feature has no dependencies of its
+  own (`crates/roym_core/Cargo.toml:11`). The direct retry after the
+  restart fits the budget: the outbox retries on a backoff by the
+  message's age (`conversation/src/outbox.rs:655`). Between 127 s and
+  255 s of age the step is 128 s. Each try costs at most 5 s
+  (`MAILBOX_DIRECT_ATTEMPT_TIMEOUT`, `router/src/proxy/mailbox.rs:30`).
+  So at least one try falls inside the 150 s `ANSWER_BUDGET` after B is
+  back.
+  One small difference, inside the 1 KiB margin: the fixture sends
+  `text/plain` (`dual-build-fixture/src/app/dispatch.rs:198`), and Roym
+  sends `application/vnd.roym.card+json` (`roym_core/src/card.rs:27`).
+  This is 20 more bytes in `DeliveryPayload.content_type`, or about
+  90 sealed bytes. The value the test measures is therefore slightly
+  high for a real card, by about 20 body bytes. The margin covers it.
+- **P14.** Confirmed. `resolve_principal_and_owner` is at `app.rs:281`,
+  and `quote.set` calls it at `quote_ops.rs:106`. One gap in the new text
+  is P19.
+- **P15.** Confirmed. `disclosures-differ` is gone from `SdError`, D-C2-4,
+  D-C2-7 and the agreements doc row, and the reason is stated.
+- **P16.** Confirmed. `check-roym-deps` allows `syneroym-signed-record`
+  (`xtask/src/main.rs:188`). `roym_core` (`Cargo.toml:15`) and
+  `syneroym-core` (`Cargo.toml:26`) both depend on it, and it has `sha2`
+  (`crates/signed_record/Cargo.toml:15`).
+- **P17.** Confirmed. The hand-built copy is gone. The router's warning
+  carries the seal error (`router/src/proxy/mailbox.rs:268` to `:274`),
+  and that error names the sealed size and the 64 KiB maximum
+  (`mailbox_format/src/deposit.rs:49`).
+
+### New findings
+
+- [ ] **P18 — minor.** *Where:* step 6, "The mailbox size", the case
+  `a_card_of_the_mailbox_size_waits_at_the_mailbox_and_a_larger_one_at_the_sender`;
+  7.8 (time).
+  *Problem:* The case proves that the larger card is not deposited by
+  waiting the full `DEPOSIT_BUDGET` (60 s) and seeing no `deposited`.
+  That proves only that nothing happened. A card that was never tried
+  also shows no `deposited`.
+  *Failure case:* An outbox change stops the sender from trying the
+  larger card while B is away. The case still passes, and it costs a
+  fixed 60 s on every run.
+  *Fix:* Wait for a positive signal. The router counts each failed
+  deposit as `substrate.proxy.mailbox.deposit_failed`
+  (`router/src/proxy/mailbox.rs:269`), in the same process recorder that
+  `deposits_so_far()` reads. Wait until that counter grows. Then check
+  that the larger card's state is `pending` and that
+  `deposits_so_far()` grew by one only. Drop the 60 s wait from 7.8's
+  estimate.
+  *Status:* Open
+
+- [ ] **P19 — minor.** *Where:* D-C2-11 (`quote.measure`'s errors and the
+  "service principal" branch).
+  *Problem:* `measure` now calls `resolve_principal_and_owner`. That
+  function refuses when the node has no owner, when signing is not
+  enrolled, and when the certificate is expired or stale (`app.rs:285` to
+  `:305`). D-C2-11 lists only "a body that does not parse, or a slot step
+  that fails" as errors. Also, "or none for a service principal" cannot
+  happen: `person_principal` always returns `Principal::Delegated`
+  (`roym_core/src/signing.rs:211`).
+  *Failure case:* A person who is not enrolled opens the quote form. The
+  Hub's size line gets `signing-not-enrolled`, a case the plan does not
+  name, so the Hub code and the Hub unit test do not cover it.
+  *Fix:* In D-C2-11, say that `measure` answers the same signing errors
+  as `quote.set`, and that the Hub hides the size line on any error.
+  Remove the "service principal" branch, and make
+  `card_body_upper_bound`'s `delegation_json` a `&str`, not an `Option`.
+  *Status:* Open
