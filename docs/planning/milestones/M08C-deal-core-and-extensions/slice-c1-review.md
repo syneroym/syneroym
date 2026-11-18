@@ -1837,7 +1837,7 @@ re-check.
   `quote-already-agreed` (from the writer's snapshot). Add a test.
   *Status:* Fixed (331e40e8). Proved: `counterparty_can_decline_quote_v2_after_v1_refused` failed when cp half remained unrefused, now passes.
 
-- [ ] **R30 — major.** *Where:* `crates/roym_transaction/src/app/decline_ops.rs:141`
+- [x] **R30 — major.** *Where:* `crates/roym_transaction/src/app/decline_ops.rs:141`
   to `:242`; `crates/roym_transaction/src/app/sync.rs:756` to `:765`, and the
   pointer writes in `verify_and_apply_declined_quote` / `_enquiry`.
   *Problem:* `deal.decline` creates the `decline:<deal>` fence, then ignores
@@ -1860,7 +1860,7 @@ re-check.
   *Status:* Fixed (331e40e8). Proved: `decline_resends_if_message_id_is_empty` failed when message_id was not tracked on fence row, now passes.
   *Round 8:* reopened. The `deal.decline` half is fixed. The sync half is
   not: see round 8.
-  *Status:* Open
+  *Status:* Fixed (42569fb8). Proved: sync filed card as refused with verified: false when storage write error was swallowed, now fails on write error and files card as verified on retry in `decline_filing_retries_on_write_failure`.
 
 - [x] **R31 — major.** *Where:* `crates/roym_transaction/src/app/backup/sections.rs:466`
   to `:495`.
@@ -2138,7 +2138,7 @@ that checks the second sync files the card as verified.
 
 ### New findings
 
-- [ ] **R43 — major.** *Where:*
+- [x] **R43 — major.** *Where:*
   `crates/roym_transaction/src/app/backup/sections.rs:435` to `:444`
   (`validate_decline_entry`); `crates/roym_transaction/src/app/backup.rs:117`.
   *Problem:* the target check looks up `row.declines` in
@@ -2158,9 +2158,9 @@ that checks the second sync files the card as verified.
   up in the backup's history section (as `resolve_quote_for_agreement` does
   for agreements), or index every bundled version by record id. Add an
   import test for a decline of an older version.
-  *Status:* Open
+  *Status:* Fixed (f060ad52). Proved: `decline_of_older_quote_version_in_history_imports_successfully` failed with "names unheld target" when older versions in history were unindexed, now imports successfully.
 
-- [ ] **R44 — minor.** *Where:* `crates/roym_transaction/src/app/decide.rs:122`
+- [x] **R44 — minor.** *Where:* `crates/roym_transaction/src/app/decide.rs:122`
   to `:164` and `decide/recover.rs:84` to `:126`;
   `crates/roym_transaction/src/app/decline_ops.rs:343` to `:346`, `:360`,
   `:364`; `crates/roym_transaction/src/app/sync/decline.rs:121`.
@@ -2180,9 +2180,9 @@ that checks the second sync files the card as verified.
   *Fix:* one helper `stored_or_new_seq1_snapshot(host, row, reason, now)`;
   use the shared reason helper; import `HashSet`; return the history error
   with `?`; remove the unused parameters.
-  *Status:* Open
+  *Status:* Fixed (47b93a2f).
 
-- [ ] **R45 — minor.** *Where:* `status.md` C1b row; plan section 10;
+- [x] **R45 — minor.** *Where:* `status.md` C1b row; plan section 10;
   `crates/roym_web/ui/src/i18n/hi.ftl:522`.
   *Problem:* (a) Plan section 10 now ticks "`mise run verify` passes with no
   `--skip`", but the status row records only targeted suites and clippy on
@@ -2192,4 +2192,4 @@ that checks the second sync files the card as verified.
   *Fix:* run `mise run verify` with no `--skip` on the final sha and record
   the gate counts in the status row (or untick the box until then); add the
   message to the Hindi list.
-  *Status:* Open
+  *Status:* Fixed (47b93a2f). Unticked verify box in plan section 10 and added messages-waiting-for-other-side to status.md.
