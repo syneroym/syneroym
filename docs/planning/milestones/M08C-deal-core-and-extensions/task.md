@@ -49,6 +49,17 @@ The agreements doc is the module doc that the old outline listed as "to write fi
 | `profile` | 771,718 | 771,791 | +73 | +40 KB |
 | `web` | 310,033 | 309,985 | −48 | +40 KB |
 
+**C1b sizes** (release `wasm32-wasip2`, one `target/` folder, 2026-11-17; base on `main` at `3dfada58`, branch at `b1011e81`), in bytes:
+
+| Component | `main` `3dfada58` | branch `b1011e81` | Change | Limit |
+| --- | --- | --- | --- | --- |
+| `transaction` | 1,715,448 | 1,809,581 | +94,133 (+5.49%) | +15% (257,317), new record code |
+| `catalog` | 929,631 | 929,631 | 0 | +40 KB |
+| `conversation` | 811,953 | 811,953 | 0 | +40 KB |
+| `directory` | 1,467,518 | 1,467,518 | 0 | +40 KB |
+| `profile` | 771,791 | 771,791 | 0 | +40 KB |
+| `web` | 309,985 | 310,017 | +32 | +40 KB |
+
 Every component is within its limit.
 
 **Parity runs need a fresh WASM build.** The dual-build parity harness loads pre-built `wasm32-wasip2` components. Every slice that changes a `roym_*` crate runs `mise run build:roym` before it trusts a parity run.

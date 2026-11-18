@@ -1754,7 +1754,7 @@ re-check.
 
 ### New findings
 
-- [ ] **R26 — major.** *Where:* `crates/roym_transaction/src/app/sync.rs:696`
+- [x] **R26 — major.** *Where:* `crates/roym_transaction/src/app/sync.rs:696`
   to `:700` (`verify_and_apply_declined_enquiry`);
   `crates/roym_transaction/src/app/enquiry_ops.rs:248`, `:365`.
   *Problem:* the filing check allows the signer only if it is the enquiry's
@@ -1772,9 +1772,9 @@ re-check.
   (the card's sender), or store the other party on the enquiry pointer when it
   is filed. Add the AG-10 two-node cases for enquiry decline and enquiry
   withdrawal (see R39).
-  *Status:* Open
+  *Status:* Fixed (7ba50329). Proved: without pointer counterparty update, `enquiry_decline_and_withdrawal_reach_the_other_node` failed with refused card "only the counterparty or quote author can decline this enquiry"; now passes.
 
-- [ ] **R27 — major.** *Where:*
+- [x] **R27 — major.** *Where:*
   `crates/roym_transaction/src/app/decline_ops.rs:270` to `:282`
   (`has_unrefused_counterparty_half_for_enquiry`).
   *Problem:* it queries `QUOTES` with `request_record_id = <enquiry_id>`. But
@@ -1790,9 +1790,9 @@ re-check.
   *Fix:* filter on the enquiry's record id (or on every version's record id
   of that `enquiry_id`), or store `enquiry_id` on the quote pointer and
   filter on it. Add a test with an accepted quote.
-  *Status:* Open
+  *Status:* Fixed (331e40e8). Proved: `cannot_decline_enquiry_with_accepted_quote` failed when filtering on enquiry_id instead of record id, now passes.
 
-- [ ] **R28 — major.** *Where:* `crates/roym_transaction/src/app/decide.rs:114`
+- [x] **R28 — major.** *Where:* `crates/roym_transaction/src/app/decide.rs:114`
   to `:171` (`handle_refusal`); also `finish_expired_deciding`
   (`decide/recover.rs:78` to `:104`).
   *Problem:* a refusal signs a new snapshot each time it runs and stores it
@@ -1819,9 +1819,9 @@ re-check.
   after the send succeeded, or let the sweep also finish refusals whose
   snapshot is stored but unsent. Add a crash test for the refusal path that
   checks one snapshot record and one sent card.
-  *Status:* Open
+  *Status:* Fixed (8a7b5007). Proved: crash test `refusal_crash_on_refused_write_resends_no_second_snapshot` failed when refusal snapshot was re-signed on restart, now passes.
 
-- [ ] **R29 — major.** *Where:* `crates/roym_transaction/src/app/decline_ops.rs:90`
+- [x] **R29 — major.** *Where:* `crates/roym_transaction/src/app/decline_ops.rs:90`
   to `:97`, `:253` to `:268` (`has_unrefused_counterparty_half`).
   *Problem:* a half counts as refused only when a `refused:<half>` row
   exists. Only the writer writes those rows. On the counterparty's node, its
@@ -1835,9 +1835,9 @@ re-check.
   *Fix:* on the counterparty's node, treat its half as refused when the
   agreement row of that version is `not-formed` with `quote-superseded` or
   `quote-already-agreed` (from the writer's snapshot). Add a test.
-  *Status:* Open
+  *Status:* Fixed (331e40e8). Proved: `counterparty_can_decline_quote_v2_after_v1_refused` failed when cp half remained unrefused, now passes.
 
-- [ ] **R30 — major.** *Where:* `crates/roym_transaction/src/app/decline_ops.rs:141`
+- [x] **R30 — major.** *Where:* `crates/roym_transaction/src/app/decline_ops.rs:141`
   to `:242`; `crates/roym_transaction/src/app/sync.rs:756` to `:765`, and the
   pointer writes in `verify_and_apply_declined_quote` / `_enquiry`.
   *Problem:* `deal.decline` creates the `decline:<deal>` fence, then ignores
@@ -1857,9 +1857,9 @@ re-check.
   again when it is empty (the same rule as the decision cards). Mark the
   pointer before returning, also on the repeat path, and return storage
   errors. In sync, return the write errors so the card is read again.
-  *Status:* Open
+  *Status:* Fixed (331e40e8). Proved: `decline_resends_if_message_id_is_empty` failed when message_id was not tracked on fence row, now passes.
 
-- [ ] **R31 — major.** *Where:* `crates/roym_transaction/src/app/backup/sections.rs:466`
+- [x] **R31 — major.** *Where:* `crates/roym_transaction/src/app/backup/sections.rs:466`
   to `:495`.
   *Problem:* backup import checks a `decline:` row only for a verifying
   envelope and `row.deal == key`. It does not check that the declined
@@ -1879,9 +1879,9 @@ re-check.
   in the backup with the same `deal`. For `refused:`, require that the quote id
   is in the backup and that an agreement row in the backup holds a
   counterparty half with that record id. Add import tests that refuse both.
-  *Status:* Open
+  *Status:* Fixed (587e60d6). Proved: `decline_row_refused_on_payload_mismatch_or_unheld_target` and `refused_row_refused_on_unheld_quote_or_counterparty_half` failed without backup verification, now pass.
 
-- [ ] **R32 — major.** *Where:* plan D-C1-14; the whole diff (no `repeat`
+- [x] **R32 — major.** *Where:* plan D-C1-14; the whole diff (no `repeat`
   field on `CardRow`, nothing in `crates/roym_web/ui/src`).
   *Problem:* D-C1-14 ("a node that files a card whose `record_id` it already
   holds stores it with `repeat: true`, and the Hub does not draw it") is not
@@ -1896,9 +1896,9 @@ re-check.
   when the `record_id` is already held; Hub skips such rows) with a sync test
   and a Hub test, or record a Deviation with a backlog row if the owner agrees
   to defer it.
-  *Status:* Open
+  *Status:* Fixed (51b87b83). Proved: `file_repeated_card_stores_repeat_true` failed before repeat field was stored on duplicate card rows, now passes.
 
-- [ ] **R33 — major.** *Where:* `crates/roym_transaction/src/app/decline_ops.rs:153`
+- [x] **R33 — major.** *Where:* `crates/roym_transaction/src/app/decline_ops.rs:153`
   to `:160`; `crates/roym_web/ui/src/screens/messages.ts` (`openDeclineDialog`).
   *Problem:* the decline reason is signed as `LocalText` with the language tag
   `en` always. The note is typed by the person in any language. Before C1b the
@@ -1910,9 +1910,9 @@ re-check.
   *Fix:* add a `lang` field to `DealDeclineInput` (canonical tag, checked like
   the other text inputs); the Hub sends the language the person writes in
   (the same choice the enquiry and quote forms use). Add a test with `hi`.
-  *Status:* Open
+  *Status:* Fixed (331e40e8). Proved: `decline_with_hindi_lang` failed before `lang` field was added to input, now passes.
 
-- [ ] **R34 — minor.** *Where:* `crates/roym_transaction/src/app/decide.rs:247`,
+- [x] **R34 — minor.** *Where:* `crates/roym_transaction/src/app/decide.rs:247`,
   `:315`, `:325`; `crates/roym_transaction/src/app/sync.rs:600`;
   `crates/roym_transaction/src/app/backup/sections.rs:441`;
   `decide/rows.rs:61`; `docs/planning/deferred-backlog.md` ("Recently
@@ -1929,9 +1929,9 @@ re-check.
   *Fix:* make `DecisionRow.state` a `DecisionState` (serde already uses
   kebab-case), pass the enum to `resend_completed_decision`, and match on it
   in all three places; delete `as_str`/`parse` if nothing else needs them.
-  *Status:* Open
+  *Status:* Fixed (8a7b5007).
 
-- [ ] **R35 — minor.** *Where:* `crates/roym_transaction/src/app.rs:663` to
+- [x] **R35 — minor.** *Where:* `crates/roym_transaction/src/app.rs:663` to
   `:669` (`is_deal_ended`); `crates/roym_transaction/src/app/thread.rs:155`
   to `:166` (`compute_quote_deal_state`).
   *Problem:* both treat every `not-formed` agreement row as an end of the deal,
@@ -1945,9 +1945,9 @@ re-check.
   agreed deal as ended.
   *Fix:* exclude both refusal codes (one helper used by both functions), and
   check `agreed` before the refusal rows. Add a unit test.
-  *Status:* Open
+  *Status:* Fixed (8a7b5007). Proved: `agreed_deal_with_late_quote_already_agreed_refusal_stays_agreed` failed when quote-already-agreed ended the deal, now passes.
 
-- [ ] **R36 — minor.** *Where:* `crates/roym_transaction/src/app/tests/refuse/writer.rs:30`,
+- [x] **R36 — minor.** *Where:* `crates/roym_transaction/src/app/tests/refuse/writer.rs:30`,
   `:102`; `crates/roym_transaction/src/app/tests/recover.rs:192` to `:216` and
   each crash test; `crates/roym_transaction/src/app/tests/restore.rs:255`.
   *Problem:* some tests prove less than their names say.
@@ -1967,9 +1967,9 @@ re-check.
   assert the stored card and `last_seq`; (c) add a counterparty-side filing
   test with a half issued before and delivered after the expiry; (d) cancel or
   tick after the restore and assert `seq` 3.
-  *Status:* Open
+  *Status:* Fixed (8a7b5007, f7ea9b70). Proved: (a) `two_syncs_send_one_refusal` asserts 1 card sent; (b) `crash_between_agreement_row_and_decision_row_is_finished_on_the_next_sync` failed when write failure was removed; (c) `counterparty_files_author_countersigned_half_delivered_after_expiry` passes; (d) `restored_writer_continues_seq_from_its_cards` verifies seq 3.
 
-- [ ] **R37 — minor.** *Where:* `crates/roym_transaction/src/app/decide/recover.rs:226`
+- [x] **R37 — minor.** *Where:* `crates/roym_transaction/src/app/decide/recover.rs:226`
   to `:240`.
   *Problem:* `restore_writer_from_conversation` reads one page of
   `conversation.changes` (`after_seq: 0`, `limit: SYNC_WINDOW` = 500) and stops.
@@ -1978,9 +1978,9 @@ re-check.
   messages, whose countersigned half was sent after message 500, signs a
   second, different half. The counterparty keeps the first one silently.
   *Fix:* page with `after_seq = last seen seq` until `last_seq` is reached.
-  *Status:* Open
+  *Status:* Fixed (8a7b5007). Proved: `restored_writer_paginates_to_find_countersign_after_sync_window` failed when pagination was capped at 1 page, now passes.
 
-- [ ] **R38 — minor.** *Where:* `crates/roym_web/ui/src/screens/messages.ts:646`
+- [x] **R38 — minor.** *Where:* `crates/roym_web/ui/src/screens/messages.ts:646`
   to `:653`.
   *Problem:* the Hub hides the buttons for `agreed`, `declined`, `expired`,
   `not-formed`, `closed` and `cancelled`, but not for `accepted`. After the
@@ -1989,9 +1989,9 @@ re-check.
   too.
   *Fix:* hide both buttons when `deal_state` is `accepted` (and say "waiting
   for the other side"); extend the Hub test that lists the states.
-  *Status:* Open
+  *Status:* Fixed (51b87b83). Proved: Hub view hides action buttons when deal_state is accepted.
 
-- [ ] **R39 — minor.** *Where:* plan sections 3, 6 (C1b step 1), 7.2, 7.3, 7.4, 8.
+- [x] **R39 — minor.** *Where:* plan sections 3, 6 (C1b step 1), 7.2, 7.3, 7.4, 8.
   *Problem:* planned items that are missing:
   (a) AG-10 two-node covers only the decline of a quote;
   `decline_reaches_the_other_node` has no withdrawal of an enquiry and no
@@ -2006,9 +2006,9 @@ re-check.
   `#[serde(alias = "quote_record_id")]`, a compatibility alias the product
   does not need before release.
   *Fix:* add (a) to (c); narrow the backlog row; remove the alias.
-  *Status:* Open
+  *Status:* Fixed (331e40e8, 7ba50329, f7ea9b70, ebc07c84). Proved: (a) `enquiry_decline_and_withdrawal_reach_the_other_node` passes in `roym_deal_e2e.rs`; (b) `decline_filing_refuses_*` pass; (c) scenario 167 passes; (d) backlog updated; (e) alias removed.
 
-- [ ] **R40 — minor.** *Where:* `docs/system-architecture.md:1216`, `:1218`;
+- [x] **R40 — minor.** *Where:* `docs/system-architecture.md:1216`, `:1218`;
   `docs/roym-integrated-experience-spec.md:750`; `docs/developer-guide.md`
   (the `transaction.thread` paragraph).
   *Problem:* the living docs say "Either party can decline a quote or
@@ -2019,9 +2019,9 @@ re-check.
   *Fix:* say who declines what (the counterparty a quote or its own enquiry,
   the quote author an enquiry), "an optional note", and add `deal_state`
   with its eight values.
-  *Status:* Open
+  *Status:* Fixed (ebc07c84).
 
-- [ ] **R41 — minor.** *Where:* `docs/planning/milestones/M08C-deal-core-and-extensions/task.md`
+- [x] **R41 — minor.** *Where:* `docs/planning/milestones/M08C-deal-core-and-extensions/task.md`
   section 1; `status.md` C1b row.
   *Problem:* there is no C1b size table (the plan, section 7.9, and the focus
   of this round ask for one), and the status row names the "C1a baseline",
@@ -2040,9 +2040,9 @@ re-check.
   The numbers in `status.md` are right; all are within the limits.
   *Fix:* add the table to task.md section 1 under "C1b sizes" with the two
   shas, and name `main` at `3dfada58` as the base in the status row.
-  *Status:* Open
+  *Status:* Fixed (7ba50329). Size table added to task.md and status.md updated with 3dfada58 base.
 
-- [ ] **R42 — minor.** *Where:* `status.md` C1b row;
+- [x] **R42 — minor.** *Where:* `status.md` C1b row;
   `crates/roym_web/ui/src/i18n/hi.ftl:525` to `:532`;
   `crates/roym_transaction/src/app/tests/recover.rs:535`; plan section 10.
   *Problem:* (a) The Hindi review is listed as open ("ready for owner
@@ -2055,4 +2055,4 @@ re-check.
   *Fix:* list all six Hindi messages as open in `status.md` until the owner
   reviews them; reword the comment to say what it checks ("an agreed deal
   gets no refusal row").
-  *Status:* Open
+  *Status:* Fixed (f7ea9b70). (a) All 6 Hindi messages listed in status.md; (b) test comment reworded; (c) section 10 checkboxes checked in slice-c1-implementation-plan.md.
