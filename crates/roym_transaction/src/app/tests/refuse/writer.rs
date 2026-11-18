@@ -1,5 +1,7 @@
+use serde_json::{Value, json};
 use syneroym_identity::{Identity, substrate};
 use syneroym_roym_core::{
+    card::{self, CARD_CONTENT_TYPE},
     clock,
     deal::{DealTerms, LocalText},
     lang::LangTag,
@@ -12,8 +14,8 @@ use syneroym_roym_core::{
 
 use super::helpers::{build_and_sign_quote, make_counterparty_receipt, slot_commitment};
 use crate::app::{
-    AGREEMENT_PROGRESS, AGREEMENTS, AgreementRow, CardRow, Direction, LEDGER, QUOTES,
-    RecordPointerRow,
+    AGREEMENT_PROGRESS, AGREEMENTS, AgreementRow, CardRow, Direction, LEDGER, QUOTE_HISTORY,
+    QUOTES, RecordPointerRow,
     agreement_ops::{self, AgreementAcceptInput},
     decide::{
         self, CountersignRow, DecisionRow, DecisionState, RefusedRow, SnapshotRow, countersign_id,
@@ -21,11 +23,85 @@ use crate::app::{
     },
     get_row,
     hold::{HoldLedgerRow, hold_id},
-    put_row,
+    put_bytes, put_row,
     quote_ops::store_received_quote,
-    sync::receipts::file_progress_card,
+    sync::{self, SyncInput, receipts::file_progress_card},
     tests::{TestFixture, fixture},
 };
+
+fn mock_two_incoming_receipts(
+    host: &syneroym_roym_core::testing::TestHost,
+    cp_did: String,
+    now: u64,
+    card_body: String,
+) {
+    host.on_call("conversation", "conversation.changes", move |params: String| {
+        let p: Value = serde_json::from_str(&params).unwrap_or(Value::Null);
+        let after_seq = p.get("after_seq").and_then(Value::as_u64).unwrap_or(0);
+        if after_seq == 0 {
+            Ok(json!({
+                "result": {
+                    "messages": [
+                        {
+                            "id": "msg_accept_cp",
+                            "conversation": "conv_1",
+                            "author": cp_did,
+                            "direction": "incoming",
+                            "sender_timestamp_ms": (now * 1000) as i64,
+                            "content_type": CARD_CONTENT_TYPE,
+                            "languages": ["en"],
+                            "body_encoding": "utf8",
+                            "restored": false,
+                            "state": "delivered",
+                            "stored_at_secs": now as i64,
+                            "visible_seq": 1,
+                            "verified": true,
+                            "body": card_body,
+                        }
+                    ],
+                    "last_seq": 1,
+                    "kind": "direct"
+                }
+            })
+            .to_string())
+        } else if after_seq == 1 {
+            Ok(json!({
+                "result": {
+                    "messages": [
+                        {
+                            "id": "msg_accept_cp_2",
+                            "conversation": "conv_1",
+                            "author": cp_did,
+                            "direction": "incoming",
+                            "sender_timestamp_ms": ((now + 10) * 1000) as i64,
+                            "content_type": CARD_CONTENT_TYPE,
+                            "languages": ["en"],
+                            "body_encoding": "utf8",
+                            "restored": false,
+                            "state": "delivered",
+                            "stored_at_secs": (now + 10) as i64,
+                            "visible_seq": 2,
+                            "verified": true,
+                            "body": card_body,
+                        }
+                    ],
+                    "last_seq": 2,
+                    "kind": "direct"
+                }
+            })
+            .to_string())
+        } else {
+            Ok(json!({
+                "result": {
+                    "messages": [],
+                    "last_seq": 2,
+                    "kind": "direct"
+                }
+            })
+            .to_string())
+        }
+    });
+}
 
 #[tokio::test]
 async fn two_syncs_send_one_refusal() {
@@ -34,9 +110,28 @@ async fn two_syncs_send_one_refusal() {
     let counterparty_did = substrate::derive_did_key(&counterparty.public_key());
     let now = clock::now_secs();
 
-    // Author creates quote expiring at now + 100
-    let (quote_payload, q_rec_id, _) =
-        build_and_sign_quote(&fix.master, &counterparty_did, 1, None, now + 100, now);
+    // Author creates quote expiring at now + 300 (minimum lifetime)
+    let (quote_payload, q_rec_id, q_env) =
+        build_and_sign_quote(&fix.master, &counterparty_did, 1, None, now + 300, now);
+
+    put_bytes(&fix.host, QUOTE_HISTORY, &q_rec_id, q_env.as_bytes()).await.unwrap();
+    let ptr = RecordPointerRow {
+        envelope: q_env,
+        record_id: q_rec_id.clone(),
+        id: quote_payload.quote_id.clone(),
+        conversation: "conv_1".to_string(),
+        sequence: 1,
+        issuer: fix.master_did.clone(),
+        issued_at_secs: now,
+        mine: true,
+        updated_at_secs: now,
+        version_count: 1,
+        counterparty_did: Some(counterparty_did.clone()),
+        request_record_id: None,
+        declined_at_secs: None,
+        decline_note: None,
+    };
+    put_row(&fix.host, QUOTES, &quote_payload.quote_id, &ptr).await.unwrap();
 
     let (cp_rec_id, cp_env) = make_counterparty_receipt(
         &counterparty,
@@ -45,35 +140,30 @@ async fn two_syncs_send_one_refusal() {
         &quote_payload.terms,
         now,
     );
+    let card_body = card::card_body(
+        syneroym_roym_core::transaction::RECORD_AGREEMENT_RECEIPT,
+        syneroym_roym_core::transaction::AGREEMENT_RECEIPT_VERSION,
+        &cp_env,
+    )
+    .expect("card body");
 
-    let mut row = AgreementRow {
-        quote_record_id: q_rec_id.clone(),
-        quote_id: quote_payload.quote_id.clone(),
-        conversation: "conv_1".to_string(),
-        counterparty_did: counterparty_did.clone(),
-        quote_author_did: fix.master_did.clone(),
-        terms: quote_payload.terms.clone(),
-        agreed_at_secs: None,
-        counterparty: Some(ReceiptHalf {
-            record_id: cp_rec_id.clone(),
-            envelope: cp_env,
-            issuer: counterparty_did,
-            issued_at_secs: now,
-        }),
-        quote_author: None,
-        state: None,
-        state_reason: None,
-        cancel_reason: None,
-        seq: None,
-        commitments: vec![],
-        updated_at_secs: now,
-    };
+    mock_two_incoming_receipts(&fix.host, counterparty_did, now, card_body);
 
-    // First sync happens after expiry (now + 200)
-    let res1 = decide::run(&fix.host, &mut row, &quote_payload, now + 200).await;
-    assert_eq!(res1, Ok(false));
+    // First sync happens after expiry (now + 400)
+    sync::sync_at(
+        &fix.host,
+        SyncInput { conversation: "conv_1".to_string(), full: false },
+        now + 400,
+    )
+    .await
+    .expect("first sync");
 
-    // Refusal snapshot 1 was stored
+    // Exactly one card was sent (refusal snapshot 1)
+    assert_eq!(fix.host.sent_cards().len(), 1);
+
+    // Refusal snapshot 1 was stored and exactly one card was sent
+    assert_eq!(fix.host.sent_cards().len(), 1);
+
     let snap_key = snapshot_id(&q_rec_id, 1);
     let snap: Option<SnapshotRow> =
         get_row(&fix.host, AGREEMENT_PROGRESS, &snap_key).await.expect("get snap");
@@ -94,9 +184,17 @@ async fn two_syncs_send_one_refusal() {
     let dec: Option<DecisionRow> = get_row(&fix.host, LEDGER, &dec_key).await.expect("get dec");
     assert!(dec.is_none());
 
-    // Second sync runs at now + 210: skips because refused row exists
-    let res2 = decide::run(&fix.host, &mut row, &quote_payload, now + 210).await;
-    assert_eq!(res2, Ok(false));
+    // Second sync runs at now + 410: skips because refused row exists, no second
+    // refusal sent
+    sync::sync_at(
+        &fix.host,
+        SyncInput { conversation: "conv_1".to_string(), full: false },
+        now + 410,
+    )
+    .await
+    .expect("second sync");
+
+    assert_eq!(fix.host.sent_cards().len(), 1, "second sync must not send second card");
 }
 
 #[tokio::test]

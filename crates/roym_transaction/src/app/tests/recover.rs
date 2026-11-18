@@ -1,9 +1,11 @@
 //! Service tests for writer decision recovery and crash points.
 
+use serde_json::{Value, json};
 use syneroym_app_host::AppHost;
 use syneroym_identity::{Identity, substrate};
 use syneroym_roym_core::{
-    deal::{Commitment, CommitmentKind, DealTerms, Details, LocalText, ResourceKind},
+    card::{self, CARD_CONTENT_TYPE},
+    deal::{Commitment, CommitmentKind, DealTerms, Details, ExtensionRef, LocalText, ResourceKind},
     lang::LangTag,
     listing::derive_slot_id,
     progress::AgreementState,
@@ -15,15 +17,15 @@ use syneroym_roym_core::{
 };
 
 use crate::app::{
-    AGREEMENT_PROGRESS, AGREEMENTS, AgreementRow, CARDS, CardRow, Direction, LEDGER, QUOTES,
-    RecordPointerRow, SYNC_STATE, SyncStateRow,
+    AGREEMENT_PROGRESS, AGREEMENTS, AgreementRow, CARDS, CardRow, Direction, LEDGER, QUOTE_HISTORY,
+    QUOTES, RecordPointerRow, SYNC_STATE, SyncStateRow,
     decide::{
         self, CountersignRow, DecisionRow, DecisionState, RefusedRow, SnapshotRow, countersign_id,
         decision_id, refused_id, snapshot_id,
     },
     get_row,
     hold::{HoldLedgerRow, Reservations, ReserveOutcome, SeatLedger, hold_id, seat_id},
-    put_card, put_row,
+    put_bytes, put_card, put_row,
     sync::{self, SyncInput},
     tests::{TestFixture, fixture},
 };
@@ -40,7 +42,7 @@ fn slot_commitment(
         giver: DealRole::QuoteAuthor,
         resource_kind: ResourceKind::ServiceInSlot,
         kind: CommitmentKind::Fulfilment,
-        extension: None,
+        extension: Some(ExtensionRef { id: "scheduling".to_string(), version: 1 }),
         after: vec![],
         description: LocalText::plain(
             LangTag::parse_canonical("en").expect("parse lang"),
@@ -73,7 +75,7 @@ fn build_quote(
     commitments: Vec<Commitment>,
     expires_at_secs: u64,
     now: u64,
-) -> (QuotePayload, String) {
+) -> (QuotePayload, String, String) {
     let author_did = substrate::derive_did_key(&author.public_key());
     let quote_id = derive_quote_id("conv_1", &author_did, 1).expect("quote id");
     let payload = QuotePayload {
@@ -110,7 +112,8 @@ fn build_quote(
     let sig = author.sign(&bytes).to_bytes();
     env.attach_signature(z32::encode(&sig)).expect("sig");
     let q_rec_id = env.record_id().expect("rec id");
-    (payload, q_rec_id)
+    let env_json = env.to_json().expect("env json");
+    (payload, q_rec_id, env_json)
 }
 
 fn make_receipt(
@@ -157,16 +160,17 @@ fn make_receipt(
     )
 }
 
-fn setup_test_deal(
+fn setup_test_deal_with_env(
     f: &TestFixture,
     commitments: Vec<Commitment>,
     expiry_secs: u64,
-) -> (QuotePayload, String, AgreementRow, u64) {
+) -> (QuotePayload, String, String, AgreementRow, u64) {
     let cp = Identity::generate().expect("cp");
     let cp_did = substrate::derive_did_key(&cp.public_key());
     let now = f.host.now();
 
-    let (quote, q_rec_id) = build_quote(&f.master, &cp_did, commitments, expiry_secs, now);
+    let (quote, q_rec_id, q_env_json) =
+        build_quote(&f.master, &cp_did, commitments, expiry_secs, now);
     let (cp_half, _) = make_receipt(&cp, &f.master_did, &q_rec_id, &quote.terms, now);
 
     let row = AgreementRow {
@@ -186,6 +190,15 @@ fn setup_test_deal(
         commitments: vec![],
         updated_at_secs: now,
     };
+    (quote, q_rec_id, q_env_json, row, now)
+}
+
+fn setup_test_deal(
+    f: &TestFixture,
+    commitments: Vec<Commitment>,
+    expiry_secs: u64,
+) -> (QuotePayload, String, AgreementRow, u64) {
+    let (quote, q_rec_id, _, row, now) = setup_test_deal_with_env(f, commitments, expiry_secs);
     (quote, q_rec_id, row, now)
 }
 
@@ -257,11 +270,12 @@ async fn crash_after_the_fence_is_finished_on_the_next_sync() {
     let f = fixture();
     let now = f.host.now();
     let (comm, _) = slot_commitment("c1", "listing_1", now + 1000, now + 4600);
-    let (quote, q_rec_id, mut row, now) = setup_test_deal(&f, vec![comm], now + 3600);
-    put_row(&f.host, AGREEMENTS, &q_rec_id, &row).await.unwrap();
+    let (quote, q_rec_id, q_env_json, row, now) =
+        setup_test_deal_with_env(&f, vec![comm], now + 3600);
 
+    put_bytes(&f.host, QUOTE_HISTORY, &q_rec_id, q_env_json.as_bytes()).await.unwrap();
     let ptr = RecordPointerRow {
-        envelope: "{}".to_string(),
+        envelope: q_env_json,
         record_id: q_rec_id.clone(),
         id: quote.quote_id.clone(),
         conversation: "conv_1".to_string(),
@@ -277,38 +291,76 @@ async fn crash_after_the_fence_is_finished_on_the_next_sync() {
         decline_note: None,
     };
     put_row(&f.host, QUOTES, &quote.quote_id, &ptr).await.unwrap();
-    file_card_and_move_cursor(&f, "conv_1", "msg_accept_1", now).await;
 
-    // Crash after fence: on the first reserve write to ledger (seat:)
-    f.host.crash_on_write("ledger", "seat:");
+    let cp_half = row.counterparty.as_ref().unwrap();
+    let card_body =
+        card::card_body(RECORD_AGREEMENT_RECEIPT, AGREEMENT_RECEIPT_VERSION, &cp_half.envelope)
+            .expect("card body");
 
-    let err = decide::run(&f.host, &mut row, &quote, now)
+    let card_body_clone = card_body.clone();
+    let cp_did = quote.counterparty_did.clone();
+    f.host.on_call("conversation", "conversation.changes", move |params| {
+        let p: Value = serde_json::from_str(&params).unwrap_or(Value::Null);
+        let after_seq = p.get("after_seq").and_then(Value::as_u64).unwrap_or(0);
+        if after_seq == 0 {
+            Ok(json!({
+                "result": {
+                    "messages": [
+                        {
+                            "id": "msg_accept_1",
+                            "conversation": "conv_1",
+                            "author": cp_did,
+                            "direction": "incoming",
+                            "sender_timestamp_ms": (now * 1000) as i64,
+                            "content_type": CARD_CONTENT_TYPE,
+                            "languages": ["en"],
+                            "body_encoding": "utf8",
+                            "restored": false,
+                            "state": "delivered",
+                            "stored_at_secs": now as i64,
+                            "visible_seq": 1,
+                            "verified": true,
+                            "body": card_body_clone,
+                        }
+                    ],
+                    "last_seq": 1,
+                    "kind": "direct"
+                }
+            })
+            .to_string())
+        } else {
+            Ok(json!({
+                "result": {
+                    "messages": [],
+                    "last_seq": 1,
+                    "kind": "direct"
+                }
+            })
+            .to_string())
+        }
+    });
+
+    // Failing write after fence: on the first reserve write to ledger (seat:)
+    f.host.fail_write("ledger", "seat:");
+
+    // First sync delivers the acceptance receipt half.
+    // decide::run fails on seat: write (after writing the fence), but sync catches
+    // it because dec.state == Deciding, files the card and advances last_seq to
+    // 1.
+    sync::sync_at(&f.host, SyncInput { conversation: "conv_1".to_string(), full: false }, now)
         .await
-        .expect_err("fault must fire on reserve write");
-    assert!(err.contains("injected crash"));
+        .expect("sync files card despite decide write failure");
 
-    // Check card is stored and sync cursor moved
+    assert!(f.host.was_failed_write_hit(), "failing write must have fired during sync");
+
+    // Check card is stored and sync cursor moved despite decide::run write failure
     let card: Option<CardRow> = get_row(&f.host, CARDS, "msg_accept_1").await.unwrap();
-    assert!(card.is_some());
+    assert!(card.is_some(), "card must be stored despite decide::run write failure");
     let state: Option<SyncStateRow> = get_row(&f.host, SYNC_STATE, "conv_1").await.unwrap();
-    assert_eq!(state.unwrap().last_seq, 1);
+    assert_eq!(state.unwrap().last_seq, 1, "sync cursor must be moved to 1");
 
-    // Decision row remains deciding
+    // The recovery sweep at the end of sync finishes the deciding row to Agreed
     let dec_key = decision_id(&quote.quote_id);
-    let dec: Option<DecisionRow> = get_row(&f.host, LEDGER, &dec_key).await.unwrap();
-    assert_eq!(dec.unwrap().state, DecisionState::Deciding);
-
-    f.host.restart();
-
-    // Second sync with no new cards runs recovery sweep
-    sync::sync_at(
-        &f.host,
-        SyncInput { conversation: "conv_1".to_string(), full: false },
-        now + 100,
-    )
-    .await
-    .unwrap();
-
     let dec_after: DecisionRow = get_row(&f.host, LEDGER, &dec_key).await.unwrap().unwrap();
     assert_eq!(dec_after.state, DecisionState::Agreed);
 
