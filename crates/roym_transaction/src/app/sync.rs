@@ -278,7 +278,6 @@ fn init_card_row(m: &Value, conversation: &str, now: u64) -> CardRow {
 async fn dispatch_known_card<H: AppHost>(
     host: &H,
     row: CardRow,
-    _sender: &str,
     card: &card::Card,
     conversation: &str,
     now: u64,
@@ -341,7 +340,6 @@ pub(crate) async fn file_incoming_card<H: AppHost>(
     owner: &str,
 ) -> Result<FileCardResult, String> {
     let mut row = init_card_row(m, conversation, now);
-    let sender = m.get("author").and_then(Value::as_str).unwrap_or_default();
 
     let body = match m.get("body").and_then(Value::as_str) {
         Some(b) => b,
@@ -367,7 +365,7 @@ pub(crate) async fn file_incoming_card<H: AppHost>(
         });
     }
 
-    dispatch_known_card(host, row, sender, &card, conversation, now, owner).await
+    dispatch_known_card(host, row, &card, conversation, now, owner).await
 }
 
 /// Stores `row` with `reason` and reports it as filed-but-refused.
