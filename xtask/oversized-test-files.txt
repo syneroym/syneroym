@@ -1,4 +1,4 @@
-crates/app_host_native/tests/dual_build_parity/helpers.rs 842
+crates/app_host_native/tests/dual_build_parity/helpers.rs 835
 crates/app_orchestration/src/models/tests.rs 886
 crates/app_orchestration/src/resolver/tests.rs 881
 crates/app_supervisor/src/service/tests/bindings.rs 996
@@ -18,7 +18,7 @@ crates/data_db/src/tests_fdae.rs 1787
 crates/router/src/route_handler/io/tests.rs 1115
 crates/router/tests/proxy_dispatch.rs 979
 crates/roym_web/tests/dual_build_parity/directory.rs 981
-crates/roym_web/tests/dual_build_parity/helpers.rs 1290
+crates/roym_web/tests/dual_build_parity/helpers.rs 1289
 crates/roym_web/tests/dual_build_parity/profile.rs 1112
 crates/roym_web/tests/dual_build_parity/transaction.rs 821
 crates/sandbox_wasm/src/engine/tests.rs 821

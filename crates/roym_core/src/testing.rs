@@ -19,6 +19,7 @@ use syneroym_app_host::{
 };
 
 pub mod data_layer;
+pub mod sd;
 pub mod stubs;
 
 pub use stubs::{DummyReader, DummyWriter};

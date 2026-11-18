@@ -478,7 +478,7 @@ fn make_hand_signed_acceptance(
     let sig = z32::encode(&node.owner.sign(&bytes).to_bytes());
     env.attach_signature(sig).expect("sig");
     let env_json = env.to_json().expect("json");
-    card::card_body(RECORD_AGREEMENT_RECEIPT, AGREEMENT_RECEIPT_VERSION, &env_json)
+    card::card_body(RECORD_AGREEMENT_RECEIPT, AGREEMENT_RECEIPT_VERSION, &env_json, &[])
         .expect("card body")
 }
 

@@ -525,7 +525,7 @@ fn make_author_countersigned_half_card(
     let sig = author.sign(&bytes).to_bytes();
     env.attach_signature(z32::encode(&sig)).expect("sig");
     let author_half_env = env.to_json().expect("env json");
-    card::card_body(RECORD_AGREEMENT_RECEIPT, AGREEMENT_RECEIPT_VERSION, &author_half_env)
+    card::card_body(RECORD_AGREEMENT_RECEIPT, AGREEMENT_RECEIPT_VERSION, &author_half_env, &[])
         .expect("card body")
 }
 

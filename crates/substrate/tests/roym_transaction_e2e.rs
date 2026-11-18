@@ -428,7 +428,7 @@ async fn a_tampered_card_is_filed_refused_and_never_verified() {
     }
     let tampered_env_str = serde_json::to_string(&env_val).unwrap();
 
-    let tampered_card = card_body(RECORD_ENQUIRY, ENQUIRY_VERSION, &tampered_env_str).unwrap();
+    let tampered_card = card_body(RECORD_ENQUIRY, ENQUIRY_VERSION, &tampered_env_str, &[]).unwrap();
 
     let send_params = json!({ "conversation": x_conv_id, "body": tampered_card, "content_type": CARD_CONTENT_TYPE });
     let sent = node_x.rpc_ok("conversation.send", send_params).await;

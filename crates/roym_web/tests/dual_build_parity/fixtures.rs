@@ -235,7 +235,7 @@ pub(crate) fn inbound_card(
     version: u32,
     envelope: &str,
 ) -> ConversationMessage {
-    let body = card::card_body(card_type, version, envelope).unwrap();
+    let body = card::card_body(card_type, version, envelope, &[]).unwrap();
     let mut msg = inbound(id, conversation, author, ts, &body);
     msg.content_type = card::CARD_CONTENT_TYPE.to_string();
     msg

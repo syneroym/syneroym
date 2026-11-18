@@ -73,6 +73,21 @@ impl FulfilmentReceiptPayload {
     }
 }
 
+/// The hidden fields of a fulfilment receipt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FulfilmentHidden {
+    pub settlement_note: Option<LocalText>,
+}
+
+impl FulfilmentHidden {
+    pub fn validate(&self) -> Result<(), FulfilmentError> {
+        if let Some(note) = &self.settlement_note {
+            note.validate("settlement_note", MAX_SETTLEMENT_NOTE_LEN)?;
+        }
+        Ok(())
+    }
+}
+
 /// Both halves must agree on agreement, conversation, parties, and
 /// commitment_id, and come from opposite roles.
 #[must_use]

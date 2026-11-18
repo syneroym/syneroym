@@ -461,17 +461,14 @@ pub(crate) async fn harness_with_config(custom_config: Option<SubstrateConfig>) 
     let stub_proxy = Arc::new(StubProxy::default());
     let node_identity = Arc::new(Identity::generate().unwrap());
     let master_identity = Arc::new(Identity::generate().unwrap());
-    let clock = RecordClock::Fixed(1_800_000_000);
-    let salts = RecordSalts::Seeded(42);
-
     let (wasm_engine, wasm_conversation, wasm_ws_senders) = build_wasm_stack(
         wasm_dir.path(),
         &wasm_bytes,
         &stub_proxy,
         node_identity.clone(),
         &master_identity,
-        clock,
-        salts,
+        RecordClock::Fixed(1_800_000_000),
+        RecordSalts::Seeded(42),
         custom_config.clone(),
     )
     .await;
@@ -487,8 +484,8 @@ pub(crate) async fn harness_with_config(custom_config: Option<SubstrateConfig>) 
         &stub_proxy,
         node_identity.clone(),
         &master_identity,
-        clock,
-        salts,
+        RecordClock::Fixed(1_800_000_000),
+        RecordSalts::Seeded(42),
         custom_config,
     )
     .await;
@@ -595,20 +592,10 @@ async fn setup_app_topology(registry: &EndpointRegistry) -> Arc<LogicalResolver>
 }
 
 async fn seed_test_config(storage_provider: &Arc<dyn StorageProvider>, key_store: &Arc<KeyStore>) {
-    storage_provider
-        .save_config_generation(
-            SERVICE_ID,
-            r#"{"greeting":"hello","db.host":"x","db.port":"5432"}"#,
-        )
-        .await
-        .unwrap();
-    storage_provider
-        .open_service_db(SERVICE_ID, key_store)
-        .await
-        .unwrap()
-        .write_secret("known", b"top-secret")
-        .await
-        .unwrap();
+    let cfg = r#"{"greeting":"hello","db.host":"x","db.port":"5432"}"#;
+    storage_provider.save_config_generation(SERVICE_ID, cfg).await.unwrap();
+    let db = storage_provider.open_service_db(SERVICE_ID, key_store).await.unwrap();
+    db.write_secret("known", b"top-secret").await.unwrap();
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -14,7 +14,8 @@ pub mod verify;
 
 pub use disclosure::{
     DIGEST_CHARS, DecodedDisclosure, DisclosureError, SALT_BYTES, SALT_CHARS, Salt,
-    decode_disclosure, disclosure_digest, encode_disclosure, seeded_salt,
+    decode_base64url, decode_disclosure, disclosure_digest, encode_base64url, encode_disclosure,
+    seeded_salt,
 };
 pub use envelope::{
     DraftError, ENVELOPE_VERSION, Envelope, EnvelopeError, MAX_PAYLOAD_BYTES, MAX_PAYLOAD_DEPTH,

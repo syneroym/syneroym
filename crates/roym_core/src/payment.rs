@@ -82,6 +82,21 @@ impl PaymentRequestPayload {
     }
 }
 
+/// The hidden fields of a payment request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaymentRequestHidden {
+    pub note: Option<LocalText>,
+}
+
+impl PaymentRequestHidden {
+    pub fn validate(&self) -> Result<(), PaymentError> {
+        if let Some(note) = &self.note {
+            note.validate("note", MAX_NOTE_LEN)?;
+        }
+        Ok(())
+    }
+}
+
 /// One party's statement about a payment for a specific commitment.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaymentAcknowledgementPayload {
@@ -123,6 +138,31 @@ impl PaymentAcknowledgementPayload {
         if self.observed_at_secs == 0 {
             return Err(PaymentError::ZeroObservedTime);
         }
+        if let Some(m) = &self.method
+            && !listing::valid_token(m, MAX_PAYMENT_METHOD_LEN)
+        {
+            return Err(PaymentError::MethodShape(m.clone()));
+        }
+        if self.reference.as_ref().is_some_and(|r| r.len() > MAX_REFERENCE_LEN) {
+            return Err(PaymentError::ReferenceTooLong);
+        }
+        if let Some(note) = &self.settlement_note {
+            note.validate("settlement_note", MAX_SETTLEMENT_NOTE_LEN)?;
+        }
+        Ok(())
+    }
+}
+
+/// The hidden fields of a payment acknowledgement.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaymentAckHidden {
+    pub method: Option<String>,
+    pub reference: Option<String>,
+    pub settlement_note: Option<LocalText>,
+}
+
+impl PaymentAckHidden {
+    pub fn validate(&self) -> Result<(), PaymentError> {
         if let Some(m) = &self.method
             && !listing::valid_token(m, MAX_PAYMENT_METHOD_LEN)
         {

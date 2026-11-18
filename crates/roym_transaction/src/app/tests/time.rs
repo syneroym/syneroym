@@ -361,8 +361,9 @@ async fn a_late_half_after_the_end_is_kept_and_changes_nothing() {
     let env_json = env.to_json().expect("env to json");
     let late_record_id = env.record_id().expect("record id");
 
-    let card_body = card::card_body("fulfilment-receipt", FULFILMENT_RECEIPT_VERSION, &env_json)
-        .expect("card body");
+    let card_body =
+        card::card_body("fulfilment-receipt", FULFILMENT_RECEIPT_VERSION, &env_json, &[])
+            .expect("card body");
 
     let message = json!({
         "id": "msg_late_receiver_half",

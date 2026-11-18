@@ -543,7 +543,7 @@ pub(crate) async fn send_card_and_file<H: AppHost>(
     now: u64,
     version_count: Option<u64>,
 ) -> (String, SendState, Option<SendCardError>) {
-    let body = match card::card_body(card_type, version, envelope_json) {
+    let body = match card::card_body(card_type, version, envelope_json, &[]) {
         Ok(b) => b,
         Err(e) => {
             return (

@@ -10,6 +10,7 @@ use crate::{
     transaction::{DealRole, QuoteLocation, TimeWindow},
 };
 
+pub mod sd;
 pub mod transition;
 
 #[cfg(test)]
@@ -233,6 +234,8 @@ pub enum DealError {
     Window(String),
     #[error("location invalid: {0}")]
     Location(String),
+    #[error("selective disclosure shape invalid: {0}")]
+    SdShape(String),
 }
 
 impl DealError {
@@ -260,6 +263,7 @@ impl DealError {
             Self::CurrencyUnknown(_) => "currency-unknown",
             Self::Window(_) => "window",
             Self::Location(_) => "location",
+            Self::SdShape(_) => "sd-shape",
         }
     }
 }
@@ -326,7 +330,7 @@ impl DealTerms {
 }
 
 fn validate_commitment(c: &Commitment) -> Result<(), DealError> {
-    validate_commitment_kind(c)?;
+    validate_commitment_kind(c.resource_kind, c.kind, c.extension.as_ref())?;
     validate_extension_and_details(c)?;
     validate_commitment_values(c)?;
     if c.eep.is_some() {
@@ -342,10 +346,14 @@ fn validate_commitment(c: &Commitment) -> Result<(), DealError> {
     Ok(())
 }
 
-fn validate_commitment_kind(c: &Commitment) -> Result<(), DealError> {
-    match (c.resource_kind, c.kind) {
+pub fn validate_commitment_kind(
+    resource_kind: ResourceKind,
+    kind: CommitmentKind,
+    extension: Option<&ExtensionRef>,
+) -> Result<(), DealError> {
+    match (resource_kind, kind) {
         (ResourceKind::ServiceInSlot, CommitmentKind::Fulfilment) => {
-            let ext = c.extension.as_ref().ok_or_else(|| {
+            let ext = extension.ok_or_else(|| {
                 DealError::CommitmentKindNotSupported(
                     "service-in-slot requires scheduling extension v1".to_string(),
                 )
@@ -358,7 +366,7 @@ fn validate_commitment_kind(c: &Commitment) -> Result<(), DealError> {
             }
         }
         (ResourceKind::GoodsOrService, CommitmentKind::Fulfilment) => {
-            if let Some(ref ext) = c.extension {
+            if let Some(ext) = extension {
                 return Err(DealError::CommitmentKindNotSupported(format!(
                     "goods-or-service does not support extension '{}'",
                     ext.id
@@ -366,7 +374,7 @@ fn validate_commitment_kind(c: &Commitment) -> Result<(), DealError> {
             }
         }
         (ResourceKind::Currency, CommitmentKind::Currency) => {
-            if let Some(ref ext) = c.extension {
+            if let Some(ext) = extension {
                 return Err(DealError::CommitmentKindNotSupported(format!(
                     "currency does not support extension '{}'",
                     ext.id
@@ -375,7 +383,7 @@ fn validate_commitment_kind(c: &Commitment) -> Result<(), DealError> {
         }
         (ResourceKind::ServiceInSlot | ResourceKind::GoodsOrService, CommitmentKind::Currency)
         | (ResourceKind::Currency, CommitmentKind::Fulfilment) => {
-            return Err(DealError::KindMismatch(c.resource_kind, c.kind));
+            return Err(DealError::KindMismatch(resource_kind, kind));
         }
     }
     Ok(())
@@ -501,19 +509,24 @@ fn validate_commitment_values(c: &Commitment) -> Result<(), DealError> {
 }
 
 fn validate_after_graph(commitments: &[Commitment]) -> Result<(), DealError> {
-    let id_to_index: HashMap<&str, usize> =
-        commitments.iter().enumerate().map(|(i, c)| (c.commitment_id.as_str(), i)).collect();
+    let entries: Vec<(&str, &[String])> =
+        commitments.iter().map(|c| (c.commitment_id.as_str(), c.after.as_slice())).collect();
+    validate_after_graph_entries(&entries)
+}
 
-    for c in commitments {
-        if c.after.len() > MAX_AFTER {
+pub fn validate_after_graph_entries(entries: &[(&str, &[String])]) -> Result<(), DealError> {
+    let id_to_index: HashMap<&str, usize> =
+        entries.iter().enumerate().map(|(i, (id, _))| (*id, i)).collect();
+
+    for (c_id, after) in entries {
+        if after.len() > MAX_AFTER {
             return Err(DealError::AfterUnknown(format!(
-                "commitment {} has more than {} after dependencies",
-                c.commitment_id, MAX_AFTER
+                "commitment {c_id} has more than {MAX_AFTER} after dependencies"
             )));
         }
-        let mut seen = HashSet::with_capacity(c.after.len());
-        for target in &c.after {
-            if target == &c.commitment_id {
+        let mut seen = HashSet::with_capacity(after.len());
+        for target in *after {
+            if target == *c_id {
                 return Err(DealError::AfterCycle(target.clone()));
             }
             if !id_to_index.contains_key(target.as_str()) {
@@ -527,30 +540,30 @@ fn validate_after_graph(commitments: &[Commitment]) -> Result<(), DealError> {
 
     // Cycle detection via DFS with 3 states: 0 = unvisited, 1 = visiting, 2 =
     // visited.
-    let n = commitments.len();
+    let n = entries.len();
     let mut state = vec![0u8; n];
     for start in 0..n {
         if state[start] == 0 {
-            detect_cycle(start, commitments, &id_to_index, &mut state)?;
+            detect_cycle_entries(start, entries, &id_to_index, &mut state)?;
         }
     }
     Ok(())
 }
 
-fn detect_cycle(
+fn detect_cycle_entries(
     u: usize,
-    commitments: &[Commitment],
+    entries: &[(&str, &[String])],
     id_to_index: &HashMap<&str, usize>,
     state: &mut [u8],
 ) -> Result<(), DealError> {
     state[u] = 1; // Visiting
-    for target_id in &commitments[u].after {
+    for target_id in entries[u].1 {
         let v = id_to_index[target_id.as_str()];
         if state[v] == 1 {
             return Err(DealError::AfterCycle(target_id.clone()));
         }
         if state[v] == 0 {
-            detect_cycle(v, commitments, id_to_index, state)?;
+            detect_cycle_entries(v, entries, id_to_index, state)?;
         }
     }
     state[u] = 2; // Visited

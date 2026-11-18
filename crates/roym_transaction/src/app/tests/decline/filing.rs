@@ -41,8 +41,9 @@ async fn decline_filing_refuses_third_party_signer() {
 
     let (bad_dec_json, _) =
         make_decline_envelope(&third_party, &q_rec_id, &quote.quote_id, "conv_1", now);
-    let bad_card_body = card::card_body(RECORD_DEAL_DECLINE, DEAL_DECLINE_VERSION, &bad_dec_json)
-        .expect("card body");
+    let bad_card_body =
+        card::card_body(RECORD_DEAL_DECLINE, DEAL_DECLINE_VERSION, &bad_dec_json, &[])
+            .expect("card body");
 
     f.host.on_call("conversation", "conversation.changes", move |_| {
         Ok(json!({
@@ -91,8 +92,9 @@ async fn decline_filing_refuses_mismatched_conversation() {
 
     let (bad_conv_json, _) =
         make_decline_envelope(&cp, &q_rec_id, &quote.quote_id, "other_conv", now);
-    let bad_conv_body = card::card_body(RECORD_DEAL_DECLINE, DEAL_DECLINE_VERSION, &bad_conv_json)
-        .expect("card body");
+    let bad_conv_body =
+        card::card_body(RECORD_DEAL_DECLINE, DEAL_DECLINE_VERSION, &bad_conv_json, &[])
+            .expect("card body");
 
     f.host.on_call("conversation", "conversation.changes", move |_| {
         Ok(json!({
@@ -139,8 +141,9 @@ async fn decline_filing_refuses_mismatched_deal() {
     let (q_rec_id, _quote) = setup_quote_for_decline_filing(&f, &cp, now).await;
 
     let (bad_deal_json, _) = make_decline_envelope(&cp, &q_rec_id, "wrong_quote_id", "conv_1", now);
-    let bad_deal_body = card::card_body(RECORD_DEAL_DECLINE, DEAL_DECLINE_VERSION, &bad_deal_json)
-        .expect("card body");
+    let bad_deal_body =
+        card::card_body(RECORD_DEAL_DECLINE, DEAL_DECLINE_VERSION, &bad_deal_json, &[])
+            .expect("card body");
 
     f.host.on_call("conversation", "conversation.changes", move |_| {
         Ok(json!({
@@ -214,7 +217,7 @@ async fn decline_filing_refuses_when_unrefused_half_exists() {
     let (unrefused_dec_json, _) =
         make_decline_envelope(&cp, &q_rec_id, &quote.quote_id, "conv_1", now);
     let unrefused_body =
-        card::card_body(RECORD_DEAL_DECLINE, DEAL_DECLINE_VERSION, &unrefused_dec_json)
+        card::card_body(RECORD_DEAL_DECLINE, DEAL_DECLINE_VERSION, &unrefused_dec_json, &[])
             .expect("card body");
 
     f.host.on_call("conversation", "conversation.changes", move |_| {
@@ -262,8 +265,8 @@ async fn decline_filing_retries_on_write_failure() {
     let (q_rec_id, quote) = setup_quote_for_decline_filing(&f, &cp, now).await;
 
     let (dec_json, _) = make_decline_envelope(&cp, &q_rec_id, &quote.quote_id, "conv_1", now);
-    let dec_body =
-        card::card_body(RECORD_DEAL_DECLINE, DEAL_DECLINE_VERSION, &dec_json).expect("card body");
+    let dec_body = card::card_body(RECORD_DEAL_DECLINE, DEAL_DECLINE_VERSION, &dec_json, &[])
+        .expect("card body");
 
     f.host.on_call("conversation", "conversation.changes", move |_| {
         Ok(json!({

@@ -33,6 +33,22 @@ impl Salt {
     pub fn encoded(&self) -> String {
         URL_SAFE_NO_PAD.encode(self.0)
     }
+
+    pub fn from_encoded(s: &str) -> Result<Self, DisclosureError> {
+        let bytes =
+            URL_SAFE_NO_PAD.decode(s.as_bytes()).map_err(|_| DisclosureError::NotBase64Url)?;
+        Self::try_from_slice(&bytes)
+    }
+}
+
+/// Encodes raw bytes as unpadded base64url.
+pub fn encode_base64url(bytes: &[u8]) -> String {
+    URL_SAFE_NO_PAD.encode(bytes)
+}
+
+/// Decodes unpadded base64url into raw bytes.
+pub fn decode_base64url(s: &str) -> Result<Vec<u8>, DisclosureError> {
+    URL_SAFE_NO_PAD.decode(s.as_bytes()).map_err(|_| DisclosureError::NotBase64Url)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

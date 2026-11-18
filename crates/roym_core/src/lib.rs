@@ -14,6 +14,7 @@ pub mod clock;
 pub mod conversation;
 pub mod deal;
 pub mod directory;
+pub mod disclosure;
 pub mod dual_build;
 pub mod envelope;
 pub mod fulfilment;

@@ -1012,11 +1012,9 @@ pub(crate) async fn harness_with_unbound(skip: Option<&'static str>) -> Harness 
         let manifest = wasm_deploy_manifest(bytes, iface);
         wasm_engine.deploy_wasm(&service_id, &manifest).await.expect("deploy wasm service");
     }
+    let dir2_manifest = wasm_deploy_manifest(directory_wasm_bytes, services::DIRECTORY.interface);
     wasm_engine
-        .deploy_wasm(
-            &did_for_service("directory2"),
-            &wasm_deploy_manifest(directory_wasm_bytes, services::DIRECTORY.interface),
-        )
+        .deploy_wasm(&did_for_service("directory2"), &dir2_manifest)
         .await
         .expect("deploy second directory wasm service");
 
@@ -1040,10 +1038,10 @@ pub(crate) async fn harness_with_unbound(skip: Option<&'static str>) -> Harness 
     // half of the harness is left, so the budget covers the scenario body.
     let wall_now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
     let fixed_clock = RecordClock::Fixed(wall_now + 240);
-    let seeded_salts = RecordSalts::Seeded(42);
+    let salts = RecordSalts::Seeded(42);
 
     let wasm_record_signer =
-        NodeRecordSigner::with_clock(node_identity.clone(), wasm_reg, fixed_clock, seeded_salts);
+        NodeRecordSigner::with_clock(node_identity.clone(), wasm_reg, fixed_clock, salts);
     wasm_engine.record_signer.set(wasm_record_signer).expect("set wasm record_signer");
 
     // 2. Native Stack setup
@@ -1070,7 +1068,7 @@ pub(crate) async fn harness_with_unbound(skip: Option<&'static str>) -> Harness 
     native_conversation.set_event_bus(native_event_bus.clone());
 
     let native_record_signer =
-        NodeRecordSigner::with_clock(node_identity, native_reg.clone(), fixed_clock, seeded_salts);
+        NodeRecordSigner::with_clock(node_identity, native_reg.clone(), fixed_clock, salts);
 
     let make_factory = |name: &str| {
         NativeHostFactory::new(

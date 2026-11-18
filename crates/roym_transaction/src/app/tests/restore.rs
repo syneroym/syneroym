@@ -301,7 +301,7 @@ async fn restored_writer_continues_seq_from_its_cards() {
 
     // Now sync discovers outgoing card seq 2 in conversation history
     let p2_card_body =
-        card::card_body(RECORD_AGREEMENT_PROGRESS, AGREEMENT_PROGRESS_VERSION, &p2_json)
+        card::card_body(RECORD_AGREEMENT_PROGRESS, AGREEMENT_PROGRESS_VERSION, &p2_json, &[])
             .expect("card body");
 
     f.host.on_call("conversation", "conversation.changes", move |_| {
@@ -408,7 +408,7 @@ async fn restored_writer_reuses_its_sent_countersign() {
 
     // Conversation history from 0 holds the sent countersign card
     let cs_card_body =
-        card::card_body(RECORD_AGREEMENT_RECEIPT, AGREEMENT_RECEIPT_VERSION, &cs_json)
+        card::card_body(RECORD_AGREEMENT_RECEIPT, AGREEMENT_RECEIPT_VERSION, &cs_json, &[])
             .expect("card body");
 
     f.host.on_call("conversation", "conversation.changes", move |_| {
@@ -531,7 +531,7 @@ async fn restored_writer_paginates_to_find_countersign_after_sync_window() {
     put_row(&f.host, AGREEMENTS, &q_rec_id, &initial_row).await.unwrap();
 
     let cs_card_body =
-        card::card_body(RECORD_AGREEMENT_RECEIPT, AGREEMENT_RECEIPT_VERSION, &cs_json)
+        card::card_body(RECORD_AGREEMENT_RECEIPT, AGREEMENT_RECEIPT_VERSION, &cs_json, &[])
             .expect("card body");
 
     f.host.on_call("conversation", "conversation.changes", move |params| {

@@ -144,6 +144,7 @@ async fn two_syncs_send_one_refusal() {
         syneroym_roym_core::transaction::RECORD_AGREEMENT_RECEIPT,
         syneroym_roym_core::transaction::AGREEMENT_RECEIPT_VERSION,
         &cp_env,
+        &[],
     )
     .expect("card body");
 

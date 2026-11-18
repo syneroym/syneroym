@@ -293,9 +293,13 @@ async fn crash_after_the_fence_is_finished_on_the_next_sync() {
     put_row(&f.host, QUOTES, &quote.quote_id, &ptr).await.unwrap();
 
     let cp_half = row.counterparty.as_ref().unwrap();
-    let card_body =
-        card::card_body(RECORD_AGREEMENT_RECEIPT, AGREEMENT_RECEIPT_VERSION, &cp_half.envelope)
-            .expect("card body");
+    let card_body = card::card_body(
+        RECORD_AGREEMENT_RECEIPT,
+        AGREEMENT_RECEIPT_VERSION,
+        &cp_half.envelope,
+        &[],
+    )
+    .expect("card body");
 
     let card_body_clone = card_body.clone();
     let cp_did = quote.counterparty_did.clone();
