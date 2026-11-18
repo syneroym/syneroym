@@ -128,7 +128,7 @@ The owner has not answered Q1 to Q7. This is only the reviewer's view.
 
 ### Findings
 
-- [ ] **P1 — major.** *Where:* plan section 2.2 point 1, the test
+- [x] **P1 — major.** *Where:* plan section 2.2 point 1, the test
   `largest_quote_card_fits_in_the_card_body` (7.2), AG-40, and the C2
   deviation row "The 96 KiB limit against the card body (checked)".
   *Problem:* The plan checks 96 KiB only against `MAX_CARD_BODY_BYTES`
@@ -172,9 +172,9 @@ The owner has not answered Q1 to Q7. This is only the reviewer's view.
   actually be delivered. (4) The two-node test must prove the decision: a
   quote near the chosen limit reaches an online peer and an offline peer
   with a mailbox.
-  *Status:* Open
+  *Status:* Fixed (ba8c42a8): new owner question Q8 with the measured expansion (×3.36 as numbers, about ×4.47 after encryption) and the 64 KiB sealed cap, about 14 KiB of card body; recommendation (a) keep 96 KiB, the Hub notes when a quote is too large for a mailbox (`quote.measure` returns `card_bytes`, `mailbox_fits`), a backlog row for a compact body encoding. Step 6 measures the real ceiling (`MAILBOX_CARD_BODY_BYTES`, D-C2-22) and adds the two-node mailbox tests; the deviation row no longer claims 49 KiB to spare for delivery. Checked: a failed deposit falls back to direct delivery (`router/src/proxy/mailbox.rs:268` to `:275`).
 
-- [ ] **P2 — major.** *Where:* step 5 ("In-crate tests: section 7.2"),
+- [x] **P2 — major.** *Where:* step 5 ("In-crate tests: section 7.2"),
   section 7.1 and 7.2, section 7.8.
   *Problem:* About 20 existing test files build the signed payload types
   directly with plain `DealTerms` or plain settlement fields, and they stop
@@ -203,9 +203,9 @@ The owner has not answered Q1 to Q7. This is only the reviewer's view.
   cap (`app/tests/restore.rs`, `transaction/tests.rs`) and where new cases
   go. `wire_words.rs` must keep scanning the plain form *and* the decoded
   disclosures (see P9).
-  *Status:* Open
+  *Status:* Fixed (ba8c42a8): D-C2-20 adds one shared builder, `roym_core::testing::sd`; section 2.2 point 12 lists the ~20 files; step 5 moves each to it; 7.8 names the files near the cap and where new cases go; Q1 sizes C2a.
 
-- [ ] **P3 — major.** *Where:* step 3 ("`fresh-salts` on the host"),
+- [x] **P3 — major.** *Where:* step 3 ("`fresh-salts` on the host"),
   D-C2-13, and the plan's list of implementers.
   *Problem:* Adding a function to `syneroym:signing` and an argument to
   `NodeRecordSigner::with_clock` has callers the plan does not name:
@@ -231,9 +231,9 @@ The owner has not answered Q1 to Q7. This is only the reviewer's view.
   with `RecordSalts::Seeded` both builds return the same salts, and a count
   of 0 and of 257 give the same error on both. Add `dual-build-fixture` to
   the files that change in 7.8.
-  *Status:* Open
+  *Status:* Fixed (ba8c42a8): step 3 and D-C2-13 name all six `with_clock` callers, `permitted_differences.rs`, the `fresh-salts` op in `dual-build-fixture` with its rebuild command, and two scenarios in `app_host_native` parity `signing.rs`; 7.8 names the fixture; exit criteria cover both parity harnesses.
 
-- [ ] **P4 — minor.** *Where:* D-C2-11, Q4, test `quote_measure_matches_quote_set`.
+- [x] **P4 — minor.** *Where:* D-C2-11, Q4, test `quote_measure_matches_quote_set`.
   *Problem:* `quote.set` fills the `window` of every slot commitment from
   the catalog before it builds the terms (`quote_ops.rs:133` to `:136`,
   `validate_and_apply_slot` at `:287` to `:340`), and `window` is a hidden
@@ -250,9 +250,9 @@ The owner has not answered Q1 to Q7. This is only the reviewer's view.
   latest_secs: 9_999_999_999}`) when `window` is empty, and say in the
   method's doc that the answer is an upper bound for the slot case. The
   test must include one slot commitment.
-  *Status:* Open
+  *Status:* Fixed differently (ba8c42a8): in place of a placeholder window, `quote.set` and `quote.measure` share one `prepare_terms` that runs the real slot step, so the measure is exact; the expiry is measured at its longest. `quote_measure_matches_quote_set` has a slot commitment.
 
-- [ ] **P5 — minor.** *Where:* step 4 (`DisclosureIndex::build`) and D-C2-7.
+- [x] **P5 — minor.** *Where:* step 4 (`DisclosureIndex::build`) and D-C2-7.
   *Problem:* The plan decodes and hashes every disclosure and only then
   checks the count. A stranger's card may be 160 KiB. A card can hold
   thousands of tiny disclosures that each decode, hash and go into a map
@@ -267,9 +267,9 @@ The owner has not answered Q1 to Q7. This is only the reviewer's view.
   for a quote, 1 or 3 for a settlement record; for a presentation, the sum
   over its records). Add `disclosure-count-too-high` to `SdError` and one
   table case.
-  *Status:* Open
+  *Status:* Fixed (ba8c42a8): D-C2-21, `DisclosureIndex::build(disclosures, max_count)` refuses a longer list, or one oversized disclosure, before any decode (`disclosure-count-too-high`); C2b uses the sum over records; two table cases in 7.1.
 
-- [ ] **P6 — minor.** *Where:* step 6 (parity, method shapes) and C2b step 2.
+- [x] **P6 — minor.** *Where:* step 6 (parity, method shapes) and C2b step 2.
   *Problem:* `crates/roym_web/tests/method_contract/contract.rs:60` asserts
   `table.len() == 37` for the `transaction` method table. The same test runs
   `assert_service_table` (`roym_core/src/method/check.rs:33`), which refuses
@@ -284,9 +284,9 @@ The owner has not answered Q1 to Q7. This is only the reviewer's view.
   *Fix:* Add the file and the two new counts to step 6 and to C2b step 2,
   and say that each new input type has `deny_unknown_fields` and each
   output is a typed struct.
-  *Status:* Open
+  *Status:* Fixed (ba8c42a8): step 6 (37 → 38) and C2b step 2 (38 → 40) name `contract.rs:60`, and say each new input is `deny_unknown_fields` and each output a typed struct.
 
-- [ ] **P7 — minor.** *Where:* section 4 "Stays the same" (`roymctl`) and
+- [x] **P7 — minor.** *Where:* section 4 "Stays the same" (`roymctl`) and
   section 9.
   *Problem:* The plan says `roymctl` "prints plain `agreement.get` output"
   and stays the same. But `roymctl roym agreement payment verify` calls
@@ -302,9 +302,9 @@ The owner has not answered Q1 to Q7. This is only the reviewer's view.
   commands, and add one line to the developer guide: a verdict shows the
   signed form; disclosed fields appear only with C2b's `disclosures` input.
   Check `roymctl`'s own tests for a payload read.
-  *Status:* Open
+  *Status:* Fixed in part (ba8c42a8): only one `roymctl` verify verb exists, `roymctl roym transaction payment verify` (`agreement.rs:110`, `:290` to `:298`); there is no `quote`, `agreement` or `fulfilment` verify verb, no guide example prints a verdict, and no `roymctl` test reads its payload. Section 4 and 2.2 point 13 now say so; step 5 changes that verb's help text; section 9 adds the guide line.
 
-- [ ] **P8 — minor.** *Where:* section 9 (living docs).
+- [x] **P8 — minor.** *Where:* section 9 (living docs).
   *Problem:* Three more statements become false and are not listed:
   `docs/system-architecture.md:1215` ("`fulfilment-receipt` … carries
   `terms` with `terms.lang`", the plan names only `:1203` to `:1211`) and
@@ -318,9 +318,9 @@ The owner has not answered Q1 to Q7. This is only the reviewer's view.
   *Fix:* Add the three lines. The developer guide should also say that
   `quote.get`, `quote.list` and `quote.history` now return `terms`
   (section 4's table) and that `quote.measure` exists.
-  *Status:* Open
+  *Status:* Fixed (ba8c42a8): section 9 adds architecture `:1213` to `:1215` and `:1415`, guide `:1786`, and the guide lines for `quote.get`/`.list`/`.history` `terms` and `quote.measure`.
 
-- [ ] **P9 — minor.** *Where:* step 5 and `crates/roym_core/src/record/tests/wire_words.rs`.
+- [x] **P9 — minor.** *Where:* step 5 and `crates/roym_core/src/record/tests/wire_words.rs`.
   *Problem:* That test scans every signed record sample for a fixed
   seller or buyer word (`wire_words.rs:1` to `:6`: "each sample fills every
   optional field"). After the switch the signed samples no longer hold the
@@ -329,9 +329,9 @@ The owner has not answered Q1 to Q7. This is only the reviewer's view.
   any failure.
   *Fix:* Scan the plain form (the one `CardRow.data` holds) and the decoded
   disclosure values of each sample in addition to the wire form.
-  *Status:* Open
+  *Status:* Fixed (ba8c42a8): step 5 and 2.2 point 12: `wire_words.rs` scans the wire form, the plain form and each decoded disclosure value.
 
-- [ ] **P10 — minor.** *Where:* step 3 (`NodeRecordSigner::fresh_salts`,
+- [x] **P10 — minor.** *Where:* step 3 (`NodeRecordSigner::fresh_salts`,
   "`System` uses `getrandom::fill`").
   *Problem:* `crates/core/Cargo.toml` has `rand` (used at
   `event_bus.rs:112` with `rand::rng()`), and no `getrandom`. The plan does
@@ -340,9 +340,9 @@ The owner has not answered Q1 to Q7. This is only the reviewer's view.
   *Fix:* Use `rand::rng().fill_bytes` (already in the crate, from the OS
   generator), or add `getrandom.workspace = true` and say so. Pick one in
   the plan.
-  *Status:* Open
+  *Status:* Fixed (ba8c42a8): `System` salts use `rand::rng().fill_bytes`; `rand` is already in `crates/core/Cargo.toml:31`. No new dependency.
 
-- [ ] **P11 — minor.** *Where:* D-C2-7, D-C2-4 and the filers (step 5).
+- [x] **P11 — minor.** *Where:* D-C2-7, D-C2-4 and the filers (step 5).
   *Problem:* The plan does not say what a filer does with a repeat of a
   record it already holds. Today `file_quote_card` marks a repeat
   (`already_held`, `sync.rs:477`) and still shows the card as verified. With
@@ -355,9 +355,9 @@ The owner has not answered Q1 to Q7. This is only the reviewer's view.
   store write is "put if absent" (or equal); a repeat with no disclosures is
   filed as a repeat when the stored set exists. Add two cases to
   `disclosure.rs` in 7.2.
-  *Status:* Open
+  *Status:* Fixed (ba8c42a8): D-C2-4 (the store is a `create`, never replaced, `disclosures-differ`) and D-C2-7 (the strict reveal runs on the card's own set; equal set or no set is a repeat); three cases in 7.2.
 
-- [ ] **P12 — minor.** *Where:* D-C2-4 (`DisclosureRow … index on
+- [x] **P12 — minor.** *Where:* D-C2-4 (`DisclosureRow … index on
   conversation`).
   *Problem:* No code in the plan queries `DISCLOSURES` by `conversation`
   (the backup exports the whole collection; every other read is by
@@ -366,4 +366,4 @@ The owner has not answered Q1 to Q7. This is only the reviewer's view.
   *Fix:* Drop the index and the `conversation` field, or name the reader
   that needs it (a conversation delete, if one exists, would be that
   reader; the plan does not describe one).
-  *Status:* Open
+  *Status:* Fixed (ba8c42a8): D-C2-4 drops the `conversation` field and the index.
