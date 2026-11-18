@@ -747,7 +747,7 @@ The first release has **eight card types**, and no others:
 | `payment-request` | Quote author | C17 — payee comes from the signed agreement, never from a later message |
 | `payment-acknowledgement` | Each side, separately | C19 — what each party observed |
 | `fulfilment-receipt` | Both | C20 — both agreed the work was done |
-| `deal-decline` | Decliner | Either side declines a quote or enquiry, or withdraws its own enquiry |
+| `deal-decline` | Decliner | Counterparty declines a quote or withdraws its own enquiry; quote author declines an enquiry |
 
 Each renders through a **fixed template chosen by `(type, version)`**. The Hub
 ships eight templates plus one fallback; it is not a general interpreter.
