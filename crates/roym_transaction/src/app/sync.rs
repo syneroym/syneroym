@@ -278,7 +278,7 @@ fn init_card_row(m: &Value, conversation: &str, now: u64) -> CardRow {
 async fn dispatch_known_card<H: AppHost>(
     host: &H,
     row: CardRow,
-    sender: &str,
+    _sender: &str,
     card: &card::Card,
     conversation: &str,
     now: u64,
@@ -327,16 +327,7 @@ async fn dispatch_known_card<H: AppHost>(
             .await
         }
         "deal-decline" => {
-            decline::file_deal_decline_card(
-                host,
-                row,
-                sender,
-                &card.envelope,
-                conversation,
-                now,
-                owner,
-            )
-            .await
+            decline::file_deal_decline_card(host, row, &card.envelope, conversation, now).await
         }
         _ => refuse_card(host, row, "a known card type this build does not file").await,
     }
