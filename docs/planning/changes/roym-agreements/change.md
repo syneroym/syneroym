@@ -1195,6 +1195,35 @@ The plan did not state these rules. The code follows them now.
   state reaches `agreed`, ensuring both the countersigned receipt card
   and the agreement-progress snapshot 1 card have arrived across the network.
 
+**Written when the M08C C2 slice was planned (2026-11-18,
+[slice-c2-implementation-plan.md](../../milestones/M08C-deal-core-and-extensions/slice-c2-implementation-plan.md)).**
+The plan's questions Q1 to Q7 are not answered yet. Rows that depend on an
+answer are added when the owner answers.
+
+- **The 96 KiB limit against the card body (checked).** "Where disclosures
+  travel" asks C2's plan to check 96 KiB against a real envelope. Worst
+  case on the M08C shapes (16 commitments with the longest visible fields,
+  a delegation certificate, disclosures of exactly 96 KiB): the card body
+  is 113,583 bytes of the 163,840-byte `MAX_CARD_BODY_BYTES`. The limit
+  stays. A test that signs a real envelope pins it.
+- **The 96 KiB limit binds before the 8 KiB one.** Texts at their maximum
+  in five languages give about 218 KiB of disclosures, so `quote-too-large`
+  can come from long texts, not only from large `details`.
+- **Every hidden field is disclosed, also when unused.** "Every
+  commitment has all ten hidden fields" also holds for the terms (5) and
+  each settlement record (1, 3, 1): an unused field is disclosed with the
+  value `null`.
+- **Cards that must not carry disclosures.** A receipt, snapshot, enquiry
+  or decline card that carries disclosures is refused when filed.
+- **Size limits on both sides.** The filing node also refuses a received
+  record whose disclosures break the 96 KiB or 8 KiB limit.
+- **The backup import rebuilds plain values.** The import checks each
+  disclosures row against its record, and builds the agreement's plain
+  terms and each card's shown data from the signed records and the
+  disclosures, not from the bundle's own copy.
+- **AG-8.** The presentation part that C1 left comes in C2's second part
+  (C2b).
+
 ## Close-out
 
 Before merge, update the living docs (requirements, architecture, integrated spec, developer guide, terminology) so they describe the result. Then set `status: done` and fill in `living-docs-touched` and `demo`. Record anything you postponed in [deferred-backlog.md](../../deferred-backlog.md).
