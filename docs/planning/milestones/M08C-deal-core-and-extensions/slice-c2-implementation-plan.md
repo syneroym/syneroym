@@ -4,9 +4,10 @@
 owner, who answers the questions in section 2.1. You do not have the
 planning conversation. This plan is meant to stand alone.*
 
-**Status: plan written, 2026-11-18, by Claude Opus 5.5. Not reviewed yet.
-The owner has not answered Q1 to Q7 yet. The plan is written for the
-recommended answer of each question.**
+**Status: plan written, 2026-11-18, by Claude Opus 5.5. Plan review round 1
+(Claude Sonnet 5.5, [slice-c2-review.md](slice-c2-review.md), P1 to P12)
+folded the same day. The owner has not answered Q1 to Q8 yet. The plan is
+written for the recommended answer of each question.**
 
 **Size and PRs.** C2 is an L slice. This plan splits it in two parts, and
 each part is one PR that passes `mise run verify` (Q1):
@@ -166,6 +167,9 @@ C2a:
   line like "Size: 2.1 KiB of 96 KiB". It changes as he types.
 - If Bob writes far too much text, the line turns red and says the quote
   is too large to send.
+- If the quote is large but allowed (for example long texts in several
+  languages), a short note says that Alice gets it only while both phones
+  or computers are online (Q8).
 - Alice receives the quote and sees it exactly as before: the same lines,
   the same prices. Accepting, paying and confirming look the same.
 - What changed is not visible on screen: the signed records no longer
@@ -185,6 +189,9 @@ How a developer can see it work:
 - `cargo nextest run -p syneroym-signed-record disclosure` and
   `cargo nextest run -p syneroym-roym-core disclosure`: the RFC 9901 test
   vectors and the refusal tables.
+- C2a: `cargo nextest run -p syneroym-substrate --test roym_disclosure_e2e`:
+  a quote of the mailbox size reaches an offline peer through its mailbox,
+  and a larger one arrives when the peer comes back.
 - C2b: `cargo nextest run -p syneroym-substrate --test roym_disclosure_e2e`:
   Bob shows his agreement with Alice to Carol's node, with the price
   hidden and the scope shown; Carol's node verifies both halves and the
@@ -201,11 +208,14 @@ recommended answer. Answer-dependent rows go into the change docs'
 #### Q1. Split C2 into C2a (hide) and C2b (show)?
 
 - **(a) Split as section 1 describes.** Recommended. Each part works on its
-  own and has one kind of risk.
+  own and has one kind of risk. C2a stays large: about 3,800 changed
+  lines by estimate, of which about 1,000 are the migration of ~20 test
+  files to the shared builder (section 2.2 point 12, review P2) and the
+  mailbox tests of Q8. C2b is about 1,200.
 - (b) Keep one C2: one PR of roughly 5,000 changed lines (estimate:
   `roym_core` and `signed_record` +1,400 with tests, `transaction` ±1,200,
-  parity and shape files ±900, two-node ±500, host and WIT ±300 plus
-  regenerated bindings, Hub ±250).
+  existing test migration ±1,000, parity and shape files ±900, two-node
+  ±500, host and WIT ±300 plus regenerated bindings, Hub ±250).
 
 #### Q2. Where do the salts come from?
 
@@ -230,9 +240,13 @@ the two builds.
   `RecordSalts::Seeded(u64)` beside it keeps parity exact. The signing WIT
   is one file; every `wit/deps/signing/signing.wit` is a symlink to it.
   Cost: one WIT function, four implementers (`GuestHost`,
-  `NativeAppHost`, `HostState`, `TestHost`), and regenerated
-  `bindings.rs` in the six Roym crates (a few hundred bytes per
-  component).
+  `NativeAppHost`, `HostState`, `TestHost`), regenerated `bindings.rs` in
+  the six Roym crates (a few hundred bytes per component), and the
+  host-surface parity harness: `crates/app_host_native/tests/dual_build_parity/`
+  (`helpers.rs:674`, `:741` call `with_clock`; `signing.rs` compares every
+  signing function on both builds) with its guest fixture
+  `test-components/dual-build-fixture`, which needs a `fresh-salts` op
+  (step 3, review P3).
 - (b) `getrandom` in the guest. It is already in the WASM build graph
   (through `syneroym-identity`, `crates/identity/Cargo.toml`, used at
   `crates/identity/src/backup.rs:72`) and works on `wasm32-wasip2`. The
@@ -271,8 +285,12 @@ order does not matter for length, but skipped empty fields and escapes do).
 - **(a) A new local-only method `quote.measure { terms }` that runs the
   same Rust code `quote.set` runs, with zero salts (a salt is always 22
   characters, so the size does not depend on its value).** Recommended.
-  One source of truth. The Hub calls it 300 ms after the person stops
-  typing. It is a deviation: the doc's method table has no such method.
+  One source of truth. It runs the same preparation step as `quote.set`,
+  including the slot step that fills each slot commitment's `window` from
+  the catalog (`quote_ops.rs:133` to `:136`), so a quote with a slot is not
+  measured smaller than it is signed (review P4). The Hub calls it 300 ms
+  after the person stops typing. It is a deviation: the doc's method table
+  has no such method.
 - (b) Compute the size in TypeScript. A second copy of the encoding that
   can drift.
 - (c) Show the size only after `quote.set` refuses with `quote-too-large`.
@@ -331,6 +349,49 @@ is free text.
 - (b) Hide it with one digest, like a payment request's `note`. One more
   record path in C2a, for a record nobody presents.
 
+#### Q8. Does the 96 KiB limit stay when a mailbox cannot carry such a card? (review P1)
+
+A card does not travel as its body. `conversation` puts the body in a
+`DeliveryPayload` whose `body` is `Vec<u8>`
+(`crates/conversation/src/envelope.rs:24`), writes it with
+`serde_json::to_vec` (`crates/conversation/src/crypto.rs:421`), which
+writes each byte as a decimal number and a comma, then Olm encrypts it and
+writes the ciphertext as base64 (vodozemac's `OlmMessage` serialiser). A
+measured sample: 10,263 bytes of card body become 34,444 bytes as numbers
+(×3.36) and about 45,900 after encryption and base64 (×4.47). When the
+receiver is offline and has a mailbox, the sender seals the call for the
+mailbox, and a sealed message may be at most `MAX_SEALED_BYTES` = 64 KiB
+(`crates/mailbox_format/src/lib.rs:37`, `message.rs:339`). So a card
+reaches a mailbox only when its body is about 14 KiB or less. A direct
+delivery to an online peer has no such cap below the conversation body
+limit of 262,144 bytes (`crates/conversation/src/store.rs:92`). When a
+deposit fails, the sender logs "will try directly again" and returns the
+direct error (`crates/router/src/proxy/mailbox.rs:268` to `:275`), so the
+message stays in the sender's outbox and is delivered directly once both
+nodes are online (the outbox keeps it up to 30 days,
+`max_pending_age_secs`, `store.rs:95`).
+
+This is already true today: a plain quote can be over 14 KiB. C2 makes
+each card larger (base64url adds a third to every hidden text, and each
+hidden field adds a salt and a digest).
+
+- **(a) Keep 96 KiB. A quote whose card is too large for a mailbox reaches
+  an offline peer only when both nodes are online. The Hub says so on the
+  quote form. A backlog row asks `conversation` for a compact body
+  encoding.** Recommended. The limit protects the card body; the mailbox
+  is a delivery shortcut, and the outbox already falls back to direct
+  delivery. A typical quote (two commitments, short texts, one language)
+  is about 5 KiB of card by estimate (step 6 measures one) and fits a
+  mailbox. The quotes that do not fit
+  are the long, many-language ones, and their author is told.
+- (b) Lower the disclosure limit so every card fits a mailbox (about
+  8 KiB of disclosures after the envelope). A quote with 16 commitments,
+  or with texts in several languages, could not be made at all.
+- (c) Fix the transport first: a base64 or binary body in
+  `DeliveryPayload` (×1.33 in place of ×3.36). It changes `conversation`'s
+  wire format, which no M08C slice owns, and even then a 96 KiB card would
+  not fit a 64 KiB sealed message.
+
 ### 2.2 Points found while reading
 
 1. **The 96 KiB limit against a real card body.** task.md asks the plan to
@@ -341,11 +402,14 @@ is free text.
    bytes, envelope JSON 13,337 bytes, envelope as an escaped JSON string
    inside the card 14,711 bytes, disclosure array 98,800 bytes, card body
    113,583 bytes. The limit is `MAX_CARD_BODY_BYTES` = 163,840
-   (`crates/roym_core/src/card.rs:63`). So 96 KiB fits with about 49 KiB to
-   spare. Disclosures are base64url and need no escaping. C2a pins this
-   with a test that signs a real envelope (section 7.2,
-   `largest_quote_card_fits_in_the_card_body`). The C2 deviation rows in
-   the agreements doc record the numbers.
+   (`crates/roym_core/src/card.rs:63`). So 96 KiB fits *the card body*
+   with about 49 KiB to spare. Disclosures are base64url and need no
+   escaping. C2a pins this with a test that signs a real envelope (section
+   7.2, `largest_quote_card_fits_in_the_card_body`). The card body is not
+   the only limit on the way: a card for an offline peer must fit a
+   64 KiB sealed mailbox message, which is about 14 KiB of card body (Q8,
+   review P1). C2a measures that number with the real encoding (step 6)
+   and the C2 deviation rows record both numbers.
 2. **The 96 KiB limit binds, not the 8 KiB one.** Today the 64 KiB payload
    limit (`crates/signed_record/src/envelope.rs:7`) bounds a quote. With
    the texts at their maximum (scope 4,096 bytes and 4 translations,
@@ -452,6 +516,26 @@ is free text.
     The doc's method table says the views hold the plain values
     (`change.md:848`). C2a adds `terms` to both, and a `versions` list to
     `quote.history` (D-C2-15).
+12. **About 20 test files build signed payloads by hand** (review P2) and
+    stop compiling in step 5. In `crates/roym_core/src`:
+    `record/tests/wire_words.rs`, `transaction/tests.rs`,
+    `transaction/tests/{viewed,verify,lang}.rs`, `deal/tests.rs`,
+    `payment/tests.rs`, `fulfilment/tests.rs`. In
+    `crates/roym_transaction/src/app/`: `tests/{restore,recover,decide,settle,
+    accept,time,cancel,decline}.rs`, `tests/decline/filing.rs`,
+    `tests/refuse/{helpers,writer}.rs`, `backup/tests.rs`. About 100 sites
+    in all. Step 4 adds one shared builder for them (D-C2-20), and step 5
+    moves each file to it. `wire_words.rs` scans every signed sample for a
+    seller or buyer word (`wire_words.rs:1` to `:6`); after the switch the
+    hidden text is no longer in the signed sample, so it must also scan
+    the plain form and the decoded disclosure values (review P9).
+13. **`roymctl` prints one deal verdict.** `roymctl roym transaction
+    payment verify` calls `payment.verify` and prints the verdict
+    (`apps/roymctl/src/commands/roym/agreement.rs:110`, `:290` to `:298`).
+    After C2a its payload has digests in place of `method`, `reference` and
+    the note. There is no `quote`, `agreement` or `fulfilment` verify verb,
+    no guide example prints a verdict, and no `roymctl` test reads its
+    payload (review P7, corrected).
 
 ## 3. What C2 meets
 
@@ -468,7 +552,7 @@ says which PR proves it.
 | AG-33 | C2a | The hidden-field part: AG-17's test covers `settlement_note` in both settlement records. | Statement row: C6 |
 | AG-34 | C2b | Unit: a quote alone, price hidden, scope shown, verifies; a quote and a half with different `terms` are refused. Two-node: Carol verifies a quote before any agreement. | |
 | AG-38 | C2b | Unit: a snapshot bound to the quote author's half or the quote is "the writer's"; a snapshot from any other key is "writer not checked". | |
-| AG-40 | C2a | Unit: an 8 KiB-plus `details` and a 96 KiB-plus record are refused. Service: `quote.set` answers `quote-too-large`. E2E: story 50 shows the size line. Hub unit test: the over-limit line. | |
+| AG-40 | C2a | Unit: an 8 KiB-plus `details` and a 96 KiB-plus record are refused. Service: `quote.set` answers `quote-too-large`; the largest card fits the card body. Delivery (Q8): a card of `MAILBOX_CARD_BODY_BYTES` seals for a mailbox; two-node, a quote over that size reaches an offline peer after it comes back online. E2E: story 50 shows the size line. Hub unit test: the over-limit line and the mailbox note. | |
 | AG-8 | C2b | The presentation part that C1 left (agreements doc `## Deviations`, AG-8): a presentation with only the snapshot and the halves words `claimed: true/false` and the reason codes. | |
 
 From [roym-value-exchange](../../changes/roym-value-exchange/change.md):
@@ -522,7 +606,7 @@ guest that does not import the function still links).
 | Method | Today | After C2a |
 | --- | --- | --- |
 | `quote.set` | | refuses `quote-too-large` (data `{"code": "quote-too-large"}`) |
-| `quote.measure` | | new (Q4): `{terms}` → `{bytes, limit, details: [{commitment_id, bytes, limit}], fits}` |
+| `quote.measure` | | new (Q4): `{terms}` → `{bytes, limit, details: [{commitment_id, bytes, limit}], fits, card_bytes, mailbox_fits}` |
 | `quote.get`, `quote.list` | envelope only | add `terms` (plain) |
 | `quote.history` | `{history: [envelope]}` | adds `versions: [{record_id, terms}]` |
 | `quote.verify`, `agreement.verify`, `payment.verify`, `fulfilment.verify` | payload plain | payload in wire form (`_sd`, no hidden values) |
@@ -557,7 +641,9 @@ C2a:
 6. The backup import rebuilds each card row's `data` and each agreement
    row's `terms` from the signed records and the disclosures, and refuses a
    bundle whose disclosures do not match.
-7. The Hub's quote form shows a size line.
+7. The Hub's quote form shows a size line, and a note when the quote is
+   too large for a mailbox: the other person gets it only while both
+   devices are online (Q8).
 8. `SCHEMA_VERSION` of `transaction` goes from 5 to 6
    (`crates/roym_transaction/src/app.rs:52`): stored data of version 5 is
    not read.
@@ -582,8 +668,11 @@ C2b:
 - What the Hub draws. Every card template, `agreement.get`, `agreement.list`
   and story 40.
 - The snapshot: no hidden field, still signed by the service key.
-- `roymctl`: it sends plain terms to `quote.set` and prints plain
-  `agreement.get` output.
+- `roymctl`'s commands and flags: it sends plain terms to `quote.set` and
+  prints plain `agreement.get` output. One printed output changes: `roymctl
+  roym transaction payment verify` now prints the signed form, with
+  digests in place of the method, the reference and the note (section 2.2
+  point 13). Its help text says so (step 5).
 - `conversation`, `profile`, `directory`, `catalog` and `web` Rust code
   (only their regenerated bindings change).
 
@@ -617,12 +706,17 @@ differs from the doc's text (marked "deviation").
   removed.
 - **D-C2-4. One local store for disclosures.** New collection
   `disclosures` in `transaction`, row id = the record's `record_id`:
-  `DisclosureRow { record_id, record_type, conversation, disclosures:
-  Vec<String>, stored_at_secs }`, index on `conversation`. Written *before*
-  the record's own row: before `QUOTE_HISTORY` for a quote, before the
-  fence row for a settlement record, before the half on filing. A crash
-  after the disclosures and before the record leaves an unused row, which
-  is harmless. A receipt has no row; its disclosures are the quote's.
+  `DisclosureRow { record_id, record_type, disclosures: Vec<String>,
+  stored_at_secs }`, with no index: every read is by `record_id`, and the
+  backup exports the whole collection, as for `QUOTE_HISTORY` (review
+  P12). Written *before* the record's own row: before `QUOTE_HISTORY` for
+  a quote, before the fence row for a settlement record, before the half
+  on filing. A crash after the disclosures and before the record leaves an
+  unused row, which is harmless. A receipt has no row; its disclosures are
+  the quote's. **A row is never replaced by a different set** (review
+  P11): the write is `AppDataLayer::create`; when the row exists, the
+  stored set is kept, and a new set that is not equal to it is refused as
+  `disclosures-differ`.
 - **D-C2-5. `send_card_and_file` takes an `OutgoingCard`.**
   `pub(crate) struct OutgoingCard<'a> { card_type: &'a str, version: u32,
   envelope: &'a str, send: &'a [String], view: &'a [String] }`. `send` goes
@@ -643,7 +737,13 @@ differs from the doc's text (marked "deviation").
   the strict reveal of its own disclosures passes, and the plain record
   passes its full validator. The reason text names the rule and the field,
   never a value (a refused card's reason is stored and shown; a value in it
-  would leak).
+  would leak). **Repeats** (review P11): the strict reveal runs on the
+  card's own set only, never mixed with the stored set, so a valid repeat
+  is not refused as "salt repeated". A repeat that carries a set equal to
+  the stored one (in any order) is filed as a repeat. A repeat with no
+  disclosures, of a record whose set is stored, is filed as a repeat with
+  the stored set. A repeat with a different valid set is refused
+  (`disclosures-differ`); the first set stays.
 - **D-C2-8. Salts are fetched first, then concealed by a pure function.**
   `DealTerms::hidden_field_count()` is `5 + 10 × commitments`. The service
   asks the host for that many salts in one call (`AppSigning::fresh_salts`),
@@ -662,14 +762,27 @@ differs from the doc's text (marked "deviation").
   take them too, so a settlement record's note can be checked the same
   way.
 - **D-C2-10. `SCHEMA_VERSION` 5 → 6.**
-- **D-C2-11. `quote.measure` (Q4).** Input `{ terms: DealTermsInput }`;
-  it builds `DealTerms` with `quote_expires_at_secs` 0 and runs
-  `DealTerms::disclosure_size()`, which conceals with zero salts and sums
-  the encoded lengths. `quote.set` calls the same function before it asks
-  for salts. Output `{ bytes: u64, limit: u64, details: [{ commitment_id,
-  bytes, limit }], fits: bool }`. It does not validate the terms (the form
-  is half filled while the person types); a body that does not parse
-  answers `-32602`.
+- **D-C2-11. `quote.measure` (Q4).** Input `{ terms: DealTermsInput }`.
+  `quote.set` and `quote.measure` share one preparation function,
+  `prepare_terms(host, input, expires_at_secs) -> Result<DealTerms,
+  Response>`, which runs today's slot step (`validate_and_apply_slot`,
+  `quote_ops.rs:288`) for every quote-author slot commitment and then
+  `into_deal_terms`. So a slot commitment's `window` is in the measure
+  (review P4). `measure` passes `expires_at_secs` = `now +
+  MAX_QUOTE_LIFETIME_SECS`, so the expiry has as many digits as a real one.
+  Then `DealTerms::disclosure_size()`, which conceals with zero salts and
+  sums the encoded lengths. `quote.set` calls the same function before it
+  asks for salts. Output `{ bytes: u64, limit: u64, details: [{
+  commitment_id, bytes, limit }], fits: bool, card_bytes: u64,
+  mailbox_fits: bool }`. `card_bytes` is an upper bound of the card body:
+  the length of `card_body` built with the concealed payload, the
+  disclosures and a placeholder envelope whose issuer, signature and
+  delegation certificate have their longest lengths
+  (`roym_core::card::card_body_upper_bound`). `mailbox_fits` is
+  `card_bytes <= MAILBOX_CARD_BODY_BYTES` (Q8, D-C2-22). It does not
+  validate the terms (the form is half filled while the person types). A
+  body that does not parse, or a slot step that fails, answers the same
+  error `quote.set` would give; the Hub then hides the line.
 - **D-C2-12. Import rebuilds plain data.** `transaction.import` checks the
   `disclosures` section first (each row names a record in the bundle; each
   disclosure matches a digest of that record; a quote's set is complete and
@@ -683,9 +796,14 @@ differs from the doc's text (marked "deviation").
   `RecordClock`. Seeded salt number `n` is the first 16 bytes of
   `SHA-256(seed as 8 little-endian bytes ‖ n as 8 little-endian bytes)`,
   with `n` from an `AtomicU64`. `NodeRecordSigner::with_clock` gains a
-  `salts` argument. The parity harness seeds both stacks with the same
-  value. `TestHost` keeps its own counter, settable with
-  `set_salt_seed(u64)`.
+  `salts` argument; its callers are `crates/core/src/record_signer.rs:420`,
+  `:425` (tests), `crates/roym_web/tests/dual_build_parity/helpers.rs:1045`,
+  `:1072`, and `crates/app_host_native/tests/dual_build_parity/helpers.rs:674`,
+  `:741` (review P3). Both parity harnesses seed both stacks with the same
+  value. `System` salts come from `rand::rng().fill_bytes`: `rand` is
+  already a dependency of `syneroym-core` (`crates/core/Cargo.toml:31`,
+  used at `event_bus.rs:112`), so no new dependency (review P10).
+  `TestHost` keeps its own counter, settable with `set_salt_seed(u64)`.
 - **D-C2-14. Presentation (C2b).** `deal.present { record_id, include:
   { quote: bool = true, receipt: bool = true, progress: bool = false,
   settlement: bool = false }, show: [field path] }`. `record_id` is the
@@ -717,6 +835,44 @@ differs from the doc's text (marked "deviation").
 - **D-C2-18. Size limits apply on both sides.** `quote.set` refuses, and
   the filing node also refuses a received record over the limits.
 - **D-C2-19. Clean-ups of section 2.2 point 7.**
+- **D-C2-20. One shared test builder** (review P2). New module
+  `roym_core::testing::sd` (file `crates/roym_core/src/testing/sd.rs`,
+  behind the existing `cfg(any(test, feature = "test-host"))`), used by
+  every test that signs a deal record by hand, in `roym_core`,
+  `roym_transaction` and the parity harness:
+  ```rust
+  /// Salts 0, 1, 2, … from `seed`, the same rule as `RecordSalts::Seeded`.
+  pub fn seeded_salts(seed: u64) -> impl Iterator<Item = Salt>;
+  pub fn conceal_quote(payload: PlainQuote, seed: u64) -> (QuotePayload, Vec<String>);
+  pub fn conceal_payment_request(p: PlainPaymentRequest, seed: u64) -> (PaymentRequestPayload, Vec<String>);
+  pub fn conceal_payment_ack(p: PlainPaymentAck, seed: u64) -> (PaymentAcknowledgementPayload, Vec<String>);
+  pub fn conceal_fulfilment(p: PlainFulfilment, seed: u64) -> (FulfilmentReceiptPayload, Vec<String>);
+  /// `card_body` with the disclosures, for peer cards in tests.
+  pub fn deal_card_body(card_type: &str, envelope: &str, disclosures: &[String]) -> String;
+  ```
+  `PlainQuote` and the three `Plain*` structs are test-only structs with
+  the plain fields (today's payload shapes). The salts are real 16-byte
+  salts, so a hand-signed record passes the real filer. The parity harness
+  turns on `syneroym-roym-core/test-host` in `crates/roym_web/Cargo.toml`'s
+  `[dev-dependencies]`; `check-roym-deps` reads only `[dependencies]`, as
+  C1 found (D-C1-3).
+- **D-C2-21. Count before work** (review P5). `DisclosureIndex::build`
+  takes the most disclosures the records can have, and refuses a longer
+  list with `disclosure-count-too-high` before it decodes or hashes any
+  disclosure: `5 + 10 × commitments` for a quote (the count of the
+  visible `commitments` list), 1, 3 or 1 for a settlement record, and for
+  a presentation (C2b) the sum over its records. A single disclosure
+  longer than `MAX_RECORD_DISCLOSURE_BYTES` is also refused before it is
+  decoded.
+- **D-C2-22. The mailbox size (Q8).** `pub const MAILBOX_CARD_BODY_BYTES:
+  usize` in `crates/roym_core/src/card.rs`, beside `MAX_CARD_BODY_BYTES`.
+  Its value is the largest card body that step 6's test can seal through
+  the real conversation encoding and `mailbox_format`'s seal, rounded down
+  to a whole KiB, less 1 KiB of margin. The plan's estimate is 13 KiB; the
+  test sets the number. The constant is a delivery hint only: no record is
+  refused for passing it. If `conversation` later gets a compact body
+  encoding, the test still passes and the backlog row says to raise the
+  number.
 
 ## 6. Step-by-step changes
 
@@ -788,14 +944,26 @@ Tests: section 7.1.
   and `TestHost` (`crates/roym_core/src/testing.rs:213`, the seeded counter
   of D-C2-13).
 - `NodeRecordSigner::fresh_salts(&self, count) -> Result<Vec<[u8; 16]>,
-  SigningError>`: `System` uses `getrandom::fill`; `Seeded` as D-C2-13. A
-  read-only instance may ask for salts (it cannot sign, so they are
-  useless, but harmless).
+  SigningError>`: `System` uses `rand::rng().fill_bytes` (D-C2-13);
+  `Seeded` as D-C2-13. A read-only instance may ask for salts (it cannot
+  sign, so they are useless, but harmless).
+- Every caller of `with_clock` passes the new `salts` argument (D-C2-13
+  lists the six call sites); `permitted_differences.rs:23`, `:89` keep
+  `RecordClock::Fixed` and add `RecordSalts::Seeded`.
 - Regenerate the six Roym `bindings.rs` with `mise run build:roym`.
+- **The host-surface parity harness** (review P3). Add a `fresh-salts` op
+  to `test-components/dual-build-fixture` (`src/app.rs:47`, the `op`
+  table), regenerate its `bindings.rs`, and rebuild it with `cargo
+  component build --release --target wasm32-wasip2 -p
+  syneroym-test-dual-build-fixture` (`mise.toml:44`, the fixture task).
+  The fixture is outside the workspace, so a stale build does not fail
+  compilation; the new scenario below fails instead. Add to
+  `crates/app_host_native/tests/dual_build_parity/signing.rs`:
+  `fresh_salts_match_on_both_builds` (seeded: equal bytes) and
+  `fresh_salts_count_zero_and_257_fail_the_same_way`.
 - Tests: `fresh_salts_are_sixteen_bytes_and_differ`,
   `seeded_salts_repeat_for_the_same_seed`, `count_zero_and_257_are_refused`
-  in `crates/core`; one WASM test in `crates/sandbox_wasm` that a component
-  call reaches the host function.
+  in `crates/core`; the two parity scenarios above.
 
 #### Step 4 — Roym's hiding rules (`roym_core`, added beside today's code)
 
@@ -822,8 +990,10 @@ pub fn conceal_object(obj: &mut Map<String, Value>, set: &HiddenSet,
 
 pub struct DisclosureIndex { /* digest -> DecodedDisclosure, encoded bytes */ }
 impl DisclosureIndex {
-    /// Decodes each; refuses the same digest twice.
-    pub fn build(disclosures: &[String]) -> Result<Self, SdError>;
+    /// Refuses more than `max_count` disclosures, or one longer than
+    /// MAX_RECORD_DISCLOSURE_BYTES, before any decode (D-C2-21). Then
+    /// decodes each; refuses the same digest twice.
+    pub fn build(disclosures: &[String], max_count: usize) -> Result<Self, SdError>;
     /// Roym rules: every salt decodes to 16 bytes; no salt twice.
     pub fn check_salts(&self) -> Result<(), SdError>;
     pub fn total_bytes(&self) -> usize;
@@ -842,7 +1012,8 @@ pub struct FieldPath { /* Terms(field) | Commitment(id, field) | Record(record_i
 pub enum SdError { /* each with code(): "sd-shape", "disclosure-unknown-digest",
     "digest-repeated", "disclosure-name", "disclosure-visible-name",
     "disclosure-value", "salt-length", "salt-repeated", "quote-too-large",
-    "details-too-large", "disclosure-missing" */ }
+    "details-too-large", "disclosure-missing", "disclosure-count-too-high",
+    "disclosures-differ" */ }
 ```
 
 `crates/roym_core/src/deal/sd.rs`:
@@ -889,8 +1060,13 @@ Vec<String>), SdError>` (digests, disclosures) and
 `reveal_hidden_strict<T: DeserializeOwned>(sd: &[String], set, disclosures)
 -> Result<T, SdError>`.
 
-`card.rs`: `Card.disclosures` and `card_body(card_type, version, envelope,
-disclosures: &[String])`.
+`card.rs`: `Card.disclosures`, `card_body(card_type, version, envelope,
+disclosures: &[String])`, `card_body_upper_bound(card_type, payload:
+&Value, disclosures: &[String]) -> usize` (D-C2-11), and
+`MAILBOX_CARD_BODY_BYTES` with a first value of 13 KiB that step 6's test
+corrects (D-C2-22).
+
+The shared test builder `roym_core::testing::sd` (D-C2-20).
 
 Tests: section 7.1.
 
@@ -910,6 +1086,10 @@ Tests: section 7.1.
   `commitment_accepts` (`payment.rs:143`) is unchanged; its caller passes
   the plain method.
 - Delete the comment at `deal.rs:144`. Fix `card.rs:6`.
+- Move the ~20 test files of section 2.2 point 12 to the shared builder
+  (D-C2-20); none keeps its own conceal helper.
+- `record/tests/wire_words.rs`: for every signed sample, scan the wire
+  form, the plain form and each decoded disclosure value (review P9).
 
 `transaction`:
 
@@ -929,7 +1109,13 @@ Tests: section 7.1.
   `QuotePayload` with `signed`, `validate`, and in `sign_and_store_quote`
   store the disclosures between the signing (`:372`) and `put_bytes`
   (`:393`). Send with `send = view = disclosures`.
-- `quote.measure` (D-C2-11), registered in `api.rs`.
+- `quote.measure` (D-C2-11), registered in `api.rs`. Its input type is
+  `deny_unknown_fields` and its output a typed struct, as
+  `assert_service_table` requires (`crates/roym_core/src/method/check.rs:33`).
+  `prepare_terms` is shared with `quote.set`.
+- `roymctl`: the help text of `payment verify`
+  (`apps/roymctl/src/commands/roym/agreement.rs:110`) says the output is
+  the signed form, with digests in place of the hidden fields (review P7).
 - Quote views: `QuoteView.terms`, `QuoteListItem.terms` (via `load`, plain
   `reveal_terms_strict` of the stored disclosures), and `quote.history`'s
   `versions` (D-C2-15 in section 4's table).
@@ -981,7 +1167,30 @@ In-crate tests: section 7.2.
   `fulfilment_verify_good.json`, `quote_get_found.json`,
   `quote_list_with_rows.json`, `quote_history.json`,
   `transaction_export.json`; add `quote_measure.json` and a row in
-  `method_contract/shapes_transaction.rs`.
+  `method_contract/shapes_transaction.rs`. The `transaction` method count
+  in `method_contract/contract.rs:60` goes from 37 to 38 (review P6);
+  check the new row in the table, not only the number.
+- **The mailbox size** (Q8, review P1). A test in `crates/substrate/tests`
+  (its dev-dependencies already hold `syneroym-conversation` with
+  `test-support`, `syneroym-mailbox-format` and `syneroym-roym-core`)
+  builds, for a card body of `MAILBOX_CARD_BODY_BYTES` bytes of base64url
+  text, the same `DeliveryPayload` encoding, Olm encryption and `deliver`
+  request that `crates/conversation/src/transport.rs:210` to `:230`
+  builds, and seals it with `mailbox_format`'s `seal`:
+  `a_card_of_the_mailbox_size_seals` passes, and
+  `a_card_two_kib_larger_does_not_seal` fails with `TooLarge`. If the
+  encoding steps are not reachable from outside `conversation`, add one
+  `test-support` function there that returns the sealed size for a body,
+  rather than copying the steps. Set
+  `MAILBOX_CARD_BODY_BYTES` from it (D-C2-22) and record in the
+  agreements doc's C2 deviation row the measured factor and the size of a
+  typical two-commitment quote card (from
+  `quote_card_carries_every_disclosure_and_the_peer_files_plain_terms`).
+- Two-node (Q8): `roym_disclosure_e2e.rs` (new in C2a, extended in C2b)
+  gets `a_quote_larger_than_a_mailbox_reaches_an_offline_peer_when_it_returns`
+  and `a_quote_of_the_mailbox_size_reaches_an_offline_peer_through_the_mailbox`,
+  using `common/mailbox_world.rs` for the mailbox and `Restart` for the
+  peer that goes offline.
 - Two-node: `roym_transaction_e2e.rs:293` to `:310` as section 2.2 point 8;
   `roym_restore_e2e.rs` gains the `agreement.get` check.
 - `card.rs` test `quote_dense_envelope_near_max_payload_fits_in_card_body`
@@ -995,13 +1204,17 @@ In-crate tests: section 7.2.
   no new input, call `quote.measure` with `readTerms()`; draw
   `t("quote-size-line", { used, limit })` with sizes in KiB to one decimal;
   when `fits` is false add class `quote-size-over` and
-  `t("quote-size-over")`. On any error, or when `readTerms()` is
-  `undefined` (a required field does not parse yet), hide the line.
+  `t("quote-size-over")`. When `fits` is true and `mailbox_fits` is false,
+  add `t("quote-size-mailbox")` under the line: "This quote is large. The
+  other person gets it only while both devices are online." (Q8). On any
+  error, or when `readTerms()` is `undefined` (a required field does not
+  parse yet), hide the line.
 - `messages.ts`: factor the term building of `submitBtn.onclick`
   (`messages.ts:861` to `:953`) into one `readQuoteForm(): {terms} |
   {error}` used by both submit and the size line, so the two cannot
   disagree. Append the line before `errP` in `form.append` (`:956` to `:975`).
-- `en.ftl`, `hi.ftl`: `quote-size-line`, `quote-size-over`.
+- `en.ftl`, `hi.ftl`: `quote-size-line`, `quote-size-over`,
+  `quote-size-mailbox`.
 - Delete `cards/templates/booking_progress.ts` and the `booking-progress`
   case at `render.ts:36`.
 - Story 50 (`demo/50-roym-deal.spec.ts:78`): in Bob's quote step, check
@@ -1072,12 +1285,20 @@ Rules, in order:
 - `api.rs`: `deal.present`, `deal.verify-presentation`. Admission table
   rows (`transaction_validation.rs:27`, `:289`) and method shapes
   (`deal_present.json`, `deal_verify_presentation.json`, and the four
-  verify shapes with `shown`/`hidden`).
+  verify shapes with `shown`/`hidden`). The method count in
+  `method_contract/contract.rs:60` goes from 38 to 40 (review P6). Each
+  new input type (`DisclosedVerifyInput`, `PresentInput`, `Presentation`)
+  is `deny_unknown_fields`; each output (`DisclosedVerdict<P>`,
+  `Presentation`, `PresentationView`) is a typed struct, never a bare
+  `Value` (`assert_service_table`, `check.rs:33`). Fields inside them that
+  hold shown values (`shown`, `terms`) may be `Value`.
+- `deal.verify-presentation` builds its `DisclosureIndex` with the sum of
+  the records' hidden-field counts as `max_count` (D-C2-21).
 
 #### Step 3 — Two-node with a third node
 
-New file `crates/substrate/tests/roym_disclosure_e2e.rs` (the deal file is
-at 714 lines). Three installations as in `roym_trust_e2e.rs:8` to `:57`,
+Extend `crates/substrate/tests/roym_disclosure_e2e.rs`, which C2a starts
+(the deal file is at 714 lines). Three installations as in `roym_trust_e2e.rs:8` to `:57`,
 using the shared harness (`SubstrateTestContext`, `alloc_ports`). Section
 7.4.
 
@@ -1113,6 +1334,8 @@ Test names say what they prove, with no planning ids.
   (AG-21).
 - `an_unclassified_field_cannot_be_concealed`.
 - `field_paths_parse_and_print`.
+- `too_many_disclosures_are_refused_before_any_decode` and
+  `one_oversized_disclosure_is_refused_before_decode` (D-C2-21).
 
 `crates/roym_core/src/deal/sd/tests.rs` (C2a):
 
@@ -1167,7 +1390,12 @@ New file `disclosure.rs` (C2a):
   point 4): crash after the fence, repeat the call, the second card has
   the same disclosures.
 - `a_settlement_card_note_is_filed_plain_and_signed_hidden` (AG-33).
-- `quote_measure_matches_quote_set`.
+- `quote_measure_matches_quote_set`, with one quote-author slot
+  commitment whose `window` the slot step fills (review P4).
+- `quote_measure_says_when_a_card_does_not_fit_a_mailbox` (Q8).
+- Repeats (D-C2-7, review P11): `a_repeat_quote_card_with_the_same_set_is_a_repeat`,
+  `a_repeat_quote_card_without_disclosures_uses_the_stored_set`,
+  `a_repeat_with_a_different_set_is_refused_and_the_first_set_stays`.
 
 `backup/tests.rs` gains `mod disclosures;` → `backup/tests/disclosures.rs`:
 `export_import_keeps_disclosures`, `import_rebuilds_card_data_from_disclosures`,
@@ -1190,9 +1418,13 @@ answers. Admission tables list every new method (AG-31).
 
 C2a: `roym_transaction_e2e.rs` checks plain values through `agreement.get`
 and that the signed halves hold no `payee` (AG-17 on real cards);
-`roym_restore_e2e.rs` checks plain terms after a restore.
+`roym_restore_e2e.rs` checks plain terms after a restore. New file
+`roym_disclosure_e2e.rs` (Q8): `a_card_of_the_mailbox_size_seals`,
+`a_card_two_kib_larger_does_not_seal`,
+`a_quote_of_the_mailbox_size_reaches_an_offline_peer_through_the_mailbox`,
+`a_quote_larger_than_a_mailbox_reaches_an_offline_peer_when_it_returns`.
 
-C2b, `roym_disclosure_e2e.rs`:
+C2b, the same file:
 
 - `a_third_node_verifies_an_agreement_with_the_price_hidden` (AG-18): Bob
   and Alice agree; Bob calls `deal.present` with `show:
@@ -1204,8 +1436,9 @@ C2b, `roym_disclosure_e2e.rs`:
 ### 7.5 Hub unit tests (`npm test`)
 
 - `quote_size.test.ts`: the line shows used and limit; the over class and
-  text when `fits` is false; hidden on an error; one call after typing
-  stops (fake timers).
+  text when `fits` is false; the mailbox note when `fits` is true and
+  `mailbox_fits` is false; hidden on an error; one call after typing stops
+  (fake timers).
 - `messages.test.ts`: `readQuoteForm` gives the same terms submit sends.
 - `templates.test.ts`: remove the `booking-progress` case.
 
@@ -1234,6 +1467,16 @@ C2b: none.
   `roym_deal_e2e.rs` 714. New code goes into `disclosures.rs`,
   `backup/disclosures.rs`, `deal/sd.rs`, `present_ops.rs` and new test
   files. D-C2-5 shortens the 15 send calls.
+- Test files that step 5 migrates and that are near the cap (review P2):
+  `app/tests/decide.rs` 716, `recover.rs` 658, `backup/tests.rs` 658,
+  `accept.rs` 645, `refuse/writer.rs` 604, `restore.rs` 601, `settle.rs`
+  571; `roym_core` `wire_words.rs` 477, `transaction/tests.rs` 440. The
+  shared builder makes each of them shorter, not longer. New cases go into
+  the new files `app/tests/disclosure.rs`, `backup/tests/disclosures.rs`,
+  `deal/sd/tests.rs` and `disclosure/tests.rs`, never into these.
+- `test-components/dual-build-fixture` changes (step 3). It is outside the
+  workspace and is not checked by the file-size gate, but it must be
+  rebuilt, or the host-surface parity scenario fails.
 - `transaction.wasm` gains `base64`, the reveal code and the presentation
   verifier. Check after C2a step 5; if over +15%, stop and tell the owner.
 - The parity harness's two stacks must call `fresh_salts` in the same
@@ -1253,7 +1496,8 @@ grows; the other five change by the new import only. C2b reports again.
 ### 7.10 Hindi text
 
 New `hi.ftl` messages need the owner's review before merge, as in M08B and
-C1: `quote-size-line`, `quote-size-over`. C2b adds none.
+C1: `quote-size-line`, `quote-size-over`, `quote-size-mailbox`. C2b adds
+none.
 
 ### 7.11 How C2 avoids the kinds of findings in the C1 reviews
 
@@ -1285,6 +1529,7 @@ C1: `quote-size-line`, `quote-size-over`. C2b adds none.
 | "The forward action offers only three Roym record types" (`:315`) | Unchanged; C7 relies on C2's rule that a forwarded quote carries no disclosures. |
 | New: "No Hub screen shows a deal to a third party" (Q6) | C2b adds it, target M08G (evidence). |
 | New: "A third party cannot check ML-18 or one-language rules on hidden text" (Q5) | C2b adds it, target TBD (only if a visible language is ever wanted). |
+| New: "A conversation message body travels as a JSON number array" (Q8, review P1) | C2a adds it, target TBD. `DeliveryPayload.body` (`crates/conversation/src/envelope.rs:24`) is `Vec<u8>` written by `serde_json` as numbers, about ×3.4 before encryption, so a card over about 14 KiB cannot use a mailbox and reaches an offline peer only when both are online. A base64 or binary body would raise that to about 36 KiB; then raise `MAILBOX_CARD_BODY_BYTES`. |
 | "`RECORD_TYPES` is not read by any verifier" (`:658`) | Not targeted; C2b's presentation verifier checks record types by its own table. Note it in the row. |
 
 No new `TODO` or `FIXME` marker is planned. If one is added, it gets a row
@@ -1300,14 +1545,23 @@ Each PR fixes the statements it makes false. C8 does the full pass.
   `agreement-receipt` "these exact terms, including payee …" → the
   receipt signs the digests of those terms; the parties hold the values),
   and the Cards table (`:729` to `:760`).
-- `docs/system-architecture.md`: Cards (`:1203` to `:1211`: a card carries
+- `docs/system-architecture.md`: Cards (`:1203` to `:1215`: a card carries
   the envelope and, for four types, the disclosures; remove `terms.lang`
-  and `translations`), and the `transaction` collections (new
-  `disclosures`).
+  and `translations`; `:1213` to `:1215` say the payment request "carries
+  currency, amount, and an optional note", the acknowledgement a method
+  and reference, and the fulfilment receipt "`terms` with `terms.lang`",
+  all false after C2a), the record-text paragraph (`:1415`, "the receipts'
+  terms": the receipt holds digests; the text on screen is the party's own
+  plain copy), the `transaction` collections (new `disclosures`), and the
+  mailbox size note of Q8 (review P8).
 - `docs/developer-guide.md`: "Show cards" (`:2537` to `:2550`: `data` is the
-  plain form, never the signed bytes); the signing host interface section
-  (`fresh-salts`); C2b: how to call `deal.present` and
-  `deal.verify-presentation`.
+  plain form, never the signed bytes); "Record languages" (`:1786`, the
+  same clause as architecture `:1415`); `quote.get`, `quote.list` and
+  `quote.history` now return `terms`, and `quote.measure` exists (review
+  P8); a verdict from `*.verify` shows the signed form, and disclosed
+  fields appear only with C2b's `disclosures` input (review P7); the
+  signing host interface section (`fresh-salts`); C2b: how to call
+  `deal.present` and `deal.verify-presentation`.
 - `docs/TERMINOLOGY.md`: hidden field, salt, disclosure, digest,
   presentation; fix "Declared value" (`:69`).
 - `docs/planning/traceability-matrix.md`: the selective-disclosure rows.
@@ -1318,12 +1572,15 @@ C2a:
 
 - [ ] Every C2a row of section 3 names a test that exists and passes.
 - [ ] Story 50 shows the size line; story 40 and Hub cases pass unchanged.
-- [ ] Parity passes with seeded salts and no new normalisation.
+- [ ] Parity passes with seeded salts and no new normalisation, in both
+  parity harnesses (`roym_web` and `app_host_native`).
+- [ ] `MAILBOX_CARD_BODY_BYTES` is set from the measurement, and the
+  agreements doc's C2 row records the measured numbers (Q8).
 - [ ] Component sizes recorded; `transaction` within +15%, others within
   +40 KB.
 - [ ] Deviations, backlog rows and living docs done.
 - [ ] `mise run verify` passes with no `--skip`.
-- [ ] Owner reviewed the two Hindi messages.
+- [ ] Owner reviewed the three Hindi messages.
 
 C2b:
 

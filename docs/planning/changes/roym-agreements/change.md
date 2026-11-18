@@ -1197,15 +1197,23 @@ The plan did not state these rules. The code follows them now.
 
 **Written when the M08C C2 slice was planned (2026-11-18,
 [slice-c2-implementation-plan.md](../../milestones/M08C-deal-core-and-extensions/slice-c2-implementation-plan.md)).**
-The plan's questions Q1 to Q7 are not answered yet. Rows that depend on an
+The plan's questions Q1 to Q8 are not answered yet. Rows that depend on an
 answer are added when the owner answers.
 
 - **The 96 KiB limit against the card body (checked).** "Where disclosures
   travel" asks C2's plan to check 96 KiB against a real envelope. Worst
   case on the M08C shapes (16 commitments with the longest visible fields,
   a delegation certificate, disclosures of exactly 96 KiB): the card body
-  is 113,583 bytes of the 163,840-byte `MAX_CARD_BODY_BYTES`. The limit
-  stays. A test that signs a real envelope pins it.
+  is 113,583 bytes of the 163,840-byte `MAX_CARD_BODY_BYTES`. A test that
+  signs a real envelope pins it.
+- **The card body is not the only limit (plan review P1).** A
+  conversation message writes its body as a JSON number array, then
+  encrypts and base64-encodes it: about ×4.5 in a measured sample. A
+  message deposited at an offline receiver's mailbox may be at most
+  64 KiB sealed, so a card reaches a mailbox only when its body is about
+  14 KiB or less. A larger card stays in the sender's outbox and is
+  delivered directly once both nodes are online. What C2 does about this
+  is the C2 plan's Q8, open; C2a records the measured numbers here.
 - **The 96 KiB limit binds before the 8 KiB one.** Texts at their maximum
   in five languages give about 218 KiB of disclosures, so `quote-too-large`
   can come from long texts, not only from large `details`.
@@ -1216,7 +1224,12 @@ answer are added when the owner answers.
 - **Cards that must not carry disclosures.** A receipt, snapshot, enquiry
   or decline card that carries disclosures is refused when filed.
 - **Size limits on both sides.** The filing node also refuses a received
-  record whose disclosures break the 96 KiB or 8 KiB limit.
+  record whose disclosures break the 96 KiB or 8 KiB limit. It also
+  refuses a list longer than the record's number of hidden fields before
+  it decodes any disclosure.
+- **A stored set of disclosures is never replaced.** A repeat of a record
+  with the same set, or with none, is filed as a repeat. A repeat with a
+  different set is refused, and the first set stays.
 - **The backup import rebuilds plain values.** The import checks each
   disclosures row against its record, and builds the agreement's plain
   terms and each card's shown data from the signed records and the
