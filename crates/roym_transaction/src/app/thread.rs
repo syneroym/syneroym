@@ -102,9 +102,13 @@ pub(crate) async fn thread<H: AppHost>(host: &H, input: ThreadInput) -> Reply<Th
             && let Some(eid) =
                 row.data.as_ref().and_then(|r| r.get("enquiry_id")).and_then(Value::as_str)
             && let Some(pointer) = enquiry_map.get(eid)
-            && row.version_count.is_none()
         {
-            row.version_count = Some(pointer.version_count);
+            if pointer.declined_at_secs.is_some() {
+                row.declined = Some(true);
+            }
+            if row.version_count.is_none() {
+                row.version_count = Some(pointer.version_count);
+            }
         } else if (row.card_type == "payment-request" || row.card_type == "payment-acknowledgement")
             && row.verified
             && let Some(agr_id) =

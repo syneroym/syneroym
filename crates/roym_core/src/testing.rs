@@ -47,6 +47,9 @@ pub struct TestHost {
     pub(crate) record_signer: Mutex<Option<SignerFn>>,
     pub(crate) crash_prefix: Mutex<Option<(String, String, usize)>>,
     pub(crate) is_crashed: Mutex<bool>,
+    pub(crate) crashed_write_hit: Mutex<bool>,
+    pub(crate) fail_prefix: Mutex<Option<(String, String)>>,
+    pub(crate) failed_write_hit: Mutex<bool>,
     pub(crate) call_handlers: Mutex<HashMap<(String, String), CallHandler>>,
     pub(crate) sent_cards: Mutex<Vec<String>>,
 }
@@ -139,6 +142,23 @@ impl TestHost {
     pub fn restart(&self) {
         *self.is_crashed.lock().unwrap() = false;
         *self.crash_prefix.lock().unwrap() = None;
+        *self.fail_prefix.lock().unwrap() = None;
+    }
+
+    pub fn is_crashed(&self) -> bool {
+        *self.is_crashed.lock().unwrap()
+    }
+
+    pub fn was_crashed_write_hit(&self) -> bool {
+        *self.crashed_write_hit.lock().unwrap()
+    }
+
+    pub fn fail_write(&self, collection: impl Into<String>, key_prefix: impl Into<String>) {
+        *self.fail_prefix.lock().unwrap() = Some((collection.into(), key_prefix.into()));
+    }
+
+    pub fn was_failed_write_hit(&self) -> bool {
+        *self.failed_write_hit.lock().unwrap()
     }
 
     pub fn sent_cards(&self) -> Vec<String> {
@@ -153,6 +173,18 @@ impl TestHost {
         if *self.is_crashed.lock().unwrap() {
             return Err(DataLayerError::Internal("test host crashed".to_string()));
         }
+        let mut fail = self.fail_prefix.lock().unwrap();
+        if let Some((target_col, target_prefix)) = fail.as_ref()
+            && collection == target_col
+            && (target_prefix == "*" || id.starts_with(target_prefix.as_str()))
+        {
+            *fail = None;
+            *self.failed_write_hit.lock().unwrap() = true;
+            return Err(DataLayerError::Internal(format!(
+                "injected write failure to {collection}/{id}"
+            )));
+        }
+        drop(fail);
         let mut crash = self.crash_prefix.lock().unwrap();
         if let Some((target_col, target_prefix, skip)) = crash.as_mut()
             && collection == target_col
@@ -163,6 +195,7 @@ impl TestHost {
                 return Ok(());
             }
             *self.is_crashed.lock().unwrap() = true;
+            *self.crashed_write_hit.lock().unwrap() = true;
             return Err(DataLayerError::Internal(format!(
                 "injected crash on write to {collection}/{id}"
             )));

@@ -68,6 +68,8 @@ pub struct EnquiryView {
     pub mine: bool,
     pub updated_at_secs: u64,
     pub version_count: u64,
+    pub declined_at_secs: Option<u64>,
+    pub decline_note: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -269,6 +271,8 @@ pub(crate) async fn get<H: AppHost>(
         mine: p.mine,
         updated_at_secs: p.updated_at_secs,
         version_count: p.version_count,
+        declined_at_secs: p.declined_at_secs,
+        decline_note: p.decline_note,
     }))
 }
 
@@ -295,6 +299,8 @@ pub(crate) async fn list<H: AppHost>(host: &H, input: ListInput) -> Reply<Enquir
             mine: p.mine,
             updated_at_secs: p.updated_at_secs,
             version_count: p.version_count,
+            declined_at_secs: p.declined_at_secs,
+            decline_note: p.decline_note,
         })
         .collect();
     Ok(EnquiryListOutput { enquiries: page })

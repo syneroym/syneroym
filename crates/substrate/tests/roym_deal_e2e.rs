@@ -555,6 +555,74 @@ async fn decline_reaches_the_other_node() {
 }
 
 #[tokio::test]
+async fn enquiry_decline_and_withdrawal_reach_the_other_node() {
+    let _guard = common::serial_guard().await;
+    let _ = ring::default_provider().install_default();
+    if !roym_artifacts_present() {
+        eprintln!("skipping: Roym wasm/UI artifacts not built (`mise run build:roym`)");
+        return;
+    }
+
+    let CrossQuoteFixture { _dir_x, _dir_y, node_x, node_y, conv_x, conv_y, req_x, req_y } =
+        setup_cross_quote_fixture().await;
+
+    // Case 1: Enquiry decline by quote author.
+    // Node X sent enquiry req_x to Node Y.
+    // Node Y (the quote author / recipient of enquiry) declines req_x.
+    let dec_y =
+        node_y.rpc_ok("deal.decline", json!({ "declines": req_x, "note": "cannot service" })).await;
+    assert_eq!(dec_y["declined"], true);
+
+    let x_saw_decline = wait_until(Duration::from_secs(20), || async {
+        node_x.rpc_ok("transaction.sync", json!({ "conversation": conv_x })).await;
+        let thread_x = node_x.rpc_ok("transaction.thread", json!({ "conversation": conv_x })).await;
+        let card = thread_x["cards"].as_array().unwrap().iter().find(|c| c["record_id"] == req_x);
+        if let Some(c) = card
+            && c["declined"] == true
+        {
+            let enquiry_id = c["data"]["enquiry_id"].as_str().unwrap();
+            let enq = node_x.rpc_ok("enquiry.get", json!({ "enquiry_id": enquiry_id })).await;
+            enq["declined_at_secs"].is_number() && enq["decline_note"] == "cannot service"
+        } else {
+            false
+        }
+    })
+    .await;
+    assert!(x_saw_decline, "X sees enquiry declined by quote author Y");
+
+    // Case 2: Enquiry withdrawal by its author.
+    // Node Y sent enquiry req_y to Node X.
+    // Node Y (the enquiry author) withdraws/declines req_y.
+    let dec_x =
+        node_y.rpc_ok("deal.decline", json!({ "declines": req_y, "note": "nevermind" })).await;
+    assert_eq!(dec_x["declined"], true);
+
+    let x_saw_withdrawal = wait_until(Duration::from_secs(20), || async {
+        node_x.rpc_ok("transaction.sync", json!({ "conversation": conv_x })).await;
+        let thread_x = node_x.rpc_ok("transaction.thread", json!({ "conversation": conv_x })).await;
+        let card = thread_x["cards"].as_array().unwrap().iter().find(|c| c["record_id"] == req_y);
+        if let Some(c) = card
+            && c["declined"] == true
+        {
+            let enquiry_id = c["data"]["enquiry_id"].as_str().unwrap();
+            let enq = node_x.rpc_ok("enquiry.get", json!({ "enquiry_id": enquiry_id })).await;
+            enq["declined_at_secs"].is_number() && enq["decline_note"] == "nevermind"
+        } else {
+            false
+        }
+    })
+    .await;
+    assert!(x_saw_withdrawal, "X sees enquiry withdrawn by author Y");
+
+    // Also verify on Y's thread in conv_y
+    node_y.rpc_ok("transaction.sync", json!({ "conversation": conv_y })).await;
+    let thread_y = node_y.rpc_ok("transaction.thread", json!({ "conversation": conv_y })).await;
+    let card_y_req_x =
+        thread_y["cards"].as_array().unwrap().iter().find(|c| c["record_id"] == req_x).unwrap();
+    assert_eq!(card_y_req_x["declined"], true);
+}
+
+#[tokio::test]
 async fn refused_superseded_acceptance_shows_on_that_version() {
     let _guard = common::serial_guard().await;
     let _ = ring::default_provider().install_default();
