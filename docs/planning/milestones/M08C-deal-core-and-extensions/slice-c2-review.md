@@ -367,3 +367,199 @@ The owner has not answered Q1 to Q7. This is only the reviewer's view.
   that needs it (a conversation delete, if one exists, would be that
   reader; the plan does not describe one).
   *Status:* Fixed (ba8c42a8): D-C2-4 drops the `conversation` field and the index.
+
+## Plan review round 2 — Claude Opus 5.5 (Claude Code), 2026-11-18
+
+**Reviewer note.** This round runs on Claude Opus 5.5, the same model that
+wrote the plan and folded round 1. So it does not meet the
+session-strategy rule that a different tool reviews a plan. Round 1 was
+Claude Sonnet 5.5. The owner decides whether another tool checks round 2.
+
+Checked the plan at `4a312271` (branch `feat/m08c-c2-disclosure`, pulled;
+fixes in `ba8c42a8`) against the code on this checkout (`main` is
+`ba5a5597`). First each round 1 item was checked against the code. Then
+the parts of the plan that the fix commit changed (Q1, Q2, Q4, Q8, D-C2-4,
+D-C2-7, D-C2-11, D-C2-13, D-C2-20 to D-C2-22, steps 3, 5, 6 and 7, 7.1 to
+7.10, 8, 9, 10) were reviewed again for new problems.
+
+**Summary: round 1 items: 12 of 12 fixed and confirmed. New findings: 5
+(0 blocker, 2 major, 3 minor). Open: 5.**
+
+### Round 1 items
+
+- **P1.** Confirmed. Q8 is accurate. A failed deposit logs "will try
+  directly again" and returns the direct error
+  (`crates/router/src/proxy/mailbox.rs:268` to `:275`). `classify` turns
+  `Transport`, `Timeout` and `ServiceNotFound` into `Unreachable`
+  (`crates/conversation/src/transport.rs:711`). The outbox defers an
+  unreachable item with a backoff from its age and counts no attempt
+  (`crates/conversation/src/outbox.rs:258` to `:265`), so the
+  `max_pending_age_secs` of 30 days (`store.rs:95`) is the only limit, as
+  Q8 says. The factors are consistent (3.36 × 4/3 ≈ 4.47; 65,536 / 4.47 ≈
+  14.3 KiB). **Correction to my own round 1 text:** the 256 KiB cap of
+  `proxy_outbox.rs:50` is not on the conversation path. `conversation` has
+  its own queue and only mirrors the proxy outbox's dispositions
+  (`transport.rs:47`, `:680`). The fix rightly does not cite it. The new
+  tests for Q8 have problems of their own: P13 and P14.
+- **P2.** Confirmed. Section 2.2 point 12 lists the files. The line counts
+  in 7.8 are right (`decide.rs` 716, `recover.rs` 658, `backup/tests.rs`
+  658, `accept.rs` 645, `refuse/writer.rs` 604, `restore.rs` 601,
+  `settle.rs` 571, `wire_words.rs` 477, `transaction/tests.rs` 440).
+  `roym_core::testing` is gated by `cfg(any(test, feature = "test-host"))`
+  (`lib.rs:35`). `roym_transaction` already turns on `test-host` in its
+  dev-dependencies (`Cargo.toml:41`), and `roym_web` does not yet, as the
+  plan says. One gap in D-C2-20 is P16.
+- **P3.** Confirmed. The six `with_clock` call sites are right. The fixture's
+  `op` table is at `test-components/dual-build-fixture/src/app.rs:47`, and
+  its build command is `mise.toml:44` with package
+  `syneroym-test-dual-build-fixture`.
+- **P4.** Confirmed. "Fixed differently" is better than my placeholder: one
+  `prepare_terms` makes the measure exact.
+- **P5.** Confirmed.
+- **P6.** Confirmed.
+- **P7.** Confirmed, and the fixer is right that my round 1 text was wrong.
+  `apps/roymctl/src/commands/roym/agreement.rs` has one verify verb,
+  `PaymentCommands::Verify` (`:111`, `:290` to `:298`). There is no
+  `quote`, `agreement` or `fulfilment` verify verb.
+- **P8.** Confirmed. `system-architecture.md:1213` to `:1215` and `:1415`
+  and `developer-guide.md:1786` say what the plan quotes.
+- **P9.** Confirmed.
+- **P10.** Confirmed (`rand::rng()` is a CSPRNG seeded from the OS; the
+  code needs `use rand::RngCore` for `fill_bytes`).
+- **P11.** Confirmed: `AppDataLayer::create` exists
+  (`crates/app_host/src/lib.rs:242`). It answers `Some(id)` when the row
+  is already there, and the test host does the same
+  (`roym_core/src/testing/data_layer.rs:181` to `:193`). One part of the
+  rule cannot happen: P15.
+- **P12.** Confirmed.
+
+### View on the owner questions
+
+Q1 to Q7: no change from round 1.
+
+- **Q8 (96 KiB against the mailbox).** Agree with (a). The fallback to
+  direct delivery is real and has no attempt limit, so a large quote is
+  late, never lost within 30 days. Option (b) would block real quotes, and
+  option (c) belongs to `conversation`. (a) works only if the Hub note is
+  right. With D-C2-11 as written, the note shows for every quote (P14).
+
+### New findings
+
+- [ ] **P13 — major.** *Where:* step 6 ("Two-node (Q8)"), 7.4, AG-40 in
+  section 3, "How this is shown to an end user" (developer bullet), exit
+  criteria.
+  *Problem:* The two new two-node tests use "`common/mailbox_world.rs` for
+  the mailbox and `Restart`". That world has a sender guest that queues
+  calls, a mailbox node and a receiver with a *greeter*
+  (`crates/substrate/tests/common/mailbox_world.rs:1` to `:3`). It has no
+  `conversation` service and no Roym app. The only world with conversation
+  messages and a mailbox is local to `mailbox_conversation_e2e.rs` (`World`
+  at `:81`, `boot_b` at `:59`, using `conversation_fixture` and
+  `conversation_peer::Peer`). It deploys a conversation fixture, not Roym.
+  No test world has Roym and a mailbox together. Such a world is new
+  harness work that the plan does not size (Q1's 3,800 lines do not include
+  it). Each mailbox round also waits: `DEPOSIT_WAIT` is 60 s and
+  `ANSWER_WAIT` 150 s (`mailbox_world.rs:36` to `:40`), so two Roym tests
+  add several minutes to nextest.
+  *Failure case:* the implementer reaches step 6 and either builds a
+  second Roym-and-mailbox harness by hand (against "Reuse the test
+  harness"), or drops the tests. Then the AG-40 row and the exit criterion
+  have no test.
+  *Fix:* Prove the delivery facts at the layer that owns them. Move
+  `mailbox_conversation_e2e.rs`'s world into `common/` (or extend that
+  file) and add two cases: a message whose body is a real quote card of
+  `MAILBOX_CARD_BODY_BYTES` shows `deposited`; a body 2 KiB larger stays
+  `pending` and becomes `delivered` after the peer restarts. These two
+  cases also replace the "seals / does not seal" pair, with no copy of the
+  encoding steps (see P17). Keep the Roym part in-crate:
+  `quote_measure_says_when_a_card_does_not_fit_a_mailbox` already checks
+  `mailbox_fits`. Update the AG-40 row, the developer bullet and 7.4 to
+  match. If the owner wants a Roym-level mailbox test anyway, add the new
+  world to Q1's estimate and to 7.8's time risks.
+  *Status:* Open
+
+- [ ] **P14 — major.** *Where:* D-C2-11 (`card_bytes`,
+  `card_body_upper_bound`), step 4 (`card.rs`), step 7, Q8 (a).
+  *Problem:* `card_bytes` is "the length of `card_body` built with … a
+  placeholder envelope whose issuer, signature and delegation certificate
+  have their longest lengths". The longest delegation certificate the
+  signer accepts is 16 KiB (`crates/core/src/record_signer.rs:121`). As an
+  escaped string inside the card, that alone is more than the about 13 KiB
+  that `MAILBOX_CARD_BODY_BYTES` will be (D-C2-22). So `mailbox_fits` is
+  false for every quote, and the Hub shows "This quote is large…" under
+  every quote form. A real certificate is far smaller.
+  *Failure case:* Bob writes a one-line quote of ₹100. The form says "2.1
+  KiB of 96 KiB" and, under it, that Alice gets it only while both devices
+  are online. That is false, and it teaches people to ignore the note.
+  Story 50 checks only "of 96 KiB", so no test catches it.
+  *Fix:* Measure with the certificate this node really signs with:
+  `quote.set` already resolves it (`resolve_principal_and_owner`,
+  `quote_ops.rs:106`); `measure` calls the same function and passes the
+  real `delegation_json` (or none for `Principal::Service`) to
+  `card_body_upper_bound`. The issuer (`did:key`) and the signature have
+  fixed lengths. Only the timestamps and the record id need a longest
+  value. Add a case to `quote_measure_says_when_a_card_does_not_fit_a_mailbox`:
+  a typical two-commitment quote has `mailbox_fits: true`, and
+  `card_bytes` is at least the real card's length for the same terms.
+  *Status:* Open
+
+- [ ] **P15 — minor.** *Where:* D-C2-4, D-C2-7 (`disclosures-differ`),
+  the 7.2 test `a_repeat_with_a_different_set_is_refused_and_the_first_set_stays`,
+  and the agreements doc's new row "A stored set of disclosures is never
+  replaced".
+  *Problem:* A set that passes the strict reveal for a record is the only
+  such set. Every digest in `_sd` must be matched, each digest is the
+  SHA-256 of exactly one disclosure string, and no extra disclosure is
+  allowed. So two different sets cannot both pass for one `record_id`,
+  short of a SHA-256 collision. The strict reveal runs before the store
+  (D-C2-7). So `disclosures-differ` cannot happen on filing. The import
+  also checks each set strictly first (D-C2-12). The named test cannot be
+  built with a valid second set. An implementer will then build it with an
+  invalid set, which the strict reveal refuses with another code, and the
+  test proves something other than its name.
+  *Fix:* Drop `disclosures-differ` from `SdError` and from the doc row.
+  Keep the `create` write. It protects the stored set at no cost. State the
+  reason: a strictly valid set is unique. Rename the test to
+  `a_repeat_with_a_bad_set_is_refused_and_the_stored_set_stays`. Change the
+  doc row to: "A repeat with the same set, or with none, is filed as a
+  repeat; a repeat whose set fails the strict reveal is refused; the
+  stored set is never replaced."
+  *Status:* Open
+
+- [ ] **P16 — minor.** *Where:* D-C2-13, D-C2-20 (`seeded_salts`, "the same
+  rule as `RecordSalts::Seeded`"), `TestHost`'s counter.
+  *Problem:* The seeded rule (`SHA-256(seed ‖ n)`, first 16 bytes) is to
+  exist in three places: `RecordSalts::Seeded` in `crates/core`,
+  `TestHost`'s counter and `roym_core::testing::sd::seeded_salts`. The two
+  in `roym_core` cannot reach the one in `crates/core`, and they cannot add
+  `sha2`. `test-host` is a feature of `roym_core`, so its code may use only
+  `roym_core`'s `[dependencies]`, which `check-roym-deps` limits
+  (`xtask/src/main.rs:182` to `:196`). So the plan asks for three copies
+  of one rule, and nothing keeps them equal. The parity harness depends on
+  them being equal.
+  *Fix:* Put one `pub fn seeded_salt(seed: u64, n: u64) -> Salt` in
+  `syneroym_signed_record::disclosure` (that crate has `sha2`, and both
+  `syneroym-core` and `roym_core` already depend on it). Call it from
+  `RecordSalts::Seeded`, `TestHost` and `testing::sd`. Add one unit test
+  that pins its first output.
+  *Status:* Open
+
+- [ ] **P17 — minor.** *Where:* step 6, "The mailbox size" (the
+  measurement test).
+  *Problem:* The test "builds the same `DeliveryPayload` encoding, Olm
+  encryption and `deliver` request that `transport.rs:210` to `:230`
+  builds", and adds a `test-support` function only "if the encoding steps
+  are not reachable". A hand-built copy measures the copy. If
+  `conversation` later changes its encoding, the copy still passes and
+  `MAILBOX_CARD_BODY_BYTES` becomes wrong. The input is also "bytes of
+  base64url text". The real card body is JSON with an escaped envelope,
+  and the number-array growth depends on the byte values (bytes 100 and
+  up, such as the letters `d` to `z`, take three digits). So the factor
+  differs a little from a real card.
+  *Fix:* Measure through the real path only. Either use P13's
+  conversation-level two-node cases, or add the `test-support` function
+  unconditionally: `sealed_size_for_body(body: &[u8]) -> usize` in
+  `conversation`, which calls the real encode and encrypt functions. Feed
+  it a real quote card built with the shared builder (D-C2-20), not
+  synthetic text.
+  *Status:* Open
