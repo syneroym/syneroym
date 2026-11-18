@@ -15,6 +15,7 @@ import { type SearchMatch, searchHits } from "./message_search";
 import { waitingRedraw } from "./thread_redraw";
 import { categoryPicker } from "../taxonomy/category_picker";
 import { buildDealTerms } from "./quote_terms";
+import { attachSizeLine } from "./quote_size";
 import {
   computeNewestQuoteMap,
   computeNewestRequestMap,
@@ -856,7 +857,12 @@ export function openQuoteForm(
   const cancelBtn = text("button", t("common-cancel"), "button cancel-quote-button") as HTMLButtonElement;
   const errP = text("p", "", "quote-form-error");
 
-  cancelBtn.onclick = () => form.remove();
+  const detachSizeLine = attachSizeLine(form, () => readQuoteForm(form));
+
+  cancelBtn.onclick = () => {
+    detachSizeLine();
+    form.remove();
+  };
 
   submitBtn.onclick = async () => {
     errP.textContent = "";
@@ -945,6 +951,7 @@ export function openQuoteForm(
         expires_in_secs,
         terms,
       });
+      detachSizeLine();
       form.remove();
       await refresh();
     } catch (err) {
@@ -974,6 +981,85 @@ export function openQuoteForm(
     errP,
   );
   anchor.appendChild(form);
+}
+
+export function readQuoteForm(form: HTMLElement): Record<string, unknown> | undefined {
+  const scopeInput = form.querySelector<HTMLInputElement>(".quote-scope-input");
+  const giveInput = form.querySelector<HTMLInputElement>(".quote-give-input");
+  const currencyInput = form.querySelector<HTMLInputElement>(".quote-currency-input");
+  const amountInput = form.querySelector<HTMLInputElement>(".quote-amount-input");
+  const taxInput = form.querySelector<HTMLInputElement>(".quote-tax-input");
+  const feesInput = form.querySelector<HTMLInputElement>(".quote-fees-input");
+  const payeeInput = form.querySelector<HTMLInputElement>(".quote-payee-input");
+  const timingSelect = form.querySelector<HTMLSelectElement>(".quote-timing-select");
+  const whereSelect = form.querySelector<HTMLSelectElement>(".quote-where-select");
+  const addressInput = form.querySelector<HTMLInputElement>(".quote-address-input");
+  const cancInput = form.querySelector<HTMLInputElement>(".quote-canc-input");
+  const refInput = form.querySelector<HTMLInputElement>(".quote-ref-input");
+  const dispInput = form.querySelector<HTMLInputElement>(".quote-disp-input");
+  const quoteLang = form.querySelector<HTMLSelectElement>(".quote-text-lang");
+
+  const scope = scopeInput?.value.trim() ?? "";
+  if (!scope) return undefined;
+
+  const currency = currencyInput?.value.trim().toUpperCase() ?? "";
+  if (!currency) return undefined;
+
+  const exp = currencyMinorExponent(currency);
+  if (exp === undefined) return undefined;
+
+  let amountMinor: number | undefined;
+  try {
+    amountMinor = toMinorUnits(amountInput?.value ?? "", exp);
+  } catch {
+    return undefined;
+  }
+  if (amountMinor === undefined) return undefined;
+
+  let taxMinor = 0;
+  if (taxInput?.value.trim()) {
+    try {
+      taxMinor = toMinorUnits(taxInput.value, exp) ?? 0;
+    } catch {
+      return undefined;
+    }
+  }
+
+  let feesMinor = 0;
+  if (feesInput?.value.trim()) {
+    try {
+      feesMinor = toMinorUnits(feesInput.value, exp) ?? 0;
+    } catch {
+      return undefined;
+    }
+  }
+
+  const payee = payeeInput?.value.trim() ?? "";
+  if (!payee) return undefined;
+
+  const where = (whereSelect?.value ?? "at-receiver") as ServiceLocationKind;
+  const address = where === "at-receiver" ? addressInput?.value.trim() : undefined;
+  const timing = (timingSelect?.value ?? "after-work") as "before-work" | "after-work";
+  const lang = quoteLang?.value ?? "en";
+
+  return buildDealTerms(
+    {
+      give: giveInput?.value.trim() || undefined,
+      scope,
+      currency,
+      amountMinor,
+      taxMinor,
+      feesMinor,
+      payee,
+      timing,
+      where,
+      address,
+      cancellation: cancInput?.value.trim(),
+      refund: refInput?.value.trim(),
+      dispute: dispInput?.value.trim(),
+    },
+    lang,
+  );
 }
 
 function openDeleteDialog(anchor: HTMLElement, m: MessageRow, refresh: () => Promise<void>) {

@@ -111,6 +111,8 @@ const NO_WORDS = [
   "safety-report-row",
   // The protocol name and a status number; the outer sign-in sentence is Hindi.
   "login-error-http",
+  // Two KiB values joined by a slash.
+  "quote-size-line",
 ];
 
 describe("the Hindi file", () => {

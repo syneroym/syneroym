@@ -33,7 +33,6 @@ export function renderCard(card: CardObject): HTMLElement {
     case "agreement-receipt":
       return renderAgreementReceipt(card.data as AgreementReceiptData | undefined);
     case "agreement-progress":
-    case "booking-progress":
       return renderAgreementProgress(card.data as AgreementProgressData | undefined);
     case "payment-request":
       return renderPaymentRequest({
