@@ -29,7 +29,7 @@ pub struct DisclosureRow {
 /// Stores the disclosures for a signed record before taking a fence or writing
 /// history.
 ///
-/// If a row already exists, the stored set is kept (D-C2-4).
+/// If a row already exists, the stored set is kept.
 pub(crate) async fn store<H: AppHost>(
     host: &H,
     record_id: &str,
