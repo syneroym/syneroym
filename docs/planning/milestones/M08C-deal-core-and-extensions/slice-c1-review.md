@@ -2193,3 +2193,75 @@ that checks the second sync files the card as verified.
   the gate counts in the status row (or untick the box until then); add the
   message to the Hindi list.
   *Status:* Fixed (47b93a2f). Unticked verify box in plan section 10 and added messages-waiting-for-other-side to status.md.
+
+## Code review round 9 — Claude Opus 5.5 (Claude Code), 2026-11-18
+
+Reviewed the round-8 fixes on branch `feat/m08c-c1b-single-writer` at
+`633ace13` (fix commits `42569fb8`, `f060ad52`, `47b93a2f`, then the close-out
+docs commit), PR [#368](https://github.com/syneroym/syneroym/pull/368), in the
+main checkout. I read `git diff cfb90d32..HEAD` (12 files) and changed no
+code.
+
+**Summary:** R30, R43, R44 and R45 are fixed. One new minor item (R46).
+**Open after round 9: 1 (0 blocker, 0 major, 1 minor).**
+
+### How this was checked
+
+- CI (`gh pr checks 368` on `633ace13`): "Lints, licenses & checks" and the
+  CLA check passed. Tests 1/6 to 6/6 and Playwright E2E were still pending.
+  So CI is **not yet** proof that the full suite passes.
+- `cargo nextest run -p syneroym-roym-transaction`: 70 passed.
+  `cargo clippy -p syneroym-roym-transaction --all-targets -- -D warnings`:
+  clean.
+- I did not run the full suite or `mise run verify`. Plan section 10 now
+  leaves the `mise run verify` box unticked, which matches the status row.
+
+### Round-8 items
+
+Confirmed fixed: R30, R43, R44, R45.
+
+- R30: the quote and enquiry checks in `sync/decline.rs` now return
+  `Result<DeclineVerification, String>`. A party or target problem is
+  `Refused(reason)` and becomes a refused card. A storage error is `Err` and
+  `file_deal_decline_card` returns it with `?`, so the sync fails and the
+  card is read again. `decline_filing_retries_on_write_failure` does what my
+  round-8 probe did: one failed `QUOTES` write, then a second sync. It checks
+  that the fault fired, that no card row is stored after the first sync, and
+  that the second sync files the card as verified and marks the quote
+  declined.
+- R43: import now indexes every verifying row of the backup's quote and
+  enquiry history sections by record id, so a decline of an older version
+  finds its target. The index keys on the row id, not on the envelope's
+  record id; that is safe, because `import_history_section` refuses a row
+  whose id differs from its record id before any pointer, ledger or card row
+  is written. `decline_of_older_quote_version_in_history_imports_successfully`
+  runs a full import.
+- R44: one helper `stored_or_new_seq1_snapshot` serves the refusal and the
+  expiry paths; `has_unrefused_counterparty_half` uses
+  `is_deal_level_not_formed_reason`; `HashSet` is imported; the history read
+  error is returned with `?`; `file_deal_decline_card` lost both unused
+  parameters. But see R46.
+- R45: the verify box is unticked and `messages-waiting-for-other-side` is in
+  the Hindi list.
+
+### New findings
+
+- [ ] **R46 — minor.** *Where:* `crates/roym_transaction/src/app/sync.rs:281`
+  (`dispatch_known_card`) and `:344` (`file_incoming_card`).
+  *Problem:* the unused sender parameter from R44 (e) moved up one level.
+  `file_incoming_card` still reads `author` from the message only to pass it
+  to `dispatch_known_card`, which names it `_sender` and never uses it.
+  *Failure case:* none at run time. A reader expects the sender to be checked
+  somewhere, and it is not.
+  *Fix:* remove the parameter and the `sender` variable.
+  *Status:* Open
+
+### Before merge
+
+These are not findings. They are the steps the status row still names:
+
+- Run `mise run verify` with no `--skip` on the final sha, record the gate
+  counts, and tick the plan box.
+- The sizes in the status row and task.md were measured on `b1011e81`. The
+  code changed after that, so measure again on the final sha.
+- The owner reviews the seven Hindi messages in the status row.
