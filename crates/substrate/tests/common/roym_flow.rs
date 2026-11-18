@@ -284,11 +284,15 @@ pub async fn wait_and_verify_winner_scheduled(
     let prov_msg_id = y_prov_card["message_id"].as_str().unwrap();
     assert!(wait_delivered(node_y, prov_msg_id).await, "countersigned receipt delivered to winner");
 
-    winner_node.rpc_ok("transaction.sync", json!({ "conversation": winner_conv_id })).await;
-    let winner_booking = winner_node
-        .rpc_ok("agreement.get", json!({ "quote_record_id": winner_quote_record_id }))
-        .await;
-    assert_eq!(winner_booking["state"], "agreed");
+    let synced = wait_until(Duration::from_secs(30), || async {
+        winner_node.rpc_ok("transaction.sync", json!({ "conversation": winner_conv_id })).await;
+        let winner_booking = winner_node
+            .rpc_ok("agreement.get", json!({ "quote_record_id": winner_quote_record_id }))
+            .await;
+        winner_booking["state"] == "agreed"
+    })
+    .await;
+    assert!(synced, "winner agreement reaches agreed");
 }
 
 /// Payment request, both acknowledgements, both fulfilment signatures, and

@@ -1,0 +1,7 @@
+{
+  "deal": "string",
+  "declined": "boolean",
+  "declines": "string",
+  "note": "Too expensive",
+  "record_id": "string"
+}

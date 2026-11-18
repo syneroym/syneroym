@@ -25,7 +25,7 @@ use crate::app::{
     get_row,
     payment_ops::{self, PaymentAckInput, PaymentRequestInput},
     progress, progress_ops, put_row,
-    sync::receipts::file_fulfilment_card,
+    sync::settle_receipts::file_fulfilment_card,
 };
 
 fn make_service_commitment(id: &str) -> Commitment {
@@ -274,6 +274,7 @@ async fn receiver_half_settles_with_a_settlement_note() {
         known: true,
         verified: true,
         expired: false,
+        repeat: false,
         reason: None,
         issuer: Some(cp_did.clone()),
         record_id: None,
@@ -281,6 +282,7 @@ async fn receiver_half_settles_with_a_settlement_note() {
         data: None,
         stored_at_secs: agreed_at + 20,
         declined: None,
+        deal_state: None,
         agreement_payee: None,
         agreement_payment_methods: Vec::new(),
         version_count: None,
@@ -447,6 +449,7 @@ fn make_fulfilment_card_row(msg_id: &str, issuer: &str, at: u64) -> CardRow {
         known: true,
         verified: true,
         expired: false,
+        repeat: false,
         reason: None,
         issuer: Some(issuer.to_string()),
         record_id: None,
@@ -454,6 +457,7 @@ fn make_fulfilment_card_row(msg_id: &str, issuer: &str, at: u64) -> CardRow {
         data: None,
         stored_at_secs: at,
         declined: None,
+        deal_state: None,
         agreement_payee: None,
         agreement_payment_methods: Vec::new(),
         version_count: None,

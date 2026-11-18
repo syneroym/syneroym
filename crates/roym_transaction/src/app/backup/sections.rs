@@ -18,7 +18,8 @@ use super::{
     super::{
         AGREEMENT_PROGRESS, AgreementRow, FULFILMENTS, FulfilmentsRow, LEDGER, PAYMENTS,
         PaymentsRow,
-        decide::{CountersignRow, DecisionRow, SnapshotRow},
+        decide::{CountersignRow, DecisionRow, DecisionState, RefusedRow, SnapshotRow},
+        decline_ops::DeclineRow,
         hold::{HoldLedgerRow, SeatLedgerRow},
         ledger::LedgerRow,
         put_row,
@@ -40,6 +41,8 @@ pub(crate) enum ValidatedLedgerRow {
     Hold(HoldLedgerRow),
     Seat(SeatLedgerRow),
     Fence(LedgerRow),
+    Decline(DeclineRow),
+    Refused(RefusedRow),
 }
 
 pub(crate) struct ValidatedVerticalSections {
@@ -394,10 +397,95 @@ fn validate_fence_entry(
     Ok(ValidatedLedgerRow::Fence(row))
 }
 
+fn validate_decline_entry(
+    id: &str,
+    payload: Value,
+    quotes_by_record_id: &QuotesByRecordId,
+    enquiries_by_record_id: &HashMap<String, String>,
+    now: u64,
+) -> Result<ValidatedLedgerRow, Response> {
+    let row: DeclineRow = serde_json::from_value(payload).map_err(|e| {
+        Response::invalid_params(format!("ledger '{id}': invalid decline row: {e}"))
+    })?;
+    let v = syneroym_roym_core::transaction::verify_deal_decline(&row.envelope, now);
+    if !v.verified {
+        return Err(Response::invalid_params(format!(
+            "ledger '{id}': decline does not verify: {:?}",
+            v.reason
+        )));
+    }
+    let deal_from_id = id.strip_prefix("decline:").unwrap_or("");
+    if row.deal != deal_from_id {
+        return Err(Response::invalid_params(format!(
+            "ledger '{id}': deal id mismatch with row: '{}'",
+            row.deal
+        )));
+    }
+    let p = v.payload.ok_or_else(|| {
+        Response::invalid_params(format!("ledger '{id}': decline missing payload"))
+    })?;
+    if p.deal != row.deal || p.declines != row.declines {
+        return Err(Response::invalid_params(format!("ledger '{id}': payload mismatch with row")));
+    }
+    if v.record_id.as_deref() != Some(&row.record_id) {
+        return Err(Response::invalid_params(format!(
+            "ledger '{id}': record id mismatch with envelope"
+        )));
+    }
+    let matches_quote =
+        quotes_by_record_id.get(&row.declines).is_some_and(|q| q.payload.quote_id == row.deal);
+    let matches_enquiry =
+        enquiries_by_record_id.get(&row.declines).is_some_and(|enq_id| enq_id == &row.deal);
+    if !matches_quote && !matches_enquiry {
+        return Err(Response::invalid_params(format!(
+            "ledger '{id}': names unheld target '{}'",
+            row.declines
+        )));
+    }
+    Ok(ValidatedLedgerRow::Decline(row))
+}
+
+fn validate_refused_entry(
+    id: &str,
+    payload: Value,
+    quotes_by_record_id: &QuotesByRecordId,
+    agreements_map: &HashMap<String, AgreementRow>,
+) -> Result<ValidatedLedgerRow, Response> {
+    let row: RefusedRow = serde_json::from_value(payload).map_err(|e| {
+        Response::invalid_params(format!("ledger '{id}': invalid refused row: {e}"))
+    })?;
+    if row.quote_id.is_empty() {
+        return Err(Response::invalid_params(format!("ledger '{id}': empty quote_id")));
+    }
+    if row.code.is_empty() {
+        return Err(Response::invalid_params(format!("ledger '{id}': empty refusal code")));
+    }
+    let half_record_id = id.strip_prefix("refused:").unwrap_or("");
+    let quote_exists = quotes_by_record_id.values().any(|q| q.payload.quote_id == row.quote_id);
+    if !quote_exists {
+        return Err(Response::invalid_params(format!(
+            "ledger '{id}': quote_id '{}' not in backup",
+            row.quote_id
+        )));
+    }
+    let half_held = agreements_map.values().any(|a| {
+        a.quote_id == row.quote_id
+            && a.counterparty.as_ref().is_some_and(|cp| cp.record_id == half_record_id)
+    });
+    if !half_held {
+        return Err(Response::invalid_params(format!(
+            "ledger '{id}': names unheld counterparty half '{half_record_id}'"
+        )));
+    }
+    Ok(ValidatedLedgerRow::Refused(row))
+}
+
 fn validate_non_seat_entry(
     id: &str,
     payload: Value,
     quotes_by_record_id: &QuotesByRecordId,
+    agreements_map: &HashMap<String, AgreementRow>,
+    enquiries_by_record_id: &HashMap<String, String>,
     now: u64,
     active_holds: &mut std::collections::HashSet<(String, u32, String)>,
 ) -> Result<Option<ValidatedLedgerRow>, Response> {
@@ -435,11 +523,8 @@ fn validate_non_seat_entry(
                 row.agreement
             )));
         }
-        if row.state != "deciding" && row.state != "agreed" && row.state != "not-formed" {
-            return Err(Response::invalid_params(format!(
-                "ledger '{id}': unknown decision state '{}'",
-                row.state
-            )));
+        match row.state {
+            DecisionState::Deciding | DecisionState::Agreed | DecisionState::NotFormed => {}
         }
         Ok(Some(ValidatedLedgerRow::Decision(row)))
     } else if id.starts_with("countersign:") {
@@ -460,6 +545,11 @@ fn validate_non_seat_entry(
             )));
         }
         Ok(Some(ValidatedLedgerRow::Countersign(row)))
+    } else if id.starts_with("decline:") {
+        validate_decline_entry(id, payload, quotes_by_record_id, enquiries_by_record_id, now)
+            .map(Some)
+    } else if id.starts_with("refused:") {
+        validate_refused_entry(id, payload, quotes_by_record_id, agreements_map).map(Some)
     } else if id.starts_with("payreq:") || id.starts_with("ack:") || id.starts_with("fulfil:") {
         validate_fence_entry(id, payload, quotes_by_record_id, now).map(Some)
     } else if id.starts_with("seat:") {
@@ -472,6 +562,8 @@ fn validate_non_seat_entry(
 pub(crate) fn validate_ledger(
     ledger_rows: Vec<Value>,
     quotes_by_record_id: &QuotesByRecordId,
+    agreements_map: &HashMap<String, AgreementRow>,
+    enquiries_by_record_id: &HashMap<String, String>,
     now: u64,
 ) -> Result<ValidatedLedger, Response> {
     let mut validated_ledger = Vec::new();
@@ -481,9 +573,15 @@ pub(crate) fn validate_ledger(
     for r in &ledger_rows {
         let id = r.get("id").and_then(Value::as_str).unwrap_or("");
         let payload = r.get("payload").cloned().unwrap_or(Value::Null);
-        if let Some(row) =
-            validate_non_seat_entry(id, payload, quotes_by_record_id, now, &mut active_holds)?
-        {
+        if let Some(row) = validate_non_seat_entry(
+            id,
+            payload,
+            quotes_by_record_id,
+            agreements_map,
+            enquiries_by_record_id,
+            now,
+            &mut active_holds,
+        )? {
             validated_ledger.push((id.to_string(), row));
         }
     }
@@ -557,6 +655,7 @@ pub(crate) fn validate_vertical_sections(
     bundle_sections: &std::collections::BTreeMap<String, Vec<Value>>,
     agreements_map: &HashMap<String, AgreementRow>,
     quotes_by_record_id: &QuotesByRecordId,
+    enquiries_by_record_id: &HashMap<String, String>,
     _owner: &str,
     now: u64,
 ) -> Result<ValidatedVerticalSections, Response> {
@@ -570,7 +669,13 @@ pub(crate) fn validate_vertical_sections(
     history_entries.extend(h_pay);
     let (fulfilments, h_ful) = validate_fulfilments(ful_rows, agreements_map, now)?;
     history_entries.extend(h_ful);
-    let (ledger, h_led) = validate_ledger(led_rows, quotes_by_record_id, now)?;
+    let (ledger, h_led) = validate_ledger(
+        led_rows,
+        quotes_by_record_id,
+        agreements_map,
+        enquiries_by_record_id,
+        now,
+    )?;
     history_entries.extend(h_led);
     let (progress, h_prog) = validate_progress(prog_rows, quotes_by_record_id, now)?;
     history_entries.extend(h_prog);

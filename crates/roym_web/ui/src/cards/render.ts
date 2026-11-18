@@ -4,6 +4,7 @@ import { AgreementReceiptData, renderAgreementReceipt } from "./templates/agreem
 import { AgreementProgressData, renderAgreementProgress } from "./templates/agreement_progress";
 import { EnquiryData, renderEnquiry } from "./templates/enquiry";
 import { FulfilmentReceiptData, renderFulfilmentReceipt } from "./templates/fulfilment_receipt";
+import { DealDeclineData, renderDealDecline } from "./templates/deal_decline";
 import { PaymentAcknowledgementData, renderPaymentAcknowledgement } from "./templates/payment_acknowledgement";
 import { PaymentRequestData, renderPaymentRequest } from "./templates/payment_request";
 import { QuoteData, renderQuote } from "./templates/quote";
@@ -44,6 +45,8 @@ export function renderCard(card: CardObject): HTMLElement {
       return renderPaymentAcknowledgement(card.data as PaymentAcknowledgementData | undefined);
     case "fulfilment-receipt":
       return renderFulfilmentReceipt(card.data as FulfilmentReceiptData | undefined);
+    case "deal-decline":
+      return renderDealDecline(card.data as DealDeclineData | undefined);
     default:
       return renderUnknown(card.type, card.version);
   }

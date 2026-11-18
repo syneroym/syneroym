@@ -135,4 +135,5 @@ syneroym-roym-core.workspace = true
 hex.workspace = true
 tracing-subscriber.workspace = true
 rusqlite.workspace = true
+z32.workspace = true
 iroh-relay.workspace = true

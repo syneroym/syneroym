@@ -8,6 +8,7 @@ import { renderRefusedCard } from "../refused.js";
 import { renderAgreementReceipt } from "./agreement_receipt.js";
 import { renderAgreementProgress, renderBookingProgress } from "./agreement_progress.js";
 import { renderFulfilmentReceipt } from "./fulfilment_receipt.js";
+import { renderDealDecline } from "./deal_decline.js";
 import { renderPaymentAcknowledgement } from "./payment_acknowledgement.js";
 import { renderPaymentRequest } from "./payment_request.js";
 import { renderQuote } from "./quote.js";
@@ -653,5 +654,19 @@ describe("Card templates with a translation engine", () => {
     expect(request.querySelector(".record-text-translate")).toBeNull();
     expect(quote.querySelector(".record-text-translate")).toBeNull();
     expect(calls).toEqual([]);
+  });
+
+  describe("renderDealDecline", () => {
+    it("renders deal and reason", () => {
+      const data = {
+        deal: "quote-123",
+        reason: { lang: "en", text: "Too expensive" },
+      };
+      const el = renderDealDecline(data);
+      expect(el.classList.contains("card-deal-decline")).toBe(true);
+      expect(el.textContent).toContain("Declined");
+      expect(el.textContent).toContain("quote-123");
+      expect(el.textContent).toContain("Too expensive");
+    });
   });
 });

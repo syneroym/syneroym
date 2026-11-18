@@ -10,7 +10,7 @@ use syneroym_app_host::{
 };
 use syneroym_roym_core::{
     clock,
-    deal::{DealTerms, ResourceKind, transition::track_end},
+    deal::{Commitment, DealTerms, ResourceKind, transition::track_end},
     envelope::Response,
     lang::LangTag,
     method::{self, ParamError, Reply, VerifyInput},
@@ -25,10 +25,10 @@ use syneroym_roym_core::{
 };
 
 use super::{
-    AGREEMENTS, AgreementRow, QUOTE_HISTORY, SendState, default_list_limit_u64, ensure_collections,
-    get_bytes, get_row,
+    AGREEMENTS, AgreementRow, QUOTE_HISTORY, QUOTES, RecordPointerRow, SendState,
+    default_list_limit_u64, ensure_collections, get_bytes, get_row,
     hold::{Reservations, ReserveOutcome, SeatLedger},
-    progress_ops, put_row, resolve_principal_and_owner, send_card_and_file,
+    is_deal_ended, progress_ops, put_row, resolve_principal_and_owner, send_card_and_file,
 };
 
 #[derive(Debug, Deserialize)]
@@ -164,44 +164,16 @@ pub(crate) async fn accept_at<H: AppHost>(
         return Ok(out);
     }
 
-    let reservations = SeatLedger;
-    let mut reserved = Vec::new();
-    for c in &row.terms.commitments {
-        if c.giver == DealRole::Counterparty && c.resource_kind == ResourceKind::ServiceInSlot {
-            let slot_id = c
-                .details
-                .as_ref()
-                .and_then(|d| d.data.get("slot_id"))
-                .and_then(Value::as_str)
-                .ok_or_else(|| Response::invalid_params("missing slot_id"))?;
-            match reservations
-                .reserve(host, &input.quote_record_id, &c.commitment_id, slot_id, now)
-                .await
-            {
-                Ok(ReserveOutcome::Held { .. } | ReserveOutcome::AlreadyHeld { .. }) => {
-                    reserved.push(c.commitment_id.clone());
-                }
-                Ok(outcome @ (ReserveOutcome::SlotUnavailable | ReserveOutcome::SlotTaken)) => {
-                    for cid in &reserved {
-                        let _ = reservations.release(host, &input.quote_record_id, cid).await;
-                    }
-                    let reason = if outcome == ReserveOutcome::SlotUnavailable {
-                        "slot-unavailable"
-                    } else {
-                        "slot-taken"
-                    };
-                    return Err(Response::invalid_params("reserve-failed")
-                        .with_data(serde_json::json!({ "reason": reason })));
-                }
-                Err(e) => {
-                    for cid in &reserved {
-                        let _ = reservations.release(host, &input.quote_record_id, cid).await;
-                    }
-                    return Err(Response::internal_error(e));
-                }
-            }
-        }
-    }
+    check_quote_acceptance_eligibility(
+        host,
+        &quote_payload.quote_id,
+        &input.quote_record_id,
+        quote_payload.terms.quote_expires_at_secs,
+        now,
+    )
+    .await?;
+
+    reserve_counterparty_slots(host, &input.quote_record_id, &row.terms.commitments, now).await?;
 
     let half =
         sign_agreement_receipt(host, principal, &input.quote_record_id, &row, &owner, role, viewed)
@@ -243,6 +215,78 @@ pub(crate) async fn accept<H: AppHost>(
     input: AgreementAcceptInput,
 ) -> Reply<AgreementAcceptOutput> {
     accept_at(host, input, clock::now_secs()).await
+}
+
+async fn check_quote_acceptance_eligibility<H: AppHost>(
+    host: &H,
+    quote_id: &str,
+    quote_record_id: &str,
+    expires_at_secs: u64,
+    now: u64,
+) -> Result<(), Response> {
+    if let Some(ptr) = get_row::<RecordPointerRow, _>(host, QUOTES, quote_id)
+        .await
+        .map_err(Response::internal_error)?
+        && ptr.record_id != quote_record_id
+    {
+        return Err(Response::invalid_params("quote-superseded")
+            .with_data(serde_json::json!("quote-superseded")));
+    }
+
+    if is_deal_ended(host, quote_id, Some(expires_at_secs), now)
+        .await
+        .map_err(Response::internal_error)?
+    {
+        return Err(
+            Response::invalid_params("quote-ended").with_data(serde_json::json!("quote-ended"))
+        );
+    }
+    Ok(())
+}
+
+async fn reserve_counterparty_slots<H: AppHost>(
+    host: &H,
+    quote_record_id: &str,
+    commitments: &[Commitment],
+    now: u64,
+) -> Result<(), Response> {
+    let reservations = SeatLedger;
+    let mut reserved = Vec::new();
+    for c in commitments {
+        if c.giver == DealRole::Counterparty && c.resource_kind == ResourceKind::ServiceInSlot {
+            let slot_id = c
+                .details
+                .as_ref()
+                .and_then(|d| d.data.get("slot_id"))
+                .and_then(Value::as_str)
+                .ok_or_else(|| Response::invalid_params("missing slot_id"))?;
+            match reservations.reserve(host, quote_record_id, &c.commitment_id, slot_id, now).await
+            {
+                Ok(ReserveOutcome::Held { .. } | ReserveOutcome::AlreadyHeld { .. }) => {
+                    reserved.push(c.commitment_id.clone());
+                }
+                Ok(outcome @ (ReserveOutcome::SlotUnavailable | ReserveOutcome::SlotTaken)) => {
+                    for cid in &reserved {
+                        let _ = reservations.release(host, quote_record_id, cid).await;
+                    }
+                    let reason = if outcome == ReserveOutcome::SlotUnavailable {
+                        "slot-unavailable"
+                    } else {
+                        "slot-taken"
+                    };
+                    return Err(Response::invalid_params("reserve-failed")
+                        .with_data(serde_json::json!({ "reason": reason })));
+                }
+                Err(e) => {
+                    for cid in &reserved {
+                        let _ = reservations.release(host, quote_record_id, cid).await;
+                    }
+                    return Err(Response::internal_error(e));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn viewed_error(field: &str, message: impl Into<String>) -> Response {

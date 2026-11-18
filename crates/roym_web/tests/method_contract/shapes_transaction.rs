@@ -24,6 +24,8 @@ async fn deal_pings_and_empty(h: &Harness) {
     assert_shape("quote_ping", &ping_q);
     let ping_a = rpc(h, "agreement.ping", json!({})).await;
     assert_shape("agreement_ping", &ping_a);
+    let ping_d = rpc(h, "deal.ping", json!({})).await;
+    assert_shape("deal_ping", &ping_d);
 
     let r_empty = rpc(h, "enquiry.list", json!({})).await;
     assert_shape("enquiry_list_empty", &r_empty);
@@ -122,9 +124,8 @@ async fn deal_enquiry_and_quote_shapes(h: &Harness, conv: &str) -> (String, Stri
     rpc(h, "transaction.sync", json!({ "conversation": conv, "full": true })).await;
 
     let q_dec =
-        rpc(h, "quote.decline", json!({ "quote_record_id": cp_q_rec_id, "note": "Too expensive" }))
-            .await;
-    assert_shape("quote_decline", &q_dec);
+        rpc(h, "deal.decline", json!({ "declines": cp_q_rec_id, "note": "Too expensive" })).await;
+    assert_shape("deal_decline", &q_dec);
 
     let env_q2 = Envelope::from_json(&cp_q_env).unwrap();
     let q2_id = env_q2.payload["quote_id"].as_str().unwrap();

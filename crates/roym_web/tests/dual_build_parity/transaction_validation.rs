@@ -24,7 +24,8 @@ async fn scenario_144_every_transaction_verb_refused_over_wire_parity() {
         "quote.list",
         "quote.history",
         "quote.verify",
-        "quote.decline",
+        "deal.ping",
+        "deal.decline",
         "agreement.accept",
         "agreement.get",
         "agreement.list",
@@ -285,15 +286,15 @@ async fn scenario_147_replaying_declined_quote_preserves_decline_parity() {
     // Node declines the quote using quote_record_id
     let (dw, dn) = both_rpc(
         &h,
-        "quote.decline",
+        "deal.decline",
         json!({
-            "quote_record_id": q_rec_id,
+            "declines": q_rec_id,
             "note": "Price is too high",
         }),
     )
     .await;
-    assert_eq!(dw, dn);
-    assert_eq!(dw["result"]["declined"], true);
+    assert_eq!(stripped(&dw), stripped(&dn));
+    assert!(dw["result"]["record_id"].is_string());
 
     // In thread, quote shows declined: Some(true)
     let (mut tw1, mut tn1) =

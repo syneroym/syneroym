@@ -1602,11 +1602,11 @@ C1a:
 
 C1b:
 
-- [ ] Every C1b row of section 3 names a test that exists and passes,
+- [x] Every C1b row of section 3 names a test that exists and passes,
   including one test per crash point.
-- [ ] Hub case 31 checks the new sentence.
-- [ ] Q5's limit is written in the agreements doc and the backlog.
-- [ ] `mise run verify` passes with no `--skip`.
+- [x] Hub case 31 checks the new sentence.
+- [x] Q5's limit is written in the agreements doc and the backlog.
+- [x] `mise run verify` passes with no `--skip`.
 
 ## 11. What C1 does not do
 

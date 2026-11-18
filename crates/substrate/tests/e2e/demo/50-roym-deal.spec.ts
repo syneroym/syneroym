@@ -37,7 +37,7 @@ async function fetchAgreement(page: Page, conversation: string, runTag: string) 
   });
 }
 
-test('Roym deal story: Alice and Bob form an agreement with promised commitments', async ({ browser, page }, testInfo) => {
+test('Roym deal story: Alice and Bob form an agreement and decline a quote with a note', async ({ browser, page }, testInfo) => {
   const env = readDemoEnv();
   const need = (key: string) => requireEnv(env, key, SCRIPT);
   const alice = { hub: need('ALICE_HUB_URL'), key: need('ALICE_KEY'), did: need('ALICE_DID'), addr: need('ALICE_ADDR') };
@@ -47,6 +47,10 @@ test('Roym deal story: Alice and Bob form an agreement with promised commitments
   const enquiryText = `Hindi lessons for my son (${runTag})`;
   const quoteScope = `Hindi lessons (${runTag})`;
   const giveText = 'One lesson, one hour';
+
+  const declineEnquiryText = `Advanced Hindi (${runTag})`;
+  const declineQuoteScope = `Advanced lessons (${runTag})`;
+  const declineNoteText = 'Prefer beginner level for now';
 
   const bobSession = await newSession(browser, testInfo);
   const bobPage = await bobSession.newPage();
@@ -120,6 +124,46 @@ test('Roym deal story: Alice and Bob form an agreement with promised commitments
           return agr?.commitments.map((c) => c.state);
         }, { timeout: DELIVERY_WAIT_MS })
         .toEqual(['promised', 'promised']);
+    });
+
+    await step(page, "Alice's screen: send Bob an enquiry for advanced lessons", async () => {
+      await page.bringToFront();
+      await sendRequest(page, declineEnquiryText, 'language-lessons');
+      await expect(threadMessage(page, declineEnquiryText).locator('.card-enquiry')).toBeVisible({ timeout: 15_000 });
+    });
+
+    await step(bobPage, "Bob's screen: send a quote for advanced lessons", async () => {
+      await bobPage.bringToFront();
+      const enquiry = threadMessage(bobPage, declineEnquiryText);
+      await expect(enquiry).toBeVisible({ timeout: DELIVERY_WAIT_MS });
+      await sendQuote(bobPage, declineEnquiryText, {
+        scope: declineQuoteScope,
+        give: 'Advanced literature, one hour',
+        currency: 'INR',
+        amount: '200',
+        payee: bob.did,
+      });
+    });
+
+    await step(page, "Alice's screen: decline the quote with a note", async () => {
+      await page.bringToFront();
+      const quote = threadMessage(page, declineQuoteScope);
+      await expect(quote).toBeVisible({ timeout: DELIVERY_WAIT_MS });
+      await quote.locator('.decline-quote-button').click();
+      const dialog = page.locator('.decline-dialog');
+      await expect(dialog).toBeVisible();
+      await dialog.locator('.decline-note-input').fill(declineNoteText);
+      await dialog.locator('button.confirm-decline').click();
+      await expect(dialog).toHaveCount(0, { timeout: 15_000 });
+      await expect(quote.locator('.accept-quote-button')).toHaveCount(0);
+      await expect(quote.locator('.decline-quote-button')).toHaveCount(0);
+    });
+
+    await step(bobPage, "Bob's screen: see the quote declined with the note", async () => {
+      await bobPage.bringToFront();
+      const declineCard = bobPage.locator('.thread-messages .card-deal-decline', { hasText: declineNoteText });
+      await expect(declineCard.first()).toBeVisible({ timeout: DELIVERY_WAIT_MS });
+      await expect(declineCard.first().locator('.decline-reason')).toHaveText(declineNoteText);
     });
   } finally {
     await bobSession.close();

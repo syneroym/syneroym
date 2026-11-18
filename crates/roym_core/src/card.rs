@@ -14,6 +14,7 @@ pub const CARD_TYPES: &[(&str, u32)] = &[
     ("payment-request", 1),
     ("payment-acknowledgement", 1),
     ("fulfilment-receipt", 1),
+    ("deal-decline", 1),
 ];
 
 pub fn is_known_card(card_type: &str, version: u32) -> bool {

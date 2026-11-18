@@ -24,7 +24,6 @@ use syneroym_roym_core::{
     paging,
     record::{Envelope, RECORD_QUOTE},
     services,
-    signing::{self, CertificateError},
     transaction::{
         self, Answers, DealRole, EnquiryPayload, MAX_QUOTE_LIFETIME_SECS, MIN_QUOTE_LIFETIME_SECS,
         QUOTE_VERSION, QuotePayload, RecordVerdict, TimeWindow,
@@ -32,9 +31,9 @@ use syneroym_roym_core::{
 };
 
 use super::{
-    AGREEMENTS, AgreementRow, ENQUIRY_HISTORY, ListInput, QUOTE_HISTORY, QUOTES, RecordPointerRow,
-    SendState, conversation_mine_filter, count_mine, ensure_collections, get_bytes, get_row,
-    put_bytes, put_row, resolve_principal_and_owner, send_card_and_file,
+    ENQUIRY_HISTORY, ListInput, QUOTE_HISTORY, QUOTES, RecordPointerRow, SendState,
+    conversation_mine_filter, count_mine, decline_ops, ensure_collections, get_bytes, get_row,
+    is_deal_ended, put_bytes, put_row, resolve_principal_and_owner, send_card_and_file,
 };
 
 #[derive(Debug, Deserialize)]
@@ -99,21 +98,6 @@ pub struct QuoteListOutput {
     pub quotes: Vec<QuoteListItem>,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct QuoteDeclineInput {
-    pub quote_record_id: String,
-    #[serde(default)]
-    pub note: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct QuoteDeclineOutput {
-    pub quote_record_id: String,
-    pub declined: bool,
-    pub note: Option<String>,
-}
-
 pub(crate) async fn set_at<H: AppHost>(
     host: &H,
     mut input: QuoteSetInput,
@@ -135,7 +119,7 @@ pub(crate) async fn set_at<H: AppHost>(
     let conversation = req_payload.conversation;
 
     let (sequence, supersedes, next_count) =
-        resolve_quote_sequence(host, &input, &conversation, &owner).await?;
+        resolve_quote_sequence(host, &input, &conversation, &owner, now).await?;
 
     let expires_at_secs = now + input.expires_in_secs;
     let quote_id = match input.quote_id.take() {
@@ -257,6 +241,7 @@ async fn resolve_quote_sequence<H: AppHost>(
     params: &QuoteSetInput,
     conversation: &str,
     owner: &str,
+    now: u64,
 ) -> Result<(u32, Option<String>, u64), Response> {
     if let Some(ref id) = params.quote_id {
         let prior: RecordPointerRow = match get_row(host, QUOTES, id).await {
@@ -275,6 +260,21 @@ async fn resolve_quote_sequence<H: AppHost>(
                 "a new version of a quote answers the same enquiry",
             ));
         }
+
+        if decline_ops::has_unrefused_counterparty_half(host, id)
+            .await
+            .map_err(Response::internal_error)?
+        {
+            return Err(Response::invalid_params("quote-already-accepted")
+                .with_data(serde_json::json!("quote-already-accepted")));
+        }
+
+        if is_deal_ended(host, id, None, now).await.map_err(Response::internal_error)? {
+            return Err(
+                Response::invalid_params("quote-ended").with_data(serde_json::json!("quote-ended"))
+            );
+        }
+
         Ok((prior.sequence, Some(prior.record_id), prior.version_count + 1))
     } else {
         let count = match count_mine(host, QUOTES, conversation, owner).await {
@@ -493,77 +493,6 @@ pub(crate) async fn history<H: AppHost>(
     Ok(EnvelopeHistoryOutput { history: out })
 }
 
-pub(crate) async fn decline<H: AppHost>(
-    host: &H,
-    input: QuoteDeclineInput,
-) -> Reply<QuoteDeclineOutput> {
-    let now = clock::now_secs();
-    let owner = match signing::owner_did(host).await {
-        Ok(o) => o,
-        Err(CertificateError::NoOwner) => {
-            return Err(Response::invalid_params("this installation has no recorded owner"));
-        }
-        Err(e) => return Err(Response::internal_error(e.to_string())),
-    };
-
-    ensure_collections(host).await.map_err(Response::internal_error)?;
-
-    let quote_envelope_bytes = match get_bytes(host, QUOTE_HISTORY, &input.quote_record_id).await {
-        Ok(Some(b)) => b,
-        Ok(None) => return Err(Response::invalid_params("no such quote")),
-        Err(e) => return Err(Response::internal_error(e)),
-    };
-
-    let quote_envelope_str = match String::from_utf8(quote_envelope_bytes) {
-        Ok(s) => s,
-        Err(e) => return Err(Response::internal_error(e.to_string())),
-    };
-
-    let verdict = transaction::verify_quote(&quote_envelope_str, now);
-    if !verdict.verified {
-        return Err(Response::invalid_params(format!(
-            "the quote does not verify: {}",
-            verdict.reason.as_deref().unwrap_or("unknown")
-        )));
-    }
-    let quote_payload = match verdict.payload {
-        Some(p) => p,
-        None => return Err(Response::internal_error("missing quote payload")),
-    };
-
-    if owner != quote_payload.counterparty_did {
-        return Err(Response::invalid_params("only the counterparty can decline this quote"));
-    }
-
-    if let Ok(Some(agr)) =
-        get_row::<AgreementRow, _>(host, AGREEMENTS, &input.quote_record_id).await
-        && (agr.counterparty.is_some() || agr.quote_author.is_some())
-    {
-        return Err(Response::invalid_params(
-            "cannot decline a quote that has already been accepted",
-        ));
-    }
-
-    let mut pointer: RecordPointerRow = match get_row(host, QUOTES, &quote_payload.quote_id).await {
-        Ok(Some(p)) => p,
-        Ok(None) => return Err(Response::invalid_params("no such quote")),
-        Err(e) => return Err(Response::internal_error(e)),
-    };
-
-    pointer.declined_at_secs = Some(now);
-    pointer.decline_note = input.note.clone();
-    pointer.updated_at_secs = now;
-    if let Err(e) = put_row(host, QUOTES, &quote_payload.quote_id, &pointer).await {
-        return Err(Response::internal_error(e));
-    }
-
-    Ok(QuoteDeclineOutput {
-        quote_record_id: input.quote_record_id,
-        declined: true,
-        note: input.note,
-    })
-}
-
 pub(crate) async fn verify<H: AppHost>(
     _host: &H,
     input: VerifyInput,
@@ -591,13 +520,12 @@ pub(crate) async fn store_received_quote<H: AppHost>(
     }
     put_bytes(host, QUOTE_HISTORY, record_id, envelope.as_bytes()).await?;
     let (version_count, declined_at_secs, decline_note) = if let Some(existing) = &prior {
-        if existing.record_id == record_id {
-            // Idempotent replay: preserve decline and version count
-            (existing.version_count, existing.declined_at_secs, existing.decline_note.clone())
+        let count = if existing.record_id == record_id {
+            existing.version_count
         } else {
-            // New version: fresh offer, not declined
-            (existing.version_count + 1, None, None)
-        }
+            existing.version_count + 1
+        };
+        (count, existing.declined_at_secs, existing.decline_note.clone())
     } else {
         (1, None, None)
     };

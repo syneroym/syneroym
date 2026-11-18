@@ -25,8 +25,11 @@ use crate::{
 };
 pub use crate::{
     deal::{Answers, DealTerms},
-    record::{RECORD_AGREEMENT_RECEIPT, RECORD_ENQUIRY, RECORD_QUOTE},
+    record::{RECORD_AGREEMENT_RECEIPT, RECORD_DEAL_DECLINE, RECORD_ENQUIRY, RECORD_QUOTE},
 };
+
+pub mod decline;
+pub use decline::{DEAL_DECLINE_VERSION, DealDeclinePayload, verify_deal_decline};
 
 pub const ENQUIRY_VERSION: u32 = 1;
 pub const QUOTE_VERSION: u32 = 1;

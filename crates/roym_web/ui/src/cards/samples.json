@@ -127,6 +127,19 @@
     }
   },
   {
+    "type": "deal-decline",
+    "version": 1,
+    "data": {
+      "deal": "deal-sample-123",
+      "declines": "rec_quote_sample",
+      "conversation": "conv-sample-123",
+      "reason": {
+        "lang": "en",
+        "text": "Schedule conflict"
+      }
+    }
+  },
+  {
     "type": "not-a-real-type",
     "version": 1,
     "data": {}

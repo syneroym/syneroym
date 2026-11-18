@@ -6,4 +6,5 @@ export const CARD_TYPES: [string, number][] = [
   ["payment-request", 1],
   ["payment-acknowledgement", 1],
   ["fulfilment-receipt", 1],
+  ["deal-decline", 1],
 ];

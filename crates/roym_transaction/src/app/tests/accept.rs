@@ -1,25 +1,27 @@
-use serde_json::json;
+use serde_json::{Value, json};
 use syneroym_identity::{Identity, substrate};
 use syneroym_roym_core::{
+    card::{self, CARD_CONTENT_TYPE},
     conversation::Direction,
     deal::{Commitment, CommitmentKind, DealTerms, Details, ExtensionRef, LocalText, ResourceKind},
     lang::LangTag,
     listing::derive_slot_id,
     progress::{self, AGREEMENT_PROGRESS_VERSION, RECORD_AGREEMENT_PROGRESS},
-    record::{Envelope, RECORD_QUOTE, RecordDraft},
+    record::{Envelope, RECORD_AGREEMENT_RECEIPT, RECORD_QUOTE, RecordDraft},
     transaction::{
-        Answers, DealRole, QUOTE_VERSION, QuotePayload, TimeWindow, derive_quote_id, verify_quote,
+        AGREEMENT_RECEIPT_VERSION, AgreementReceiptPayload, Answers, DealRole, QUOTE_VERSION,
+        QuotePayload, TimeWindow, derive_quote_id, verify_quote,
     },
 };
 
 use super::fixture;
 use crate::app::{
-    AgreementRow, CardRow, LEDGER,
+    AGREEMENTS, AgreementRow, CARDS, CardRow, LEDGER,
     agreement_ops::{self, AgreementAcceptInput, QuoteRecordInput},
     get_row,
     hold::{HoldLedgerRow, SeatLedgerRow, hold_id, seat_id},
     quote_ops::store_received_quote,
-    sync::receipts::file_progress_card,
+    sync::{self, SyncInput, receipts::file_progress_card},
 };
 
 fn slot_commitment(
@@ -181,6 +183,7 @@ fn make_progress_card(
         known: true,
         verified: true,
         expired: false,
+        repeat: false,
         reason: None,
         issuer: None,
         record_id: None,
@@ -188,6 +191,7 @@ fn make_progress_card(
         data: None,
         stored_at_secs: now,
         declined: None,
+        deal_state: None,
         version_count: None,
         agreement_payee: None,
         agreement_payment_methods: vec![],
@@ -434,4 +438,208 @@ async fn counterparty_releases_holds_on_not_formed_and_expiry() {
         .await
         .expect("query seat 2");
     assert!(seat2.is_none(), "expired quote must release seat");
+}
+
+#[tokio::test]
+async fn file_repeated_card_stores_repeat_true() {
+    let f = fixture();
+    let author = Identity::generate().expect("generate author");
+    let now = 1_000_000;
+    let (c1, _slot_id) = slot_commitment("c1", "listing_123", 1_000_000, 1_003_600);
+    let (payload, rec_id, env) =
+        build_and_sign_quote(&author, &f.master_did, vec![c1], now + 300, now);
+    let v = verify_quote(&env, now);
+    store_received_quote(&f.host, &env, &v, &payload, now, &f.master_did)
+        .await
+        .expect("store quote");
+
+    let (card_row1, snap_env) = make_progress_card(
+        &author,
+        &rec_id,
+        &f.master_did,
+        &payload.terms,
+        Some("slot-taken"),
+        now + 10,
+    );
+    let res1 = file_progress_card(&f.host, card_row1, &snap_env, "conv_1", now + 10, &f.master_did)
+        .await
+        .expect("file first progress card");
+    assert!(res1.filed, "res1: {:?}", res1);
+
+    let first_stored: CardRow = get_row(&f.host, CARDS, "msg_progress_1")
+        .await
+        .expect("query first card")
+        .expect("first card exists");
+    assert!(!first_stored.repeat, "first filed card must not be repeat");
+
+    let mut card_row2 = make_progress_card(
+        &author,
+        &rec_id,
+        &f.master_did,
+        &payload.terms,
+        Some("slot-taken"),
+        now + 10,
+    )
+    .0;
+    card_row2.message_id = "msg_snap_repeat".to_string();
+
+    let res2 = file_progress_card(&f.host, card_row2, &snap_env, "conv_1", now + 10, &f.master_did)
+        .await
+        .expect("file second progress card");
+    assert!(res2.filed);
+
+    let second_stored: CardRow = get_row(&f.host, CARDS, "msg_snap_repeat")
+        .await
+        .expect("query second card")
+        .expect("second card exists");
+    assert!(second_stored.repeat, "second filed card must have repeat: true");
+}
+
+fn make_author_countersigned_half_card(
+    author: &Identity,
+    author_did: &str,
+    counterparty_did: &str,
+    q_rec_id: &str,
+    terms: &DealTerms,
+    issued_at: u64,
+) -> String {
+    let author_payload = AgreementReceiptPayload {
+        quote_record_id: q_rec_id.to_string(),
+        counterparty_did: counterparty_did.to_string(),
+        quote_author_did: author_did.to_string(),
+        role: DealRole::QuoteAuthor,
+        terms: terms.clone(),
+        viewed_lang: LangTag::parse_canonical("en").expect("lang"),
+        viewed_via_mt: false,
+    };
+    let draft = RecordDraft {
+        version: AGREEMENT_RECEIPT_VERSION,
+        record_type: RECORD_AGREEMENT_RECEIPT.to_string(),
+        subject: q_rec_id.to_string(),
+        payload: serde_json::to_value(&author_payload).expect("payload json"),
+        expires_at_secs: None,
+        supersedes: None,
+    };
+    let (mut env, bytes) =
+        Envelope::unsigned(draft, author_did.to_string(), None, issued_at).expect("env");
+    let sig = author.sign(&bytes).to_bytes();
+    env.attach_signature(z32::encode(&sig)).expect("sig");
+    let author_half_env = env.to_json().expect("env json");
+    card::card_body(RECORD_AGREEMENT_RECEIPT, AGREEMENT_RECEIPT_VERSION, &author_half_env)
+        .expect("card body")
+}
+
+fn mock_author_half_delivered_at(
+    host: &syneroym_roym_core::testing::TestHost,
+    author_did: String,
+    delivery_time: u64,
+    card_body: String,
+) {
+    host.on_call("conversation", "conversation.changes", move |params: String| {
+        let p: Value = serde_json::from_str(&params).unwrap_or(Value::Null);
+        let after_seq = p.get("after_seq").and_then(Value::as_u64).unwrap_or(0);
+        if after_seq == 0 {
+            Ok(json!({
+                "result": {
+                    "messages": [
+                        {
+                            "id": "msg_author_half",
+                            "conversation": "conv_1",
+                            "author": author_did,
+                            "direction": "incoming",
+                            "sender_timestamp_ms": (delivery_time * 1000) as i64,
+                            "content_type": CARD_CONTENT_TYPE,
+                            "languages": ["en"],
+                            "body_encoding": "utf8",
+                            "restored": false,
+                            "state": "delivered",
+                            "stored_at_secs": delivery_time as i64,
+                            "visible_seq": 1,
+                            "verified": true,
+                            "body": card_body,
+                        }
+                    ],
+                    "last_seq": 1,
+                    "kind": "direct"
+                }
+            })
+            .to_string())
+        } else {
+            Ok(json!({
+                "result": {
+                    "messages": [],
+                    "last_seq": 1,
+                    "kind": "direct"
+                }
+            })
+            .to_string())
+        }
+    });
+}
+
+#[tokio::test]
+async fn counterparty_files_author_countersigned_half_delivered_after_expiry() {
+    let f = fixture();
+    let author = Identity::generate().expect("author identity");
+    let author_did = substrate::derive_did_key(&author.public_key());
+    let now = 1_000_000;
+    let (c1, _slot_id) = slot_commitment("c1", "listing_123", now + 1_000, now + 4_600);
+    // Quote expires at now + 300
+    let (quote_payload, q_rec_id, q_env) =
+        build_and_sign_quote(&author, &f.master_did, vec![c1], now + 300, now);
+    let v = verify_quote(&q_env, now);
+    store_received_quote(&f.host, &q_env, &v, &quote_payload, now, &f.master_did)
+        .await
+        .expect("store quote");
+
+    // Counterparty accepts at now + 10 (before expiry)
+    let acc_res = agreement_ops::accept_at(
+        &f.host,
+        AgreementAcceptInput {
+            quote_record_id: q_rec_id.clone(),
+            viewed_lang: None,
+            viewed_via_mt: None,
+        },
+        now + 10,
+    )
+    .await
+    .expect("counterparty accepts");
+    assert_eq!(acc_res.role, DealRole::Counterparty);
+
+    // Quote author signs countersigned receipt half at now + 50 (before expiry)
+    let card_body = make_author_countersigned_half_card(
+        &author,
+        &author_did,
+        &f.master_did,
+        &q_rec_id,
+        &quote_payload.terms,
+        now + 50,
+    );
+
+    // Author's half is delivered to counterparty at now + 400 (after expiry now +
+    // 300)
+    mock_author_half_delivered_at(&f.host, author_did, now + 400, card_body);
+
+    let sync_res = sync::sync_at(
+        &f.host,
+        SyncInput { conversation: "conv_1".to_string(), full: false },
+        now + 400,
+    )
+    .await
+    .expect("sync at now + 400");
+    assert_eq!(sync_res.filed, 1);
+    assert_eq!(sync_res.refused, 0);
+
+    // Stored card verified is true and no refusal reason
+    let card: CardRow =
+        get_row(&f.host, CARDS, "msg_author_half").await.expect("get card").expect("card exists");
+    assert!(card.verified);
+    assert!(card.reason.is_none());
+
+    // Agreement row now has both halves and agreed_at_secs set to the author's
+    // issued_at
+    let agr: AgreementRow =
+        get_row(&f.host, AGREEMENTS, &q_rec_id).await.expect("get agr").expect("agr exists");
+    assert!(agr.quote_author.is_some());
+    assert_eq!(agr.agreed_at_secs, Some(now + 50));
 }

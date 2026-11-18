@@ -261,7 +261,7 @@ describe("a feed redraw keeps the other open work", () => {
     const messages: unknown[] = [QUOTE_MESSAGE];
     const card: Record<string, unknown> = { ...QUOTE_CARD };
     const node = stubNode(messages, [card], {
-      "quote.decline": () => {
+      "deal.decline": () => {
         card.declined = true;
         return {};
       },

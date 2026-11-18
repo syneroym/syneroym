@@ -98,6 +98,8 @@ async fn scenario_167_every_new_verb_refused_over_wire_parity() {
         "payment.verify",
         "fulfilment.sign",
         "fulfilment.get",
+        "deal.decline",
+        "deal.ping",
     ] {
         let (w, n) =
             h.wire_invoke(syneroym_roym_core::services::TRANSACTION, &env(method, json!({}))).await;

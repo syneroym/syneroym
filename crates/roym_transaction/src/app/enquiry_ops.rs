@@ -68,6 +68,8 @@ pub struct EnquiryView {
     pub mine: bool,
     pub updated_at_secs: u64,
     pub version_count: u64,
+    pub declined_at_secs: Option<u64>,
+    pub decline_note: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -269,6 +271,8 @@ pub(crate) async fn get<H: AppHost>(
         mine: p.mine,
         updated_at_secs: p.updated_at_secs,
         version_count: p.version_count,
+        declined_at_secs: p.declined_at_secs,
+        decline_note: p.decline_note,
     }))
 }
 
@@ -295,6 +299,8 @@ pub(crate) async fn list<H: AppHost>(host: &H, input: ListInput) -> Reply<Enquir
             mine: p.mine,
             updated_at_secs: p.updated_at_secs,
             version_count: p.version_count,
+            declined_at_secs: p.declined_at_secs,
+            decline_note: p.decline_note,
         })
         .collect();
     Ok(EnquiryListOutput { enquiries: page })
@@ -350,6 +356,7 @@ pub(crate) async fn store_received_enquiry<H: AppHost>(
         1
     };
     let mine = !owner.is_empty() && v.issuer.as_deref() == Some(owner);
+    let counterparty_did = if !mine && !owner.is_empty() { Some(owner.to_string()) } else { None };
     let pointer = RecordPointerRow {
         envelope: envelope.to_string(),
         record_id: record_id.to_string(),
@@ -362,7 +369,7 @@ pub(crate) async fn store_received_enquiry<H: AppHost>(
         version_count,
         issued_at_secs: incoming_issued,
         request_record_id: None,
-        counterparty_did: None,
+        counterparty_did,
         declined_at_secs: None,
         decline_note: None,
     };
