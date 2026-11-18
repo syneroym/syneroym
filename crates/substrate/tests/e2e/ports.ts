@@ -17,42 +17,78 @@ export interface ReservedPort {
   release: () => Promise<void>;
 }
 
+// Ports below 32_768 sit outside the OS ephemeral range (Linux defaults to
+// 32768-60999, as on GitHub Actions runners), so the kernel never gives one to
+// an outbound connection on its own. A port from `listen(0)` is always inside
+// the ephemeral range. In the gap between release and the daemon's bind, an
+// outbound connection of the daemon itself (for example iroh dialling its
+// relay) can take that port, and the bind then fails with EADDRINUSE. This
+// pool matches `PORT_POOL_*` in `crates/substrate/tests/common/mod.rs`.
+const POOL_START = 18_000;
+const POOL_END = 32_768;
+const MAX_PROBE_ATTEMPTS = 500;
+
+function randomPoolPort(): number {
+  return POOL_START + Math.floor(Math.random() * (POOL_END - POOL_START));
+}
+
+// Try random pool ports until one binds. Only "port is taken" errors are
+// retried; any other error is a real failure.
+async function reserveInPool(
+  tryReserve: (port: number) => Promise<ReservedPort>,
+): Promise<ReservedPort> {
+  for (let attempt = 0; attempt < MAX_PROBE_ATTEMPTS; attempt++) {
+    try {
+      return await tryReserve(randomPoolPort());
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code !== 'EADDRINUSE' && code !== 'EACCES') throw err;
+    }
+  }
+  throw new Error(
+    `no free port in ${POOL_START}-${POOL_END - 1} after ${MAX_PROBE_ATTEMPTS} attempts`,
+  );
+}
+
 export function reserveTcpPort(host = '127.0.0.1'): Promise<ReservedPort> {
-  return new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.unref();
-    server.on('error', reject);
-    server.listen(0, host, () => {
-      const addr = server.address() as net.AddressInfo;
-      const port = addr.port;
-      resolve({
-        port,
-        release: () =>
-          new Promise<void>((res) => {
-            server.close(() => res());
-          }),
-      });
-    });
-  });
+  return reserveInPool(
+    (port) =>
+      new Promise((resolve, reject) => {
+        const server = net.createServer();
+        server.unref();
+        server.once('error', reject);
+        server.listen(port, host, () => {
+          resolve({
+            port,
+            release: () => new Promise<void>((res) => server.close(() => res())),
+          });
+        });
+      }),
+  );
 }
 
 export function reserveUdpPort(host = '127.0.0.1'): Promise<ReservedPort> {
-  return new Promise((resolve, reject) => {
-    const socket = dgram.createSocket('udp4');
-    socket.unref();
-    socket.on('error', reject);
-    socket.bind(0, host, () => {
-      const addr = socket.address();
-      const port = addr.port;
-      resolve({
-        port,
-        release: () =>
-          new Promise<void>((res) => {
-            socket.close(() => res());
-          }),
-      });
-    });
-  });
+  return reserveInPool(
+    (port) =>
+      new Promise((resolve, reject) => {
+        const socket = dgram.createSocket('udp4');
+        socket.unref();
+        socket.once('error', (err) => {
+          try {
+            socket.close();
+          } catch {
+            // Already closed: nothing left to free.
+          }
+          reject(err);
+        });
+        socket.bind(port, host, () => {
+          resolve({
+            port,
+            release: () => new Promise<void>((res) => socket.close(() => res())),
+          });
+        });
+      }),
+  );
 }
 
 export interface E2EPorts {
