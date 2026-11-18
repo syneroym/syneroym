@@ -6,10 +6,14 @@ use syneroym_roym_core::{
         Commitment, CommitmentKind, DealTerms, LocalText, ResourceKind, SettlementRole,
         transition::CommitmentState,
     },
-    fulfilment::{FULFILMENT_RECEIPT_VERSION, FulfilmentReceiptPayload},
+    disclosure::{FULFILMENT_SET, reveal_hidden_strict},
+    fulfilment::{FULFILMENT_RECEIPT_VERSION, FulfilmentHidden, FulfilmentReceiptPayload},
     lang::LangTag,
     progress::AgreementState,
-    record::{Envelope, RECORD_AGREEMENT_RECEIPT, RECORD_FULFILMENT_RECEIPT, RecordDraft},
+    record::{
+        Envelope, RECORD_AGREEMENT_RECEIPT, RECORD_FULFILMENT_RECEIPT, RECORD_QUOTE, RecordDraft,
+    },
+    testing::sd::{PlainQuote, conceal_fulfilment, conceal_quote},
     transaction::{
         AGREEMENT_RECEIPT_VERSION, AgreementReceiptPayload, Answers, DealRole, ReceiptHalf,
         SignedTerms, derive_quote_id,
@@ -21,7 +25,7 @@ use super::fixture;
 use crate::app::{
     AGREEMENT_PROGRESS, AGREEMENTS, AgreementRow, CardRow, FULFILMENTS, FulfilmentsRow, SendState,
     decide::{SnapshotRow, snapshot_id},
-    ensure_collections,
+    disclosures, ensure_collections,
     fulfilment_ops::{self, FulfilmentSignInput, fulfilment_id},
     get_row,
     payment_ops::{self, PaymentAckInput, PaymentRequestInput},
@@ -237,7 +241,7 @@ async fn setup_agreed_deal(
         quote_expires_at_secs: agreed_at + 3600,
     };
 
-    let plain = syneroym_roym_core::testing::sd::PlainQuote {
+    let plain = PlainQuote {
         quote_id: quote_id.clone(),
         conversation: "conv_1".to_string(),
         sequence: 1,
@@ -245,16 +249,10 @@ async fn setup_agreed_deal(
         counterparty_did: counterparty_did.clone(),
         terms: terms.clone(),
     };
-    let (payload, disclosures) = syneroym_roym_core::testing::sd::conceal_quote(plain, 1);
-    crate::app::disclosures::store(
-        &fix.host,
-        &quote_record_id,
-        syneroym_roym_core::record::RECORD_QUOTE,
-        &disclosures,
-        agreed_at,
-    )
-    .await
-    .unwrap();
+    let (payload, disclosures) = conceal_quote(plain, 1);
+    disclosures::store(&fix.host, &quote_record_id, RECORD_QUOTE, &disclosures, agreed_at)
+        .await
+        .unwrap();
 
     let author_half = make_receipt_half(
         &fix.master,
@@ -335,8 +333,7 @@ async fn receiver_half_settles_with_a_settlement_note() {
         role: SettlementRole::Receiver,
         settlement_note: Some(sample_note(note_text)),
     };
-    let (rc_payload, rc_disclosures) =
-        syneroym_roym_core::testing::sd::conceal_fulfilment(plain_fulfilment, 1);
+    let (rc_payload, rc_disclosures) = conceal_fulfilment(plain_fulfilment, 1);
     let envelope_json = make_signed_fulfilment_envelope(
         &counterparty,
         &cp_did,
@@ -373,16 +370,11 @@ async fn receiver_half_settles_with_a_settlement_note() {
     let f_row: Option<FulfilmentsRow> = get_row(&fix.host, FULFILMENTS, &f_id).await.unwrap();
     assert!(f_row.is_some());
     let r_half = f_row.unwrap().counterparty.expect("counterparty half stored");
-    let disc = crate::app::disclosures::load(&fix.host, &r_half.record_id).await.unwrap().unwrap();
+    let disc = disclosures::load(&fix.host, &r_half.record_id).await.unwrap().unwrap();
     let env_parsed = Envelope::from_json(&r_half.envelope).unwrap();
     let parsed: FulfilmentReceiptPayload = serde_json::from_value(env_parsed.payload).unwrap();
-    let revealed: syneroym_roym_core::fulfilment::FulfilmentHidden =
-        syneroym_roym_core::disclosure::reveal_hidden_strict(
-            &parsed.sd,
-            &syneroym_roym_core::disclosure::FULFILMENT_SET,
-            &disc,
-        )
-        .expect("reveal fulfilment");
+    let revealed: FulfilmentHidden =
+        reveal_hidden_strict(&parsed.sd, &FULFILMENT_SET, &disc).expect("reveal fulfilment");
     assert_eq!(revealed.settlement_note.map(|n| n.text), Some(note_text.to_string()));
 
     // Progress snapshot advances to Fulfilled and Closed
@@ -557,7 +549,7 @@ fn sign_bad_fulfilment_env(
         role,
         settlement_note: None,
     };
-    let (payload, disclosures) = syneroym_roym_core::testing::sd::conceal_fulfilment(plain, 1);
+    let (payload, disclosures) = conceal_fulfilment(plain, 1);
     let draft = RecordDraft {
         version: FULFILMENT_RECEIPT_VERSION,
         record_type: RECORD_FULFILMENT_RECEIPT.to_string(),

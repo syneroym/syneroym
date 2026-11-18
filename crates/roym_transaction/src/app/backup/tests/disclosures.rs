@@ -9,10 +9,11 @@ use syneroym_roym_core::{
     },
     conversation::Direction,
     deal::{Commitment, CommitmentKind, DealTerms, LocalText, ResourceKind},
-    disclosure::Salt,
+    disclosure::{Salt, encode_disclosure},
     lang::LangTag,
     method::NoParams,
     record::{Envelope, RECORD_AGREEMENT_RECEIPT, RecordDraft},
+    signing,
     transaction::{
         AGREEMENT_RECEIPT_VERSION, AgreementReceiptPayload, Answers, DealRole, QUOTE_VERSION,
         QuotePayload, ReceiptHalf, derive_quote_id,
@@ -276,7 +277,7 @@ async fn import_rebuilds_card_data_from_disclosures() {
     );
 
     let mut bundle = Bundle::new(f1.master_did.clone(), SCHEMA_VERSION, sections).unwrap();
-    syneroym_roym_core::signing::sign_bundle(&f1.host, &mut bundle, now).await.unwrap();
+    signing::sign_bundle(&f1.host, &mut bundle, now).await.unwrap();
 
     let f2 = fixture_with_master(Arc::clone(&f1.master));
     let res = backup::import(&f2.host, ImportInput { bundle }).await.unwrap();
@@ -329,12 +330,8 @@ async fn import_refuses_disclosures_that_match_no_digest() {
     );
 
     let salt = Salt::from_bytes([0x42; 16]);
-    let bogus_disclosure = syneroym_roym_core::disclosure::encode_disclosure(
-        &salt,
-        "bogus_field",
-        &json!("bogus_value"),
-    )
-    .expect("encode disclosure");
+    let bogus_disclosure =
+        encode_disclosure(&salt, "bogus_field", &json!("bogus_value")).expect("encode disclosure");
     let disc_row = DisclosureRow {
         record_id: q_rec_id.clone(),
         record_type: "quote".to_string(),
@@ -347,7 +344,7 @@ async fn import_refuses_disclosures_that_match_no_digest() {
     );
 
     let mut bundle = Bundle::new(f1.master_did.clone(), SCHEMA_VERSION, sections).unwrap();
-    syneroym_roym_core::signing::sign_bundle(&f1.host, &mut bundle, now).await.unwrap();
+    signing::sign_bundle(&f1.host, &mut bundle, now).await.unwrap();
 
     let f2 = fixture_with_master(Arc::clone(&f1.master));
     let res = backup::import(&f2.host, ImportInput { bundle }).await;
@@ -442,7 +439,7 @@ async fn import_refuses_agreement_terms_that_differ_from_the_quote() {
     );
 
     let mut bundle = Bundle::new(f1.master_did.clone(), SCHEMA_VERSION, sections).unwrap();
-    syneroym_roym_core::signing::sign_bundle(&f1.host, &mut bundle, now).await.unwrap();
+    signing::sign_bundle(&f1.host, &mut bundle, now).await.unwrap();
 
     let f2 = fixture_with_master(Arc::clone(&f1.master));
     let res = backup::import(&f2.host, ImportInput { bundle }).await;

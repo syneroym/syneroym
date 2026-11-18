@@ -2,6 +2,8 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+use crate::envelope;
+
 #[cfg(test)]
 mod tests;
 
@@ -75,7 +77,7 @@ pub fn encode_disclosure(
     name: &str,
     value: &Value,
 ) -> Result<String, DisclosureError> {
-    crate::envelope::walk_integers(value, 1, "").map_err(|_| DisclosureError::NonIntegerNumber)?;
+    envelope::walk_integers(value, 1, "").map_err(|_| DisclosureError::NonIntegerNumber)?;
     let tuple = (salt.encoded(), name, value);
     let json = serde_json::to_string(&tuple).map_err(|_| DisclosureError::NotJson)?;
     Ok(URL_SAFE_NO_PAD.encode(json.as_bytes()))
@@ -135,7 +137,7 @@ pub fn decode_disclosure(disclosure: &str) -> Result<DecodedDisclosure, Disclosu
         _ => return Err(DisclosureError::NameNotString),
     };
 
-    crate::envelope::walk_integers(&value, 1, "").map_err(|_| DisclosureError::NonIntegerNumber)?;
+    envelope::walk_integers(&value, 1, "").map_err(|_| DisclosureError::NonIntegerNumber)?;
 
     let digest = disclosure_digest(disclosure);
     Ok(DecodedDisclosure { salt, name, value, digest })

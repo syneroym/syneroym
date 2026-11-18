@@ -2,7 +2,7 @@ use serde_json::json;
 use syneroym_identity::{Identity, substrate};
 use syneroym_roym_core::{
     clock,
-    record::{Envelope, RecordDraft},
+    record::{Envelope, RECORD_QUOTE, RecordDraft},
     transaction::{ReceiptHalf, verify_quote},
 };
 
@@ -10,7 +10,7 @@ use super::helpers::{build_and_sign_enquiry, build_and_sign_quote, sample_terms_
 use crate::app::{
     AGREEMENTS, AgreementRow, ENQUIRY_HISTORY, LEDGER,
     agreement_ops::{self, AgreementAcceptInput},
-    decline_ops, put_bytes, put_row,
+    decline_ops, disclosures, put_bytes, put_row,
     quote_ops::{self, QuoteSetInput, store_received_quote},
     tests::fixture,
 };
@@ -30,15 +30,7 @@ async fn accepting_a_superseded_version_is_refused() {
     store_received_quote(&fix.host, &env_q1, &v_q1, &pay_q1.signed, now, &counterparty_did)
         .await
         .expect("store quote v1");
-    crate::app::disclosures::store(
-        &fix.host,
-        &rec_q1,
-        syneroym_roym_core::record::RECORD_QUOTE,
-        &pay_q1.disclosures,
-        now,
-    )
-    .await
-    .unwrap();
+    disclosures::store(&fix.host, &rec_q1, RECORD_QUOTE, &pay_q1.disclosures, now).await.unwrap();
 
     // Author creates quote v2 superseding v1 (same quote_id sequence 1)
     let (pay_q2, rec_q2, env_q2) = build_and_sign_quote(
@@ -54,15 +46,9 @@ async fn accepting_a_superseded_version_is_refused() {
     store_received_quote(&fix.host, &env_q2, &v_q2, &pay_q2.signed, now + 10, &counterparty_did)
         .await
         .expect("store quote v2");
-    crate::app::disclosures::store(
-        &fix.host,
-        &rec_q2,
-        syneroym_roym_core::record::RECORD_QUOTE,
-        &pay_q2.disclosures,
-        now + 10,
-    )
-    .await
-    .unwrap();
+    disclosures::store(&fix.host, &rec_q2, RECORD_QUOTE, &pay_q2.disclosures, now + 10)
+        .await
+        .unwrap();
 
     // Counterparty tries to accept superseded v1
     let accept_v1_err = agreement_ops::accept_at(

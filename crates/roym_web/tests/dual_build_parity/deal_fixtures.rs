@@ -1,7 +1,16 @@
 use serde_json::{Value, json};
 use syneroym_data_db::host_store::RecordWriteValue;
-use syneroym_roym_core::transaction;
-use syneroym_signed_record::Envelope;
+use syneroym_roym_core::{
+    card,
+    deal::{self, Answers, DealTerms, SettlementRole},
+    fulfilment, payment, progress, record,
+    testing::sd::{
+        PlainFulfilment, PlainPaymentAck, PlainQuote, conceal_fulfilment, conceal_payment_ack,
+        conceal_quote,
+    },
+    transaction,
+};
+use syneroym_signed_record::{Envelope, RecordDraft};
 
 use super::{fixtures::*, helpers::*};
 
@@ -214,10 +223,9 @@ pub(crate) fn inbound_card_with_disclosures(
     envelope: &str,
     disclosures: &[String],
 ) -> syneroym_rpc::ConversationMessage {
-    let body =
-        syneroym_roym_core::card::card_body(card_type, version, envelope, disclosures).unwrap();
+    let body = card::card_body(card_type, version, envelope, disclosures).unwrap();
     let mut msg = inbound(id, conversation, author, ts, &body);
-    msg.content_type = syneroym_roym_core::card::CARD_CONTENT_TYPE.to_string();
+    msg.content_type = card::CARD_CONTENT_TYPE.to_string();
     msg
 }
 
@@ -279,25 +287,23 @@ pub(crate) fn peer_signed_quote_with(
     terms_val["quote_expires_at_secs"] = json!(exp_secs);
     if let Some(arr) = terms_val["commitments"].as_array_mut() {
         for (i, c) in arr.iter_mut().enumerate() {
-            c["commitment_id"] = json!(syneroym_roym_core::deal::commitment_id(i));
+            c["commitment_id"] = json!(deal::commitment_id(i));
         }
     }
-    let terms: syneroym_roym_core::deal::DealTerms = serde_json::from_value(terms_val).unwrap();
-    let plain = syneroym_roym_core::testing::sd::PlainQuote {
+    let terms: DealTerms = serde_json::from_value(terms_val).unwrap();
+    let plain = PlainQuote {
         quote_id: quote_id.clone(),
         conversation: conv.to_string(),
         sequence: seq,
-        answers: syneroym_roym_core::deal::Answers::Enquiry {
-            record_id: req_record_id.to_string(),
-        },
+        answers: Answers::Enquiry { record_id: req_record_id.to_string() },
         counterparty_did: counterparty_did.to_string(),
         terms,
     };
-    let (payload, disclosures) = syneroym_roym_core::testing::sd::conceal_quote(plain, seq as u64);
+    let (payload, disclosures) = conceal_quote(plain, seq as u64);
     let payload_val = serde_json::to_value(&payload).unwrap();
     let peer = peer_identity();
     let issuer = peer_did();
-    let draft = syneroym_signed_record::RecordDraft {
+    let draft = RecordDraft {
         version: transaction::QUOTE_VERSION,
         record_type: transaction::RECORD_QUOTE.to_string(),
         subject: quote_id,
@@ -327,12 +333,9 @@ pub(crate) fn peer_signed_payment_ack(
     supersedes: Option<String>,
     issued_at: u64,
 ) -> (String, String, Vec<String>) {
-    let settlement_role = if role == "giver" {
-        syneroym_roym_core::deal::SettlementRole::Giver
-    } else {
-        syneroym_roym_core::deal::SettlementRole::Receiver
-    };
-    let plain = syneroym_roym_core::testing::sd::PlainPaymentAck {
+    let settlement_role =
+        if role == "giver" { SettlementRole::Giver } else { SettlementRole::Receiver };
+    let plain = PlainPaymentAck {
         agreement: agreement.to_string(),
         conversation: conv.to_string(),
         commitment_id: commitment_id.to_string(),
@@ -344,10 +347,10 @@ pub(crate) fn peer_signed_payment_ack(
         reference: reference.map(String::from),
         settlement_note: None,
     };
-    let (payload, disclosures) = syneroym_roym_core::testing::sd::conceal_payment_ack(plain, 1);
-    let draft = syneroym_signed_record::RecordDraft {
-        version: syneroym_roym_core::payment::PAYMENT_ACKNOWLEDGEMENT_VERSION,
-        record_type: syneroym_roym_core::record::RECORD_PAYMENT_ACKNOWLEDGEMENT.to_string(),
+    let (payload, disclosures) = conceal_payment_ack(plain, 1);
+    let draft = RecordDraft {
+        version: payment::PAYMENT_ACKNOWLEDGEMENT_VERSION,
+        record_type: record::RECORD_PAYMENT_ACKNOWLEDGEMENT.to_string(),
         subject: agreement.to_string(),
         payload: serde_json::to_value(&payload).unwrap(),
         expires_at_secs: None,
@@ -367,12 +370,9 @@ pub(crate) fn peer_signed_fulfilment(
     commitment_id: &str,
     issued_at: u64,
 ) -> (String, String, Vec<String>) {
-    let settlement_role = if role == "giver" {
-        syneroym_roym_core::deal::SettlementRole::Giver
-    } else {
-        syneroym_roym_core::deal::SettlementRole::Receiver
-    };
-    let plain = syneroym_roym_core::testing::sd::PlainFulfilment {
+    let settlement_role =
+        if role == "giver" { SettlementRole::Giver } else { SettlementRole::Receiver };
+    let plain = PlainFulfilment {
         agreement: agreement.to_string(),
         conversation: conv.to_string(),
         commitment_id: commitment_id.to_string(),
@@ -381,10 +381,10 @@ pub(crate) fn peer_signed_fulfilment(
         role: settlement_role,
         settlement_note: None,
     };
-    let (payload, disclosures) = syneroym_roym_core::testing::sd::conceal_fulfilment(plain, 1);
-    let draft = syneroym_signed_record::RecordDraft {
-        version: syneroym_roym_core::fulfilment::FULFILMENT_RECEIPT_VERSION,
-        record_type: syneroym_roym_core::record::RECORD_FULFILMENT_RECEIPT.to_string(),
+    let (payload, disclosures) = conceal_fulfilment(plain, 1);
+    let draft = RecordDraft {
+        version: fulfilment::FULFILMENT_RECEIPT_VERSION,
+        record_type: record::RECORD_FULFILMENT_RECEIPT.to_string(),
         subject: agreement.to_string(),
         payload: serde_json::to_value(&payload).unwrap(),
         expires_at_secs: None,
@@ -471,8 +471,8 @@ pub(crate) fn peer_signed_progress(
         "commitments": commitments,
     });
     let draft = syneroym_signed_record::RecordDraft {
-        version: syneroym_roym_core::progress::AGREEMENT_PROGRESS_VERSION,
-        record_type: syneroym_roym_core::record::RECORD_AGREEMENT_PROGRESS.to_string(),
+        version: progress::AGREEMENT_PROGRESS_VERSION,
+        record_type: record::RECORD_AGREEMENT_PROGRESS.to_string(),
         subject: agreement.to_string(),
         payload,
         expires_at_secs: None,

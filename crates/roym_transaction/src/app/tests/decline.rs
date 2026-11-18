@@ -22,7 +22,7 @@ use crate::app::{
     AGREEMENTS, AgreementRow, CARDS, CardRow, ENQUIRIES, ENQUIRY_HISTORY, LEDGER, QUOTE_HISTORY,
     QUOTES, RecordPointerRow,
     decline_ops::{self, DealDeclineInput},
-    get_row, put_bytes, put_row,
+    disclosures, get_row, put_bytes, put_row,
     sync::{self, SyncInput},
     tests::{TestFixture, fixture},
 };
@@ -172,7 +172,7 @@ async fn repeated_decline_returns_the_same_record() {
     // f is counterparty
     let (q_json, q_rec_id, quote, _terms, disc) = make_quote_envelope(&author, &f.master_did, now);
     put_bytes(&f.host, QUOTE_HISTORY, &q_rec_id, q_json.as_bytes()).await.unwrap();
-    crate::app::disclosures::store(&f.host, &q_rec_id, RECORD_QUOTE, &disc, now).await.unwrap();
+    disclosures::store(&f.host, &q_rec_id, RECORD_QUOTE, &disc, now).await.unwrap();
 
     let ptr = RecordPointerRow {
         envelope: q_json,
@@ -228,7 +228,7 @@ async fn decline_with_hindi_lang() {
     let cp = Identity::generate().expect("cp");
     let (q_json, q_rec_id, quote, _terms, disc) = make_quote_envelope(&cp, &f.master_did, now);
     put_bytes(&f.host, QUOTE_HISTORY, &q_rec_id, q_json.as_bytes()).await.unwrap();
-    crate::app::disclosures::store(&f.host, &q_rec_id, RECORD_QUOTE, &disc, now).await.unwrap();
+    disclosures::store(&f.host, &q_rec_id, RECORD_QUOTE, &disc, now).await.unwrap();
 
     let ptr = RecordPointerRow {
         envelope: q_json,
@@ -293,7 +293,7 @@ async fn decline_resends_if_message_id_is_empty() {
     let cp = Identity::generate().expect("cp");
     let (q_json, q_rec_id, quote, _terms, disc) = make_quote_envelope(&cp, &f.master_did, now);
     put_bytes(&f.host, QUOTE_HISTORY, &q_rec_id, q_json.as_bytes()).await.unwrap();
-    crate::app::disclosures::store(&f.host, &q_rec_id, RECORD_QUOTE, &disc, now).await.unwrap();
+    disclosures::store(&f.host, &q_rec_id, RECORD_QUOTE, &disc, now).await.unwrap();
 
     let ptr = RecordPointerRow {
         envelope: q_json,
@@ -384,7 +384,7 @@ async fn cannot_decline_enquiry_with_accepted_quote() {
     let cp_did = substrate::derive_did_key(&cp.public_key());
     let (q_json, q_rec_id, quote, terms, disc) = make_quote_envelope(&f.master, &cp_did, now);
     put_bytes(&f.host, QUOTE_HISTORY, &q_rec_id, q_json.as_bytes()).await.unwrap();
-    crate::app::disclosures::store(&f.host, &q_rec_id, RECORD_QUOTE, &disc, now).await.unwrap();
+    disclosures::store(&f.host, &q_rec_id, RECORD_QUOTE, &disc, now).await.unwrap();
 
     let q_ptr = RecordPointerRow {
         envelope: q_json,
@@ -469,12 +469,12 @@ async fn counterparty_can_decline_quote_v2_after_v1_refused() {
         make_quote_envelope(&cp, &f.master_did, now);
     let quote_id = q1_payload.quote_id.clone();
     put_bytes(&f.host, QUOTE_HISTORY, &q1_rec_id, q1_json.as_bytes()).await.unwrap();
-    crate::app::disclosures::store(&f.host, &q1_rec_id, RECORD_QUOTE, &q1_disc, now).await.unwrap();
+    disclosures::store(&f.host, &q1_rec_id, RECORD_QUOTE, &q1_disc, now).await.unwrap();
 
     let (mut env2, bytes2) = Envelope::unsigned(
         RecordDraft {
             version: QUOTE_VERSION,
-            record_type: syneroym_roym_core::record::RECORD_QUOTE.to_string(),
+            record_type: RECORD_QUOTE.to_string(),
             subject: quote_id.clone(),
             payload: serde_json::to_value(&q1_payload).unwrap(),
             expires_at_secs: Some(now + 3600),
@@ -490,9 +490,7 @@ async fn counterparty_can_decline_quote_v2_after_v1_refused() {
     let q2_rec_id = env2.record_id().unwrap();
     let q2_json = env2.to_json().unwrap();
     put_bytes(&f.host, QUOTE_HISTORY, &q2_rec_id, q2_json.as_bytes()).await.unwrap();
-    crate::app::disclosures::store(&f.host, &q2_rec_id, RECORD_QUOTE, &q1_disc, now + 10)
-        .await
-        .unwrap();
+    disclosures::store(&f.host, &q2_rec_id, RECORD_QUOTE, &q1_disc, now + 10).await.unwrap();
 
     let ptr2 = RecordPointerRow {
         envelope: q2_json,

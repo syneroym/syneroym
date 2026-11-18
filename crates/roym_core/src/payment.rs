@@ -6,6 +6,7 @@ use thiserror::Error;
 
 use crate::{
     deal::{Commitment, LocalText, SettlementRole},
+    disclosure::check_sd_shape,
     lang::TranslationError,
     listing::{self, MAX_PAYMENT_METHOD_LEN},
     person,
@@ -78,8 +79,7 @@ impl PaymentRequestPayload {
         if self.commitment_id.is_empty() {
             return Err(PaymentError::CommitmentIdEmpty);
         }
-        crate::disclosure::check_sd_shape(&self.sd, 1, "payment-request")
-            .map_err(PaymentError::SdShape)?;
+        check_sd_shape(&self.sd, 1, "payment-request").map_err(PaymentError::SdShape)?;
         Ok(())
     }
 }
@@ -137,8 +137,7 @@ impl PaymentAcknowledgementPayload {
         if self.observed_at_secs == 0 {
             return Err(PaymentError::ZeroObservedTime);
         }
-        crate::disclosure::check_sd_shape(&self.sd, 3, "payment-acknowledgement")
-            .map_err(PaymentError::SdShape)?;
+        check_sd_shape(&self.sd, 3, "payment-acknowledgement").map_err(PaymentError::SdShape)?;
         Ok(())
     }
 }

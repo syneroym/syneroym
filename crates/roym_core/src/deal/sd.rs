@@ -11,8 +11,8 @@ use crate::{
     },
     disclosure::{
         COMMITMENT_SET, DisclosureIndex, FieldPath, MAX_DETAILS_DISCLOSURE_BYTES,
-        MAX_RECORD_DISCLOSURE_BYTES, SdError, TERMS_SET, check_all_used, conceal_object,
-        reveal_object,
+        MAX_RECORD_DISCLOSURE_BYTES, SdError, TERMS_SET, check_all_used, check_sd_shape,
+        conceal_object, reveal_object,
     },
     listing, money,
     transaction::DealRole,
@@ -337,7 +337,7 @@ impl SignedTerms {
 }
 
 fn validate_sd_list(sd: &[String], expected_len: usize, context: &str) -> Result<(), DealError> {
-    crate::disclosure::check_sd_shape(sd, expected_len, context).map_err(DealError::SdShape)
+    check_sd_shape(sd, expected_len, context).map_err(DealError::SdShape)
 }
 
 /// Strict reveal for filing: builds index, checks salts, checks limits,

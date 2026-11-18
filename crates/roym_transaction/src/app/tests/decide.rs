@@ -24,6 +24,7 @@ use crate::app::{
         snapshot_id,
     },
     disclosures::HeldQuote,
+    get_row,
     hold::{HoldLedgerRow, Reservations, SeatLedger, SeatLedgerRow, hold_id, seat_id},
     progress_ops,
 };
@@ -250,8 +251,7 @@ async fn writer_countersigns_in_sync_and_sends_snapshot_one() {
 
     // Verify countersign row
     let cs_key = countersign_id(&quote_rec_id);
-    let cs: Option<CountersignRow> =
-        crate::app::get_row(&f.host, LEDGER, &cs_key).await.expect("get cs");
+    let cs: Option<CountersignRow> = get_row(&f.host, LEDGER, &cs_key).await.expect("get cs");
     assert!(cs.is_some(), "countersign row must exist");
     let cs = cs.unwrap();
     assert_eq!(cs.agreement, quote_rec_id);
@@ -259,7 +259,7 @@ async fn writer_countersigns_in_sync_and_sends_snapshot_one() {
     // Verify snapshot 1
     let snap_key = snapshot_id(&quote_rec_id, 1);
     let snap: Option<SnapshotRow> =
-        crate::app::get_row(&f.host, AGREEMENT_PROGRESS, &snap_key).await.expect("get snap");
+        get_row(&f.host, AGREEMENT_PROGRESS, &snap_key).await.expect("get snap");
     assert!(snap.is_some(), "snapshot 1 must exist");
     let snap = snap.unwrap();
     assert_eq!(snap.snapshot.state, AgreementState::Agreed);
@@ -267,8 +267,7 @@ async fn writer_countersigns_in_sync_and_sends_snapshot_one() {
 
     // Verify decision row
     let dec_key = decision_id(&quote.signed.quote_id);
-    let dec: Option<DecisionRow> =
-        crate::app::get_row(&f.host, LEDGER, &dec_key).await.expect("get dec");
+    let dec: Option<DecisionRow> = get_row(&f.host, LEDGER, &dec_key).await.expect("get dec");
     assert!(dec.is_some());
     assert_eq!(dec.unwrap().state, DecisionState::Agreed);
 
@@ -312,8 +311,7 @@ async fn losing_the_last_seat_ends_not_formed() {
 
     // Decision row is not-formed with reason slot-taken
     let dec_key = decision_id(&quote.signed.quote_id);
-    let dec: Option<DecisionRow> =
-        crate::app::get_row(&f.host, LEDGER, &dec_key).await.expect("get dec");
+    let dec: Option<DecisionRow> = get_row(&f.host, LEDGER, &dec_key).await.expect("get dec");
     assert!(dec.is_some());
     let dec = dec.unwrap();
     assert_eq!(dec.state, DecisionState::NotFormed);
@@ -321,8 +319,7 @@ async fn losing_the_last_seat_ends_not_formed() {
 
     // Snapshot 1 is not-formed
     let snap_key = snapshot_id(&quote_rec_id, 1);
-    let snap: Option<SnapshotRow> =
-        crate::app::get_row(&f.host, AGREEMENT_PROGRESS, &snap_key).await.unwrap();
+    let snap: Option<SnapshotRow> = get_row(&f.host, AGREEMENT_PROGRESS, &snap_key).await.unwrap();
     assert!(snap.is_some());
     let snap = snap.unwrap();
     assert_eq!(snap.snapshot.state, AgreementState::NotFormed);
@@ -386,8 +383,7 @@ async fn send_error_stops_decision_row_and_retries_on_next_sync() {
     assert_eq!(res2, Ok(false));
 
     let dec_key = decision_id(&quote.signed.quote_id);
-    let dec: Option<DecisionRow> =
-        crate::app::get_row(&f.host, LEDGER, &dec_key).await.expect("get dec");
+    let dec: Option<DecisionRow> = get_row(&f.host, LEDGER, &dec_key).await.expect("get dec");
     assert!(dec.is_some());
     assert_eq!(
         dec.unwrap().state,
@@ -406,19 +402,15 @@ async fn release_both_seat_and_hold_in_one_batch() {
     let h_key = hold_id("agr_batch", "c1");
     let s_key = seat_id("slot_batch", 1);
 
-    let h: Option<HoldLedgerRow> =
-        crate::app::get_row(&f.host, LEDGER, &h_key).await.expect("get hold");
-    let s: Option<SeatLedgerRow> =
-        crate::app::get_row(&f.host, LEDGER, &s_key).await.expect("get seat");
+    let h: Option<HoldLedgerRow> = get_row(&f.host, LEDGER, &h_key).await.expect("get hold");
+    let s: Option<SeatLedgerRow> = get_row(&f.host, LEDGER, &s_key).await.expect("get seat");
     assert!(h.is_some());
     assert!(s.is_some());
 
     SeatLedger.release(&f.host, "agr_batch", "c1").await.expect("release");
 
-    let h_after: Option<HoldLedgerRow> =
-        crate::app::get_row(&f.host, LEDGER, &h_key).await.expect("get hold");
-    let s_after: Option<SeatLedgerRow> =
-        crate::app::get_row(&f.host, LEDGER, &s_key).await.expect("get seat");
+    let h_after: Option<HoldLedgerRow> = get_row(&f.host, LEDGER, &h_key).await.expect("get hold");
+    let s_after: Option<SeatLedgerRow> = get_row(&f.host, LEDGER, &s_key).await.expect("get seat");
     assert!(h_after.is_none(), "hold row must be released");
     assert!(s_after.is_none(), "seat row must be released");
 }
@@ -468,8 +460,7 @@ async fn repeat_past_expiry_without_countersign_leaves_row_deciding() {
     assert_eq!(res, Ok(false));
 
     // Decision row remains deciding
-    let dec_after: Option<DecisionRow> =
-        crate::app::get_row(&f.host, LEDGER, &dec_key).await.expect("get dec");
+    let dec_after: Option<DecisionRow> = get_row(&f.host, LEDGER, &dec_key).await.expect("get dec");
     assert!(dec_after.is_some());
     assert_eq!(dec_after.unwrap().state, DecisionState::Deciding);
 }
@@ -604,9 +595,7 @@ async fn transition_retries_and_advances_when_snapshot_key_already_exists() {
 
     assert_eq!(updated.seq, Some(3));
     let snap3: Option<SnapshotRow> =
-        crate::app::get_row(&f.host, AGREEMENT_PROGRESS, &snapshot_id(&quote_rec_id, 3))
-            .await
-            .unwrap();
+        get_row(&f.host, AGREEMENT_PROGRESS, &snapshot_id(&quote_rec_id, 3)).await.unwrap();
     assert!(snap3.is_some(), "snapshot 3 must be stored");
 }
 
@@ -635,8 +624,7 @@ async fn repeat_after_the_agreement_moved_keeps_its_state() {
     let res = decide::run(&f.host, &mut row, &quote, now).await.expect("repeat decide");
     assert!(res);
 
-    let stored: Option<AgreementRow> =
-        crate::app::get_row(&f.host, AGREEMENTS, &quote_rec_id).await.unwrap();
+    let stored: Option<AgreementRow> = get_row(&f.host, AGREEMENTS, &quote_rec_id).await.unwrap();
     let agr = stored.expect("agreement exists");
     assert_eq!(agr.state, Some(AgreementState::Cancelled));
     assert_eq!(agr.seq, Some(2));
@@ -662,15 +650,14 @@ async fn crash_before_the_decision_row_is_final_is_finished_on_the_next_sync() {
         decide::run(&f.host, &mut row, &quote, now).await.expect("next sync finishes decision");
     assert!(res);
 
-    let stored: Option<AgreementRow> =
-        crate::app::get_row(&f.host, AGREEMENTS, &quote_rec_id).await.unwrap();
+    let stored: Option<AgreementRow> = get_row(&f.host, AGREEMENTS, &quote_rec_id).await.unwrap();
     let agr = stored.expect("agreement must be stored");
     assert_eq!(agr.state, Some(AgreementState::Agreed));
     assert_eq!(agr.seq, Some(1));
     assert!(agr.quote_author.is_some());
 
     let dec: Option<DecisionRow> =
-        crate::app::get_row(&f.host, LEDGER, &decision_id(&quote.signed.quote_id)).await.unwrap();
+        get_row(&f.host, LEDGER, &decision_id(&quote.signed.quote_id)).await.unwrap();
     assert_eq!(dec.expect("decision row exists").state, DecisionState::Agreed);
 }
 
@@ -704,8 +691,7 @@ async fn cancel_before_the_decision_row_is_final_is_kept() {
     let res = decide::run(&f.host, &mut row, &quote, now).await.expect("repeat decide");
     assert!(res);
 
-    let stored: Option<AgreementRow> =
-        crate::app::get_row(&f.host, AGREEMENTS, &quote_rec_id).await.unwrap();
+    let stored: Option<AgreementRow> = get_row(&f.host, AGREEMENTS, &quote_rec_id).await.unwrap();
     let agr = stored.expect("agreement exists");
     assert_eq!(agr.state, Some(AgreementState::Cancelled));
     assert_eq!(agr.seq, Some(2));
@@ -713,6 +699,6 @@ async fn cancel_before_the_decision_row_is_final_is_kept() {
     assert!(agr.agreed_at_secs.is_some());
 
     let dec_key = decision_id(&quote.signed.quote_id);
-    let dec: Option<DecisionRow> = crate::app::get_row(&f.host, LEDGER, &dec_key).await.unwrap();
+    let dec: Option<DecisionRow> = get_row(&f.host, LEDGER, &dec_key).await.unwrap();
     assert_eq!(dec.expect("decision exists").state, DecisionState::Agreed);
 }

@@ -9,7 +9,10 @@ use syneroym_roym_core::{
     fulfilment::FULFILMENT_RECEIPT_VERSION,
     lang::LangTag,
     progress::{self as core_progress, AgreementProgressPayload, AgreementState},
-    record::{Envelope, RECORD_AGREEMENT_RECEIPT, RECORD_FULFILMENT_RECEIPT, RecordDraft},
+    record::{
+        Envelope, RECORD_AGREEMENT_RECEIPT, RECORD_FULFILMENT_RECEIPT, RECORD_QUOTE, RecordDraft,
+    },
+    testing::sd::{PlainFulfilment, PlainQuote, conceal_fulfilment, conceal_quote},
     transaction::{
         AGREEMENT_RECEIPT_VERSION, AgreementReceiptPayload, Answers, DealRole, ReceiptHalf,
         SignedTerms, TimeWindow, derive_quote_id,
@@ -20,7 +23,7 @@ use super::{TestFixture, fixture};
 use crate::app::{
     AGREEMENT_PROGRESS, AGREEMENTS, AgreementRef, AgreementRow, FULFILMENTS, FulfilmentsRow,
     decide::{SnapshotRow, snapshot_id},
-    ensure_collections,
+    disclosures, ensure_collections,
     fulfilment_ops::{self, FulfilmentSignInput, fulfilment_id},
     get_row, progress, progress_ops, put_row, sync,
 };
@@ -150,7 +153,7 @@ async fn setup_agreed_deal(
         quote_expires_at_secs: agreed_at + 3600,
     };
 
-    let plain = syneroym_roym_core::testing::sd::PlainQuote {
+    let plain = PlainQuote {
         quote_id: quote_id.clone(),
         conversation: "conv_1".to_string(),
         sequence: 1,
@@ -158,16 +161,10 @@ async fn setup_agreed_deal(
         counterparty_did: counterparty_did.clone(),
         terms: terms.clone(),
     };
-    let (payload, disclosures) = syneroym_roym_core::testing::sd::conceal_quote(plain, 1);
-    crate::app::disclosures::store(
-        &fix.host,
-        &quote_record_id,
-        syneroym_roym_core::record::RECORD_QUOTE,
-        &disclosures,
-        agreed_at,
-    )
-    .await
-    .unwrap();
+    let (payload, disclosures) = conceal_quote(plain, 1);
+    disclosures::store(&fix.host, &quote_record_id, RECORD_QUOTE, &disclosures, agreed_at)
+        .await
+        .unwrap();
 
     let author_half = make_receipt_half(
         &fix.master,
@@ -365,7 +362,7 @@ async fn a_late_half_after_the_end_is_kept_and_changes_nothing() {
     // Counterparty (receiver) signs a fulfilment receipt late (after the agreement
     // is closed)
     let late_now = tick_after + 500;
-    let plain_fulfilment = syneroym_roym_core::testing::sd::PlainFulfilment {
+    let plain_fulfilment = PlainFulfilment {
         agreement: agreement.clone(),
         conversation: "conv_1".to_string(),
         commitment_id: "c1".to_string(),
@@ -374,8 +371,7 @@ async fn a_late_half_after_the_end_is_kept_and_changes_nothing() {
         role: SettlementRole::Receiver,
         settlement_note: None,
     };
-    let (half_payload, half_disclosures) =
-        syneroym_roym_core::testing::sd::conceal_fulfilment(plain_fulfilment, 1);
+    let (half_payload, half_disclosures) = conceal_fulfilment(plain_fulfilment, 1);
 
     let draft = RecordDraft {
         version: FULFILMENT_RECEIPT_VERSION,

@@ -16,7 +16,9 @@ use syneroym_roym_core::{
         AGREEMENT_PROGRESS_VERSION, AgreementProgressPayload, AgreementState, CancelReason,
         CommitmentProgress,
     },
-    record::{Envelope, RECORD_AGREEMENT_PROGRESS, RECORD_AGREEMENT_RECEIPT, RecordDraft},
+    record::{
+        Envelope, RECORD_AGREEMENT_PROGRESS, RECORD_AGREEMENT_RECEIPT, RECORD_QUOTE, RecordDraft,
+    },
     transaction::{
         AGREEMENT_RECEIPT_VERSION, AgreementReceiptPayload, Answers, DealRole, QUOTE_VERSION,
         QuotePayload, ReceiptHalf, SignedTerms, TimeWindow, derive_quote_id,
@@ -29,7 +31,7 @@ use crate::app::{
         CountersignRow, DecisionRow, DecisionState, SnapshotRow, countersign_id, decision_id,
         recover_deciding_rows, snapshot_id,
     },
-    get_row, put_bytes, put_row,
+    disclosures, get_row, put_bytes, put_row,
     sync::{self, SyncInput},
     tests::{TestFixture, fixture},
 };
@@ -107,15 +109,7 @@ async fn build_test_quote(
     let q_json = env.to_json().expect("json");
 
     put_bytes(&f.host, QUOTE_HISTORY, &rec_id, q_json.as_bytes()).await.unwrap();
-    crate::app::disclosures::store(
-        &f.host,
-        &rec_id,
-        syneroym_roym_core::record::RECORD_QUOTE,
-        &disclosures,
-        now,
-    )
-    .await
-    .unwrap();
+    disclosures::store(&f.host, &rec_id, RECORD_QUOTE, &disclosures, now).await.unwrap();
 
     (payload, rec_id, q_json, terms)
 }

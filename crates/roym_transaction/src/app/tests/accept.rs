@@ -18,7 +18,7 @@ use super::fixture;
 use crate::app::{
     AGREEMENTS, AgreementRow, CARDS, CardRow, LEDGER,
     agreement_ops::{self, AgreementAcceptInput, QuoteRecordInput},
-    disclosures::HeldQuote,
+    disclosures::{self, HeldQuote},
     get_row,
     hold::{HoldLedgerRow, SeatLedgerRow, hold_id, seat_id},
     quote_ops::store_received_quote,
@@ -221,7 +221,7 @@ async fn authors_own_accept_is_refused() {
     store_received_quote(&f.host, &envelope_json, &verdict, &quote.signed, now, &f.master_did)
         .await
         .expect("store quote");
-    crate::app::disclosures::store(&f.host, &record_id, RECORD_QUOTE, &quote.disclosures, now)
+    disclosures::store(&f.host, &record_id, RECORD_QUOTE, &quote.disclosures, now)
         .await
         .expect("store disclosures");
 
@@ -248,7 +248,7 @@ async fn repeated_accept_returns_the_same_half() {
     store_received_quote(&f.host, &envelope_json, &verdict, &quote.signed, now, &f.master_did)
         .await
         .expect("store quote");
-    crate::app::disclosures::store(&f.host, &record_id, RECORD_QUOTE, &quote.disclosures, now)
+    disclosures::store(&f.host, &record_id, RECORD_QUOTE, &quote.disclosures, now)
         .await
         .expect("store disclosures");
 
@@ -293,7 +293,7 @@ async fn counterparty_holds_its_own_seat_before_signing() {
     store_received_quote(&f.host, &envelope_json, &verdict, &quote.signed, now, &f.master_did)
         .await
         .expect("store quote");
-    crate::app::disclosures::store(&f.host, &record_id, RECORD_QUOTE, &quote.disclosures, now)
+    disclosures::store(&f.host, &record_id, RECORD_QUOTE, &quote.disclosures, now)
         .await
         .expect("store disclosures");
 
@@ -344,7 +344,7 @@ async fn taken_seat_answers_reserve_failed_and_signs_nothing() {
     store_received_quote(&f.host, &envelope_json, &verdict, &quote.signed, now, &f.master_did)
         .await
         .expect("store quote");
-    crate::app::disclosures::store(&f.host, &record_id, RECORD_QUOTE, &quote.disclosures, now)
+    disclosures::store(&f.host, &record_id, RECORD_QUOTE, &quote.disclosures, now)
         .await
         .expect("store disclosures");
 
@@ -386,7 +386,7 @@ async fn counterparty_releases_holds_on_not_formed_and_expiry() {
     store_received_quote(&f.host, &env1, &v1, &quote1.signed, now, &f.master_did)
         .await
         .expect("store quote 1");
-    crate::app::disclosures::store(&f.host, &rec_id1, RECORD_QUOTE, &quote1.disclosures, now)
+    disclosures::store(&f.host, &rec_id1, RECORD_QUOTE, &quote1.disclosures, now)
         .await
         .expect("store disclosures 1");
 
@@ -437,7 +437,7 @@ async fn counterparty_releases_holds_on_not_formed_and_expiry() {
     store_received_quote(&f.host, &env2, &v2, &quote2.signed, now, &f.master_did)
         .await
         .expect("store quote 2");
-    crate::app::disclosures::store(&f.host, &rec_id2, RECORD_QUOTE, &quote2.disclosures, now)
+    disclosures::store(&f.host, &rec_id2, RECORD_QUOTE, &quote2.disclosures, now)
         .await
         .expect("store disclosures 2");
 
@@ -473,7 +473,7 @@ async fn file_repeated_card_stores_repeat_true() {
     store_received_quote(&f.host, &env, &v, &quote.signed, now, &f.master_did)
         .await
         .expect("store quote");
-    crate::app::disclosures::store(&f.host, &rec_id, RECORD_QUOTE, &quote.disclosures, now)
+    disclosures::store(&f.host, &rec_id, RECORD_QUOTE, &quote.disclosures, now)
         .await
         .expect("store disclosures");
 
@@ -617,15 +617,9 @@ async fn counterparty_files_author_countersigned_half_delivered_after_expiry() {
     store_received_quote(&f.host, &q_env, &v, &quote_payload.signed, now, &f.master_did)
         .await
         .expect("store quote");
-    crate::app::disclosures::store(
-        &f.host,
-        &q_rec_id,
-        RECORD_QUOTE,
-        &quote_payload.disclosures,
-        now,
-    )
-    .await
-    .expect("store disclosures");
+    disclosures::store(&f.host, &q_rec_id, RECORD_QUOTE, &quote_payload.disclosures, now)
+        .await
+        .expect("store disclosures");
 
     // Counterparty accepts at now + 10 (before expiry)
     let acc_res = agreement_ops::accept_at(

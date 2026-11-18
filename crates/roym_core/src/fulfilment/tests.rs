@@ -2,10 +2,13 @@ use syneroym_identity::{Identity, substrate};
 use syneroym_signed_record::{Envelope, RecordDraft};
 
 use super::*;
-use crate::deal::SettlementRole;
+use crate::{
+    deal::SettlementRole,
+    testing::sd::{self, PlainFulfilment},
+};
 
 fn sample_receipt(role: SettlementRole) -> FulfilmentReceiptPayload {
-    let plain = crate::testing::sd::PlainFulfilment {
+    let plain = PlainFulfilment {
         agreement: "rec_quote123".to_string(),
         conversation: "conv_123".to_string(),
         commitment_id: "c1".to_string(),
@@ -14,7 +17,7 @@ fn sample_receipt(role: SettlementRole) -> FulfilmentReceiptPayload {
         role,
         settlement_note: None,
     };
-    crate::testing::sd::conceal_fulfilment(plain, 12).0
+    sd::conceal_fulfilment(plain, 12).0
 }
 
 #[test]

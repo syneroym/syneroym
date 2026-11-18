@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, HashMap};
 use serde_json::Value;
 use syneroym_app_host::{AppDataLayer, AppHost, types::data_layer::RecordWriteValue};
 use syneroym_roym_core::{
-    deal::{self, DealTerms},
+    deal::{DealTerms, sd},
     disclosure::{
         FULFILMENT_SET, PAYMENT_ACK_SET, PAYMENT_REQUEST_SET, decode_base64url, decode_disclosure,
         reveal_hidden_strict,
@@ -112,7 +112,7 @@ fn verify_record_disclosures(
         let signed = q_verdict.payload.ok_or_else(|| {
             Response::invalid_params(format!("quote '{record_id}' missing payload"))
         })?;
-        let terms = deal::sd::reveal_terms_strict(&signed.terms, disclosures).map_err(|e| {
+        let terms = sd::reveal_terms_strict(&signed.terms, disclosures).map_err(|e| {
             Response::invalid_params(format!(
                 "quote '{record_id}' disclosures do not strictly reveal: {e}"
             ))

@@ -11,15 +11,7 @@ async fn setup_quote_for_decline_filing(
     let (q_json, q_rec_id, quote, terms, disclosures) =
         make_quote_envelope(&f.master, &cp_did, now);
     put_bytes(&f.host, QUOTE_HISTORY, &q_rec_id, q_json.as_bytes()).await.unwrap();
-    crate::app::disclosures::store(
-        &f.host,
-        &q_rec_id,
-        syneroym_roym_core::record::RECORD_QUOTE,
-        &disclosures,
-        now,
-    )
-    .await
-    .unwrap();
+    disclosures::store(&f.host, &q_rec_id, RECORD_QUOTE, &disclosures, now).await.unwrap();
 
     let ptr = RecordPointerRow {
         envelope: q_json,

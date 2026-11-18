@@ -6,6 +6,7 @@ use thiserror::Error;
 
 use crate::{
     deal::{LocalText, SettlementRole},
+    disclosure::check_sd_shape,
     lang::TranslationError,
     listing, person,
     record::{self, RECORD_FULFILMENT_RECEIPT, VerifyOptions},
@@ -69,8 +70,7 @@ impl FulfilmentReceiptPayload {
         if self.commitment_id.is_empty() {
             return Err(FulfilmentError::CommitmentIdEmpty);
         }
-        crate::disclosure::check_sd_shape(&self.sd, 1, "fulfilment-receipt")
-            .map_err(FulfilmentError::SdShape)?;
+        check_sd_shape(&self.sd, 1, "fulfilment-receipt").map_err(FulfilmentError::SdShape)?;
         Ok(())
     }
 }

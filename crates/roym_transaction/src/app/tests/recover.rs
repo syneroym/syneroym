@@ -23,7 +23,7 @@ use crate::app::{
         self, CountersignRow, DecisionRow, DecisionState, RefusedRow, SnapshotRow, countersign_id,
         decision_id, refused_id, snapshot_id,
     },
-    disclosures::HeldQuote,
+    disclosures::{self, HeldQuote},
     get_row,
     hold::{HoldLedgerRow, Reservations, ReserveOutcome, SeatLedger, hold_id, seat_id},
     put_bytes, put_card, put_row,
@@ -176,9 +176,7 @@ async fn setup_test_deal_with_env(
     let (cp_half, _) = make_receipt(&cp, &f.master_did, &q_rec_id, &quote.signed.terms, now);
 
     put_bytes(&f.host, QUOTE_HISTORY, &q_rec_id, q_env_json.as_bytes()).await.unwrap();
-    crate::app::disclosures::store(&f.host, &q_rec_id, RECORD_QUOTE, &quote.disclosures, now)
-        .await
-        .unwrap();
+    disclosures::store(&f.host, &q_rec_id, RECORD_QUOTE, &quote.disclosures, now).await.unwrap();
 
     let row = AgreementRow {
         quote_record_id: q_rec_id.clone(),

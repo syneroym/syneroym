@@ -7,6 +7,7 @@ use syneroym_roym_core::{
     lang::LangTag,
     progress::{self, AgreementState, RECORD_AGREEMENT_PROGRESS},
     record::{Envelope, RECORD_QUOTE, RecordDraft},
+    testing::TestHost,
     transaction::{Answers, QUOTE_VERSION, ReceiptHalf, derive_quote_id, verify_quote},
 };
 
@@ -19,7 +20,7 @@ use crate::app::{
         self, CountersignRow, DecisionRow, DecisionState, RefusedRow, SnapshotRow, countersign_id,
         decision_id, refused_id, snapshot_id,
     },
-    disclosures::HeldQuote,
+    disclosures::{self, HeldQuote},
     get_row,
     hold::{HoldLedgerRow, hold_id},
     put_bytes, put_row,
@@ -28,12 +29,7 @@ use crate::app::{
     tests::{TestFixture, fixture},
 };
 
-fn mock_two_incoming_receipts(
-    host: &syneroym_roym_core::testing::TestHost,
-    cp_did: String,
-    now: u64,
-    card_body: String,
-) {
+fn mock_two_incoming_receipts(host: &TestHost, cp_did: String, now: u64, card_body: String) {
     host.on_call("conversation", "conversation.changes", move |params: String| {
         let p: Value = serde_json::from_str(&params).unwrap_or(Value::Null);
         let after_seq = p.get("after_seq").and_then(Value::as_u64).unwrap_or(0);
@@ -114,15 +110,9 @@ async fn two_syncs_send_one_refusal() {
         build_and_sign_quote(&fix.master, &counterparty_did, 1, None, now + 300, now);
 
     put_bytes(&fix.host, QUOTE_HISTORY, &q_rec_id, q_env.as_bytes()).await.unwrap();
-    crate::app::disclosures::store(
-        &fix.host,
-        &q_rec_id,
-        RECORD_QUOTE,
-        &quote_payload.disclosures,
-        now,
-    )
-    .await
-    .unwrap();
+    disclosures::store(&fix.host, &q_rec_id, RECORD_QUOTE, &quote_payload.disclosures, now)
+        .await
+        .unwrap();
     let ptr = RecordPointerRow {
         envelope: q_env,
         record_id: q_rec_id.clone(),
@@ -366,7 +356,7 @@ async fn store_sample_slot_quote(
     store_received_quote(&fix.host, &env_json, &v_q, &payload, now, &fix.master_did)
         .await
         .expect("store quote");
-    crate::app::disclosures::store(&fix.host, &q_rec_id, RECORD_QUOTE, &disclosures, now)
+    disclosures::store(&fix.host, &q_rec_id, RECORD_QUOTE, &disclosures, now)
         .await
         .expect("store disclosures");
     let held = HeldQuote { verdict: v_q, signed: payload, terms, disclosures };

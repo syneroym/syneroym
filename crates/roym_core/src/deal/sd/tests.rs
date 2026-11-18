@@ -9,6 +9,7 @@ use crate::{
         SettlementRole, TextTranslation, TimeWindow,
     },
     lang::LangTag,
+    testing::sd::{self, PlainFulfilment, PlainPaymentAck, PlainPaymentRequest},
     transaction::DealRole,
 };
 
@@ -105,8 +106,8 @@ fn no_signed_payload_holds_a_hidden_value() {
     assert!(!signed_terms_canonical.contains(&track_end_str));
 
     // Settlement payloads
-    let pay_req = crate::testing::sd::conceal_payment_request(
-        crate::testing::sd::PlainPaymentRequest {
+    let pay_req = sd::conceal_payment_request(
+        PlainPaymentRequest {
             agreement: "rec_agr".to_string(),
             conversation: "conv".to_string(),
             commitment_id: "c1".to_string(),
@@ -122,8 +123,8 @@ fn no_signed_payload_holds_a_hidden_value() {
             .unwrap();
     assert!(!req_canon.contains("note-marker-73"));
 
-    let pay_ack = crate::testing::sd::conceal_payment_ack(
-        crate::testing::sd::PlainPaymentAck {
+    let pay_ack = sd::conceal_payment_ack(
+        PlainPaymentAck {
             agreement: "rec_agr".to_string(),
             conversation: "conv".to_string(),
             commitment_id: "c1".to_string(),
@@ -145,8 +146,8 @@ fn no_signed_payload_holds_a_hidden_value() {
     assert!(!ack_canon.contains("ref-marker-74"));
     assert!(!ack_canon.contains("note-marker-73"));
 
-    let ful = crate::testing::sd::conceal_fulfilment(
-        crate::testing::sd::PlainFulfilment {
+    let ful = sd::conceal_fulfilment(
+        PlainFulfilment {
             agreement: "rec_agr".to_string(),
             conversation: "conv".to_string(),
             commitment_id: "c1".to_string(),

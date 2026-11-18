@@ -5,6 +5,7 @@ use super::*;
 use crate::{
     deal::{Commitment, CommitmentKind, ResourceKind},
     lang::LangTag,
+    testing::sd::{self, PlainPaymentAck, PlainPaymentRequest},
     transaction::DealRole,
 };
 
@@ -34,7 +35,7 @@ fn sample_commitment() -> Commitment {
 }
 
 fn sample_request() -> PaymentRequestPayload {
-    let plain = crate::testing::sd::PlainPaymentRequest {
+    let plain = PlainPaymentRequest {
         agreement: "rec_quote123".to_string(),
         conversation: "conv_123".to_string(),
         commitment_id: "c1".to_string(),
@@ -46,11 +47,11 @@ fn sample_request() -> PaymentRequestPayload {
             translations: Vec::new(),
         }),
     };
-    crate::testing::sd::conceal_payment_request(plain, 10).0
+    sd::conceal_payment_request(plain, 10).0
 }
 
 fn sample_ack(role: SettlementRole) -> PaymentAcknowledgementPayload {
-    let plain = crate::testing::sd::PlainPaymentAck {
+    let plain = PlainPaymentAck {
         agreement: "rec_quote123".to_string(),
         conversation: "conv_123".to_string(),
         commitment_id: "c1".to_string(),
@@ -62,7 +63,7 @@ fn sample_ack(role: SettlementRole) -> PaymentAcknowledgementPayload {
         reference: Some("ref_tx_999".to_string()),
         settlement_note: None,
     };
-    crate::testing::sd::conceal_payment_ack(plain, 11).0
+    sd::conceal_payment_ack(plain, 11).0
 }
 
 #[test]

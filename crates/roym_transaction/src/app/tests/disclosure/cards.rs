@@ -6,7 +6,9 @@ use syneroym_roym_core::{
     card::{self, MAX_CARD_BODY_BYTES},
     clock,
     deal::{Commitment, CommitmentKind, DealTerms, LocalText, ResourceKind, TextTranslation},
-    disclosure::{MAX_RECORD_DISCLOSURE_BYTES, Salt, decode_disclosure, encode_base64url},
+    disclosure::{
+        MAX_RECORD_DISCLOSURE_BYTES, Salt, decode_disclosure, encode_base64url, encode_disclosure,
+    },
     lang::LangTag,
     record::{Envelope, RECORD_AGREEMENT_RECEIPT, RECORD_QUOTE, RecordDraft},
     transaction::{AGREEMENT_RECEIPT_VERSION, Answers, DealRole, QUOTE_VERSION, derive_quote_id},
@@ -18,11 +20,11 @@ use super::helpers::{
     setup_agreed_currency_deal,
 };
 use crate::app::{
-    CARDS, CardRow, DISCLOSURES, ENQUIRY_HISTORY,
+    AGREEMENTS, AgreementRow, CARDS, CardRow, DISCLOSURES, ENQUIRY_HISTORY, PAYMENTS,
     disclosures::DisclosureRow,
     get_row,
     payment_ops::{self, PaymentAckInput, PaymentRequestInput},
-    put_bytes,
+    put_bytes, put_row,
     quote_ops::{self, CommitmentInput, QuoteSetInput},
     sync,
     tests::fixture,
@@ -392,8 +394,7 @@ async fn a_receipt_card_with_disclosures_is_refused() {
         make_counterparty_receipt(&cp, &fix.master_did, &q_rec_id, &q_held.signed.terms, now);
 
     let salt = Salt::from_bytes([0x42; 16]);
-    let disc =
-        syneroym_roym_core::disclosure::encode_disclosure(&salt, "foo", &json!("bar")).unwrap();
+    let disc = encode_disclosure(&salt, "foo", &json!("bar")).unwrap();
 
     let body =
         card::card_body(RECORD_AGREEMENT_RECEIPT, AGREEMENT_RECEIPT_VERSION, &receipt_env, &[disc])
@@ -453,7 +454,7 @@ async fn a_resent_payment_acknowledgement_carries_its_disclosures() {
     // Crash after fence: delete payments row so repeat call recovers via fence
     // collision
     let p_id = payment_ops::payment_id(&agreement, "c2");
-    let _ = AppDataLayer::delete(&fix.host, crate::app::PAYMENTS.to_string(), p_id).await;
+    let _ = AppDataLayer::delete(&fix.host, PAYMENTS.to_string(), p_id).await;
 
     let out2 = payment_ops::acknowledge(&fix.host, input).await.unwrap();
     let ack_cards2: Vec<_> = fix
@@ -477,9 +478,8 @@ async fn a_settlement_card_note_is_filed_plain_and_signed_hidden() {
     let agreed_at = clock::now_secs();
 
     let (agreement, _terms) = setup_agreed_currency_deal(&fix, &cp_fix.master, agreed_at).await;
-    let agr_row: crate::app::AgreementRow =
-        get_row(&fix.host, crate::app::AGREEMENTS, &agreement).await.unwrap().unwrap();
-    crate::app::put_row(&cp_fix.host, crate::app::AGREEMENTS, &agreement, &agr_row).await.unwrap();
+    let agr_row: AgreementRow = get_row(&fix.host, AGREEMENTS, &agreement).await.unwrap().unwrap();
+    put_row(&cp_fix.host, AGREEMENTS, &agreement, &agr_row).await.unwrap();
 
     let input = PaymentRequestInput {
         agreement: agreement.clone(),

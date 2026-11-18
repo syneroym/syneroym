@@ -6,7 +6,8 @@ use syneroym_roym_core::{
     lang::LangTag,
     listing::derive_slot_id,
     progress::{AgreementState, CancelReason},
-    record::{Envelope, RECORD_AGREEMENT_RECEIPT, RecordDraft},
+    record::{Envelope, RECORD_AGREEMENT_RECEIPT, RECORD_QUOTE, RecordDraft},
+    testing::sd::{PlainQuote, conceal_quote},
     transaction::{
         AGREEMENT_RECEIPT_VERSION, AgreementReceiptPayload, Answers, DealRole, ReceiptHalf,
         SignedTerms, TimeWindow, derive_quote_id,
@@ -18,7 +19,7 @@ use super::fixture;
 use crate::app::{
     AGREEMENT_PROGRESS, AGREEMENTS, AgreementRow, LEDGER,
     decide::{SnapshotRow, snapshot_id},
-    ensure_collections,
+    disclosures, ensure_collections,
     fulfilment_ops::{self, FulfilmentSignInput},
     get_row,
     hold::{HoldLedgerRow, Reservations, SeatLedger, SeatLedgerRow, hold_id, seat_id},
@@ -188,7 +189,7 @@ async fn setup_agreed_deal(
         quote_expires_at_secs: agreed_at + 3600,
     };
 
-    let plain = syneroym_roym_core::testing::sd::PlainQuote {
+    let plain = PlainQuote {
         quote_id: quote_id.clone(),
         conversation: "conv_1".to_string(),
         sequence: 1,
@@ -196,16 +197,10 @@ async fn setup_agreed_deal(
         counterparty_did: counterparty_did.clone(),
         terms: terms.clone(),
     };
-    let (payload, disclosures) = syneroym_roym_core::testing::sd::conceal_quote(plain, 1);
-    crate::app::disclosures::store(
-        &fix.host,
-        &quote_record_id,
-        syneroym_roym_core::record::RECORD_QUOTE,
-        &disclosures,
-        agreed_at,
-    )
-    .await
-    .unwrap();
+    let (payload, disclosures) = conceal_quote(plain, 1);
+    disclosures::store(&fix.host, &quote_record_id, RECORD_QUOTE, &disclosures, agreed_at)
+        .await
+        .unwrap();
 
     let author_half = make_receipt_half(
         &fix.master,
