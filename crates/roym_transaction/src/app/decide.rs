@@ -111,6 +111,53 @@ pub(crate) async fn run_with_reservations<H: AppHost, R: Reservations>(
     finalize_agreed_deal(host, row, now).await
 }
 
+pub(crate) async fn stored_or_new_seq1_snapshot<H: AppHost>(
+    host: &H,
+    row: &AgreementRow,
+    reason: &str,
+    now: u64,
+) -> Result<SnapshotRow, String> {
+    let snap_key = snapshot_id(&row.quote_record_id, 1);
+    if let Some(stored) = get_row(host, AGREEMENT_PROGRESS, &snap_key).await? {
+        return Ok(stored);
+    }
+    let snapshot = core_progress::open(
+        row.quote_record_id.clone(),
+        row.conversation.clone(),
+        row.counterparty_did.clone(),
+        row.quote_author_did.clone(),
+        &row.terms,
+        Some(reason.to_string()),
+    );
+    let (snap_env, snap_rec_id) = progress::sign(host, &snapshot).await?;
+    let snap = SnapshotRow {
+        seq: 1,
+        agreement: row.quote_record_id.clone(),
+        conversation: row.conversation.clone(),
+        snapshot,
+        envelope: snap_env,
+        record_id: snap_rec_id,
+        message_id: None,
+        stored_at_secs: now,
+    };
+    let write = RecordWriteValue {
+        id: snap_key.clone(),
+        payload: serde_json::to_vec(&snap).map_err(|e| e.to_string())?,
+    };
+    if let Some(err) = AppDataLayer::create(host, AGREEMENT_PROGRESS.to_string(), vec![write])
+        .await
+        .map_err(|e| e.to_string())?
+    {
+        if let Some(existing) = get_row(host, AGREEMENT_PROGRESS, &snap_key).await? {
+            Ok(existing)
+        } else {
+            Err(format!("failed to store snapshot: {err:?}"))
+        }
+    } else {
+        Ok(snap)
+    }
+}
+
 async fn handle_refusal<H: AppHost>(
     host: &H,
     row: &mut AgreementRow,
@@ -119,48 +166,7 @@ async fn handle_refusal<H: AppHost>(
     reason: &str,
     now: u64,
 ) -> Result<bool, String> {
-    let snap_key = snapshot_id(&row.quote_record_id, 1);
-    let mut snap_row: SnapshotRow = match get_row(host, AGREEMENT_PROGRESS, &snap_key).await? {
-        Some(stored) => stored,
-        None => {
-            let snapshot = core_progress::open(
-                row.quote_record_id.clone(),
-                row.conversation.clone(),
-                row.counterparty_did.clone(),
-                row.quote_author_did.clone(),
-                &row.terms,
-                Some(reason.to_string()),
-            );
-            let (snap_env, snap_rec_id) = progress::sign(host, &snapshot).await?;
-            let snap = SnapshotRow {
-                seq: 1,
-                agreement: row.quote_record_id.clone(),
-                conversation: row.conversation.clone(),
-                snapshot,
-                envelope: snap_env,
-                record_id: snap_rec_id,
-                message_id: None,
-                stored_at_secs: now,
-            };
-            let write = RecordWriteValue {
-                id: snap_key.clone(),
-                payload: serde_json::to_vec(&snap).map_err(|e| e.to_string())?,
-            };
-            if let Some(err) =
-                AppDataLayer::create(host, AGREEMENT_PROGRESS.to_string(), vec![write])
-                    .await
-                    .map_err(|e| e.to_string())?
-            {
-                if let Some(existing) = get_row(host, AGREEMENT_PROGRESS, &snap_key).await? {
-                    existing
-                } else {
-                    return Err(format!("failed to store refusal snapshot: {err:?}"));
-                }
-            } else {
-                snap
-            }
-        }
-    };
+    let mut snap_row = stored_or_new_seq1_snapshot(host, row, reason, now).await?;
 
     if !ensure_snapshot_sent(host, &row.conversation, &mut snap_row, now).await? {
         return Ok(false);

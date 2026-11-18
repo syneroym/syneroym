@@ -1,6 +1,6 @@
 //! Recovery of deciding rows and reservations cleanup.
 
-use syneroym_app_host::{AppDataLayer, AppHost, types::data_layer::RecordWriteValue};
+use syneroym_app_host::AppHost;
 use syneroym_roym_core::{
     card::{self, CARD_CONTENT_TYPE},
     deal::ResourceKind,
@@ -17,8 +17,8 @@ use syneroym_roym_core::{
 use super::{
     AGREEMENT_PROGRESS, AGREEMENTS, AgreementRow, CountersignRow, DecisionRow, DecisionState,
     EVENT_PROGRESS, LEDGER, SnapshotRow, countersign_id, decision_id, ensure_snapshot_sent,
-    finalize_agreed_deal, get_row, handle_not_formed, progress, put_row, repeat_both,
-    repeat_countersigned, reserve_author_holds, snapshot_id,
+    finalize_agreed_deal, get_row, handle_not_formed, put_row, repeat_both, repeat_countersigned,
+    reserve_author_holds, snapshot_id,
 };
 use crate::app::hold::{Reservations, SeatLedger};
 
@@ -81,48 +81,7 @@ async fn finish_expired_deciding<H: AppHost, R: Reservations>(
     reservations: &R,
     now: u64,
 ) -> Result<bool, String> {
-    let snap_key = snapshot_id(&row.quote_record_id, 1);
-    let mut snap_row: SnapshotRow = match get_row(host, AGREEMENT_PROGRESS, &snap_key).await? {
-        Some(stored) => stored,
-        None => {
-            let snapshot = core_progress::open(
-                row.quote_record_id.clone(),
-                row.conversation.clone(),
-                row.counterparty_did.clone(),
-                row.quote_author_did.clone(),
-                &row.terms,
-                Some("quote-expired".to_string()),
-            );
-            let (snap_env, snap_rec_id) = progress::sign(host, &snapshot).await?;
-            let snap = SnapshotRow {
-                seq: 1,
-                agreement: row.quote_record_id.clone(),
-                conversation: row.conversation.clone(),
-                snapshot,
-                envelope: snap_env,
-                record_id: snap_rec_id,
-                message_id: None,
-                stored_at_secs: now,
-            };
-            let write = RecordWriteValue {
-                id: snap_key.clone(),
-                payload: serde_json::to_vec(&snap).map_err(|e| e.to_string())?,
-            };
-            if let Some(err) =
-                AppDataLayer::create(host, AGREEMENT_PROGRESS.to_string(), vec![write])
-                    .await
-                    .map_err(|e| e.to_string())?
-            {
-                if let Some(existing) = get_row(host, AGREEMENT_PROGRESS, &snap_key).await? {
-                    existing
-                } else {
-                    return Err(format!("failed to store expired snapshot: {err:?}"));
-                }
-            } else {
-                snap
-            }
-        }
-    };
+    let mut snap_row = super::stored_or_new_seq1_snapshot(host, row, "quote-expired", now).await?;
 
     release_all_author_holds(host, row, reservations).await;
 

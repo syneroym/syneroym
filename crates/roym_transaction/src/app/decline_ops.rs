@@ -1,5 +1,7 @@
 //! Operations for declining a deal (quote or enquiry).
 
+use std::collections::HashSet;
+
 use serde::{Deserialize, Serialize};
 use syneroym_app_host::{AppDataLayer, AppHost, AppSigning, types::data_layer::RecordWriteValue};
 use syneroym_roym_core::{
@@ -16,8 +18,8 @@ use syneroym_roym_core::{
 
 use super::{
     AGREEMENTS, AgreementRow, ENQUIRIES, ENQUIRY_HISTORY, LEDGER, QUOTE_HISTORY, QUOTES,
-    RecordPointerRow, ensure_collections, get_bytes, get_row, put_row, resolve_principal_and_owner,
-    send_card_and_file,
+    RecordPointerRow, ensure_collections, get_bytes, get_row, is_deal_level_not_formed_reason,
+    put_row, resolve_principal_and_owner, send_card_and_file,
 };
 
 pub fn decline_id(deal: &str) -> String {
@@ -342,8 +344,7 @@ pub(crate) async fn has_unrefused_counterparty_half<H: AppHost>(
             let ref_key = format!("refused:{}", cp_half.record_id);
             if get_row::<serde_json::Value, _>(host, LEDGER, &ref_key).await?.is_none() {
                 let is_refused_by_snapshot = agr.state == Some(AgreementState::NotFormed)
-                    && (agr.state_reason.as_deref() == Some("quote-superseded")
-                        || agr.state_reason.as_deref() == Some("quote-already-agreed"));
+                    && !is_deal_level_not_formed_reason(agr.state_reason.as_deref());
                 if !is_refused_by_snapshot {
                     return Ok(true);
                 }
@@ -357,19 +358,16 @@ pub(crate) async fn has_unrefused_counterparty_half_for_enquiry<H: AppHost>(
     host: &H,
     enquiry_id: &str,
 ) -> Result<bool, String> {
-    let mut record_ids = std::collections::HashSet::new();
+    let mut record_ids = HashSet::new();
     if let Some(ptr) = get_row::<RecordPointerRow, _>(host, ENQUIRIES, enquiry_id).await? {
         record_ids.insert(ptr.record_id);
     }
-    if let Ok(history) =
-        paging::envelope_history(host, ENQUIRY_HISTORY, "enquiry_id", enquiry_id).await
-    {
-        for env_json in history {
-            if let Ok(env) = Envelope::from_json(&env_json)
-                && let Ok(rid) = env.record_id()
-            {
-                record_ids.insert(rid);
-            }
+    let history = paging::envelope_history(host, ENQUIRY_HISTORY, "enquiry_id", enquiry_id).await?;
+    for env_json in history {
+        if let Ok(env) = Envelope::from_json(&env_json)
+            && let Ok(rid) = env.record_id()
+        {
+            record_ids.insert(rid);
         }
     }
     for rec_id in record_ids {
