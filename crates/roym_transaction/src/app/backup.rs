@@ -93,6 +93,8 @@ pub(crate) async fn import<H: AppHost>(
 
     let req_rows = bundle.sections.get(SECTION_ENQUIRIES).cloned().unwrap_or_default();
     let quote_rows = bundle.sections.get(SECTION_QUOTES).cloned().unwrap_or_default();
+    let req_hist_rows = bundle.sections.get(SECTION_ENQUIRY_HISTORY).cloned().unwrap_or_default();
+    let quote_hist_rows = bundle.sections.get(SECTION_QUOTE_HISTORY).cloned().unwrap_or_default();
     let agr_rows = bundle.sections.get(SECTION_AGREEMENTS).cloned().unwrap_or_default();
     let card_rows = bundle.sections.get(SECTION_CARDS).cloned().unwrap_or_default();
 
@@ -100,11 +102,12 @@ pub(crate) async fn import<H: AppHost>(
         Ok(v) => v,
         Err(e) => return Err(e),
     };
-    let (verified_quotes, quotes_by_record_id) =
+    let (verified_quotes, mut quotes_by_record_id) =
         match verify_imported_quotes(quote_rows, &owner, now) {
             Ok(v) => v,
             Err(e) => return Err(e),
         };
+    index_quote_history_rows(&quote_hist_rows, &mut quotes_by_record_id, now);
     let verified_agreements =
         match verify_imported_agreements(host, agr_rows, &quotes_by_record_id, now).await {
             Ok(v) => v,
@@ -113,8 +116,9 @@ pub(crate) async fn import<H: AppHost>(
 
     let agreements_map: HashMap<String, AgreementRow> =
         verified_agreements.iter().cloned().collect();
-    let enquiries_by_record_id: HashMap<String, String> =
+    let mut enquiries_by_record_id: HashMap<String, String> =
         verified_requests.iter().map(|(id, ptr)| (ptr.record_id.clone(), id.clone())).collect();
+    index_enquiry_history_rows(&req_hist_rows, &mut enquiries_by_record_id, now);
     let validated_vertical = match sections::validate_vertical_sections(
         &bundle.sections,
         &agreements_map,
@@ -391,6 +395,56 @@ fn verify_imported_quotes(
         verified_quotes.push((p.quote_id.clone(), row));
     }
     Ok((verified_quotes, quotes_by_record_id))
+}
+
+fn index_quote_history_rows(
+    quote_hist_rows: &[Value],
+    quotes_by_record_id: &mut QuotesByRecordId,
+    now: u64,
+) {
+    for r in quote_hist_rows {
+        let row_id = r.get("id").and_then(Value::as_str).unwrap_or("");
+        if row_id.is_empty() || quotes_by_record_id.contains_key(row_id) {
+            continue;
+        }
+        let payload = r.get("payload");
+        let env_str = match payload.and_then(|p| p.get("envelope")).and_then(Value::as_str) {
+            Some(s) => s,
+            None => continue,
+        };
+        let v = transaction::verify_quote(env_str, now);
+        if v.verified
+            && let Some(p) = v.payload
+            && let Some(issuer) = v.issuer
+        {
+            quotes_by_record_id
+                .insert(row_id.to_string(), ImportedQuote { quote_author_did: issuer, payload: p });
+        }
+    }
+}
+
+fn index_enquiry_history_rows(
+    enq_hist_rows: &[Value],
+    enquiries_by_record_id: &mut HashMap<String, String>,
+    now: u64,
+) {
+    for r in enq_hist_rows {
+        let row_id = r.get("id").and_then(Value::as_str).unwrap_or("");
+        if row_id.is_empty() || enquiries_by_record_id.contains_key(row_id) {
+            continue;
+        }
+        let payload = r.get("payload");
+        let env_str = match payload.and_then(|p| p.get("envelope")).and_then(Value::as_str) {
+            Some(s) => s,
+            None => continue,
+        };
+        let v = transaction::verify_enquiry(env_str, now);
+        if v.verified
+            && let Some(p) = v.payload
+        {
+            enquiries_by_record_id.insert(row_id.to_string(), p.enquiry_id);
+        }
+    }
 }
 
 /// Resolves the quote an agreement row's `quote_record_id` answers, first

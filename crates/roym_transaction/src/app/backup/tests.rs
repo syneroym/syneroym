@@ -1,23 +1,26 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use serde_json::json;
 use syneroym_identity::{Identity, substrate};
 use syneroym_roym_core::{
+    backup::{Bundle, ImportInput, SECTION_LEDGER, SECTION_QUOTE_HISTORY, SECTION_QUOTES},
     deal::{Commitment, CommitmentKind, DealTerms, LocalText, ResourceKind},
     lang::LangTag,
     record::{Envelope, RECORD_DEAL_DECLINE, RecordDraft},
     transaction::{
-        Answers, DEAL_DECLINE_VERSION, DealDeclinePayload, DealRole, QuotePayload, ReceiptHalf,
+        Answers, DEAL_DECLINE_VERSION, DealDeclinePayload, DealRole, QUOTE_VERSION, QuotePayload,
+        ReceiptHalf, derive_quote_id,
     },
 };
 
 use crate::app::{
-    AgreementRow,
+    AgreementRow, RecordPointerRow, SCHEMA_VERSION, backup,
     backup::{ImportedQuote, QuotesByRecordId, sections::validate_ledger},
     decide::{CountersignRow, DecisionRow, DecisionState, RefusedRow},
     decline_ops::DeclineRow,
     hold::{HoldLedgerRow, SeatLedgerRow},
     ledger::{LedgerKind, LedgerRow},
+    tests::fixture,
 };
 
 fn sample_quote_context(quote_rec_id: &str) -> QuotesByRecordId {
@@ -520,4 +523,136 @@ fn refused_row_refused_on_unheld_quote_or_counterparty_half() {
         100,
     );
     assert!(ok.is_ok());
+}
+
+fn make_test_quote_envelope(
+    author: &Identity,
+    cp_did: &str,
+    supersedes: Option<String>,
+    now: u64,
+) -> (String, String, QuotePayload) {
+    let author_did = substrate::derive_did_key(&author.public_key());
+    let quote_id = derive_quote_id("conv_1", &author_did, 1).expect("quote id");
+    let terms = DealTerms {
+        currency: "EUR".to_string(),
+        commitments: vec![Commitment {
+            commitment_id: "c1".to_string(),
+            giver: DealRole::QuoteAuthor,
+            resource_kind: ResourceKind::GoodsOrService,
+            kind: CommitmentKind::Fulfilment,
+            extension: None,
+            after: vec![],
+            description: LocalText::plain(LangTag::parse_canonical("en").expect("lang"), "Service"),
+            declared_value_minor: 1000,
+            details: None,
+            window: None,
+            location: None,
+            payee: None,
+            payment_methods: None,
+            tax_minor: None,
+            fees_minor: None,
+            eep: None,
+        }],
+        home_exchange: None,
+        listing_id: None,
+        scope: LocalText::plain(LangTag::parse_canonical("en").expect("lang"), "Scope"),
+        cancellation_terms: LocalText::plain(
+            LangTag::parse_canonical("en").expect("lang"),
+            "Terms",
+        ),
+        refund_terms: LocalText::plain(LangTag::parse_canonical("en").expect("lang"), "Refund"),
+        dispute_path: LocalText::plain(LangTag::parse_canonical("en").expect("lang"), "Dispute"),
+        quote_expires_at_secs: now + 3600,
+    };
+    let payload = QuotePayload {
+        quote_id,
+        conversation: "conv_1".to_string(),
+        sequence: 1,
+        counterparty_did: cp_did.to_string(),
+        terms,
+        answers: Answers::Enquiry { record_id: "rec_enq_1".to_string() },
+    };
+    let draft = RecordDraft {
+        version: QUOTE_VERSION,
+        record_type: "quote".to_string(),
+        subject: "conv_1".to_string(),
+        payload: serde_json::to_value(&payload).expect("payload"),
+        expires_at_secs: Some(now + 3600),
+        supersedes,
+    };
+    let (mut env, bytes) = Envelope::unsigned(draft, author_did, None, now).expect("env");
+    let sig = author.sign(&bytes).to_bytes();
+    env.attach_signature(z32::encode(&sig)).expect("sig");
+    let rec_id = env.record_id().expect("rec id");
+    (env.to_json().expect("json"), rec_id, payload)
+}
+
+#[tokio::test]
+async fn decline_of_older_quote_version_in_history_imports_successfully() {
+    let f = fixture();
+    let now = f.host.now();
+    let cp = Identity::generate().expect("cp");
+    let cp_did = substrate::derive_did_key(&cp.public_key());
+
+    // Quote v1
+    let (q1_json, q1_rec_id, q1_payload) = make_test_quote_envelope(&f.master, &cp_did, None, now);
+
+    // Quote v2 supersedes v1
+    let (q2_json, q2_rec_id, q2_payload) =
+        make_test_quote_envelope(&f.master, &cp_did, Some(q1_rec_id.clone()), now + 10);
+
+    // Decline of v1 by counterparty
+    let (dec_env, dec_rec_id) =
+        make_test_decline_envelope(&cp, &q1_rec_id, &q1_payload.quote_id, "conv_1", now + 20);
+
+    let q2_ptr = RecordPointerRow {
+        envelope: q2_json.clone(),
+        record_id: q2_rec_id.clone(),
+        id: q2_payload.quote_id.clone(),
+        conversation: "conv_1".to_string(),
+        sequence: 2,
+        issuer: f.master_did.clone(),
+        mine: true,
+        updated_at_secs: now + 10,
+        version_count: 2,
+        issued_at_secs: now + 10,
+        request_record_id: None,
+        counterparty_did: Some(cp_did.clone()),
+        declined_at_secs: None,
+        decline_note: None,
+    };
+
+    let decline_row = DeclineRow {
+        kind: "decline".to_string(),
+        deal: q1_payload.quote_id.clone(),
+        declines: q1_rec_id.clone(),
+        envelope: dec_env,
+        record_id: dec_rec_id,
+        message_id: None,
+        created_at_secs: now + 20,
+    };
+
+    let mut sections = BTreeMap::new();
+    sections.insert(
+        SECTION_QUOTES.to_string(),
+        vec![json!({ "id": q2_payload.quote_id, "payload": q2_ptr })],
+    );
+    sections.insert(
+        SECTION_QUOTE_HISTORY.to_string(),
+        vec![
+            json!({ "id": q1_rec_id, "payload": { "envelope": q1_json } }),
+            json!({ "id": q2_rec_id, "payload": { "envelope": q2_json } }),
+        ],
+    );
+    sections.insert(
+        SECTION_LEDGER.to_string(),
+        vec![json!({ "id": format!("decline:{}", q1_payload.quote_id), "payload": decline_row })],
+    );
+
+    let mut bundle = Bundle::new(f.master_did.clone(), SCHEMA_VERSION, sections).unwrap();
+    syneroym_roym_core::signing::sign_bundle(&f.host, &mut bundle, now).await.unwrap();
+
+    let res = backup::import(&f.host, ImportInput { bundle }).await;
+    assert!(res.is_ok(), "import should succeed: {:?}", res.err());
+    assert!(res.unwrap().imported);
 }
