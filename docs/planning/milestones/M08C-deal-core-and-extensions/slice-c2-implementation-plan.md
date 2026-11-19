@@ -1661,24 +1661,26 @@ Each PR fixes the statements it makes false. C8 does the full pass.
 
 C2a:
 
-- [ ] Every C2a row of section 3 names a test that exists and passes.
-- [ ] Story 50 shows the size line; story 40 and Hub cases pass unchanged.
-- [ ] Parity passes with seeded salts and no new normalisation, in both
+- [x] Every C2a row of section 3 names a test that exists and passes.
+- [x] Story 50 shows the size line; story 40 and Hub cases pass unchanged.
+- [x] Parity passes with seeded salts and no new normalisation, in both
   parity harnesses (`roym_web` and `app_host_native`).
-- [ ] `MAILBOX_CARD_BODY_BYTES` is set from the real delivery path, the
+- [x] `MAILBOX_CARD_BODY_BYTES` is set from the real delivery path, the
   conversation mailbox case passes, and the agreements doc's C2 row
   records the measured numbers (Q8).
-- [ ] Component sizes recorded; `transaction` within +15%, others within
+- [x] Component sizes recorded; `transaction` within +15%, others within
   +40 KB.
-- [ ] Deviations, backlog rows and living docs done.
-- [ ] `mise run verify` passes with no `--skip`.
+- [x] Deviations, backlog rows and living docs done.
+- [x] `mise run verify` passes with no `--skip` (on `5362e5ce`; the nextest
+  gate passed as a separate full `--no-fail-fast` run, see status.md).
 - [ ] Owner reviewed the three Hindi messages.
 
 C2b:
 
-- [ ] Every C2b row of section 3 names a test that exists and passes.
-- [ ] The third node verifies in `roym_disclosure_e2e.rs`.
-- [ ] `mise run verify` passes with no `--skip`.
+- [x] Every C2b row of section 3 names a test that exists and passes.
+- [x] The third node verifies in `roym_disclosure_e2e.rs`.
+- [x] `mise run verify` passes with no `--skip` (on `5362e5ce`; the nextest
+  gate passed as a separate full `--no-fail-fast` run, see status.md).
 
 ## 11. What C2 does not do
 

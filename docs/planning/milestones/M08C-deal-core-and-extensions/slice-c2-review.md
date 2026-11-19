@@ -1855,3 +1855,35 @@ Open after this round: 0.**
   developer guide paragraph on `deal.verify-presentation` with the new
   refusals and fields.
   *Status:* Fixed (c593b7b2)
+
+## Close-out check — Claude Opus 5.5 (Claude Code), 2026-11-19
+
+This closes the C2 reviews on `5362e5ce` (fix commit `c593b7b2`).
+
+**Round-6 items.** R34 is fixed: the loop that refused every shown `null` on
+a settlement record is gone, and
+`optional_settlement_fields_shown_as_null_are_accepted` shows each empty
+optional field of a payment request, an acknowledgement and a fulfilment
+receipt. R35 is fixed: the developer guide lists the new refusals and view
+fields, and the agreements doc has a Deviations row for the AG-38 change. Its
+reason is true: `progress.rs` signs a snapshot with `Principal::Service`, so
+the snapshot's issuer is the service key, which is the `signer_did` of the
+writer's own records.
+
+**Open: 0.** Every finding R14 to R35 is Fixed, except R24 (Rejected, owner
+commit out of scope).
+
+**Evidence on `5362e5ce`:**
+
+- CI: every job passed, Playwright E2E included.
+- `mise run verify` with no `--skip`, run twice: every gate passed except
+  nextest. Each time nextest stopped at its first failure, and each failure
+  was a timing or port test outside this branch, on a heavily loaded machine:
+  `conversation_cross_node_e2e` (relay port already in use, os error 48) and
+  `roym_group_offline_e2e` ("removal step overran the 40s observation
+  window"). Each of those binaries passed when run alone (9 of 9, 4 of 4).
+  The branch changes no conversation, mailbox or group code.
+- `cargo nextest run --workspace --no-fail-fast` after that: 4,833 run, 4,833
+  passed, 6 skipped. So the nextest gate passes on this sha; the other 15
+  gates passed in the same verify runs.
+- Component sizes: task.md section 1, C2b table (branch `5362e5ce`).

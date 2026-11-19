@@ -75,11 +75,11 @@ Every component is within its limit.
 
 Every component is within its limit.
 
-**C2b sizes** (release `wasm32-wasip2`, one `target/` folder, 2026-11-19; base on `main` at `581403ca`, branch at `68e7135a`), in bytes:
+**C2b sizes** (release `wasm32-wasip2`, one `target/` folder, 2026-11-19; base on `main` at `581403ca`, branch at `5362e5ce`, after all review fixes), in bytes:
 
-| Component | `main` `581403ca` | branch `68e7135a` | Change | Limit |
+| Component | `main` `581403ca` | branch `5362e5ce` | Change | Limit |
 | --- | --- | --- | --- | --- |
-| `transaction` | 2,008,936 | 2,108,952 | +100,016 (+4.98%) | +15% (301,340), new record code |
+| `transaction` | 2,008,936 | 2,115,515 | +106,579 (+5.31%) | +15% (301,340), new record code |
 | `catalog` | 930,212 | 930,212 | 0 | +40 KB |
 | `conversation` | 812,580 | 812,580 | 0 | +40 KB |
 | `directory` | 1,468,103 | 1,468,103 | 0 | +40 KB |
