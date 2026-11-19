@@ -689,16 +689,9 @@ pub(crate) async fn verify<H: AppHost>(
 ) -> Reply<DisclosedVerdict<QuotePayload>> {
     let now = clock::now_secs();
     let verdict = transaction::verify_quote(&input.envelope, now);
-    let (shown, hidden, disclosure_refused) = if verdict.verified {
-        if let Some(ref p) = verdict.payload {
-            method::reveal_disclosed_terms(&p.terms, &input.disclosures)
-        } else {
-            (None, Vec::new(), None)
-        }
-    } else {
-        (None, Vec::new(), None)
-    };
-    Ok(DisclosedVerdict { verdict, shown, hidden, disclosure_refused })
+    Ok(method::verify_disclosed(verdict, &input.disclosures, |p, d| {
+        method::reveal_disclosed_terms(&p.terms, d)
+    }))
 }
 
 pub(crate) async fn store_received_quote<H: AppHost>(

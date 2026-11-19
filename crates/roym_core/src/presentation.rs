@@ -2,7 +2,7 @@
 //! parties.
 
 pub mod types;
-mod validate;
+pub(crate) mod validate;
 pub mod verify;
 
 #[cfg(test)]

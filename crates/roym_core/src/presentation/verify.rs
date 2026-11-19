@@ -13,18 +13,17 @@ use super::{
 };
 use crate::{
     deal::{
-        CommitmentKind, LocalText, SettlementRole,
+        CommitmentKind, SettlementRole,
         sd::{SignedCommitment, SignedTerms},
     },
     disclosure::{
         DisclosureIndex, FULFILMENT_SET, HiddenSet, PAYMENT_ACK_SET, PAYMENT_REQUEST_SET,
         check_all_used, reveal_object,
     },
-    fulfilment::{self, FulfilmentReceiptPayload},
-    listing::{self, MAX_PAYMENT_METHOD_LEN},
+    fulfilment::{self, FulfilmentHidden, FulfilmentReceiptPayload},
     payment::{
-        self, MAX_NOTE_LEN, MAX_REFERENCE_LEN, MAX_SETTLEMENT_NOTE_LEN,
-        PaymentAcknowledgementPayload, PaymentRequestPayload,
+        self, PaymentAckHidden, PaymentAcknowledgementPayload, PaymentRequestHidden,
+        PaymentRequestPayload,
     },
     progress::{self, AGREEMENT_PROGRESS_VERSION, AgreementProgressPayload},
     record::{
@@ -583,7 +582,7 @@ fn reveal_settlement_record(
         all_used.push(u);
     }
 
-    validate_revealed_settlement_fields(&revealed.fields)?;
+    validate_revealed_settlement_fields(&revealed.fields, set)?;
 
     let hidden = revealed.hidden.into_iter().map(|s| s.to_string()).collect();
     Ok(SettlementView {
@@ -597,48 +596,26 @@ fn reveal_settlement_record(
 
 fn validate_revealed_settlement_fields(
     fields: &Map<String, Value>,
+    set: &HiddenSet,
 ) -> Result<(), PresentationError> {
-    if let Some(val) = fields.get("note")
-        && !val.is_null()
-    {
-        let note: LocalText = serde_json::from_value(val.clone())
+    let val = Value::Object(fields.clone());
+    if set == &PAYMENT_REQUEST_SET {
+        let h: PaymentRequestHidden = serde_json::from_value(val)
             .map_err(|e| PresentationError::FieldInvalid("note".to_string(), e.to_string()))?;
-        note.validate("note", MAX_NOTE_LEN)
+        h.validate()
             .map_err(|e| PresentationError::FieldInvalid("note".to_string(), e.to_string()))?;
-    }
-    if let Some(val) = fields.get("method")
-        && !val.is_null()
-    {
-        let m = val.as_str().ok_or_else(|| {
-            PresentationError::FieldInvalid("method".to_string(), "not a string".to_string())
+    } else if set == &PAYMENT_ACK_SET {
+        let h: PaymentAckHidden = serde_json::from_value(val).map_err(|e| {
+            PresentationError::FieldInvalid("settlement".to_string(), e.to_string())
         })?;
-        if !listing::valid_token(m, MAX_PAYMENT_METHOD_LEN) {
-            return Err(PresentationError::FieldInvalid(
-                "method".to_string(),
-                "invalid token".to_string(),
-            ));
-        }
-    }
-    if let Some(val) = fields.get("reference")
-        && !val.is_null()
-    {
-        let r = val.as_str().ok_or_else(|| {
-            PresentationError::FieldInvalid("reference".to_string(), "not a string".to_string())
+        h.validate().map_err(|e| {
+            PresentationError::FieldInvalid("settlement".to_string(), e.to_string())
         })?;
-        if r.len() > MAX_REFERENCE_LEN {
-            return Err(PresentationError::FieldInvalid(
-                "reference".to_string(),
-                "reference too long".to_string(),
-            ));
-        }
-    }
-    if let Some(val) = fields.get("settlement_note")
-        && !val.is_null()
-    {
-        let note: LocalText = serde_json::from_value(val.clone()).map_err(|e| {
+    } else if set == &FULFILMENT_SET {
+        let h: FulfilmentHidden = serde_json::from_value(val).map_err(|e| {
             PresentationError::FieldInvalid("settlement_note".to_string(), e.to_string())
         })?;
-        note.validate("settlement_note", MAX_SETTLEMENT_NOTE_LEN).map_err(|e| {
+        h.validate().map_err(|e| {
             PresentationError::FieldInvalid("settlement_note".to_string(), e.to_string())
         })?;
     }

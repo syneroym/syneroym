@@ -51,6 +51,7 @@ fn sign_test_record(
 }
 
 mod records;
+mod validation;
 
 fn sample_two_commitment_terms() -> DealTerms {
     DealTerms {

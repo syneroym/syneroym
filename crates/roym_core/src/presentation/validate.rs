@@ -8,14 +8,15 @@ use super::types::PresentationError;
 use crate::{
     deal::{
         CommitmentKind, Details, LocalText, MAX_COMMITMENT_DESCRIPTION_LEN,
-        MAX_DECLARED_VALUE_MINOR, MAX_PAYEE_LEN, MAX_SCOPE_LEN, MAX_TERMS_TEXT_LEN,
-        SCHEDULING_EXTENSION,
+        MAX_DECLARED_VALUE_MINOR, MAX_PAYEE_LEN, MAX_PAYMENT_METHODS, MAX_SCOPE_LEN,
+        MAX_TERMS_TEXT_LEN, SCHEDULING_EXTENSION,
         sd::{PartialTerms, SignedCommitment, SignedTerms},
     },
+    listing::{self, MAX_PAYMENT_METHOD_LEN},
     transaction::{AgreementReceiptPayload, QuoteLocation, RecordVerdict, TimeWindow},
 };
 
-pub(super) fn validate_partial_terms_fields(
+pub(crate) fn validate_partial_terms_fields(
     partial: &PartialTerms,
     signed: &SignedTerms,
     receipts: &[(&RecordVerdict<AgreementReceiptPayload>, &AgreementReceiptPayload)],
@@ -65,51 +66,36 @@ pub(super) fn validate_partial_terms_fields(
     Ok(())
 }
 
+const TERMS_TEXT_FIELDS: &[(&str, usize)] = &[
+    ("scope", MAX_SCOPE_LEN),
+    ("cancellation_terms", MAX_TERMS_TEXT_LEN),
+    ("refund_terms", MAX_TERMS_TEXT_LEN),
+    ("dispute_path", MAX_TERMS_TEXT_LEN),
+];
+
 fn validate_terms_level_texts(
     obj: &Map<String, Value>,
     all_texts: &mut Vec<LocalText>,
 ) -> Result<(), PresentationError> {
-    if let Some(val) = obj.get("scope")
+    if let Some(val) = obj.get("listing_id")
         && !val.is_null()
+        && val.as_str().is_none()
     {
-        let text: LocalText = serde_json::from_value(val.clone())
-            .map_err(|e| PresentationError::FieldInvalid("scope".to_string(), e.to_string()))?;
-        text.validate("scope", MAX_SCOPE_LEN)
-            .map_err(|e| PresentationError::FieldInvalid("scope".to_string(), e.to_string()))?;
-        all_texts.push(text);
+        return Err(PresentationError::FieldInvalid(
+            "listing_id".to_string(),
+            "listing_id must be a string".to_string(),
+        ));
     }
-    if let Some(val) = obj.get("cancellation_terms")
-        && !val.is_null()
-    {
-        let text: LocalText = serde_json::from_value(val.clone()).map_err(|e| {
-            PresentationError::FieldInvalid("cancellation_terms".to_string(), e.to_string())
-        })?;
-        text.validate("cancellation_terms", MAX_TERMS_TEXT_LEN).map_err(|e| {
-            PresentationError::FieldInvalid("cancellation_terms".to_string(), e.to_string())
-        })?;
-        all_texts.push(text);
-    }
-    if let Some(val) = obj.get("refund_terms")
-        && !val.is_null()
-    {
-        let text: LocalText = serde_json::from_value(val.clone()).map_err(|e| {
-            PresentationError::FieldInvalid("refund_terms".to_string(), e.to_string())
-        })?;
-        text.validate("refund_terms", MAX_TERMS_TEXT_LEN).map_err(|e| {
-            PresentationError::FieldInvalid("refund_terms".to_string(), e.to_string())
-        })?;
-        all_texts.push(text);
-    }
-    if let Some(val) = obj.get("dispute_path")
-        && !val.is_null()
-    {
-        let text: LocalText = serde_json::from_value(val.clone()).map_err(|e| {
-            PresentationError::FieldInvalid("dispute_path".to_string(), e.to_string())
-        })?;
-        text.validate("dispute_path", MAX_TERMS_TEXT_LEN).map_err(|e| {
-            PresentationError::FieldInvalid("dispute_path".to_string(), e.to_string())
-        })?;
-        all_texts.push(text);
+    for &(field, limit) in TERMS_TEXT_FIELDS {
+        if let Some(val) = obj.get(field)
+            && !val.is_null()
+        {
+            let text: LocalText = serde_json::from_value(val.clone())
+                .map_err(|e| PresentationError::FieldInvalid(field.to_string(), e.to_string()))?;
+            text.validate(field, limit)
+                .map_err(|e| PresentationError::FieldInvalid(field.to_string(), e.to_string()))?;
+            all_texts.push(text);
+        }
     }
     Ok(())
 }
@@ -214,14 +200,20 @@ fn validate_single_commitment_partial(
     Ok(())
 }
 
-fn validate_commitment_values_partial(
+fn validate_declared_value_partial(
     c_map: &Map<String, Value>,
     c_orig: &SignedCommitment,
-    not_checked: &mut Vec<String>,
-) -> Result<(), PresentationError> {
+) -> Result<Option<i64>, PresentationError> {
     let cid = &c_orig.commitment_id;
-    let decl_opt = c_map.get("declared_value_minor").and_then(Value::as_i64);
-    if let Some(val) = decl_opt {
+    if let Some(val_raw) = c_map.get("declared_value_minor")
+        && !val_raw.is_null()
+    {
+        let val: i64 = serde_json::from_value(val_raw.clone()).map_err(|e| {
+            PresentationError::FieldInvalid(
+                format!("terms.commitments[{cid}].declared_value_minor"),
+                e.to_string(),
+            )
+        })?;
         if !(0..=MAX_DECLARED_VALUE_MINOR).contains(&val) {
             return Err(PresentationError::FieldInvalid(
                 format!("terms.commitments[{cid}].declared_value_minor"),
@@ -234,71 +226,154 @@ fn validate_commitment_values_partial(
                 "currency commitment value must be >= 1".to_string(),
             ));
         }
+        Ok(Some(val))
+    } else {
+        Ok(None)
+    }
+}
+
+fn validate_currency_commitment_fields_partial(
+    c_map: &Map<String, Value>,
+    c_orig: &SignedCommitment,
+    decl_opt: Option<i64>,
+    not_checked: &mut Vec<String>,
+) -> Result<(), PresentationError> {
+    let cid = &c_orig.commitment_id;
+    if let Some(payee_val) = c_map.get("payee")
+        && !payee_val.is_null()
+    {
+        let payee: String = serde_json::from_value(payee_val.clone()).map_err(|e| {
+            PresentationError::FieldInvalid(
+                format!("terms.commitments[{cid}].payee"),
+                e.to_string(),
+            )
+        })?;
+        if payee.trim().is_empty() || payee.len() > MAX_PAYEE_LEN {
+            return Err(PresentationError::FieldInvalid(
+                format!("terms.commitments[{cid}].payee"),
+                "payee empty or too long".to_string(),
+            ));
+        }
+    } else {
+        not_checked.push(format!("terms.commitments[{cid}].payee_not_empty"));
     }
 
-    if c_orig.kind == CommitmentKind::Currency {
-        if let Some(payee_val) = c_map.get("payee") {
-            let payee = payee_val.as_str().unwrap_or_default();
-            if payee.trim().is_empty() || payee.len() > MAX_PAYEE_LEN {
+    if let Some(methods_val) = c_map.get("payment_methods")
+        && !methods_val.is_null()
+    {
+        let methods: Vec<String> = serde_json::from_value(methods_val.clone()).map_err(|e| {
+            PresentationError::FieldInvalid(
+                format!("terms.commitments[{cid}].payment_methods"),
+                e.to_string(),
+            )
+        })?;
+        if methods.len() > MAX_PAYMENT_METHODS {
+            return Err(PresentationError::FieldInvalid(
+                format!("terms.commitments[{cid}].payment_methods"),
+                "too many payment methods".to_string(),
+            ));
+        }
+        for m in &methods {
+            if !listing::valid_token(m, MAX_PAYMENT_METHOD_LEN) {
                 return Err(PresentationError::FieldInvalid(
-                    format!("terms.commitments[{cid}].payee"),
-                    "payee empty or too long".to_string(),
+                    format!("terms.commitments[{cid}].payment_methods"),
+                    "invalid payment method token".to_string(),
                 ));
             }
-        } else {
-            not_checked.push(format!("terms.commitments[{cid}].payee_not_empty"));
         }
+    }
 
-        let tax_opt = c_map.get("tax_minor").and_then(Value::as_i64);
-        let fees_opt = c_map.get("fees_minor").and_then(Value::as_i64);
-        if let Some(t) = tax_opt
-            && t < 0
-        {
+    let tax_opt = if let Some(t_val) = c_map.get("tax_minor")
+        && !t_val.is_null()
+    {
+        let t: i64 = serde_json::from_value(t_val.clone()).map_err(|e| {
+            PresentationError::FieldInvalid(
+                format!("terms.commitments[{cid}].tax_minor"),
+                e.to_string(),
+            )
+        })?;
+        if t < 0 {
             return Err(PresentationError::FieldInvalid(
                 format!("terms.commitments[{cid}].tax_minor"),
                 "tax cannot be negative".to_string(),
             ));
         }
-        if let Some(f) = fees_opt
-            && f < 0
-        {
+        Some(t)
+    } else {
+        None
+    };
+
+    let fees_opt = if let Some(f_val) = c_map.get("fees_minor")
+        && !f_val.is_null()
+    {
+        let f: i64 = serde_json::from_value(f_val.clone()).map_err(|e| {
+            PresentationError::FieldInvalid(
+                format!("terms.commitments[{cid}].fees_minor"),
+                e.to_string(),
+            )
+        })?;
+        if f < 0 {
             return Err(PresentationError::FieldInvalid(
                 format!("terms.commitments[{cid}].fees_minor"),
                 "fees cannot be negative".to_string(),
             ));
         }
-
-        if let (Some(val), Some(tax), Some(fees)) = (decl_opt, tax_opt, fees_opt) {
-            if tax.saturating_add(fees) > val {
-                return Err(PresentationError::FieldInvalid(
-                    format!("terms.commitments[{cid}].tax_minor"),
-                    "tax plus fees exceeds declared value".to_string(),
-                ));
-            }
-        } else {
-            not_checked.push(format!("terms.commitments[{cid}].tax_fees_within_value"));
-        }
+        Some(f)
     } else {
-        if c_map.get("payee").is_some_and(|v| !v.is_null())
-            || c_map.get("payment_methods").is_some_and(|v| !v.is_null())
-            || c_map.get("tax_minor").is_some_and(|v| !v.is_null())
-            || c_map.get("fees_minor").is_some_and(|v| !v.is_null())
-        {
+        None
+    };
+
+    if let (Some(val), Some(tax), Some(fees)) = (decl_opt, tax_opt, fees_opt) {
+        if tax.saturating_add(fees) > val {
             return Err(PresentationError::FieldInvalid(
-                format!("terms.commitments[{cid}].currency_fields"),
-                "currency fields must be null on non-currency commitment".to_string(),
+                format!("terms.commitments[{cid}].tax_minor"),
+                "tax plus fees exceeds declared value".to_string(),
             ));
         }
-        if c_map.get("payee").is_none()
-            || c_map.get("payment_methods").is_none()
-            || c_map.get("tax_minor").is_none()
-            || c_map.get("fees_minor").is_none()
-        {
-            not_checked.push(format!("terms.commitments[{cid}].currency_fields_null"));
-        }
+    } else {
+        not_checked.push(format!("terms.commitments[{cid}].tax_fees_within_value"));
     }
 
     Ok(())
+}
+
+fn validate_non_currency_commitment_fields_partial(
+    c_map: &Map<String, Value>,
+    c_orig: &SignedCommitment,
+    not_checked: &mut Vec<String>,
+) -> Result<(), PresentationError> {
+    let cid = &c_orig.commitment_id;
+    if c_map.get("payee").is_some_and(|v| !v.is_null())
+        || c_map.get("payment_methods").is_some_and(|v| !v.is_null())
+        || c_map.get("tax_minor").is_some_and(|v| !v.is_null())
+        || c_map.get("fees_minor").is_some_and(|v| !v.is_null())
+    {
+        return Err(PresentationError::FieldInvalid(
+            format!("terms.commitments[{cid}].currency_fields"),
+            "currency fields must be null on non-currency commitment".to_string(),
+        ));
+    }
+    if c_map.get("payee").is_none()
+        || c_map.get("payment_methods").is_none()
+        || c_map.get("tax_minor").is_none()
+        || c_map.get("fees_minor").is_none()
+    {
+        not_checked.push(format!("terms.commitments[{cid}].currency_fields_null"));
+    }
+    Ok(())
+}
+
+fn validate_commitment_values_partial(
+    c_map: &Map<String, Value>,
+    c_orig: &SignedCommitment,
+    not_checked: &mut Vec<String>,
+) -> Result<(), PresentationError> {
+    let decl_opt = validate_declared_value_partial(c_map, c_orig)?;
+    if c_orig.kind == CommitmentKind::Currency {
+        validate_currency_commitment_fields_partial(c_map, c_orig, decl_opt, not_checked)
+    } else {
+        validate_non_currency_commitment_fields_partial(c_map, c_orig, not_checked)
+    }
 }
 
 fn validate_commitment_details_partial(

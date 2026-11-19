@@ -3,12 +3,15 @@
 
 use std::sync::Arc;
 
-use syneroym_identity::Identity;
+use syneroym_identity::{Identity, substrate};
 use syneroym_roym_core::{
-    disclosure::decode_disclosure,
+    deal::{DealTerms, LocalText},
+    disclosure::{Salt, decode_disclosure, disclosure_digest, encode_disclosure},
+    lang::LangTag,
     method::DisclosedVerifyInput,
+    record::{Envelope, RECORD_QUOTE, RecordDraft},
     testing::sd::{PlainQuote, conceal_quote},
-    transaction::{Answers, derive_quote_id},
+    transaction::{Answers, QUOTE_VERSION, derive_quote_id},
 };
 
 use crate::app::{
@@ -156,4 +159,153 @@ async fn verify_with_a_bad_disclosure_keeps_verified_and_names_the_problem() {
         "problem must be named"
     );
     assert!(verdict.hidden.contains(&"terms.scope".to_string()));
+}
+
+fn tamper_quote_commitment_disclosure_for_verify(
+    fix: &TestFixture,
+    cid: &str,
+    field_name: &str,
+    tampered_val: serde_json::Value,
+) -> (String, String) {
+    let cp_key = Arc::new(Identity::generate().expect("key"));
+    let cp_did = substrate::derive_did_key(&cp_key.public_key());
+    let quote_id = derive_quote_id("conv_1", &fix.master_did, 1).expect("quote id");
+    let terms = DealTerms {
+        currency: "INR".to_string(),
+        listing_id: None,
+        quote_expires_at_secs: 10_000,
+        home_exchange: None,
+        commitments: vec![
+            helpers::sample_service_commitment("c1"),
+            helpers::sample_currency_commitment("c2", &fix.master_did),
+        ],
+        scope: LocalText::plain(LangTag::parse_canonical("en").unwrap(), "Lesson deal"),
+        cancellation_terms: LocalText::plain(LangTag::parse_canonical("en").unwrap(), "Standard"),
+        refund_terms: LocalText::plain(LangTag::parse_canonical("en").unwrap(), "Full refund"),
+        dispute_path: LocalText::plain(LangTag::parse_canonical("en").unwrap(), "Mediation"),
+    };
+    let plain_q = PlainQuote {
+        quote_id: quote_id.clone(),
+        conversation: "conv_1".to_string(),
+        sequence: 1,
+        answers: Answers::Enquiry { record_id: "rec_enq_1".to_string() },
+        counterparty_did: cp_did,
+        terms,
+    };
+    let (mut quote_payload, disclosures) = conceal_quote(plain_q, 100);
+
+    let comm = quote_payload
+        .terms
+        .commitments
+        .iter_mut()
+        .find(|c| c.commitment_id == cid)
+        .expect("commitment");
+
+    let old_disc_idx = disclosures
+        .iter()
+        .position(|d| {
+            let dec = decode_disclosure(d).expect("decode");
+            if dec.name != field_name {
+                return false;
+            }
+            let dig = disclosure_digest(d);
+            comm.sd.contains(&dig)
+        })
+        .expect("field disclosure found in commitment");
+
+    let old_disc = &disclosures[old_disc_idx];
+    let old_dec = decode_disclosure(old_disc).expect("decode");
+    let old_digest = disclosure_digest(old_disc);
+
+    let salt = Salt::from_encoded(&old_dec.salt).expect("salt");
+    let new_disc = encode_disclosure(&salt, field_name, &tampered_val).expect("encode");
+    let new_digest = disclosure_digest(&new_disc);
+
+    let sd_pos = comm.sd.iter().position(|d| d == &old_digest).expect("digest in _sd");
+    comm.sd[sd_pos] = new_digest;
+    comm.sd.sort();
+
+    let draft = RecordDraft {
+        version: QUOTE_VERSION,
+        record_type: RECORD_QUOTE.to_string(),
+        subject: quote_id,
+        payload: serde_json::to_value(&quote_payload).expect("payload"),
+        expires_at_secs: Some(10_000),
+        supersedes: None,
+    };
+    let (mut q_env, q_bytes) =
+        Envelope::unsigned(draft, fix.master_did.clone(), None, 1_000).expect("envelope");
+    let sig = fix.master.sign(&q_bytes).to_bytes();
+    q_env.attach_signature(z32::encode(&sig)).expect("attach signature");
+    let quote_env = q_env.to_json().expect("json");
+    (quote_env, new_disc)
+}
+
+#[tokio::test]
+async fn quote_verify_refuses_invalid_revealed_fields() {
+    let fix = fixture();
+
+    // 1. String declared value
+    let (q_str, d_str) = tamper_quote_commitment_disclosure_for_verify(
+        &fix,
+        "c2",
+        "declared_value_minor",
+        serde_json::json!("free"),
+    );
+    let verdict = quote_ops::verify(
+        &fix.host,
+        DisclosedVerifyInput { envelope: q_str, disclosures: vec![d_str] },
+    )
+    .await
+    .unwrap();
+    assert!(verdict.verdict.verified);
+    assert_eq!(verdict.disclosure_refused, Some("field-invalid".to_string()));
+
+    // 2. Negative declared value
+    let (q_neg, d_neg) = tamper_quote_commitment_disclosure_for_verify(
+        &fix,
+        "c2",
+        "declared_value_minor",
+        serde_json::json!(-10),
+    );
+    let verdict = quote_ops::verify(
+        &fix.host,
+        DisclosedVerifyInput { envelope: q_neg, disclosures: vec![d_neg] },
+    )
+    .await
+    .unwrap();
+    assert!(verdict.verdict.verified);
+    assert_eq!(verdict.disclosure_refused, Some("field-invalid".to_string()));
+
+    // 3. Declared value over max
+    let (q_max, d_max) = tamper_quote_commitment_disclosure_for_verify(
+        &fix,
+        "c2",
+        "declared_value_minor",
+        serde_json::json!(1_000_000_000_000_001i64),
+    );
+    let verdict = quote_ops::verify(
+        &fix.host,
+        DisclosedVerifyInput { envelope: q_max, disclosures: vec![d_max] },
+    )
+    .await
+    .unwrap();
+    assert!(verdict.verdict.verified);
+    assert_eq!(verdict.disclosure_refused, Some("field-invalid".to_string()));
+
+    // 4. Bad payment methods
+    let (q_pm, d_pm) = tamper_quote_commitment_disclosure_for_verify(
+        &fix,
+        "c2",
+        "payment_methods",
+        serde_json::json!(vec!["invalid token!"]),
+    );
+    let verdict = quote_ops::verify(
+        &fix.host,
+        DisclosedVerifyInput { envelope: q_pm, disclosures: vec![d_pm] },
+    )
+    .await
+    .unwrap();
+    assert!(verdict.verdict.verified);
+    assert_eq!(verdict.disclosure_refused, Some("field-invalid".to_string()));
 }

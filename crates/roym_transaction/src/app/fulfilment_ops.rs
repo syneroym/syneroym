@@ -576,14 +576,5 @@ pub(crate) async fn verify<H: AppHost>(
 ) -> Reply<DisclosedVerdict<FulfilmentReceiptPayload>> {
     let now = clock::now_secs();
     let verdict = fulfilment::verify_fulfilment_receipt(&input.envelope, now);
-    let (shown, hidden, disclosure_refused) = if verdict.verified {
-        if let Some(ref p) = verdict.payload {
-            method::reveal_disclosed_fulfilment(p, &input.disclosures)
-        } else {
-            (None, Vec::new(), None)
-        }
-    } else {
-        (None, Vec::new(), None)
-    };
-    Ok(DisclosedVerdict { verdict, shown, hidden, disclosure_refused })
+    Ok(method::verify_disclosed(verdict, &input.disclosures, method::reveal_disclosed_fulfilment))
 }

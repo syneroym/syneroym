@@ -400,7 +400,7 @@ pub(crate) async fn verify<H: AppHost>(
         let (shown, hidden, disclosure_refused) = if let Some(ref p) = v_req.payload {
             method::reveal_disclosed_payment_request(p, &input.disclosures)
         } else {
-            (None, vec!["note".to_string()], None)
+            (None, method::all_payment_request_hidden(), None)
         };
         return Ok(PaymentVerdict {
             kind: "payment-request".to_string(),
@@ -428,11 +428,7 @@ pub(crate) async fn verify<H: AppHost>(
         let (shown, hidden, disclosure_refused) = if let Some(ref p) = v_ack.payload {
             method::reveal_disclosed_payment_ack(p, &input.disclosures)
         } else {
-            (
-                None,
-                vec!["method".to_string(), "reference".to_string(), "settlement_note".to_string()],
-                None,
-            )
+            (None, method::all_payment_ack_hidden(), None)
         };
         return Ok(PaymentVerdict {
             kind: "payment-acknowledgement".to_string(),
