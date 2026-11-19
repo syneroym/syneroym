@@ -5,9 +5,11 @@ use syneroym_roym_core::{
     lang::LangTag,
     listing::derive_slot_id,
     record::{Envelope, RECORD_AGREEMENT_RECEIPT, RECORD_ENQUIRY, RECORD_QUOTE, RecordDraft},
+    testing::sd::{PlainQuote, conceal_quote},
     transaction::{
         AGREEMENT_RECEIPT_VERSION, AgreementReceiptPayload, Answers, DealRole, ENQUIRY_VERSION,
         EnquiryPayload, QUOTE_VERSION, SignedTerms, TimeWindow, derive_enquiry_id, derive_quote_id,
+        verify_quote,
     },
 };
 
@@ -118,11 +120,19 @@ pub(crate) fn sample_terms_input(scope_text: &str) -> DealTermsInput {
 }
 
 pub(crate) fn build_and_sign_enquiry(enquirer: &Identity, now: u64) -> (String, String) {
+    build_and_sign_enquiry_conv(enquirer, "conv_1", now)
+}
+
+pub(crate) fn build_and_sign_enquiry_conv(
+    enquirer: &Identity,
+    conv: &str,
+    now: u64,
+) -> (String, String) {
     let enquirer_did = substrate::derive_did_key(&enquirer.public_key());
-    let enquiry_id = derive_enquiry_id("conv_1", &enquirer_did, 1).expect("derive enquiry id");
+    let enquiry_id = derive_enquiry_id(conv, &enquirer_did, 1).expect("derive enquiry id");
     let payload = EnquiryPayload {
         enquiry_id,
-        conversation: "conv_1".to_string(),
+        conversation: conv.to_string(),
         sequence: 1,
         categories: vec!["repair".to_string()],
         description: LocalText::plain(
@@ -137,7 +147,7 @@ pub(crate) fn build_and_sign_enquiry(enquirer: &Identity, now: u64) -> (String, 
     let draft = RecordDraft {
         version: ENQUIRY_VERSION,
         record_type: RECORD_ENQUIRY.to_string(),
-        subject: "conv_1".to_string(),
+        subject: conv.to_string(),
         payload: serde_json::to_value(&payload).expect("serialize enquiry"),
         expires_at_secs: None,
         supersedes: None,
@@ -181,7 +191,7 @@ pub(crate) fn build_and_sign_quote(
         ),
         quote_expires_at_secs: expires_at_secs,
     };
-    let plain = syneroym_roym_core::testing::sd::PlainQuote {
+    let plain = PlainQuote {
         quote_id,
         conversation: "conv_1".to_string(),
         sequence,
@@ -189,7 +199,7 @@ pub(crate) fn build_and_sign_quote(
         counterparty_did: counterparty_did.to_string(),
         terms: terms.clone(),
     };
-    let (payload, disclosures) = syneroym_roym_core::testing::sd::conceal_quote(plain, 1);
+    let (payload, disclosures) = conceal_quote(plain, 1);
 
     let draft = RecordDraft {
         version: QUOTE_VERSION,
@@ -205,7 +215,7 @@ pub(crate) fn build_and_sign_quote(
     env.attach_signature(z32::encode(&sig)).expect("attach signature");
     let record_id = env.record_id().expect("record id");
     let envelope_json = env.to_json().expect("envelope json");
-    let verdict = syneroym_roym_core::transaction::verify_quote(&envelope_json, now);
+    let verdict = verify_quote(&envelope_json, now);
     let held = HeldQuote { verdict, signed: payload, terms, disclosures };
     (held, record_id, envelope_json)
 }

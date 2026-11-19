@@ -119,7 +119,7 @@ pub fn card_body_upper_bound(
         envelope_version: ENVELOPE_VERSION,
         version: 1,
         record_type: card_type.to_string(),
-        issuer: "did:key:z00000000000000000000000000000000000000000000".to_string(),
+        issuer: "did:key:z0000000000000000000000000000000000000000000000000000000".to_string(),
         subject: "quo_0000000000000000000000000000000000000000000000000000".to_string(),
         issued_at_secs: 1_899_999_999,
         expires_at_secs: Some(1_899_999_999),

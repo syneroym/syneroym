@@ -2,8 +2,9 @@ use syneroym_identity::{Identity, substrate};
 use syneroym_roym_core::{
     deal::{Commitment, CommitmentKind, DealTerms, LocalText, ResourceKind},
     lang::LangTag,
-    progress::{AgreementProgressPayload, AgreementState},
+    progress::{self as core_progress, AgreementProgressPayload, AgreementState},
     record::{Envelope, RECORD_AGREEMENT_RECEIPT, RECORD_QUOTE, RecordDraft},
+    testing::sd::{PlainQuote, conceal_quote},
     transaction::{
         AGREEMENT_RECEIPT_VERSION, AgreementReceiptPayload, Answers, DealRole, QUOTE_VERSION,
         QuotePayload, ReceiptHalf, SignedTerms, derive_quote_id,
@@ -12,8 +13,8 @@ use syneroym_roym_core::{
 use z32;
 
 pub(crate) use crate::app::tests::refuse::helpers::{
-    build_and_sign_enquiry, build_and_sign_quote, make_counterparty_receipt, sample_terms_input,
-    slot_commitment,
+    build_and_sign_enquiry, build_and_sign_enquiry_conv, build_and_sign_quote,
+    make_counterparty_receipt, sample_terms_input, slot_commitment,
 };
 use crate::app::{
     AGREEMENT_PROGRESS, AGREEMENTS, AgreementRow, QUOTE_HISTORY,
@@ -140,7 +141,7 @@ async fn store_open_snapshot(
     counterparty_did: &str,
     agreed_at: u64,
 ) -> AgreementProgressPayload {
-    let snap1_payload = syneroym_roym_core::progress::open(
+    let snap1_payload = core_progress::open(
         quote_record_id.to_string(),
         "conv_1".to_string(),
         counterparty_did.to_string(),
@@ -200,7 +201,7 @@ pub(crate) async fn setup_agreed_currency_deal(
         quote_expires_at_secs: agreed_at + 3600,
     };
 
-    let plain = syneroym_roym_core::testing::sd::PlainQuote {
+    let plain = PlainQuote {
         quote_id: quote_id.clone(),
         conversation: "conv_1".to_string(),
         sequence: 1,
@@ -208,7 +209,7 @@ pub(crate) async fn setup_agreed_currency_deal(
         counterparty_did: counterparty_did.clone(),
         terms: terms.clone(),
     };
-    let (payload, disclosures) = syneroym_roym_core::testing::sd::conceal_quote(plain, 1);
+    let (payload, disclosures) = conceal_quote(plain, 1);
     disclosures::store(&fix.host, &quote_record_id, RECORD_QUOTE, &disclosures, agreed_at)
         .await
         .unwrap();

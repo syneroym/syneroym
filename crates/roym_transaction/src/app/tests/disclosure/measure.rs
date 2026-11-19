@@ -8,7 +8,7 @@ use syneroym_roym_core::{
 };
 
 use super::helpers::{
-    build_and_sign_enquiry, sample_deal_terms, sample_terms_input, slot_commitment,
+    build_and_sign_enquiry_conv, sample_deal_terms, sample_terms_input, slot_commitment,
 };
 use crate::app::{
     DISCLOSURES, ENQUIRY_HISTORY,
@@ -24,7 +24,8 @@ async fn quote_measure_matches_quote_set() {
     let cp = Identity::generate().expect("cp");
     let now = fix.host.now();
 
-    let (enq_rec, enq_env) = build_and_sign_enquiry(&cp, now);
+    let conv_id = format!("conv:{}", "0".repeat(64));
+    let (enq_rec, enq_env) = build_and_sign_enquiry_conv(&cp, &conv_id, now);
     put_bytes(&fix.host, ENQUIRY_HISTORY, &enq_rec, enq_env.as_bytes()).await.unwrap();
 
     let (slot_comm, _) = slot_commitment("c1", "listing_123", 1_000_000, 1_003_600);
@@ -73,6 +74,10 @@ async fn quote_measure_matches_quote_set() {
     assert!(measure.fits);
     assert_eq!(measure.details.len(), 1);
     assert_eq!(measure.details[0].commitment_id, "c1");
+    assert_eq!(substrate::derive_did_key(&cp.public_key()).len(), 64);
+    assert_eq!(fix.master_did.len(), 64);
+    assert_eq!(conv_id.len(), 69);
+    assert_eq!(set_out.record_id.len(), 56);
 
     let body = fix.host.sent_cards().last().unwrap().clone();
     assert!(measure.card_bytes >= body.len() as u64);

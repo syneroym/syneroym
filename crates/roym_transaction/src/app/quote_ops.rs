@@ -282,7 +282,8 @@ pub(crate) async fn measure_at<H: AppHost>(
         answers: Answers::Enquiry {
             record_id: "rec_0000000000000000000000000000000000000000000000000000".to_string(),
         },
-        counterparty_did: "did:key:z00000000000000000000000000000000000000000000".to_string(),
+        counterparty_did: "did:key:z0000000000000000000000000000000000000000000000000000000"
+            .to_string(),
         terms: concealed.signed,
     };
 
