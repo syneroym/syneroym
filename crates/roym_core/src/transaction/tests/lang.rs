@@ -1,7 +1,7 @@
 use syneroym_identity::{Identity, substrate};
 
 use super::*;
-use crate::{deal::TextTranslation, lang::TranslationError};
+use crate::{deal::TextTranslation, lang::TranslationError, testing::sd};
 
 pub(super) fn sample_tag(s: &str) -> LangTag {
     LangTag::parse(s).expect("valid tag")
@@ -143,8 +143,8 @@ fn halves_agree_differs_on_terms_lang() {
     terms_hi.refund_terms.lang = sample_tag("hi");
     terms_hi.dispute_path.lang = sample_tag("hi");
 
-    let signed_base = base_terms.conceal(&mut crate::testing::sd::seeded_salts(30)).unwrap().signed;
-    let signed_hi = terms_hi.conceal(&mut crate::testing::sd::seeded_salts(31)).unwrap().signed;
+    let signed_base = base_terms.conceal(&mut sd::seeded_salts(30)).unwrap().signed;
+    let signed_hi = terms_hi.conceal(&mut sd::seeded_salts(31)).unwrap().signed;
 
     let half_c = AgreementReceiptPayload {
         quote_record_id: "rec_quote123".to_string(),

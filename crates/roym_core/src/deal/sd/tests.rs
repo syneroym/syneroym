@@ -1,5 +1,5 @@
 use serde_json::json;
-use syneroym_identity::substrate::canonicalize_json_value;
+use syneroym_identity::substrate;
 use syneroym_signed_record::seeded_salt;
 
 use super::*;
@@ -78,7 +78,7 @@ fn no_signed_payload_holds_a_hidden_value() {
     let mut salts = (0..).map(|n| seeded_salt(10, n));
     let concealed = terms.conceal(&mut salts).unwrap();
 
-    let signed_terms_canonical = serde_json::to_string(&canonicalize_json_value(
+    let signed_terms_canonical = serde_json::to_string(&substrate::canonicalize_json_value(
         &serde_json::to_value(&concealed.signed).unwrap(),
     ))
     .unwrap();
@@ -91,9 +91,10 @@ fn no_signed_payload_holds_a_hidden_value() {
         counterparty_did: "did:key:zCounterparty".to_string(),
         terms: concealed.signed.clone(),
     };
-    let quote_canonical =
-        serde_json::to_string(&canonicalize_json_value(&serde_json::to_value(&quote).unwrap()))
-            .unwrap();
+    let quote_canonical = serde_json::to_string(&substrate::canonicalize_json_value(
+        &serde_json::to_value(&quote).unwrap(),
+    ))
+    .unwrap();
 
     let author_half = AgreementReceiptPayload {
         quote_record_id: "rec_quote_1".to_string(),
@@ -104,7 +105,7 @@ fn no_signed_payload_holds_a_hidden_value() {
         viewed_via_mt: false,
         terms: concealed.signed.clone(),
     };
-    let author_half_canonical = serde_json::to_string(&canonicalize_json_value(
+    let author_half_canonical = serde_json::to_string(&substrate::canonicalize_json_value(
         &serde_json::to_value(&author_half).unwrap(),
     ))
     .unwrap();
@@ -118,9 +119,10 @@ fn no_signed_payload_holds_a_hidden_value() {
         viewed_via_mt: false,
         terms: concealed.signed.clone(),
     };
-    let cp_half_canonical =
-        serde_json::to_string(&canonicalize_json_value(&serde_json::to_value(&cp_half).unwrap()))
-            .unwrap();
+    let cp_half_canonical = serde_json::to_string(&substrate::canonicalize_json_value(
+        &serde_json::to_value(&cp_half).unwrap(),
+    ))
+    .unwrap();
 
     let snap = progress::open(
         "rec_agr_1".to_string(),
@@ -130,9 +132,10 @@ fn no_signed_payload_holds_a_hidden_value() {
         &terms,
         None,
     );
-    let snap_canonical =
-        serde_json::to_string(&canonicalize_json_value(&serde_json::to_value(&snap).unwrap()))
-            .unwrap();
+    let snap_canonical = serde_json::to_string(&substrate::canonicalize_json_value(
+        &serde_json::to_value(&snap).unwrap(),
+    ))
+    .unwrap();
 
     let markers = [
         "scope-marker-71",
@@ -181,9 +184,10 @@ fn check_settlement_payloads_hold_no_markers() {
         50,
     )
     .0;
-    let req_canon =
-        serde_json::to_string(&canonicalize_json_value(&serde_json::to_value(&pay_req).unwrap()))
-            .unwrap();
+    let req_canon = serde_json::to_string(&substrate::canonicalize_json_value(
+        &serde_json::to_value(&pay_req).unwrap(),
+    ))
+    .unwrap();
     assert!(!req_canon.contains("note-marker-73"));
 
     let pay_ack = sd::conceal_payment_ack(
@@ -202,9 +206,10 @@ fn check_settlement_payloads_hold_no_markers() {
         51,
     )
     .0;
-    let ack_canon =
-        serde_json::to_string(&canonicalize_json_value(&serde_json::to_value(&pay_ack).unwrap()))
-            .unwrap();
+    let ack_canon = serde_json::to_string(&substrate::canonicalize_json_value(
+        &serde_json::to_value(&pay_ack).unwrap(),
+    ))
+    .unwrap();
     assert!(!ack_canon.contains("method-marker"));
     assert!(!ack_canon.contains("ref-marker-74"));
     assert!(!ack_canon.contains("note-marker-73"));
@@ -222,9 +227,10 @@ fn check_settlement_payloads_hold_no_markers() {
         52,
     )
     .0;
-    let ful_canon =
-        serde_json::to_string(&canonicalize_json_value(&serde_json::to_value(&ful).unwrap()))
-            .unwrap();
+    let ful_canon = serde_json::to_string(&substrate::canonicalize_json_value(
+        &serde_json::to_value(&ful).unwrap(),
+    ))
+    .unwrap();
     assert!(!ful_canon.contains("note-marker-73"));
 }
 

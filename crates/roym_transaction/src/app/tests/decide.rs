@@ -8,10 +8,16 @@ use syneroym_roym_core::{
     },
     lang::LangTag,
     listing::derive_slot_id,
-    progress::{AgreementEvent, AgreementProgressPayload, AgreementState, CommitmentProgress},
+    progress::{
+        AgreementEvent, AgreementProgressPayload, AgreementState, CancelReason, CommitmentProgress,
+    },
     record::{Envelope, RECORD_AGREEMENT_RECEIPT, RECORD_QUOTE, RecordDraft},
+    testing::{
+        TestHost,
+        sd::{PlainQuote, conceal_quote},
+    },
     transaction::{
-        AGREEMENT_RECEIPT_VERSION, AgreementReceiptPayload, Answers, DealRole, QUOTE_VERSION,
+        self, AGREEMENT_RECEIPT_VERSION, AgreementReceiptPayload, Answers, DealRole, QUOTE_VERSION,
         ReceiptHalf, TimeWindow, derive_quote_id,
     },
 };
@@ -26,7 +32,7 @@ use crate::app::{
     disclosures::HeldQuote,
     get_row,
     hold::{HoldLedgerRow, Reservations, SeatLedger, SeatLedgerRow, hold_id, seat_id},
-    progress_ops,
+    progress_ops, put_row,
 };
 
 fn author_service_commitment(id: &str) -> Commitment {
@@ -118,7 +124,7 @@ fn build_and_sign_author_quote(
         ),
         quote_expires_at_secs: expires_at_secs,
     };
-    let plain = syneroym_roym_core::testing::sd::PlainQuote {
+    let plain = PlainQuote {
         quote_id,
         conversation: "conv_1".to_string(),
         sequence: 1,
@@ -126,7 +132,7 @@ fn build_and_sign_author_quote(
         counterparty_did: counterparty_did.to_string(),
         terms: terms.clone(),
     };
-    let (payload, disclosures) = syneroym_roym_core::testing::sd::conceal_quote(plain, 1);
+    let (payload, disclosures) = conceal_quote(plain, 1);
 
     let draft = RecordDraft {
         version: QUOTE_VERSION,
@@ -142,7 +148,7 @@ fn build_and_sign_author_quote(
     env.attach_signature(z32::encode(&sig)).expect("attach signature");
     let record_id = env.record_id().expect("record id");
     let envelope_json = env.to_json().expect("envelope json");
-    let verdict = syneroym_roym_core::transaction::verify_quote(&envelope_json, now);
+    let verdict = transaction::verify_quote(&envelope_json, now);
     let held = HeldQuote { verdict, signed: payload, terms, disclosures };
     (held, record_id, envelope_json)
 }
@@ -342,7 +348,7 @@ async fn repeat_branch_reuses_stored_snapshot_one() {
         reason: None,
         created_at_secs: now,
     };
-    crate::app::put_row(&f.host, LEDGER, &dec_key, &dec).await.unwrap();
+    put_row(&f.host, LEDGER, &dec_key, &dec).await.unwrap();
 
     // First run succeeds
     let res = decide::run(&f.host, &mut row, &quote, now).await;
@@ -452,7 +458,7 @@ async fn repeat_past_expiry_without_countersign_leaves_row_deciding() {
         reason: None,
         created_at_secs: now,
     };
-    crate::app::put_row(&f.host, LEDGER, &dec_key, &dec).await.unwrap();
+    put_row(&f.host, LEDGER, &dec_key, &dec).await.unwrap();
 
     // Now advance clock past quote expiry
     let expired_now = now + 500;
@@ -466,7 +472,7 @@ async fn repeat_past_expiry_without_countersign_leaves_row_deciding() {
 }
 
 async fn seed_snapshot_history(
-    host: &syneroym_roym_core::testing::TestHost,
+    host: &TestHost,
     quote_rec_id: &str,
     cp_did: &str,
     master_did: &str,
@@ -499,9 +505,7 @@ async fn seed_snapshot_history(
         message_id: Some("msg_1".to_string()),
         stored_at_secs: now,
     };
-    crate::app::put_row(host, AGREEMENT_PROGRESS, &snapshot_id(quote_rec_id, 1), &snap1_row)
-        .await
-        .unwrap();
+    put_row(host, AGREEMENT_PROGRESS, &snapshot_id(quote_rec_id, 1), &snap1_row).await.unwrap();
 
     let snap2 = AgreementProgressPayload {
         agreement: quote_rec_id.to_string(),
@@ -530,9 +534,7 @@ async fn seed_snapshot_history(
         message_id: Some("msg_2".to_string()),
         stored_at_secs: now,
     };
-    crate::app::put_row(host, AGREEMENT_PROGRESS, &snapshot_id(quote_rec_id, 2), &snap2_row)
-        .await
-        .unwrap();
+    put_row(host, AGREEMENT_PROGRESS, &snapshot_id(quote_rec_id, 2), &snap2_row).await.unwrap();
 }
 
 #[tokio::test]
@@ -573,7 +575,7 @@ async fn transition_retries_and_advances_when_snapshot_key_already_exists() {
         }],
         updated_at_secs: now,
     };
-    crate::app::put_row(&f.host, AGREEMENTS, &quote_rec_id, &row).await.unwrap();
+    put_row(&f.host, AGREEMENTS, &quote_rec_id, &row).await.unwrap();
 
     seed_snapshot_history(&f.host, &quote_rec_id, &cp_did, &f.master_did, now).await;
 
@@ -603,7 +605,7 @@ async fn transition_retries_and_advances_when_snapshot_key_already_exists() {
 async fn repeat_after_the_agreement_moved_keeps_its_state() {
     let f = fixture();
     let (quote, quote_rec_id, mut row, now) = setup_service_agreement(&f);
-    crate::app::put_row(&f.host, AGREEMENTS, &quote_rec_id, &row).await.unwrap();
+    put_row(&f.host, AGREEMENTS, &quote_rec_id, &row).await.unwrap();
 
     let agreed = decide::run(&f.host, &mut row, &quote, now).await.expect("initial decide");
     assert!(agreed);
@@ -613,7 +615,7 @@ async fn repeat_after_the_agreement_moved_keeps_its_state() {
     let cancelled = progress_ops::transition_at(
         &f.host,
         &quote_rec_id,
-        AgreementEvent::Cancel { reason: syneroym_roym_core::progress::CancelReason::Other },
+        AgreementEvent::Cancel { reason: CancelReason::Other },
         now,
     )
     .await
@@ -634,7 +636,7 @@ async fn repeat_after_the_agreement_moved_keeps_its_state() {
 async fn crash_before_the_decision_row_is_final_is_finished_on_the_next_sync() {
     let f = fixture();
     let (quote, quote_rec_id, mut row, now) = setup_service_agreement(&f);
-    crate::app::put_row(&f.host, AGREEMENTS, &quote_rec_id, &row).await.unwrap();
+    put_row(&f.host, AGREEMENTS, &quote_rec_id, &row).await.unwrap();
 
     // Inject crash when writing to agreements collection
     f.host.crash_on_write("agreements", &quote_rec_id);
@@ -665,7 +667,7 @@ async fn crash_before_the_decision_row_is_final_is_finished_on_the_next_sync() {
 async fn cancel_before_the_decision_row_is_final_is_kept() {
     let f = fixture();
     let (quote, quote_rec_id, mut row, now) = setup_service_agreement(&f);
-    crate::app::put_row(&f.host, AGREEMENTS, &quote_rec_id, &row).await.unwrap();
+    put_row(&f.host, AGREEMENTS, &quote_rec_id, &row).await.unwrap();
 
     // Inject crash when writing to agreements collection on initial decide
     f.host.crash_on_write("agreements", &quote_rec_id);
@@ -680,7 +682,7 @@ async fn cancel_before_the_decision_row_is_final_is_kept() {
     let cancelled = progress_ops::transition_at(
         &f.host,
         &quote_rec_id,
-        AgreementEvent::Cancel { reason: syneroym_roym_core::progress::CancelReason::Other },
+        AgreementEvent::Cancel { reason: CancelReason::Other },
         now,
     )
     .await

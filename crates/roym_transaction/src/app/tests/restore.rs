@@ -19,6 +19,7 @@ use syneroym_roym_core::{
     record::{
         Envelope, RECORD_AGREEMENT_PROGRESS, RECORD_AGREEMENT_RECEIPT, RECORD_QUOTE, RecordDraft,
     },
+    testing::sd::{PlainQuote, conceal_quote},
     transaction::{
         AGREEMENT_RECEIPT_VERSION, AgreementReceiptPayload, Answers, DealRole, QUOTE_VERSION,
         QuotePayload, ReceiptHalf, SignedTerms, TimeWindow, derive_quote_id,
@@ -31,7 +32,7 @@ use crate::app::{
         CountersignRow, DecisionRow, DecisionState, SnapshotRow, countersign_id, decision_id,
         recover_deciding_rows, snapshot_id,
     },
-    disclosures, get_row, put_bytes, put_row,
+    disclosures, get_row, progress_ops, put_bytes, put_row,
     sync::{self, SyncInput},
     tests::{TestFixture, fixture},
 };
@@ -85,7 +86,7 @@ async fn build_test_quote(
         dispute_path: LocalText::plain(LangTag::parse_canonical("en").expect("lang"), "None"),
         quote_expires_at_secs: now + 3600,
     };
-    let plain = syneroym_roym_core::testing::sd::PlainQuote {
+    let plain = PlainQuote {
         quote_id,
         conversation: "conv_1".to_string(),
         sequence: 1,
@@ -93,7 +94,7 @@ async fn build_test_quote(
         counterparty_did: cp_did.to_string(),
         terms: terms.clone(),
     };
-    let (payload, disclosures) = syneroym_roym_core::testing::sd::conceal_quote(plain, 1);
+    let (payload, disclosures) = conceal_quote(plain, 1);
     let draft = RecordDraft {
         version: QUOTE_VERSION,
         record_type: "quote".to_string(),
@@ -361,9 +362,9 @@ async fn restored_writer_continues_seq_from_its_cards() {
     assert_eq!(snap2.unwrap().record_id, p2_rec_id);
 
     // Cancel after restore: next snapshot is seq 3
-    let cancel_res = crate::app::progress_ops::cancel_at(
+    let cancel_res = progress_ops::cancel_at(
         &f.host,
-        crate::app::progress_ops::AgreementCancelInput {
+        progress_ops::AgreementCancelInput {
             agreement: q_rec_id.clone(),
             reason: CancelReason::CounterpartyAsked,
         },

@@ -5,7 +5,7 @@ use syneroym_roym_core::{
     deal::{Commitment, CommitmentKind, DealTerms, Details, ExtensionRef, LocalText, ResourceKind},
     lang::LangTag,
     listing::derive_slot_id,
-    progress::{AgreementState, CancelReason},
+    progress::{self as core_progress, AgreementProgressPayload, AgreementState, CancelReason},
     record::{Envelope, RECORD_AGREEMENT_RECEIPT, RECORD_QUOTE, RecordDraft},
     testing::sd::{PlainQuote, conceal_quote},
     transaction::{
@@ -130,8 +130,8 @@ async fn store_open_snapshot(
     terms: &DealTerms,
     counterparty_did: &str,
     agreed_at: u64,
-) -> syneroym_roym_core::progress::AgreementProgressPayload {
-    let snap1_payload = syneroym_roym_core::progress::open(
+) -> AgreementProgressPayload {
+    let snap1_payload = core_progress::open(
         quote_record_id.to_string(),
         "conv_1".to_string(),
         counterparty_did.to_string(),

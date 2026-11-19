@@ -12,7 +12,8 @@ use syneroym_roym_core::{
     deal::{Commitment, CommitmentKind, DealTerms, LocalText, ResourceKind},
     lang::LangTag,
     record::{Envelope, RECORD_DEAL_DECLINE, RecordDraft},
-    testing::sd::{self, PlainQuote},
+    signing,
+    testing::sd::{self, PlainQuote, conceal_quote},
     transaction::{
         Answers, DEAL_DECLINE_VERSION, DealDeclinePayload, DealRole, QUOTE_VERSION, QuotePayload,
         ReceiptHalf, derive_quote_id,
@@ -93,7 +94,7 @@ fn sample_deal_terms() -> DealTerms {
 fn sample_quote_context(quote_rec_id: &str) -> QuotesByRecordId {
     let mut quotes = HashMap::new();
     let terms = sample_deal_terms();
-    let plain = syneroym_roym_core::testing::sd::PlainQuote {
+    let plain = PlainQuote {
         quote_id: "quote_1".to_string(),
         conversation: "conv_1".to_string(),
         sequence: 1,
@@ -101,7 +102,7 @@ fn sample_quote_context(quote_rec_id: &str) -> QuotesByRecordId {
         terms,
         answers: Answers::Enquiry { record_id: "enq_1".to_string() },
     };
-    let (payload, _disclosures) = syneroym_roym_core::testing::sd::conceal_quote(plain, 1);
+    let (payload, _disclosures) = conceal_quote(plain, 1);
 
     quotes.insert(
         quote_rec_id.to_string(),
@@ -681,7 +682,7 @@ async fn decline_of_older_quote_version_in_history_imports_successfully() {
     );
 
     let mut bundle = Bundle::new(f.master_did.clone(), SCHEMA_VERSION, sections).unwrap();
-    syneroym_roym_core::signing::sign_bundle(&f.host, &mut bundle, now).await.unwrap();
+    signing::sign_bundle(&f.host, &mut bundle, now).await.unwrap();
 
     let res = backup::import(&f.host, ImportInput { bundle }).await;
     assert!(res.is_ok(), "import should succeed: {:?}", res.err());

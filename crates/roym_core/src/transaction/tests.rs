@@ -7,6 +7,7 @@ use super::*;
 use crate::{
     deal::{Commitment, CommitmentKind, DealTerms, ResourceKind},
     lang::TranslationError,
+    testing::sd,
 };
 
 mod lang;
@@ -90,7 +91,7 @@ pub(super) fn sample_enquiry(issuer: &str) -> EnquiryPayload {
 }
 
 pub(super) fn sample_signed_terms() -> SignedTerms {
-    let mut salts = crate::testing::sd::seeded_salts(20);
+    let mut salts = sd::seeded_salts(20);
     sample_terms().conceal(&mut salts).unwrap().signed
 }
 

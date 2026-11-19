@@ -8,6 +8,7 @@ use crate::{
     },
     lang::LangTag,
     listing,
+    testing::sd,
     transaction::{AgreementReceiptPayload, DealRole, QuotePayload, TimeWindow},
 };
 
@@ -382,10 +383,8 @@ fn quote_for_an_enquiry_and_for_a_want_give_equal_receipts() {
         sample_service_commitment("c1", DealRole::QuoteAuthor, 100),
         sample_currency_commitment("c2", DealRole::Counterparty, 100),
     ]);
-    let signed_terms = terms
-        .conceal(&mut crate::testing::sd::seeded_salts(42))
-        .expect("conceal terms for test")
-        .signed;
+    let signed_terms =
+        terms.conceal(&mut sd::seeded_salts(42)).expect("conceal terms for test").signed;
 
     let quote_enquiry = QuotePayload {
         quote_id: "quo_1".to_string(),

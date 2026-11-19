@@ -2,7 +2,11 @@
 //! `viewed_via_mt` in the signed acceptance, on both builds.
 
 use serde_json::{Value, json};
-use syneroym_roym_core::transaction;
+use syneroym_roym_core::{
+    deal::{Answers, DealTerms},
+    testing::sd::{PlainQuote, conceal_quote},
+    transaction,
+};
 use syneroym_signed_record::Envelope;
 
 use super::{
@@ -59,18 +63,16 @@ fn peer_quote_hindi_with_english(conv: &str, req_record_id: &str) -> (String, St
         "refund_terms": hi_text("वापसी की शर्तें", "Full refund if unsatisfactory"),
         "dispute_path": hi_text("विवाद निवारण", "Contact disputes@example.com")
     });
-    let terms: syneroym_roym_core::deal::DealTerms = serde_json::from_value(terms_val).unwrap();
-    let plain = syneroym_roym_core::testing::sd::PlainQuote {
+    let terms: DealTerms = serde_json::from_value(terms_val).unwrap();
+    let plain = PlainQuote {
         quote_id: quote_id.clone(),
         conversation: conv.to_string(),
         sequence: 1,
-        answers: syneroym_roym_core::deal::Answers::Enquiry {
-            record_id: req_record_id.to_string(),
-        },
+        answers: Answers::Enquiry { record_id: req_record_id.to_string() },
         counterparty_did: owner_did(),
         terms,
     };
-    let (payload, disclosures) = syneroym_roym_core::testing::sd::conceal_quote(plain, 1);
+    let (payload, disclosures) = conceal_quote(plain, 1);
     let payload_val = serde_json::to_value(&payload).unwrap();
     let env_json = sign_as_peer(
         transaction::RECORD_QUOTE,

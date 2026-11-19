@@ -10,8 +10,9 @@ use syneroym_roym_core::{
     listing::derive_slot_id,
     progress::AgreementState,
     record::{Envelope, RECORD_AGREEMENT_RECEIPT, RECORD_QUOTE, RecordDraft},
+    testing::sd::{PlainQuote, conceal_quote},
     transaction::{
-        AGREEMENT_RECEIPT_VERSION, AgreementReceiptPayload, Answers, DealRole, QUOTE_VERSION,
+        self, AGREEMENT_RECEIPT_VERSION, AgreementReceiptPayload, Answers, DealRole, QUOTE_VERSION,
         ReceiptHalf, SignedTerms, TimeWindow, derive_quote_id,
     },
 };
@@ -90,7 +91,7 @@ fn build_quote(
         dispute_path: LocalText::plain(LangTag::parse_canonical("en").expect("lang"), "Arb"),
         quote_expires_at_secs: expires_at_secs,
     };
-    let plain = syneroym_roym_core::testing::sd::PlainQuote {
+    let plain = PlainQuote {
         quote_id,
         conversation: "conv_1".to_string(),
         sequence: 1,
@@ -98,7 +99,7 @@ fn build_quote(
         counterparty_did: counterparty_did.to_string(),
         terms: terms.clone(),
     };
-    let (payload, disclosures) = syneroym_roym_core::testing::sd::conceal_quote(plain, 1);
+    let (payload, disclosures) = conceal_quote(plain, 1);
 
     let draft = RecordDraft {
         version: QUOTE_VERSION,
@@ -113,7 +114,7 @@ fn build_quote(
     env.attach_signature(z32::encode(&sig)).expect("sig");
     let q_rec_id = env.record_id().expect("rec id");
     let env_json = env.to_json().expect("env json");
-    let verdict = syneroym_roym_core::transaction::verify_quote(&env_json, now);
+    let verdict = transaction::verify_quote(&env_json, now);
     let held = HeldQuote { verdict, signed: payload, terms, disclosures };
     (held, q_rec_id, env_json)
 }

@@ -7,8 +7,14 @@ use syneroym_roym_core::{
     lang::LangTag,
     progress::{self, AgreementState, RECORD_AGREEMENT_PROGRESS},
     record::{Envelope, RECORD_QUOTE, RecordDraft},
-    testing::TestHost,
-    transaction::{Answers, QUOTE_VERSION, ReceiptHalf, derive_quote_id, verify_quote},
+    testing::{
+        TestHost,
+        sd::{PlainQuote, conceal_quote},
+    },
+    transaction::{
+        AGREEMENT_RECEIPT_VERSION, Answers, QUOTE_VERSION, RECORD_AGREEMENT_RECEIPT, ReceiptHalf,
+        derive_quote_id, verify_quote,
+    },
 };
 
 use super::helpers::{build_and_sign_quote, make_counterparty_receipt, slot_commitment};
@@ -138,13 +144,9 @@ async fn two_syncs_send_one_refusal() {
         &quote_payload.signed.terms,
         now,
     );
-    let card_body = card::card_body(
-        syneroym_roym_core::transaction::RECORD_AGREEMENT_RECEIPT,
-        syneroym_roym_core::transaction::AGREEMENT_RECEIPT_VERSION,
-        &cp_env,
-        &[],
-    )
-    .expect("card body");
+    let card_body =
+        card::card_body(RECORD_AGREEMENT_RECEIPT, AGREEMENT_RECEIPT_VERSION, &cp_env, &[])
+            .expect("card body");
 
     mock_two_incoming_receipts(&fix.host, counterparty_did, now, card_body);
 
@@ -327,7 +329,7 @@ async fn store_sample_slot_quote(
         dispute_path: LocalText::plain(LangTag::parse_canonical("en").expect("lang"), "Arb"),
         quote_expires_at_secs: now + 3600,
     };
-    let plain = syneroym_roym_core::testing::sd::PlainQuote {
+    let plain = PlainQuote {
         quote_id,
         conversation: "conv_1".to_string(),
         sequence: 1,
@@ -335,7 +337,7 @@ async fn store_sample_slot_quote(
         counterparty_did: fix.master_did.clone(),
         terms: terms.clone(),
     };
-    let (payload, disclosures) = syneroym_roym_core::testing::sd::conceal_quote(plain, 1);
+    let (payload, disclosures) = conceal_quote(plain, 1);
 
     let draft = RecordDraft {
         version: QUOTE_VERSION,

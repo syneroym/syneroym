@@ -12,9 +12,11 @@ use syneroym_roym_core::{
     listing::derive_slot_id,
     progress::AgreementState,
     record::{Envelope, RECORD_DEAL_DECLINE, RECORD_ENQUIRY, RECORD_QUOTE, RecordDraft},
+    testing::sd::{PlainQuote, conceal_quote},
     transaction::{
         Answers, DEAL_DECLINE_VERSION, DealDeclinePayload, DealRole, ENQUIRY_VERSION,
-        EnquiryPayload, QUOTE_VERSION, QuotePayload, ReceiptHalf, TimeWindow, derive_quote_id,
+        EnquiryPayload, QUOTE_VERSION, QuotePayload, ReceiptHalf, TimeWindow, derive_enquiry_id,
+        derive_quote_id, verify_deal_decline,
     },
 };
 
@@ -75,7 +77,7 @@ fn make_quote_envelope(
         dispute_path: LocalText::plain(LangTag::parse_canonical("en").expect("lang"), "None"),
         quote_expires_at_secs: now + 3600,
     };
-    let plain = syneroym_roym_core::testing::sd::PlainQuote {
+    let plain = PlainQuote {
         quote_id,
         conversation: "conv_1".to_string(),
         sequence: 1,
@@ -83,7 +85,7 @@ fn make_quote_envelope(
         counterparty_did: cp_did.to_string(),
         terms: terms.clone(),
     };
-    let (payload, disclosures) = syneroym_roym_core::testing::sd::conceal_quote(plain, 1);
+    let (payload, disclosures) = conceal_quote(plain, 1);
     let draft = RecordDraft {
         version: QUOTE_VERSION,
         record_type: "quote".to_string(),
@@ -134,8 +136,7 @@ fn make_enquiry_envelope(
     now: u64,
 ) -> (String, String, EnquiryPayload) {
     let author_did = substrate::derive_did_key(&author.public_key());
-    let enquiry_id = syneroym_roym_core::transaction::derive_enquiry_id(conv, &author_did, 1)
-        .expect("enquiry id");
+    let enquiry_id = derive_enquiry_id(conv, &author_did, 1).expect("enquiry id");
     let payload = EnquiryPayload {
         enquiry_id: enquiry_id.clone(),
         conversation: conv.to_string(),
@@ -278,7 +279,7 @@ async fn decline_with_hindi_lang() {
 
     let dec_row: decline_ops::DeclineRow =
         get_row(&f.host, LEDGER, &decline_ops::decline_id(&quote.quote_id)).await.unwrap().unwrap();
-    let v = syneroym_roym_core::transaction::verify_deal_decline(&dec_row.envelope, now);
+    let v = verify_deal_decline(&dec_row.envelope, now);
     assert!(v.verified);
     let payload = v.payload.unwrap();
     let reason = payload.reason.unwrap();

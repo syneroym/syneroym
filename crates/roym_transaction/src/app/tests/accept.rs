@@ -8,6 +8,10 @@ use syneroym_roym_core::{
     listing::derive_slot_id,
     progress::{self, AGREEMENT_PROGRESS_VERSION, RECORD_AGREEMENT_PROGRESS},
     record::{Envelope, RECORD_AGREEMENT_RECEIPT, RECORD_QUOTE, RecordDraft},
+    testing::{
+        TestHost,
+        sd::{PlainQuote, conceal_quote},
+    },
     transaction::{
         AGREEMENT_RECEIPT_VERSION, AgreementReceiptPayload, Answers, DealRole, QUOTE_VERSION,
         SignedTerms, TimeWindow, derive_quote_id, verify_quote,
@@ -114,7 +118,7 @@ fn build_and_sign_quote(
         ),
         quote_expires_at_secs: expires_at_secs,
     };
-    let plain = syneroym_roym_core::testing::sd::PlainQuote {
+    let plain = PlainQuote {
         quote_id,
         conversation: "conv_1".to_string(),
         sequence: 1,
@@ -122,7 +126,7 @@ fn build_and_sign_quote(
         counterparty_did: counterparty_did.to_string(),
         terms: terms.clone(),
     };
-    let (payload, disclosures) = syneroym_roym_core::testing::sd::conceal_quote(plain, 1);
+    let (payload, disclosures) = conceal_quote(plain, 1);
 
     let draft = RecordDraft {
         version: QUOTE_VERSION,
@@ -556,7 +560,7 @@ fn make_author_countersigned_half_card(
 }
 
 fn mock_author_half_delivered_at(
-    host: &syneroym_roym_core::testing::TestHost,
+    host: &TestHost,
     author_did: String,
     delivery_time: u64,
     card_body: String,
