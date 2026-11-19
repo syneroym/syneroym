@@ -165,7 +165,10 @@ fn no_signed_payload_holds_a_hidden_value() {
     assert!(!snap_canonical.contains(&track_end_str), "snapshot leaked track end");
     assert!(!signed_terms_canonical.contains(&track_end_str));
 
-    // Settlement payloads
+    check_settlement_payloads_hold_no_markers();
+}
+
+fn check_settlement_payloads_hold_no_markers() {
     let pay_req = sd::conceal_payment_request(
         PlainPaymentRequest {
             agreement: "rec_agr".to_string(),

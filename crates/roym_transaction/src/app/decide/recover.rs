@@ -149,11 +149,11 @@ pub(crate) async fn finish_deciding_row_with_reservations<H: AppHost, R: Reserva
         stored_snap = get_row(host, AGREEMENT_PROGRESS, &snap_key).await?;
     }
 
-    if let Some(ref snap_row) = stored_snap {
+    if let Some(snap_row) = stored_snap {
         if snap_row.snapshot.state == AgreementState::NotFormed {
-            return repeat_not_formed(host, &mut row, stored_snap.unwrap(), &reservations, now)
-                .await;
+            return repeat_not_formed(host, &mut row, snap_row, &reservations, now).await;
         }
+        stored_snap = Some(snap_row);
     }
 
     if stored_cs.is_none() && now >= row.terms.quote_expires_at_secs {
@@ -166,14 +166,14 @@ pub(crate) async fn finish_deciding_row_with_reservations<H: AppHost, R: Reserva
         Err(_) => return Ok(false),
     };
 
-    if let Some(snap_row) = stored_snap {
-        if let Some(cs) = stored_cs {
+    match (stored_snap, stored_cs) {
+        (Some(snap_row), Some(cs)) => {
             return repeat_both(host, &mut row, snap_row, cs, &held.disclosures, now).await;
         }
-    }
-
-    if let Some(cs) = stored_cs {
-        return repeat_countersigned(host, &mut row, cs, &held.disclosures, now).await;
+        (None, Some(cs)) => {
+            return repeat_countersigned(host, &mut row, cs, &held.disclosures, now).await;
+        }
+        _ => {}
     }
 
     let (reserved, failed) = reserve_author_holds(host, &row, &reservations, now).await?;

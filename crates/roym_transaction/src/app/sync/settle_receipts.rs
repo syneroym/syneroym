@@ -212,9 +212,47 @@ async fn record_payment_request_half<H: AppHost>(
     Ok(())
 }
 
-pub(crate) async fn file_payment_ack_card<H: AppHost>(
+fn decode_ack_payload<'a>(
+    v: &'a RecordVerdict<payment::PaymentAcknowledgementPayload>,
+    disclosures: &[String],
+    conversation: &str,
+) -> Result<(&'a payment::PaymentAcknowledgementPayload, PaymentAckHidden), String> {
+    let p = match v.payload.as_ref() {
+        Some(p) => p,
+        None => return Err("missing payload".to_string()),
+    };
+    let hidden: PaymentAckHidden = match reveal_hidden_strict(&p.sd, &PAYMENT_ACK_SET, disclosures)
+    {
+        Ok(h) => h,
+        Err(e) => return Err(format!("payment acknowledgement disclosures: {}", e.code())),
+    };
+    if let Err(e) = hidden.validate() {
+        return Err(format!("payment acknowledgement hidden: {}", e.code()));
+    }
+    if p.conversation != conversation {
+        return Err("card names another conversation".to_string());
+    }
+    Ok((p, hidden))
+}
+
+async fn finish_ack_card_put<H: AppHost>(
     host: &H,
     mut row: CardRow,
+    record_id: Option<String>,
+    is_repeat: bool,
+    plain_data: Value,
+) -> Result<(), String> {
+    row.known = true;
+    row.verified = true;
+    row.repeat = is_repeat;
+    row.record_id = record_id;
+    row.data = Some(plain_data);
+    put_card(host, &row).await
+}
+
+pub(crate) async fn file_payment_ack_card<H: AppHost>(
+    host: &H,
+    row: CardRow,
     envelope: &str,
     disclosures: &[String],
     conversation: &str,
@@ -227,29 +265,10 @@ pub(crate) async fn file_payment_ack_card<H: AppHost>(
             v.reason.unwrap_or_else(|| "payment acknowledgement does not verify".to_string());
         return refuse_card(host, row, reason).await;
     }
-    let p = match v.payload.as_ref() {
-        Some(p) => p,
-        None => return refuse_card(host, row, "missing payload").await,
+    let (p, _) = match decode_ack_payload(&v, disclosures, conversation) {
+        Ok(res) => res,
+        Err(reason) => return refuse_card(host, row, reason).await,
     };
-    let hidden: PaymentAckHidden = match reveal_hidden_strict(&p.sd, &PAYMENT_ACK_SET, disclosures)
-    {
-        Ok(h) => h,
-        Err(e) => {
-            return refuse_card(
-                host,
-                row,
-                format!("payment acknowledgement disclosures: {}", e.code()),
-            )
-            .await;
-        }
-    };
-    if let Err(e) = hidden.validate() {
-        return refuse_card(host, row, format!("payment acknowledgement hidden: {}", e.code()))
-            .await;
-    }
-    if p.conversation != conversation {
-        return refuse_card(host, row, "card names another conversation").await;
-    }
     let agr: Option<AgreementRow> = get_row(host, AGREEMENTS, &p.agreement).await?;
     let agr = match validate_ack_agreement(agr, p) {
         Ok(a) => a,
@@ -306,13 +325,7 @@ pub(crate) async fn file_payment_ack_card<H: AppHost>(
 
     let p_val = serde_json::to_value(p).unwrap_or(Value::Null);
     let plain_data = disclosures::plain_view(&p_val, disclosures);
-
-    row.known = true;
-    row.verified = true;
-    row.repeat = is_repeat;
-    row.record_id = v.record_id.clone();
-    row.data = Some(plain_data);
-    put_card(host, &row).await?;
+    finish_ack_card_put(host, row, v.record_id.clone(), is_repeat, plain_data).await?;
 
     if owner == agr.quote_author_did {
         let _ = progress_ops::transition_at(
