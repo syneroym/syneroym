@@ -259,3 +259,67 @@ fn oversized_record_string_and_oversized_disclosures_are_refused() {
         verify_presentation(&pres_huge_disc, 1_100).expect_err("huge disclosures refused");
     assert_eq!(err_disc.code(), "quote-too-large");
 }
+
+#[test]
+fn optional_settlement_fields_shown_as_null_are_accepted() {
+    let fix = setup_test_deal(sample_two_commitment_terms());
+
+    let (req_env, req_discs) = sign_test_payment_request(
+        &fix.author_key,
+        &fix.quote_record_id,
+        &fix.author_did,
+        &fix.counterparty_did,
+        "c2",
+    );
+
+    let (ack_env, ack_discs) = sign_test_payment_ack(
+        &fix.author_key,
+        &fix.quote_record_id,
+        &fix.author_did,
+        &fix.counterparty_did,
+        "c2",
+        SettlementRole::Receiver,
+    );
+
+    let (ful_env, ful_discs) = sign_test_fulfilment_receipt(
+        &fix.author_key,
+        &fix.quote_record_id,
+        &fix.author_did,
+        &fix.counterparty_did,
+        "c1",
+        SettlementRole::Giver,
+    );
+
+    let mut all_disclosures = Vec::new();
+    all_disclosures.extend(req_discs);
+    all_disclosures.extend(ack_discs);
+    all_disclosures.extend(ful_discs);
+
+    let presentation = Presentation {
+        presentation_version: 1,
+        records: vec![
+            fix.quote_env,
+            fix.author_half_env,
+            fix.cp_half_env,
+            req_env,
+            ack_env,
+            ful_env,
+        ],
+        disclosures: all_disclosures,
+    };
+
+    let view = verify_presentation(&presentation, 1_300)
+        .expect("optional settlement fields disclosed as null must be accepted");
+    assert_eq!(view.settlement.len(), 3);
+
+    let req_view = &view.settlement[0];
+    assert_eq!(req_view.shown.get("note"), Some(&Value::Null));
+
+    let ack_view = &view.settlement[1];
+    assert_eq!(ack_view.shown.get("method"), Some(&Value::Null));
+    assert_eq!(ack_view.shown.get("reference"), Some(&Value::Null));
+    assert_eq!(ack_view.shown.get("settlement_note"), Some(&Value::Null));
+
+    let ful_view = &view.settlement[2];
+    assert_eq!(ful_view.shown.get("settlement_note"), Some(&Value::Null));
+}

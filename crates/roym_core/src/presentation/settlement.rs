@@ -97,15 +97,6 @@ fn reveal_settlement_record(
 
     validate_revealed_settlement_fields(&revealed.fields, target.set)?;
 
-    for (k, val) in &revealed.fields {
-        if val.is_null() {
-            return Err(PresentationError::FieldInvalid(
-                k.clone(),
-                "required field cannot be null".to_string(),
-            ));
-        }
-    }
-
     let hidden = revealed.hidden.into_iter().map(|s| s.to_string()).collect();
     Ok(SettlementView {
         record_id: target.record_id.to_string(),
