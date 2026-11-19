@@ -444,29 +444,35 @@ pub(crate) async fn file_fulfilment_card<H: AppHost>(
         });
 
     let rec_id = v.record_id.clone().unwrap_or_default();
-    disclosures::store(host, &rec_id, RECORD_FULFILMENT_RECEIPT, disclosures, now).await?;
-
-    let args = RecordFulfilmentHalfArgs {
-        f_id: &f_id,
-        fulfilments,
-        deal_role,
-        rec_id: &rec_id,
-        envelope,
-        issuer: v.issuer.as_deref().unwrap_or_default(),
-        issued_at: v.issued_at_secs.unwrap_or(now),
-        commitment_id: &p.commitment_id,
-        agreement: &p.agreement,
-        role: p.role,
-        owner,
-        quote_author_did: &agr.quote_author_did,
-        now,
+    let existing = match deal_role {
+        DealRole::Counterparty => fulfilments.counterparty.as_ref(),
+        DealRole::QuoteAuthor => fulfilments.quote_author.as_ref(),
     };
-    match record_fulfilment_half_card(host, args).await {
-        Ok(true) => {}
-        Ok(false) => {
+
+    if let Some(ex) = existing {
+        if ex.record_id == rec_id {
             row.repeat = true;
+        } else {
+            return refuse_card(host, row, "a second receipt from this party").await;
         }
-        Err(e) => return refuse_card(host, row, e).await,
+    } else {
+        disclosures::store(host, &rec_id, RECORD_FULFILMENT_RECEIPT, disclosures, now).await?;
+        let args = RecordFulfilmentHalfArgs {
+            f_id: &f_id,
+            fulfilments,
+            deal_role,
+            rec_id: &rec_id,
+            envelope,
+            issuer: v.issuer.as_deref().unwrap_or_default(),
+            issued_at: v.issued_at_secs.unwrap_or(now),
+            commitment_id: &p.commitment_id,
+            agreement: &p.agreement,
+            role: p.role,
+            owner,
+            quote_author_did: &agr.quote_author_did,
+            now,
+        };
+        record_fulfilment_half_card(host, args).await?;
     }
 
     let p_val = serde_json::to_value(p).unwrap_or(Value::Null);
@@ -506,20 +512,14 @@ struct RecordFulfilmentHalfArgs<'a> {
 async fn record_fulfilment_half_card<H: AppHost>(
     host: &H,
     args: RecordFulfilmentHalfArgs<'_>,
-) -> Result<bool, String> {
+) -> Result<(), String> {
     let mut fulfilments = args.fulfilments;
-    let existing = match args.deal_role {
+    let target = match args.deal_role {
         DealRole::Counterparty => &mut fulfilments.counterparty,
         DealRole::QuoteAuthor => &mut fulfilments.quote_author,
     };
 
-    if let Some(ex) = existing {
-        if ex.record_id == args.rec_id {
-            return Ok(false);
-        }
-        return Err("a second receipt from this party".to_string());
-    }
-    *existing = Some(ReceiptHalf {
+    *target = Some(ReceiptHalf {
         record_id: args.rec_id.to_string(),
         envelope: args.envelope.to_string(),
         issuer: args.issuer.to_string(),
@@ -542,7 +542,7 @@ async fn record_fulfilment_half_card<H: AppHost>(
         .await;
     }
 
-    Ok(true)
+    Ok(())
 }
 
 fn validate_ack_agreement(

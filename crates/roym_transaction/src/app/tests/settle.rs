@@ -1,5 +1,8 @@
+use std::sync::Arc;
+
 use syneroym_identity::{Identity, substrate};
 use syneroym_roym_core::{
+    backup::ImportInput,
     clock,
     conversation::Direction,
     deal::{
@@ -9,27 +12,29 @@ use syneroym_roym_core::{
     disclosure::{FULFILMENT_SET, reveal_hidden_strict},
     fulfilment::{FULFILMENT_RECEIPT_VERSION, FulfilmentHidden, FulfilmentReceiptPayload},
     lang::LangTag,
-    progress::AgreementState,
+    method::NoParams,
+    progress::{self as core_progress, AgreementProgressPayload, AgreementState},
     record::{
         Envelope, RECORD_AGREEMENT_RECEIPT, RECORD_FULFILMENT_RECEIPT, RECORD_QUOTE, RecordDraft,
     },
-    testing::sd::{PlainQuote, conceal_fulfilment, conceal_quote},
+    testing::sd::{PlainFulfilment, PlainQuote, conceal_fulfilment, conceal_quote},
     transaction::{
-        AGREEMENT_RECEIPT_VERSION, AgreementReceiptPayload, Answers, DealRole, ReceiptHalf,
-        SignedTerms, derive_quote_id,
+        AGREEMENT_RECEIPT_VERSION, AgreementReceiptPayload, Answers, DealRole, QUOTE_VERSION,
+        ReceiptHalf, SignedTerms, derive_quote_id,
     },
 };
 use z32;
 
-use super::fixture;
+use super::{fixture, fixture_with_master};
 use crate::app::{
-    AGREEMENT_PROGRESS, AGREEMENTS, AgreementRow, CardRow, FULFILMENTS, FulfilmentsRow, SendState,
+    AGREEMENT_PROGRESS, AGREEMENTS, AgreementRef, AgreementRow, CardRow, FULFILMENTS,
+    FulfilmentsRow, QUOTE_HISTORY, SendState, backup,
     decide::{SnapshotRow, snapshot_id},
     disclosures, ensure_collections,
     fulfilment_ops::{self, FulfilmentSignInput, fulfilment_id},
     get_row,
     payment_ops::{self, PaymentAckInput, PaymentRequestInput},
-    progress, progress_ops, put_row,
+    progress, progress_ops, put_bytes, put_row,
     sync::settle_receipts::file_fulfilment_card,
 };
 
@@ -127,8 +132,8 @@ async fn store_open_snapshot(
     terms: &DealTerms,
     counterparty_did: &str,
     agreed_at: u64,
-) -> syneroym_roym_core::progress::AgreementProgressPayload {
-    let snap1_payload = syneroym_roym_core::progress::open(
+) -> AgreementProgressPayload {
+    let snap1_payload = core_progress::open(
         quote_record_id.to_string(),
         "conv_1".to_string(),
         counterparty_did.to_string(),
@@ -190,7 +195,7 @@ fn make_signed_fulfilment_envelope(
     counterparty: &Identity,
     cp_did: &str,
     agreement: &str,
-    payload: &syneroym_roym_core::fulfilment::FulfilmentReceiptPayload,
+    payload: &FulfilmentReceiptPayload,
     issued_at_secs: u64,
 ) -> String {
     let draft = RecordDraft {
@@ -217,7 +222,6 @@ async fn setup_agreed_deal(
     ensure_collections(&fix.host).await.expect("ensure collections");
 
     let counterparty_did = substrate::derive_did_key(&counterparty.public_key());
-    let quote_record_id = "rec_quote_settle_test_1".to_string();
     let quote_id = derive_quote_id("conv_1", &fix.master_did, 1).expect("derive quote id");
 
     let terms = DealTerms {
@@ -250,6 +254,21 @@ async fn setup_agreed_deal(
         terms: terms.clone(),
     };
     let (payload, disclosures) = conceal_quote(plain, 1);
+    let draft = RecordDraft {
+        version: QUOTE_VERSION,
+        record_type: RECORD_QUOTE.to_string(),
+        subject: "conv_1".to_string(),
+        payload: serde_json::to_value(&payload).expect("serialize quote payload"),
+        expires_at_secs: Some(agreed_at + 3600),
+        supersedes: None,
+    };
+    let (mut q_env, q_bytes) =
+        Envelope::unsigned(draft, fix.master_did.clone(), None, agreed_at).expect("draft quote");
+    let sig = fix.master.sign(&q_bytes).to_bytes();
+    q_env.attach_signature(z32::encode(&sig)).expect("attach signature");
+    let quote_record_id = q_env.record_id().unwrap();
+    let q_json = q_env.to_json().expect("json");
+    put_bytes(&fix.host, QUOTE_HISTORY, &quote_record_id, q_json.as_bytes()).await.unwrap();
     disclosures::store(&fix.host, &quote_record_id, RECORD_QUOTE, &disclosures, agreed_at)
         .await
         .unwrap();
@@ -324,7 +343,7 @@ async fn receiver_half_settles_with_a_settlement_note() {
     // Counterparty receiver delivers fulfilment card with a settlement note
     let cp_did = substrate::derive_did_key(&counterparty.public_key());
     let note_text = "Piano was tuned excellently and sounds wonderful";
-    let plain_fulfilment = syneroym_roym_core::testing::sd::PlainFulfilment {
+    let plain_fulfilment = PlainFulfilment {
         agreement: agreement.clone(),
         conversation: "conv_1".to_string(),
         commitment_id: "c1".to_string(),
@@ -380,7 +399,7 @@ async fn receiver_half_settles_with_a_settlement_note() {
     // Progress snapshot advances to Fulfilled and Closed
     let prog = progress_ops::progress_at(
         &fix.host,
-        crate::app::AgreementRef { agreement: agreement.clone() },
+        AgreementRef { agreement: agreement.clone() },
         agreed_at + 30,
     )
     .await
@@ -540,7 +559,7 @@ fn sign_bad_fulfilment_env(
     role: SettlementRole,
     at: u64,
 ) -> (String, Vec<String>) {
-    let plain = syneroym_roym_core::testing::sd::PlainFulfilment {
+    let plain = PlainFulfilment {
         agreement: agreement.to_string(),
         conversation: "conv_1".to_string(),
         commitment_id: "c1".to_string(),
@@ -638,4 +657,81 @@ async fn a_half_from_the_wrong_party_is_not_filed() {
     .expect("file bad role card");
 
     assert!(res2.refused);
+}
+
+#[tokio::test]
+async fn second_fulfilment_receipt_from_same_party_is_refused_and_stores_no_disclosures() {
+    let fix = fixture();
+    let counterparty = Identity::generate().expect("generate counterparty");
+    let agreed_at = clock::now_secs();
+    let (agreement, _terms) =
+        setup_agreed_deal(&fix, &counterparty, vec![make_service_commitment("c1")], agreed_at)
+            .await;
+    let cp_did = substrate::derive_did_key(&counterparty.public_key());
+
+    // 1. Counterparty files a first valid fulfilment receipt (receiver role)
+    let (env1, disc1) = sign_bad_fulfilment_env(
+        &counterparty,
+        &cp_did,
+        &agreement,
+        &cp_did,
+        &fix.master_did,
+        SettlementRole::Receiver,
+        agreed_at + 10,
+    );
+    let card1 = make_fulfilment_card_row("msg_f1", &cp_did, agreed_at + 10);
+    let res1 = file_fulfilment_card(
+        &fix.host,
+        card1,
+        &env1,
+        &disc1,
+        "conv_1",
+        agreed_at + 10,
+        &fix.master_did,
+    )
+    .await
+    .expect("file first fulfilment receipt");
+    assert!(res1.filed && !res1.refused);
+
+    let rec_id1 = Envelope::from_json(&env1).unwrap().record_id().unwrap();
+    let stored1 = disclosures::load(&fix.host, &rec_id1).await.unwrap();
+    assert!(stored1.is_some());
+
+    // 2. Counterparty sends a second, different fulfilment receipt for the same
+    //    commitment
+    let (env2, disc2) = sign_bad_fulfilment_env(
+        &counterparty,
+        &cp_did,
+        &agreement,
+        &cp_did,
+        &fix.master_did,
+        SettlementRole::Receiver,
+        agreed_at + 20,
+    );
+    let rec_id2 = Envelope::from_json(&env2).unwrap().record_id().unwrap();
+    assert_ne!(rec_id1, rec_id2);
+
+    let card2 = make_fulfilment_card_row("msg_f2", &cp_did, agreed_at + 20);
+    let res2 = file_fulfilment_card(
+        &fix.host,
+        card2,
+        &env2,
+        &disc2,
+        "conv_1",
+        agreed_at + 20,
+        &fix.master_did,
+    )
+    .await
+    .expect("file second fulfilment receipt");
+    assert!(res2.refused);
+
+    // No disclosures row should exist for the refused second receipt
+    let stored2 = disclosures::load(&fix.host, &rec_id2).await.unwrap();
+    assert!(stored2.is_none(), "disclosures row must not exist for refused second receipt");
+
+    // Export and import must succeed
+    let bundle = backup::export(&fix.host, NoParams {}).await.expect("export bundle");
+    let f2 = fixture_with_master(Arc::clone(&fix.master));
+    let import_out = backup::import(&f2.host, ImportInput { bundle }).await.expect("import bundle");
+    assert!(import_out.imported);
 }
