@@ -1,6 +1,6 @@
 //! Backup verification and import for the `disclosures` section.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use serde_json::Value;
 use syneroym_app_host::{AppDataLayer, AppHost, types::data_layer::RecordWriteValue};
@@ -41,6 +41,23 @@ pub(crate) fn validate_disclosures_section(
     let disc_rows = bundle_sections.get("disclosures").unwrap_or(&empty);
     let record_envelopes = collect_bundle_record_envelopes(bundle_sections);
 
+    let mut quote_record_ids = HashSet::new();
+    for r in bundle_sections.get("quotes").unwrap_or(&empty) {
+        if let Some(payload) = r.get("payload")
+            && let Some(rid) = payload.get("record_id").and_then(Value::as_str)
+            && !rid.is_empty()
+        {
+            quote_record_ids.insert(rid.to_string());
+        }
+    }
+    for r in bundle_sections.get("quote_history").unwrap_or(&empty) {
+        if let Some(id) = r.get("id").and_then(Value::as_str)
+            && !id.is_empty()
+        {
+            quote_record_ids.insert(id.to_string());
+        }
+    }
+
     let mut by_record_id = HashMap::with_capacity(disc_rows.len());
     let mut rows = Vec::with_capacity(disc_rows.len());
     let mut revealed_quotes = HashMap::new();
@@ -76,6 +93,12 @@ pub(crate) fn validate_disclosures_section(
 
         by_record_id.insert(row.record_id.clone(), row.disclosures.clone());
         rows.push(row);
+    }
+
+    for rid in &quote_record_ids {
+        if !by_record_id.contains_key(rid) {
+            return Err(Response::invalid_params(format!("quote '{rid}': disclosures missing")));
+        }
     }
 
     Ok(ValidatedDisclosures { by_record_id, revealed_quotes, rows })
@@ -185,10 +208,13 @@ fn collect_bundle_record_envelopes(
     }
 
     for r in sections.get("quote_history").unwrap_or(&empty) {
-        if let Some(id) = r.get("id").and_then(Value::as_str)
-            && let Some(payload) = r.get("payload").and_then(Value::as_str)
-        {
-            map.insert(id.to_string(), payload.to_string());
+        if let Some(id) = r.get("id").and_then(Value::as_str) {
+            let env = r
+                .get("payload")
+                .and_then(|p| p.get("envelope").and_then(Value::as_str).or_else(|| p.as_str()));
+            if let Some(env) = env {
+                map.insert(id.to_string(), env.to_string());
+            }
         }
     }
 

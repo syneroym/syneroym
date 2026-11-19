@@ -448,3 +448,55 @@ async fn import_refuses_agreement_terms_that_differ_from_the_quote() {
     let err = res.unwrap_err();
     assert!(err.error.as_ref().unwrap().message.contains("agreement terms differ from quote"));
 }
+
+#[tokio::test]
+async fn import_refuses_a_quote_without_disclosures() {
+    let f1 = fixture();
+    let now = f1.host.now();
+    let cp = Identity::generate().expect("cp");
+    let cp_did = substrate::derive_did_key(&cp.public_key());
+
+    let (q_env, q_rec_id, q_payload, _disclosures) =
+        make_quote_with_disclosures(&f1.master, &cp_did, now);
+
+    let mut sections = BTreeMap::new();
+    let q_ptr = RecordPointerRow {
+        envelope: q_env.clone(),
+        record_id: q_rec_id.clone(),
+        id: q_payload.quote_id.clone(),
+        conversation: "conv_1".to_string(),
+        sequence: 1,
+        issuer: f1.master_did.clone(),
+        mine: true,
+        updated_at_secs: now,
+        version_count: 1,
+        issued_at_secs: now,
+        request_record_id: None,
+        counterparty_did: Some(cp_did.clone()),
+        declined_at_secs: None,
+        decline_note: None,
+    };
+    sections.insert(
+        SECTION_QUOTES.to_string(),
+        vec![json!({ "id": q_payload.quote_id, "payload": q_ptr })],
+    );
+    sections.insert(
+        SECTION_QUOTE_HISTORY.to_string(),
+        vec![json!({ "id": q_rec_id, "payload": { "envelope": q_env } })],
+    );
+
+    let mut bundle = Bundle::new(f1.master_did.clone(), SCHEMA_VERSION, sections).unwrap();
+    signing::sign_bundle(&f1.host, &mut bundle, now).await.unwrap();
+
+    let f2 = fixture_with_master(Arc::clone(&f1.master));
+    let res = backup::import(&f2.host, ImportInput { bundle }).await;
+    assert!(res.is_err());
+    let err = res.unwrap_err();
+    let err_obj = err.error.as_ref().unwrap();
+    assert_eq!(err_obj.code, -32602);
+    assert!(
+        err_obj.message.contains(&format!("quote '{q_rec_id}': disclosures missing")),
+        "unexpected error message: {}",
+        err_obj.message
+    );
+}
