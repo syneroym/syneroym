@@ -18,6 +18,7 @@
     "counterparty_did": "string",
     "currency": "string",
     "quote_author_did": "string",
+    "quote_checked": "boolean",
     "quote_expires_at_secs": "number",
     "quote_id": "string"
   },

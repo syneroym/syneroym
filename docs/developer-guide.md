@@ -2586,6 +2586,8 @@ roym deal.verify-presentation '<presentation_json>' | jq '{verified: (.records |
 
 This checks all cryptographic signatures, ensures all records belong to the same deal, validates that author and counterparty halves agree, verifies the selective disclosure digests, and checks writer state without leaking any unrevealed values. The response reports verified records, shown terms, hidden field paths, commitment outcomes, settlement views, and writer checks.
 
+Every receipt half, payment record, fulfilment receipt and progress snapshot must name the same two parties as the deal. If one does not, the call fails with `party-mismatch`. Every payment or fulfilment record must point to a commitment of the right kind in the terms. If one does not, the call fails with `commitment-mismatch`. When the presentation includes the quote, the parties come from the quote's signer and its `counterparty_did`, and `deal.quote_checked` is `true`. When it has no quote, the parties are only what the agreement halves claim, and `deal.quote_checked` is `false`.
+
 ### 6.9. Errors and unknown fields
 
 `POST /rpc` answers HTTP 200 with a JSON-RPC `error` object for most wrong calls. These are the codes a client meets:
