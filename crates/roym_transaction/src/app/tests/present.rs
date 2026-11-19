@@ -15,13 +15,13 @@ use crate::app::{
     QUOTE_HISTORY, disclosures, get_bytes,
     present_ops::{self, PresentInclude, PresentInput},
     quote_ops,
-    tests::{TestFixture, disclosure::helpers::setup_agreed_currency_deal, fixture},
+    tests::{TestFixture, disclosure::helpers, fixture},
 };
 
 async fn setup_present_test() -> (TestFixture, String, String, Vec<String>) {
     let fix = fixture();
     let cp_key = Arc::new(Identity::generate().expect("key"));
-    let (quote_record_id, _terms) = setup_agreed_currency_deal(&fix, &cp_key, 1_000).await;
+    let (quote_record_id, _terms) = helpers::setup_agreed_currency_deal(&fix, &cp_key, 1_000).await;
 
     let quote_bytes = get_bytes(&fix.host, QUOTE_HISTORY, &quote_record_id)
         .await
@@ -59,7 +59,7 @@ async fn present_shows_only_the_named_paths() {
 
     assert_eq!(view.deal.agreement, quote_record_id);
     let scope_val = view.terms.get("scope").expect("scope is shown");
-    assert_eq!(scope_val.get("text").and_then(serde_json::Value::as_str), Some("Lesson deal"));
+    assert_eq!(scope_val["text"].as_str(), Some("Lesson deal"));
 
     assert!(view.hidden.contains(&"terms.cancellation_terms".to_string()));
     assert!(view.hidden.contains(&"terms.commitments[c1].declared_value_minor".to_string()));
@@ -127,9 +127,12 @@ async fn verify_with_disclosures_shows_them() {
 async fn verify_with_a_bad_disclosure_keeps_verified_and_names_the_problem() {
     let (fix, _quote_record_id, quote_env, _discs) = setup_present_test().await;
 
-    let (_agr_id, terms) =
-        setup_agreed_currency_deal(&fix, &Arc::new(Identity::generate().expect("key")), 2_000)
-            .await;
+    let (_agr_id, terms) = helpers::setup_agreed_currency_deal(
+        &fix,
+        &Arc::new(Identity::generate().expect("key")),
+        2_000,
+    )
+    .await;
     let quote_id = derive_quote_id("conv_1", &fix.master_did, 2).expect("quote id");
     let plain_q = PlainQuote {
         quote_id,

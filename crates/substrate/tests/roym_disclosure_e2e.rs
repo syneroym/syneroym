@@ -15,15 +15,18 @@ use tempfile::TempDir;
 
 mod common;
 
-use common::{roym, roym_flow};
+use common::{
+    roym::{self, RoymNode},
+    roym_flow,
+};
 
 struct ThreeNodeFixture {
     _dir_bob: TempDir,
     _dir_alice: TempDir,
     _dir_carol: TempDir,
-    bob: roym::RoymNode,
-    alice: roym::RoymNode,
-    carol: roym::RoymNode,
+    bob: RoymNode,
+    alice: RoymNode,
+    carol: RoymNode,
     conv_bob: String,
     conv_alice: String,
     req_rec_id: String,
@@ -44,7 +47,7 @@ async fn setup_three_nodes() -> Option<ThreeNodeFixture> {
     let owner_alice = Identity::generate().unwrap();
     let owner_carol = Identity::generate().unwrap();
 
-    let bob = roym::RoymNode::boot_ready(
+    let bob = RoymNode::boot_ready(
         "node-bob",
         dir_bob.path().to_path_buf(),
         None,
@@ -55,7 +58,7 @@ async fn setup_three_nodes() -> Option<ThreeNodeFixture> {
 
     let shared_registry = Some(bob.registry_url.clone());
 
-    let alice = roym::RoymNode::boot_ready(
+    let alice = RoymNode::boot_ready(
         "node-alice",
         dir_alice.path().to_path_buf(),
         shared_registry.clone(),
@@ -64,7 +67,7 @@ async fn setup_three_nodes() -> Option<ThreeNodeFixture> {
     )
     .await;
 
-    let carol = roym::RoymNode::boot_ready(
+    let carol = RoymNode::boot_ready(
         "node-carol",
         dir_carol.path().to_path_buf(),
         shared_registry,

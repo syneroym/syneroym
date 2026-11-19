@@ -5,7 +5,7 @@ use syneroym_signed_record::{Envelope, RecordDraft};
 use super::*;
 use crate::{
     deal::{
-        Answers, Commitment, CommitmentKind, DealTerms, LocalText, ResourceKind,
+        Answers, Commitment, CommitmentKind, DealTerms, LocalText, ResourceKind, sd::SignedTerms,
         transition::CommitmentState,
     },
     lang::LangTag,
@@ -110,7 +110,7 @@ struct TestDealFixture {
     author_half_env: String,
     cp_half_env: String,
     disclosures: Vec<String>,
-    terms: crate::deal::sd::SignedTerms,
+    terms: SignedTerms,
 }
 
 fn setup_test_deal(terms: DealTerms) -> TestDealFixture {

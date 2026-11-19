@@ -1267,6 +1267,13 @@ with the question.
   disclosures, not from the bundle's own copy.
 - **AG-8.** The presentation part that C1 left comes in C2's second part
   (C2b).
+- **Presentation verifier check order.** Agreement match across all records
+  (`MultipleDeals`) is checked before comparing receipt halves
+  (`HalvesDisagree`), so records from different deals are refused with
+  `multiple-deals` rather than `halves-disagree` or `terms-mismatch`.
+- **Presentation show paths.** `deal.present` accepts `show` paths for fields
+  that are hidden by default; requesting a path that is not hidden by default
+  or unincluded returns `-32602`.
 
 ## Close-out
 
