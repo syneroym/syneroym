@@ -1781,3 +1781,77 @@ Open after this round: 0.**
   are involved, so a party can only mislead about their own deal.
   *Fix:* require one `conversation` value across all records that carry it.
   *Status:* Fixed (5dd7ec2d)
+
+## Code review round 6 — Claude Opus 5.5 (Claude Code), 2026-11-19
+
+This round re-checks the round-5 fixes on `19f8823a` (fix commit
+`5dd7ec2d`). The code was written by Gemini 3.8 Flash.
+
+**CI.** `gh pr checks 371` on `19f8823a`: every job passed, Playwright E2E
+included (run 44533670036). `mise run verify` was not run on this sha.
+
+**What I ran:** `presentation::` 41 passed; `present` 8 passed;
+`method_contract` 36 passed; clippy with `-D warnings` on `roym_core` and
+`roym_transaction` clean; `check-file-lengths`, `check-change-docs` and
+`check-duplication` (6.88%) pass. One temporary test for R34, removed with
+`git checkout`.
+
+**Round-5 items.** R25, R27 to R33 are fixed as their status lines say:
+
+- R25: `check_settlement_record` finds the signer's deal role and requires the
+  settlement role to match the commitment's giver. A payment request must come
+  from the receiver. `SettlementView` now has `issuer`.
+- R27: a snapshot whose issuer is not a party (or a party's signing key) is
+  refused with `party-mismatch`.
+- R28: a lone counterparty half without the quote gives `missing-terms`.
+- R29: shown scheduling `details` with a shown `window` go through
+  `validate_scheduling_slot_details`.
+- R30, R31: the view has `supersedes`, `observed_at_secs`, `revocation_status`
+  and `deal.quote_expired`.
+- R32: records over 128 KiB and disclosures over the total budget are refused.
+- R33: one `conversation` across the quote, snapshot and settlement records.
+
+R26 is fixed on the terms side: `null` is refused only for the required
+fields, and stays valid for `listing_id`, `window`, `location`, `eep`, and
+the other optional fields. The settlement side goes too far (R34).
+
+**Summary: 2 findings (R34, R35): 0 blocker, 1 major, 1 minor.
+Open after this round: 2.**
+
+### New findings
+
+- [ ] **R34 — major.** *Where:* `crates/roym_core/src/presentation/settlement.rs:100`
+  to `:107` (`reveal_settlement_record`).
+  *Problem:* The R26 fix refuses every shown `null` on a settlement record.
+  But every hidden settlement field is optional (`PaymentRequestHidden.note`,
+  `PaymentAckHidden.method`, `.reference`, `.settlement_note`,
+  `FulfilmentHidden.settlement_note`), and `conceal_object` writes a missing
+  value as a `null` disclosure. So showing an empty optional field on an honest
+  record now fails the whole presentation. `deal.present` builds that
+  presentation without complaint, and `deal.verify-presentation` refuses it.
+  *Failure case:* the quote author (receiver of `c2`) signs a payment
+  acknowledgement with no `method`, `reference` or `settlement_note`. With no
+  disclosures it verifies. With any one of its three disclosures shown, it
+  fails with `field-invalid`. Proved with a temporary test.
+  *Fix:* delete the loop. `validate_revealed_settlement_fields` already parses
+  into the typed `*Hidden` structs, which accept `None`. Add a test that shows
+  each empty optional field of a payment request, an acknowledgement and a
+  fulfilment receipt, and expects `Ok` with the field shown as `null`.
+  *Status:* Open
+
+- [ ] **R35 — minor.** *Where:* `crates/roym_core/src/presentation/verify.rs:619`
+  (`check_writer_binding`), `docs/developer-guide.md` (section on
+  `deal.verify-presentation`),
+  `docs/planning/changes/roym-agreements/change.md` (`## Deviations`).
+  *Problem:* `check_writer_binding` now also returns `Checked` when the
+  snapshot's issuer equals the author half's or the quote's `issuer`, not only
+  its `signer_did`. That widens AG-38 (it fixes the delegated-key note from
+  round 5), but no Deviations row records it. The developer guide does not
+  name the new refusals (a settlement role that does not match its signer, a
+  lone counterparty half, a different `conversation`, size limits) or the new
+  view fields (`issuer`, `supersedes`, `observed_at_secs`, `revocation_status`,
+  `deal.quote_expired`).
+  *Fix:* add one Deviations row for the AG-38 change, and extend the
+  developer guide paragraph on `deal.verify-presentation` with the new
+  refusals and fields.
+  *Status:* Open
