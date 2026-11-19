@@ -45,6 +45,7 @@ impl AppDataLayer for TestHost {
         collection: String,
         id: String,
     ) -> Result<Option<RecordReadValue>, DataLayerError> {
+        self.check_read_fault(&collection, &id)?;
         let store = self.storage.lock().unwrap();
         if let Some(col) = store.get(&collection)
             && let Some(val) = col.get(&id)

@@ -152,8 +152,10 @@ async fn collect_presentation_records<H: AppHost>(
         && let Some(seq) = agr.seq
     {
         let snap_key = snapshot_id(&agr.quote_record_id, seq);
-        if let Ok(Some(sr)) = get_row::<SnapshotRow, _>(host, AGREEMENT_PROGRESS, &snap_key).await {
-            records.push(sr.envelope);
+        match get_row::<SnapshotRow, _>(host, AGREEMENT_PROGRESS, &snap_key).await {
+            Ok(Some(sr)) => records.push(sr.envelope),
+            Ok(None) => {}
+            Err(e) => return Err(Response::internal_error(e)),
         }
     }
     if include.settlement && agr_opt.is_some() {
@@ -170,25 +172,33 @@ async fn collect_settlement_records<H: AppHost>(
 ) -> Result<(), Response> {
     for c in &signed_terms.commitments {
         let p_id = payment_id(quote_record_id, &c.commitment_id);
-        if let Ok(Some(py)) = get_row::<PaymentsRow, _>(host, PAYMENTS, &p_id).await {
-            if let Some(ref req) = py.request {
-                records.push(req.envelope.clone());
+        match get_row::<PaymentsRow, _>(host, PAYMENTS, &p_id).await {
+            Ok(Some(py)) => {
+                if let Some(ref req) = py.request {
+                    records.push(req.envelope.clone());
+                }
+                for h in &py.counterparty {
+                    records.push(h.envelope.clone());
+                }
+                for h in &py.quote_author {
+                    records.push(h.envelope.clone());
+                }
             }
-            for h in &py.counterparty {
-                records.push(h.envelope.clone());
-            }
-            for h in &py.quote_author {
-                records.push(h.envelope.clone());
-            }
+            Ok(None) => {}
+            Err(e) => return Err(Response::internal_error(e)),
         }
         let f_id = fulfilment_id(quote_record_id, &c.commitment_id);
-        if let Ok(Some(fy)) = get_row::<FulfilmentsRow, _>(host, FULFILMENTS, &f_id).await {
-            if let Some(ref h) = fy.counterparty {
-                records.push(h.envelope.clone());
+        match get_row::<FulfilmentsRow, _>(host, FULFILMENTS, &f_id).await {
+            Ok(Some(fy)) => {
+                if let Some(ref h) = fy.counterparty {
+                    records.push(h.envelope.clone());
+                }
+                if let Some(ref h) = fy.quote_author {
+                    records.push(h.envelope.clone());
+                }
             }
-            if let Some(ref h) = fy.quote_author {
-                records.push(h.envelope.clone());
-            }
+            Ok(None) => {}
+            Err(e) => return Err(Response::internal_error(e)),
         }
     }
     Ok(())
