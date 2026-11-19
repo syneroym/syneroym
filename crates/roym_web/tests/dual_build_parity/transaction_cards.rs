@@ -145,8 +145,9 @@ async fn scenario_140c_deal_decline_parity() {
     .await;
     let my_req_rec_id = my_req_w["result"]["record_id"].as_str().unwrap();
 
-    let (q_rec_id, q_env) = peer_signed_quote(&conv, 1, my_req_rec_id, &owner_did(), None, 1_000);
-    let card_msg = inbound_card(
+    let (q_rec_id, q_env, q_disc) =
+        peer_signed_quote(&conv, 1, my_req_rec_id, &owner_did(), None, 1_000);
+    let card_msg = inbound_card_with_disclosures(
         "m-quote-140c",
         &conv,
         &peer_did(),
@@ -154,6 +155,7 @@ async fn scenario_140c_deal_decline_parity() {
         transaction::RECORD_QUOTE,
         transaction::QUOTE_VERSION,
         &q_env,
+        &q_disc,
     );
     h.deliver(true, card_msg.clone()).await;
     h.deliver(false, card_msg).await;
@@ -321,8 +323,9 @@ async fn scenario_142_transaction_export_import_roundtrip_parity() {
     .await;
     let req_rec_id = rw["result"]["record_id"].as_str().unwrap();
 
-    let (q_rec_id, q_env) = peer_signed_quote(&conv, 1, req_rec_id, &owner_did(), None, 1_000);
-    let card_msg = inbound_card(
+    let (q_rec_id, q_env, q_disc) =
+        peer_signed_quote(&conv, 1, req_rec_id, &owner_did(), None, 1_000);
+    let card_msg = inbound_card_with_disclosures(
         "m-quote-142",
         &conv,
         &peer_did(),
@@ -330,6 +333,7 @@ async fn scenario_142_transaction_export_import_roundtrip_parity() {
         transaction::RECORD_QUOTE,
         transaction::QUOTE_VERSION,
         &q_env,
+        &q_disc,
     );
     h.deliver(true, card_msg.clone()).await;
     h.deliver(false, card_msg).await;
@@ -341,10 +345,11 @@ async fn scenario_142_transaction_export_import_roundtrip_parity() {
         let bundle: Bundle = serde_json::from_value(side["result"].clone()).unwrap();
         bundle.check_integrity().expect("exported bundle must pass integrity");
         let sections = &bundle.manifest.sections;
-        assert_eq!(sections["enquiries"].schema_version, 5);
-        assert_eq!(sections["quotes"].schema_version, 5);
-        assert_eq!(sections["agreements"].schema_version, 5);
-        assert_eq!(sections["cards"].schema_version, 5);
+        assert_eq!(sections["enquiries"].schema_version, 6);
+        assert_eq!(sections["quotes"].schema_version, 6);
+        assert_eq!(sections["agreements"].schema_version, 6);
+        assert_eq!(sections["cards"].schema_version, 6);
+        assert_eq!(sections["disclosures"].schema_version, 6);
     }
 
     let bundle_val = exp_w["result"].clone();
@@ -606,9 +611,9 @@ async fn scenario_143_guard_transaction_verbs_local_admission() {
     let (rg, _) = both_rpc(&h, "enquiry.get", json!({ "enquiry_id": req_id })).await;
     let req_env = rg["result"]["envelope"].clone();
 
-    let (peer_q_rec_id, peer_q_env) =
+    let (peer_q_rec_id, peer_q_env, peer_q_disc) =
         peer_signed_quote(&conv, 1, &req_rec_id, &owner_did(), None, 1_000);
-    let q_card = inbound_card(
+    let q_card = inbound_card_with_disclosures(
         "m-guard-q",
         &conv,
         &peer_did(),
@@ -616,6 +621,7 @@ async fn scenario_143_guard_transaction_verbs_local_admission() {
         transaction::RECORD_QUOTE,
         transaction::QUOTE_VERSION,
         &peer_q_env,
+        &peer_q_disc,
     );
     h.deliver(true, q_card.clone()).await;
     h.deliver(false, q_card).await;

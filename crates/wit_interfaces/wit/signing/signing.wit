@@ -76,6 +76,11 @@ interface signing {
         as-principal: principal,
     ) -> result<string, signing-error>;
 
+    /// Fresh salts for the hidden fields of a record this component is about
+    /// to sign. Each is 16 bytes from the host's secure random source.
+    /// `count` is 1 to 256; anything else is `invalid-record`.
+    fresh-salts: func(count: u32) -> result<list<list<u8>>, signing-error>;
+
     /// Public identifiers only.
     record signing-identity {
         /// `did:key` of the key this substrate signs this service's

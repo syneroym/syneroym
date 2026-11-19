@@ -15,12 +15,11 @@ use serde_json::json;
 use syneroym_identity::{Identity, substrate};
 use syneroym_roym_core::{
     card::{self, CARD_CONTENT_TYPE},
-    deal::DealTerms,
     lang::LangTag,
     record::{Envelope, RECORD_AGREEMENT_RECEIPT, RecordDraft},
     transaction::{
         AGREEMENT_RECEIPT_VERSION, AgreementReceiptPayload, DEFAULT_DATA_USE_NOTICE, DealRole,
-        QuotePayload,
+        QuotePayload, SignedTerms,
     },
 };
 
@@ -453,7 +452,7 @@ fn make_hand_signed_acceptance(
     quote_record_id: &str,
     quote_author_did: &str,
     counterparty_did: &str,
-    terms: DealTerms,
+    terms: SignedTerms,
     now: u64,
 ) -> String {
     let payload = AgreementReceiptPayload {
@@ -478,7 +477,7 @@ fn make_hand_signed_acceptance(
     let sig = z32::encode(&node.owner.sign(&bytes).to_bytes());
     env.attach_signature(sig).expect("sig");
     let env_json = env.to_json().expect("json");
-    card::card_body(RECORD_AGREEMENT_RECEIPT, AGREEMENT_RECEIPT_VERSION, &env_json)
+    card::card_body(RECORD_AGREEMENT_RECEIPT, AGREEMENT_RECEIPT_VERSION, &env_json, &[])
         .expect("card body")
 }
 

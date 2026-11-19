@@ -8,9 +8,13 @@ use syneroym_roym_core::{
     listing::derive_slot_id,
     progress::{self, AGREEMENT_PROGRESS_VERSION, RECORD_AGREEMENT_PROGRESS},
     record::{Envelope, RECORD_AGREEMENT_RECEIPT, RECORD_QUOTE, RecordDraft},
+    testing::{
+        TestHost,
+        sd::{PlainQuote, conceal_quote},
+    },
     transaction::{
         AGREEMENT_RECEIPT_VERSION, AgreementReceiptPayload, Answers, DealRole, QUOTE_VERSION,
-        QuotePayload, TimeWindow, derive_quote_id, verify_quote,
+        SignedTerms, TimeWindow, derive_quote_id, verify_quote,
     },
 };
 
@@ -18,6 +22,7 @@ use super::fixture;
 use crate::app::{
     AGREEMENTS, AgreementRow, CARDS, CardRow, LEDGER,
     agreement_ops::{self, AgreementAcceptInput, QuoteRecordInput},
+    disclosures::{self, HeldQuote},
     get_row,
     hold::{HoldLedgerRow, SeatLedgerRow, hold_id, seat_id},
     quote_ops::store_received_quote,
@@ -90,39 +95,38 @@ fn build_and_sign_quote(
     commitments: Vec<Commitment>,
     expires_at_secs: u64,
     now: u64,
-) -> (QuotePayload, String, String) {
+) -> (HeldQuote, String, String) {
     let author_did = substrate::derive_did_key(&author.public_key());
     let quote_id = derive_quote_id("conv_1", &author_did, 1).expect("derive quote id");
-    let payload = QuotePayload {
+    let terms = DealTerms {
+        currency: "EUR".to_string(),
+        commitments,
+        home_exchange: None,
+        listing_id: None,
+        scope: LocalText::plain(LangTag::parse_canonical("en").expect("parse lang"), "Lesson deal"),
+        cancellation_terms: LocalText::plain(
+            LangTag::parse_canonical("en").expect("parse lang"),
+            "24h notice",
+        ),
+        refund_terms: LocalText::plain(
+            LangTag::parse_canonical("en").expect("parse lang"),
+            "Full refund",
+        ),
+        dispute_path: LocalText::plain(
+            LangTag::parse_canonical("en").expect("parse lang"),
+            "Arbitration",
+        ),
+        quote_expires_at_secs: expires_at_secs,
+    };
+    let plain = PlainQuote {
         quote_id,
         conversation: "conv_1".to_string(),
         sequence: 1,
-        counterparty_did: counterparty_did.to_string(),
-        terms: DealTerms {
-            currency: "EUR".to_string(),
-            commitments,
-            home_exchange: None,
-            listing_id: None,
-            scope: LocalText::plain(
-                LangTag::parse_canonical("en").expect("parse lang"),
-                "Lesson deal",
-            ),
-            cancellation_terms: LocalText::plain(
-                LangTag::parse_canonical("en").expect("parse lang"),
-                "24h notice",
-            ),
-            refund_terms: LocalText::plain(
-                LangTag::parse_canonical("en").expect("parse lang"),
-                "Full refund",
-            ),
-            dispute_path: LocalText::plain(
-                LangTag::parse_canonical("en").expect("parse lang"),
-                "Arbitration",
-            ),
-            quote_expires_at_secs: expires_at_secs,
-        },
         answers: Answers::Enquiry { record_id: "rec_enq_1".to_string() },
+        counterparty_did: counterparty_did.to_string(),
+        terms: terms.clone(),
     };
+    let (payload, disclosures) = conceal_quote(plain, 1);
 
     let draft = RecordDraft {
         version: QUOTE_VERSION,
@@ -138,7 +142,9 @@ fn build_and_sign_quote(
     env.attach_signature(z32::encode(&sig)).expect("attach signature");
     let record_id = env.record_id().expect("record id");
     let envelope_json = env.to_json().expect("envelope json");
-    (payload, record_id, envelope_json)
+    let verdict = verify_quote(&envelope_json, now);
+    let held = HeldQuote { verdict, signed: payload, terms, disclosures };
+    (held, record_id, envelope_json)
 }
 
 fn make_progress_card(
@@ -206,7 +212,7 @@ async fn authors_own_accept_is_refused() {
     let now = f.host.now();
     let other_user = "did:key:z6MkuOtherCounterpartyUser00000000000000000";
 
-    let (payload, record_id, envelope_json) = build_and_sign_quote(
+    let (quote, record_id, envelope_json) = build_and_sign_quote(
         &f.master,
         other_user,
         vec![author_service_commitment("c1")],
@@ -216,9 +222,12 @@ async fn authors_own_accept_is_refused() {
 
     let verdict = verify_quote(&envelope_json, now);
     assert!(verdict.verified, "verdict reason: {:?}", verdict.reason);
-    store_received_quote(&f.host, &envelope_json, &verdict, &payload, now, &f.master_did)
+    store_received_quote(&f.host, &envelope_json, &verdict, &quote.signed, now, &f.master_did)
         .await
         .expect("store quote");
+    disclosures::store(&f.host, &record_id, RECORD_QUOTE, &quote.disclosures, now)
+        .await
+        .expect("store disclosures");
 
     let input =
         AgreementAcceptInput { quote_record_id: record_id, viewed_lang: None, viewed_via_mt: None };
@@ -235,14 +244,17 @@ async fn repeated_accept_returns_the_same_half() {
     let author = Identity::generate().expect("generate author");
     let (c1, slot_id) = slot_commitment("c1", "listing_123", 1_000_000, 1_003_600);
 
-    let (payload, record_id, envelope_json) =
+    let (quote, record_id, envelope_json) =
         build_and_sign_quote(&author, &f.master_did, vec![c1], now + 3600, now);
 
     let verdict = verify_quote(&envelope_json, now);
     assert!(verdict.verified, "verdict reason: {:?}", verdict.reason);
-    store_received_quote(&f.host, &envelope_json, &verdict, &payload, now, &f.master_did)
+    store_received_quote(&f.host, &envelope_json, &verdict, &quote.signed, now, &f.master_did)
         .await
         .expect("store quote");
+    disclosures::store(&f.host, &record_id, RECORD_QUOTE, &quote.disclosures, now)
+        .await
+        .expect("store disclosures");
 
     let input1 = AgreementAcceptInput {
         quote_record_id: record_id.clone(),
@@ -277,14 +289,17 @@ async fn counterparty_holds_its_own_seat_before_signing() {
     let author = Identity::generate().expect("generate author");
     let (c1, slot_id) = slot_commitment("c1", "listing_123", 1_000_000, 1_003_600);
 
-    let (payload, record_id, envelope_json) =
+    let (quote, record_id, envelope_json) =
         build_and_sign_quote(&author, &f.master_did, vec![c1], now + 3600, now);
 
     let verdict = verify_quote(&envelope_json, now);
     assert!(verdict.verified, "verdict reason: {:?}", verdict.reason);
-    store_received_quote(&f.host, &envelope_json, &verdict, &payload, now, &f.master_did)
+    store_received_quote(&f.host, &envelope_json, &verdict, &quote.signed, now, &f.master_did)
         .await
         .expect("store quote");
+    disclosures::store(&f.host, &record_id, RECORD_QUOTE, &quote.disclosures, now)
+        .await
+        .expect("store disclosures");
 
     let input = AgreementAcceptInput {
         quote_record_id: record_id.clone(),
@@ -325,14 +340,17 @@ async fn taken_seat_answers_reserve_failed_and_signs_nothing() {
     };
     f.host.set_storage_row(LEDGER, &seat_id(&slot_id, 1), &existing_seat);
 
-    let (payload, record_id, envelope_json) =
+    let (quote, record_id, envelope_json) =
         build_and_sign_quote(&author, &f.master_did, vec![c1], now + 3600, now);
 
     let verdict = verify_quote(&envelope_json, now);
     assert!(verdict.verified, "verdict reason: {:?}", verdict.reason);
-    store_received_quote(&f.host, &envelope_json, &verdict, &payload, now, &f.master_did)
+    store_received_quote(&f.host, &envelope_json, &verdict, &quote.signed, now, &f.master_did)
         .await
         .expect("store quote");
+    disclosures::store(&f.host, &record_id, RECORD_QUOTE, &quote.disclosures, now)
+        .await
+        .expect("store disclosures");
 
     let input = AgreementAcceptInput {
         quote_record_id: record_id.clone(),
@@ -366,12 +384,15 @@ async fn counterparty_releases_holds_on_not_formed_and_expiry() {
 
     // Part 1: Hold released when author notifies not-formed
     let (c1, slot_id1) = slot_commitment("c1", "listing_123", 1_000_000, 1_003_600);
-    let (payload1, rec_id1, env1) =
+    let (quote1, rec_id1, env1) =
         build_and_sign_quote(&author, &f.master_did, vec![c1], now + 3600, now);
     let v1 = verify_quote(&env1, now);
-    store_received_quote(&f.host, &env1, &v1, &payload1, now, &f.master_did)
+    store_received_quote(&f.host, &env1, &v1, &quote1.signed, now, &f.master_did)
         .await
         .expect("store quote 1");
+    disclosures::store(&f.host, &rec_id1, RECORD_QUOTE, &quote1.disclosures, now)
+        .await
+        .expect("store disclosures 1");
 
     let input1 = AgreementAcceptInput {
         quote_record_id: rec_id1.clone(),
@@ -390,13 +411,14 @@ async fn counterparty_releases_holds_on_not_formed_and_expiry() {
         &author,
         &rec_id1,
         &f.master_did,
-        &payload1.terms,
+        &quote1.terms,
         Some("slot-taken"),
         now + 10,
     );
-    let res = file_progress_card(&f.host, card_row, &snap_env, "conv_1", now + 10, &f.master_did)
-        .await
-        .expect("file progress card");
+    let res =
+        file_progress_card(&f.host, card_row, &snap_env, &[], "conv_1", now + 10, &f.master_did)
+            .await
+            .expect("file progress card");
     assert!(res.filed, "file_progress_card failed: {res:?}");
     assert!(!res.refused, "file_progress_card was refused: {res:?}");
 
@@ -412,13 +434,16 @@ async fn counterparty_releases_holds_on_not_formed_and_expiry() {
     // Part 2: Hold released on quote expiry
     let author2 = Identity::generate().expect("generate author 2");
     let (c2, slot_id2) = slot_commitment("c1", "listing_123", 1_000_000, 1_003_600);
-    let (payload2, rec_id2, env2) =
+    let (quote2, rec_id2, env2) =
         build_and_sign_quote(&author2, &f.master_did, vec![c2], now + 300, now);
     let v2 = verify_quote(&env2, now);
     assert!(v2.verified, "v2 reason: {:?}", v2.reason);
-    store_received_quote(&f.host, &env2, &v2, &payload2, now, &f.master_did)
+    store_received_quote(&f.host, &env2, &v2, &quote2.signed, now, &f.master_did)
         .await
         .expect("store quote 2");
+    disclosures::store(&f.host, &rec_id2, RECORD_QUOTE, &quote2.disclosures, now)
+        .await
+        .expect("store disclosures 2");
 
     let input2 = AgreementAcceptInput {
         quote_record_id: rec_id2.clone(),
@@ -446,24 +471,28 @@ async fn file_repeated_card_stores_repeat_true() {
     let author = Identity::generate().expect("generate author");
     let now = 1_000_000;
     let (c1, _slot_id) = slot_commitment("c1", "listing_123", 1_000_000, 1_003_600);
-    let (payload, rec_id, env) =
+    let (quote, rec_id, env) =
         build_and_sign_quote(&author, &f.master_did, vec![c1], now + 300, now);
     let v = verify_quote(&env, now);
-    store_received_quote(&f.host, &env, &v, &payload, now, &f.master_did)
+    store_received_quote(&f.host, &env, &v, &quote.signed, now, &f.master_did)
         .await
         .expect("store quote");
+    disclosures::store(&f.host, &rec_id, RECORD_QUOTE, &quote.disclosures, now)
+        .await
+        .expect("store disclosures");
 
     let (card_row1, snap_env) = make_progress_card(
         &author,
         &rec_id,
         &f.master_did,
-        &payload.terms,
+        &quote.terms,
         Some("slot-taken"),
         now + 10,
     );
-    let res1 = file_progress_card(&f.host, card_row1, &snap_env, "conv_1", now + 10, &f.master_did)
-        .await
-        .expect("file first progress card");
+    let res1 =
+        file_progress_card(&f.host, card_row1, &snap_env, &[], "conv_1", now + 10, &f.master_did)
+            .await
+            .expect("file first progress card");
     assert!(res1.filed, "res1: {:?}", res1);
 
     let first_stored: CardRow = get_row(&f.host, CARDS, "msg_progress_1")
@@ -476,16 +505,17 @@ async fn file_repeated_card_stores_repeat_true() {
         &author,
         &rec_id,
         &f.master_did,
-        &payload.terms,
+        &quote.terms,
         Some("slot-taken"),
         now + 10,
     )
     .0;
     card_row2.message_id = "msg_snap_repeat".to_string();
 
-    let res2 = file_progress_card(&f.host, card_row2, &snap_env, "conv_1", now + 10, &f.master_did)
-        .await
-        .expect("file second progress card");
+    let res2 =
+        file_progress_card(&f.host, card_row2, &snap_env, &[], "conv_1", now + 10, &f.master_did)
+            .await
+            .expect("file second progress card");
     assert!(res2.filed);
 
     let second_stored: CardRow = get_row(&f.host, CARDS, "msg_snap_repeat")
@@ -500,7 +530,7 @@ fn make_author_countersigned_half_card(
     author_did: &str,
     counterparty_did: &str,
     q_rec_id: &str,
-    terms: &DealTerms,
+    terms: &SignedTerms,
     issued_at: u64,
 ) -> String {
     let author_payload = AgreementReceiptPayload {
@@ -525,12 +555,12 @@ fn make_author_countersigned_half_card(
     let sig = author.sign(&bytes).to_bytes();
     env.attach_signature(z32::encode(&sig)).expect("sig");
     let author_half_env = env.to_json().expect("env json");
-    card::card_body(RECORD_AGREEMENT_RECEIPT, AGREEMENT_RECEIPT_VERSION, &author_half_env)
+    card::card_body(RECORD_AGREEMENT_RECEIPT, AGREEMENT_RECEIPT_VERSION, &author_half_env, &[])
         .expect("card body")
 }
 
 fn mock_author_half_delivered_at(
-    host: &syneroym_roym_core::testing::TestHost,
+    host: &TestHost,
     author_did: String,
     delivery_time: u64,
     card_body: String,
@@ -588,9 +618,12 @@ async fn counterparty_files_author_countersigned_half_delivered_after_expiry() {
     let (quote_payload, q_rec_id, q_env) =
         build_and_sign_quote(&author, &f.master_did, vec![c1], now + 300, now);
     let v = verify_quote(&q_env, now);
-    store_received_quote(&f.host, &q_env, &v, &quote_payload, now, &f.master_did)
+    store_received_quote(&f.host, &q_env, &v, &quote_payload.signed, now, &f.master_did)
         .await
         .expect("store quote");
+    disclosures::store(&f.host, &q_rec_id, RECORD_QUOTE, &quote_payload.disclosures, now)
+        .await
+        .expect("store disclosures");
 
     // Counterparty accepts at now + 10 (before expiry)
     let acc_res = agreement_ops::accept_at(
@@ -612,7 +645,7 @@ async fn counterparty_files_author_countersigned_half_delivered_after_expiry() {
         &author_did,
         &f.master_did,
         &q_rec_id,
-        &quote_payload.terms,
+        &quote_payload.signed.terms,
         now + 50,
     );
 

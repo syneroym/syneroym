@@ -8,7 +8,10 @@
 //! the native factory, so there is no cycle to guard against.
 
 use std::{
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -17,7 +20,7 @@ use syneroym_identity::{
     delegation::{DelegationCertificate, SCOPE_RECORD_SIGNING},
     substrate::derive_did_key,
 };
-use syneroym_signed_record::{DraftError, Envelope, RecordDraft};
+use syneroym_signed_record::{DraftError, Envelope, RecordDraft, disclosure};
 
 use crate::local_registry::EndpointRegistry;
 
@@ -58,24 +61,39 @@ pub enum RecordClock {
     Fixed(u64),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecordSalts {
+    System,
+    Seeded(u64),
+}
+
 #[derive(Debug)]
 pub struct NodeRecordSigner {
     node_identity: Arc<Identity>,
     registry: EndpointRegistry,
     clock: RecordClock,
+    salts: RecordSalts,
+    salt_counter: AtomicU64,
 }
 
 impl NodeRecordSigner {
     pub fn new(node_identity: Arc<Identity>, registry: EndpointRegistry) -> Arc<Self> {
-        Arc::new(Self { node_identity, registry, clock: RecordClock::System })
+        Arc::new(Self {
+            node_identity,
+            registry,
+            clock: RecordClock::System,
+            salts: RecordSalts::System,
+            salt_counter: AtomicU64::new(0),
+        })
     }
 
     pub fn with_clock(
         node_identity: Arc<Identity>,
         registry: EndpointRegistry,
         clock: RecordClock,
+        salts: RecordSalts,
     ) -> Arc<Self> {
-        Arc::new(Self { node_identity, registry, clock })
+        Arc::new(Self { node_identity, registry, clock, salts, salt_counter: AtomicU64::new(0) })
     }
 
     fn service_identity(&self, service_id: &str) -> Result<(Identity, String), SigningError> {
@@ -95,6 +113,35 @@ impl NodeRecordSigner {
             pubkey_hex: hex::encode(key.public_key().to_bytes()),
             owner_did: Some(owner_did),
         })
+    }
+
+    pub fn fresh_salts(&self, count: u32) -> Result<Vec<[u8; 16]>, SigningError> {
+        if count == 0 || count > 256 {
+            return Err(SigningError::InvalidRecord(format!(
+                "salt count must be between 1 and 256, found {count}"
+            )));
+        }
+        let count = count as usize;
+        let mut out = Vec::with_capacity(count);
+        match self.salts {
+            RecordSalts::System => {
+                use rand::RngCore;
+                let mut rng = rand::rng();
+                for _ in 0..count {
+                    let mut b = [0u8; 16];
+                    rng.fill_bytes(&mut b);
+                    out.push(b);
+                }
+            }
+            RecordSalts::Seeded(seed) => {
+                for _ in 0..count {
+                    let n = self.salt_counter.fetch_add(1, Ordering::Relaxed);
+                    let salt = disclosure::seeded_salt(seed, n);
+                    out.push(*salt.as_bytes());
+                }
+            }
+        }
+        Ok(out)
     }
 
     pub fn sign_record(
@@ -416,13 +463,21 @@ mod tests {
 
         let reg1 = make_registry().await;
         reg1.set_owner("svc1".to_string(), owner_did.clone()).await.unwrap();
-        let signer1 =
-            NodeRecordSigner::with_clock(node_id.clone(), reg1, RecordClock::Fixed(1_800_000_000));
+        let signer1 = NodeRecordSigner::with_clock(
+            node_id.clone(),
+            reg1,
+            RecordClock::Fixed(1_800_000_000),
+            RecordSalts::Seeded(42),
+        );
 
         let reg2 = make_registry().await;
         reg2.set_owner("svc1".to_string(), owner_did).await.unwrap();
-        let signer2 =
-            NodeRecordSigner::with_clock(node_id, reg2, RecordClock::Fixed(1_800_000_000));
+        let signer2 = NodeRecordSigner::with_clock(
+            node_id,
+            reg2,
+            RecordClock::Fixed(1_800_000_000),
+            RecordSalts::Seeded(42),
+        );
 
         let json1 = signer1
             .sign_record(
@@ -443,5 +498,58 @@ mod tests {
             .unwrap();
 
         assert_eq!(json1, json2);
+    }
+
+    #[tokio::test]
+    async fn fresh_salts_are_sixteen_bytes_and_differ() {
+        let node_id = Arc::new(Identity::generate().unwrap());
+        let registry = make_registry().await;
+        let signer = NodeRecordSigner::new(node_id, registry);
+
+        let salts = signer.fresh_salts(5).unwrap();
+        assert_eq!(salts.len(), 5);
+        for s in &salts {
+            assert_eq!(s.len(), 16);
+        }
+        for i in 0..salts.len() {
+            for j in (i + 1)..salts.len() {
+                assert_ne!(salts[i], salts[j]);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn seeded_salts_repeat_for_the_same_seed() {
+        let node_id1 = Arc::new(Identity::generate().unwrap());
+        let registry1 = make_registry().await;
+        let signer1 = NodeRecordSigner::with_clock(
+            node_id1,
+            registry1,
+            RecordClock::System,
+            RecordSalts::Seeded(999),
+        );
+
+        let node_id2 = Arc::new(Identity::generate().unwrap());
+        let registry2 = make_registry().await;
+        let signer2 = NodeRecordSigner::with_clock(
+            node_id2,
+            registry2,
+            RecordClock::System,
+            RecordSalts::Seeded(999),
+        );
+
+        let salts1 = signer1.fresh_salts(10).unwrap();
+        let salts2 = signer2.fresh_salts(10).unwrap();
+        assert_eq!(salts1, salts2);
+    }
+
+    #[tokio::test]
+    async fn count_zero_and_257_are_refused() {
+        let node_id = Arc::new(Identity::generate().unwrap());
+        let registry = make_registry().await;
+        let signer = NodeRecordSigner::new(node_id, registry);
+
+        assert!(matches!(signer.fresh_salts(0).unwrap_err(), SigningError::InvalidRecord(_)));
+        assert!(matches!(signer.fresh_salts(257).unwrap_err(), SigningError::InvalidRecord(_)));
     }
 }

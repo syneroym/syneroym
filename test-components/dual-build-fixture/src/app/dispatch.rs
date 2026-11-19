@@ -514,6 +514,10 @@ pub(super) async fn dispatch<H: AppHost>(
                 "owner_did": id.owner_did,
             }))
         }
+        Request::FreshSalts { count } => {
+            let salts = host.fresh_salts(count).await.map_err(fmt_err)?;
+            Ok(json!({ "salts": salts }))
+        }
         Request::VerifyRecord { signed_json, now_secs } => {
             let env: Envelope = serde_json::from_str(&signed_json).map_err(fmt_err)?;
             let check_now = now_secs.unwrap_or(env.issued_at_secs);

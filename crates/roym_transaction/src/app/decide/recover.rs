@@ -20,7 +20,10 @@ use super::{
     finalize_agreed_deal, get_row, handle_not_formed, put_row, repeat_both, repeat_countersigned,
     reserve_author_holds, snapshot_id,
 };
-use crate::app::hold::{Reservations, SeatLedger};
+use crate::app::{
+    disclosures::{self, LoadQuoteError},
+    hold::{Reservations, SeatLedger},
+};
 
 pub(crate) async fn release_all_author_holds<H: AppHost, R: Reservations>(
     host: &H,
@@ -150,17 +153,27 @@ pub(crate) async fn finish_deciding_row_with_reservations<H: AppHost, R: Reserva
         if snap_row.snapshot.state == AgreementState::NotFormed {
             return repeat_not_formed(host, &mut row, snap_row, &reservations, now).await;
         }
-        if let Some(cs) = stored_cs {
-            return repeat_both(host, &mut row, snap_row, cs, now).await;
-        }
+        stored_snap = Some(snap_row);
     }
 
     if stored_cs.is_none() && now >= row.terms.quote_expires_at_secs {
         return finish_expired_deciding(host, &mut row, &reservations, now).await;
     }
 
-    if let Some(cs) = stored_cs {
-        return repeat_countersigned(host, &mut row, cs, now).await;
+    let held = match disclosures::load_quote(host, &row.quote_record_id, now).await {
+        Ok(h) => h,
+        Err(LoadQuoteError::Storage(e)) => return Err(e),
+        Err(_) => return Ok(false),
+    };
+
+    match (stored_snap, stored_cs) {
+        (Some(snap_row), Some(cs)) => {
+            return repeat_both(host, &mut row, snap_row, cs, &held.disclosures, now).await;
+        }
+        (None, Some(cs)) => {
+            return repeat_countersigned(host, &mut row, cs, &held.disclosures, now).await;
+        }
+        _ => {}
     }
 
     let (reserved, failed) = reserve_author_holds(host, &row, &reservations, now).await?;
@@ -174,7 +187,7 @@ pub(crate) async fn finish_deciding_row_with_reservations<H: AppHost, R: Reserva
         }
     }
 
-    finalize_agreed_deal(host, &mut row, now).await
+    finalize_agreed_deal(host, &mut row, &held.signed.terms, &held.disclosures, now).await
 }
 
 pub(crate) async fn finish_deciding_row<H: AppHost>(

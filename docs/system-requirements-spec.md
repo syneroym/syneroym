@@ -428,7 +428,7 @@ Trust in the Syneroym ecosystem operates across multiple layers:
 
 **Layer 4: Interaction receipts and feedback.** Completed commercial interactions create bilateral agreement receipts (`AgreementReceiptPayload`) and fulfilment receipts (`FulfilmentRecord`). Each party signs and stores these receipts independently. A receipt proves that both parties agreed to a workflow event under identical terms. It does not prove that every real-world claim is true. Export archives preserve record provenance with signed manifests.
 
-> **Envisioned.** Not built yet. Separately signed feedback from counterparties, public reviews, and selective disclosure (redactable zero-knowledge or field-level disclosure) are unbuilt. Today interactions produce bilateral independent agreement and fulfilment receipts.
+> **Envisioned.** Not built yet. Separately signed feedback from counterparties, public reviews, zero-knowledge proofs, and showing chosen fields to a third party are unbuilt. Today interactions produce bilateral independent agreement and fulfilment receipts with hidden fields in signed deal records (RFC 9901 selective disclosure).
 
 **Layer 5: Community moderation.** Guilds and communities maintain signed membership revocation and suspension records (`crates/roym_core/src/membership.rs`). Abuse reports submitted by users stay on recipient nodes (`crates/roym_profile/src/app/moderation.rs`). The system does not broadcast reports as global truth. Searchers can see the source of moderation policies.
 

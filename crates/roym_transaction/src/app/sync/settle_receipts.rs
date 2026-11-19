@@ -1,11 +1,16 @@
 //! Inbound filing for payment requests/acknowledgements and fulfilment
 //! receipts.
 
+use serde_json::Value;
 use syneroym_app_host::AppHost;
 use syneroym_roym_core::{
     deal::{CommitmentKind, SettlementRole},
-    fulfilment, payment,
-    record::Envelope,
+    disclosure::{FULFILMENT_SET, PAYMENT_ACK_SET, PAYMENT_REQUEST_SET, reveal_hidden_strict},
+    fulfilment::{self, FulfilmentHidden},
+    payment::{self, PaymentAckHidden, PaymentRequestHidden},
+    record::{
+        Envelope, RECORD_FULFILMENT_RECEIPT, RECORD_PAYMENT_ACKNOWLEDGEMENT, RECORD_PAYMENT_REQUEST,
+    },
     transaction::{DealRole, PairState, ReceiptHalf, pair_state},
     verdict::RecordVerdict,
 };
@@ -13,8 +18,8 @@ use syneroym_roym_core::{
 use super::{
     super::{
         AGREEMENTS, AgreementRow, CardRow, FULFILMENTS, FulfilmentsRow, PAYMENTS, PaymentsRow,
-        fulfilment_ops::fulfilment_id, get_row, payment_ops::payment_id, progress_ops, put_card,
-        put_row,
+        disclosures, fulfilment_ops::fulfilment_id, get_row, payment_ops::payment_id, progress_ops,
+        put_card, put_row,
     },
     FileCardResult,
     receipts::defer_or_refuse,
@@ -64,6 +69,7 @@ pub(crate) async fn file_payment_request_card<H: AppHost>(
     host: &H,
     mut row: CardRow,
     envelope: &str,
+    disclosures: &[String],
     conversation: &str,
     now: u64,
     owner: &str,
@@ -77,6 +83,21 @@ pub(crate) async fn file_payment_request_card<H: AppHost>(
         Some(p) => p,
         None => return refuse_card(host, row, "missing payload").await,
     };
+    let hidden: PaymentRequestHidden =
+        match reveal_hidden_strict(&p.sd, &PAYMENT_REQUEST_SET, disclosures) {
+            Ok(h) => h,
+            Err(e) => {
+                return refuse_card(
+                    host,
+                    row,
+                    format!("payment request disclosures: {}", e.code()),
+                )
+                .await;
+            }
+        };
+    if let Err(e) = hidden.validate() {
+        return refuse_card(host, row, format!("payment request hidden: {}", e.code())).await;
+    }
     let agr: Option<AgreementRow> = get_row(host, AGREEMENTS, &p.agreement).await?;
     let agr = match validate_payment_request_agr(agr, p, conversation, v.issuer.as_deref()) {
         Ok(a) => a,
@@ -97,13 +118,16 @@ pub(crate) async fn file_payment_request_card<H: AppHost>(
         });
 
     let rec_id = v.record_id.clone().unwrap_or_default();
+    let p_val = serde_json::to_value(p).unwrap_or(Value::Null);
+    let plain_data = disclosures::plain_view(&p_val, disclosures);
+
     if let Some(existing) = &payments.request {
         if existing.record_id != rec_id {
             row.known = true;
             row.verified = true;
             row.record_id = Some(rec_id);
             row.reason = Some("a second payment request for one commitment".to_string());
-            row.data = serde_json::to_value(p).ok();
+            row.data = Some(plain_data);
             put_card(host, &row).await?;
             return Ok(FileCardResult {
                 filed: true,
@@ -115,6 +139,7 @@ pub(crate) async fn file_payment_request_card<H: AppHost>(
         }
         row.repeat = true;
     } else {
+        disclosures::store(host, &rec_id, RECORD_PAYMENT_REQUEST, disclosures, now).await?;
         let args = RecordPaymentRequestHalfArgs {
             p_id: &p_id,
             payments,
@@ -134,7 +159,7 @@ pub(crate) async fn file_payment_request_card<H: AppHost>(
     row.known = true;
     row.verified = true;
     row.record_id = Some(rec_id);
-    row.data = serde_json::to_value(p).ok();
+    row.data = Some(plain_data);
     put_card(host, &row).await?;
     Ok(FileCardResult {
         filed: true,
@@ -187,10 +212,49 @@ async fn record_payment_request_half<H: AppHost>(
     Ok(())
 }
 
-pub(crate) async fn file_payment_ack_card<H: AppHost>(
+fn decode_ack_payload<'a>(
+    v: &'a RecordVerdict<payment::PaymentAcknowledgementPayload>,
+    disclosures: &[String],
+    conversation: &str,
+) -> Result<(&'a payment::PaymentAcknowledgementPayload, PaymentAckHidden), String> {
+    let p = match v.payload.as_ref() {
+        Some(p) => p,
+        None => return Err("missing payload".to_string()),
+    };
+    let hidden: PaymentAckHidden = match reveal_hidden_strict(&p.sd, &PAYMENT_ACK_SET, disclosures)
+    {
+        Ok(h) => h,
+        Err(e) => return Err(format!("payment acknowledgement disclosures: {}", e.code())),
+    };
+    if let Err(e) = hidden.validate() {
+        return Err(format!("payment acknowledgement hidden: {}", e.code()));
+    }
+    if p.conversation != conversation {
+        return Err("card names another conversation".to_string());
+    }
+    Ok((p, hidden))
+}
+
+async fn finish_ack_card_put<H: AppHost>(
     host: &H,
     mut row: CardRow,
+    record_id: Option<String>,
+    is_repeat: bool,
+    plain_data: Value,
+) -> Result<(), String> {
+    row.known = true;
+    row.verified = true;
+    row.repeat = is_repeat;
+    row.record_id = record_id;
+    row.data = Some(plain_data);
+    put_card(host, &row).await
+}
+
+pub(crate) async fn file_payment_ack_card<H: AppHost>(
+    host: &H,
+    row: CardRow,
     envelope: &str,
+    disclosures: &[String],
     conversation: &str,
     now: u64,
     owner: &str,
@@ -201,13 +265,10 @@ pub(crate) async fn file_payment_ack_card<H: AppHost>(
             v.reason.unwrap_or_else(|| "payment acknowledgement does not verify".to_string());
         return refuse_card(host, row, reason).await;
     }
-    let p = match v.payload.as_ref() {
-        Some(p) => p,
-        None => return refuse_card(host, row, "missing payload").await,
+    let (p, _) = match decode_ack_payload(&v, disclosures, conversation) {
+        Ok(res) => res,
+        Err(reason) => return refuse_card(host, row, reason).await,
     };
-    if p.conversation != conversation {
-        return refuse_card(host, row, "card names another conversation").await;
-    }
     let agr: Option<AgreementRow> = get_row(host, AGREEMENTS, &p.agreement).await?;
     let agr = match validate_ack_agreement(agr, p) {
         Ok(a) => a,
@@ -255,15 +316,16 @@ pub(crate) async fn file_payment_ack_card<H: AppHost>(
         }
     };
 
+    if let Some(rec_id) = v.record_id.as_deref() {
+        disclosures::store(host, rec_id, RECORD_PAYMENT_ACKNOWLEDGEMENT, disclosures, now).await?;
+    }
+
     payments.updated_at_secs = now;
     put_row(host, PAYMENTS, &p_id, &payments).await?;
 
-    row.known = true;
-    row.verified = true;
-    row.repeat = is_repeat;
-    row.record_id = v.record_id.clone();
-    row.data = serde_json::to_value(p).ok();
-    put_card(host, &row).await?;
+    let p_val = serde_json::to_value(p).unwrap_or(Value::Null);
+    let plain_data = disclosures::plain_view(&p_val, disclosures);
+    finish_ack_card_put(host, row, v.record_id.clone(), is_repeat, plain_data).await?;
 
     if owner == agr.quote_author_did {
         let _ = progress_ops::transition_at(
@@ -338,6 +400,7 @@ pub(crate) async fn file_fulfilment_card<H: AppHost>(
     host: &H,
     mut row: CardRow,
     envelope: &str,
+    disclosures: &[String],
     conversation: &str,
     now: u64,
     owner: &str,
@@ -351,6 +414,16 @@ pub(crate) async fn file_fulfilment_card<H: AppHost>(
         Some(p) => p,
         None => return refuse_card(host, row, "missing payload").await,
     };
+    let hidden: FulfilmentHidden = match reveal_hidden_strict(&p.sd, &FULFILMENT_SET, disclosures) {
+        Ok(h) => h,
+        Err(e) => {
+            return refuse_card(host, row, format!("fulfilment receipt disclosures: {}", e.code()))
+                .await;
+        }
+    };
+    if let Err(e) = hidden.validate() {
+        return refuse_card(host, row, format!("fulfilment receipt hidden: {}", e.code())).await;
+    }
     let agr: Option<AgreementRow> = get_row(host, AGREEMENTS, &p.agreement).await?;
     let (agr, deal_role) =
         match validate_fulfilment_card_agr(agr, p, conversation, v.issuer.as_deref()) {
@@ -371,33 +444,44 @@ pub(crate) async fn file_fulfilment_card<H: AppHost>(
         });
 
     let rec_id = v.record_id.clone().unwrap_or_default();
-    let args = RecordFulfilmentHalfArgs {
-        f_id: &f_id,
-        fulfilments,
-        deal_role,
-        rec_id: &rec_id,
-        envelope,
-        issuer: v.issuer.as_deref().unwrap_or_default(),
-        issued_at: v.issued_at_secs.unwrap_or(now),
-        commitment_id: &p.commitment_id,
-        agreement: &p.agreement,
-        role: p.role,
-        owner,
-        quote_author_did: &agr.quote_author_did,
-        now,
+    let existing = match deal_role {
+        DealRole::Counterparty => fulfilments.counterparty.as_ref(),
+        DealRole::QuoteAuthor => fulfilments.quote_author.as_ref(),
     };
-    match record_fulfilment_half_card(host, args).await {
-        Ok(true) => {}
-        Ok(false) => {
+
+    if let Some(ex) = existing {
+        if ex.record_id == rec_id {
             row.repeat = true;
+        } else {
+            return refuse_card(host, row, "a second receipt from this party").await;
         }
-        Err(e) => return refuse_card(host, row, e).await,
+    } else {
+        disclosures::store(host, &rec_id, RECORD_FULFILMENT_RECEIPT, disclosures, now).await?;
+        let args = RecordFulfilmentHalfArgs {
+            f_id: &f_id,
+            fulfilments,
+            deal_role,
+            rec_id: &rec_id,
+            envelope,
+            issuer: v.issuer.as_deref().unwrap_or_default(),
+            issued_at: v.issued_at_secs.unwrap_or(now),
+            commitment_id: &p.commitment_id,
+            agreement: &p.agreement,
+            role: p.role,
+            owner,
+            quote_author_did: &agr.quote_author_did,
+            now,
+        };
+        record_fulfilment_half_card(host, args).await?;
     }
+
+    let p_val = serde_json::to_value(p).unwrap_or(Value::Null);
+    let plain_data = disclosures::plain_view(&p_val, disclosures);
 
     row.known = true;
     row.verified = true;
     row.record_id = Some(rec_id);
-    row.data = serde_json::to_value(p).ok();
+    row.data = Some(plain_data);
     put_card(host, &row).await?;
 
     Ok(FileCardResult {
@@ -428,20 +512,14 @@ struct RecordFulfilmentHalfArgs<'a> {
 async fn record_fulfilment_half_card<H: AppHost>(
     host: &H,
     args: RecordFulfilmentHalfArgs<'_>,
-) -> Result<bool, String> {
+) -> Result<(), String> {
     let mut fulfilments = args.fulfilments;
-    let existing = match args.deal_role {
+    let target = match args.deal_role {
         DealRole::Counterparty => &mut fulfilments.counterparty,
         DealRole::QuoteAuthor => &mut fulfilments.quote_author,
     };
 
-    if let Some(ex) = existing {
-        if ex.record_id == args.rec_id {
-            return Ok(false);
-        }
-        return Err("a second receipt from this party".to_string());
-    }
-    *existing = Some(ReceiptHalf {
+    *target = Some(ReceiptHalf {
         record_id: args.rec_id.to_string(),
         envelope: args.envelope.to_string(),
         issuer: args.issuer.to_string(),
@@ -464,7 +542,7 @@ async fn record_fulfilment_half_card<H: AppHost>(
         .await;
     }
 
-    Ok(true)
+    Ok(())
 }
 
 fn validate_ack_agreement(

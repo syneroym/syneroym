@@ -4,14 +4,14 @@ use syneroym_signed_record::Envelope;
 
 use super::{
     deal_fixtures::{
-        peer_signed_progress, seed_row, setup_active_agreement,
+        deliver_peer_card_with_disclosures, peer_signed_payment_ack, peer_signed_progress,
+        peer_signed_quote, seed_row, setup_active_agreement_native,
         setup_author_slot_quote_accepted_by_peer, setup_listing_with_slot, setup_peer_request,
         setup_synced_counterparty_quote,
     },
     fixtures::{
         deliver_peer_card, enrol_signing, open_conv, peer_counterparty_receipt, peer_did,
-        peer_identity, peer_signed_payment_ack, peer_signed_quote, peer_signed_request,
-        valid_quote_params, wall_now,
+        peer_identity, peer_signed_request, valid_quote_params, wall_now,
     },
     helpers::{Harness, harness, owner_did},
     shapes::{assert_shape, enrol_native_signing, rpc, rpc_err},
@@ -89,6 +89,8 @@ async fn deal_enquiry_and_quote_shapes(h: &Harness, conv: &str) -> (String, Stri
 
     let (peer_req_id, _) = setup_peer_request(h, conv).await;
     let q_params = valid_quote_params(conv, &peer_req_id);
+    let q_meas = rpc(h, "quote.measure", json!({ "terms": q_params["terms"] })).await;
+    assert_shape("quote_measure", &q_meas);
     let q_set = rpc(h, "quote.set", q_params).await;
     assert_shape("quote_set", &q_set);
     let quote_id = q_set["quote_id"].as_str().unwrap().to_string();
@@ -109,9 +111,9 @@ async fn deal_enquiry_and_quote_shapes(h: &Harness, conv: &str) -> (String, Stri
     let q_ver_bad = rpc(h, "quote.verify", json!({ "envelope": "tampered" })).await;
     assert_shape("quote_verify_bad", &q_ver_bad);
 
-    let (cp_q_rec_id, cp_q_env) =
+    let (cp_q_rec_id, cp_q_env, cp_q_disc) =
         peer_signed_quote(conv, 2, &req_rec_id, &owner_did(), None, 1_000);
-    deliver_peer_card(
+    deliver_peer_card_with_disclosures(
         h,
         "m-quote-to-decline",
         conv,
@@ -119,6 +121,7 @@ async fn deal_enquiry_and_quote_shapes(h: &Harness, conv: &str) -> (String, Stri
         transaction::RECORD_QUOTE,
         transaction::QUOTE_VERSION,
         &cp_q_env,
+        &cp_q_disc,
     )
     .await;
     rpc(h, "transaction.sync", json!({ "conversation": conv, "full": true })).await;
@@ -177,7 +180,7 @@ async fn deal_shapes() {
 }
 
 async fn agreement_progress_and_cancel_shapes(h: &Harness, conv: &str) {
-    let (agr_rec, _) = setup_active_agreement(h, conv, "after-work").await;
+    let (agr_rec, _) = setup_active_agreement_native(h, conv, "after-work").await;
 
     let a_prog = rpc(h, "agreement.progress", json!({ "agreement": agr_rec })).await;
     assert_shape("agreement_progress", &a_prog);
@@ -199,7 +202,7 @@ async fn agreement_progress_shapes() {
 }
 
 async fn payment_crash_recovery_shapes(h: &Harness, conv: &str) {
-    let (agr_cr1, _) = setup_active_agreement(h, conv, "after-work").await;
+    let (agr_cr1, _) = setup_active_agreement_native(h, conv, "after-work").await;
     let pr_cr1 =
         rpc(h, "payment.request", json!({ "agreement": agr_cr1, "commitment_id": "c2" })).await;
     let rec1 = pr_cr1["record_id"].as_str().unwrap().to_string();
@@ -223,7 +226,7 @@ async fn payment_crash_recovery_shapes(h: &Harness, conv: &str) {
     assert_ne!(pr_cr2["state"], "already-recorded");
     assert_shape("payment_request_crash_recovery", &pr_cr2);
 
-    let (agr_cr2, _) = setup_active_agreement(h, conv, "after-work").await;
+    let (agr_cr2, _) = setup_active_agreement_native(h, conv, "after-work").await;
     rpc(h, "payment.request", json!({ "agreement": agr_cr2, "commitment_id": "c2" })).await;
     let pa_cr1 =
         rpc(h, "payment.acknowledge", json!({ "agreement": agr_cr2, "commitment_id": "c2" })).await;
@@ -252,7 +255,7 @@ async fn payment_crash_recovery_shapes(h: &Harness, conv: &str) {
     assert_ne!(pa_cr2["state"], "already-recorded");
     assert_shape("payment_ack_crash_recovery", &pa_cr2);
 
-    let (agr_cr3, _) = setup_active_agreement(h, conv, "after-work").await;
+    let (agr_cr3, _) = setup_active_agreement_native(h, conv, "after-work").await;
     let fs_cr1 =
         rpc(h, "fulfilment.sign", json!({ "agreement": agr_cr3, "commitment_id": "c1" })).await;
     let rec3 = fs_cr1["record_id"].as_str().unwrap().to_string();
@@ -288,7 +291,7 @@ async fn payment_fulfilment_shapes() {
     assert_shape("receipt_ping", &rpc(&h, "receipt.ping", json!({})).await);
     assert_shape("fulfilment_ping", &rpc(&h, "fulfilment.ping", json!({})).await);
 
-    let (agr1, _) = setup_active_agreement(&h, &conv, "after-work").await;
+    let (agr1, _) = setup_active_agreement_native(&h, &conv, "after-work").await;
 
     let p_get_empty =
         rpc(&h, "payment.get", json!({ "agreement": agr1, "commitment_id": "c2" })).await;
@@ -338,7 +341,7 @@ async fn payment_fulfilment_shapes() {
     let p_ver_req = rpc(&h, "payment.verify", json!({ "envelope": req_env })).await;
     assert_shape("payment_verify_request", &p_ver_req);
 
-    let (_, ack_env) = peer_signed_payment_ack(
+    let (_, ack_env, _ack_disc) = peer_signed_payment_ack(
         &conv,
         &agr1,
         &peer_did(),
@@ -379,7 +382,7 @@ async fn sync_backup_shapes() {
     enrol_signing(&h, "transaction").await;
 
     let conv = open_conv(&h, &peer_did()).await;
-    let (agr, _) = setup_active_agreement(&h, &conv, "after-work").await;
+    let (agr, _) = setup_active_agreement_native(&h, &conv, "after-work").await;
     rpc(&h, "payment.request", json!({ "agreement": agr, "commitment_id": "c2" })).await;
 
     let sync = rpc(&h, "transaction.sync", json!({ "conversation": conv, "full": true })).await;

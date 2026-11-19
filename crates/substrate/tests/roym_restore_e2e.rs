@@ -394,6 +394,8 @@ async fn assert_durability_parity(node_y2: &Node, before: &BeforeSnapshot, tx: &
     assert_eq!(agreement_after["state"], before.agreement["state"]);
     assert_eq!(agreement_after["seq"], before.agreement["seq"]);
     assert_eq!(agreement_after["commitments"], before.agreement["commitments"]);
+    assert_eq!(agreement_after["terms"], before.agreement["terms"]);
+    assert_eq!(agreement_after["terms"]["commitments"][1]["payee"], "Y Cleaning");
 
     let payment_after = node_y2
         .rpc_ok("payment.get", json!({ "agreement": tx.quote_record_id, "commitment_id": "c2" }))

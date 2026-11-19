@@ -8,6 +8,7 @@
 
 use serde::Serialize;
 use serde_json::Value;
+use syneroym_signed_record::decode_disclosure;
 
 use crate::{
     area::Area,
@@ -15,18 +16,17 @@ use crate::{
         Answers, Commitment, CommitmentKind, DealTerms, LocalText, ResourceKind, SettlementRole,
         TextTranslation, transition::CommitmentState,
     },
-    fulfilment::FulfilmentReceiptPayload,
     lang::LangTag,
     listing::{
         AddressDisclosure, BookingMode, BookingTerms, ListingPayload, ListingStatus,
         ListingTranslation, LocationTerms, OpenTo, PaymentModel, PaymentTerms, ProductCondition,
         ProductDetail, RelationshipTerms, ServiceDetail, ServiceLocation, ServiceRecordTerms,
     },
-    payment::{PaymentAcknowledgementPayload, PaymentRequestPayload},
     progress::{AgreementProgressPayload, AgreementState, CancelReason, CommitmentProgress},
+    testing::sd::{self, PlainFulfilment, PlainPaymentAck, PlainPaymentRequest, PlainQuote},
     transaction::{
         AgreementReceiptPayload, DEFAULT_DATA_USE_NOTICE, DealRole, EnquiryPayload, QuoteLocation,
-        QuotePayload, TimeWindow,
+        TimeWindow,
     },
 };
 
@@ -66,6 +66,16 @@ fn assert_no_old_words(name: &str, sample: &impl Serialize) {
     let mut found = Vec::new();
     find_old_words(name, &value, &mut found);
     assert!(found.is_empty(), "old deal-role words on the wire: {found:#?}");
+}
+
+fn assert_no_old_words_in_disclosures(name: &str, disclosures: &[String]) {
+    for (i, d) in disclosures.iter().enumerate() {
+        if let Ok(decoded) = decode_disclosure(d) {
+            let mut found = Vec::new();
+            find_old_words(&format!("{name}.disclosures[{i}]"), &decoded.value, &mut found);
+            assert!(found.is_empty(), "old deal-role words in disclosures: {found:#?}");
+        }
+    }
 }
 
 /// Lists every variant of an enum. The `match` has no wildcard, so adding a
@@ -376,15 +386,19 @@ fn the_other_wire_enums_say_no_old_word_in_any_variant() {
 fn a_request_and_a_quote_say_no_old_word() {
     assert_no_old_words("enquiry", &enquiry());
     for place in every_place() {
-        let quote = QuotePayload {
+        let plain_terms = terms(place);
+        assert_no_old_words("plain terms", &plain_terms);
+        let plain = PlainQuote {
             quote_id: "quo_1".to_string(),
             conversation: "conv_1".to_string(),
             sequence: 1,
             answers: Answers::Enquiry { record_id: "rec_enquiry".to_string() },
             counterparty_did: COUNTERPARTY.to_string(),
-            terms: terms(place),
+            terms: plain_terms,
         };
+        let (quote, disclosures) = sd::conceal_quote(plain, 1);
         assert_no_old_words("quote", &quote);
+        assert_no_old_words_in_disclosures("quote", &disclosures);
     }
 }
 
@@ -392,20 +406,25 @@ fn a_request_and_a_quote_say_no_old_word() {
 fn an_agreement_and_its_receipts_say_no_old_word() {
     for role in every_role() {
         for place in every_place() {
+            let plain_terms = terms(place);
+            assert_no_old_words("plain terms", &plain_terms);
+            let mut salts = sd::seeded_salts(2);
+            let concealed = plain_terms.conceal(&mut salts).unwrap();
             let agreement = AgreementReceiptPayload {
                 quote_record_id: "rec_quote".to_string(),
                 counterparty_did: COUNTERPARTY.to_string(),
                 quote_author_did: QUOTE_AUTHOR.to_string(),
                 role,
-                viewed_lang: terms(place).scope.lang,
+                viewed_lang: plain_terms.scope.lang,
                 viewed_via_mt: false,
-                terms: terms(place),
+                terms: concealed.signed,
             };
             assert_no_old_words("agreement-receipt", &agreement);
+            assert_no_old_words_in_disclosures("agreement", &concealed.disclosures);
         }
     }
     for s_role in every_settlement_role() {
-        let fulfilment = FulfilmentReceiptPayload {
+        let plain = PlainFulfilment {
             agreement: "rec_agreement".to_string(),
             conversation: "conv_1".to_string(),
             commitment_id: "c1".to_string(),
@@ -414,13 +433,16 @@ fn an_agreement_and_its_receipts_say_no_old_word() {
             role: s_role,
             settlement_note: None,
         };
+        assert_no_old_words("plain fulfilment", &plain.settlement_note);
+        let (fulfilment, disclosures) = sd::conceal_fulfilment(plain, 3);
         assert_no_old_words("fulfilment-receipt", &fulfilment);
+        assert_no_old_words_in_disclosures("fulfilment", &disclosures);
     }
 }
 
 #[test]
 fn the_payment_records_say_no_old_word() {
-    let request = PaymentRequestPayload {
+    let plain_req = PlainPaymentRequest {
         agreement: "rec_agreement".to_string(),
         conversation: "conv_1".to_string(),
         commitment_id: "c1".to_string(),
@@ -432,9 +454,13 @@ fn the_payment_records_say_no_old_word() {
             translations: Vec::new(),
         }),
     };
+    assert_no_old_words("plain payment-request note", &plain_req.note);
+    let (request, req_disclosures) = sd::conceal_payment_request(plain_req, 4);
     assert_no_old_words("payment-request", &request);
+    assert_no_old_words_in_disclosures("payment-request", &req_disclosures);
+
     for s_role in every_settlement_role() {
-        let ack = PaymentAcknowledgementPayload {
+        let plain_ack = PlainPaymentAck {
             agreement: "rec_agreement".to_string(),
             conversation: "conv_1".to_string(),
             commitment_id: "c1".to_string(),
@@ -446,7 +472,10 @@ fn the_payment_records_say_no_old_word() {
             reference: Some("receipt 7".to_string()),
             settlement_note: None,
         };
+        assert_no_old_words("plain payment-ack method", &plain_ack.method);
+        let (ack, ack_disclosures) = sd::conceal_payment_ack(plain_ack, 5);
         assert_no_old_words("payment-acknowledgement", &ack);
+        assert_no_old_words_in_disclosures("payment-acknowledgement", &ack_disclosures);
     }
 }
 

@@ -2,7 +2,7 @@
 
 use syneroym_app_host::{AppDataLayer, AppHost, AppSigning, types::data_layer::RecordWriteValue};
 use syneroym_roym_core::{
-    deal::ResourceKind,
+    deal::{ResourceKind, SignedTerms},
     progress::{
         self as core_progress, AGREEMENT_PROGRESS_VERSION, AgreementState, CommitmentProgress,
         RECORD_AGREEMENT_PROGRESS,
@@ -15,7 +15,9 @@ use syneroym_roym_core::{
 };
 
 use super::{
-    AGREEMENT_PROGRESS, AGREEMENTS, AgreementRow, EVENT_PROGRESS, LEDGER, QUOTES, RecordPointerRow,
+    AGREEMENT_PROGRESS, AGREEMENTS, AgreementRow, EVENT_PROGRESS, LEDGER, OutgoingCard, QUOTES,
+    RecordPointerRow,
+    disclosures::HeldQuote,
     get_row,
     hold::{Reservations, ReserveOutcome, SeatLedger},
     progress, put_row, send_card_and_file,
@@ -30,7 +32,7 @@ pub(crate) use rows::*;
 pub(crate) async fn run<H: AppHost>(
     host: &H,
     row: &mut AgreementRow,
-    quote: &QuotePayload,
+    quote: &HeldQuote,
     now: u64,
 ) -> Result<bool, String> {
     run_with_reservations(host, row, quote, SeatLedger, now).await
@@ -39,7 +41,7 @@ pub(crate) async fn run<H: AppHost>(
 pub(crate) async fn run_with_reservations<H: AppHost, R: Reservations>(
     host: &H,
     row: &mut AgreementRow,
-    quote: &QuotePayload,
+    quote: &HeldQuote,
     reservations: R,
     now: u64,
 ) -> Result<bool, String> {
@@ -53,7 +55,7 @@ pub(crate) async fn run_with_reservations<H: AppHost, R: Reservations>(
         return Ok(false);
     }
 
-    let dec_key = decision_id(&quote.quote_id);
+    let dec_key = decision_id(&quote.signed.quote_id);
     let cs_key = countersign_id(&row.quote_record_id);
 
     let existing_dec: Option<DecisionRow> = get_row(host, LEDGER, &dec_key).await?;
@@ -61,35 +63,52 @@ pub(crate) async fn run_with_reservations<H: AppHost, R: Reservations>(
 
     if let Some(dec) = &existing_dec {
         if dec.agreement == row.quote_record_id {
-            return continue_decision(host, row, dec, &reservations, now).await;
+            return continue_decision(host, row, dec, &reservations, quote, now).await;
         }
-        return handle_refusal(host, row, quote, &cp_record_id, "quote-already-agreed", now).await;
+        return handle_refusal(
+            host,
+            row,
+            &quote.signed,
+            &cp_record_id,
+            "quote-already-agreed",
+            now,
+        )
+        .await;
     }
     if existing_cs.is_some() {
-        return repeat_path(host, row, &reservations, now).await;
+        return repeat_path(host, row, &reservations, quote, now).await;
     }
 
     if cp_issuer != row.counterparty_did {
         return Ok(false);
     }
 
-    if let Some(ptr) = get_row::<RecordPointerRow, _>(host, QUOTES, &quote.quote_id).await?
+    if let Some(ptr) = get_row::<RecordPointerRow, _>(host, QUOTES, &quote.signed.quote_id).await?
         && ptr.record_id != row.quote_record_id
     {
-        return handle_refusal(host, row, quote, &cp_record_id, "quote-superseded", now).await;
+        return handle_refusal(host, row, &quote.signed, &cp_record_id, "quote-superseded", now)
+            .await;
     }
 
-    if now >= quote.terms.quote_expires_at_secs {
-        return handle_refusal(host, row, quote, &cp_record_id, "quote-expired", now).await;
+    if now >= quote.signed.terms.quote_expires_at_secs {
+        return handle_refusal(host, row, &quote.signed, &cp_record_id, "quote-expired", now).await;
     }
 
-    if !claim_decision_fence(host, row, quote, &dec_key, now).await? {
+    if !claim_decision_fence(host, row, &quote.signed, &dec_key, now).await? {
         if let Ok(Some(existing_dec)) = get_row::<DecisionRow, _>(host, LEDGER, &dec_key).await {
             if existing_dec.agreement == row.quote_record_id {
-                return continue_decision(host, row, &existing_dec, &reservations, now).await;
+                return continue_decision(host, row, &existing_dec, &reservations, quote, now)
+                    .await;
             }
-            return handle_refusal(host, row, quote, &cp_record_id, "quote-already-agreed", now)
-                .await;
+            return handle_refusal(
+                host,
+                row,
+                &quote.signed,
+                &cp_record_id,
+                "quote-already-agreed",
+                now,
+            )
+            .await;
         }
         return Ok(false);
     }
@@ -108,7 +127,7 @@ pub(crate) async fn run_with_reservations<H: AppHost, R: Reservations>(
     }
 
     // 5-7. Store countersign, snapshots, send cards, and complete agreed state
-    finalize_agreed_deal(host, row, now).await
+    finalize_agreed_deal(host, row, &quote.signed.terms, &quote.disclosures, now).await
 }
 
 pub(crate) async fn stored_or_new_seq1_snapshot<H: AppHost>(
@@ -203,21 +222,20 @@ async fn ensure_countersign_sent<H: AppHost>(
     host: &H,
     conversation: &str,
     cs: &mut CountersignRow,
+    disclosures: &[String],
     now: u64,
 ) -> Result<bool, String> {
     if cs.message_id.is_some() {
         return Ok(true);
     }
-    let (msg_id, _, err) = send_card_and_file(
-        host,
-        conversation,
-        RECORD_AGREEMENT_RECEIPT,
-        AGREEMENT_RECEIPT_VERSION,
-        &cs.half.envelope,
-        now,
-        None,
-    )
-    .await;
+    let card = OutgoingCard {
+        card_type: RECORD_AGREEMENT_RECEIPT,
+        version: AGREEMENT_RECEIPT_VERSION,
+        envelope: &cs.half.envelope,
+        send: &[],
+        view: disclosures,
+    };
+    let (msg_id, _, err) = send_card_and_file(host, conversation, &card, now, None).await;
     if !msg_id.is_empty() {
         cs.message_id = Some(msg_id);
         let _ = put_row(host, LEDGER, &countersign_id(&cs.agreement), cs).await;
@@ -240,16 +258,14 @@ async fn ensure_snapshot_sent<H: AppHost>(
     if snap.message_id.is_some() {
         return Ok(true);
     }
-    let (msg_id, _, err) = send_card_and_file(
-        host,
-        conversation,
-        RECORD_AGREEMENT_PROGRESS,
-        AGREEMENT_PROGRESS_VERSION,
-        &snap.envelope,
-        now,
-        None,
-    )
-    .await;
+    let card = OutgoingCard {
+        card_type: RECORD_AGREEMENT_PROGRESS,
+        version: AGREEMENT_PROGRESS_VERSION,
+        envelope: &snap.envelope,
+        send: &[],
+        view: &[],
+    };
+    let (msg_id, _, err) = send_card_and_file(host, conversation, &card, now, None).await;
     if !msg_id.is_empty() {
         snap.message_id = Some(msg_id);
         let _ =
@@ -269,13 +285,14 @@ async fn continue_decision<H: AppHost, R: Reservations>(
     row: &mut AgreementRow,
     existing_dec: &DecisionRow,
     reservations: &R,
+    quote: &HeldQuote,
     now: u64,
 ) -> Result<bool, String> {
     match existing_dec.state {
         DecisionState::Agreed | DecisionState::NotFormed => {
-            resend_completed_decision(host, row, existing_dec.state, now).await
+            resend_completed_decision(host, row, existing_dec.state, &quote.disclosures, now).await
         }
-        _ => repeat_path(host, row, reservations, now).await,
+        _ => repeat_path(host, row, reservations, quote, now).await,
     }
 }
 
@@ -342,6 +359,7 @@ async fn resend_completed_decision<H: AppHost>(
     host: &H,
     row: &mut AgreementRow,
     state: DecisionState,
+    disclosures: &[String],
     now: u64,
 ) -> Result<bool, String> {
     let snap_key = snapshot_id(&row.quote_record_id, 1);
@@ -353,7 +371,7 @@ async fn resend_completed_decision<H: AppHost>(
 
     if state == DecisionState::Agreed {
         if let Some(cs) = stored_cs.as_mut()
-            && !ensure_countersign_sent(host, &row.conversation, cs, now).await?
+            && !ensure_countersign_sent(host, &row.conversation, cs, disclosures, now).await?
         {
             return Ok(false);
         }
@@ -436,13 +454,15 @@ pub(crate) async fn reserve_author_holds<H: AppHost, R: Reservations>(
 pub(crate) async fn finalize_agreed_deal<H: AppHost>(
     host: &H,
     row: &mut AgreementRow,
+    signed_terms: &SignedTerms,
+    disclosures: &[String],
     now: u64,
 ) -> Result<bool, String> {
     let cs_key = countersign_id(&row.quote_record_id);
     let mut cs_row = match get_row::<CountersignRow, _>(host, LEDGER, &cs_key).await? {
         Some(cs) => cs,
         None => {
-            let half = sign_author_receipt_half(host, row, now).await?;
+            let half = sign_author_receipt_half(host, row, signed_terms, now).await?;
             let cs = CountersignRow {
                 kind: "countersign".to_string(),
                 agreement: row.quote_record_id.clone(),
@@ -483,7 +503,7 @@ pub(crate) async fn finalize_agreed_deal<H: AppHost>(
         }
     };
 
-    if !ensure_countersign_sent(host, &row.conversation, &mut cs_row, now).await? {
+    if !ensure_countersign_sent(host, &row.conversation, &mut cs_row, disclosures, now).await? {
         return Ok(false);
     }
     if !ensure_snapshot_sent(host, &row.conversation, &mut snap_row, now).await? {
@@ -498,9 +518,10 @@ pub(crate) async fn repeat_both<H: AppHost>(
     row: &mut AgreementRow,
     mut snap_row: SnapshotRow,
     mut cs: CountersignRow,
+    disclosures: &[String],
     now: u64,
 ) -> Result<bool, String> {
-    if !ensure_countersign_sent(host, &row.conversation, &mut cs, now).await? {
+    if !ensure_countersign_sent(host, &row.conversation, &mut cs, disclosures, now).await? {
         return Ok(false);
     }
     if !ensure_snapshot_sent(host, &row.conversation, &mut snap_row, now).await? {
@@ -513,6 +534,7 @@ pub(crate) async fn repeat_countersigned<H: AppHost>(
     host: &H,
     row: &mut AgreementRow,
     mut cs: CountersignRow,
+    disclosures: &[String],
     now: u64,
 ) -> Result<bool, String> {
     let snap_key = snapshot_id(&row.quote_record_id, 1);
@@ -537,7 +559,7 @@ pub(crate) async fn repeat_countersigned<H: AppHost>(
     };
     put_row(host, AGREEMENT_PROGRESS, &snap_key, &snap_row).await?;
 
-    if !ensure_countersign_sent(host, &row.conversation, &mut cs, now).await? {
+    if !ensure_countersign_sent(host, &row.conversation, &mut cs, disclosures, now).await? {
         return Ok(false);
     }
     if !ensure_snapshot_sent(host, &row.conversation, &mut snap_row, now).await? {
@@ -551,6 +573,8 @@ pub(crate) async fn repeat_fresh<H: AppHost, R: Reservations>(
     host: &H,
     row: &mut AgreementRow,
     reservations: &R,
+    signed_terms: &SignedTerms,
+    disclosures: &[String],
     now: u64,
 ) -> Result<bool, String> {
     if now >= row.terms.quote_expires_at_secs {
@@ -567,13 +591,14 @@ pub(crate) async fn repeat_fresh<H: AppHost, R: Reservations>(
         }
     }
 
-    finalize_agreed_deal(host, row, now).await
+    finalize_agreed_deal(host, row, signed_terms, disclosures, now).await
 }
 
 async fn repeat_path<H: AppHost, R: Reservations>(
     host: &H,
     row: &mut AgreementRow,
     reservations: &R,
+    quote: &HeldQuote,
     now: u64,
 ) -> Result<bool, String> {
     let snap_key = snapshot_id(&row.quote_record_id, 1);
@@ -588,12 +613,13 @@ async fn repeat_path<H: AppHost, R: Reservations>(
             return repeat_not_formed(host, row, snap_row, reservations, now).await;
         }
         if let Some(cs) = stored_cs {
-            return repeat_both(host, row, snap_row, cs, now).await;
+            return repeat_both(host, row, snap_row, cs, &quote.disclosures, now).await;
         }
     } else if let Some(cs) = stored_cs {
-        return repeat_countersigned(host, row, cs, now).await;
+        return repeat_countersigned(host, row, cs, &quote.disclosures, now).await;
     } else {
-        return repeat_fresh(host, row, reservations, now).await;
+        return repeat_fresh(host, row, reservations, &quote.signed.terms, &quote.disclosures, now)
+            .await;
     }
 
     Ok(false)
@@ -669,6 +695,7 @@ pub(crate) async fn handle_not_formed<H: AppHost, R: Reservations>(
 async fn sign_author_receipt_half<H: AppHost>(
     host: &H,
     row: &AgreementRow,
+    signed_terms: &SignedTerms,
     now: u64,
 ) -> Result<ReceiptHalf, String> {
     let (principal, _master) = match signing::person_principal(host, now).await {
@@ -685,7 +712,7 @@ async fn sign_author_receipt_half<H: AppHost>(
         counterparty_did: row.counterparty_did.clone(),
         quote_author_did: row.quote_author_did.clone(),
         role: DealRole::QuoteAuthor,
-        terms: row.terms.clone(),
+        terms: signed_terms.clone(),
         viewed_lang: row.terms.scope.lang.clone(),
         viewed_via_mt: false,
     };

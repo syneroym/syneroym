@@ -17,9 +17,9 @@ use syneroym_roym_core::{
 };
 
 use super::{
-    AGREEMENTS, AgreementRow, ENQUIRIES, ENQUIRY_HISTORY, LEDGER, QUOTE_HISTORY, QUOTES,
-    RecordPointerRow, ensure_collections, get_bytes, get_row, is_deal_level_not_formed_reason,
-    put_row, resolve_principal_and_owner, send_card_and_file,
+    AGREEMENTS, AgreementRow, ENQUIRIES, ENQUIRY_HISTORY, LEDGER, OutgoingCard, QUOTES,
+    RecordPointerRow, disclosures, ensure_collections, get_bytes, get_row,
+    is_deal_level_not_formed_reason, put_row, resolve_principal_and_owner, send_card_and_file,
 };
 
 pub fn decline_id(deal: &str) -> String {
@@ -73,64 +73,60 @@ async fn resolve_declined_target<H: AppHost>(
     owner: &str,
     now: u64,
 ) -> Result<(String, String), Response> {
-    if let Some(q_bytes) =
-        get_bytes(host, QUOTE_HISTORY, declines).await.map_err(Response::internal_error)?
-    {
-        let q_env = String::from_utf8(q_bytes)
-            .map_err(|e| Response::internal_error(format!("invalid quote envelope utf8: {e}")))?;
-        let verdict = transaction::verify_quote(&q_env, now);
-        if !verdict.verified {
-            return Err(Response::invalid_params(format!(
-                "the quote does not verify: {}",
-                verdict.reason.as_deref().unwrap_or("unknown")
-            )));
+    match disclosures::load_quote(host, declines, now).await {
+        Ok(held) => {
+            if owner != held.signed.counterparty_did {
+                return Err(Response::invalid_params(
+                    "only the counterparty can decline this quote",
+                ));
+            }
+            if has_unrefused_counterparty_half(host, &held.signed.quote_id)
+                .await
+                .map_err(Response::internal_error)?
+            {
+                return Err(Response::invalid_params(
+                    "cannot decline a quote that has already been accepted",
+                ));
+            }
+            Ok((held.signed.quote_id, held.signed.conversation))
         }
-        let q_payload = verdict
-            .payload
-            .ok_or_else(|| Response::internal_error("missing quote payload after verification"))?;
-
-        if owner != q_payload.counterparty_did {
-            return Err(Response::invalid_params("only the counterparty can decline this quote"));
+        Err(disclosures::LoadQuoteError::Invalid(e)) => {
+            Err(Response::invalid_params(format!("the quote does not verify: {e}")))
         }
+        Err(disclosures::LoadQuoteError::Storage(e)) => Err(Response::internal_error(e)),
+        Err(disclosures::LoadQuoteError::Missing) => {
+            if let Some(e_bytes) = get_bytes(host, ENQUIRY_HISTORY, declines)
+                .await
+                .map_err(Response::internal_error)?
+            {
+                let e_env = String::from_utf8(e_bytes).map_err(|e| {
+                    Response::internal_error(format!("invalid enquiry envelope utf8: {e}"))
+                })?;
+                let verdict = transaction::verify_enquiry(&e_env, now);
+                if !verdict.verified {
+                    return Err(Response::invalid_params(format!(
+                        "the enquiry does not verify: {}",
+                        verdict.reason.as_deref().unwrap_or("unknown")
+                    )));
+                }
+                let e_payload = verdict.payload.ok_or_else(|| {
+                    Response::internal_error("missing enquiry payload after verification")
+                })?;
 
-        if has_unrefused_counterparty_half(host, &q_payload.quote_id)
-            .await
-            .map_err(Response::internal_error)?
-        {
-            return Err(Response::invalid_params(
-                "cannot decline a quote that has already been accepted",
-            ));
+                if has_unrefused_counterparty_half_for_enquiry(host, &e_payload.enquiry_id)
+                    .await
+                    .map_err(Response::internal_error)?
+                {
+                    return Err(Response::invalid_params(
+                        "cannot decline an enquiry with an accepted quote",
+                    ));
+                }
+
+                Ok((e_payload.enquiry_id, e_payload.conversation))
+            } else {
+                Err(Response::invalid_params("no such quote or enquiry to decline"))
+            }
         }
-
-        Ok((q_payload.quote_id, q_payload.conversation))
-    } else if let Some(e_bytes) =
-        get_bytes(host, ENQUIRY_HISTORY, declines).await.map_err(Response::internal_error)?
-    {
-        let e_env = String::from_utf8(e_bytes)
-            .map_err(|e| Response::internal_error(format!("invalid enquiry envelope utf8: {e}")))?;
-        let verdict = transaction::verify_enquiry(&e_env, now);
-        if !verdict.verified {
-            return Err(Response::invalid_params(format!(
-                "the enquiry does not verify: {}",
-                verdict.reason.as_deref().unwrap_or("unknown")
-            )));
-        }
-        let e_payload = verdict.payload.ok_or_else(|| {
-            Response::internal_error("missing enquiry payload after verification")
-        })?;
-
-        if has_unrefused_counterparty_half_for_enquiry(host, &e_payload.enquiry_id)
-            .await
-            .map_err(Response::internal_error)?
-        {
-            return Err(Response::invalid_params(
-                "cannot decline an enquiry with an accepted quote",
-            ));
-        }
-
-        Ok((e_payload.enquiry_id, e_payload.conversation))
-    } else {
-        Err(Response::invalid_params("no such quote or enquiry to decline"))
     }
 }
 
@@ -191,16 +187,15 @@ pub(crate) async fn decline_at<H: AppHost>(
     }
 
     // Send the card and file it
-    let (msg_id, _send_state, send_err) = send_card_and_file(
-        host,
-        &conversation,
-        RECORD_DEAL_DECLINE,
-        DEAL_DECLINE_VERSION,
-        &envelope_json,
-        now,
-        None,
-    )
-    .await;
+    let card = OutgoingCard {
+        card_type: RECORD_DEAL_DECLINE,
+        version: DEAL_DECLINE_VERSION,
+        envelope: &envelope_json,
+        send: &[],
+        view: &[],
+    };
+    let (msg_id, _send_state, send_err) =
+        send_card_and_file(host, &conversation, &card, now, None).await;
 
     if let Some(err) = send_err {
         return Err(Response::internal_error(format!("failed to send decline card: {err:?}")));
@@ -233,16 +228,15 @@ async fn repeat_decline<H: AppHost>(
     now: u64,
 ) -> Reply<DealDeclineOutput> {
     if existing.message_id.is_none() {
-        let (msg_id, _send_state, send_err) = send_card_and_file(
-            host,
-            conversation,
-            RECORD_DEAL_DECLINE,
-            DEAL_DECLINE_VERSION,
-            &existing.envelope,
-            now,
-            None,
-        )
-        .await;
+        let card = OutgoingCard {
+            card_type: RECORD_DEAL_DECLINE,
+            version: DEAL_DECLINE_VERSION,
+            envelope: &existing.envelope,
+            send: &[],
+            view: &[],
+        };
+        let (msg_id, _send_state, send_err) =
+            send_card_and_file(host, conversation, &card, now, None).await;
         if let Some(err) = send_err {
             return Err(Response::internal_error(format!("failed to send decline card: {err:?}")));
         }

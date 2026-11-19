@@ -19,7 +19,7 @@ use syneroym_roym_core::{
 };
 
 use super::{
-    AGREEMENT_PROGRESS, AGREEMENTS, AgreementRef, AgreementRow,
+    AGREEMENT_PROGRESS, AGREEMENTS, AgreementRef, AgreementRow, OutgoingCard,
     agreement_ops::AgreementView,
     decide::{SnapshotRow, snapshot_id},
     get_row,
@@ -109,16 +109,14 @@ async fn finalize_snapshot<H: AppHost>(
         }
     }
 
-    let (message_id, _, _) = send_card_and_file(
-        host,
-        &row.conversation,
-        RECORD_AGREEMENT_PROGRESS,
-        AGREEMENT_PROGRESS_VERSION,
-        &snap_row.envelope,
-        now,
-        None,
-    )
-    .await;
+    let card = OutgoingCard {
+        card_type: RECORD_AGREEMENT_PROGRESS,
+        version: AGREEMENT_PROGRESS_VERSION,
+        envelope: &snap_row.envelope,
+        send: &[],
+        view: &[],
+    };
+    let (message_id, _, _) = send_card_and_file(host, &row.conversation, &card, now, None).await;
 
     if !message_id.is_empty() {
         snap_row.message_id = Some(message_id);

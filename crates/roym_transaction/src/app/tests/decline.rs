@@ -11,10 +11,12 @@ use syneroym_roym_core::{
     lang::LangTag,
     listing::derive_slot_id,
     progress::AgreementState,
-    record::{Envelope, RECORD_DEAL_DECLINE, RECORD_ENQUIRY, RecordDraft},
+    record::{Envelope, RECORD_DEAL_DECLINE, RECORD_ENQUIRY, RECORD_QUOTE, RecordDraft},
+    testing::sd::{PlainQuote, conceal_quote},
     transaction::{
         Answers, DEAL_DECLINE_VERSION, DealDeclinePayload, DealRole, ENQUIRY_VERSION,
-        EnquiryPayload, QUOTE_VERSION, QuotePayload, ReceiptHalf, TimeWindow, derive_quote_id,
+        EnquiryPayload, QUOTE_VERSION, QuotePayload, ReceiptHalf, TimeWindow, derive_enquiry_id,
+        derive_quote_id, verify_deal_decline,
     },
 };
 
@@ -22,7 +24,7 @@ use crate::app::{
     AGREEMENTS, AgreementRow, CARDS, CardRow, ENQUIRIES, ENQUIRY_HISTORY, LEDGER, QUOTE_HISTORY,
     QUOTES, RecordPointerRow,
     decline_ops::{self, DealDeclineInput},
-    get_row, put_bytes, put_row,
+    disclosures, get_row, put_bytes, put_row,
     sync::{self, SyncInput},
     tests::{TestFixture, fixture},
 };
@@ -61,7 +63,7 @@ fn make_quote_envelope(
     author: &Identity,
     cp_did: &str,
     now: u64,
-) -> (String, String, QuotePayload) {
+) -> (String, String, QuotePayload, DealTerms, Vec<String>) {
     let author_did = substrate::derive_did_key(&author.public_key());
     let quote_id = derive_quote_id("conv_1", &author_did, 1).expect("quote id");
     let terms = DealTerms {
@@ -75,14 +77,15 @@ fn make_quote_envelope(
         dispute_path: LocalText::plain(LangTag::parse_canonical("en").expect("lang"), "None"),
         quote_expires_at_secs: now + 3600,
     };
-    let payload = QuotePayload {
+    let plain = PlainQuote {
         quote_id,
         conversation: "conv_1".to_string(),
         sequence: 1,
-        counterparty_did: cp_did.to_string(),
-        terms,
         answers: Answers::Enquiry { record_id: "rec_enq_1".to_string() },
+        counterparty_did: cp_did.to_string(),
+        terms: terms.clone(),
     };
+    let (payload, disclosures) = conceal_quote(plain, 1);
     let draft = RecordDraft {
         version: QUOTE_VERSION,
         record_type: "quote".to_string(),
@@ -95,7 +98,7 @@ fn make_quote_envelope(
     let sig = author.sign(&bytes).to_bytes();
     env.attach_signature(z32::encode(&sig)).expect("sig");
     let rec_id = env.record_id().expect("rec id");
-    (env.to_json().expect("json"), rec_id, payload)
+    (env.to_json().expect("json"), rec_id, payload, terms, disclosures)
 }
 
 fn make_decline_envelope(
@@ -133,8 +136,7 @@ fn make_enquiry_envelope(
     now: u64,
 ) -> (String, String, EnquiryPayload) {
     let author_did = substrate::derive_did_key(&author.public_key());
-    let enquiry_id = syneroym_roym_core::transaction::derive_enquiry_id(conv, &author_did, 1)
-        .expect("enquiry id");
+    let enquiry_id = derive_enquiry_id(conv, &author_did, 1).expect("enquiry id");
     let payload = EnquiryPayload {
         enquiry_id: enquiry_id.clone(),
         conversation: conv.to_string(),
@@ -169,8 +171,9 @@ async fn repeated_decline_returns_the_same_record() {
     let author_did = substrate::derive_did_key(&author.public_key());
 
     // f is counterparty
-    let (q_json, q_rec_id, quote) = make_quote_envelope(&author, &f.master_did, now);
+    let (q_json, q_rec_id, quote, _terms, disc) = make_quote_envelope(&author, &f.master_did, now);
     put_bytes(&f.host, QUOTE_HISTORY, &q_rec_id, q_json.as_bytes()).await.unwrap();
+    disclosures::store(&f.host, &q_rec_id, RECORD_QUOTE, &disc, now).await.unwrap();
 
     let ptr = RecordPointerRow {
         envelope: q_json,
@@ -224,8 +227,9 @@ async fn decline_with_hindi_lang() {
     let f = fixture();
     let now = f.host.now();
     let cp = Identity::generate().expect("cp");
-    let (q_json, q_rec_id, quote) = make_quote_envelope(&cp, &f.master_did, now);
+    let (q_json, q_rec_id, quote, _terms, disc) = make_quote_envelope(&cp, &f.master_did, now);
     put_bytes(&f.host, QUOTE_HISTORY, &q_rec_id, q_json.as_bytes()).await.unwrap();
+    disclosures::store(&f.host, &q_rec_id, RECORD_QUOTE, &disc, now).await.unwrap();
 
     let ptr = RecordPointerRow {
         envelope: q_json,
@@ -275,7 +279,7 @@ async fn decline_with_hindi_lang() {
 
     let dec_row: decline_ops::DeclineRow =
         get_row(&f.host, LEDGER, &decline_ops::decline_id(&quote.quote_id)).await.unwrap().unwrap();
-    let v = syneroym_roym_core::transaction::verify_deal_decline(&dec_row.envelope, now);
+    let v = verify_deal_decline(&dec_row.envelope, now);
     assert!(v.verified);
     let payload = v.payload.unwrap();
     let reason = payload.reason.unwrap();
@@ -288,8 +292,9 @@ async fn decline_resends_if_message_id_is_empty() {
     let f = fixture();
     let now = f.host.now();
     let cp = Identity::generate().expect("cp");
-    let (q_json, q_rec_id, quote) = make_quote_envelope(&cp, &f.master_did, now);
+    let (q_json, q_rec_id, quote, _terms, disc) = make_quote_envelope(&cp, &f.master_did, now);
     put_bytes(&f.host, QUOTE_HISTORY, &q_rec_id, q_json.as_bytes()).await.unwrap();
+    disclosures::store(&f.host, &q_rec_id, RECORD_QUOTE, &disc, now).await.unwrap();
 
     let ptr = RecordPointerRow {
         envelope: q_json,
@@ -378,8 +383,9 @@ async fn cannot_decline_enquiry_with_accepted_quote() {
     // Create quote answering enq_rec_id
     let cp = Identity::generate().expect("cp");
     let cp_did = substrate::derive_did_key(&cp.public_key());
-    let (q_json, q_rec_id, quote) = make_quote_envelope(&f.master, &cp_did, now);
+    let (q_json, q_rec_id, quote, terms, disc) = make_quote_envelope(&f.master, &cp_did, now);
     put_bytes(&f.host, QUOTE_HISTORY, &q_rec_id, q_json.as_bytes()).await.unwrap();
+    disclosures::store(&f.host, &q_rec_id, RECORD_QUOTE, &disc, now).await.unwrap();
 
     let q_ptr = RecordPointerRow {
         envelope: q_json,
@@ -406,7 +412,7 @@ async fn cannot_decline_enquiry_with_accepted_quote() {
         conversation: "conv_1".to_string(),
         counterparty_did: cp_did.clone(),
         quote_author_did: f.master_did.clone(),
-        terms: quote.terms.clone(),
+        terms: terms.clone(),
         agreed_at_secs: None,
         counterparty: Some(ReceiptHalf {
             record_id: "rec_cp_half_enq".to_string(),
@@ -460,14 +466,16 @@ async fn counterparty_can_decline_quote_v2_after_v1_refused() {
     let cp_did = substrate::derive_did_key(&cp.public_key());
 
     // Quote v1 and v2 have the same quote_id
-    let (q1_json, q1_rec_id, q1_payload) = make_quote_envelope(&cp, &f.master_did, now);
+    let (q1_json, q1_rec_id, q1_payload, q1_terms, q1_disc) =
+        make_quote_envelope(&cp, &f.master_did, now);
     let quote_id = q1_payload.quote_id.clone();
     put_bytes(&f.host, QUOTE_HISTORY, &q1_rec_id, q1_json.as_bytes()).await.unwrap();
+    disclosures::store(&f.host, &q1_rec_id, RECORD_QUOTE, &q1_disc, now).await.unwrap();
 
     let (mut env2, bytes2) = Envelope::unsigned(
         RecordDraft {
             version: QUOTE_VERSION,
-            record_type: syneroym_roym_core::record::RECORD_QUOTE.to_string(),
+            record_type: RECORD_QUOTE.to_string(),
             subject: quote_id.clone(),
             payload: serde_json::to_value(&q1_payload).unwrap(),
             expires_at_secs: Some(now + 3600),
@@ -483,6 +491,7 @@ async fn counterparty_can_decline_quote_v2_after_v1_refused() {
     let q2_rec_id = env2.record_id().unwrap();
     let q2_json = env2.to_json().unwrap();
     put_bytes(&f.host, QUOTE_HISTORY, &q2_rec_id, q2_json.as_bytes()).await.unwrap();
+    disclosures::store(&f.host, &q2_rec_id, RECORD_QUOTE, &q1_disc, now + 10).await.unwrap();
 
     let ptr2 = RecordPointerRow {
         envelope: q2_json,
@@ -510,7 +519,7 @@ async fn counterparty_can_decline_quote_v2_after_v1_refused() {
         conversation: "conv_1".to_string(),
         counterparty_did: f.master_did.clone(),
         quote_author_did: cp_did.clone(),
-        terms: q1_payload.terms.clone(),
+        terms: q1_terms.clone(),
         agreed_at_secs: None,
         counterparty: Some(ReceiptHalf {
             record_id: "rec_cp_half_v1".to_string(),

@@ -1,5 +1,6 @@
 //! Transaction data backup: export and import.
 
+pub(crate) mod disclosures;
 pub(crate) mod sections;
 #[cfg(test)]
 mod tests;
@@ -12,10 +13,11 @@ use syneroym_app_host::AppHost;
 use syneroym_roym_core::{
     backup::{
         self, Bundle, ImportInput, SECTION_AGREEMENT_PROGRESS, SECTION_AGREEMENTS, SECTION_CARDS,
-        SECTION_ENQUIRIES, SECTION_ENQUIRY_HISTORY, SECTION_FULFILMENTS, SECTION_LEDGER,
-        SECTION_PAYMENTS, SECTION_QUOTE_HISTORY, SECTION_QUOTES,
+        SECTION_DISCLOSURES, SECTION_ENQUIRIES, SECTION_ENQUIRY_HISTORY, SECTION_FULFILMENTS,
+        SECTION_LEDGER, SECTION_PAYMENTS, SECTION_QUOTE_HISTORY, SECTION_QUOTES,
     },
     clock,
+    deal::DealTerms,
     envelope::Response,
     fulfilment,
     method::{NoParams, Reply},
@@ -24,9 +26,9 @@ use syneroym_roym_core::{
 };
 
 use super::{
-    AGREEMENT_PROGRESS, AGREEMENTS, AgreementRow, CARDS, CardRow, ENQUIRIES, ENQUIRY_HISTORY,
-    FULFILMENTS, LEDGER, PAYMENTS, QUOTE_HISTORY, QUOTES, RecordPointerRow, SCHEMA_VERSION,
-    ensure_collections, get_bytes, put_bytes, put_row,
+    AGREEMENT_PROGRESS, AGREEMENTS, AgreementRow, CARDS, CardRow, DISCLOSURES, ENQUIRIES,
+    ENQUIRY_HISTORY, FULFILMENTS, LEDGER, PAYMENTS, QUOTE_HISTORY, QUOTES, RecordPointerRow,
+    SCHEMA_VERSION, ensure_collections, get_bytes, put_bytes, put_row,
 };
 
 #[derive(Debug, Serialize)]
@@ -55,6 +57,7 @@ pub(crate) async fn export<H: AppHost>(host: &H, _input: NoParams) -> Reply<Bund
             (SECTION_AGREEMENT_PROGRESS, AGREEMENT_PROGRESS),
             (SECTION_PAYMENTS, PAYMENTS),
             (SECTION_FULFILMENTS, FULFILMENTS),
+            (SECTION_DISCLOSURES, DISCLOSURES),
         ],
     )
     .await
@@ -91,6 +94,8 @@ pub(crate) async fn import<H: AppHost>(
         return Err(Response::internal_error(e));
     }
 
+    let validated_disclosures = disclosures::validate_disclosures_section(&bundle.sections, now)?;
+
     let req_rows = bundle.sections.get(SECTION_ENQUIRIES).cloned().unwrap_or_default();
     let quote_rows = bundle.sections.get(SECTION_QUOTES).cloned().unwrap_or_default();
     let req_hist_rows = bundle.sections.get(SECTION_ENQUIRY_HISTORY).cloned().unwrap_or_default();
@@ -108,11 +113,18 @@ pub(crate) async fn import<H: AppHost>(
             Err(e) => return Err(e),
         };
     index_quote_history_rows(&quote_hist_rows, &mut quotes_by_record_id, now);
-    let verified_agreements =
-        match verify_imported_agreements(host, agr_rows, &quotes_by_record_id, now).await {
-            Ok(v) => v,
-            Err(e) => return Err(e),
-        };
+    let verified_agreements = match verify_imported_agreements(
+        host,
+        agr_rows,
+        &quotes_by_record_id,
+        &validated_disclosures.revealed_quotes,
+        now,
+    )
+    .await
+    {
+        Ok(v) => v,
+        Err(e) => return Err(e),
+    };
 
     let agreements_map: HashMap<String, AgreementRow> =
         verified_agreements.iter().cloned().collect();
@@ -145,7 +157,16 @@ pub(crate) async fn import<H: AppHost>(
 
     sections::write_vertical_sections(host, validated_vertical, &mut imported_history).await?;
 
-    write_imported_cards(host, card_rows, &imported_history, now).await?;
+    disclosures::write_imported_disclosures(host, &validated_disclosures.rows).await?;
+
+    write_imported_cards(
+        host,
+        card_rows,
+        &imported_history,
+        &validated_disclosures.by_record_id,
+        now,
+    )
+    .await?;
 
     Ok(TransactionImportOutput { imported: true })
 }
@@ -580,6 +601,7 @@ async fn verify_imported_agreements<H: AppHost>(
     host: &H,
     agr_rows: Vec<Value>,
     quotes_by_record_id: &QuotesByRecordId,
+    revealed_quotes: &HashMap<String, DealTerms>,
     now: u64,
 ) -> Result<Vec<(String, AgreementRow)>, Response> {
     let mut verified_agreements = Vec::new();
@@ -622,9 +644,24 @@ async fn verify_imported_agreements<H: AppHost>(
             verify_receipt_half(p, id, "quote_author", DealRole::QuoteAuthor, &quote_ctx, now)?;
         }
 
+        let revealed = match revealed_quotes.get(&row.quote_record_id) {
+            Some(t) => t,
+            None => {
+                return Err(Response::invalid_params(format!(
+                    "agreement '{id}': quote disclosures missing"
+                )));
+            }
+        };
+
+        if &row.terms != revealed {
+            return Err(Response::invalid_params(format!(
+                "agreement '{id}': agreement terms differ from quote"
+            )));
+        }
+
         row.counterparty_did = quote_payload.counterparty_did.clone();
         row.quote_author_did = quote_author_did;
-        row.terms = quote_payload.terms;
+        row.terms = revealed.clone();
 
         verified_agreements.push((row.quote_record_id.clone(), row));
     }
@@ -681,6 +718,7 @@ async fn write_imported_cards<H: AppHost>(
     host: &H,
     card_rows: Vec<Value>,
     imported_history: &HashMap<String, (String, String)>,
+    disclosures_map: &HashMap<String, Vec<String>>,
     now: u64,
 ) -> Result<(), Response> {
     for r in card_rows {
@@ -709,6 +747,7 @@ async fn write_imported_cards<H: AppHost>(
                     _ => false,
                 };
                 row.verified = is_verified;
+                disclosures::rebuild_card_data(&mut row, kind, env, disclosures_map, now);
             } else {
                 row.verified = false;
                 if row.reason.is_none() {

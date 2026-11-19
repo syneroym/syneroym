@@ -14,11 +14,16 @@ use syneroym_app_host::{
     types::signing::{Principal, RecordDraft},
 };
 use syneroym_roym_core::{
+    card::{MAILBOX_CARD_BODY_BYTES, card_body_upper_bound},
     clock,
-    deal::ResourceKind,
+    deal::{
+        DealTerms, ResourceKind,
+        sd::{ConcealedTerms, reveal_terms_strict},
+    },
+    disclosure::{MAX_DETAILS_DISCLOSURE_BYTES, MAX_RECORD_DISCLOSURE_BYTES, Salt},
     envelope::Response,
     method::{
-        self, EnvelopeHistoryOutput, Reply, SiblingError, VerifyInput, call_sibling,
+        self, Reply, SiblingError, VerifyInput, call_sibling,
         catalog::{SlotKeyInput, SlotRow},
     },
     paging,
@@ -31,9 +36,9 @@ use syneroym_roym_core::{
 };
 
 use super::{
-    ENQUIRY_HISTORY, ListInput, QUOTE_HISTORY, QUOTES, RecordPointerRow, SendState,
-    conversation_mine_filter, count_mine, decline_ops, ensure_collections, get_bytes, get_row,
-    is_deal_ended, put_bytes, put_row, resolve_principal_and_owner, send_card_and_file,
+    ENQUIRY_HISTORY, ListInput, OutgoingCard, QUOTE_HISTORY, QUOTES, RecordPointerRow, SendState,
+    conversation_mine_filter, count_mine, decline_ops, disclosures, ensure_collections, get_bytes,
+    get_row, is_deal_ended, put_bytes, put_row, resolve_principal_and_owner, send_card_and_file,
 };
 
 #[derive(Debug, Deserialize)]
@@ -61,6 +66,29 @@ pub struct QuoteSetOutput {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct QuoteMeasureInput {
+    pub terms: DealTermsInput,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DetailMeasure {
+    pub commitment_id: String,
+    pub bytes: u64,
+    pub limit: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct QuoteMeasureOutput {
+    pub bytes: u64,
+    pub limit: u64,
+    pub details: Vec<DetailMeasure>,
+    pub fits: bool,
+    pub card_bytes: u64,
+    pub mailbox_fits: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct QuoteKeyInput {
     pub quote_id: String,
 }
@@ -78,6 +106,7 @@ pub struct QuoteView {
     pub counterparty_did: Option<String>,
     pub declined_at_secs: Option<u64>,
     pub decline_note: Option<String>,
+    pub terms: DealTerms,
 }
 
 #[derive(Debug, Serialize)]
@@ -91,11 +120,38 @@ pub struct QuoteListItem {
     pub version_count: u64,
     pub request_record_id: Option<String>,
     pub counterparty_did: Option<String>,
+    pub terms: DealTerms,
 }
 
 #[derive(Debug, Serialize)]
 pub struct QuoteListOutput {
     pub quotes: Vec<QuoteListItem>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct QuoteVersionItem {
+    pub record_id: String,
+    pub terms: DealTerms,
+}
+
+#[derive(Debug, Serialize)]
+pub struct QuoteHistoryOutput {
+    pub history: Vec<String>,
+    pub versions: Vec<QuoteVersionItem>,
+}
+
+pub(crate) async fn prepare_terms<H: AppHost>(
+    host: &H,
+    input: &DealTermsInput,
+    expires_at_secs: u64,
+) -> Result<DealTerms, Response> {
+    let mut terms_input = input.clone();
+    for c in &mut terms_input.commitments {
+        if c.giver == DealRole::QuoteAuthor && c.resource_kind == ResourceKind::ServiceInSlot {
+            validate_and_apply_slot(host, c, terms_input.listing_id.as_deref()).await?;
+        }
+    }
+    Ok(terms_input.into_deal_terms(expires_at_secs))
 }
 
 pub(crate) async fn set_at<H: AppHost>(
@@ -130,13 +186,8 @@ pub(crate) async fn set_at<H: AppHost>(
         },
     };
 
-    for c in &mut input.terms.commitments {
-        if c.giver == DealRole::QuoteAuthor && c.resource_kind == ResourceKind::ServiceInSlot {
-            validate_and_apply_slot(host, c, input.terms.listing_id.as_deref()).await?;
-        }
-    }
-
-    let terms = input.terms.into_deal_terms(expires_at_secs);
+    let terms = prepare_terms(host, &input.terms, expires_at_secs).await?;
+    let concealed = validate_and_conceal_terms(host, &terms).await?;
 
     let payload = QuotePayload {
         quote_id: quote_id.clone(),
@@ -144,7 +195,7 @@ pub(crate) async fn set_at<H: AppHost>(
         sequence,
         answers: Answers::Enquiry { record_id: input.enquiry_record_id.clone() },
         counterparty_did: counterparty_did.clone(),
-        terms,
+        terms: concealed.signed,
     };
     if let Err(e) = payload.validate() {
         let resp = Response::invalid_params(e.to_string());
@@ -157,25 +208,30 @@ pub(crate) async fn set_at<H: AppHost>(
         return Err(resp);
     }
 
-    let signed =
-        sign_and_store_quote(host, principal, &owner, &payload, expires_at_secs, supersedes)
-            .await?;
+    let sign_input = QuoteSigningInput {
+        principal,
+        owner: &owner,
+        expires_at_secs,
+        supersedes,
+        disclosures: &concealed.disclosures,
+        now,
+    };
+    let signed = sign_and_store_quote(host, &payload, sign_input).await?;
 
     let pointer = build_quote_pointer(&payload, &signed, &owner, next_count, now);
     if let Err(e) = put_row(host, QUOTES, &quote_id, &pointer).await {
         return Err(Response::internal_error(e));
     }
 
-    let (message_id, state, send_error) = send_card_and_file(
-        host,
-        &conversation,
-        RECORD_QUOTE,
-        QUOTE_VERSION,
-        &signed.envelope_json,
-        now,
-        Some(next_count),
-    )
-    .await;
+    let card = OutgoingCard {
+        card_type: RECORD_QUOTE,
+        version: QUOTE_VERSION,
+        envelope: &signed.envelope_json,
+        send: &concealed.disclosures,
+        view: &concealed.disclosures,
+    };
+    let (message_id, state, send_error) =
+        send_card_and_file(host, &conversation, &card, now, Some(next_count)).await;
 
     Ok(QuoteSetOutput {
         quote_id,
@@ -186,6 +242,80 @@ pub(crate) async fn set_at<H: AppHost>(
         state,
         send_error: send_error.map(|e| e.to_string()),
     })
+}
+
+pub(crate) async fn measure_at<H: AppHost>(
+    host: &H,
+    input: QuoteMeasureInput,
+    now: u64,
+) -> Reply<QuoteMeasureOutput> {
+    let (principal, _owner) = resolve_principal_and_owner(host, now).await?;
+    let terms = prepare_terms(host, &input.terms, now + MAX_QUOTE_LIFETIME_SECS).await?;
+
+    let size = terms.disclosure_size().map_err(|e| {
+        Response::invalid_params(e.to_string()).with_data(serde_json::json!({ "code": e.code() }))
+    })?;
+
+    let details: Vec<DetailMeasure> = size
+        .details
+        .into_iter()
+        .map(|(id, bytes)| DetailMeasure {
+            commitment_id: id,
+            bytes: bytes as u64,
+            limit: MAX_DETAILS_DISCLOSURE_BYTES as u64,
+        })
+        .collect();
+
+    let fits = size.total_bytes <= MAX_RECORD_DISCLOSURE_BYTES
+        && details.iter().all(|d| d.bytes <= d.limit);
+
+    let mut zero_salts = (0..).map(|_| Salt::from_bytes([0u8; 16]));
+    let concealed = terms.conceal_unbounded(&mut zero_salts).map_err(|e| {
+        Response::invalid_params(e.to_string()).with_data(serde_json::json!({ "code": e.code() }))
+    })?;
+
+    let payload = QuotePayload {
+        quote_id: "quo_0000000000000000000000000000000000000000000000000000".to_string(),
+        conversation: "conv:0000000000000000000000000000000000000000000000000000000000000000"
+            .to_string(),
+        sequence: 1,
+        answers: Answers::Enquiry {
+            record_id: "rec_0000000000000000000000000000000000000000000000000000".to_string(),
+        },
+        counterparty_did: "did:key:z0000000000000000000000000000000000000000000000000000000"
+            .to_string(),
+        terms: concealed.signed,
+    };
+
+    let payload_val = match serde_json::to_value(&payload) {
+        Ok(v) => v,
+        Err(e) => return Err(Response::internal_error(e.to_string())),
+    };
+
+    let cert_str = match &principal {
+        Principal::Delegated(cert) => cert.as_str(),
+        Principal::Service => "",
+    };
+
+    let card_bytes =
+        card_body_upper_bound(RECORD_QUOTE, &payload_val, &concealed.disclosures, cert_str) as u64;
+    let mailbox_fits = card_bytes <= MAILBOX_CARD_BODY_BYTES as u64;
+
+    Ok(QuoteMeasureOutput {
+        bytes: size.total_bytes as u64,
+        limit: MAX_RECORD_DISCLOSURE_BYTES as u64,
+        details,
+        fits,
+        card_bytes,
+        mailbox_fits,
+    })
+}
+
+pub(crate) async fn measure<H: AppHost>(
+    host: &H,
+    input: QuoteMeasureInput,
+) -> Reply<QuoteMeasureOutput> {
+    measure_at(host, input, clock::now_secs()).await
 }
 
 pub(crate) async fn set<H: AppHost>(host: &H, input: QuoteSetInput) -> Reply<QuoteSetOutput> {
@@ -345,15 +475,36 @@ struct SignedQuote {
     envelope_json: String,
 }
 
+async fn validate_and_conceal_terms<H: AppHost>(
+    host: &H,
+    terms: &DealTerms,
+) -> Result<ConcealedTerms, Response> {
+    if let Err(e) = terms.validate() {
+        return Err(Response::invalid_params(e.to_string())
+            .with_data(serde_json::json!({ "code": e.code() })));
+    }
+    let salts = disclosures::fresh_salts(host, terms.hidden_field_count() as u32).await?;
+    let mut salts_iter = salts.into_iter();
+    terms.conceal(&mut salts_iter).map_err(|e| {
+        Response::invalid_params(e.to_string()).with_data(serde_json::json!({ "code": e.code() }))
+    })
+}
+
+struct QuoteSigningInput<'a> {
+    principal: Principal,
+    owner: &'a str,
+    expires_at_secs: u64,
+    supersedes: Option<String>,
+    disclosures: &'a [String],
+    now: u64,
+}
+
 /// Serializes and signs `payload`, checks the host signed it under the
 /// issuer this service asked for, and stores the envelope by its record id.
 async fn sign_and_store_quote<H: AppHost>(
     host: &H,
-    principal: Principal,
-    owner: &str,
     payload: &QuotePayload,
-    expires_at_secs: u64,
-    supersedes: Option<String>,
+    input: QuoteSigningInput<'_>,
 ) -> Result<SignedQuote, Response> {
     let payload_str = match serde_json::to_string(payload) {
         Ok(s) => s,
@@ -365,11 +516,11 @@ async fn sign_and_store_quote<H: AppHost>(
         record_type: RECORD_QUOTE.to_string(),
         subject: payload.quote_id.clone(),
         payload: payload_str,
-        expires_at_secs: Some(expires_at_secs),
-        supersedes,
+        expires_at_secs: Some(input.expires_at_secs),
+        supersedes: input.supersedes,
     };
 
-    let envelope_json = match AppSigning::sign_record(host, draft, principal).await {
+    let envelope_json = match AppSigning::sign_record(host, draft, input.principal).await {
         Ok(json) => json,
         Err(e) => return Err(Response::internal_error(e.to_string())),
     };
@@ -379,7 +530,7 @@ async fn sign_and_store_quote<H: AppHost>(
         Err(e) => return Err(Response::internal_error(e.to_string())),
     };
 
-    if envelope.issuer != owner {
+    if envelope.issuer != input.owner {
         return Err(Response::internal_error(
             "the host signed under an issuer this service did not ask for",
         ));
@@ -389,6 +540,12 @@ async fn sign_and_store_quote<H: AppHost>(
         Ok(id) => id,
         Err(e) => return Err(Response::internal_error(e.to_string())),
     };
+
+    if let Err(e) =
+        disclosures::store(host, &record_id, RECORD_QUOTE, input.disclosures, input.now).await
+    {
+        return Err(Response::internal_error(e));
+    }
 
     if let Err(e) = put_bytes(host, QUOTE_HISTORY, &record_id, envelope_json.as_bytes()).await {
         return Err(Response::internal_error(e));
@@ -429,24 +586,46 @@ fn build_quote_pointer(
     }
 }
 
+async fn reveal_pointer_terms<H: AppHost>(
+    host: &H,
+    record_id: &str,
+    envelope_str: &str,
+) -> Result<DealTerms, String> {
+    let env = Envelope::from_json(envelope_str).map_err(|e| e.to_string())?;
+    let payload: QuotePayload = serde_json::from_value(env.payload).map_err(|e| e.to_string())?;
+    let disc = disclosures::load(host, record_id)
+        .await?
+        .ok_or_else(|| "disclosures missing".to_string())?;
+    reveal_terms_strict(&payload.terms, &disc).map_err(|e| e.to_string())
+}
+
 pub(crate) async fn get<H: AppHost>(host: &H, input: QuoteKeyInput) -> Reply<Option<QuoteView>> {
     ensure_collections(host).await.map_err(Response::internal_error)?;
     let pointer: Option<RecordPointerRow> = match get_row(host, QUOTES, &input.quote_id).await {
         Ok(p) => p,
         Err(e) => return Err(Response::internal_error(e)),
     };
-    Ok(pointer.map(|p| QuoteView {
-        envelope: p.envelope,
-        record_id: p.record_id,
-        quote_id: p.id,
-        conversation: p.conversation,
-        mine: p.mine,
-        updated_at_secs: p.updated_at_secs,
-        version_count: p.version_count,
-        request_record_id: p.request_record_id,
-        counterparty_did: p.counterparty_did,
-        declined_at_secs: p.declined_at_secs,
-        decline_note: p.decline_note,
+    let pointer = match pointer {
+        Some(p) => p,
+        None => return Ok(None),
+    };
+    let terms = reveal_pointer_terms(host, &pointer.record_id, &pointer.envelope)
+        .await
+        .map_err(Response::internal_error)?;
+
+    Ok(Some(QuoteView {
+        envelope: pointer.envelope,
+        record_id: pointer.record_id,
+        quote_id: pointer.id,
+        conversation: pointer.conversation,
+        mine: pointer.mine,
+        updated_at_secs: pointer.updated_at_secs,
+        version_count: pointer.version_count,
+        request_record_id: pointer.request_record_id,
+        counterparty_did: pointer.counterparty_did,
+        declined_at_secs: pointer.declined_at_secs,
+        decline_note: pointer.decline_note,
+        terms,
     }))
 }
 
@@ -461,11 +640,12 @@ pub(crate) async fn list<H: AppHost>(host: &H, input: ListInput) -> Reply<QuoteL
     rows.sort_by_key(|p| Reverse(p.updated_at_secs));
     let offset = usize::try_from(input.offset).unwrap_or(usize::MAX);
     let limit = usize::try_from(input.limit).unwrap_or(usize::MAX);
-    let page: Vec<QuoteListItem> = rows
-        .into_iter()
-        .skip(offset)
-        .take(limit)
-        .map(|p| QuoteListItem {
+    let mut page: Vec<QuoteListItem> = Vec::with_capacity(limit.min(rows.len()));
+    for p in rows.into_iter().skip(offset).take(limit) {
+        let terms = reveal_pointer_terms(host, &p.record_id, &p.envelope)
+            .await
+            .map_err(Response::internal_error)?;
+        page.push(QuoteListItem {
             envelope: p.envelope,
             record_id: p.record_id,
             quote_id: p.id,
@@ -475,22 +655,32 @@ pub(crate) async fn list<H: AppHost>(host: &H, input: ListInput) -> Reply<QuoteL
             version_count: p.version_count,
             request_record_id: p.request_record_id,
             counterparty_did: p.counterparty_did,
-        })
-        .collect();
+            terms,
+        });
+    }
     Ok(QuoteListOutput { quotes: page })
 }
 
 pub(crate) async fn history<H: AppHost>(
     host: &H,
     input: QuoteKeyInput,
-) -> Reply<EnvelopeHistoryOutput> {
+) -> Reply<QuoteHistoryOutput> {
     ensure_collections(host).await.map_err(Response::internal_error)?;
     let out = match paging::envelope_history(host, QUOTE_HISTORY, "quote_id", &input.quote_id).await
     {
         Ok(out) => out,
         Err(e) => return Err(Response::internal_error(e)),
     };
-    Ok(EnvelopeHistoryOutput { history: out })
+    let mut versions = Vec::with_capacity(out.len());
+    for env_str in &out {
+        if let Ok(env) = Envelope::from_json(env_str)
+            && let Ok(rid) = env.record_id()
+            && let Ok(terms) = reveal_pointer_terms(host, &rid, env_str).await
+        {
+            versions.push(QuoteVersionItem { record_id: rid, terms });
+        }
+    }
+    Ok(QuoteHistoryOutput { history: out, versions })
 }
 
 pub(crate) async fn verify<H: AppHost>(

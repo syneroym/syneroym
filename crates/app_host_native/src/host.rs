@@ -681,6 +681,11 @@ impl AppSigning for NativeAppHost {
         .map_err(convert::signing_error_guest)
     }
 
+    async fn fresh_salts(&self, count: u32) -> Result<Vec<Vec<u8>>, SigningError> {
+        let mut state = self.0.state_mutex().await.lock().await;
+        HostSigning::fresh_salts(&mut *state, count).await.map_err(convert::signing_error_guest)
+    }
+
     async fn signing_identity(&self) -> Result<SigningIdentity, SigningError> {
         let mut state = self.0.state_mutex().await.lock().await;
         HostSigning::identity(&mut *state)

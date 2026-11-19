@@ -2,7 +2,10 @@
 
 use std::{
     collections::{HashMap, VecDeque},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use syneroym_app_host::{
@@ -14,8 +17,10 @@ use syneroym_app_host::{
         signing::{Principal, RecordDraft, SigningError, SigningIdentity},
     },
 };
+use syneroym_signed_record::disclosure;
 
 pub mod data_layer;
+pub mod sd;
 pub mod stubs;
 
 pub use stubs::{DummyReader, DummyWriter};
@@ -52,6 +57,8 @@ pub struct TestHost {
     pub(crate) failed_write_hit: Mutex<bool>,
     pub(crate) call_handlers: Mutex<HashMap<(String, String), CallHandler>>,
     pub(crate) sent_cards: Mutex<Vec<String>>,
+    pub(crate) salt_seed: Mutex<u64>,
+    pub(crate) salt_counter: AtomicU64,
 }
 
 impl std::fmt::Debug for TestHost {
@@ -165,6 +172,11 @@ impl TestHost {
         self.sent_cards.lock().unwrap().clone()
     }
 
+    pub fn set_salt_seed(&self, seed: u64) {
+        *self.salt_seed.lock().unwrap() = seed;
+        self.salt_counter.store(0, Ordering::Relaxed);
+    }
+
     pub(crate) fn check_write_fault(
         &self,
         collection: &str,
@@ -228,6 +240,22 @@ impl AppSigning for TestHost {
         } else {
             unimplemented!("no record signer set on TestHost")
         }
+    }
+
+    async fn fresh_salts(&self, count: u32) -> Result<Vec<Vec<u8>>, SigningError> {
+        if count == 0 || count > 256 {
+            return Err(SigningError::InvalidRecord(format!(
+                "salt count must be between 1 and 256, found {count}"
+            )));
+        }
+        let seed = *self.salt_seed.lock().unwrap();
+        let mut out = Vec::with_capacity(count as usize);
+        for _ in 0..count {
+            let n = self.salt_counter.fetch_add(1, Ordering::Relaxed);
+            let s = disclosure::seeded_salt(seed, n);
+            out.push(s.as_bytes().to_vec());
+        }
+        Ok(out)
     }
 }
 

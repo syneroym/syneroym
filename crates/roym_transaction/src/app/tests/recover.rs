@@ -10,9 +10,10 @@ use syneroym_roym_core::{
     listing::derive_slot_id,
     progress::AgreementState,
     record::{Envelope, RECORD_AGREEMENT_RECEIPT, RECORD_QUOTE, RecordDraft},
+    testing::sd::{PlainQuote, conceal_quote},
     transaction::{
-        AGREEMENT_RECEIPT_VERSION, AgreementReceiptPayload, Answers, DealRole, QUOTE_VERSION,
-        QuotePayload, ReceiptHalf, TimeWindow, derive_quote_id,
+        self, AGREEMENT_RECEIPT_VERSION, AgreementReceiptPayload, Answers, DealRole, QUOTE_VERSION,
+        ReceiptHalf, SignedTerms, TimeWindow, derive_quote_id,
     },
 };
 
@@ -23,6 +24,7 @@ use crate::app::{
         self, CountersignRow, DecisionRow, DecisionState, RefusedRow, SnapshotRow, countersign_id,
         decision_id, refused_id, snapshot_id,
     },
+    disclosures::{self, HeldQuote},
     get_row,
     hold::{HoldLedgerRow, Reservations, ReserveOutcome, SeatLedger, hold_id, seat_id},
     put_bytes, put_card, put_row,
@@ -75,30 +77,29 @@ fn build_quote(
     commitments: Vec<Commitment>,
     expires_at_secs: u64,
     now: u64,
-) -> (QuotePayload, String, String) {
+) -> (HeldQuote, String, String) {
     let author_did = substrate::derive_did_key(&author.public_key());
     let quote_id = derive_quote_id("conv_1", &author_did, 1).expect("quote id");
-    let payload = QuotePayload {
+    let terms = DealTerms {
+        currency: "EUR".to_string(),
+        commitments,
+        home_exchange: None,
+        listing_id: None,
+        scope: LocalText::plain(LangTag::parse_canonical("en").expect("lang"), "Service"),
+        cancellation_terms: LocalText::plain(LangTag::parse_canonical("en").expect("lang"), "24h"),
+        refund_terms: LocalText::plain(LangTag::parse_canonical("en").expect("lang"), "Full"),
+        dispute_path: LocalText::plain(LangTag::parse_canonical("en").expect("lang"), "Arb"),
+        quote_expires_at_secs: expires_at_secs,
+    };
+    let plain = PlainQuote {
         quote_id,
         conversation: "conv_1".to_string(),
         sequence: 1,
-        counterparty_did: counterparty_did.to_string(),
-        terms: DealTerms {
-            currency: "EUR".to_string(),
-            commitments,
-            home_exchange: None,
-            listing_id: None,
-            scope: LocalText::plain(LangTag::parse_canonical("en").expect("lang"), "Service"),
-            cancellation_terms: LocalText::plain(
-                LangTag::parse_canonical("en").expect("lang"),
-                "24h",
-            ),
-            refund_terms: LocalText::plain(LangTag::parse_canonical("en").expect("lang"), "Full"),
-            dispute_path: LocalText::plain(LangTag::parse_canonical("en").expect("lang"), "Arb"),
-            quote_expires_at_secs: expires_at_secs,
-        },
         answers: Answers::Enquiry { record_id: "rec_enq_1".to_string() },
+        counterparty_did: counterparty_did.to_string(),
+        terms: terms.clone(),
     };
+    let (payload, disclosures) = conceal_quote(plain, 1);
 
     let draft = RecordDraft {
         version: QUOTE_VERSION,
@@ -113,14 +114,16 @@ fn build_quote(
     env.attach_signature(z32::encode(&sig)).expect("sig");
     let q_rec_id = env.record_id().expect("rec id");
     let env_json = env.to_json().expect("env json");
-    (payload, q_rec_id, env_json)
+    let verdict = transaction::verify_quote(&env_json, now);
+    let held = HeldQuote { verdict, signed: payload, terms, disclosures };
+    (held, q_rec_id, env_json)
 }
 
 fn make_receipt(
     cp: &Identity,
     author_did: &str,
     quote_record_id: &str,
-    terms: &DealTerms,
+    terms: &SignedTerms,
     now: u64,
 ) -> (ReceiptHalf, String) {
     let cp_did = substrate::derive_did_key(&cp.public_key());
@@ -160,22 +163,25 @@ fn make_receipt(
     )
 }
 
-fn setup_test_deal_with_env(
+async fn setup_test_deal_with_env(
     f: &TestFixture,
     commitments: Vec<Commitment>,
     expiry_secs: u64,
-) -> (QuotePayload, String, String, AgreementRow, u64) {
+) -> (HeldQuote, String, String, AgreementRow, u64) {
     let cp = Identity::generate().expect("cp");
     let cp_did = substrate::derive_did_key(&cp.public_key());
     let now = f.host.now();
 
     let (quote, q_rec_id, q_env_json) =
         build_quote(&f.master, &cp_did, commitments, expiry_secs, now);
-    let (cp_half, _) = make_receipt(&cp, &f.master_did, &q_rec_id, &quote.terms, now);
+    let (cp_half, _) = make_receipt(&cp, &f.master_did, &q_rec_id, &quote.signed.terms, now);
+
+    put_bytes(&f.host, QUOTE_HISTORY, &q_rec_id, q_env_json.as_bytes()).await.unwrap();
+    disclosures::store(&f.host, &q_rec_id, RECORD_QUOTE, &quote.disclosures, now).await.unwrap();
 
     let row = AgreementRow {
         quote_record_id: q_rec_id.clone(),
-        quote_id: quote.quote_id.clone(),
+        quote_id: quote.signed.quote_id.clone(),
         conversation: "conv_1".to_string(),
         counterparty_did: cp_did,
         quote_author_did: f.master_did.clone(),
@@ -193,12 +199,13 @@ fn setup_test_deal_with_env(
     (quote, q_rec_id, q_env_json, row, now)
 }
 
-fn setup_test_deal(
+async fn setup_test_deal(
     f: &TestFixture,
     commitments: Vec<Commitment>,
     expiry_secs: u64,
-) -> (QuotePayload, String, AgreementRow, u64) {
-    let (quote, q_rec_id, _, row, now) = setup_test_deal_with_env(f, commitments, expiry_secs);
+) -> (HeldQuote, String, AgreementRow, u64) {
+    let (quote, q_rec_id, _, row, now) =
+        setup_test_deal_with_env(f, commitments, expiry_secs).await;
     (quote, q_rec_id, row, now)
 }
 
@@ -271,13 +278,12 @@ async fn crash_after_the_fence_is_finished_on_the_next_sync() {
     let now = f.host.now();
     let (comm, _) = slot_commitment("c1", "listing_1", now + 1000, now + 4600);
     let (quote, q_rec_id, q_env_json, row, now) =
-        setup_test_deal_with_env(&f, vec![comm], now + 3600);
+        setup_test_deal_with_env(&f, vec![comm], now + 3600).await;
 
-    put_bytes(&f.host, QUOTE_HISTORY, &q_rec_id, q_env_json.as_bytes()).await.unwrap();
     let ptr = RecordPointerRow {
         envelope: q_env_json,
         record_id: q_rec_id.clone(),
-        id: quote.quote_id.clone(),
+        id: quote.signed.quote_id.clone(),
         conversation: "conv_1".to_string(),
         sequence: 1,
         issuer: f.master_did.clone(),
@@ -286,19 +292,23 @@ async fn crash_after_the_fence_is_finished_on_the_next_sync() {
         version_count: 1,
         issued_at_secs: now,
         request_record_id: None,
-        counterparty_did: Some(quote.counterparty_did.clone()),
+        counterparty_did: Some(quote.signed.counterparty_did.clone()),
         declined_at_secs: None,
         decline_note: None,
     };
-    put_row(&f.host, QUOTES, &quote.quote_id, &ptr).await.unwrap();
+    put_row(&f.host, QUOTES, &quote.signed.quote_id, &ptr).await.unwrap();
 
     let cp_half = row.counterparty.as_ref().unwrap();
-    let card_body =
-        card::card_body(RECORD_AGREEMENT_RECEIPT, AGREEMENT_RECEIPT_VERSION, &cp_half.envelope)
-            .expect("card body");
+    let card_body = card::card_body(
+        RECORD_AGREEMENT_RECEIPT,
+        AGREEMENT_RECEIPT_VERSION,
+        &cp_half.envelope,
+        &[],
+    )
+    .expect("card body");
 
     let card_body_clone = card_body.clone();
-    let cp_did = quote.counterparty_did.clone();
+    let cp_did = quote.signed.counterparty_did.clone();
     f.host.on_call("conversation", "conversation.changes", move |params| {
         let p: Value = serde_json::from_str(&params).unwrap_or(Value::Null);
         let after_seq = p.get("after_seq").and_then(Value::as_u64).unwrap_or(0);
@@ -360,7 +370,7 @@ async fn crash_after_the_fence_is_finished_on_the_next_sync() {
     assert_eq!(state.unwrap().last_seq, 1, "sync cursor must be moved to 1");
 
     // The recovery sweep at the end of sync finishes the deciding row to Agreed
-    let dec_key = decision_id(&quote.quote_id);
+    let dec_key = decision_id(&quote.signed.quote_id);
     let dec_after: DecisionRow = get_row(&f.host, LEDGER, &dec_key).await.unwrap().unwrap();
     assert_eq!(dec_after.state, DecisionState::Agreed);
 
@@ -375,7 +385,7 @@ async fn crash_after_each_reserve_is_finished_on_the_next_sync() {
     let now = f.host.now();
     let (comm1, _) = slot_commitment("c1", "listing_1", now + 1000, now + 4600);
     let (comm2, _) = slot_commitment("c2", "listing_2", now + 5000, now + 8600);
-    let (quote, q_rec_id, mut row, now) = setup_test_deal(&f, vec![comm1, comm2], now + 3600);
+    let (quote, q_rec_id, mut row, now) = setup_test_deal(&f, vec![comm1, comm2], now + 3600).await;
     put_row(&f.host, AGREEMENTS, &q_rec_id, &row).await.unwrap();
     file_card_and_move_cursor(&f, "conv_1", "msg_accept_2", now).await;
 
@@ -397,7 +407,7 @@ async fn crash_after_each_reserve_is_finished_on_the_next_sync() {
     .await
     .unwrap();
 
-    let dec_key = decision_id(&quote.quote_id);
+    let dec_key = decision_id(&quote.signed.quote_id);
     let dec_after: DecisionRow = get_row(&f.host, LEDGER, &dec_key).await.unwrap().unwrap();
     assert_eq!(dec_after.state, DecisionState::Agreed);
 }
@@ -407,7 +417,7 @@ async fn crash_after_the_countersign_row_is_finished_on_the_next_sync() {
     let f = fixture();
     let now = f.host.now();
     let (comm, _) = slot_commitment("c1", "listing_1", now + 1000, now + 4600);
-    let (quote, q_rec_id, mut row, now) = setup_test_deal(&f, vec![comm], now + 3600);
+    let (quote, q_rec_id, mut row, now) = setup_test_deal(&f, vec![comm], now + 3600).await;
     put_row(&f.host, AGREEMENTS, &q_rec_id, &row).await.unwrap();
     file_card_and_move_cursor(&f, "conv_1", "msg_accept_3", now).await;
 
@@ -433,7 +443,7 @@ async fn crash_after_the_countersign_row_is_finished_on_the_next_sync() {
     .await
     .unwrap();
 
-    let dec_key = decision_id(&quote.quote_id);
+    let dec_key = decision_id(&quote.signed.quote_id);
     let dec_after: DecisionRow = get_row(&f.host, LEDGER, &dec_key).await.unwrap().unwrap();
     assert_eq!(dec_after.state, DecisionState::Agreed);
 }
@@ -443,7 +453,7 @@ async fn crash_after_the_snapshot_row_is_finished_on_the_next_sync() {
     let f = fixture();
     let now = f.host.now();
     let (comm, _) = slot_commitment("c1", "listing_1", now + 1000, now + 4600);
-    let (quote, q_rec_id, mut row, now) = setup_test_deal(&f, vec![comm], now + 3600);
+    let (quote, q_rec_id, mut row, now) = setup_test_deal(&f, vec![comm], now + 3600).await;
     put_row(&f.host, AGREEMENTS, &q_rec_id, &row).await.unwrap();
     file_card_and_move_cursor(&f, "conv_1", "msg_accept_4", now).await;
 
@@ -469,7 +479,7 @@ async fn crash_after_the_snapshot_row_is_finished_on_the_next_sync() {
     .await
     .unwrap();
 
-    let dec_key = decision_id(&quote.quote_id);
+    let dec_key = decision_id(&quote.signed.quote_id);
     let dec_after: DecisionRow = get_row(&f.host, LEDGER, &dec_key).await.unwrap().unwrap();
     assert_eq!(dec_after.state, DecisionState::Agreed);
 }
@@ -479,13 +489,13 @@ async fn crash_between_agreement_row_and_decision_row_is_finished_on_the_next_sy
     let f = fixture();
     let now = f.host.now();
     let (comm, _) = slot_commitment("c1", "listing_1", now + 1000, now + 4600);
-    let (quote, q_rec_id, mut row, now) = setup_test_deal(&f, vec![comm], now + 3600);
+    let (quote, q_rec_id, mut row, now) = setup_test_deal(&f, vec![comm], now + 3600).await;
     put_row(&f.host, AGREEMENTS, &q_rec_id, &row).await.unwrap();
     file_card_and_move_cursor(&f, "conv_1", "msg_accept_5", now).await;
 
     // Skip 1 write (the fence write to decision_id), and crash on the 2nd write
     // (mark_decision_agreed)
-    let dec_target = decision_id(&quote.quote_id);
+    let dec_target = decision_id(&quote.signed.quote_id);
     f.host.crash_on_write_skip("ledger", &dec_target, 1);
 
     let err = decide::run(&f.host, &mut row, &quote, now)
@@ -498,7 +508,7 @@ async fn crash_between_agreement_row_and_decision_row_is_finished_on_the_next_sy
     assert_eq!(agr_stored.unwrap().state, Some(AgreementState::Agreed));
 
     // But decision row remains deciding
-    let dec_key = decision_id(&quote.quote_id);
+    let dec_key = decision_id(&quote.signed.quote_id);
     let dec: Option<DecisionRow> = get_row(&f.host, LEDGER, &dec_key).await.unwrap();
     assert_eq!(dec.unwrap().state, DecisionState::Deciding);
 
@@ -521,7 +531,7 @@ async fn crash_after_fence_with_clock_moved_past_expiry_ends_not_formed() {
     let f = fixture();
     let now = f.host.now();
     let (comm, _) = slot_commitment("c1", "listing_1", now + 100, now + 200);
-    let (quote, q_rec_id, mut row, now) = setup_test_deal(&f, vec![comm], now + 50);
+    let (quote, q_rec_id, mut row, now) = setup_test_deal(&f, vec![comm], now + 300).await;
     put_row(&f.host, AGREEMENTS, &q_rec_id, &row).await.unwrap();
     file_card_and_move_cursor(&f, "conv_1", "msg_accept_6", now).await;
 
@@ -533,17 +543,17 @@ async fn crash_after_fence_with_clock_moved_past_expiry_ends_not_formed() {
 
     f.host.restart();
     // Clock moved past expiry
-    f.host.set_now(now + 100);
+    f.host.set_now(now + 350);
 
     sync::sync_at(
         &f.host,
         SyncInput { conversation: "conv_1".to_string(), full: false },
-        now + 100,
+        now + 350,
     )
     .await
     .unwrap();
 
-    let dec_key = decision_id(&quote.quote_id);
+    let dec_key = decision_id(&quote.signed.quote_id);
     let dec: DecisionRow = get_row(&f.host, LEDGER, &dec_key).await.unwrap().unwrap();
     assert_eq!(dec.state, DecisionState::NotFormed);
     assert_eq!(dec.reason.as_deref(), Some("quote-expired"));
@@ -558,7 +568,7 @@ async fn crash_after_countersign_stored_with_clock_past_expiry_checks_no_refused
     let f = fixture();
     let now = f.host.now();
     let (comm, _) = slot_commitment("c1", "listing_1", now + 100, now + 200);
-    let (quote, q_rec_id, mut row, now) = setup_test_deal(&f, vec![comm], now + 50);
+    let (quote, q_rec_id, mut row, now) = setup_test_deal(&f, vec![comm], now + 300).await;
     put_row(&f.host, AGREEMENTS, &q_rec_id, &row).await.unwrap();
     file_card_and_move_cursor(&f, "conv_1", "msg_accept_7", now).await;
 
@@ -571,17 +581,17 @@ async fn crash_after_countersign_stored_with_clock_past_expiry_checks_no_refused
 
     f.host.restart();
     // Clock moved past expiry
-    f.host.set_now(now + 100);
+    f.host.set_now(now + 350);
 
     sync::sync_at(
         &f.host,
         SyncInput { conversation: "conv_1".to_string(), full: false },
-        now + 100,
+        now + 350,
     )
     .await
     .unwrap();
 
-    let dec_key = decision_id(&quote.quote_id);
+    let dec_key = decision_id(&quote.signed.quote_id);
     let dec_after: DecisionRow = get_row(&f.host, LEDGER, &dec_key).await.unwrap().unwrap();
     assert_eq!(dec_after.state, DecisionState::Agreed);
 
@@ -597,7 +607,7 @@ async fn refused_confirm_stub_ends_not_formed() {
     let f = fixture();
     let now = f.host.now();
     let (comm, _) = slot_commitment("c1", "listing_1", now + 1000, now + 4600);
-    let (quote, q_rec_id, mut row, now) = setup_test_deal(&f, vec![comm], now + 3600);
+    let (quote, q_rec_id, mut row, now) = setup_test_deal(&f, vec![comm], now + 3600).await;
     put_row(&f.host, AGREEMENTS, &q_rec_id, &row).await.unwrap();
 
     let res =
@@ -605,7 +615,7 @@ async fn refused_confirm_stub_ends_not_formed() {
             .await;
     assert_eq!(res, Ok(false));
 
-    let dec_key = decision_id(&quote.quote_id);
+    let dec_key = decision_id(&quote.signed.quote_id);
     let dec: DecisionRow = get_row(&f.host, LEDGER, &dec_key).await.unwrap().unwrap();
     assert_eq!(dec.state, DecisionState::NotFormed);
     assert_eq!(dec.reason.as_deref(), Some("slot-expired"));
@@ -621,7 +631,7 @@ async fn refused_confirm_with_crash_after_not_formed_snapshot_stays_not_formed_o
     let f = fixture();
     let now = f.host.now();
     let (comm, slot_id) = slot_commitment("c1", "listing_1", now + 1000, now + 4600);
-    let (quote, q_rec_id, mut row, now) = setup_test_deal(&f, vec![comm], now + 3600);
+    let (quote, q_rec_id, mut row, now) = setup_test_deal(&f, vec![comm], now + 3600).await;
     put_row(&f.host, AGREEMENTS, &q_rec_id, &row).await.unwrap();
 
     // Crash right after not-formed snapshot stored: on agreement row write
@@ -651,7 +661,7 @@ async fn refused_confirm_with_crash_after_not_formed_snapshot_stays_not_formed_o
     assert_eq!(res, Ok(false));
 
     // Stays not-formed! Does not re-reserve!
-    let dec_key = decision_id(&quote.quote_id);
+    let dec_key = decision_id(&quote.signed.quote_id);
     let dec: DecisionRow = get_row(&f.host, LEDGER, &dec_key).await.unwrap().unwrap();
     assert_eq!(dec.state, DecisionState::NotFormed);
     assert_eq!(dec.reason.as_deref(), Some("slot-expired"));

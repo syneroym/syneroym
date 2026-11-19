@@ -16,10 +16,13 @@ use syneroym_roym_core::{
         AGREEMENT_PROGRESS_VERSION, AgreementProgressPayload, AgreementState, CancelReason,
         CommitmentProgress,
     },
-    record::{Envelope, RECORD_AGREEMENT_PROGRESS, RECORD_AGREEMENT_RECEIPT, RecordDraft},
+    record::{
+        Envelope, RECORD_AGREEMENT_PROGRESS, RECORD_AGREEMENT_RECEIPT, RECORD_QUOTE, RecordDraft,
+    },
+    testing::sd::{PlainQuote, conceal_quote},
     transaction::{
         AGREEMENT_RECEIPT_VERSION, AgreementReceiptPayload, Answers, DealRole, QUOTE_VERSION,
-        QuotePayload, ReceiptHalf, TimeWindow, derive_quote_id,
+        QuotePayload, ReceiptHalf, SignedTerms, TimeWindow, derive_quote_id,
     },
 };
 
@@ -29,9 +32,9 @@ use crate::app::{
         CountersignRow, DecisionRow, DecisionState, SnapshotRow, countersign_id, decision_id,
         recover_deciding_rows, snapshot_id,
     },
-    get_row, put_bytes, put_row,
+    disclosures, get_row, progress_ops, put_bytes, put_row,
     sync::{self, SyncInput},
-    tests::fixture,
+    tests::{TestFixture, fixture},
 };
 
 fn sample_commitment(id: &str, listing_id: &str, start_secs: u64, end_secs: u64) -> Commitment {
@@ -64,7 +67,12 @@ fn sample_commitment(id: &str, listing_id: &str, start_secs: u64, end_secs: u64)
     }
 }
 
-fn build_test_quote(author: &Identity, cp_did: &str, now: u64) -> (QuotePayload, String, String) {
+async fn build_test_quote(
+    f: &TestFixture,
+    author: &Identity,
+    cp_did: &str,
+    now: u64,
+) -> (QuotePayload, String, String, DealTerms) {
     let author_did = substrate::derive_did_key(&author.public_key());
     let quote_id = derive_quote_id("conv_1", &author_did, 1).expect("quote id");
     let terms = DealTerms {
@@ -78,14 +86,15 @@ fn build_test_quote(author: &Identity, cp_did: &str, now: u64) -> (QuotePayload,
         dispute_path: LocalText::plain(LangTag::parse_canonical("en").expect("lang"), "None"),
         quote_expires_at_secs: now + 3600,
     };
-    let payload = QuotePayload {
+    let plain = PlainQuote {
         quote_id,
         conversation: "conv_1".to_string(),
         sequence: 1,
-        counterparty_did: cp_did.to_string(),
-        terms,
         answers: Answers::Enquiry { record_id: "rec_enq_1".to_string() },
+        counterparty_did: cp_did.to_string(),
+        terms: terms.clone(),
     };
+    let (payload, disclosures) = conceal_quote(plain, 1);
     let draft = RecordDraft {
         version: QUOTE_VERSION,
         record_type: "quote".to_string(),
@@ -99,14 +108,18 @@ fn build_test_quote(author: &Identity, cp_did: &str, now: u64) -> (QuotePayload,
     env.attach_signature(z32::encode(&sig)).expect("sig");
     let rec_id = env.record_id().expect("rec id");
     let q_json = env.to_json().expect("json");
-    (payload, rec_id, q_json)
+
+    put_bytes(&f.host, QUOTE_HISTORY, &rec_id, q_json.as_bytes()).await.unwrap();
+    disclosures::store(&f.host, &rec_id, RECORD_QUOTE, &disclosures, now).await.unwrap();
+
+    (payload, rec_id, q_json, terms)
 }
 
 fn make_countersign_envelope(
     author: &Identity,
     quote_record_id: &str,
     cp_did: &str,
-    terms: &DealTerms,
+    terms: &SignedTerms,
     now: u64,
 ) -> (String, String) {
     let author_did = substrate::derive_did_key(&author.public_key());
@@ -186,6 +199,7 @@ fn make_progress_envelope(
 struct InitialAgreedState<'a> {
     q_rec_id: &'a str,
     quote: &'a QuotePayload,
+    terms: &'a DealTerms,
     q_json: &'a str,
     cp_did: &'a str,
     cs: (&'a str, &'a str),
@@ -203,7 +217,7 @@ async fn seed_initial_agreed_state(f: &super::TestFixture, s: InitialAgreedState
         conversation: "conv_1".to_string(),
         counterparty_did: s.cp_did.to_string(),
         quote_author_did: f.master_did.clone(),
-        terms: s.quote.terms.clone(),
+        terms: s.terms.clone(),
         agreed_at_secs: Some(s.now),
         counterparty: None,
         quote_author: Some(ReceiptHalf {
@@ -260,11 +274,11 @@ async fn restored_writer_continues_seq_from_its_cards() {
     let cp = Identity::generate().expect("cp");
     let cp_did = substrate::derive_did_key(&cp.public_key());
 
-    let (quote, q_rec_id, q_json) = build_test_quote(&f.master, &cp_did, now);
+    let (quote, q_rec_id, q_json, terms) = build_test_quote(&f, &f.master, &cp_did, now).await;
     let (cs_json, cs_rec_id) =
         make_countersign_envelope(&f.master, &q_rec_id, &cp_did, &quote.terms, now);
 
-    let comm_prog = initial_commitments(&quote.terms.commitments);
+    let comm_prog = initial_commitments(&terms.commitments);
     let (p1_json, p1_rec_id, p1_payload) = make_progress_envelope(
         &f.master,
         &q_rec_id,
@@ -289,6 +303,7 @@ async fn restored_writer_continues_seq_from_its_cards() {
         InitialAgreedState {
             q_rec_id: &q_rec_id,
             quote: &quote,
+            terms: &terms,
             q_json: &q_json,
             cp_did: &cp_did,
             cs: (&cs_json, &cs_rec_id),
@@ -301,7 +316,7 @@ async fn restored_writer_continues_seq_from_its_cards() {
 
     // Now sync discovers outgoing card seq 2 in conversation history
     let p2_card_body =
-        card::card_body(RECORD_AGREEMENT_PROGRESS, AGREEMENT_PROGRESS_VERSION, &p2_json)
+        card::card_body(RECORD_AGREEMENT_PROGRESS, AGREEMENT_PROGRESS_VERSION, &p2_json, &[])
             .expect("card body");
 
     f.host.on_call("conversation", "conversation.changes", move |_| {
@@ -347,9 +362,9 @@ async fn restored_writer_continues_seq_from_its_cards() {
     assert_eq!(snap2.unwrap().record_id, p2_rec_id);
 
     // Cancel after restore: next snapshot is seq 3
-    let cancel_res = crate::app::progress_ops::cancel_at(
+    let cancel_res = progress_ops::cancel_at(
         &f.host,
-        crate::app::progress_ops::AgreementCancelInput {
+        progress_ops::AgreementCancelInput {
             agreement: q_rec_id.clone(),
             reason: CancelReason::CounterpartyAsked,
         },
@@ -371,7 +386,7 @@ async fn restored_writer_reuses_its_sent_countersign() {
     let cp = Identity::generate().expect("cp");
     let cp_did = substrate::derive_did_key(&cp.public_key());
 
-    let (quote, q_rec_id, _) = build_test_quote(&f.master, &cp_did, now);
+    let (quote, q_rec_id, _, terms) = build_test_quote(&f, &f.master, &cp_did, now).await;
     let (cs_json, cs_rec_id) =
         make_countersign_envelope(&f.master, &q_rec_id, &cp_did, &quote.terms, now);
 
@@ -393,7 +408,7 @@ async fn restored_writer_reuses_its_sent_countersign() {
         conversation: "conv_1".to_string(),
         counterparty_did: cp_did.clone(),
         quote_author_did: f.master_did.clone(),
-        terms: quote.terms.clone(),
+        terms,
         agreed_at_secs: None,
         counterparty: None,
         quote_author: None,
@@ -408,7 +423,7 @@ async fn restored_writer_reuses_its_sent_countersign() {
 
     // Conversation history from 0 holds the sent countersign card
     let cs_card_body =
-        card::card_body(RECORD_AGREEMENT_RECEIPT, AGREEMENT_RECEIPT_VERSION, &cs_json)
+        card::card_body(RECORD_AGREEMENT_RECEIPT, AGREEMENT_RECEIPT_VERSION, &cs_json, &[])
             .expect("card body");
 
     f.host.on_call("conversation", "conversation.changes", move |_| {
@@ -483,6 +498,7 @@ fn make_dummy_chat_messages(start_seq: u64, end_seq: u64, now: u64) -> Vec<serde
 fn empty_agreement_row(
     q_rec_id: &str,
     quote: &QuotePayload,
+    terms: &DealTerms,
     cp_did: &str,
     master_did: &str,
     now: u64,
@@ -493,7 +509,7 @@ fn empty_agreement_row(
         conversation: "conv_1".to_string(),
         counterparty_did: cp_did.to_string(),
         quote_author_did: master_did.to_string(),
-        terms: quote.terms.clone(),
+        terms: terms.clone(),
         agreed_at_secs: None,
         counterparty: None,
         quote_author: None,
@@ -513,7 +529,7 @@ async fn restored_writer_paginates_to_find_countersign_after_sync_window() {
     let cp = Identity::generate().expect("cp");
     let cp_did = substrate::derive_did_key(&cp.public_key());
 
-    let (quote, q_rec_id, _) = build_test_quote(&f.master, &cp_did, now);
+    let (quote, q_rec_id, _, terms) = build_test_quote(&f, &f.master, &cp_did, now).await;
     let (cs_json, cs_rec_id) =
         make_countersign_envelope(&f.master, &q_rec_id, &cp_did, &quote.terms, now);
 
@@ -527,11 +543,11 @@ async fn restored_writer_paginates_to_find_countersign_after_sync_window() {
     };
     put_row(&f.host, LEDGER, &decision_id(&quote.quote_id), &dec_fence).await.unwrap();
 
-    let initial_row = empty_agreement_row(&q_rec_id, &quote, &cp_did, &f.master_did, now);
+    let initial_row = empty_agreement_row(&q_rec_id, &quote, &terms, &cp_did, &f.master_did, now);
     put_row(&f.host, AGREEMENTS, &q_rec_id, &initial_row).await.unwrap();
 
     let cs_card_body =
-        card::card_body(RECORD_AGREEMENT_RECEIPT, AGREEMENT_RECEIPT_VERSION, &cs_json)
+        card::card_body(RECORD_AGREEMENT_RECEIPT, AGREEMENT_RECEIPT_VERSION, &cs_json, &[])
             .expect("card body");
 
     f.host.on_call("conversation", "conversation.changes", move |params| {

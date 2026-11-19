@@ -3,6 +3,9 @@
   "issued_at_secs": "number",
   "issuer": "string",
   "payload": {
+    "_sd": [
+      "string"
+    ],
     "agreement": "string",
     "commitment_id": "string",
     "conversation": "string",

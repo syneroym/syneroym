@@ -1,12 +1,19 @@
+mod disclosures;
+
 use std::collections::{BTreeMap, HashMap};
 
 use serde_json::json;
 use syneroym_identity::{Identity, substrate};
 use syneroym_roym_core::{
-    backup::{Bundle, ImportInput, SECTION_LEDGER, SECTION_QUOTE_HISTORY, SECTION_QUOTES},
+    backup::{
+        Bundle, ImportInput, SECTION_DISCLOSURES, SECTION_LEDGER, SECTION_QUOTE_HISTORY,
+        SECTION_QUOTES,
+    },
     deal::{Commitment, CommitmentKind, DealTerms, LocalText, ResourceKind},
     lang::LangTag,
     record::{Envelope, RECORD_DEAL_DECLINE, RecordDraft},
+    signing,
+    testing::sd::{self, PlainQuote, conceal_quote},
     transaction::{
         Answers, DEAL_DECLINE_VERSION, DealDeclinePayload, DealRole, QUOTE_VERSION, QuotePayload,
         ReceiptHalf, derive_quote_id,
@@ -18,14 +25,14 @@ use crate::app::{
     backup::{ImportedQuote, QuotesByRecordId, sections::validate_ledger},
     decide::{CountersignRow, DecisionRow, DecisionState, RefusedRow},
     decline_ops::DeclineRow,
+    disclosures::DisclosureRow,
     hold::{HoldLedgerRow, SeatLedgerRow},
     ledger::{LedgerKind, LedgerRow},
     tests::fixture,
 };
 
-fn sample_quote_context(quote_rec_id: &str) -> QuotesByRecordId {
-    let mut quotes = HashMap::new();
-    let terms = DealTerms {
+fn sample_deal_terms() -> DealTerms {
+    DealTerms {
         currency: "EUR".to_string(),
         commitments: vec![
             Commitment {
@@ -81,21 +88,25 @@ fn sample_quote_context(quote_rec_id: &str) -> QuotesByRecordId {
         refund_terms: LocalText::plain(LangTag::parse_canonical("en").expect("lang"), "Refund"),
         dispute_path: LocalText::plain(LangTag::parse_canonical("en").expect("lang"), "Dispute"),
         quote_expires_at_secs: 10000,
+    }
+}
+
+fn sample_quote_context(quote_rec_id: &str) -> QuotesByRecordId {
+    let mut quotes = HashMap::new();
+    let terms = sample_deal_terms();
+    let plain = PlainQuote {
+        quote_id: "quote_1".to_string(),
+        conversation: "conv_1".to_string(),
+        sequence: 1,
+        counterparty_did: "did:key:cp".to_string(),
+        terms,
+        answers: Answers::Enquiry { record_id: "enq_1".to_string() },
     };
+    let (payload, _disclosures) = conceal_quote(plain, 1);
 
     quotes.insert(
         quote_rec_id.to_string(),
-        ImportedQuote {
-            quote_author_did: "did:key:author".to_string(),
-            payload: QuotePayload {
-                quote_id: "quote_1".to_string(),
-                conversation: "conv_1".to_string(),
-                sequence: 1,
-                counterparty_did: "did:key:cp".to_string(),
-                terms,
-                answers: Answers::Enquiry { record_id: "enq_1".to_string() },
-            },
-        },
+        ImportedQuote { quote_author_did: "did:key:author".to_string(), payload },
     );
     quotes
 }
@@ -490,14 +501,14 @@ fn refused_row_refused_on_unheld_quote_or_counterparty_half() {
     );
     assert!(err3.unwrap_err().error.unwrap().message.contains("names unheld counterparty half"));
 
-    let sample_quote = quotes.get("rec_quote_1").expect("quote");
+    let _sample_quote = quotes.get("rec_quote_1").expect("quote");
     let held_agreement = AgreementRow {
         quote_record_id: "rec_quote_1".to_string(),
         quote_id: "quote_1".to_string(),
         conversation: "conv_1".to_string(),
         counterparty_did: "did:key:cp".to_string(),
         quote_author_did: "did:key:author".to_string(),
-        terms: sample_quote.payload.terms.clone(),
+        terms: sample_deal_terms(),
         state: None,
         state_reason: None,
         cancel_reason: None,
@@ -530,7 +541,7 @@ fn make_test_quote_envelope(
     cp_did: &str,
     supersedes: Option<String>,
     now: u64,
-) -> (String, String, QuotePayload) {
+) -> (String, String, QuotePayload, Vec<String>) {
     let author_did = substrate::derive_did_key(&author.public_key());
     let quote_id = derive_quote_id("conv_1", &author_did, 1).expect("quote id");
     let terms = DealTerms {
@@ -564,14 +575,15 @@ fn make_test_quote_envelope(
         dispute_path: LocalText::plain(LangTag::parse_canonical("en").expect("lang"), "Dispute"),
         quote_expires_at_secs: now + 3600,
     };
-    let payload = QuotePayload {
+    let plain = PlainQuote {
         quote_id,
         conversation: "conv_1".to_string(),
         sequence: 1,
+        answers: Answers::Enquiry { record_id: "rec_enq_1".to_string() },
         counterparty_did: cp_did.to_string(),
         terms,
-        answers: Answers::Enquiry { record_id: "rec_enq_1".to_string() },
     };
+    let (payload, disclosures) = sd::conceal_quote(plain, 1);
     let draft = RecordDraft {
         version: QUOTE_VERSION,
         record_type: "quote".to_string(),
@@ -584,7 +596,7 @@ fn make_test_quote_envelope(
     let sig = author.sign(&bytes).to_bytes();
     env.attach_signature(z32::encode(&sig)).expect("sig");
     let rec_id = env.record_id().expect("rec id");
-    (env.to_json().expect("json"), rec_id, payload)
+    (env.to_json().expect("json"), rec_id, payload, disclosures)
 }
 
 #[tokio::test]
@@ -595,10 +607,11 @@ async fn decline_of_older_quote_version_in_history_imports_successfully() {
     let cp_did = substrate::derive_did_key(&cp.public_key());
 
     // Quote v1
-    let (q1_json, q1_rec_id, q1_payload) = make_test_quote_envelope(&f.master, &cp_did, None, now);
+    let (q1_json, q1_rec_id, q1_payload, q1_disc) =
+        make_test_quote_envelope(&f.master, &cp_did, None, now);
 
     // Quote v2 supersedes v1
-    let (q2_json, q2_rec_id, q2_payload) =
+    let (q2_json, q2_rec_id, q2_payload, q2_disc) =
         make_test_quote_envelope(&f.master, &cp_did, Some(q1_rec_id.clone()), now + 10);
 
     // Decline of v1 by counterparty
@@ -644,13 +657,32 @@ async fn decline_of_older_quote_version_in_history_imports_successfully() {
             json!({ "id": q2_rec_id, "payload": { "envelope": q2_json } }),
         ],
     );
+    let disc1 = DisclosureRow {
+        record_id: q1_rec_id.clone(),
+        record_type: "quote".to_string(),
+        disclosures: q1_disc,
+        stored_at_secs: now,
+    };
+    let disc2 = DisclosureRow {
+        record_id: q2_rec_id.clone(),
+        record_type: "quote".to_string(),
+        disclosures: q2_disc,
+        stored_at_secs: now + 10,
+    };
+    sections.insert(
+        SECTION_DISCLOSURES.to_string(),
+        vec![
+            json!({ "id": q1_rec_id, "payload": disc1 }),
+            json!({ "id": q2_rec_id, "payload": disc2 }),
+        ],
+    );
     sections.insert(
         SECTION_LEDGER.to_string(),
         vec![json!({ "id": format!("decline:{}", q1_payload.quote_id), "payload": decline_row })],
     );
 
     let mut bundle = Bundle::new(f.master_did.clone(), SCHEMA_VERSION, sections).unwrap();
-    syneroym_roym_core::signing::sign_bundle(&f.host, &mut bundle, now).await.unwrap();
+    signing::sign_bundle(&f.host, &mut bundle, now).await.unwrap();
 
     let res = backup::import(&f.host, ImportInput { bundle }).await;
     assert!(res.is_ok(), "import should succeed: {:?}", res.err());

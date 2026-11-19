@@ -11,9 +11,13 @@ use syneroym_app_host::{
 use syneroym_roym_core::{
     clock,
     deal::{CommitmentKind, LocalText, SettlementRole, transition::CommitmentState},
+    disclosure::{PAYMENT_ACK_SET, PAYMENT_REQUEST_SET, conceal_hidden},
     envelope::Response,
     method::{Reply, VerifyInput},
-    payment::{self, PaymentAcknowledgementPayload, PaymentRequestPayload},
+    payment::{
+        self, PaymentAckHidden, PaymentAcknowledgementPayload, PaymentRequestHidden,
+        PaymentRequestPayload,
+    },
     progress::AgreementEvent,
     record::{Envelope, RECORD_PAYMENT_ACKNOWLEDGEMENT, RECORD_PAYMENT_REQUEST},
     transaction::{DealRole, PairState, ReceiptHalf, pair_state},
@@ -21,15 +25,16 @@ use syneroym_roym_core::{
 };
 
 use super::{
-    AGREEMENTS, AgreementRow, FenceOutcome, HalfRecordedOutput, PAYMENTS, PaymentsRow, SendState,
-    get_row, progress_ops, put_row, resolve_principal_and_owner, send_card_and_file,
+    AGREEMENTS, AgreementRow, FenceOutcome, HalfRecordedOutput, OutgoingCard, PAYMENTS,
+    PaymentsRow, SendState, disclosures, get_row, progress_ops, put_row,
+    resolve_principal_and_owner, send_card_and_file,
 };
 
 pub(crate) fn payment_id(agreement: &str, commitment_id: &str) -> String {
     format!("{agreement}:{commitment_id}")
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PaymentRequestInput {
     pub agreement: String,
@@ -45,7 +50,7 @@ pub struct PaymentRequestOutput {
     pub state: SendState,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PaymentAckInput {
     pub agreement: String,
@@ -62,7 +67,7 @@ pub struct PaymentAckInput {
     pub supersedes: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PaymentKeyInput {
     pub agreement: String,
@@ -121,13 +126,21 @@ pub(crate) async fn request<H: AppHost>(
         });
     }
 
+    let hidden = PaymentRequestHidden { note: input.note };
+    if let Err(e) = hidden.validate() {
+        return Err(Response::invalid_params(e.to_string()));
+    }
+    let mut salts = disclosures::fresh_salts(host, 1).await?.into_iter();
+    let (sd, disc) = conceal_hidden(&hidden, &PAYMENT_REQUEST_SET, &mut salts)
+        .map_err(|e| Response::invalid_params(e.to_string()))?;
+
     let payload = PaymentRequestPayload {
         agreement: input.agreement.clone(),
         conversation: agr.conversation.clone(),
         commitment_id: input.commitment_id.clone(),
         quote_author_did: agr.quote_author_did.clone(),
         counterparty_did: agr.counterparty_did.clone(),
-        note: input.note,
+        sd,
     };
     if let Err(e) = payload.validate() {
         return Err(Response::invalid_params(e.to_string()));
@@ -142,6 +155,10 @@ pub(crate) async fn request<H: AppHost>(
         issuer: env.issuer,
         issued_at_secs: env.issued_at_secs,
     };
+
+    disclosures::store(host, &record_id, RECORD_PAYMENT_REQUEST, &disc, now)
+        .await
+        .map_err(Response::internal_error)?;
 
     match claim_payment_request_fence(
         host,
@@ -173,9 +190,16 @@ pub(crate) async fn request<H: AppHost>(
         .await;
     }
 
+    let card = OutgoingCard {
+        card_type: "payment-request",
+        version: 1,
+        envelope: &env_json,
+        send: &disc,
+        view: &disc,
+    };
+
     let (message_id, send_state, _) =
-        send_card_and_file(host, &agr.conversation, "payment-request", 1, &env_json, now, None)
-            .await;
+        send_card_and_file(host, &agr.conversation, &card, now, None).await;
 
     Ok(PaymentRequestOutput { record_id, message_id: Some(message_id), state: send_state })
 }
@@ -260,24 +284,17 @@ pub(crate) async fn acknowledge<H: AppHost>(
         return Ok(early);
     }
 
-    let payload = PaymentAcknowledgementPayload {
-        agreement: input.agreement.clone(),
-        conversation: agr.conversation.clone(),
-        commitment_id: input.commitment_id.clone(),
-        quote_author_did: agr.quote_author_did.clone(),
-        counterparty_did: agr.counterparty_did.clone(),
-        role: settlement_role,
-        observed_at_secs: input.observed_at_secs.unwrap_or(now),
-        method: input.method.clone(),
-        reference: input.reference.clone(),
-        settlement_note: input.settlement_note,
-    };
+    let (payload, disc) = prepare_ack_payload(host, &input, &agr, settlement_role, now).await?;
 
     check_acknowledgement_correction(input.supersedes.as_deref(), versions, &payload, now)?;
 
     let half =
         prepare_and_sign_ack(host, &input.agreement, &payload, input.supersedes.clone(), principal)
             .await?;
+
+    disclosures::store(host, &half.record_id, RECORD_PAYMENT_ACKNOWLEDGEMENT, &disc, now)
+        .await
+        .map_err(Response::internal_error)?;
 
     let ack_fence_claim = AckFenceClaim {
         agreement: &input.agreement,
@@ -294,16 +311,9 @@ pub(crate) async fn acknowledge<H: AppHost>(
         FenceOutcome::Answered(out) => return Ok(out),
     }
 
-    let (message_id, send_state) = record_and_send_ack(
-        host,
-        &p_id,
-        &agr.conversation,
-        &mut payments,
-        deal_role,
-        half.clone(),
-        now,
-    )
-    .await?;
+    let send_ctx = AckSendContext { conversation: &agr.conversation, disclosures: &disc, now };
+    let (message_id, send_state) =
+        record_and_send_ack(host, &p_id, &mut payments, deal_role, half.clone(), send_ctx).await?;
 
     if owner == agr.quote_author_did {
         let _ = progress_ops::transition_at(
@@ -617,21 +627,58 @@ async fn sign_payment_ack<H: AppHost>(
     Ok((env_json, env, record_id))
 }
 
+async fn prepare_ack_payload<H: AppHost>(
+    host: &H,
+    input: &PaymentAckInput,
+    agr: &AgreementRow,
+    settlement_role: SettlementRole,
+    now: u64,
+) -> Result<(PaymentAcknowledgementPayload, Vec<String>), Response> {
+    let hidden = PaymentAckHidden {
+        method: input.method.clone(),
+        reference: input.reference.clone(),
+        settlement_note: input.settlement_note.clone(),
+    };
+    if let Err(e) = hidden.validate() {
+        return Err(Response::invalid_params(e.to_string()));
+    }
+    let mut salts = disclosures::fresh_salts(host, 3).await?.into_iter();
+    let (sd, disc) = conceal_hidden(&hidden, &PAYMENT_ACK_SET, &mut salts)
+        .map_err(|e| Response::invalid_params(e.to_string()))?;
+
+    let payload = PaymentAcknowledgementPayload {
+        agreement: input.agreement.clone(),
+        conversation: agr.conversation.clone(),
+        commitment_id: input.commitment_id.clone(),
+        quote_author_did: agr.quote_author_did.clone(),
+        counterparty_did: agr.counterparty_did.clone(),
+        role: settlement_role,
+        observed_at_secs: input.observed_at_secs.unwrap_or(now),
+        sd,
+    };
+    Ok((payload, disc))
+}
+
+struct AckSendContext<'a> {
+    conversation: &'a str,
+    disclosures: &'a [String],
+    now: u64,
+}
+
 async fn record_and_send_ack<H: AppHost>(
     host: &H,
     p_id: &str,
-    conversation: &str,
     payments: &mut PaymentsRow,
     role: DealRole,
     half: ReceiptHalf,
-    now: u64,
+    ctx: AckSendContext<'_>,
 ) -> Result<(String, SendState), Response> {
     let versions = match role {
         DealRole::Counterparty => &mut payments.counterparty,
         DealRole::QuoteAuthor => &mut payments.quote_author,
     };
     versions.push(half.clone());
-    payments.updated_at_secs = now;
+    payments.updated_at_secs = ctx.now;
     if let Err(e) = put_row(host, PAYMENTS, p_id, payments).await {
         return Err(Response::internal_error(e));
     }
@@ -641,16 +688,16 @@ async fn record_and_send_ack<H: AppHost>(
         DealRole::QuoteAuthor => payments.quote_author.len(),
     } as u64;
 
-    let (message_id, send_state, _) = send_card_and_file(
-        host,
-        conversation,
-        "payment-acknowledgement",
-        1,
-        &half.envelope,
-        now,
-        Some(version_count),
-    )
-    .await;
+    let card = OutgoingCard {
+        card_type: "payment-acknowledgement",
+        version: 1,
+        envelope: &half.envelope,
+        send: ctx.disclosures,
+        view: ctx.disclosures,
+    };
+
+    let (message_id, send_state, _) =
+        send_card_and_file(host, ctx.conversation, &card, ctx.now, Some(version_count)).await;
 
     Ok((message_id, send_state))
 }

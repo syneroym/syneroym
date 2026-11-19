@@ -1,9 +1,11 @@
 //! Card types and versions.
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use syneroym_signed_record::{ENVELOPE_VERSION, Envelope};
 use thiserror::Error;
 
-/// The seven card types of the first release, and the version each one is
+/// The eight card types of the first release, and the version each one is
 /// rendered at today. Fixed: a card of an unlisted type, or a listed type
 /// at an unlisted version, renders as the neutral unknown block.
 pub const CARD_TYPES: &[(&str, u32)] = &[
@@ -31,6 +33,10 @@ pub const CARD_CONTENT_TYPE: &str = "application/vnd.roym.card+json";
 /// template renders them.
 pub const CARD_WRAPPER_VERSION: u32 = 1;
 
+/// Estimated card body size that fits in a mailbox sealed message without
+/// falling back to sender-side pending direct delivery.
+pub const MAILBOX_CARD_BODY_BYTES: usize = 13 * 1024;
+
 /// A card as it travels. It carries the signed envelope and nothing
 /// derived from it: the receiving node verifies and projects, so a sender
 /// cannot supply a rendering that disagrees with what it signed.
@@ -42,6 +48,9 @@ pub struct Card {
     pub version: u32,
     /// The signed envelope, exactly as the host returned it.
     pub envelope: String,
+    /// Selective disclosures for hidden fields in this card's record.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disclosures: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -78,18 +87,59 @@ pub fn parse_card(body: &str) -> Result<Card, CardError> {
 }
 
 /// The body a card message carries for `envelope`.
-pub fn card_body(card_type: &str, version: u32, envelope: &str) -> Result<String, CardError> {
+pub fn card_body(
+    card_type: &str,
+    version: u32,
+    envelope: &str,
+    disclosures: &[String],
+) -> Result<String, CardError> {
     let card = Card {
         card_version: CARD_WRAPPER_VERSION,
         card_type: card_type.to_string(),
         version,
         envelope: envelope.to_string(),
+        disclosures: disclosures.to_vec(),
     };
     let s = serde_json::to_string(&card).map_err(|e| CardError::Json(e.to_string()))?;
     if s.len() > MAX_CARD_BODY_BYTES {
         return Err(CardError::TooLarge);
     }
     Ok(s)
+}
+
+/// Computes an upper bound on the card body size for a given concealed payload,
+/// disclosures, and the local node's real delegation certificate JSON.
+pub fn card_body_upper_bound(
+    card_type: &str,
+    payload: &Value,
+    disclosures: &[String],
+    delegation_json: &str,
+) -> usize {
+    let env = Envelope {
+        envelope_version: ENVELOPE_VERSION,
+        version: 1,
+        record_type: card_type.to_string(),
+        issuer: "did:key:z0000000000000000000000000000000000000000000000000000000".to_string(),
+        subject: "quo_0000000000000000000000000000000000000000000000000000".to_string(),
+        issued_at_secs: 1_899_999_999,
+        expires_at_secs: Some(1_899_999_999),
+        supersedes: Some("rec_0000000000000000000000000000000000000000000000000000".to_string()),
+        payload: payload.clone(),
+        delegation: if delegation_json.is_empty() {
+            None
+        } else {
+            Some(delegation_json.to_string())
+        },
+        signature: "A".repeat(103),
+    };
+    let env_json = match serde_json::to_string(&env) {
+        Ok(j) => j,
+        Err(_) => return usize::MAX,
+    };
+    match card_body(card_type, 1, &env_json, disclosures) {
+        Ok(body) => body.len(),
+        Err(_) => usize::MAX,
+    }
 }
 
 #[cfg(test)]
@@ -142,12 +192,18 @@ mod tests {
     #[test]
     fn card_round_trip() {
         let envelope = "{\"test\": \"env\"}";
-        let body = card_body("enquiry", 1, envelope).expect("serialize card");
+        let body = card_body("enquiry", 1, envelope, &[]).expect("serialize card");
         let parsed = parse_card(&body).expect("parse card");
         assert_eq!(parsed.card_version, CARD_WRAPPER_VERSION);
         assert_eq!(parsed.card_type, "enquiry");
         assert_eq!(parsed.version, 1);
         assert_eq!(parsed.envelope, envelope);
+        assert!(parsed.disclosures.is_empty());
+
+        let disc_body = card_body("quote", 1, envelope, &["disc_one".to_string()])
+            .expect("serialize with disclosures");
+        let parsed_disc = parse_card(&disc_body).expect("parse card with disclosures");
+        assert_eq!(parsed_disc.disclosures, vec!["disc_one"]);
     }
 
     #[test]
@@ -170,7 +226,7 @@ mod tests {
         assert_eq!(parse_card(&large_body), Err(CardError::TooLarge));
 
         let large_env = "x".repeat(MAX_CARD_BODY_BYTES);
-        assert_eq!(card_body("enquiry", 1, &large_env), Err(CardError::TooLarge));
+        assert_eq!(card_body("enquiry", 1, &large_env, &[]), Err(CardError::TooLarge));
     }
 
     #[test]
@@ -189,7 +245,7 @@ mod tests {
         // which forces heavy escaping when embedded into the Card JSON wrapper.
         let heavy_escapes = r#"\""#.repeat(32_000); // 64,000 bytes
         let env = format!(r#"{{"payload":"{heavy_escapes}"}}"#);
-        let res = card_body("enquiry", 1, &env);
+        let res = card_body("enquiry", 1, &env, &[]);
         assert!(res.is_ok(), "heavy-escape envelope should fit under MAX_CARD_BODY_BYTES");
         let body = res.unwrap();
         assert!(body.len() <= MAX_CARD_BODY_BYTES);

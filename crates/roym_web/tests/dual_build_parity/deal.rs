@@ -1,6 +1,6 @@
 use serde_json::json;
 
-use super::{deal_fixtures::*, fixtures::*, helpers::*};
+use super::{fixtures::*, helpers::*};
 
 #[tokio::test]
 async fn two_commitment_quote_parity() {

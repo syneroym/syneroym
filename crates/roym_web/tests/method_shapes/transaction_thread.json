@@ -115,19 +115,15 @@
                 "lang": "string",
                 "text": "string"
               },
-              "details": "null",
-              "eep": "null",
               "fees_minor": "number",
               "giver": "counterparty",
               "kind": "currency",
-              "location": "null",
               "payee": "string",
               "payment_methods": [
                 "string"
               ],
               "resource_kind": "currency",
-              "tax_minor": "number",
-              "window": "null"
+              "tax_minor": "number"
             },
             {
               "commitment_id": "string",
@@ -136,20 +132,13 @@
                 "lang": "string",
                 "text": "string"
               },
-              "details": "null",
-              "eep": "null",
-              "fees_minor": "null",
               "giver": "quote-author",
               "kind": "fulfilment",
               "location": {
                 "address": "string",
                 "where": "at-receiver"
               },
-              "payee": "null",
-              "payment_methods": "null",
-              "resource_kind": "goods-or-service",
-              "tax_minor": "null",
-              "window": "null"
+              "resource_kind": "goods-or-service"
             }
           ],
           "currency": "string",
@@ -207,19 +196,15 @@
                 "lang": "string",
                 "text": "string"
               },
-              "details": "null",
-              "eep": "null",
               "fees_minor": "number",
               "giver": "counterparty",
               "kind": "currency",
-              "location": "null",
               "payee": "string",
               "payment_methods": [
                 "string"
               ],
               "resource_kind": "currency",
-              "tax_minor": "number",
-              "window": "null"
+              "tax_minor": "number"
             },
             {
               "commitment_id": "string",
@@ -228,20 +213,13 @@
                 "lang": "string",
                 "text": "string"
               },
-              "details": "null",
-              "eep": "null",
-              "fees_minor": "null",
               "giver": "quote-author",
               "kind": "fulfilment",
               "location": {
                 "address": "string",
                 "where": "at-receiver"
               },
-              "payee": "null",
-              "payment_methods": "null",
-              "resource_kind": "goods-or-service",
-              "tax_minor": "null",
-              "window": "null"
+              "resource_kind": "goods-or-service"
             }
           ],
           "currency": "string",
@@ -333,19 +311,15 @@
                 "lang": "string",
                 "text": "string"
               },
-              "details": "null",
-              "eep": "null",
               "fees_minor": "number",
               "giver": "counterparty",
               "kind": "currency",
-              "location": "null",
               "payee": "string",
               "payment_methods": [
                 "string"
               ],
               "resource_kind": "currency",
-              "tax_minor": "number",
-              "window": "null"
+              "tax_minor": "number"
             },
             {
               "commitment_id": "string",
@@ -354,20 +328,13 @@
                 "lang": "string",
                 "text": "string"
               },
-              "details": "null",
-              "eep": "null",
-              "fees_minor": "null",
               "giver": "quote-author",
               "kind": "fulfilment",
               "location": {
                 "address": "string",
                 "where": "at-receiver"
               },
-              "payee": "null",
-              "payment_methods": "null",
-              "resource_kind": "goods-or-service",
-              "tax_minor": "null",
-              "window": "null"
+              "resource_kind": "goods-or-service"
             }
           ],
           "currency": "string",

@@ -21,8 +21,9 @@ async fn each_native_invocation_gets_a_fresh_resource_table() {
     let node_id = Arc::new(Identity::generate().unwrap());
     let master = Identity::generate().unwrap();
     let clock = RecordClock::Fixed(1_800_000_000);
+    let salts = RecordSalts::Seeded(42);
     let (_, factory, _, _, _, _) =
-        build_native_stack(dir.path(), &stub, node_id, &master, clock, None).await;
+        build_native_stack(dir.path(), &stub, node_id, &master, clock, salts, None).await;
 
     let host_a = factory.host_for(caller());
     let writer_a = host_a.open_upload().await.unwrap();
@@ -87,8 +88,9 @@ async fn a_policy_with_abac_permissions_fails_closed_on_the_native_build() {
     let node_id = Arc::new(Identity::generate().unwrap());
     let master = Identity::generate().unwrap();
     let clock = RecordClock::Fixed(1_800_000_000);
+    let salts = RecordSalts::Seeded(42);
     let (_, factory, storage_provider, _, _, _) =
-        build_native_stack(dir.path(), &stub, node_id, &master, clock, None).await;
+        build_native_stack(dir.path(), &stub, node_id, &master, clock, salts, None).await;
     storage_provider.save_fdae_policy(SERVICE_ID, &abac_policy()).await.unwrap();
 
     let host = factory.host_for(caller());

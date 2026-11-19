@@ -6,6 +6,7 @@ use thiserror::Error;
 
 use crate::{
     deal::{LocalText, SettlementRole},
+    disclosure::check_sd_shape,
     lang::TranslationError,
     listing, person,
     record::{self, RECORD_FULFILMENT_RECEIPT, VerifyOptions},
@@ -31,10 +32,29 @@ pub enum FulfilmentError {
     CommitmentIdEmpty,
     #[error("settlement_note: {0}")]
     SettlementNote(#[from] TranslationError),
+    #[error("selective disclosure shape invalid: {0}")]
+    SdShape(String),
+}
+
+impl FulfilmentError {
+    #[must_use]
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::InvalidAgreement(_) => "invalid-agreement",
+            Self::InvalidCounterpartyDid(_) => "invalid-counterparty-did",
+            Self::InvalidQuoteAuthorDid(_) => "invalid-quote-author-did",
+            Self::SamePartyDid => "same-party-did",
+            Self::ConversationEmpty => "conversation-empty",
+            Self::CommitmentIdEmpty => "commitment-id-empty",
+            Self::SettlementNote(_) => "settlement-note",
+            Self::SdShape(_) => "sd-shape",
+        }
+    }
 }
 
 /// One party's attestation regarding fulfilment of a commitment.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FulfilmentReceiptPayload {
     pub agreement: String,
     pub conversation: String,
@@ -42,8 +62,8 @@ pub struct FulfilmentReceiptPayload {
     pub counterparty_did: String,
     pub quote_author_did: String,
     pub role: SettlementRole,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub settlement_note: Option<LocalText>,
+    #[serde(rename = "_sd")]
+    pub sd: Vec<String>,
 }
 
 impl FulfilmentReceiptPayload {
@@ -66,6 +86,19 @@ impl FulfilmentReceiptPayload {
         if self.commitment_id.is_empty() {
             return Err(FulfilmentError::CommitmentIdEmpty);
         }
+        check_sd_shape(&self.sd, 1, "fulfilment-receipt").map_err(FulfilmentError::SdShape)?;
+        Ok(())
+    }
+}
+
+/// The hidden fields of a fulfilment receipt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FulfilmentHidden {
+    pub settlement_note: Option<LocalText>,
+}
+
+impl FulfilmentHidden {
+    pub fn validate(&self) -> Result<(), FulfilmentError> {
         if let Some(note) = &self.settlement_note {
             note.validate("settlement_note", MAX_SETTLEMENT_NOTE_LEN)?;
         }

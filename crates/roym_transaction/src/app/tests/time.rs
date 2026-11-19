@@ -6,13 +6,16 @@ use syneroym_roym_core::{
         Commitment, CommitmentKind, DealTerms, LocalText, ResourceKind, SettlementRole,
         transition::{CommitmentState, TRACK_WINDOW_SECS, track_end},
     },
-    fulfilment::{FULFILMENT_RECEIPT_VERSION, FulfilmentReceiptPayload},
+    fulfilment::FULFILMENT_RECEIPT_VERSION,
     lang::LangTag,
     progress::{self as core_progress, AgreementProgressPayload, AgreementState},
-    record::{Envelope, RECORD_AGREEMENT_RECEIPT, RECORD_FULFILMENT_RECEIPT, RecordDraft},
+    record::{
+        Envelope, RECORD_AGREEMENT_RECEIPT, RECORD_FULFILMENT_RECEIPT, RECORD_QUOTE, RecordDraft,
+    },
+    testing::sd::{PlainFulfilment, PlainQuote, conceal_fulfilment, conceal_quote},
     transaction::{
-        AGREEMENT_RECEIPT_VERSION, AgreementReceiptPayload, DealRole, ReceiptHalf, TimeWindow,
-        derive_quote_id,
+        AGREEMENT_RECEIPT_VERSION, AgreementReceiptPayload, Answers, DealRole, ReceiptHalf,
+        SignedTerms, TimeWindow, derive_quote_id,
     },
 };
 
@@ -20,7 +23,7 @@ use super::{TestFixture, fixture};
 use crate::app::{
     AGREEMENT_PROGRESS, AGREEMENTS, AgreementRef, AgreementRow, FULFILMENTS, FulfilmentsRow,
     decide::{SnapshotRow, snapshot_id},
-    ensure_collections,
+    disclosures, ensure_collections,
     fulfilment_ops::{self, FulfilmentSignInput, fulfilment_id},
     get_row, progress, progress_ops, put_row, sync,
 };
@@ -53,7 +56,7 @@ fn make_receipt_half(
     signer: &Identity,
     role: DealRole,
     quote_record_id: &str,
-    terms: &DealTerms,
+    terms: &SignedTerms,
     counterparty_did: &str,
     quote_author_did: &str,
     now: u64,
@@ -83,6 +86,38 @@ fn make_receipt_half(
     let envelope_json = env.to_json().expect("envelope to json");
     let record_id = env.record_id().expect("record id");
     ReceiptHalf { record_id, envelope: envelope_json, issuer: signer_did, issued_at_secs: now }
+}
+
+async fn store_open_snapshot(
+    fix: &TestFixture,
+    quote_record_id: &str,
+    terms: &DealTerms,
+    counterparty_did: &str,
+    agreed_at: u64,
+) -> AgreementProgressPayload {
+    let snap1_payload = core_progress::open(
+        quote_record_id.to_string(),
+        "conv_1".to_string(),
+        counterparty_did.to_string(),
+        fix.master_did.clone(),
+        terms,
+        None,
+    );
+    let (snap1_env, snap1_rec_id) =
+        progress::sign(&fix.host, &snap1_payload).await.expect("sign snapshot 1");
+    let snap_key = snapshot_id(quote_record_id, 1);
+    let snap_row = SnapshotRow {
+        seq: 1,
+        agreement: quote_record_id.to_string(),
+        conversation: "conv_1".to_string(),
+        snapshot: snap1_payload.clone(),
+        envelope: snap1_env,
+        record_id: snap1_rec_id,
+        message_id: None,
+        stored_at_secs: agreed_at,
+    };
+    put_row(&fix.host, AGREEMENT_PROGRESS, &snap_key, &snap_row).await.expect("put snapshot 1");
+    snap1_payload
 }
 
 async fn setup_agreed_deal(
@@ -118,11 +153,24 @@ async fn setup_agreed_deal(
         quote_expires_at_secs: agreed_at + 3600,
     };
 
+    let plain = PlainQuote {
+        quote_id: quote_id.clone(),
+        conversation: "conv_1".to_string(),
+        sequence: 1,
+        answers: Answers::Enquiry { record_id: "rec_enq_1".to_string() },
+        counterparty_did: counterparty_did.clone(),
+        terms: terms.clone(),
+    };
+    let (payload, disclosures) = conceal_quote(plain, 1);
+    disclosures::store(&fix.host, &quote_record_id, RECORD_QUOTE, &disclosures, agreed_at)
+        .await
+        .unwrap();
+
     let author_half = make_receipt_half(
         &fix.master,
         DealRole::QuoteAuthor,
         &quote_record_id,
-        &terms,
+        &payload.terms,
         &counterparty_did,
         &fix.master_did,
         agreed_at,
@@ -131,36 +179,14 @@ async fn setup_agreed_deal(
         counterparty,
         DealRole::Counterparty,
         &quote_record_id,
-        &terms,
+        &payload.terms,
         &counterparty_did,
         &fix.master_did,
         agreed_at,
     );
 
-    let snap1_payload = core_progress::open(
-        quote_record_id.clone(),
-        "conv_1".to_string(),
-        counterparty_did.clone(),
-        fix.master_did.clone(),
-        &terms,
-        None,
-    );
-
-    let (snap1_env, snap1_rec_id) =
-        progress::sign(&fix.host, &snap1_payload).await.expect("sign snapshot 1");
-
-    let snap_key = snapshot_id(&quote_record_id, 1);
-    let snap_row = SnapshotRow {
-        seq: 1,
-        agreement: quote_record_id.clone(),
-        conversation: "conv_1".to_string(),
-        snapshot: snap1_payload.clone(),
-        envelope: snap1_env,
-        record_id: snap1_rec_id,
-        message_id: None,
-        stored_at_secs: agreed_at,
-    };
-    put_row(&fix.host, AGREEMENT_PROGRESS, &snap_key, &snap_row).await.expect("put snapshot 1");
+    let snap1_payload =
+        store_open_snapshot(fix, &quote_record_id, &terms, &counterparty_did, agreed_at).await;
 
     let agr_row = AgreementRow {
         quote_record_id: quote_record_id.clone(),
@@ -336,7 +362,7 @@ async fn a_late_half_after_the_end_is_kept_and_changes_nothing() {
     // Counterparty (receiver) signs a fulfilment receipt late (after the agreement
     // is closed)
     let late_now = tick_after + 500;
-    let half_payload = FulfilmentReceiptPayload {
+    let plain_fulfilment = PlainFulfilment {
         agreement: agreement.clone(),
         conversation: "conv_1".to_string(),
         commitment_id: "c1".to_string(),
@@ -345,6 +371,7 @@ async fn a_late_half_after_the_end_is_kept_and_changes_nothing() {
         role: SettlementRole::Receiver,
         settlement_note: None,
     };
+    let (half_payload, half_disclosures) = conceal_fulfilment(plain_fulfilment, 1);
 
     let draft = RecordDraft {
         version: FULFILMENT_RECEIPT_VERSION,
@@ -361,8 +388,13 @@ async fn a_late_half_after_the_end_is_kept_and_changes_nothing() {
     let env_json = env.to_json().expect("env to json");
     let late_record_id = env.record_id().expect("record id");
 
-    let card_body = card::card_body("fulfilment-receipt", FULFILMENT_RECEIPT_VERSION, &env_json)
-        .expect("card body");
+    let card_body = card::card_body(
+        "fulfilment-receipt",
+        FULFILMENT_RECEIPT_VERSION,
+        &env_json,
+        &half_disclosures,
+    )
+    .expect("card body");
 
     let message = json!({
         "id": "msg_late_receiver_half",

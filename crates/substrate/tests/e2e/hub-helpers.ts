@@ -218,6 +218,8 @@ export async function sendQuote(
   await form.locator('.quote-amount-input').fill(quote.amount);
   await form.locator('.quote-payee-input').fill(quote.payee);
   await form.locator('.quote-where-select').selectOption('at-giver');
+  await expect(form.locator('.quote-size-line')).toBeVisible();
+  await expect(form.locator('.quote-size-line')).toContainText('of 96 KiB');
   await form.locator('.submit-quote-button').click();
   await expect(form).toHaveCount(0, { timeout: 15_000 });
 }

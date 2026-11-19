@@ -5,14 +5,18 @@ use syneroym_roym_core::{
     lang::LangTag,
     listing::derive_slot_id,
     record::{Envelope, RECORD_AGREEMENT_RECEIPT, RECORD_ENQUIRY, RECORD_QUOTE, RecordDraft},
+    testing::sd::{PlainQuote, conceal_quote},
     transaction::{
         AGREEMENT_RECEIPT_VERSION, AgreementReceiptPayload, Answers, DealRole, ENQUIRY_VERSION,
-        EnquiryPayload, QUOTE_VERSION, QuotePayload, TimeWindow, derive_enquiry_id,
-        derive_quote_id,
+        EnquiryPayload, QUOTE_VERSION, SignedTerms, TimeWindow, derive_enquiry_id, derive_quote_id,
+        verify_quote,
     },
 };
 
-use crate::app::quote_ops::{CommitmentInput, DealTermsInput};
+use crate::app::{
+    disclosures::HeldQuote,
+    quote_ops::{CommitmentInput, DealTermsInput},
+};
 
 pub(crate) fn sample_commitment(id: &str) -> Commitment {
     Commitment {
@@ -116,11 +120,19 @@ pub(crate) fn sample_terms_input(scope_text: &str) -> DealTermsInput {
 }
 
 pub(crate) fn build_and_sign_enquiry(enquirer: &Identity, now: u64) -> (String, String) {
+    build_and_sign_enquiry_conv(enquirer, "conv_1", now)
+}
+
+pub(crate) fn build_and_sign_enquiry_conv(
+    enquirer: &Identity,
+    conv: &str,
+    now: u64,
+) -> (String, String) {
     let enquirer_did = substrate::derive_did_key(&enquirer.public_key());
-    let enquiry_id = derive_enquiry_id("conv_1", &enquirer_did, 1).expect("derive enquiry id");
+    let enquiry_id = derive_enquiry_id(conv, &enquirer_did, 1).expect("derive enquiry id");
     let payload = EnquiryPayload {
         enquiry_id,
-        conversation: "conv_1".to_string(),
+        conversation: conv.to_string(),
         sequence: 1,
         categories: vec!["repair".to_string()],
         description: LocalText::plain(
@@ -135,7 +147,7 @@ pub(crate) fn build_and_sign_enquiry(enquirer: &Identity, now: u64) -> (String, 
     let draft = RecordDraft {
         version: ENQUIRY_VERSION,
         record_type: RECORD_ENQUIRY.to_string(),
-        subject: "conv_1".to_string(),
+        subject: conv.to_string(),
         payload: serde_json::to_value(&payload).expect("serialize enquiry"),
         expires_at_secs: None,
         supersedes: None,
@@ -156,39 +168,38 @@ pub(crate) fn build_and_sign_quote(
     supersedes: Option<String>,
     expires_at_secs: u64,
     now: u64,
-) -> (QuotePayload, String, String) {
+) -> (HeldQuote, String, String) {
     let author_did = substrate::derive_did_key(&author.public_key());
     let quote_id = derive_quote_id("conv_1", &author_did, sequence).expect("derive quote id");
-    let payload = QuotePayload {
+    let terms = DealTerms {
+        currency: "EUR".to_string(),
+        commitments: vec![sample_commitment("c1")],
+        home_exchange: None,
+        listing_id: None,
+        scope: LocalText::plain(LangTag::parse_canonical("en").expect("parse lang"), "Repair job"),
+        cancellation_terms: LocalText::plain(
+            LangTag::parse_canonical("en").expect("parse lang"),
+            "24h notice",
+        ),
+        refund_terms: LocalText::plain(
+            LangTag::parse_canonical("en").expect("parse lang"),
+            "Full refund",
+        ),
+        dispute_path: LocalText::plain(
+            LangTag::parse_canonical("en").expect("parse lang"),
+            "Arbitration",
+        ),
+        quote_expires_at_secs: expires_at_secs,
+    };
+    let plain = PlainQuote {
         quote_id,
         conversation: "conv_1".to_string(),
         sequence,
-        counterparty_did: counterparty_did.to_string(),
-        terms: DealTerms {
-            currency: "EUR".to_string(),
-            commitments: vec![sample_commitment("c1")],
-            home_exchange: None,
-            listing_id: None,
-            scope: LocalText::plain(
-                LangTag::parse_canonical("en").expect("parse lang"),
-                "Repair job",
-            ),
-            cancellation_terms: LocalText::plain(
-                LangTag::parse_canonical("en").expect("parse lang"),
-                "24h notice",
-            ),
-            refund_terms: LocalText::plain(
-                LangTag::parse_canonical("en").expect("parse lang"),
-                "Full refund",
-            ),
-            dispute_path: LocalText::plain(
-                LangTag::parse_canonical("en").expect("parse lang"),
-                "Arbitration",
-            ),
-            quote_expires_at_secs: expires_at_secs,
-        },
         answers: Answers::Enquiry { record_id: "rec_enq_1".to_string() },
+        counterparty_did: counterparty_did.to_string(),
+        terms: terms.clone(),
     };
+    let (payload, disclosures) = conceal_quote(plain, 1);
 
     let draft = RecordDraft {
         version: QUOTE_VERSION,
@@ -204,14 +215,16 @@ pub(crate) fn build_and_sign_quote(
     env.attach_signature(z32::encode(&sig)).expect("attach signature");
     let record_id = env.record_id().expect("record id");
     let envelope_json = env.to_json().expect("envelope json");
-    (payload, record_id, envelope_json)
+    let verdict = verify_quote(&envelope_json, now);
+    let held = HeldQuote { verdict, signed: payload, terms, disclosures };
+    (held, record_id, envelope_json)
 }
 
 pub(crate) fn make_counterparty_receipt(
     cp: &Identity,
     author_did: &str,
     quote_record_id: &str,
-    terms: &DealTerms,
+    terms: &SignedTerms,
     now: u64,
 ) -> (String, String) {
     let cp_did = substrate::derive_did_key(&cp.public_key());

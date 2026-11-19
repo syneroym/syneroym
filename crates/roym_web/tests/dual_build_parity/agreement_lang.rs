@@ -2,10 +2,18 @@
 //! `viewed_via_mt` in the signed acceptance, on both builds.
 
 use serde_json::{Value, json};
-use syneroym_roym_core::transaction;
+use syneroym_roym_core::{
+    deal::{Answers, DealTerms},
+    testing::sd::{PlainQuote, conceal_quote},
+    transaction,
+};
 use syneroym_signed_record::Envelope;
 
-use super::{deal_fixtures::setup_peer_request, fixtures::*, helpers::*};
+use super::{
+    deal_fixtures::{deliver_peer_card_with_disclosures, setup_peer_request},
+    fixtures::*,
+    helpers::*,
+};
 
 fn hi_text(hi: &str, en: &str) -> Value {
     json!({
@@ -19,10 +27,10 @@ fn hi_text(hi: &str, en: &str) -> Value {
 
 /// A quote the peer signed with `terms.scope.lang` Hindi and one English author
 /// translation on each text field.
-fn peer_quote_hindi_with_english(conv: &str, req_record_id: &str) -> (String, String) {
+fn peer_quote_hindi_with_english(conv: &str, req_record_id: &str) -> (String, String, Vec<String>) {
     let now = wall_now();
     let quote_id = transaction::derive_quote_id(conv, &peer_did(), 1).unwrap();
-    let terms = json!({
+    let terms_val = json!({
         "currency": "EUR",
         "quote_expires_at_secs": now + 3600,
         "commitments": [
@@ -55,27 +63,27 @@ fn peer_quote_hindi_with_english(conv: &str, req_record_id: &str) -> (String, St
         "refund_terms": hi_text("वापसी की शर्तें", "Full refund if unsatisfactory"),
         "dispute_path": hi_text("विवाद निवारण", "Contact disputes@example.com")
     });
-    let payload = json!({
-        "quote_id": quote_id,
-        "conversation": conv,
-        "sequence": 1,
-        "answers": {
-            "kind": "enquiry",
-            "record_id": req_record_id
-        },
-        "counterparty_did": owner_did(),
-        "terms": terms,
-    });
+    let terms: DealTerms = serde_json::from_value(terms_val).unwrap();
+    let plain = PlainQuote {
+        quote_id: quote_id.clone(),
+        conversation: conv.to_string(),
+        sequence: 1,
+        answers: Answers::Enquiry { record_id: req_record_id.to_string() },
+        counterparty_did: owner_did(),
+        terms,
+    };
+    let (payload, disclosures) = conceal_quote(plain, 1);
+    let payload_val = serde_json::to_value(&payload).unwrap();
     let env_json = sign_as_peer(
         transaction::RECORD_QUOTE,
         transaction::QUOTE_VERSION,
         &quote_id,
-        payload,
+        payload_val,
         Some(now + 3600),
         now,
     );
     let record_id = Envelope::from_json(&env_json).unwrap().record_id().unwrap();
-    (record_id, env_json)
+    (record_id, env_json, disclosures)
 }
 
 /// The peer's quote, filed on both builds. Returns the quote's record id.
@@ -93,8 +101,9 @@ async fn synced_quote(h: &Harness, name: &str) -> String {
     .await
     .1;
     let req_record_id = request["result"]["record_id"].as_str().unwrap();
-    let (quote_record_id, quote_env) = peer_quote_hindi_with_english(&conv, req_record_id);
-    deliver_peer_card(
+    let (quote_record_id, quote_env, disclosures) =
+        peer_quote_hindi_with_english(&conv, req_record_id);
+    deliver_peer_card_with_disclosures(
         h,
         &format!("m-quote-237-{name}"),
         &conv,
@@ -102,6 +111,7 @@ async fn synced_quote(h: &Harness, name: &str) -> String {
         transaction::RECORD_QUOTE,
         transaction::QUOTE_VERSION,
         &quote_env,
+        &disclosures,
     )
     .await;
     both_rpc(h, "transaction.sync", json!({ "conversation": conv, "full": true })).await;

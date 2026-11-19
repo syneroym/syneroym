@@ -1,8 +1,24 @@
 {
-  "kind": "unknown",
+  "kind": "payment-acknowledgement",
   "verdict": {
     "expired": "boolean",
-    "reason": "string",
+    "issued_at_secs": "number",
+    "issuer": "string",
+    "payload": {
+      "_sd": [
+        "string"
+      ],
+      "agreement": "string",
+      "commitment_id": "string",
+      "conversation": "string",
+      "counterparty_did": "string",
+      "observed_at_secs": "number",
+      "quote_author_did": "string",
+      "role": "receiver"
+    },
+    "record_id": "string",
+    "revocation_status": "unknown",
+    "signer_did": "string",
     "verified": "boolean"
   }
 }

@@ -4,6 +4,7 @@ pub mod agreement_ops;
 pub mod backup;
 pub mod decide;
 pub mod decline_ops;
+pub mod disclosures;
 pub mod enquiry_ops;
 pub mod fulfilment_ops;
 pub mod hold;
@@ -47,9 +48,9 @@ use syneroym_roym_core::{
 
 use crate::api;
 
-// Schema version 5 transitions the booking vertical to pure deal records,
-// multi-commitment models, and agreement progress snapshots.
-pub const SCHEMA_VERSION: u32 = 5;
+// Schema version 6 switches deal and settlement records to selective
+// disclosure.
+pub const SCHEMA_VERSION: u32 = 6;
 
 pub(crate) const ENQUIRIES: &str = "enquiries";
 pub(crate) const ENQUIRY_HISTORY: &str = "enquiry_history";
@@ -62,6 +63,7 @@ pub(crate) const LEDGER: &str = "ledger";
 pub(crate) const AGREEMENT_PROGRESS: &str = "agreement_progress";
 pub(crate) const PAYMENTS: &str = "payments";
 pub(crate) const FULFILMENTS: &str = "fulfilments";
+pub(crate) const DISCLOSURES: &str = "disclosures";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -339,6 +341,7 @@ pub(crate) async fn ensure_collections<H: AppHost>(host: &H) -> Result<(), Strin
     )
     .await?;
     ensure_coll(host, QUOTE_HISTORY, &[]).await?;
+    ensure_coll(host, disclosures::DISCLOSURES, &[]).await?;
     ensure_coll(
         host,
         AGREEMENTS,
@@ -468,27 +471,35 @@ pub(crate) async fn count_mine<H: AppHost>(
     Ok(paging::count(host, collection, Some(filter)).await? as u32)
 }
 
-#[allow(clippy::too_many_arguments)]
+/// An outgoing card to be sent over conversation and filed locally.
+#[derive(Debug, Clone)]
+pub(crate) struct OutgoingCard<'a> {
+    pub(crate) card_type: &'a str,
+    pub(crate) version: u32,
+    pub(crate) envelope: &'a str,
+    pub(crate) send: &'a [String],
+    pub(crate) view: &'a [String],
+}
+
 pub(crate) async fn file_own_card<H: AppHost>(
     host: &H,
     message_id: &str,
     conversation: &str,
-    card_type: &str,
-    version: u32,
-    envelope_json: &str,
+    card: &OutgoingCard<'_>,
     sender_timestamp_ms: i64,
     now: u64,
     version_count: Option<u64>,
 ) -> Result<(), String> {
-    let envelope = Envelope::from_json(envelope_json).map_err(|e| e.to_string())?;
+    let envelope = Envelope::from_json(card.envelope).map_err(|e| e.to_string())?;
     let record_id = envelope.record_id().map_err(|e| e.to_string())?;
+    let plain_data = disclosures::plain_view(&envelope.payload, card.view);
     let card_row = CardRow {
         message_id: message_id.to_string(),
         conversation: conversation.to_string(),
         direction: Direction::Outgoing,
         sender_timestamp_ms,
-        card_type: card_type.to_string(),
-        version,
+        card_type: card.card_type.to_string(),
+        version: card.version,
         known: true,
         verified: true,
         expired: false,
@@ -497,7 +508,7 @@ pub(crate) async fn file_own_card<H: AppHost>(
         issuer: Some(envelope.issuer),
         record_id: Some(record_id),
         revocation_status: Some("not-revoked".to_string()),
-        data: Some(envelope.payload),
+        data: Some(plain_data),
         stored_at_secs: now,
         declined: None,
         deal_state: None,
@@ -537,13 +548,11 @@ impl std::fmt::Display for SendCardError {
 pub(crate) async fn send_card_and_file<H: AppHost>(
     host: &H,
     conversation: &str,
-    card_type: &str,
-    version: u32,
-    envelope_json: &str,
+    card: &OutgoingCard<'_>,
     now: u64,
     version_count: Option<u64>,
 ) -> (String, SendState, Option<SendCardError>) {
-    let body = match card::card_body(card_type, version, envelope_json) {
+    let body = match card::card_body(card.card_type, card.version, card.envelope, card.send) {
         Ok(b) => b,
         Err(e) => {
             return (
@@ -588,9 +597,7 @@ pub(crate) async fn send_card_and_file<H: AppHost>(
             host,
             &message_id,
             conversation,
-            card_type,
-            version,
-            envelope_json,
+            card,
             sender_timestamp_ms,
             now,
             version_count,

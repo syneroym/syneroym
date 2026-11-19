@@ -6,6 +6,7 @@ use thiserror::Error;
 
 use crate::{
     deal::{Commitment, LocalText, SettlementRole},
+    disclosure::check_sd_shape,
     lang::TranslationError,
     listing::{self, MAX_PAYMENT_METHOD_LEN},
     person,
@@ -41,18 +42,40 @@ pub enum PaymentError {
     ReferenceTooLong,
     #[error("note: {0}")]
     Note(#[from] TranslationError),
+    #[error("selective disclosure shape invalid: {0}")]
+    SdShape(String),
+}
+
+impl PaymentError {
+    #[must_use]
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::InvalidAgreement(_) => "invalid-agreement",
+            Self::InvalidCounterpartyDid(_) => "invalid-counterparty-did",
+            Self::InvalidQuoteAuthorDid(_) => "invalid-quote-author-did",
+            Self::SamePartyDid => "same-party-did",
+            Self::ConversationEmpty => "conversation-empty",
+            Self::CommitmentIdEmpty => "commitment-id-empty",
+            Self::ZeroObservedTime => "zero-observed-time",
+            Self::MethodShape(_) => "method-shape",
+            Self::ReferenceTooLong => "reference-too-long",
+            Self::Note(_) => "note",
+            Self::SdShape(_) => "sd-shape",
+        }
+    }
 }
 
 /// A request to be paid for a currency commitment.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PaymentRequestPayload {
     pub agreement: String,
     pub conversation: String,
     pub commitment_id: String,
     pub quote_author_did: String,
     pub counterparty_did: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub note: Option<LocalText>,
+    #[serde(rename = "_sd")]
+    pub sd: Vec<String>,
 }
 
 impl PaymentRequestPayload {
@@ -75,6 +98,19 @@ impl PaymentRequestPayload {
         if self.commitment_id.is_empty() {
             return Err(PaymentError::CommitmentIdEmpty);
         }
+        check_sd_shape(&self.sd, 1, "payment-request").map_err(PaymentError::SdShape)?;
+        Ok(())
+    }
+}
+
+/// The hidden fields of a payment request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaymentRequestHidden {
+    pub note: Option<LocalText>,
+}
+
+impl PaymentRequestHidden {
+    pub fn validate(&self) -> Result<(), PaymentError> {
         if let Some(note) = &self.note {
             note.validate("note", MAX_NOTE_LEN)?;
         }
@@ -84,6 +120,7 @@ impl PaymentRequestPayload {
 
 /// One party's statement about a payment for a specific commitment.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PaymentAcknowledgementPayload {
     pub agreement: String,
     pub conversation: String,
@@ -92,12 +129,8 @@ pub struct PaymentAcknowledgementPayload {
     pub counterparty_did: String,
     pub role: SettlementRole,
     pub observed_at_secs: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub method: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reference: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub settlement_note: Option<LocalText>,
+    #[serde(rename = "_sd")]
+    pub sd: Vec<String>,
 }
 
 impl PaymentAcknowledgementPayload {
@@ -123,6 +156,21 @@ impl PaymentAcknowledgementPayload {
         if self.observed_at_secs == 0 {
             return Err(PaymentError::ZeroObservedTime);
         }
+        check_sd_shape(&self.sd, 3, "payment-acknowledgement").map_err(PaymentError::SdShape)?;
+        Ok(())
+    }
+}
+
+/// The hidden fields of a payment acknowledgement.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaymentAckHidden {
+    pub method: Option<String>,
+    pub reference: Option<String>,
+    pub settlement_note: Option<LocalText>,
+}
+
+impl PaymentAckHidden {
+    pub fn validate(&self) -> Result<(), PaymentError> {
         if let Some(m) = &self.method
             && !listing::valid_token(m, MAX_PAYMENT_METHOD_LEN)
         {

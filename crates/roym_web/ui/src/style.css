@@ -313,3 +313,12 @@ body {
   font-style: italic;
   border-style: dashed;
 }
+.quote-size-line {
+  font-size: 0.85em;
+  color: #475569;
+  margin: 4px 0;
+  white-space: pre-line;
+}
+.quote-size-over {
+  color: #b91c1c;
+}

@@ -8,7 +8,7 @@ use serde_json::Value;
 use syneroym_app_host::AppHost;
 use syneroym_roym_core::{
     backup::{SECTION_AGREEMENT_PROGRESS, SECTION_FULFILMENTS, SECTION_LEDGER, SECTION_PAYMENTS},
-    deal::{Commitment, CommitmentKind, ResourceKind, SettlementRole},
+    deal::{Commitment, CommitmentKind, ResourceKind, SettlementRole, SignedCommitment},
     envelope::Response,
     fulfilment, payment, progress,
     transaction::{DealRole, ReceiptHalf},
@@ -305,7 +305,7 @@ fn validate_fulfilments(
 }
 
 fn expected_issuer<'a>(
-    commitment: &Commitment,
+    commitment: &SignedCommitment,
     role: SettlementRole,
     quote: &'a ImportedQuote,
 ) -> &'a str {

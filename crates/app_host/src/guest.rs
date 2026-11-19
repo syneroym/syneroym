@@ -437,6 +437,10 @@ impl AppSigning for GuestHost {
         sgn::sign_record(&draft, &as_principal)
     }
 
+    async fn fresh_salts(&self, count: u32) -> Result<Vec<Vec<u8>>, SigningError> {
+        sgn::fresh_salts(count)
+    }
+
     async fn signing_identity(&self) -> Result<SigningIdentity, SigningError> {
         sgn::identity()
     }

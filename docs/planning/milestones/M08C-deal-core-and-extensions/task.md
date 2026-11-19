@@ -62,6 +62,19 @@ The agreements doc is the module doc that the old outline listed as "to write fi
 
 Every component is within its limit.
 
+**C2a sizes** (release `wasm32-wasip2`, one `target/` folder, 2026-11-18; base on `main` at `ba5a5597`, branch at `43c473d1`), in bytes:
+
+| Component | `main` `ba5a5597` | branch `43c473d1` | Change | Limit |
+| --- | --- | --- | --- | --- |
+| `transaction` | 1,833,741 | 2,008,936 | +175,195 (+9.55%) | +15% (275,061), new record code |
+| `catalog` | 929,631 | 930,212 | +581 | +40 KB |
+| `conversation` | 811,953 | 812,580 | +627 | +40 KB |
+| `directory` | 1,467,518 | 1,468,103 | +585 | +40 KB |
+| `profile` | 771,791 | 772,423 | +632 | +40 KB |
+| `web` | 310,017 | 310,784 | +767 | +40 KB |
+
+Every component is within its limit.
+
 **Parity runs need a fresh WASM build.** The dual-build parity harness loads pre-built `wasm32-wasip2` components. Every slice that changes a `roym_*` crate runs `mise run build:roym` before it trusts a parity run.
 
 ## 2. Facts checked in the code for this plan
@@ -143,6 +156,7 @@ Change docs: roym-agreements, roym-value-exchange (VX-1, VX-2, VX-6 to VX-9, VX-
 - `deal.present` and `deal.verify-presentation`. `quote.verify` and `agreement.verify` take disclosures.
 - Criteria: AG-17 to AG-21, AG-34, AG-38, AG-40. AG-33's check that `settlement_note` is hidden.
 - Demo: the plan decides. An end user sees only the size line on the quote form.
+- **Split (owner decision, 2026-11-18, [C2 plan](slice-c2-implementation-plan.md), Q1):** C2a (hide: digests in every signed deal record, disclosures in the card, checked, stored and backed up, the size line) and C2b (show: `deal.present`, `deal.verify-presentation` and the `*.verify` methods that take disclosures). Each is one PR. The owner accepted the plan's recommendation for Q2 to Q8 the same day.
 
 Change docs: roym-agreements, roym-value-exchange (VX-11).
 

@@ -2,7 +2,7 @@ use serde_json::json;
 use syneroym_roym_core::transaction;
 use syneroym_signed_record::Envelope;
 
-use super::{deal_fixtures::*, fixtures::*, helpers::*};
+use super::{fixtures::*, helpers::*};
 
 #[tokio::test]
 async fn scenario_158_payment_request_carries_no_payee_parity() {
@@ -56,7 +56,7 @@ async fn scenario_159_payment_track_states_parity() {
     let (agr_rec, _terms) = setup_active_agreement(&h, &conv, "after-work").await;
 
     // Counterparty's half alone -> track claimed
-    let (c_ack_id, c_ack_env) = peer_signed_payment_ack(
+    let (c_ack_id, c_ack_env, c_ack_disc) = peer_signed_payment_ack(
         &conv,
         &agr_rec,
         &peer_did(),
@@ -69,7 +69,7 @@ async fn scenario_159_payment_track_states_parity() {
         None,
         1_002_000,
     );
-    deliver_peer_card(
+    deliver_peer_card_with_disclosures(
         &h,
         &format!("m-pay-{c_ack_id}"),
         &conv,
@@ -77,6 +77,7 @@ async fn scenario_159_payment_track_states_parity() {
         syneroym_roym_core::record::RECORD_PAYMENT_ACKNOWLEDGEMENT,
         syneroym_roym_core::payment::PAYMENT_ACKNOWLEDGEMENT_VERSION,
         &c_ack_env,
+        &c_ack_disc,
     )
     .await;
     both_rpc(&h, "transaction.sync", json!({ "conversation": conv, "full": true })).await;
@@ -128,7 +129,7 @@ async fn scenario_160_payment_wrong_amount_or_method_refused_parity() {
     assert!(is_err(&bad_amt_n, -32602));
 
     // Wrong commitment in card from peer
-    let (bad_curr_id, bad_curr_env) = peer_signed_payment_ack(
+    let (bad_curr_id, bad_curr_env, bad_curr_disc) = peer_signed_payment_ack(
         &conv,
         &agr_rec,
         &peer_did(),
@@ -141,7 +142,7 @@ async fn scenario_160_payment_wrong_amount_or_method_refused_parity() {
         None,
         1_002_000,
     );
-    deliver_peer_card(
+    deliver_peer_card_with_disclosures(
         &h,
         &format!("m-badcurr-{bad_curr_id}"),
         &conv,
@@ -149,6 +150,7 @@ async fn scenario_160_payment_wrong_amount_or_method_refused_parity() {
         syneroym_roym_core::record::RECORD_PAYMENT_ACKNOWLEDGEMENT,
         syneroym_roym_core::payment::PAYMENT_ACKNOWLEDGEMENT_VERSION,
         &bad_curr_env,
+        &bad_curr_disc,
     )
     .await;
     both_rpc(&h, "transaction.sync", json!({ "conversation": conv, "full": true })).await;
@@ -296,7 +298,7 @@ async fn scenario_166_payment_half_before_agreement_deferred_parity() {
     // window against the real wall clock the deferral check reads, and
     // the card would be refused outright instead of deferred.
     let recent = wall_now() - 100;
-    let (c_ack_id, c_ack_env) = peer_signed_payment_ack(
+    let (c_ack_id, c_ack_env, c_ack_disc) = peer_signed_payment_ack(
         &conv,
         &quote_rec_id,
         &peer_did(),
@@ -311,7 +313,7 @@ async fn scenario_166_payment_half_before_agreement_deferred_parity() {
     );
 
     // Deliver payment ack BEFORE counterparty agreement receipt
-    let card_pay = inbound_card(
+    let card_pay = inbound_card_with_disclosures(
         &format!("m-defer-pay-{c_ack_id}"),
         &conv,
         &peer_did(),
@@ -319,6 +321,7 @@ async fn scenario_166_payment_half_before_agreement_deferred_parity() {
         syneroym_roym_core::record::RECORD_PAYMENT_ACKNOWLEDGEMENT,
         syneroym_roym_core::payment::PAYMENT_ACKNOWLEDGEMENT_VERSION,
         &c_ack_env,
+        &c_ack_disc,
     );
     h.deliver(true, card_pay.clone()).await;
     h.deliver(false, card_pay).await;

@@ -14,7 +14,7 @@ use super::{
     PAYMENTS, PaymentRequestOutput, PaymentsRow, check_acknowledgement_version, payment_id,
 };
 use crate::app::{
-    FenceOutcome, HalfRecordedOutput, LEDGER, SendState, get_row,
+    FenceOutcome, HalfRecordedOutput, LEDGER, OutgoingCard, SendState, disclosures, get_row,
     ledger::{LedgerKind, LedgerRow},
     progress_ops, put_row, send_card_and_file,
 };
@@ -132,9 +132,21 @@ pub(crate) async fn ensure_payment_request_recorded<H: AppHost>(
     if let Err(e) = put_row(host, PAYMENTS, &p_id, &py).await {
         return Err(Response::internal_error(e));
     }
+    let stored_disc = disclosures::load(host, &half.record_id)
+        .await
+        .map_err(Response::internal_error)?
+        .ok_or_else(|| {
+            Response::internal_error(format!("disclosures missing for {}", half.record_id))
+        })?;
+    let card = OutgoingCard {
+        card_type: "payment-request",
+        version: 1,
+        envelope: &half.envelope,
+        send: &stored_disc,
+        view: &stored_disc,
+    };
     let (message_id, send_state, _) =
-        send_card_and_file(host, conversation, "payment-request", 1, &half.envelope, now, None)
-            .await;
+        send_card_and_file(host, conversation, &card, now, None).await;
     Ok(PaymentRequestOutput {
         record_id: half.record_id.clone(),
         message_id: Some(message_id),
@@ -322,16 +334,21 @@ pub(crate) async fn ensure_payment_ack_recorded<H: AppHost>(
         DealRole::Counterparty => py.counterparty.len(),
         DealRole::QuoteAuthor => py.quote_author.len(),
     } as u64;
-    let (message_id, send_state, _) = send_card_and_file(
-        host,
-        conversation,
-        "payment-acknowledgement",
-        1,
-        &half.envelope,
-        now,
-        Some(version_count),
-    )
-    .await;
+    let stored_disc = disclosures::load(host, &half.record_id)
+        .await
+        .map_err(Response::internal_error)?
+        .ok_or_else(|| {
+            Response::internal_error(format!("disclosures missing for {}", half.record_id))
+        })?;
+    let card = OutgoingCard {
+        card_type: "payment-acknowledgement",
+        version: 1,
+        envelope: &half.envelope,
+        send: &stored_disc,
+        view: &stored_disc,
+    };
+    let (message_id, send_state, _) =
+        send_card_and_file(host, conversation, &card, now, Some(version_count)).await;
     Ok(HalfRecordedOutput {
         record_id: half.record_id.clone(),
         role,

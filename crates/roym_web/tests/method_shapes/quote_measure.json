@@ -1,0 +1,14 @@
+{
+  "bytes": "number",
+  "card_bytes": "number",
+  "details": [
+    {
+      "bytes": "number",
+      "commitment_id": "string",
+      "limit": "number"
+    }
+  ],
+  "fits": "boolean",
+  "limit": "number",
+  "mailbox_fits": "boolean"
+}

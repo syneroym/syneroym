@@ -124,6 +124,11 @@ pub trait AppSigning {
         as_principal: Principal,
     ) -> impl Future<Output = Result<String, SigningError>> + Send;
 
+    fn fresh_salts(
+        &self,
+        count: u32,
+    ) -> impl Future<Output = Result<Vec<Vec<u8>>, SigningError>> + Send;
+
     fn signing_identity(
         &self,
     ) -> impl Future<Output = Result<SigningIdentity, SigningError>> + Send;

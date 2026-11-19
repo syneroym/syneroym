@@ -5,7 +5,7 @@ use syneroym_identity::{Identity, substrate::derive_did_key};
 use syneroym_roym_core::transaction;
 use syneroym_signed_record::{Envelope, RecordDraft};
 
-use super::{deal_fixtures::*, fixtures::*, helpers::*};
+use super::{fixtures::*, helpers::*};
 
 fn peer_identity_2() -> Identity {
     Identity::from_bytes(&[8; 32])
@@ -132,9 +132,11 @@ async fn scenario_151_quote_set_with_slot_parity() {
         let env_str = res["result"]["envelope"].as_str().unwrap();
         let env = Envelope::from_json(env_str).unwrap();
         let payload = &env.payload;
-        assert_eq!(payload["terms"]["commitments"][0]["details"]["data"]["slot_id"], slot_id);
-        assert_eq!(payload["terms"]["commitments"][0]["window"]["earliest_secs"], start);
-        assert_eq!(payload["terms"]["commitments"][0]["window"]["latest_secs"], end);
+        assert!(payload["terms"]["commitments"][0]["_sd"].is_array());
+        let terms = &res["result"]["terms"];
+        assert_eq!(terms["commitments"][0]["details"]["data"]["slot_id"], slot_id);
+        assert_eq!(terms["commitments"][0]["window"]["earliest_secs"], start);
+        assert_eq!(terms["commitments"][0]["window"]["latest_secs"], end);
     }
 
     if let Some(res) = gw.get_mut("result").and_then(Value::as_object_mut) {

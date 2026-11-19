@@ -2,7 +2,7 @@ use serde_json::json;
 use syneroym_identity::{Identity, substrate};
 use syneroym_roym_core::{
     clock,
-    record::{Envelope, RecordDraft},
+    record::{Envelope, RECORD_QUOTE, RecordDraft},
     transaction::{ReceiptHalf, verify_quote},
 };
 
@@ -10,7 +10,7 @@ use super::helpers::{build_and_sign_enquiry, build_and_sign_quote, sample_terms_
 use crate::app::{
     AGREEMENTS, AgreementRow, ENQUIRY_HISTORY, LEDGER,
     agreement_ops::{self, AgreementAcceptInput},
-    decline_ops, put_bytes, put_row,
+    decline_ops, disclosures, put_bytes, put_row,
     quote_ops::{self, QuoteSetInput, store_received_quote},
     tests::fixture,
 };
@@ -27,9 +27,10 @@ async fn accepting_a_superseded_version_is_refused() {
         build_and_sign_quote(&author, &counterparty_did, 1, None, now + 3600, now);
     let v_q1 = verify_quote(&env_q1, now);
     assert!(v_q1.verified, "v_q1 must verify: {:?}", v_q1.reason);
-    store_received_quote(&fix.host, &env_q1, &v_q1, &pay_q1, now, &counterparty_did)
+    store_received_quote(&fix.host, &env_q1, &v_q1, &pay_q1.signed, now, &counterparty_did)
         .await
         .expect("store quote v1");
+    disclosures::store(&fix.host, &rec_q1, RECORD_QUOTE, &pay_q1.disclosures, now).await.unwrap();
 
     // Author creates quote v2 superseding v1 (same quote_id sequence 1)
     let (pay_q2, rec_q2, env_q2) = build_and_sign_quote(
@@ -42,9 +43,12 @@ async fn accepting_a_superseded_version_is_refused() {
     );
     let v_q2 = verify_quote(&env_q2, now + 10);
     assert!(v_q2.verified, "v_q2 must verify: {:?}", v_q2.reason);
-    store_received_quote(&fix.host, &env_q2, &v_q2, &pay_q2, now + 10, &counterparty_did)
+    store_received_quote(&fix.host, &env_q2, &v_q2, &pay_q2.signed, now + 10, &counterparty_did)
         .await
         .expect("store quote v2");
+    disclosures::store(&fix.host, &rec_q2, RECORD_QUOTE, &pay_q2.disclosures, now + 10)
+        .await
+        .unwrap();
 
     // Counterparty tries to accept superseded v1
     let accept_v1_err = agreement_ops::accept_at(

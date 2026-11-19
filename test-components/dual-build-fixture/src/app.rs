@@ -248,6 +248,9 @@ pub enum Request {
         delegation_json: String,
     },
     SigningIdentity,
+    FreshSalts {
+        count: u32,
+    },
     VerifyRecord {
         signed_json: String,
         #[serde(alias = "now_secs")]

@@ -10,7 +10,7 @@ use syneroym_app_host::{
 };
 use syneroym_roym_core::{
     clock,
-    deal::{Commitment, DealTerms, ResourceKind, transition::track_end},
+    deal::{Commitment, DealTerms, ResourceKind, SignedTerms, transition::track_end},
     envelope::Response,
     lang::LangTag,
     method::{self, ParamError, Reply, VerifyInput},
@@ -25,8 +25,8 @@ use syneroym_roym_core::{
 };
 
 use super::{
-    AGREEMENTS, AgreementRow, QUOTE_HISTORY, QUOTES, RecordPointerRow, SendState,
-    default_list_limit_u64, ensure_collections, get_bytes, get_row,
+    AGREEMENTS, AgreementRow, OutgoingCard, QUOTES, RecordPointerRow, SendState,
+    default_list_limit_u64, disclosures, ensure_collections, get_row,
     hold::{Reservations, ReserveOutcome, SeatLedger},
     is_deal_ended, progress_ops, put_row, resolve_principal_and_owner, send_card_and_file,
 };
@@ -141,7 +141,7 @@ pub(crate) async fn accept_at<H: AppHost>(
     let (principal, owner) = resolve_principal_and_owner(host, now).await?;
     ensure_collections(host).await.map_err(Response::internal_error)?;
 
-    let (quote_payload, quote_author_did, role) =
+    let (held, quote_author_did, role) =
         load_verified_quote_and_role(host, &input.quote_record_id, now, &owner).await?;
 
     if role == DealRole::QuoteAuthor {
@@ -149,12 +149,13 @@ pub(crate) async fn accept_at<H: AppHost>(
             .with_data(serde_json::json!("writer-countersigns")));
     }
 
-    let viewed = viewed(&input, &quote_payload)?;
+    let viewed = viewed(&input, &held.terms)?;
 
     let mut row = load_or_init_agreement_row(
         host,
         &input.quote_record_id,
-        &quote_payload,
+        &held.signed,
+        &held.terms,
         &quote_author_did,
         now,
     )
@@ -166,18 +167,28 @@ pub(crate) async fn accept_at<H: AppHost>(
 
     check_quote_acceptance_eligibility(
         host,
-        &quote_payload.quote_id,
+        &held.signed.quote_id,
         &input.quote_record_id,
-        quote_payload.terms.quote_expires_at_secs,
+        held.signed.terms.quote_expires_at_secs,
         now,
     )
     .await?;
 
     reserve_counterparty_slots(host, &input.quote_record_id, &row.terms.commitments, now).await?;
 
-    let half =
-        sign_agreement_receipt(host, principal, &input.quote_record_id, &row, &owner, role, viewed)
-            .await?;
+    let half = sign_agreement_receipt(
+        host,
+        SignReceiptInput {
+            principal,
+            quote_record_id: &input.quote_record_id,
+            row: &row,
+            signed_terms: held.signed.terms.clone(),
+            owner: &owner,
+            role,
+            viewed,
+        },
+    )
+    .await?;
 
     let envelope_json = half.envelope.clone();
     let record_id = half.record_id.clone();
@@ -187,16 +198,16 @@ pub(crate) async fn accept_at<H: AppHost>(
         return Err(Response::internal_error(e));
     }
 
-    let (message_id, state, send_error) = send_card_and_file(
-        host,
-        &quote_payload.conversation,
-        RECORD_AGREEMENT_RECEIPT,
-        AGREEMENT_RECEIPT_VERSION,
-        &envelope_json,
-        now,
-        None,
-    )
-    .await;
+    let card = OutgoingCard {
+        card_type: RECORD_AGREEMENT_RECEIPT,
+        version: AGREEMENT_RECEIPT_VERSION,
+        envelope: &envelope_json,
+        send: &[],
+        view: &held.disclosures,
+    };
+
+    let (message_id, state, send_error) =
+        send_card_and_file(host, &held.signed.conversation, &card, now, None).await;
 
     let pair = pair_state(row.counterparty.as_ref(), row.quote_author.as_ref());
     Ok(AgreementAcceptOutput {
@@ -293,8 +304,8 @@ fn viewed_error(field: &str, message: impl Into<String>) -> Response {
     ParamError { field: Some(field.to_string()), message: message.into() }.into_response()
 }
 
-fn viewed(input: &AgreementAcceptInput, quote: &QuotePayload) -> Result<(LangTag, bool), Response> {
-    let original = &quote.terms.scope.lang;
+fn viewed(input: &AgreementAcceptInput, terms: &DealTerms) -> Result<(LangTag, bool), Response> {
+    let original = &terms.scope.lang;
     let via_mt = input.viewed_via_mt.unwrap_or(false);
     let lang = match input.viewed_lang.as_deref() {
         None => original.clone(),
@@ -302,14 +313,10 @@ fn viewed(input: &AgreementAcceptInput, quote: &QuotePayload) -> Result<(LangTag
             viewed_error("viewed_lang", format!("invalid params: viewed_lang: {e}"))
         })?,
     };
-    if via_mt {
-        if lang == *original {
-            return Err(viewed_error(
-                "viewed_via_mt",
-                "viewed_via_mt is true, but viewed_lang is the language of the original terms",
-            ));
-        }
-    } else if lang != *original && !quote.terms.scope.translations.iter().any(|t| t.lang == lang) {
+    if let Err(e) = transaction::check_viewed(&lang, via_mt, terms) {
+        return Err(viewed_error("viewed_via_mt", e.to_string()));
+    }
+    if !via_mt && lang != *original && !terms.scope.translations.iter().any(|t| t.lang == lang) {
         return Err(viewed_error("viewed_lang", "viewed_lang names no version of this quote"));
     }
     Ok((lang, via_mt))
@@ -320,39 +327,27 @@ async fn load_verified_quote_and_role<H: AppHost>(
     quote_record_id: &str,
     now: u64,
     owner: &str,
-) -> Result<(QuotePayload, String, DealRole), Response> {
-    let quote_envelope_bytes = match get_bytes(host, QUOTE_HISTORY, quote_record_id).await {
-        Ok(Some(b)) => b,
-        Ok(None) => return Err(Response::invalid_params("no such quote")),
-        Err(e) => return Err(Response::internal_error(e)),
+) -> Result<(disclosures::HeldQuote, String, DealRole), Response> {
+    let held = match disclosures::load_quote(host, quote_record_id, now).await {
+        Ok(h) => h,
+        Err(disclosures::LoadQuoteError::Missing) => {
+            return Err(Response::invalid_params("no such quote"));
+        }
+        Err(disclosures::LoadQuoteError::Storage(e)) => return Err(Response::internal_error(e)),
+        Err(disclosures::LoadQuoteError::Invalid(e)) => {
+            return Err(Response::invalid_params(format!("the quote does not verify: {e}")));
+        }
     };
-
-    let quote_envelope_str = match String::from_utf8(quote_envelope_bytes) {
-        Ok(s) => s,
-        Err(e) => return Err(Response::internal_error(e.to_string())),
-    };
-
-    let verdict = transaction::verify_quote(&quote_envelope_str, now);
-    if !verdict.verified {
-        return Err(Response::invalid_params(format!(
-            "the quote does not verify: {}",
-            verdict.reason.as_deref().unwrap_or("unknown")
-        )));
-    }
-    if verdict.expired {
+    if held.verdict.expired {
         return Err(Response::invalid_params("quote-expired"));
     }
 
-    let quote_payload = match verdict.payload {
-        Some(p) => p,
-        None => return Err(Response::internal_error("missing quote payload")),
-    };
-    let quote_author_did = match verdict.issuer {
-        Some(i) => i,
+    let quote_author_did = match held.verdict.issuer.as_deref() {
+        Some(i) => i.to_string(),
         None => return Err(Response::internal_error("missing quote issuer")),
     };
 
-    let role = if owner == quote_payload.counterparty_did {
+    let role = if owner == held.signed.counterparty_did {
         DealRole::Counterparty
     } else if owner == quote_author_did {
         DealRole::QuoteAuthor
@@ -360,13 +355,14 @@ async fn load_verified_quote_and_role<H: AppHost>(
         return Err(Response::invalid_params("this installation is neither party to that quote"));
     };
 
-    Ok((quote_payload, quote_author_did, role))
+    Ok((held, quote_author_did, role))
 }
 
 async fn load_or_init_agreement_row<H: AppHost>(
     host: &H,
     quote_record_id: &str,
     quote_payload: &QuotePayload,
+    terms: &DealTerms,
     quote_author_did: &str,
     now: u64,
 ) -> Result<AgreementRow, Response> {
@@ -378,7 +374,7 @@ async fn load_or_init_agreement_row<H: AppHost>(
             conversation: quote_payload.conversation.clone(),
             counterparty_did: quote_payload.counterparty_did.clone(),
             quote_author_did: quote_author_did.to_string(),
-            terms: quote_payload.terms.clone(),
+            terms: terms.clone(),
             state: None,
             state_reason: None,
             cancel_reason: None,
@@ -411,21 +407,27 @@ fn already_accepted_response(
     })
 }
 
+struct SignReceiptInput<'a> {
+    principal: Principal,
+    quote_record_id: &'a str,
+    row: &'a AgreementRow,
+    signed_terms: SignedTerms,
+    owner: &'a str,
+    role: DealRole,
+    viewed: (LangTag, bool),
+}
+
 async fn sign_agreement_receipt<H: AppHost>(
     host: &H,
-    principal: Principal,
-    quote_record_id: &str,
-    row: &AgreementRow,
-    owner: &str,
-    role: DealRole,
-    (viewed_lang, viewed_via_mt): (LangTag, bool),
+    input: SignReceiptInput<'_>,
 ) -> Result<ReceiptHalf, Response> {
+    let (viewed_lang, viewed_via_mt) = input.viewed;
     let payload = AgreementReceiptPayload {
-        quote_record_id: quote_record_id.to_string(),
-        counterparty_did: row.counterparty_did.clone(),
-        quote_author_did: row.quote_author_did.clone(),
-        role,
-        terms: row.terms.clone(),
+        quote_record_id: input.quote_record_id.to_string(),
+        counterparty_did: input.row.counterparty_did.clone(),
+        quote_author_did: input.row.quote_author_did.clone(),
+        role: input.role,
+        terms: input.signed_terms,
         viewed_lang,
         viewed_via_mt,
     };
@@ -448,13 +450,13 @@ async fn sign_agreement_receipt<H: AppHost>(
     let draft = RecordDraft {
         version: AGREEMENT_RECEIPT_VERSION,
         record_type: RECORD_AGREEMENT_RECEIPT.to_string(),
-        subject: quote_record_id.to_string(),
+        subject: input.quote_record_id.to_string(),
         payload: payload_str,
         expires_at_secs: None,
         supersedes: None,
     };
 
-    let envelope_json = match AppSigning::sign_record(host, draft, principal).await {
+    let envelope_json = match AppSigning::sign_record(host, draft, input.principal).await {
         Ok(json) => json,
         Err(e) => return Err(Response::internal_error(e.to_string())),
     };
@@ -464,7 +466,7 @@ async fn sign_agreement_receipt<H: AppHost>(
         Err(e) => return Err(Response::internal_error(e.to_string())),
     };
 
-    if envelope.issuer != owner {
+    if envelope.issuer != input.owner {
         return Err(Response::internal_error(
             "the host signed under an issuer this service did not ask for",
         ));
@@ -478,7 +480,7 @@ async fn sign_agreement_receipt<H: AppHost>(
     Ok(ReceiptHalf {
         envelope: envelope_json,
         record_id,
-        issuer: owner.to_string(),
+        issuer: input.owner.to_string(),
         issued_at_secs: envelope.issued_at_secs,
     })
 }

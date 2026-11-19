@@ -5,14 +5,13 @@
     "issued_at_secs": "number",
     "issuer": "string",
     "payload": {
+      "_sd": [
+        "string"
+      ],
       "agreement": "string",
       "commitment_id": "string",
       "conversation": "string",
       "counterparty_did": "string",
-      "note": {
-        "lang": "string",
-        "text": "string"
-      },
       "quote_author_did": "string"
     },
     "record_id": "string",

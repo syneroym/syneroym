@@ -289,29 +289,41 @@ async fn an_offer_is_agreed_across_two_installations() {
     p_payload["role"] = json!("same");
     assert_eq!(c_payload, p_payload);
 
-    // Step 11: Every field the Records table names is present on both halves.
+    // Step 11: Plain terms returned by agreement.get; signed halves in card bodies
+    // hold no payee.
+    let plain_terms = &x_agr["terms"];
+    assert_eq!(plain_terms["commitments"][1]["payee"], "Y Repairs");
+    assert!(
+        plain_terms["quote_expires_at_secs"].is_u64()
+            && plain_terms["quote_expires_at_secs"].as_u64().unwrap() > 0
+    );
+    assert_eq!(
+        plain_terms["cancellation_terms"]["text"].as_str().unwrap(),
+        "24 hours notice required for full refund"
+    );
+    assert_eq!(
+        plain_terms["refund_terms"]["text"].as_str().unwrap(),
+        "Full refund if work not completed"
+    );
+    assert_eq!(
+        plain_terms["dispute_path"]["text"].as_str().unwrap(),
+        "Small claims court or informal mediation"
+    );
+
     for half_payload in [&x_counterparty_env.payload, &x_quote_author_env.payload] {
         assert_eq!(half_payload["counterparty_did"], owner_x_did);
         assert_eq!(half_payload["quote_author_did"], owner_y_did);
         assert_eq!(half_payload["quote_record_id"], quote_record_id);
         let terms = &half_payload["terms"];
-        assert_eq!(terms["commitments"][1]["payee"], "Y Repairs");
         assert!(
-            terms["quote_expires_at_secs"].is_u64()
-                && terms["quote_expires_at_secs"].as_u64().unwrap() > 0
+            terms["commitments"][1].get("payee").is_none()
+                || terms["commitments"][1]["payee"].is_null()
         );
-        assert_eq!(
-            terms["cancellation_terms"]["text"].as_str().unwrap(),
-            "24 hours notice required for full refund"
+        assert!(
+            terms["commitments"][1]["_sd"].is_array(),
+            "commitment _sd must be an array of digests"
         );
-        assert_eq!(
-            terms["refund_terms"]["text"].as_str().unwrap(),
-            "Full refund if work not completed"
-        );
-        assert_eq!(
-            terms["dispute_path"]["text"].as_str().unwrap(),
-            "Small claims court or informal mediation"
-        );
+        assert!(terms["_sd"].is_array(), "terms _sd must be an array of digests");
     }
 
     // Step 12: Restart X, redeploy on resume, and re-read agreement.get: still
@@ -428,7 +440,7 @@ async fn a_tampered_card_is_filed_refused_and_never_verified() {
     }
     let tampered_env_str = serde_json::to_string(&env_val).unwrap();
 
-    let tampered_card = card_body(RECORD_ENQUIRY, ENQUIRY_VERSION, &tampered_env_str).unwrap();
+    let tampered_card = card_body(RECORD_ENQUIRY, ENQUIRY_VERSION, &tampered_env_str, &[]).unwrap();
 
     let send_params = json!({ "conversation": x_conv_id, "body": tampered_card, "content_type": CARD_CONTENT_TYPE });
     let sent = node_x.rpc_ok("conversation.send", send_params).await;
