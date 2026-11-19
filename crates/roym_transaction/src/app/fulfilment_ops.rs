@@ -550,7 +550,9 @@ pub(crate) async fn ensure_fulfilment_recorded<H: AppHost>(
     let stored_disc = disclosures::load(host, &half.record_id)
         .await
         .map_err(Response::internal_error)?
-        .unwrap_or_default();
+        .ok_or_else(|| {
+            Response::internal_error(format!("disclosures missing for {}", half.record_id))
+        })?;
     let card = OutgoingCard {
         card_type: "fulfilment-receipt",
         version: 1,

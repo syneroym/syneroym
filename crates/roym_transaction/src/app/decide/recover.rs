@@ -21,7 +21,7 @@ use super::{
     reserve_author_holds, snapshot_id,
 };
 use crate::app::{
-    disclosures,
+    disclosures::{self, LoadQuoteError},
     hold::{Reservations, SeatLedger},
 };
 
@@ -137,11 +137,6 @@ pub(crate) async fn finish_deciding_row_with_reservations<H: AppHost, R: Reserva
         None => return Ok(false),
     };
 
-    let held = match disclosures::load_quote(host, &row.quote_record_id, now).await {
-        Ok(h) => h,
-        Err(_) => return Ok(false),
-    };
-
     let snap_key = snapshot_id(&row.quote_record_id, 1);
     let mut stored_snap: Option<SnapshotRow> = get_row(host, AGREEMENT_PROGRESS, &snap_key).await?;
 
@@ -154,17 +149,27 @@ pub(crate) async fn finish_deciding_row_with_reservations<H: AppHost, R: Reserva
         stored_snap = get_row(host, AGREEMENT_PROGRESS, &snap_key).await?;
     }
 
-    if let Some(snap_row) = stored_snap {
+    if let Some(ref snap_row) = stored_snap {
         if snap_row.snapshot.state == AgreementState::NotFormed {
-            return repeat_not_formed(host, &mut row, snap_row, &reservations, now).await;
-        }
-        if let Some(cs) = stored_cs {
-            return repeat_both(host, &mut row, snap_row, cs, &held.disclosures, now).await;
+            return repeat_not_formed(host, &mut row, stored_snap.unwrap(), &reservations, now)
+                .await;
         }
     }
 
     if stored_cs.is_none() && now >= row.terms.quote_expires_at_secs {
         return finish_expired_deciding(host, &mut row, &reservations, now).await;
+    }
+
+    let held = match disclosures::load_quote(host, &row.quote_record_id, now).await {
+        Ok(h) => h,
+        Err(LoadQuoteError::Storage(e)) => return Err(e),
+        Err(_) => return Ok(false),
+    };
+
+    if let Some(snap_row) = stored_snap {
+        if let Some(cs) = stored_cs {
+            return repeat_both(host, &mut row, snap_row, cs, &held.disclosures, now).await;
+        }
     }
 
     if let Some(cs) = stored_cs {
