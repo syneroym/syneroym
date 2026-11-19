@@ -701,3 +701,387 @@ Open: 0.**
 ### New findings
 
 None.
+
+## Code review round 1 — Claude Opus 5.5 (Claude Code), 2026-11-19
+
+Reviewed part C2a, PR [#370](https://github.com/syneroym/syneroym/pull/370),
+branch `feat/m08c-c2-disclosure` at `d19db9f4`, against `origin/main`
+(`0450b425`), with `git diff origin/main...HEAD`. This is the main checkout
+(`.git` is a directory, not a worktree). `git pull` said "Already up to
+date". The code was written by Gemini 3.8 Flash, so this round meets the
+cross-tool rule. There is no earlier code review round, so there are no
+Fixed or Rejected items to check again.
+
+Read: AGENTS.md, session-strategy.md ("The review file"), the plan, this
+file's plan review rounds, the code review rounds of
+[slice-c1-review.md](slice-c1-review.md), and both change docs
+(roym-agreements: "Selective disclosure" and the C2 rows of
+`## Deviations`; roym-value-exchange: VX-11).
+
+CI: `gh pr checks 370` is green (six test shards, Playwright E2E, "Lints,
+licenses & checks", "CI Pipeline", CLA). I did not run the full suite or
+`mise run verify`. I ran one temporary test to prove R1
+(`cargo nextest run -p syneroym-roym-core`, 1 passed) and then removed it
+with `git checkout`; the tree is clean. I changed no code. I did not build
+the WASM components, so the size numbers in `status.md` and task.md are not
+checked here.
+
+**Summary: 12 findings (R1 to R12): 0 blocker, 2 major, 10 minor. 12 open.**
+
+### What was checked and found correct
+
+- **The primitives.** `disclosure.rs` in `syneroym-signed-record` follows the
+  plan's step 2: 16-byte salts, compact JSON `[salt, name, value]`, base64url
+  with no padding, SHA-256 over the ASCII bytes of the disclosure string. The
+  RFC 9901 digest vector and the spaced disclosure are tested. The decoder
+  refuses padding, a non-array, 2 or 4 elements, a non-string salt or name,
+  and a fractional number at any depth (it reuses `walk_integers`, moved out
+  of `RecordDraft::validate` with no change in behaviour). `seeded_salt` is
+  the one copy of the seeded rule; `RecordSalts::Seeded`, `TestHost` and
+  `testing::sd` all call it. `base64` comes from the workspace; no new
+  dependency in a `roym_*` crate.
+- **The host function.** `fresh-salts` is in the one `signing.wit`, and
+  `GuestHost`, `NativeAppHost`, `HostState` and `TestHost` implement it.
+  `NodeRecordSigner::fresh_salts` refuses 0 and 257 with
+  `SigningError::InvalidRecord`; `System` uses `rand::rng().fill_bytes`.
+  All six `with_clock` callers pass a `RecordSalts`. The fixture
+  `dual-build-fixture` has the `fresh-salts` op, and the two scenarios in
+  `app_host_native` parity `signing.rs` compare both builds for good and bad
+  counts.
+- **Hidden sets.** `TERMS_SET` (5), `COMMITMENT_SET` (10),
+  `PAYMENT_REQUEST_SET` (1), `PAYMENT_ACK_SET` (3), `FULFILMENT_SET` (1)
+  match the agreements doc's field tables. `conceal_object` refuses a field
+  in neither list, and an unused field is disclosed as `null`. `SignedTerms`,
+  `SignedCommitment` and the three settlement payloads are
+  `deny_unknown_fields`, so a plain hidden field does not parse (D-C2-2).
+- **Signing paths.** `quote.set` validates the plain terms, gets
+  `hidden_field_count` salts, conceals with both limits, and stores the
+  disclosures before `QUOTE_HISTORY`. Both receipt halves copy
+  `held.signed.terms` (AG-20). Payment request, acknowledgement and
+  fulfilment receipt store their disclosures before the fence, and every
+  resend from a fence row loads the disclosures by the half's `record_id`
+  (section 2.2 point 4); `a_resent_payment_acknowledgement_carries_its_disclosures`
+  proves it with a lost `payments` row.
+- **Filing.** `dispatch_known_card` passes `card.disclosures` to every
+  filer. Enquiry, receipt, snapshot and decline cards with disclosures are
+  refused. The quote filer runs the strict reveal on the card's own set, or
+  on the stored set for a repeat with none (D-C2-7), and stores the set with
+  `create`, so it is never replaced (D-C2-4). Its refusal reason has only the
+  error code. The receipt filer compares the wire `terms` with the held
+  quote, runs `check_viewed` on the plain terms (Q5), and fills
+  `AgreementRow.terms` from the plain terms. The five copies of "load and
+  verify a stored quote" are now one `load_quote` (D-C2-6).
+- **Card rows.** `file_own_card` and every filer store the plain view in
+  `CardRow.data`, so no Hub template changed. `plain_view` fills only a
+  digest whose own disclosure hashes to it, so a wrong disclosure cannot
+  fill a field.
+- **Backup.** Export adds `disclosures`. Import checks each row against a
+  record in the bundle with the strict reveal, refuses agreement terms that
+  differ from the quote, takes the agreement's terms from the disclosures,
+  and rebuilds deal card `data` (D-C2-12).
+- **Access control.** `quote.measure` is in `api.rs` behind the same
+  local-only admission as every `transaction` method, and it is in the
+  wire-refusal list of `transaction_validation.rs` (scenario 144). No method
+  became wire-reachable. `QuoteMeasureInput` is `deny_unknown_fields` and its
+  output a typed struct; the contract count is 38.
+- **Mailbox case.** `a_card_of_the_mailbox_size_waits_at_the_mailbox_and_a_larger_one_at_the_sender`
+  waits on the `deposit_failed` counter, not on a fixed time (P18), and
+  checks `pending` and one deposit only. The constant
+  `MAILBOX_CARD_BODY_BYTES` (13 KiB) and the deviation row agree.
+- **Two-node and parity.** `roym_transaction_e2e.rs` reads plain values from
+  `agreement.get` and checks that each signed half holds `_sd` and no
+  `payee`. `roym_restore_e2e.rs` checks the plain terms after a restore.
+  Both parity harnesses seed salts with one value; four new parity
+  scenarios.
+- **Planned test names.** Every name in 7.1 and 7.2 exists, except the
+  Hub tests (R2).
+- **Change docs.** The C2 rows are in roym-agreements, with the plan's
+  question numbers and meaning; VX-11 needs no row in roym-value-exchange.
+  The backlog row for the number-array message body is there.
+- **Rules.** No planning ids in code, test names or `.ftl` files. No new
+  `.rs` file is over 800 lines (`tests/disclosure/cards.rs` 513,
+  `roym_core/src/disclosure.rs` 472). The oversized list matches the real
+  counts (835 and 1,289). No new `too_many_lines` suppression; the one
+  `#[allow(clippy::too_many_arguments)]` on `file_own_card` is gone (D-C2-5).
+  The clean-ups of 2.2 point 7 are done (`deal.rs:144`, `card.rs:6`,
+  `booking_progress.ts`, `TERMINOLOGY.md` "Declared value").
+- **Status counts.** hub-ui "46 files, 561 passed" is the same as C1b. That
+  agrees with R2: no Hub test was added. I did not confirm the nextest total:
+  CI's shard 1 reports 797 run and 3,989 skipped (4,786 tests on Linux);
+  `status.md` gives 4,776 passed and 6 skipped from a local macOS run.
+
+### New findings
+
+- [ ] **R1 — major.** *Where:* `crates/roym_core/src/deal/sd.rs:239`
+  (`SignedTerms::validate_visible`), `:277` (`reveal`), `:346`
+  (`reveal_terms_strict`); `crates/roym_core/src/disclosure.rs:214`
+  (`DisclosureIndex::build`), `:296` (`reveal_object`), `:375`
+  (`check_all_used`); test `a_digest_listed_twice_is_refused`
+  (`disclosure/tests.rs:31`).
+  *Problem:* The agreements doc ("Verifying", step 3), AG-19 (4) and RFC 9901
+  section 7.1 say: refuse if a digest appears twice anywhere in the payload.
+  The code refuses only the same disclosure string twice in the card's list
+  (`build`) and a repeat inside one `_sd` list (strictly ascending). A digest
+  that sits in two `_sd` lists, for example in `c1` and `c2`, passes. One
+  disclosure then fills both commitments, and `check_all_used` is happy
+  because `used` holds the digest twice. The same salt then blinds two
+  fields, so the "no salt repeats inside the record" rule (AG-21) is not
+  checked either. The test `a_digest_listed_twice_is_refused` tests a
+  disclosure listed twice in the card, not a digest listed twice in the
+  record.
+  *Failure case (proven):* with `sample_terms_with_markers`, make `c2` a copy
+  of `c1`, conceal, set `c2._sd = c1._sd`, and drop `c2`'s 10 disclosures.
+  `reveal_terms_strict` returns `Ok` with two commitments (temporary test,
+  1 passed, removed). In C2a, a counterparty's node files such a quote. In
+  C2b, a presenter who shows `terms.commitments[c1].payee` also shows `c2`'s
+  payee, and Carol's verifier reports it as shown, although nobody named it.
+  *Fix:* In `SignedTerms::validate_visible`, collect the digests of
+  `terms._sd` and of every commitment's `_sd` in one `HashSet` and refuse
+  the second insert with `sd-shape` (or a new `digest-repeated` code from
+  `validate_visible`). Every path then gets the check, C2b included. Add
+  `a_digest_in_two_commitments_is_refused` to `deal/sd/tests.rs`, and rename
+  the existing test to `a_disclosure_listed_twice_in_the_card_is_refused`.
+  *Status:* Open
+
+- [ ] **R2 — major.** *Where:* `crates/roym_web/ui/src/screens/messages.ts:986`
+  (`readQuoteForm`) against `:867` to `:945` (`submitBtn.onclick`);
+  `crates/roym_web/ui/src/screens/quote_size.ts`; plan step 7, 7.5, 7.11;
+  AG-40 in plan section 3.
+  *Problem:* Two planned parts of step 7 are missing.
+  (1) No Hub unit test: there is no `quote_size.test.ts` and no
+  `readQuoteForm` case in `messages.test.ts`. AG-40's row says "Hub unit
+  test: the over-limit line and the mailbox note", and 7.5 lists the cases
+  (used and limit, the over class, the mailbox note, hidden on a parse error
+  and on `signing-not-enrolled`, one call after typing stops). The hub-ui
+  count in `status.md` did not change from C1b.
+  (2) The plan says submit and the size line use one `readQuoteForm`, "so
+  the two cannot disagree" (also 7.11, "Copied helpers"). The code adds
+  `readQuoteForm` as a second copy of the submit code; submit still builds
+  the terms itself. `messages.ts` grew from 1,018 to 1,104 lines, where the
+  plan says it should shrink. The copies already differ in small ways
+  (`quoteLang?.value ?? "en"` against `quoteLang.value`; a default for
+  `whereSelect`).
+  *Failure case:* a later change adds a field to the submit code only. The
+  size line then measures a different quote from the one `quote.set` signs,
+  and says "fits" for a quote that is refused. No test fails, because no
+  test reads the size line.
+  *Fix:* Make `readQuoteForm` return `{ terms } | { error }` (the message key
+  and arguments submit shows today), and make submit call it. Add
+  `quote_size.test.ts` with the 7.5 cases (fake timers) and a
+  `messages.test.ts` case that `readQuoteForm` gives the terms submit sends.
+  *Status:* Open
+
+- [ ] **R3 — minor.** *Where:* `crates/roym_web/ui/src/i18n/en.ftl:578` to
+  `:580`, `hi.ftl:563` to `:565`; `quote_size.ts:46` to `:58`;
+  `crates/substrate/tests/e2e/hub-helpers.ts:221`;
+  `demo/50-roym-deal.spec.ts`; `status.md` C2a row.
+  *Problem:* The Hub does not show what the plan's "How this is shown to an
+  end user" says.
+  - No style rule for `quote-size-over` exists anywhere in the UI, so the
+    line does not turn red.
+  - `quote-size-mailbox` says "(waits for peer to come online)". The rule
+    (Q8) is that the other person gets it only while both devices are
+    online: the sender must be online too. "Peer" is a word an end user
+    does not use. The plan's text was "This quote is large. The other
+    person gets it only while both devices are online."
+  - `quote-size-line` is "{used} KiB / {limit} KiB", so the line reads
+    "2.1 KiB / 96.0 KiB", not "Size: 2.1 KiB of 96 KiB".
+  - Story 50 is not changed. The shared helper `sendQuote` checks only that
+    `.quote-size-line` is visible, not that it shows the limit.
+  - The three Hindi messages need the owner's review before merge (7.10,
+    exit criteria). The C2a status row does not list them, as the C1b row
+    did.
+  *Fix:* Add a CSS rule for `.quote-size-over`. Use the plan's English text
+  for the mailbox note and "Size: { $used } KiB of { $limit } KiB" (no
+  decimal on the limit), and update the Hindi text. In story 50, check that
+  Bob's line contains "of 96 KiB" before he sends. List the three Hindi
+  messages in the status row for the owner's review.
+  *Status:* Open
+
+- [ ] **R4 — minor.** *Where:* `crates/roym_transaction/src/app/sync/settle_receipts.rs:89`,
+  `:93`, `:232`, `:237`, `:396`, `:400`.
+  *Problem:* D-C2-7 says a refusal reason "names the rule and the field,
+  never a value", because the reason is stored and shown. The quote filer
+  uses `e.code()`. The three settlement filers write `{e}` instead. Some of
+  these messages hold the hidden value: `PaymentError::MethodShape` prints
+  the method (`payment.rs:40`, raised at `:158`), and an `SdError::SdShape` from
+  `serde_json::from_value` prints the value that has the wrong type (for
+  example "invalid type: integer `5`, expected a string").
+  *Failure case:* Bob's node sends an acknowledgement whose disclosed
+  `method` is `"UPI:alice@bank"` (not a valid token). Alice's card row is
+  refused with the reason "payment acknowledgement hidden: payment method
+  'UPI:alice@bank' is not …", stored in her card row and in her backup.
+  *Fix:* Use `e.code()` for the `SdError` case. For `validate()`, write the
+  field name and the rule only (for example match on the error and use a
+  short fixed text, or add a `code()` to `PaymentError` and
+  `FulfilmentError`). Add one table case that a refused ack's reason holds
+  no disclosed value.
+  *Status:* Open
+
+- [ ] **R5 — minor.** *Where:* `crates/roym_transaction/src/app/tests/disclosure/measure.rs:115`
+  (`quote_measure_answers_signing_not_enrolled_like_quote_set`).
+  *Problem:* The test uses a bare `TestHost::default()`. That host has no
+  signing identity (`roym_core/src/testing.rs:225` to `:228`), so both
+  methods fail in `owner_did` with `-32603` "no signing identity set", not
+  with `signing-not-enrolled`. The test checks only that the two errors are
+  equal. Plan review round 4 named this exact trap. The Hub case for
+  `signing-not-enrolled` (7.5) is missing too (R2).
+  *Failure case:* `quote.measure` stops answering `signing-not-enrolled`
+  (for example, it starts to skip `person_principal`). The test still
+  passes.
+  *Fix:* Call `set_signing_id` with an owner, as the shared setup does
+  (`app/tests.rs:78`), and leave out the `CERTIFICATES` row. Assert that the
+  message is `signing-not-enrolled` and the code is `-32602`, and that
+  `quote.set` gives the same.
+  *Status:* Open
+
+- [ ] **R6 — minor.** *Where:* `crates/roym_transaction/src/app/quote_ops.rs:277`
+  to `:285`; `crates/roym_core/src/card.rs:110` to `:141`.
+  *Problem:* D-C2-11 says `card_bytes` is an upper bound of the card body.
+  The placeholders are shorter than the real values for two fields:
+  `conversation` is `"conv_placeholder"` (16 characters), and a real id is
+  `conv:` plus 64 hex characters, 69 in all (`crates/conversation/src/ids.rs:23`);
+  the enquiry `record_id` is `"rec_placeholder"` (15), and a real one is
+  `rec_` plus the digest (56). The longer placeholders for the issuer and the
+  counterparty (+8 each) do not cover this. The placeholder `supersedes`
+  covers it only for a first version, which has no real `supersedes`. The
+  test `quote_measure_matches_quote_set` uses a first version.
+  *Failure case:* Bob sends version 2 of a quote whose real card body is
+  13,350 bytes. `quote.measure` gives about 13,270, so `mailbox_fits` is
+  true and the Hub shows no note, but the card cannot reach Alice's mailbox.
+  *Fix:* Use placeholders of the real longest lengths: a `conv:` id of 69
+  characters, a record id of `RECORD_ID_PREFIX` plus the digest length, and
+  `did:key` values of the real length. Add a case for a second version to
+  `quote_measure_matches_quote_set` (`card_bytes >= body.len()`).
+  *Status:* Open
+
+- [ ] **R7 — minor.** *Where:* `docs/system-architecture.md:1210`,
+  `:1213`; `docs/developer-guide.md:1672` to `:1674`;
+  `docs/system-requirements-spec.md:431`; `docs/planning/traceability-matrix.md:14`.
+  *Problem:* Living docs that are false or say more than C2a built:
+  - architecture `payment-request` row: "It carries currency and amount".
+    `PaymentRequestPayload` has no currency and no amount
+    (`crates/roym_core/src/payment.rs:52` to `:60`).
+  - architecture `quote` row: "It carries agreed terms, commitments, and
+    digests". It no longer says which fields are visible (currency, expiry,
+    each commitment's id, giver, kinds, extension and `after`), and it lost
+    "It may name one slot of the listing". The rule "never make a statement
+    less precise" applies.
+  - developer guide: the new `fresh-salts` sentence sits between "minting
+    one certificate per service … on the host" and the `enrol-signing`
+    command, and ends with the colon that introduces that command. A reader
+    takes the command to be about salts.
+  - requirements and traceability: "receipts with field-level selective
+    disclosure (RFC 9901)" and "selective disclosure concealment and
+    verification are implemented". C2a hides fields. Nobody can yet show a
+    field to a third party or verify a presentation (C2b).
+  *Fix:* Fix the payment-request row (it names the agreement and the
+  commitment; the note is hidden). List the visible quote fields and keep
+  the slot sentence. Move the `fresh-salts` sentence after the command
+  block. Say "hidden fields in signed deal records; showing chosen fields to
+  a third party is not built yet" in the requirements and the matrix.
+  *Status:* Open
+
+- [ ] **R8 — minor.** *Where:* for example `crates/roym_core/src/card.rs:116`,
+  `:117`; `crates/roym_core/src/testing.rs:254`;
+  `crates/core/src/record_signer.rs:139`;
+  `crates/roym_transaction/src/app/decide/recover.rs:137`;
+  `crates/roym_transaction/src/app/backup.rs:603`;
+  `settle_receipts.rs:115`, `:296`, `:447` (`serde_json::Value::Null`);
+  tests: `app/tests/disclosure/cards.rs:346`, `:354`,
+  `backup/tests/disclosures.rs:98`, `:106`, `record/tests/wire_words.rs`
+  (`crate::testing::sd::…`, `syneroym_signed_record::decode_disclosure`),
+  `crates/substrate/tests/mailbox_conversation_e2e.rs:240` (`use` inside a
+  function) and `:345` (`syneroym_roym_core::card::MAILBOX_CARD_BODY_BYTES`).
+  *Problem:* AGENTS.md "Mandatory Import Cleanup": types by `use`, functions
+  through their parent module, no inline paths with several `::`. The commit
+  "refactor: clean up imports and remove inline paths" left these.
+  *Fix:* Import the types (`Envelope`, `ENVELOPE_VERSION`, `DealTerms`,
+  `PlainQuote`, `Value`) and call functions through their module
+  (`disclosure::seeded_salt`, `sd::conceal_quote`, `disclosures::load_quote`).
+  *Status:* Open
+
+- [ ] **R9 — minor.** *Where:* `crates/roym_transaction/src/app/quote_ops.rs:586`
+  (`reveal_pointer_terms`), `:609`, `:642`;
+  `crates/roym_transaction/src/app/backup/disclosures.rs:36`
+  (`validate_disclosures_section`).
+  *Problem:* `quote.get` and `quote.list` answer `-32603` for the whole call
+  when one quote has no stored disclosures. The import lets that happen: it
+  checks each disclosures row that exists, and it needs one for each
+  agreement's quote, but not one for each quote in `quote_history` or
+  `quotes`. D-C2-12 says "a quote's set is complete and strict". A quote
+  with no agreement and no disclosures row is imported as it is.
+  *Failure case:* a person restores a bundle where one open quote has no
+  disclosures row (a damaged or partial bundle). The import succeeds, and
+  then `quote.list` fails for every quote on the node, so the Hub shows none
+  of them.
+  *Fix:* In the import, refuse a bundle where a quote envelope in
+  `quote_history` (or a `quotes` pointer) has no disclosures row. Add a case
+  `import_refuses_a_quote_without_disclosures` to
+  `backup/tests/disclosures.rs`.
+  *Status:* Open
+
+- [ ] **R10 — minor.** *Where:* `crates/roym_transaction/src/app/payment_ops/fence.rs:138`,
+  `:338`; `crates/roym_transaction/src/app/fulfilment_ops.rs:553`;
+  `crates/roym_transaction/src/app/decide/recover.rs:137` to `:140`.
+  *Problem:* Two new silent failures.
+  (1) A resend from a fence row uses `.unwrap_or_default()` when the
+  disclosures row is missing, so it sends a settlement card with no
+  disclosures. The peer must refuse that card, and nothing on this node says
+  why.
+  (2) `finish_deciding_row_with_reservations` now loads the quote first and
+  answers `Ok(false)` on any error. On `main` a storage error in this
+  function was returned with `?`. The load also blocks the
+  `repeat_not_formed` path, which does not need the quote.
+  *Failure case:* a storage error during recovery leaves a decision in
+  `deciding` with no log and no error, and the next recovery tries again
+  with no sign of the cause.
+  *Fix:* (1) Answer `Response::internal_error("disclosures missing for
+  <record_id>")` in place of an empty list. (2) Return `Err` for
+  `LoadQuoteError::Storage`, and load the quote only on the paths that use
+  `held` (after the `repeat_not_formed` branch).
+  *Status:* Open
+
+- [ ] **R11 — minor.** *Where:* `crates/roym_transaction/src/app/sync/settle_receipts.rs:290`
+  to `:294` (acknowledgement), `:436` to `:445` (fulfilment).
+  *Problem:* D-C2-4 says the disclosures are written before the record's own
+  row, also on filing ("before the half on filing"). The payment request
+  filer does this (`:136`). The acknowledgement filer writes the `payments`
+  row first and the disclosures after it. The fulfilment filer writes the
+  `fulfilments` row (`record_fulfilment_half_card`) first.
+  *Failure case:* a crash between the two writes leaves the half stored
+  without its disclosures. A later `transaction.export` then has a record
+  that the importing node cannot rebuild (R9's case), until the card is
+  filed again.
+  *Fix:* Move `disclosures::store` before `put_row(PAYMENTS)` and before
+  `record_fulfilment_half_card`, after the strict reveal.
+  *Status:* Open
+
+- [ ] **R12 — minor.** *Where:* `crates/roym_core/src/deal/sd/tests.rs:75`
+  (`no_signed_payload_holds_a_hidden_value`), `:294`
+  (`visible_checks_refuse_a_bad_sd_list`);
+  `crates/roym_transaction/src/app/tests/disclosure/cards.rs:297`
+  (`largest_quote_card_fits_in_the_card_body`); the agreements doc's row
+  "The 96 KiB limit against the card body (checked)".
+  *Problem:* Three tests prove less than their names, the plan or the doc
+  row say.
+  - AG-17's test checks the concealed `SignedTerms` and the three
+    settlement payloads. It builds no `QuotePayload`, no receipt half and no
+    snapshot. Its track-end check runs on the terms, where the track end
+    never is. The row says "quote, both halves, … and a snapshot … and not
+    the derived track end".
+  - The card-body test uses no extension, empty `after` lists and short
+    visible fields, and its disclosures are only over 80,000 bytes, not
+    near 98,304. It pins no size. The doc row says the worst case (113,583
+    bytes) is "pinned" by a test that signs a real envelope.
+  - The `_sd` test has no case for a bad character (plan: "length, order,
+    characters").
+  *Fix:* Build the quote payload, both halves and a snapshot (from
+  `progress::open`) in the AG-17 test, and scan each canonical form, the
+  snapshot for the track end too. Give the card-body test the longest
+  visible fields (extension on slot commitments, `after` lists, `c1` to
+  `c16`), size the texts so the disclosures are within 1 KiB under 96 KiB,
+  and assert the body is at most `MAX_CARD_BODY_BYTES`; or change the doc
+  row to what the test proves. Add a digest with `+` or `=` to the `_sd`
+  test.
+  *Status:* Open
