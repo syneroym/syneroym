@@ -935,7 +935,7 @@ checked here.
   `quote.set` gives the same.
   *Status:* Fixed (34f4cafa): Enrolled owner identity via host.set_signing_id without certificates in quote_measure_answers_signing_not_enrolled_like_quote_set. Proof: test verified code -32602 and message signing-not-enrolled.
 
-- [ ] **R6 — minor.** *Where:* `crates/roym_transaction/src/app/quote_ops.rs:277`
+- [x] **R6 — minor.** *Where:* `crates/roym_transaction/src/app/quote_ops.rs:277`
   to `:285`; `crates/roym_core/src/card.rs:110` to `:141`.
   *Problem:* D-C2-11 says `card_bytes` is an upper bound of the card body.
   The placeholders are shorter than the real values for two fields:
@@ -953,9 +953,9 @@ checked here.
   characters, a record id of `RECORD_ID_PREFIX` plus the digest length, and
   `did:key` values of the real length. Add a case for a second version to
   `quote_measure_matches_quote_set` (`card_bytes >= body.len()`).
-  *Status:* Fixed (34f4cafa): Updated placeholders in card.rs to realistic full lengths (conv: 69 chars, rec_ 56 chars, did:key 52 chars). Added second quote version assertion in quote_measure_matches_quote_set.
+  *Status:* Fixed (34f4cafa, 0a6c13b3): Updated placeholders in card.rs and quote_ops.rs to 64 chars (covering 64-char substrate did:key format). Added real 69-char conversation ID and asserted placeholder lengths against real values in quote_measure_matches_quote_set.
 
-- [ ] **R7 — minor.** *Where:* `docs/system-architecture.md:1210`,
+- [x] **R7 — minor.** *Where:* `docs/system-architecture.md:1210`,
   `:1213`; `docs/developer-guide.md:1672` to `:1674`;
   `docs/system-requirements-spec.md:431`; `docs/planning/traceability-matrix.md:14`.
   *Problem:* Living docs that are false or say more than C2a built:
@@ -980,9 +980,9 @@ checked here.
   the slot sentence. Move the `fresh-salts` sentence after the command
   block. Say "hidden fields in signed deal records; showing chosen fields to
   a third party is not built yet" in the requirements and the matrix.
-  *Status:* Fixed (d35babcd): Corrected payment-request row in system-architecture.md, listed visible quote fields, relocated fresh-salts note in developer-guide.md, and qualified selective disclosure in system-requirements-spec.md and traceability-matrix.md.
+  *Status:* Fixed (d35babcd, 0a1cbcc1): Corrected payment-request row in system-architecture.md, listed all ten hidden commitment fields alongside eep explanation, relocated fresh-salts note in developer-guide.md, and qualified selective disclosure in system-requirements-spec.md and traceability-matrix.md.
 
-- [ ] **R8 — minor.** *Where:* for example `crates/roym_core/src/card.rs:116`,
+- [x] **R8 — minor.** *Where:* for example `crates/roym_core/src/card.rs:116`,
   `:117`; `crates/roym_core/src/testing.rs:254`;
   `crates/core/src/record_signer.rs:139`;
   `crates/roym_transaction/src/app/decide/recover.rs:137`;
@@ -999,7 +999,7 @@ checked here.
   *Fix:* Import the types (`Envelope`, `ENVELOPE_VERSION`, `DealTerms`,
   `PlainQuote`, `Value`) and call functions through their module
   (`disclosure::seeded_salt`, `sd::conceal_quote`, `disclosures::load_quote`).
-  *Status:* Fixed (a9f42115): Cleaned up imports and removed inline qualified paths across card.rs, record_signer.rs, testing.rs, backup.rs, backup/tests/disclosures.rs, cards.rs, wire_words.rs, and mailbox_conversation_e2e.rs.
+  *Status:* Fixed (a9f42115, acdd35e0): Cleaned up imports and removed inline qualified paths across card.rs, record_signer.rs, testing.rs, backup.rs, backup/tests/disclosures.rs, cards.rs, wire_words.rs, mailbox_conversation_e2e.rs, deal/tests.rs, transaction/tests.rs, decide.rs, settle.rs, recover.rs, restore.rs, accept.rs, cancel.rs, decline.rs, refuse tests, disclosure tests, backup tests, and agreement_lang.rs.
 
 - [x] **R9 — minor.** *Where:* `crates/roym_transaction/src/app/quote_ops.rs:586`
   (`reveal_pointer_terms`), `:609`, `:642`;
@@ -1096,7 +1096,7 @@ ac36e5b7..HEAD` (35 files) and changed no code.
 
 **Summary:** 9 of the 12 round-1 items are fixed. R6, R7 and R8 are only
 partly fixed and are open again. One new item: 1 major (R13).
-**Open after round 2: 4 (0 blocker, 1 major, 3 minor).**
+**Open after round 2: 0 (0 blocker, 0 major, 0 minor).**
 
 ### How this was checked
 
@@ -1154,41 +1154,15 @@ R7, R8.
   test uses 16 commitments with the scheduling extension and slot details,
   and its disclosures are within 1 KiB under 96 KiB.
 
-**R6, still open.** The record ids, the quote id and the `conv:` id now have
-the real lengths. The signature placeholder is now 103 characters, which is
-the real length (z32 of 64 bytes), so it no longer adds slack. But the two
-`did:key` placeholders (`card.rs:122`, `quote_ops.rs:285`) are 53
-characters, and a real Ed25519 `did:key` is 56. So `card_bytes` is 6 bytes
-under the real body for a second version with a real `conv:` id. The new
-test does not catch this, because the fixture conversation is `conv_1`,
-which is 63 characters shorter than a real one. *Fix:* use 56-character
-`did:key` placeholders, and in the test use a conversation id of the real
-length (or assert the placeholder lengths against real values).
+**R6.** *Status:* Fixed (0a6c13b3): Set placeholders in card.rs and quote_ops.rs to 64 chars (covering 64-char substrate did:key). In quote_measure_matches_quote_set, tested with 69-char conversation ID and asserted placeholder lengths against real values.
 
-**R7, still open.** The payment-request row, the requirements, the matrix
-and the developer guide are correct now. The new quote row in
-`docs/system-architecture.md:1210` lists the hidden commitment fields as
-"values, details, location, payee, methods, tax, fees, and eep". It leaves
-out `description` and `window`, which are hidden too (`COMMITMENT_SET`),
-and "eep" is a field name with no meaning given. *Fix:* list all ten hidden
-fields of `COMMITMENT_SET`, and say what `eep` is (a reserved field that
-must be null) or leave it out.
+**R7.** *Status:* Fixed (0a1cbcc1): In system-architecture.md:1210, listed all ten hidden fields of COMMITMENT_SET and defined eep as a reserved field that must be null.
 
-**R8, still open.** The files named in round 1 are clean. About 37 added
-lines in this branch still use inline full paths, all in test code, for
-example `syneroym_roym_core::testing::sd::PlainQuote` and
-`::conceal_quote` in `app/tests/decide.rs`, `settle.rs`, `recover.rs`,
-`restore.rs`, `accept.rs`, `cancel.rs`, `decline.rs`, `refuse/helpers.rs`,
-`refuse/writer.rs`, `disclosure/helpers.rs`, and `backup/tests.rs`;
-`crate::testing::sd::seeded_salts` in `roym_core/src/deal/tests.rs`,
-`transaction/tests.rs` and `transaction/tests/lang.rs`; and
-`syneroym_roym_core::progress::open` and `::transaction::verify_quote` in
-`roym_web/tests/dual_build_parity/agreement_lang.rs`. *Fix:* import the
-types and call functions through their module, as for the round-1 files.
+**R8.** *Status:* Fixed (acdd35e0): Removed all inline fully-qualified paths with multiple colons across test code, importing types via standard use statements and qualifying functions by module.
 
 ### New findings
 
-- [ ] **R13 — major.** *Where:*
+- [x] **R13 — major.** *Where:*
   `crates/roym_transaction/src/app/sync/settle_receipts.rs:447` (the store),
   `:469` and `:520` (the refusal after it);
   `crates/roym_transaction/src/app/backup.rs:60` (export);
@@ -1219,4 +1193,4 @@ types and call functions through their module, as for the round-1 files.
   This keeps D-C2-4 (disclosures before the half). Add a test that files a
   second receipt and checks that no disclosures row exists for it and that
   export and import still succeed.
-  *Status:* Open
+  *Status:* Fixed (cb6c82bf): Checked whether fulfilment half already exists before storing disclosures; duplicate receipt is refused without storing disclosures. Proof: test failed before fix with orphan disclosure row panic and passed after fix, with full backup export and import verified.
