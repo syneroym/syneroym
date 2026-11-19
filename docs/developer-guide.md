@@ -2561,15 +2561,27 @@ A party to a deal can present signed records to a third party with selected fiel
 To build a presentation, call `deal.present`:
 
 ```bash
-roym deal.present '{"record_id":"<quote_or_agreement_record_id>","show":["terms.scope"]}'
+roym deal.present '{"record_id":"<quote_record_id>","show":["terms.scope"]}'
 ```
 
-`include` selects which records to bundle (`quote`, `agreement`, `receipts`, `snapshot`, `settlements`; defaults to true for held records). `show` lists the dotted field paths to reveal (for example `terms.scope`). Only fields that are hidden by default can be named in `show`.
+`include` selects which records to bundle:
+- `quote` (boolean, defaults to `true`)
+- `receipt` (boolean, defaults to `true`)
+- `progress` (boolean, defaults to `false`)
+- `settlement` (boolean, defaults to `false`)
+
+`show` lists the dotted field paths to reveal (for example `terms.scope`, `terms.commitments[c1].declared_value_minor`, or a settlement record's note: `<record_id>.note`). Only fields that are concealed by default can be named in `show`. Naming a visible field, naming a field of a record not included in `include`, or passing unknown keys in `include` is refused with error code `-32602` (invalid params) naming the offending path in `data.field`.
+
+Example presenting settlement records with a revealed note:
+
+```bash
+roym deal.present '{"record_id":"<quote_record_id>","include":{"settlement":true},"show":["<payment_request_record_id>.note"]}'
+```
 
 A third party verifies the presentation using `deal.verify-presentation`:
 
 ```bash
-roym deal.verify-presentation '<presentation_json>'
+roym deal.verify-presentation '<presentation_json>' | jq '{verified: (.records | all(.verified)), hidden: .hidden}'
 ```
 
 This checks all cryptographic signatures, ensures all records belong to the same deal, validates that author and counterparty halves agree, verifies the selective disclosure digests, and checks writer state without leaking any unrevealed values. The response reports verified records, shown terms, hidden field paths, commitment outcomes, settlement views, and writer checks.

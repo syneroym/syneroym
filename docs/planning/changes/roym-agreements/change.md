@@ -854,13 +854,13 @@ Every method below is **local-only**: it answers only calls from the same node (
 | `agreement.verify` | changed | input: an envelope and optional disclosures |
 | `agreement.cancel` | new (from `booking.cancel`) | quote author only, with a `CancelReason` code, while every commitment is `promised` or `payment-requested` |
 | `agreement.progress` | new (from `booking.get` and `booking.history`) | the snapshots of one agreement, latest first |
-| `deal.present` | new | input: a quote id or an agreement id, the records to include, and the [field paths](#showing-a-deal-to-a-third-party) to show. Returns a `Presentation`. |
+| `deal.present` | new | input: a quote version record_id, the records to include, and the [field paths](#showing-a-deal-to-a-third-party) to show. Returns a `Presentation`. |
 | `deal.verify-presentation` | new | verifies a `Presentation` from someone else and returns what it shows |
 | `payment.request` | changed | input adds `commitment_id` |
 | `payment.acknowledge` | changed | input adds `commitment_id`; `method` and `reference` become hidden fields |
-| `payment.get`, `.verify` | changed | per commitment |
+| `payment.get`, `.verify` | changed | per commitment; `verify` accepts optional `disclosures` |
 | `fulfilment.sign` | changed | input adds `commitment_id` |
-| `fulfilment.get`, `.verify` | changed | per commitment |
+| `fulfilment.get`, `.verify` | changed | per commitment; `verify` accepts optional `disclosures` |
 | `booking.*` | removed | the booking track moves to the scheduling extension; the deal parts move to `agreement.*` |
 | `eventlog.list` | new | input: `after` (a `{recorded_at_secs, id}` cursor, or absent) and `limit`. Pages the log in `(recorded_at_secs, id)` order. |
 | `eventlog.rebuild` | new | creates missing log entries from held records; returns the count made |
@@ -1274,6 +1274,15 @@ with the question.
 - **Presentation show paths.** `deal.present` accepts `show` paths for fields
   that are hidden by default; requesting a path that is not hidden by default
   or unincluded returns `-32602`.
+- **Payment and fulfilment verify accept disclosures.** `payment.verify` and
+  `fulfilment.verify` accept an optional `disclosures` parameter (D-C2-9) to
+  reveal hidden settlement fields.
+- **Payment verify response format.** `payment.verify` answers `{kind, verdict,
+  shown, hidden, disclosure_refused}` (as `PaymentVerdict`) rather than a
+  flattened `DisclosedVerdict`.
+- **Deal present accepts record_id only.** `deal.present` takes `record_id`
+  (a quote version's content hash) only, rather than a deal id, agreement
+  id, or quote id.
 
 ## Close-out
 
