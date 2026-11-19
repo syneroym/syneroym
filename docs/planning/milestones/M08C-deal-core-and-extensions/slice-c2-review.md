@@ -1610,3 +1610,174 @@ merge.
   advisory on why it does not reach our use (or bump `wasmtime` to 48.0.9
   there), and keep it out of C2b.
   *Status:* Rejected: committed directly by repo owner to unblock cargo audit; out of scope for C2b PR fixes (as noted by reviewer)
+
+## Code review round 5 — Claude Sonnet 5.5 (Claude Code subagent), checked by Claude Opus 5.5, 2026-11-19
+
+This is the second code review of part C2b. The owner asked for a review
+with a different model after round 4 was fixed. A Claude Sonnet 5.5 subagent
+did a read-only review of `feat/m08c-c2b-presentation` at `1b180a13`. Claude
+Opus 5.5 then checked each finding against the code before writing it here.
+
+**Round-4 items.** R14 to R23 are fixed as their status lines say. I checked
+each fix in the code and ran the new tests: `presentation::` 30 passed,
+`present` 8 passed. R24 was rejected by the owner (out of C2b scope), which
+is right.
+
+**CI on `1b180a13`.** Two jobs failed:
+
+- `Test 5/6`: `method_contract` `shapes_transaction::deal_shapes` failed. The
+  R14 fix added `deal.quote_checked` to the `deal.verify-presentation` output,
+  but `tests/method_shapes/deal_verify_presentation.json` was not updated.
+  Round 4's "method_contract 36 passed" was true on `58390028` only. Fixed in
+  `1392e3a2` (the shape file, and one paragraph in the developer guide on
+  `quote_checked`, `party-mismatch` and `commitment-mismatch`). 36 passed after
+  the fix.
+- `Playwright E2E`: failed while `apt` installed browser packages (network
+  timeout to `security.ubuntu.com`). This is not a code failure.
+
+**What was checked and found correct.** No way was found to forge a record or
+reuse a disclosure so that it verifies:
+
+- Each record goes through its own verifier. A receipt half's issuer must
+  match its role, so a half signed by a third key is refused. Quote and
+  receipt `terms` must be equal, and the halves must agree.
+- Settlement records and the snapshot must name the deal's two parties and a
+  commitment of the right kind.
+- `reveal_object` checks the exact `_sd` length, sorted order, and that each
+  name is in the hidden set and not in the visible set. A repeated disclosure
+  gives `DigestRepeated`. An unused disclosure is refused, so a disclosure
+  used for another object fails.
+- `deal.present` gives out only the disclosures named in `show`. It finds each
+  one by exact digest in the target object's `_sd`.
+- Both new methods are local-only (`require_internal`).
+- Typed checks for shown numbers and `payment_methods` work (R16).
+
+A note, not a finding: AG-38 compares the snapshot's `issuer` with another
+record's `signer_did`. A writer who signs with a delegated key gets
+`writer: not-checked` for an honest snapshot. This is the plan's rule.
+
+**Summary: 9 findings (R25 to R33): 0 blocker, 2 major, 7 minor.
+Open after this round: 9.**
+
+### New findings
+
+- [ ] **R25 — major.** *Where:* `crates/roym_core/src/presentation/verify.rs:449`
+  to `:484` (`check_settlement_and_progress_records`), `:534` to `:560`
+  (`reveal_settlement_views`), `crates/roym_core/src/presentation/types.rs:75`
+  (`SettlementView`); `payment.rs:256`, `payment.rs:303`, `fulfilment.rs:148`.
+  *Problem:* A settlement record's `role` is not tied to who signed it. The
+  record verifiers only check that the issuer is one of the two parties. The
+  presentation shows every payment request as `role: receiver` (`:537`), and
+  shows an acknowledgement's or fulfilment receipt's `role` exactly as its
+  signer wrote it. `SettlementView` has no `issuer`.
+  *Failure case:* the payer of currency commitment `c1` signs a payment
+  acknowledgement with `role: receiver` ("payment received"). The third party
+  sees `settlement[]` for `c1` with `role: receiver`, which reads as the payee
+  confirming the payment. The payer can also sign a payment request, and it is
+  shown as the receiver's. Read from the code; not tested.
+  *Fix:* in `check_settlement_and_progress_records`, find the issuer's
+  `DealRole` (issuer equals `quote_author_did` or `counterparty_did`). Require
+  `role == Giver` exactly when that role equals `commitment.giver`, and a
+  payment request only from the receiver. Refuse with `party-mismatch`
+  otherwise. Add `issuer` to `SettlementView`. Tests: a payer-signed
+  acknowledgement with `role: receiver`, a payer-signed payment request, and a
+  receiver-signed fulfilment receipt with `role: giver`, each refused.
+  *Status:* Open
+
+- [ ] **R26 — major.** *Where:* `crates/roym_core/src/presentation/validate.rs:81`
+  to `:190` (terms texts), `:209` (`validate_declared_value_partial`), `:243`
+  (`payee`); used by `crates/roym_core/src/method.rs` (`reveal_disclosed_terms`).
+  *Problem:* Every check starts with `!val.is_null()`. So a disclosed JSON
+  `null` for a required field counts as "nothing to check". The field is then
+  shown as `null`, not hidden, with no `not_checked` entry. This is a gap in
+  the R16 fix.
+  *Failure case:* a quote author signs a quote whose `c1` digest is for
+  `[salt, "declared_value_minor", null]`. The author's own node would refuse
+  it (`reveal_terms_strict`), but a third party never runs that. The
+  presentation verifies and shows `declared_value_minor: null`. The same works
+  for `description`, `scope` and `payee` on a currency commitment. Proved by
+  the subagent's temporary test (four cases, all `Ok`), then removed.
+  *Fix:* a disclosed `null` is `field-invalid` for every field that is
+  required in `DealTerms` and `Commitment`: `scope`, `cancellation_terms`,
+  `refund_terms`, `dispute_path`, `description`, `declared_value_minor`, and
+  `payee` on a currency commitment. `null` stays valid only where the full
+  check allows it. Tests: one `null` case per required field, through
+  `verify_presentation` and `quote.verify`.
+  *Status:* Open
+
+- [ ] **R27 — minor.** *Where:* `crates/roym_core/src/presentation/verify.rs:489`
+  (`check_writer_binding`), `:625` (`build_commitment_outcomes`);
+  `crates/roym_core/src/progress.rs` (`verify_agreement_progress`).
+  *Problem:* A snapshot signed by a key that is neither party is accepted. It
+  only needs to name the real parties in its payload. It is shown with
+  `writer: not-checked`, as AG-38 says, but `commitments[]` still copies its
+  `state`, `reason` and `claimed`. The test
+  `snapshot_from_another_key_is_writer_not_checked` uses such a stranger key.
+  *Failure case:* a stranger signs a snapshot that names Alice and Bob and
+  marks every commitment `fulfilled`. The view shows those states, and only
+  the `writer` field says they are not checked.
+  *Fix:* refuse a snapshot whose `issuer` is neither `quote_author_did` nor
+  `counterparty_did` (`party-mismatch`). A delegated key does not change the
+  issuer, so this refuses no honest snapshot. Change the test to sign with the
+  counterparty's key, which is a real "not checked" case.
+  *Status:* Open
+
+- [ ] **R28 — minor.** *Where:* `crates/roym_core/src/presentation/verify.rs`
+  `extract_deal_terms_and_parties`, the `(None, Some(_))` arm.
+  *Problem:* A presentation with only the counterparty's half and no quote is
+  accepted. Its `terms` and `quote_author_did` are only what the counterparty
+  wrote, and the header names the other party as if they agreed.
+  `quote_checked: false` is the only sign. `deal.present` never builds this
+  bundle, because the holder of a counterparty half also holds the other half.
+  *Fix:* refuse a lone counterparty half when there is no quote
+  (`missing-terms`). A lone quote-author half is fine: the author is the one
+  who signed the terms.
+  *Status:* Open
+
+- [ ] **R29 — minor.** *Where:* `crates/roym_core/src/presentation/validate.rs:379`
+  to `:427` (`validate_commitment_details_partial`).
+  *Problem:* A shown scheduling `details` is only checked for
+  `details.extension == ext.id`, and that `window` parses. The full rule
+  (`deal.rs`, scheduling details) also checks the schema, the two keys, the
+  `slot_id` derived from the window, and the extras limits. A wrong `slot_id`
+  verifies with no `not_checked` entry.
+  *Fix:* when `details` and `window` are both shown, call the same scheduling
+  validator as the full check. When only `details` is shown, add
+  `details_matches_extension` to `not_checked`.
+  *Status:* Open
+
+- [ ] **R30 — minor.** *Where:* `crates/roym_core/src/presentation/types.rs:75`
+  (`SettlementView`), `verify.rs:588`.
+  *Problem:* `SettlementView` drops `supersedes` and `observed_at_secs`.
+  `deal.present` includes the whole acknowledgement history, so a correction
+  and the acknowledgement it replaces look like two equal entries.
+  *Fix:* add `supersedes` (or `superseded: bool`) and `observed_at_secs` to
+  the view.
+  *Status:* Open
+
+- [ ] **R31 — minor.** *Where:* `crates/roym_core/src/presentation/types.rs:46`
+  (`RecordCheck`), `verify.rs` `verify_presentation`.
+  *Problem:* The view drops `revocation_status` and `expired`, which the
+  single-record `*.verify` methods return. Because the record verifiers run
+  with `allowing_expired()`, `now_secs` has no effect on the answer.
+  *Fix:* add `revocation_status` to `RecordCheck`, and `quote_expired` to
+  `DealHeader`.
+  *Status:* Open
+
+- [ ] **R32 — minor.** *Where:* `crates/roym_core/src/presentation/verify.rs:513`
+  (`calculate_max_disclosures`) and the disclosure index build.
+  *Problem:* Only the disclosure count and the per-item size are capped. The
+  total size of the disclosures is not, while `reveal_terms_strict` checks
+  `index.total_bytes()`. The record strings have no size cap of their own
+  either. Both methods are local-only, so the risk is low.
+  *Fix:* check `index.total_bytes()` against the terms budget plus the
+  settlement budget, and cap each record string.
+  *Status:* Open
+
+- [ ] **R33 — minor.** *Where:* `crates/roym_core/src/presentation/verify.rs`
+  `check_settlement_and_progress_records`.
+  *Problem:* The `conversation` of the snapshot and of the settlement records
+  is not compared with the quote's or the receipts'. Only party-signed records
+  are involved, so a party can only mislead about their own deal.
+  *Fix:* require one `conversation` value across all records that carry it.
+  *Status:* Open
