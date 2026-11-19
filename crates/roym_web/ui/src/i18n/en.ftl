@@ -575,9 +575,9 @@ quote-currency-unknown = Unknown currency code "{ $currency }"
 quote-amount-required = Amount is required
 quote-payee-required = Payee is required
 quote-failed = Quote failed: { $detail }
-quote-size-line = { $used } KiB / { $limit } KiB
+quote-size-line = Size: { $used } KiB of { $limit } KiB
 quote-size-over = (exceeds card limit)
-quote-size-mailbox = (waits for peer to come online)
+quote-size-mailbox = This quote is large. The other person gets it only while both devices are online.
 # The next two notes are shown before a delete runs. They match the `note`
 # that the conversation service returns for `conversation.delete-message`.
 # The Hub must not claim that the other side's copy is gone.
