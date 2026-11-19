@@ -9,8 +9,9 @@ use crate::{
         SettlementRole, TextTranslation, TimeWindow,
     },
     lang::LangTag,
+    progress,
     testing::sd::{self, PlainFulfilment, PlainPaymentAck, PlainPaymentRequest},
-    transaction::DealRole,
+    transaction::{AgreementReceiptPayload, Answers, DealRole, QuotePayload},
 };
 
 fn tag(s: &str) -> LangTag {
@@ -82,6 +83,57 @@ fn no_signed_payload_holds_a_hidden_value() {
     ))
     .unwrap();
 
+    let quote = QuotePayload {
+        quote_id: "quo_1".to_string(),
+        conversation: "conv_1".to_string(),
+        sequence: 1,
+        answers: Answers::Enquiry { record_id: "rec_enq_1".to_string() },
+        counterparty_did: "did:key:zCounterparty".to_string(),
+        terms: concealed.signed.clone(),
+    };
+    let quote_canonical =
+        serde_json::to_string(&canonicalize_json_value(&serde_json::to_value(&quote).unwrap()))
+            .unwrap();
+
+    let author_half = AgreementReceiptPayload {
+        quote_record_id: "rec_quote_1".to_string(),
+        counterparty_did: "did:key:zCounterparty".to_string(),
+        quote_author_did: "did:key:zAuthor".to_string(),
+        role: DealRole::QuoteAuthor,
+        viewed_lang: tag("en"),
+        viewed_via_mt: false,
+        terms: concealed.signed.clone(),
+    };
+    let author_half_canonical = serde_json::to_string(&canonicalize_json_value(
+        &serde_json::to_value(&author_half).unwrap(),
+    ))
+    .unwrap();
+
+    let cp_half = AgreementReceiptPayload {
+        quote_record_id: "rec_quote_1".to_string(),
+        counterparty_did: "did:key:zCounterparty".to_string(),
+        quote_author_did: "did:key:zAuthor".to_string(),
+        role: DealRole::Counterparty,
+        viewed_lang: tag("en"),
+        viewed_via_mt: false,
+        terms: concealed.signed.clone(),
+    };
+    let cp_half_canonical =
+        serde_json::to_string(&canonicalize_json_value(&serde_json::to_value(&cp_half).unwrap()))
+            .unwrap();
+
+    let snap = progress::open(
+        "rec_agr_1".to_string(),
+        "conv_1".to_string(),
+        "did:key:zCounterparty".to_string(),
+        "did:key:zAuthor".to_string(),
+        &terms,
+        None,
+    );
+    let snap_canonical =
+        serde_json::to_string(&canonicalize_json_value(&serde_json::to_value(&snap).unwrap()))
+            .unwrap();
+
     let markers = [
         "scope-marker-71",
         "987654321",
@@ -93,16 +145,24 @@ fn no_signed_payload_holds_a_hidden_value() {
         "ref-marker-74",
     ];
 
-    for marker in &markers[..5] {
-        assert!(
-            !signed_terms_canonical.contains(marker),
-            "signed terms leaked hidden marker: {marker}"
-        );
+    let payloads = [
+        ("signed_terms", &signed_terms_canonical),
+        ("quote", &quote_canonical),
+        ("author_half", &author_half_canonical),
+        ("cp_half", &cp_half_canonical),
+        ("snapshot", &snap_canonical),
+    ];
+
+    for (name, canon) in payloads {
+        for marker in &markers[..5] {
+            assert!(!canon.contains(marker), "{name} leaked hidden marker: {marker}");
+        }
     }
 
     // Derived track window end: latest_secs (1_700_003_600) + TRACK_WINDOW_SECS (30
     // days = 2_592_000) = 1_702_595_600
     let track_end_str = (1_700_003_600u64 + 30 * 86400).to_string();
+    assert!(!snap_canonical.contains(&track_end_str), "snapshot leaked track end");
     assert!(!signed_terms_canonical.contains(&track_end_str));
 
     // Settlement payloads
@@ -314,6 +374,12 @@ fn visible_checks_refuse_a_bad_sd_list() {
     let mut bad_char_len = concealed.signed.clone();
     bad_char_len.sd[0] = "a".repeat(42);
     let err = bad_char_len.validate_visible().unwrap_err();
+    assert_eq!(err.code(), "sd-shape");
+
+    // 4. Bad characters (+ or =)
+    let mut bad_chars = concealed.signed.clone();
+    bad_chars.sd[0] = format!("{}+=", &bad_chars.sd[0][..41]);
+    let err = bad_chars.validate_visible().unwrap_err();
     assert_eq!(err.code(), "sd-shape");
 }
 

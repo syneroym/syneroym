@@ -6,20 +6,24 @@ use syneroym_roym_core::{
     card::{self, MAX_CARD_BODY_BYTES},
     clock,
     deal::{
-        Commitment, CommitmentKind, DealTerms, LocalText, ResourceKind, SettlementRole,
-        TextTranslation,
+        Commitment, CommitmentKind, DealTerms, Details, DetailsExtra, ExtensionRef, LocalText,
+        ResourceKind, SCHEDULING_EXTENSION, SCHEDULING_SLOT_SCHEMA, SettlementRole,
+        TextTranslation, commitment_id,
     },
     disclosure::{
         MAX_RECORD_DISCLOSURE_BYTES, Salt, decode_disclosure, encode_base64url, encode_disclosure,
     },
     lang::LangTag,
+    listing,
     payment::PAYMENT_ACKNOWLEDGEMENT_VERSION,
     record::{
         Envelope, RECORD_AGREEMENT_RECEIPT, RECORD_PAYMENT_ACKNOWLEDGEMENT, RECORD_QUOTE,
         RecordDraft,
     },
     testing::sd::{self, PlainPaymentAck, PlainQuote},
-    transaction::{AGREEMENT_RECEIPT_VERSION, Answers, DealRole, QUOTE_VERSION, derive_quote_id},
+    transaction::{
+        AGREEMENT_RECEIPT_VERSION, Answers, DealRole, QUOTE_VERSION, TimeWindow, derive_quote_id,
+    },
 };
 use z32;
 
@@ -308,23 +312,40 @@ async fn largest_quote_card_fits_in_the_card_body() {
     let cp = Identity::generate().expect("cp");
     let cp_did = substrate::derive_did_key(&cp.public_key());
 
-    let desc_len = 4100;
-    let mut commitments = Vec::new();
+    let listing_id = "rec_0000000000000000000000000000000000000000000000000000";
+    let mut commitments = Vec::with_capacity(16);
     for i in 0..16 {
+        let cid = commitment_id(i);
+        let after = if i > 0 { (0..i).map(commitment_id).collect() } else { vec![] };
+        let earliest = now + 3600 * (i as u64 + 1);
+        let latest = earliest + 3600;
+        let slot_id = listing::derive_slot_id(listing_id, earliest, latest).expect("slot id");
+        let details = Details {
+            extension: SCHEDULING_EXTENSION.to_string(),
+            schema: SCHEDULING_SLOT_SCHEMA.to_string(),
+            data: json!({
+                "listing_id": listing_id,
+                "slot_id": slot_id,
+            }),
+            extra: (0..16)
+                .map(|j| DetailsExtra { label: format!("label_{j:02}"), value: "v".repeat(100) })
+                .collect(),
+        };
+
         commitments.push(Commitment {
-            commitment_id: format!("c{i:02}"),
+            commitment_id: cid,
             giver: DealRole::QuoteAuthor,
-            resource_kind: ResourceKind::GoodsOrService,
+            resource_kind: ResourceKind::ServiceInSlot,
             kind: CommitmentKind::Fulfilment,
-            extension: None,
-            after: vec![],
+            extension: Some(ExtensionRef { id: SCHEDULING_EXTENSION.to_string(), version: 1 }),
+            after,
             description: LocalText::plain(
                 LangTag::parse_canonical("en").expect("lang"),
-                "a".repeat(desc_len),
+                "a".repeat(1753),
             ),
             declared_value_minor: 1000,
-            details: None,
-            window: None,
+            details: Some(details),
+            window: Some(TimeWindow { earliest_secs: earliest, latest_secs: latest }),
             location: None,
             payee: None,
             payment_methods: None,
@@ -338,8 +359,8 @@ async fn largest_quote_card_fits_in_the_card_body() {
         currency: "EUR".to_string(),
         commitments,
         home_exchange: None,
-        listing_id: None,
-        scope: LocalText::plain(LangTag::parse_canonical("en").expect("lang"), "Scope"),
+        listing_id: Some(listing_id.to_string()),
+        scope: LocalText::plain(LangTag::parse_canonical("en").expect("lang"), "a".repeat(10)),
         cancellation_terms: LocalText::plain(
             LangTag::parse_canonical("en").expect("lang"),
             "Terms",
@@ -361,8 +382,11 @@ async fn largest_quote_card_fits_in_the_card_body() {
     };
     let (payload, disclosures) = sd::conceal_quote(plain, 1);
     let disc_bytes: usize = disclosures.iter().map(|d| d.len()).sum();
-    assert!(disc_bytes < MAX_RECORD_DISCLOSURE_BYTES, "must be under 96 KiB: {disc_bytes}");
-    assert!(disc_bytes > 80_000, "must be near 96 KiB: {disc_bytes}");
+    assert!(disc_bytes <= MAX_RECORD_DISCLOSURE_BYTES, "must be <= 96 KiB: {disc_bytes}");
+    assert!(
+        disc_bytes >= MAX_RECORD_DISCLOSURE_BYTES - 1024,
+        "must be within 1 KiB of 96 KiB: {disc_bytes}"
+    );
 
     let draft = RecordDraft {
         version: QUOTE_VERSION,
@@ -387,6 +411,7 @@ async fn largest_quote_card_fits_in_the_card_body() {
         body.len(),
         MAX_CARD_BODY_BYTES
     );
+    assert!(body.len() > 110_000, "expected card body near worst case (> 110,000): {}", body.len());
 }
 
 #[tokio::test]
