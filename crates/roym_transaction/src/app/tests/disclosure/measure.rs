@@ -1,4 +1,5 @@
-use syneroym_identity::Identity;
+use syneroym_app_host::types::signing::SigningIdentity;
+use syneroym_identity::{Identity, substrate};
 use syneroym_roym_core::{
     deal::{CommitmentKind, ExtensionRef, LocalText, ResourceKind, TextTranslation},
     lang::LangTag,
@@ -54,10 +55,10 @@ async fn quote_measure_matches_quote_set() {
     let set_out = quote_ops::set_at(
         &fix.host,
         QuoteSetInput {
-            enquiry_record_id: enq_rec,
+            enquiry_record_id: enq_rec.clone(),
             quote_id: None,
             expires_in_secs: 3600,
-            terms: terms_input,
+            terms: terms_input.clone(),
         },
         now,
     )
@@ -75,6 +76,21 @@ async fn quote_measure_matches_quote_set() {
 
     let body = fix.host.sent_cards().last().unwrap().clone();
     assert!(measure.card_bytes >= body.len() as u64);
+
+    let _set_v2_out = quote_ops::set_at(
+        &fix.host,
+        QuoteSetInput {
+            enquiry_record_id: enq_rec,
+            quote_id: Some(set_out.quote_id),
+            expires_in_secs: 3600,
+            terms: terms_input,
+        },
+        now + 10,
+    )
+    .await
+    .unwrap();
+    let body_v2 = fix.host.sent_cards().last().unwrap().clone();
+    assert!(measure.card_bytes >= body_v2.len() as u64);
 }
 
 #[tokio::test]
@@ -117,6 +133,19 @@ async fn quote_measure_answers_signing_not_enrolled_like_quote_set() {
     let now = 1000;
     host.set_now(now);
 
+    let master = Identity::generate().expect("master");
+    let master_did = substrate::derive_did_key(&master.public_key());
+    let service_key = Identity::generate().expect("service");
+    let service_did = substrate::derive_did_key(&service_key.public_key());
+    let pubkey_hex: String =
+        service_key.public_key().as_bytes().iter().map(|b| format!("{b:02x}")).collect();
+
+    host.set_signing_id(SigningIdentity {
+        signing_did: service_did,
+        pubkey_hex,
+        owner_did: Some(master_did),
+    });
+
     let terms = sample_deal_terms(now);
     let measure_err =
         quote_ops::measure_at(&host, QuoteMeasureInput { terms }, now).await.unwrap_err();
@@ -131,6 +160,8 @@ async fn quote_measure_answers_signing_not_enrolled_like_quote_set() {
 
     let m_err = measure_err.error.as_ref().unwrap();
     let s_err = set_err.error.as_ref().unwrap();
+    assert_eq!(m_err.code, -32602);
+    assert_eq!(m_err.message, "signing-not-enrolled");
     assert_eq!(m_err.code, s_err.code);
     assert_eq!(m_err.message, s_err.message);
 }

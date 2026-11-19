@@ -275,12 +275,14 @@ pub(crate) async fn measure_at<H: AppHost>(
     })?;
 
     let payload = QuotePayload {
-        quote_id: "quo_PlaceholderSubjectToReachFiftySevenCharsZBase32Digest".to_string(),
-        conversation: "conv_placeholder".to_string(),
-        sequence: 1,
-        answers: Answers::Enquiry { record_id: "rec_placeholder".to_string() },
-        counterparty_did: "did:key:z6Mks4PlaceholderIssuerDidKeyToReachFixedFiftyThreeChars"
+        quote_id: "quo_0000000000000000000000000000000000000000000000000000".to_string(),
+        conversation: "conv:0000000000000000000000000000000000000000000000000000000000000000"
             .to_string(),
+        sequence: 1,
+        answers: Answers::Enquiry {
+            record_id: "rec_0000000000000000000000000000000000000000000000000000".to_string(),
+        },
+        counterparty_did: "did:key:z00000000000000000000000000000000000000000000".to_string(),
         terms: concealed.signed,
     };
 

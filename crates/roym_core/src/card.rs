@@ -1,6 +1,7 @@
 //! Card types and versions.
 
 use serde::{Deserialize, Serialize};
+use syneroym_signed_record::{ENVELOPE_VERSION, Envelope};
 use thiserror::Error;
 
 /// The eight card types of the first release, and the version each one is
@@ -113,22 +114,22 @@ pub fn card_body_upper_bound(
     disclosures: &[String],
     delegation_json: &str,
 ) -> usize {
-    let env = syneroym_signed_record::Envelope {
-        envelope_version: syneroym_signed_record::ENVELOPE_VERSION,
+    let env = Envelope {
+        envelope_version: ENVELOPE_VERSION,
         version: 1,
         record_type: card_type.to_string(),
-        issuer: "did:key:z6Mks4PlaceholderIssuerDidKeyToReachFixedFiftyThreeChars".to_string(),
-        subject: "quo_PlaceholderSubjectToReachFiftySevenCharsZBase32Digest".to_string(),
+        issuer: "did:key:z00000000000000000000000000000000000000000000".to_string(),
+        subject: "quo_0000000000000000000000000000000000000000000000000000".to_string(),
         issued_at_secs: 1_899_999_999,
         expires_at_secs: Some(1_899_999_999),
-        supersedes: Some("rec_PlaceholderRecordIdToReachFiftySevenCharsZBase32Digest".to_string()),
+        supersedes: Some("rec_0000000000000000000000000000000000000000000000000000".to_string()),
         payload: payload.clone(),
         delegation: if delegation_json.is_empty() {
             None
         } else {
             Some(delegation_json.to_string())
         },
-        signature: "A".repeat(86),
+        signature: "A".repeat(103),
     };
     let env_json = match serde_json::to_string(&env) {
         Ok(j) => j,
