@@ -28,7 +28,7 @@ fn a_disclosure_whose_digest_is_not_in_the_record_is_refused() {
 }
 
 #[test]
-fn a_digest_listed_twice_is_refused() {
+fn a_disclosure_listed_twice_in_the_card_is_refused() {
     let salt = seeded_salt(2, 0);
     let disc = encode_disclosure(&salt, "note", &json!("hello")).unwrap();
 

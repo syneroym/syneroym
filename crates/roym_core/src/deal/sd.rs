@@ -1,5 +1,7 @@
 //! Selective disclosure wire types and reveal operations for deal terms.
 
+use std::collections::HashSet;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use syneroym_signed_record::{Salt, encode_disclosure};
@@ -249,6 +251,11 @@ impl SignedTerms {
 
         validate_sd_list(&self.sd, 5, "terms")?;
 
+        let mut seen_digests = HashSet::new();
+        for d in &self.sd {
+            seen_digests.insert(d.as_str());
+        }
+
         for (i, c) in self.commitments.iter().enumerate() {
             let expected_id = commitment_id(i);
             if c.commitment_id != expected_id {
@@ -261,6 +268,13 @@ impl SignedTerms {
                 return Err(DealError::ExtensionShape(format!("invalid extension id: {}", ext.id)));
             }
             validate_sd_list(&c.sd, 10, &c.commitment_id)?;
+            for d in &c.sd {
+                if !seen_digests.insert(d.as_str()) {
+                    return Err(DealError::SdShape(format!(
+                        "digest repeated across deal terms: {d}"
+                    )));
+                }
+            }
         }
 
         let entries: Vec<(&str, &[String])> = self

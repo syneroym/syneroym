@@ -316,3 +316,18 @@ fn visible_checks_refuse_a_bad_sd_list() {
     let err = bad_char_len.validate_visible().unwrap_err();
     assert_eq!(err.code(), "sd-shape");
 }
+
+#[test]
+fn a_digest_in_two_commitments_is_refused() {
+    let terms = sample_terms_with_markers();
+    let mut salts = (0..).map(|n| seeded_salt(18, n));
+    let concealed = terms.conceal(&mut salts).unwrap();
+    let mut bad = concealed.signed.clone();
+    bad.commitments[1].sd = bad.commitments[0].sd.clone();
+    let err = bad.validate_visible().unwrap_err();
+    assert_eq!(err.code(), "sd-shape");
+
+    let disclosures = concealed.disclosures[..15].to_vec();
+    let err_reveal = reveal_terms_strict(&bad, &disclosures).unwrap_err();
+    assert_eq!(err_reveal.code(), "sd-shape");
+}
