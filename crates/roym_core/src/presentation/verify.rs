@@ -13,7 +13,7 @@ use super::{
 };
 use crate::{
     deal::{
-        LocalText, SettlementRole,
+        CommitmentKind, LocalText, SettlementRole,
         sd::{SignedCommitment, SignedTerms},
     },
     disclosure::{
@@ -189,6 +189,37 @@ fn extract_payload<P>(
     payload.ok_or_else(|| PresentationError::RecordRefused("missing payload".to_string()))
 }
 
+fn check_receipt_half<'a>(
+    v: &'a RecordVerdict<AgreementReceiptPayload>,
+    p: &'a AgreementReceiptPayload,
+    quote_author_half: &mut Option<(
+        &'a RecordVerdict<AgreementReceiptPayload>,
+        &'a AgreementReceiptPayload,
+    )>,
+    counterparty_half: &mut Option<(
+        &'a RecordVerdict<AgreementReceiptPayload>,
+        &'a AgreementReceiptPayload,
+    )>,
+    receipts: &mut Vec<(&'a RecordVerdict<AgreementReceiptPayload>, &'a AgreementReceiptPayload)>,
+) -> Result<(), PresentationError> {
+    match p.role {
+        DealRole::QuoteAuthor => {
+            if quote_author_half.is_some() {
+                return Err(PresentationError::DuplicateRecord("quote-author-receipt".to_string()));
+            }
+            *quote_author_half = Some((v, p));
+        }
+        DealRole::Counterparty => {
+            if counterparty_half.is_some() {
+                return Err(PresentationError::DuplicateRecord("counterparty-receipt".to_string()));
+            }
+            *counterparty_half = Some((v, p));
+        }
+    }
+    receipts.push((v, p));
+    Ok(())
+}
+
 fn partition_and_check_deal<'a>(
     records: &'a [VerifiedRecord],
 ) -> Result<DealRecords<'a>, PresentationError> {
@@ -209,25 +240,13 @@ fn partition_and_check_deal<'a>(
                 quote = Some((v, p));
             }
             VerifiedRecord::Receipt(v, p) => {
-                match p.role {
-                    DealRole::QuoteAuthor => {
-                        if quote_author_half.is_some() {
-                            return Err(PresentationError::DuplicateRecord(
-                                "quote-author-receipt".to_string(),
-                            ));
-                        }
-                        quote_author_half = Some((v, p));
-                    }
-                    DealRole::Counterparty => {
-                        if counterparty_half.is_some() {
-                            return Err(PresentationError::DuplicateRecord(
-                                "counterparty-receipt".to_string(),
-                            ));
-                        }
-                        counterparty_half = Some((v, p));
-                    }
-                }
-                receipts.push((v, p));
+                check_receipt_half(
+                    v,
+                    p,
+                    &mut quote_author_half,
+                    &mut counterparty_half,
+                    &mut receipts,
+                )?;
             }
             VerifiedRecord::Progress(v, p) => {
                 if progress_rec.is_some() {
@@ -254,14 +273,22 @@ fn partition_and_check_deal<'a>(
         &settlements,
     )?;
 
+    let (signed_terms, quote_id, quote_author_did, counterparty_did, quote_checked) =
+        extract_deal_terms_and_parties(quote, &receipts)?;
+
     if let (Some((_, a)), Some((_, b))) = (quote_author_half, counterparty_half)
         && !transaction::halves_agree(a, b)
     {
         return Err(PresentationError::HalvesDisagree);
     }
 
-    let (signed_terms, quote_id, quote_author_did, counterparty_did) =
-        extract_deal_terms_and_parties(quote, &receipts)?;
+    check_settlement_and_progress_records(
+        &quote_author_did,
+        &counterparty_did,
+        signed_terms,
+        progress_rec,
+        &settlements,
+    )?;
 
     let header = DealHeader {
         quote_id,
@@ -270,6 +297,7 @@ fn partition_and_check_deal<'a>(
         counterparty_did,
         currency: signed_terms.currency.clone(),
         quote_expires_at_secs: signed_terms.quote_expires_at_secs,
+        quote_checked,
     };
 
     Ok(DealRecords { header, signed_terms, quote, receipts, progress: progress_rec, settlements })
@@ -353,7 +381,7 @@ fn check_all_records_match_agreement(
 fn extract_deal_terms_and_parties<'a>(
     quote: Option<(&'a RecordVerdict<QuotePayload>, &'a QuotePayload)>,
     receipts: &[(&'a RecordVerdict<AgreementReceiptPayload>, &'a AgreementReceiptPayload)],
-) -> Result<(&'a SignedTerms, Option<String>, String, String), PresentationError> {
+) -> Result<(&'a SignedTerms, Option<String>, String, String, bool), PresentationError> {
     match (quote, receipts.first()) {
         (Some((q_v, q_p)), Some((_, r_p))) => {
             if q_p.terms != r_p.terms {
@@ -362,19 +390,101 @@ fn extract_deal_terms_and_parties<'a>(
             let author_did = q_v.issuer.clone().ok_or_else(|| {
                 PresentationError::RecordRefused("missing quote issuer".to_string())
             })?;
-            Ok((&q_p.terms, Some(q_p.quote_id.clone()), author_did, q_p.counterparty_did.clone()))
+            for (_, p) in receipts {
+                if p.quote_author_did != author_did || p.counterparty_did != q_p.counterparty_did {
+                    return Err(PresentationError::PartyMismatch);
+                }
+            }
+            Ok((
+                &q_p.terms,
+                Some(q_p.quote_id.clone()),
+                author_did,
+                q_p.counterparty_did.clone(),
+                true,
+            ))
         }
         (Some((q_v, q_p)), None) => {
             let author_did = q_v.issuer.clone().ok_or_else(|| {
                 PresentationError::RecordRefused("missing quote issuer".to_string())
             })?;
-            Ok((&q_p.terms, Some(q_p.quote_id.clone()), author_did, q_p.counterparty_did.clone()))
+            Ok((
+                &q_p.terms,
+                Some(q_p.quote_id.clone()),
+                author_did,
+                q_p.counterparty_did.clone(),
+                true,
+            ))
         }
-        (None, Some((_, r_p))) => {
-            Ok((&r_p.terms, None, r_p.quote_author_did.clone(), r_p.counterparty_did.clone()))
-        }
+        (None, Some((_, r_p))) => Ok((
+            &r_p.terms,
+            None,
+            r_p.quote_author_did.clone(),
+            r_p.counterparty_did.clone(),
+            false,
+        )),
         (None, None) => Err(PresentationError::MissingTerms),
     }
+}
+
+fn check_settlement_and_progress_records(
+    author_did: &str,
+    counterparty_did: &str,
+    terms: &SignedTerms,
+    progress: Option<(&RecordVerdict<AgreementProgressPayload>, &AgreementProgressPayload)>,
+    settlements: &[&VerifiedRecord],
+) -> Result<(), PresentationError> {
+    if let Some((_, p)) = progress {
+        if p.quote_author_did != author_did || p.counterparty_did != counterparty_did {
+            return Err(PresentationError::PartyMismatch);
+        }
+        for cp in &p.commitments {
+            if !terms.commitments.iter().any(|c| c.commitment_id == cp.commitment_id) {
+                return Err(PresentationError::CommitmentMismatch(format!(
+                    "snapshot commitment '{}' not found in deal terms",
+                    cp.commitment_id
+                )));
+            }
+        }
+    }
+
+    for s in settlements {
+        let (author, cp, cid, is_payment) = match s {
+            VerifiedRecord::PaymentRequest(_, p) => {
+                (&p.quote_author_did, &p.counterparty_did, &p.commitment_id, true)
+            }
+            VerifiedRecord::PaymentAck(_, p) => {
+                (&p.quote_author_did, &p.counterparty_did, &p.commitment_id, true)
+            }
+            VerifiedRecord::Fulfilment(_, p) => {
+                (&p.quote_author_did, &p.counterparty_did, &p.commitment_id, false)
+            }
+            _ => continue,
+        };
+
+        if author != author_did || cp != counterparty_did {
+            return Err(PresentationError::PartyMismatch);
+        }
+
+        let commitment =
+            terms.commitments.iter().find(|c| &c.commitment_id == cid).ok_or_else(|| {
+                PresentationError::CommitmentMismatch(format!(
+                    "commitment '{cid}' not found in deal terms"
+                ))
+            })?;
+
+        if is_payment && commitment.kind != CommitmentKind::Currency {
+            return Err(PresentationError::CommitmentMismatch(format!(
+                "payment record commitment '{cid}' is not currency"
+            )));
+        }
+        if !is_payment && commitment.kind == CommitmentKind::Currency {
+            return Err(PresentationError::CommitmentMismatch(format!(
+                "fulfilment record commitment '{cid}' is currency"
+            )));
+        }
+    }
+
+    Ok(())
 }
 
 fn check_writer_binding(deal: &DealRecords<'_>) -> WriterCheck {

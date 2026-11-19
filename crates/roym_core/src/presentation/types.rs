@@ -36,6 +36,8 @@ pub struct DealHeader {
     pub counterparty_did: String,
     pub currency: String,
     pub quote_expires_at_secs: u64,
+    #[serde(default)]
+    pub quote_checked: bool,
 }
 
 /// Verification verdict for a single record within the presentation.
@@ -119,6 +121,10 @@ pub enum PresentationError {
     HalvesDisagree,
     #[error("quote and receipt half terms do not match")]
     TermsMismatch,
+    #[error("presentation parties do not match quote or deal")]
+    PartyMismatch,
+    #[error("commitment '{0}' does not match deal terms")]
+    CommitmentMismatch(String),
     #[error("presentation must include a quote or an agreement receipt")]
     MissingTerms,
     #[error("selective disclosure error: {0}")]
@@ -139,6 +145,8 @@ impl PresentationError {
             Self::DuplicateRecord(_) => "duplicate-record",
             Self::HalvesDisagree => "halves-disagree",
             Self::TermsMismatch => "terms-mismatch",
+            Self::PartyMismatch => "party-mismatch",
+            Self::CommitmentMismatch(_) => "commitment-mismatch",
             Self::MissingTerms => "missing-terms",
             Self::Sd(e) => e.code(),
             Self::FieldInvalid(_, _) => "field-invalid",

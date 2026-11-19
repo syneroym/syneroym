@@ -50,6 +50,8 @@ fn sign_test_record(
     env.to_json().expect("to json")
 }
 
+mod records;
+
 fn sample_two_commitment_terms() -> DealTerms {
     DealTerms {
         currency: "INR".to_string(),
