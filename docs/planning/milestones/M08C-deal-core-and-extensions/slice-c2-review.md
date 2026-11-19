@@ -726,7 +726,7 @@ with `git checkout`; the tree is clean. I changed no code. I did not build
 the WASM components, so the size numbers in `status.md` and task.md are not
 checked here.
 
-**Summary: 12 findings (R1 to R12): 0 blocker, 2 major, 10 minor. 12 open.**
+**Summary: 12 findings (R1 to R12): 0 blocker, 2 major, 10 minor. 0 open, 12 fixed.**
 
 ### What was checked and found correct
 
@@ -812,7 +812,7 @@ checked here.
 
 ### New findings
 
-- [ ] **R1 — major.** *Where:* `crates/roym_core/src/deal/sd.rs:239`
+- [x] **R1 — major.** *Where:* `crates/roym_core/src/deal/sd.rs:239`
   (`SignedTerms::validate_visible`), `:277` (`reveal`), `:346`
   (`reveal_terms_strict`); `crates/roym_core/src/disclosure.rs:214`
   (`DisclosureIndex::build`), `:296` (`reveal_object`), `:375`
@@ -841,9 +841,9 @@ checked here.
   `validate_visible`). Every path then gets the check, C2b included. Add
   `a_digest_in_two_commitments_is_refused` to `deal/sd/tests.rs`, and rename
   the existing test to `a_disclosure_listed_twice_in_the_card_is_refused`.
-  *Status:* Open
+  *Status:* Fixed (691a32db): SignedTerms::validate_visible collects digests across terms._sd and every commitment's _sd into one HashSet and rejects duplicates with DealError::SdShape. Renamed test to a_disclosure_listed_twice_in_the_card_is_refused and added a_digest_in_two_commitments_is_refused. Proof: a_digest_in_two_commitments_is_refused failed before the fix and passed after.
 
-- [ ] **R2 — major.** *Where:* `crates/roym_web/ui/src/screens/messages.ts:986`
+- [x] **R2 — major.** *Where:* `crates/roym_web/ui/src/screens/messages.ts:986`
   (`readQuoteForm`) against `:867` to `:945` (`submitBtn.onclick`);
   `crates/roym_web/ui/src/screens/quote_size.ts`; plan step 7, 7.5, 7.11;
   AG-40 in plan section 3.
@@ -869,9 +869,9 @@ checked here.
   and arguments submit shows today), and make submit call it. Add
   `quote_size.test.ts` with the 7.5 cases (fake timers) and a
   `messages.test.ts` case that `readQuoteForm` gives the terms submit sends.
-  *Status:* Open
+  *Status:* Fixed (56c14ac9): Factored readQuoteForm returning QuoteFormResult in messages.ts, unifying submit and size calculation to eliminate duplicate form parsing. Added quote_size.test.ts (6 tests covering used/limit, over class, mailbox note, hide on error, and debounce) and readQuoteForm validation test in messages.test.ts.
 
-- [ ] **R3 — minor.** *Where:* `crates/roym_web/ui/src/i18n/en.ftl:578` to
+- [x] **R3 — minor.** *Where:* `crates/roym_web/ui/src/i18n/en.ftl:578` to
   `:580`, `hi.ftl:563` to `:565`; `quote_size.ts:46` to `:58`;
   `crates/substrate/tests/e2e/hub-helpers.ts:221`;
   `demo/50-roym-deal.spec.ts`; `status.md` C2a row.
@@ -896,9 +896,9 @@ checked here.
   decimal on the limit), and update the Hindi text. In story 50, check that
   Bob's line contains "of 96 KiB" before he sends. List the three Hindi
   messages in the status row for the owner's review.
-  *Status:* Open
+  *Status:* Fixed (d49b6d06): Added .quote-size-over red styling in style.css. Updated quote-size-line to "Size: { $used } KiB of { $limit } KiB" (and Hindi translation) and quote-size-mailbox to exact plan text "(This quote is large. The other person gets it only while both devices are online.)". Updated story 50 / hub-helpers.ts to assert "of 96 KiB" is visible on quote form. Listed 3 Hindi messages in status.md.
 
-- [ ] **R4 — minor.** *Where:* `crates/roym_transaction/src/app/sync/settle_receipts.rs:89`,
+- [x] **R4 — minor.** *Where:* `crates/roym_transaction/src/app/sync/settle_receipts.rs:89`,
   `:93`, `:232`, `:237`, `:396`, `:400`.
   *Problem:* D-C2-7 says a refusal reason "names the rule and the field,
   never a value", because the reason is stored and shown. The quote filer
@@ -916,9 +916,9 @@ checked here.
   short fixed text, or add a `code()` to `PaymentError` and
   `FulfilmentError`). Add one table case that a refused ack's reason holds
   no disclosed value.
-  *Status:* Open
+  *Status:* Fixed (3141a66a, b414da10): Added code() to PaymentError and FulfilmentError. Formatted settlement card refusal reasons with error codes only instead of full error displays that could leak disclosed values. Proof: a_refused_acknowledgement_reason_holds_no_disclosed_value verified refusal reason holds only error code, not disclosed value.
 
-- [ ] **R5 — minor.** *Where:* `crates/roym_transaction/src/app/tests/disclosure/measure.rs:115`
+- [x] **R5 — minor.** *Where:* `crates/roym_transaction/src/app/tests/disclosure/measure.rs:115`
   (`quote_measure_answers_signing_not_enrolled_like_quote_set`).
   *Problem:* The test uses a bare `TestHost::default()`. That host has no
   signing identity (`roym_core/src/testing.rs:225` to `:228`), so both
@@ -933,9 +933,9 @@ checked here.
   (`app/tests.rs:78`), and leave out the `CERTIFICATES` row. Assert that the
   message is `signing-not-enrolled` and the code is `-32602`, and that
   `quote.set` gives the same.
-  *Status:* Open
+  *Status:* Fixed (34f4cafa): Enrolled owner identity via host.set_signing_id without certificates in quote_measure_answers_signing_not_enrolled_like_quote_set. Proof: test verified code -32602 and message signing-not-enrolled.
 
-- [ ] **R6 — minor.** *Where:* `crates/roym_transaction/src/app/quote_ops.rs:277`
+- [x] **R6 — minor.** *Where:* `crates/roym_transaction/src/app/quote_ops.rs:277`
   to `:285`; `crates/roym_core/src/card.rs:110` to `:141`.
   *Problem:* D-C2-11 says `card_bytes` is an upper bound of the card body.
   The placeholders are shorter than the real values for two fields:
@@ -953,9 +953,9 @@ checked here.
   characters, a record id of `RECORD_ID_PREFIX` plus the digest length, and
   `did:key` values of the real length. Add a case for a second version to
   `quote_measure_matches_quote_set` (`card_bytes >= body.len()`).
-  *Status:* Open
+  *Status:* Fixed (34f4cafa): Updated placeholders in card.rs to realistic full lengths (conv: 69 chars, rec_ 56 chars, did:key 52 chars). Added second quote version assertion in quote_measure_matches_quote_set.
 
-- [ ] **R7 — minor.** *Where:* `docs/system-architecture.md:1210`,
+- [x] **R7 — minor.** *Where:* `docs/system-architecture.md:1210`,
   `:1213`; `docs/developer-guide.md:1672` to `:1674`;
   `docs/system-requirements-spec.md:431`; `docs/planning/traceability-matrix.md:14`.
   *Problem:* Living docs that are false or say more than C2a built:
@@ -980,9 +980,9 @@ checked here.
   the slot sentence. Move the `fresh-salts` sentence after the command
   block. Say "hidden fields in signed deal records; showing chosen fields to
   a third party is not built yet" in the requirements and the matrix.
-  *Status:* Open
+  *Status:* Fixed (d35babcd): Corrected payment-request row in system-architecture.md, listed visible quote fields, relocated fresh-salts note in developer-guide.md, and qualified selective disclosure in system-requirements-spec.md and traceability-matrix.md.
 
-- [ ] **R8 — minor.** *Where:* for example `crates/roym_core/src/card.rs:116`,
+- [x] **R8 — minor.** *Where:* for example `crates/roym_core/src/card.rs:116`,
   `:117`; `crates/roym_core/src/testing.rs:254`;
   `crates/core/src/record_signer.rs:139`;
   `crates/roym_transaction/src/app/decide/recover.rs:137`;
@@ -999,9 +999,9 @@ checked here.
   *Fix:* Import the types (`Envelope`, `ENVELOPE_VERSION`, `DealTerms`,
   `PlainQuote`, `Value`) and call functions through their module
   (`disclosure::seeded_salt`, `sd::conceal_quote`, `disclosures::load_quote`).
-  *Status:* Open
+  *Status:* Fixed (a9f42115): Cleaned up imports and removed inline qualified paths across card.rs, record_signer.rs, testing.rs, backup.rs, backup/tests/disclosures.rs, cards.rs, wire_words.rs, and mailbox_conversation_e2e.rs.
 
-- [ ] **R9 — minor.** *Where:* `crates/roym_transaction/src/app/quote_ops.rs:586`
+- [x] **R9 — minor.** *Where:* `crates/roym_transaction/src/app/quote_ops.rs:586`
   (`reveal_pointer_terms`), `:609`, `:642`;
   `crates/roym_transaction/src/app/backup/disclosures.rs:36`
   (`validate_disclosures_section`).
@@ -1019,9 +1019,9 @@ checked here.
   `quote_history` (or a `quotes` pointer) has no disclosures row. Add a case
   `import_refuses_a_quote_without_disclosures` to
   `backup/tests/disclosures.rs`.
-  *Status:* Open
+  *Status:* Fixed (bca988b1): Refused backup imports in backup/disclosures.rs where a quote in quote_history or quotes lacks disclosures. Added test import_refuses_a_quote_without_disclosures. Proof: test failed before fix and passed after.
 
-- [ ] **R10 — minor.** *Where:* `crates/roym_transaction/src/app/payment_ops/fence.rs:138`,
+- [x] **R10 — minor.** *Where:* `crates/roym_transaction/src/app/payment_ops/fence.rs:138`,
   `:338`; `crates/roym_transaction/src/app/fulfilment_ops.rs:553`;
   `crates/roym_transaction/src/app/decide/recover.rs:137` to `:140`.
   *Problem:* Two new silent failures.
@@ -1040,9 +1040,9 @@ checked here.
   <record_id>")` in place of an empty list. (2) Return `Err` for
   `LoadQuoteError::Storage`, and load the quote only on the paths that use
   `held` (after the `repeat_not_formed` branch).
-  *Status:* Open
+  *Status:* Fixed (e0fb6970, b414da10): Replaced .unwrap_or_default() with Response::internal_error in fence resend. Preserved LoadQuoteError::Storage in recover.rs and moved quote loading after repeat_not_formed.
 
-- [ ] **R11 — minor.** *Where:* `crates/roym_transaction/src/app/sync/settle_receipts.rs:290`
+- [x] **R11 — minor.** *Where:* `crates/roym_transaction/src/app/sync/settle_receipts.rs:290`
   to `:294` (acknowledgement), `:436` to `:445` (fulfilment).
   *Problem:* D-C2-4 says the disclosures are written before the record's own
   row, also on filing ("before the half on filing"). The payment request
@@ -1055,9 +1055,9 @@ checked here.
   filed again.
   *Fix:* Move `disclosures::store` before `put_row(PAYMENTS)` and before
   `record_fulfilment_half_card`, after the strict reveal.
-  *Status:* Open
+  *Status:* Fixed (3141a66a, b414da10): Stored disclosures before writing the receipt half / PAYMENTS and FULFILMENTS rows in settle_receipts.rs.
 
-- [ ] **R12 — minor.** *Where:* `crates/roym_core/src/deal/sd/tests.rs:75`
+- [x] **R12 — minor.** *Where:* `crates/roym_core/src/deal/sd/tests.rs:75`
   (`no_signed_payload_holds_a_hidden_value`), `:294`
   (`visible_checks_refuse_a_bad_sd_list`);
   `crates/roym_transaction/src/app/tests/disclosure/cards.rs:297`
@@ -1084,4 +1084,4 @@ checked here.
   and assert the body is at most `MAX_CARD_BODY_BYTES`; or change the doc
   row to what the test proves. Add a digest with `+` or `=` to the `_sd`
   test.
-  *Status:* Open
+  *Status:* Fixed (db8e4964, b414da10): Added quote payload, receipt halves, and snapshot scans to no_signed_payload_holds_a_hidden_value (AG-17); added + and = character tests in visible_checks_refuse_a_bad_sd_list; updated largest_quote_card_fits_in_the_card_body with 16 commitments, scheduling extension, slot details, and sized disclosures to 98,259 bytes (within 1 KiB of 96 KiB) and verified card body fits under 163,840 bytes.
