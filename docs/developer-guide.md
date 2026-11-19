@@ -1669,14 +1669,15 @@ Before a person can sign a `profile` or a `listing` record, each Roym
 service that signs must hold a `record-signing` delegation certificate.
 One command enrols all three that sign — `profile`, `catalog`, and
 `conversation` — minting one certificate per service against that
-service's own signing key, under the deployer's master key on the host.
-The host signing interface (`syneroym:signing`) provides `sign-record` for signing record drafts
-and `fresh-salts(count)` for generating 16-byte secure random salts for selective disclosure:
+service's own signing key, under the deployer's master key on the host:
 
 ```bash
 roymctl --dir <DIR> --as owner roym enrol-signing --gateway-url http://localhost:7960
 roymctl --dir <DIR> --as owner roym signing-status   # one line per service
 ```
+
+The host signing interface (`syneroym:signing`) provides `sign-record` for signing record drafts
+and `fresh-salts(count)` for generating 16-byte secure random salts for selective disclosure.
 
 `roym enrol-signing` exits non-zero if any service fails, and reports the
 rest. A browser-only person cannot run it today — it needs the master key
