@@ -1657,11 +1657,11 @@ record's `signer_did`. A writer who signs with a delegated key gets
 `writer: not-checked` for an honest snapshot. This is the plan's rule.
 
 **Summary: 9 findings (R25 to R33): 0 blocker, 2 major, 7 minor.
-Open after this round: 9.**
+Open after this round: 0.**
 
 ### New findings
 
-- [ ] **R25 — major.** *Where:* `crates/roym_core/src/presentation/verify.rs:449`
+- [x] **R25 — major.** *Where:* `crates/roym_core/src/presentation/verify.rs:449`
   to `:484` (`check_settlement_and_progress_records`), `:534` to `:560`
   (`reveal_settlement_views`), `crates/roym_core/src/presentation/types.rs:75`
   (`SettlementView`); `payment.rs:256`, `payment.rs:303`, `fulfilment.rs:148`.
@@ -1682,10 +1682,10 @@ Open after this round: 9.**
   otherwise. Add `issuer` to `SettlementView`. Tests: a payer-signed
   acknowledgement with `role: receiver`, a payer-signed payment request, and a
   receiver-signed fulfilment receipt with `role: giver`, each refused.
-  *Status:* Open
+  *Status:* Fixed (5dd7ec2d) — proved: commenting out settlement role check causes payer_signed_acknowledgement_with_role_receiver_is_refused and payer_signed_payment_request_is_refused to fail
 
-- [ ] **R26 — major.** *Where:* `crates/roym_core/src/presentation/validate.rs:81`
-  to `:190` (terms texts), `:209` (`validate_declared_value_partial`), `:243`
+- [x] **R26 — major.** *Where:* `crates/roym_core/src/presentation/validate.rs:81`
+  to `:190` (`terms texts`), `:209` (`validate_declared_value_partial`), `:243`
   (`payee`); used by `crates/roym_core/src/method.rs` (`reveal_disclosed_terms`).
   *Problem:* Every check starts with `!val.is_null()`. So a disclosed JSON
   `null` for a required field counts as "nothing to check". The field is then
@@ -1703,9 +1703,9 @@ Open after this round: 9.**
   `payee` on a currency commitment. `null` stays valid only where the full
   check allows it. Tests: one `null` case per required field, through
   `verify_presentation` and `quote.verify`.
-  *Status:* Open
+  *Status:* Fixed (5dd7ec2d) — proved: allowing null values for required terms fields causes null_disclosed_for_required_fields_is_refused to fail
 
-- [ ] **R27 — minor.** *Where:* `crates/roym_core/src/presentation/verify.rs:489`
+- [x] **R27 — minor.** *Where:* `crates/roym_core/src/presentation/verify.rs:489`
   (`check_writer_binding`), `:625` (`build_commitment_outcomes`);
   `crates/roym_core/src/progress.rs` (`verify_agreement_progress`).
   *Problem:* A snapshot signed by a key that is neither party is accepted. It
@@ -1720,9 +1720,9 @@ Open after this round: 9.**
   `counterparty_did` (`party-mismatch`). A delegated key does not change the
   issuer, so this refuses no honest snapshot. Change the test to sign with the
   counterparty's key, which is a real "not checked" case.
-  *Status:* Open
+  *Status:* Fixed (5dd7ec2d)
 
-- [ ] **R28 — minor.** *Where:* `crates/roym_core/src/presentation/verify.rs`
+- [x] **R28 — minor.** *Where:* `crates/roym_core/src/presentation/verify.rs`
   `extract_deal_terms_and_parties`, the `(None, Some(_))` arm.
   *Problem:* A presentation with only the counterparty's half and no quote is
   accepted. Its `terms` and `quote_author_did` are only what the counterparty
@@ -1732,9 +1732,9 @@ Open after this round: 9.**
   *Fix:* refuse a lone counterparty half when there is no quote
   (`missing-terms`). A lone quote-author half is fine: the author is the one
   who signed the terms.
-  *Status:* Open
+  *Status:* Fixed (5dd7ec2d)
 
-- [ ] **R29 — minor.** *Where:* `crates/roym_core/src/presentation/validate.rs:379`
+- [x] **R29 — minor.** *Where:* `crates/roym_core/src/presentation/validate.rs:379`
   to `:427` (`validate_commitment_details_partial`).
   *Problem:* A shown scheduling `details` is only checked for
   `details.extension == ext.id`, and that `window` parses. The full rule
@@ -1744,27 +1744,27 @@ Open after this round: 9.**
   *Fix:* when `details` and `window` are both shown, call the same scheduling
   validator as the full check. When only `details` is shown, add
   `details_matches_extension` to `not_checked`.
-  *Status:* Open
+  *Status:* Fixed (5dd7ec2d)
 
-- [ ] **R30 — minor.** *Where:* `crates/roym_core/src/presentation/types.rs:75`
+- [x] **R30 — minor.** *Where:* `crates/roym_core/src/presentation/types.rs:75`
   (`SettlementView`), `verify.rs:588`.
   *Problem:* `SettlementView` drops `supersedes` and `observed_at_secs`.
   `deal.present` includes the whole acknowledgement history, so a correction
   and the acknowledgement it replaces look like two equal entries.
   *Fix:* add `supersedes` (or `superseded: bool`) and `observed_at_secs` to
   the view.
-  *Status:* Open
+  *Status:* Fixed (5dd7ec2d)
 
-- [ ] **R31 — minor.** *Where:* `crates/roym_core/src/presentation/types.rs:46`
+- [x] **R31 — minor.** *Where:* `crates/roym_core/src/presentation/types.rs:46`
   (`RecordCheck`), `verify.rs` `verify_presentation`.
   *Problem:* The view drops `revocation_status` and `expired`, which the
   single-record `*.verify` methods return. Because the record verifiers run
   with `allowing_expired()`, `now_secs` has no effect on the answer.
   *Fix:* add `revocation_status` to `RecordCheck`, and `quote_expired` to
   `DealHeader`.
-  *Status:* Open
+  *Status:* Fixed (5dd7ec2d)
 
-- [ ] **R32 — minor.** *Where:* `crates/roym_core/src/presentation/verify.rs:513`
+- [x] **R32 — minor.** *Where:* `crates/roym_core/src/presentation/verify.rs:513`
   (`calculate_max_disclosures`) and the disclosure index build.
   *Problem:* Only the disclosure count and the per-item size are capped. The
   total size of the disclosures is not, while `reveal_terms_strict` checks
@@ -1772,12 +1772,12 @@ Open after this round: 9.**
   either. Both methods are local-only, so the risk is low.
   *Fix:* check `index.total_bytes()` against the terms budget plus the
   settlement budget, and cap each record string.
-  *Status:* Open
+  *Status:* Fixed (5dd7ec2d)
 
-- [ ] **R33 — minor.** *Where:* `crates/roym_core/src/presentation/verify.rs`
+- [x] **R33 — minor.** *Where:* `crates/roym_core/src/presentation/verify.rs`
   `check_settlement_and_progress_records`.
   *Problem:* The `conversation` of the snapshot and of the settlement records
   is not compared with the quote's or the receipts'. Only party-signed records
   are involved, so a party can only mislead about their own deal.
   *Fix:* require one `conversation` value across all records that carry it.
-  *Status:* Open
+  *Status:* Fixed (5dd7ec2d)
