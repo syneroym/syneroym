@@ -1,0 +1,66 @@
+{
+  "commitments": [
+    {
+      "giver": "counterparty",
+      "id": "string",
+      "kind": "currency",
+      "resource_kind": "currency"
+    },
+    {
+      "giver": "quote-author",
+      "id": "string",
+      "kind": "fulfilment",
+      "resource_kind": "goods-or-service"
+    }
+  ],
+  "deal": {
+    "agreement": "string",
+    "counterparty_did": "string",
+    "currency": "string",
+    "quote_author_did": "string",
+    "quote_expires_at_secs": "number",
+    "quote_id": "string"
+  },
+  "hidden": [
+    "string"
+  ],
+  "not_checked": [
+    "string"
+  ],
+  "records": [
+    {
+      "issued_at_secs": "number",
+      "issuer": "string",
+      "record_id": "string",
+      "record_type": "string",
+      "verified": "boolean"
+    }
+  ],
+  "settlement": [],
+  "terms": {
+    "commitments": [
+      {
+        "after": [
+          "string"
+        ],
+        "commitment_id": "string",
+        "giver": "counterparty",
+        "kind": "currency",
+        "resource_kind": "currency"
+      },
+      {
+        "commitment_id": "string",
+        "giver": "quote-author",
+        "kind": "fulfilment",
+        "resource_kind": "goods-or-service"
+      }
+    ],
+    "currency": "string",
+    "quote_expires_at_secs": "number",
+    "scope": {
+      "lang": "string",
+      "text": "string"
+    }
+  },
+  "writer": "no-snapshot"
+}

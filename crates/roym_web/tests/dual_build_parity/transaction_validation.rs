@@ -27,6 +27,8 @@ async fn scenario_144_every_transaction_verb_refused_over_wire_parity() {
         "quote.measure",
         "deal.ping",
         "deal.decline",
+        "deal.present",
+        "deal.verify-presentation",
         "agreement.accept",
         "agreement.get",
         "agreement.list",

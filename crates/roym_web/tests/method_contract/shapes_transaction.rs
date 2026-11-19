@@ -166,6 +166,13 @@ async fn deal_agreement_shapes(h: &Harness, conv: &str) {
     assert_shape("agreement_verify_good", &agr_ver_good);
     let agr_ver_bad = rpc(h, "agreement.verify", json!({ "envelope": "tampered" })).await;
     assert_shape("agreement_verify_bad", &agr_ver_bad);
+
+    let pres =
+        rpc(h, "deal.present", json!({ "record_id": cp_q_rec_id, "show": ["terms.scope"] })).await;
+    assert_shape("deal_present", &pres);
+
+    let ver_pres = rpc(h, "deal.verify-presentation", pres).await;
+    assert_shape("deal_verify_presentation", &ver_pres);
 }
 
 #[tokio::test]

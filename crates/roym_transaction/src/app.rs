@@ -10,6 +10,7 @@ pub mod fulfilment_ops;
 pub mod hold;
 pub mod ledger;
 pub mod payment_ops;
+pub mod present_ops;
 pub mod progress;
 pub mod progress_ops;
 pub mod quote_ops;

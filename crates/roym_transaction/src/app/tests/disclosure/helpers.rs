@@ -114,10 +114,9 @@ pub(crate) fn make_receipt_half(
 
 async fn store_test_quote_record(
     fix: &TestFixture,
-    quote_record_id: &str,
     payload: &QuotePayload,
     agreed_at: u64,
-) {
+) -> (String, String) {
     let draft = RecordDraft {
         version: QUOTE_VERSION,
         record_type: RECORD_QUOTE.to_string(),
@@ -131,7 +130,9 @@ async fn store_test_quote_record(
     let sig = fix.master.sign(&q_bytes).to_bytes();
     q_env.attach_signature(z32::encode(&sig)).expect("attach signature");
     let q_json = q_env.to_json().expect("json");
-    put_bytes(&fix.host, QUOTE_HISTORY, quote_record_id, q_json.as_bytes()).await.unwrap();
+    let record_id = q_env.record_id().expect("record id");
+    put_bytes(&fix.host, QUOTE_HISTORY, &record_id, q_json.as_bytes()).await.unwrap();
+    (record_id, q_json)
 }
 
 async fn store_open_snapshot(
@@ -174,7 +175,6 @@ pub(crate) async fn setup_agreed_currency_deal(
     ensure_collections(&fix.host).await.expect("ensure collections");
 
     let counterparty_did = substrate::derive_did_key(&counterparty.public_key());
-    let quote_record_id = format!("rec_quote_disc_test_{}", agreed_at);
     let quote_id = derive_quote_id("conv_1", &fix.master_did, 1).expect("derive quote id");
 
     let commitments =
@@ -210,11 +210,10 @@ pub(crate) async fn setup_agreed_currency_deal(
         terms: terms.clone(),
     };
     let (payload, disclosures) = conceal_quote(plain, 1);
+    let (quote_record_id, _q_json) = store_test_quote_record(fix, &payload, agreed_at).await;
     disclosures::store(&fix.host, &quote_record_id, RECORD_QUOTE, &disclosures, agreed_at)
         .await
         .unwrap();
-
-    store_test_quote_record(fix, &quote_record_id, &payload, agreed_at).await;
 
     let author_half = make_receipt_half(
         &fix.master,

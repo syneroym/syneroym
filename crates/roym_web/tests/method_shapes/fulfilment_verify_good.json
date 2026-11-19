@@ -1,5 +1,8 @@
 {
   "expired": "boolean",
+  "hidden": [
+    "string"
+  ],
   "issued_at_secs": "number",
   "issuer": "string",
   "payload": {
@@ -15,6 +18,7 @@
   },
   "record_id": "string",
   "revocation_status": "unknown",
+  "shown": {},
   "signer_did": "string",
   "verified": "boolean"
 }

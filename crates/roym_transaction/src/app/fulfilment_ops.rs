@@ -14,10 +14,10 @@ use syneroym_roym_core::{
     disclosure::{FULFILMENT_SET, conceal_hidden},
     envelope::Response,
     fulfilment::{self, FulfilmentHidden, FulfilmentReceiptPayload},
-    method::{self, Reply, VerifyInput},
+    method::{self, DisclosedVerdict, DisclosedVerifyInput, Reply},
     progress::AgreementEvent,
     record::{Envelope, RECORD_FULFILMENT_RECEIPT},
-    transaction::{DealRole, PairState, ReceiptHalf, RecordVerdict, pair_state},
+    transaction::{DealRole, PairState, ReceiptHalf, pair_state},
 };
 
 use super::{
@@ -572,7 +572,18 @@ pub(crate) async fn ensure_fulfilment_recorded<H: AppHost>(
 
 pub(crate) async fn verify<H: AppHost>(
     _host: &H,
-    input: VerifyInput,
-) -> Reply<RecordVerdict<FulfilmentReceiptPayload>> {
-    method::verify_with(input, fulfilment::verify_fulfilment_receipt)
+    input: DisclosedVerifyInput,
+) -> Reply<DisclosedVerdict<FulfilmentReceiptPayload>> {
+    let now = clock::now_secs();
+    let verdict = fulfilment::verify_fulfilment_receipt(&input.envelope, now);
+    let (shown, hidden, disclosure_refused) = if verdict.verified {
+        if let Some(ref p) = verdict.payload {
+            method::reveal_disclosed_fulfilment(p, &input.disclosures)
+        } else {
+            (None, Vec::new(), None)
+        }
+    } else {
+        (None, Vec::new(), None)
+    };
+    Ok(DisclosedVerdict { verdict, shown, hidden, disclosure_refused })
 }

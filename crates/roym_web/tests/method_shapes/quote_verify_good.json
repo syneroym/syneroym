@@ -1,6 +1,9 @@
 {
   "expired": "boolean",
   "expires_at_secs": "number",
+  "hidden": [
+    "string"
+  ],
   "issued_at_secs": "number",
   "issuer": "string",
   "payload": {
@@ -45,6 +48,27 @@
   },
   "record_id": "string",
   "revocation_status": "unknown",
+  "shown": {
+    "commitments": [
+      {
+        "after": [
+          "string"
+        ],
+        "commitment_id": "string",
+        "giver": "counterparty",
+        "kind": "currency",
+        "resource_kind": "currency"
+      },
+      {
+        "commitment_id": "string",
+        "giver": "quote-author",
+        "kind": "fulfilment",
+        "resource_kind": "goods-or-service"
+      }
+    ],
+    "currency": "string",
+    "quote_expires_at_secs": "number"
+  },
   "signer_did": "string",
   "verified": "boolean"
 }

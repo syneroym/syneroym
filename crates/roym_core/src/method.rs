@@ -6,8 +6,16 @@ use syneroym_app_host::{AppHost, types::proxy::CallTarget};
 
 use crate::{
     clock,
+    deal::sd::SignedTerms,
+    disclosure::{
+        DisclosureIndex, FULFILMENT_SET, PAYMENT_ACK_SET, PAYMENT_REQUEST_SET, check_all_used,
+        reveal_object,
+    },
     envelope::{Request, Response, RpcError},
+    fulfilment::FulfilmentReceiptPayload,
+    payment::{PaymentAcknowledgementPayload, PaymentRequestPayload},
     services::Service,
+    verdict::RecordVerdict,
 };
 
 pub mod catalog;
@@ -53,6 +61,140 @@ pub struct VerifyInput {
 /// Runs one record verifier on the envelope text, at the current time.
 pub fn verify_with<V>(input: VerifyInput, verify: fn(&str, u64) -> V) -> Reply<V> {
     Ok(verify(&input.envelope, clock::now_secs()))
+}
+
+/// Input for verify methods taking record envelope text and optional
+/// disclosures.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DisclosedVerifyInput {
+    pub envelope: String,
+    #[serde(default)]
+    pub disclosures: Vec<String>,
+}
+
+/// Output for verify methods with disclosed and hidden fields.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DisclosedVerdict<P> {
+    #[serde(flatten)]
+    pub verdict: RecordVerdict<P>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shown: Option<Value>,
+    pub hidden: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disclosure_refused: Option<String>,
+}
+
+pub fn reveal_disclosed_terms(
+    signed: &SignedTerms,
+    disclosures: &[String],
+) -> (Option<Value>, Vec<String>, Option<String>) {
+    let all_hidden = all_terms_hidden_paths(signed);
+    let max_disclosures = 5 + signed.commitments.len() * 10;
+    let index = match DisclosureIndex::build(disclosures, max_disclosures) {
+        Ok(idx) => idx,
+        Err(e) => return (None, all_hidden, Some(e.code().to_string())),
+    };
+    let partial = match signed.reveal(&index) {
+        Ok(p) => p,
+        Err(e) => return (None, all_hidden, Some(e.code().to_string())),
+    };
+    if let Err(e) = check_all_used(&index, &partial.used) {
+        return (None, all_hidden, Some(e.code().to_string()));
+    }
+    let hidden = partial.hidden.into_iter().map(|p| p.to_string()).collect();
+    (Some(partial.value), hidden, None)
+}
+
+pub fn all_terms_hidden_paths(signed: &SignedTerms) -> Vec<String> {
+    let mut hidden = vec![
+        "terms.scope".to_string(),
+        "terms.cancellation_terms".to_string(),
+        "terms.refund_terms".to_string(),
+        "terms.dispute_path".to_string(),
+    ];
+    for c in &signed.commitments {
+        let cid = &c.commitment_id;
+        hidden.push(format!("terms.commitments[{cid}].description"));
+        hidden.push(format!("terms.commitments[{cid}].declared_value_minor"));
+        hidden.push(format!("terms.commitments[{cid}].details"));
+        hidden.push(format!("terms.commitments[{cid}].window"));
+        hidden.push(format!("terms.commitments[{cid}].location"));
+        hidden.push(format!("terms.commitments[{cid}].payee"));
+        hidden.push(format!("terms.commitments[{cid}].payment_methods"));
+        hidden.push(format!("terms.commitments[{cid}].tax_minor"));
+        hidden.push(format!("terms.commitments[{cid}].fees_minor"));
+        hidden.push(format!("terms.commitments[{cid}].eep"));
+    }
+    hidden
+}
+
+pub fn reveal_disclosed_payment_request(
+    p: &PaymentRequestPayload,
+    disclosures: &[String],
+) -> (Option<Value>, Vec<String>, Option<String>) {
+    let all_hidden = vec!["note".to_string()];
+    let index = match DisclosureIndex::build(disclosures, 1) {
+        Ok(idx) => idx,
+        Err(e) => return (None, all_hidden, Some(e.code().to_string())),
+    };
+    let mut obj = Map::new();
+    obj.insert("_sd".to_string(), Value::Array(p.sd.iter().cloned().map(Value::String).collect()));
+    let revealed = match reveal_object(&obj, &PAYMENT_REQUEST_SET, &index) {
+        Ok(r) => r,
+        Err(e) => return (None, all_hidden, Some(e.code().to_string())),
+    };
+    if let Err(e) = check_all_used(&index, &revealed.used) {
+        return (None, all_hidden, Some(e.code().to_string()));
+    }
+    let hidden = revealed.hidden.into_iter().map(|s| s.to_string()).collect();
+    (Some(Value::Object(revealed.fields)), hidden, None)
+}
+
+pub fn reveal_disclosed_payment_ack(
+    p: &PaymentAcknowledgementPayload,
+    disclosures: &[String],
+) -> (Option<Value>, Vec<String>, Option<String>) {
+    let all_hidden =
+        vec!["method".to_string(), "reference".to_string(), "settlement_note".to_string()];
+    let index = match DisclosureIndex::build(disclosures, 3) {
+        Ok(idx) => idx,
+        Err(e) => return (None, all_hidden, Some(e.code().to_string())),
+    };
+    let mut obj = Map::new();
+    obj.insert("_sd".to_string(), Value::Array(p.sd.iter().cloned().map(Value::String).collect()));
+    let revealed = match reveal_object(&obj, &PAYMENT_ACK_SET, &index) {
+        Ok(r) => r,
+        Err(e) => return (None, all_hidden, Some(e.code().to_string())),
+    };
+    if let Err(e) = check_all_used(&index, &revealed.used) {
+        return (None, all_hidden, Some(e.code().to_string()));
+    }
+    let hidden = revealed.hidden.into_iter().map(|s| s.to_string()).collect();
+    (Some(Value::Object(revealed.fields)), hidden, None)
+}
+
+pub fn reveal_disclosed_fulfilment(
+    p: &FulfilmentReceiptPayload,
+    disclosures: &[String],
+) -> (Option<Value>, Vec<String>, Option<String>) {
+    let all_hidden = vec!["settlement_note".to_string()];
+    let index = match DisclosureIndex::build(disclosures, 1) {
+        Ok(idx) => idx,
+        Err(e) => return (None, all_hidden, Some(e.code().to_string())),
+    };
+    let mut obj = Map::new();
+    obj.insert("_sd".to_string(), Value::Array(p.sd.iter().cloned().map(Value::String).collect()));
+    let revealed = match reveal_object(&obj, &FULFILMENT_SET, &index) {
+        Ok(r) => r,
+        Err(e) => return (None, all_hidden, Some(e.code().to_string())),
+    };
+    if let Err(e) = check_all_used(&index, &revealed.used) {
+        return (None, all_hidden, Some(e.code().to_string()));
+    }
+    let hidden = revealed.hidden.into_iter().map(|s| s.to_string()).collect();
+    (Some(Value::Object(revealed.fields)), hidden, None)
 }
 
 /// Output for history methods returning an envelope chain.

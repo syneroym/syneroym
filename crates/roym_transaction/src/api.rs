@@ -4,7 +4,11 @@ use syneroym_app_host::AppHost;
 use syneroym_roym_core::{
     backup::{Bundle, ImportInput},
     fulfilment::FulfilmentReceiptPayload,
-    method::{EnvelopeHistoryOutput, MethodInfo, NoParams, PingOutput, Reply, VerifyInput},
+    method::{
+        DisclosedVerdict, DisclosedVerifyInput, EnvelopeHistoryOutput, MethodInfo, NoParams,
+        PingOutput, Reply, VerifyInput,
+    },
+    presentation::{Presentation, PresentationView},
     services,
     signing::verbs::{
         InstallCertificateInput, InstallCertificateOutput, SigningStatusOutput,
@@ -15,7 +19,7 @@ use syneroym_roym_core::{
 
 use crate::app::{
     AgreementRef, HalfRecordedOutput, ListInput, agreement_ops, backup, decline_ops, enquiry_ops,
-    fulfilment_ops, payment_ops, progress_ops, quote_ops, sync, thread,
+    fulfilment_ops, payment_ops, present_ops, progress_ops, quote_ops, sync, thread,
 };
 
 async fn ping<H: AppHost>(_host: &H, _: NoParams) -> Reply<PingOutput> {
@@ -42,25 +46,27 @@ syneroym_roym_core::service_methods! {
     "quote.get": quote_ops::get [quote_ops::QuoteKeyInput => Option<quote_ops::QuoteView>],
     "quote.list": quote_ops::list [ListInput => quote_ops::QuoteListOutput],
     "quote.history": quote_ops::history [quote_ops::QuoteKeyInput => quote_ops::QuoteHistoryOutput],
-    "quote.verify": quote_ops::verify [VerifyInput => RecordVerdict<QuotePayload>],
+    "quote.verify": quote_ops::verify [DisclosedVerifyInput => DisclosedVerdict<QuotePayload>],
 
     "deal.decline": decline_ops::decline [decline_ops::DealDeclineInput => decline_ops::DealDeclineOutput],
+    "deal.present": present_ops::present [present_ops::PresentInput => Presentation],
+    "deal.verify-presentation": present_ops::verify_presentation [Presentation => PresentationView],
 
     "agreement.accept": agreement_ops::accept [agreement_ops::AgreementAcceptInput => agreement_ops::AgreementAcceptOutput],
     "agreement.get": agreement_ops::get [agreement_ops::QuoteRecordInput => Option<agreement_ops::AgreementView>],
     "agreement.list": agreement_ops::list [agreement_ops::AgreementListInput => agreement_ops::AgreementListOutput],
     "agreement.cancel": progress_ops::cancel [progress_ops::AgreementCancelInput => agreement_ops::AgreementView],
     "agreement.progress": progress_ops::progress [AgreementRef => progress_ops::AgreementProgressOutput],
-    "agreement.verify": agreement_ops::verify [VerifyInput => RecordVerdict<AgreementReceiptPayload>],
+    "agreement.verify": agreement_ops::verify [DisclosedVerifyInput => DisclosedVerdict<AgreementReceiptPayload>],
 
     "payment.request": payment_ops::request [payment_ops::PaymentRequestInput => payment_ops::PaymentRequestOutput],
     "payment.acknowledge": payment_ops::acknowledge [payment_ops::PaymentAckInput => HalfRecordedOutput],
     "payment.get": payment_ops::get [payment_ops::PaymentKeyInput => payment_ops::PaymentGetOutput],
-    "payment.verify": payment_ops::verify [VerifyInput => payment_ops::PaymentVerdict],
+    "payment.verify": payment_ops::verify [DisclosedVerifyInput => payment_ops::PaymentVerdict],
 
     "fulfilment.sign": fulfilment_ops::sign [fulfilment_ops::FulfilmentSignInput => HalfRecordedOutput],
     "fulfilment.get": fulfilment_ops::get [fulfilment_ops::FulfilmentKeyInput => fulfilment_ops::FulfilmentGetOutput],
-    "fulfilment.verify": fulfilment_ops::verify [VerifyInput => RecordVerdict<FulfilmentReceiptPayload>],
+    "fulfilment.verify": fulfilment_ops::verify [DisclosedVerifyInput => DisclosedVerdict<FulfilmentReceiptPayload>],
 
     "transaction.sync": sync::sync [sync::SyncInput => sync::SyncOutput],
     "transaction.thread": thread::thread [thread::ThreadInput => thread::ThreadOutput],
