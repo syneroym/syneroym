@@ -17,6 +17,7 @@ use syneroym_app_host::{
         signing::{Principal, RecordDraft, SigningError, SigningIdentity},
     },
 };
+use syneroym_signed_record::disclosure;
 
 pub mod data_layer;
 pub mod sd;
@@ -251,7 +252,7 @@ impl AppSigning for TestHost {
         let mut out = Vec::with_capacity(count as usize);
         for _ in 0..count {
             let n = self.salt_counter.fetch_add(1, Ordering::Relaxed);
-            let s = syneroym_signed_record::disclosure::seeded_salt(seed, n);
+            let s = disclosure::seeded_salt(seed, n);
             out.push(s.as_bytes().to_vec());
         }
         Ok(out)

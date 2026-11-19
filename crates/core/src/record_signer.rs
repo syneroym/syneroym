@@ -20,7 +20,7 @@ use syneroym_identity::{
     delegation::{DelegationCertificate, SCOPE_RECORD_SIGNING},
     substrate::derive_did_key,
 };
-use syneroym_signed_record::{DraftError, Envelope, RecordDraft};
+use syneroym_signed_record::{DraftError, Envelope, RecordDraft, disclosure};
 
 use crate::local_registry::EndpointRegistry;
 
@@ -136,7 +136,7 @@ impl NodeRecordSigner {
             RecordSalts::Seeded(seed) => {
                 for _ in 0..count {
                     let n = self.salt_counter.fetch_add(1, Ordering::Relaxed);
-                    let salt = syneroym_signed_record::disclosure::seeded_salt(seed, n);
+                    let salt = disclosure::seeded_salt(seed, n);
                     out.push(*salt.as_bytes());
                 }
             }

@@ -5,12 +5,20 @@ use syneroym_identity::{Identity, substrate};
 use syneroym_roym_core::{
     card::{self, MAX_CARD_BODY_BYTES},
     clock,
-    deal::{Commitment, CommitmentKind, DealTerms, LocalText, ResourceKind, TextTranslation},
+    deal::{
+        Commitment, CommitmentKind, DealTerms, LocalText, ResourceKind, SettlementRole,
+        TextTranslation,
+    },
     disclosure::{
         MAX_RECORD_DISCLOSURE_BYTES, Salt, decode_disclosure, encode_base64url, encode_disclosure,
     },
     lang::LangTag,
-    record::{Envelope, RECORD_AGREEMENT_RECEIPT, RECORD_QUOTE, RecordDraft},
+    payment::PAYMENT_ACKNOWLEDGEMENT_VERSION,
+    record::{
+        Envelope, RECORD_AGREEMENT_RECEIPT, RECORD_PAYMENT_ACKNOWLEDGEMENT, RECORD_QUOTE,
+        RecordDraft,
+    },
+    testing::sd::{self, PlainPaymentAck, PlainQuote},
     transaction::{AGREEMENT_RECEIPT_VERSION, Answers, DealRole, QUOTE_VERSION, derive_quote_id},
 };
 use z32;
@@ -343,7 +351,7 @@ async fn largest_quote_card_fits_in_the_card_body() {
 
     let author_did = fix.master_did.clone();
     let quote_id = derive_quote_id("conv_1", &author_did, 1).expect("quote id");
-    let plain = syneroym_roym_core::testing::sd::PlainQuote {
+    let plain = PlainQuote {
         quote_id,
         conversation: "conv_1".to_string(),
         sequence: 1,
@@ -351,7 +359,7 @@ async fn largest_quote_card_fits_in_the_card_body() {
         counterparty_did: cp_did,
         terms,
     };
-    let (payload, disclosures) = syneroym_roym_core::testing::sd::conceal_quote(plain, 1);
+    let (payload, disclosures) = sd::conceal_quote(plain, 1);
     let disc_bytes: usize = disclosures.iter().map(|d| d.len()).sum();
     assert!(disc_bytes < MAX_RECORD_DISCLOSURE_BYTES, "must be under 96 KiB: {disc_bytes}");
     assert!(disc_bytes > 80_000, "must be near 96 KiB: {disc_bytes}");
@@ -514,13 +522,6 @@ async fn a_settlement_card_note_is_filed_plain_and_signed_hidden() {
 
 #[tokio::test]
 async fn a_refused_acknowledgement_reason_holds_no_disclosed_value() {
-    use syneroym_roym_core::{
-        deal::SettlementRole,
-        payment::PAYMENT_ACKNOWLEDGEMENT_VERSION,
-        record::{RECORD_PAYMENT_ACKNOWLEDGEMENT, RecordDraft},
-        testing::sd::{PlainPaymentAck, conceal_payment_ack},
-    };
-
     let fix = fixture();
     let cp_fix = fixture();
     let agreed_at = clock::now_secs();
@@ -541,7 +542,7 @@ async fn a_refused_acknowledgement_reason_holds_no_disclosed_value() {
         settlement_note: None,
     };
 
-    let (ack_payload, disclosures) = conceal_payment_ack(plain_ack, 42);
+    let (ack_payload, disclosures) = sd::conceal_payment_ack(plain_ack, 42);
     let draft = RecordDraft {
         version: PAYMENT_ACKNOWLEDGEMENT_VERSION,
         record_type: RECORD_PAYMENT_ACKNOWLEDGEMENT.to_string(),

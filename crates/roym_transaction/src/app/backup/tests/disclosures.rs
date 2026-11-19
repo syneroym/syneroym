@@ -14,6 +14,7 @@ use syneroym_roym_core::{
     method::NoParams,
     record::{Envelope, RECORD_AGREEMENT_RECEIPT, RecordDraft},
     signing,
+    testing::sd::{self, PlainQuote},
     transaction::{
         AGREEMENT_RECEIPT_VERSION, AgreementReceiptPayload, Answers, DealRole, QUOTE_VERSION,
         QuotePayload, ReceiptHalf, derive_quote_id,
@@ -96,7 +97,7 @@ fn make_quote_with_disclosures(
     let author_did = substrate::derive_did_key(&author.public_key());
     let quote_id = derive_quote_id("conv_1", &author_did, 1).expect("quote id");
     let terms = sample_deal_terms(now);
-    let plain = syneroym_roym_core::testing::sd::PlainQuote {
+    let plain = PlainQuote {
         quote_id,
         conversation: "conv_1".to_string(),
         sequence: 1,
@@ -104,7 +105,7 @@ fn make_quote_with_disclosures(
         counterparty_did: cp_did.to_string(),
         terms,
     };
-    let (payload, disclosures) = syneroym_roym_core::testing::sd::conceal_quote(plain, 1);
+    let (payload, disclosures) = sd::conceal_quote(plain, 1);
     let draft = RecordDraft {
         version: QUOTE_VERSION,
         record_type: "quote".to_string(),

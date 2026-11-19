@@ -1,6 +1,7 @@
 //! Card types and versions.
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use syneroym_signed_record::{ENVELOPE_VERSION, Envelope};
 use thiserror::Error;
 
@@ -110,7 +111,7 @@ pub fn card_body(
 /// disclosures, and the local node's real delegation certificate JSON.
 pub fn card_body_upper_bound(
     card_type: &str,
-    payload: &serde_json::Value,
+    payload: &Value,
     disclosures: &[String],
     delegation_json: &str,
 ) -> usize {

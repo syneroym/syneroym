@@ -25,8 +25,15 @@ use common::{
 use rustls::crypto::ring;
 use serde_json::json;
 use syneroym_core::config::{AppSandboxRole, MailboxRole};
-use syneroym_identity::Identity;
+use syneroym_identity::{Identity, substrate::derive_did_key};
 use syneroym_observability::MemoryRecorder;
+use syneroym_roym_core::{
+    card::{MAILBOX_CARD_BODY_BYTES, card_body},
+    deal::{Answers, DealTerms},
+    testing::sd::{PlainQuote, conceal_quote},
+    transaction::{QUOTE_VERSION, RECORD_QUOTE},
+};
+use syneroym_signed_record::{Envelope, RecordDraft};
 use tempfile::TempDir;
 use tokio::time;
 
@@ -237,15 +244,6 @@ async fn a_group_push_from_the_mailbox_reaches_the_member() {
 }
 
 fn make_real_quote_card_body(target_bytes: usize) -> String {
-    use syneroym_identity::substrate::derive_did_key;
-    use syneroym_roym_core::{
-        card::card_body,
-        deal::{Answers, DealTerms},
-        testing::sd::{PlainQuote, conceal_quote},
-        transaction::{QUOTE_VERSION, RECORD_QUOTE},
-    };
-    use syneroym_signed_record::{Envelope, RecordDraft};
-
     let signer = Identity::generate().unwrap();
     let issuer = derive_did_key(&signer.public_key());
     let now = 1_700_000_000;
@@ -342,7 +340,7 @@ async fn a_card_of_the_mailbox_size_waits_at_the_mailbox_and_a_larger_one_at_the
 
     // Send a real quote card of at most MAILBOX_CARD_BODY_BYTES and within 64 bytes
     // of it
-    let target = syneroym_roym_core::card::MAILBOX_CARD_BODY_BYTES;
+    let target = MAILBOX_CARD_BODY_BYTES;
     let fit_body = make_real_quote_card_body(target);
     assert!(
         fit_body.len() <= target && fit_body.len() >= target.saturating_sub(64),

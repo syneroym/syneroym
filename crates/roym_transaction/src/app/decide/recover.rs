@@ -20,7 +20,10 @@ use super::{
     finalize_agreed_deal, get_row, handle_not_formed, put_row, repeat_both, repeat_countersigned,
     reserve_author_holds, snapshot_id,
 };
-use crate::app::hold::{Reservations, SeatLedger};
+use crate::app::{
+    disclosures,
+    hold::{Reservations, SeatLedger},
+};
 
 pub(crate) async fn release_all_author_holds<H: AppHost, R: Reservations>(
     host: &H,
@@ -134,7 +137,7 @@ pub(crate) async fn finish_deciding_row_with_reservations<H: AppHost, R: Reserva
         None => return Ok(false),
     };
 
-    let held = match crate::app::disclosures::load_quote(host, &row.quote_record_id, now).await {
+    let held = match disclosures::load_quote(host, &row.quote_record_id, now).await {
         Ok(h) => h,
         Err(_) => return Ok(false),
     };

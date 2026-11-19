@@ -8,6 +8,7 @@
 
 use serde::Serialize;
 use serde_json::Value;
+use syneroym_signed_record::decode_disclosure;
 
 use crate::{
     area::Area,
@@ -22,6 +23,7 @@ use crate::{
         ProductDetail, RelationshipTerms, ServiceDetail, ServiceLocation, ServiceRecordTerms,
     },
     progress::{AgreementProgressPayload, AgreementState, CancelReason, CommitmentProgress},
+    testing::sd::{self, PlainFulfilment, PlainPaymentAck, PlainPaymentRequest, PlainQuote},
     transaction::{
         AgreementReceiptPayload, DEFAULT_DATA_USE_NOTICE, DealRole, EnquiryPayload, QuoteLocation,
         TimeWindow,
@@ -68,7 +70,7 @@ fn assert_no_old_words(name: &str, sample: &impl Serialize) {
 
 fn assert_no_old_words_in_disclosures(name: &str, disclosures: &[String]) {
     for (i, d) in disclosures.iter().enumerate() {
-        if let Ok(decoded) = syneroym_signed_record::decode_disclosure(d) {
+        if let Ok(decoded) = decode_disclosure(d) {
             let mut found = Vec::new();
             find_old_words(&format!("{name}.disclosures[{i}]"), &decoded.value, &mut found);
             assert!(found.is_empty(), "old deal-role words in disclosures: {found:#?}");
@@ -386,7 +388,7 @@ fn a_request_and_a_quote_say_no_old_word() {
     for place in every_place() {
         let plain_terms = terms(place);
         assert_no_old_words("plain terms", &plain_terms);
-        let plain = crate::testing::sd::PlainQuote {
+        let plain = PlainQuote {
             quote_id: "quo_1".to_string(),
             conversation: "conv_1".to_string(),
             sequence: 1,
@@ -394,7 +396,7 @@ fn a_request_and_a_quote_say_no_old_word() {
             counterparty_did: COUNTERPARTY.to_string(),
             terms: plain_terms,
         };
-        let (quote, disclosures) = crate::testing::sd::conceal_quote(plain, 1);
+        let (quote, disclosures) = sd::conceal_quote(plain, 1);
         assert_no_old_words("quote", &quote);
         assert_no_old_words_in_disclosures("quote", &disclosures);
     }
@@ -406,7 +408,7 @@ fn an_agreement_and_its_receipts_say_no_old_word() {
         for place in every_place() {
             let plain_terms = terms(place);
             assert_no_old_words("plain terms", &plain_terms);
-            let mut salts = crate::testing::sd::seeded_salts(2);
+            let mut salts = sd::seeded_salts(2);
             let concealed = plain_terms.conceal(&mut salts).unwrap();
             let agreement = AgreementReceiptPayload {
                 quote_record_id: "rec_quote".to_string(),
@@ -422,7 +424,7 @@ fn an_agreement_and_its_receipts_say_no_old_word() {
         }
     }
     for s_role in every_settlement_role() {
-        let plain = crate::testing::sd::PlainFulfilment {
+        let plain = PlainFulfilment {
             agreement: "rec_agreement".to_string(),
             conversation: "conv_1".to_string(),
             commitment_id: "c1".to_string(),
@@ -432,7 +434,7 @@ fn an_agreement_and_its_receipts_say_no_old_word() {
             settlement_note: None,
         };
         assert_no_old_words("plain fulfilment", &plain.settlement_note);
-        let (fulfilment, disclosures) = crate::testing::sd::conceal_fulfilment(plain, 3);
+        let (fulfilment, disclosures) = sd::conceal_fulfilment(plain, 3);
         assert_no_old_words("fulfilment-receipt", &fulfilment);
         assert_no_old_words_in_disclosures("fulfilment", &disclosures);
     }
@@ -440,7 +442,7 @@ fn an_agreement_and_its_receipts_say_no_old_word() {
 
 #[test]
 fn the_payment_records_say_no_old_word() {
-    let plain_req = crate::testing::sd::PlainPaymentRequest {
+    let plain_req = PlainPaymentRequest {
         agreement: "rec_agreement".to_string(),
         conversation: "conv_1".to_string(),
         commitment_id: "c1".to_string(),
@@ -453,12 +455,12 @@ fn the_payment_records_say_no_old_word() {
         }),
     };
     assert_no_old_words("plain payment-request note", &plain_req.note);
-    let (request, req_disclosures) = crate::testing::sd::conceal_payment_request(plain_req, 4);
+    let (request, req_disclosures) = sd::conceal_payment_request(plain_req, 4);
     assert_no_old_words("payment-request", &request);
     assert_no_old_words_in_disclosures("payment-request", &req_disclosures);
 
     for s_role in every_settlement_role() {
-        let plain_ack = crate::testing::sd::PlainPaymentAck {
+        let plain_ack = PlainPaymentAck {
             agreement: "rec_agreement".to_string(),
             conversation: "conv_1".to_string(),
             commitment_id: "c1".to_string(),
@@ -471,7 +473,7 @@ fn the_payment_records_say_no_old_word() {
             settlement_note: None,
         };
         assert_no_old_words("plain payment-ack method", &plain_ack.method);
-        let (ack, ack_disclosures) = crate::testing::sd::conceal_payment_ack(plain_ack, 5);
+        let (ack, ack_disclosures) = sd::conceal_payment_ack(plain_ack, 5);
         assert_no_old_words("payment-acknowledgement", &ack);
         assert_no_old_words_in_disclosures("payment-acknowledgement", &ack_disclosures);
     }

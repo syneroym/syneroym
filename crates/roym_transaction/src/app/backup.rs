@@ -17,6 +17,7 @@ use syneroym_roym_core::{
         SECTION_LEDGER, SECTION_PAYMENTS, SECTION_QUOTE_HISTORY, SECTION_QUOTES,
     },
     clock,
+    deal::DealTerms,
     envelope::Response,
     fulfilment,
     method::{NoParams, Reply},
@@ -600,7 +601,7 @@ async fn verify_imported_agreements<H: AppHost>(
     host: &H,
     agr_rows: Vec<Value>,
     quotes_by_record_id: &QuotesByRecordId,
-    revealed_quotes: &HashMap<String, syneroym_roym_core::deal::DealTerms>,
+    revealed_quotes: &HashMap<String, DealTerms>,
     now: u64,
 ) -> Result<Vec<(String, AgreementRow)>, Response> {
     let mut verified_agreements = Vec::new();
