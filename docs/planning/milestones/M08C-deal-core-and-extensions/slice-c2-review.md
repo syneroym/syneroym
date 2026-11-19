@@ -1096,7 +1096,7 @@ ac36e5b7..HEAD` (35 files) and changed no code.
 
 **Summary:** 9 of the 12 round-1 items are fixed. R6, R7 and R8 are only
 partly fixed and are open again. One new item: 1 major (R13).
-**Open after round 2: 0 (0 blocker, 0 major, 0 minor).**
+**Open after round 2: 4 (0 blocker, 1 major, 3 minor).**
 
 ### How this was checked
 
@@ -1154,11 +1154,37 @@ R7, R8.
   test uses 16 commitments with the scheduling extension and slot details,
   and its disclosures are within 1 KiB under 96 KiB.
 
-**R6.** *Status:* Fixed (0a6c13b3): Set placeholders in card.rs and quote_ops.rs to 64 chars (covering 64-char substrate did:key). In quote_measure_matches_quote_set, tested with 69-char conversation ID and asserted placeholder lengths against real values.
+**R6, still open.** The record ids, the quote id and the `conv:` id now have
+the real lengths. The signature placeholder is now 103 characters, which is
+the real length (z32 of 64 bytes), so it no longer adds slack. But the two
+`did:key` placeholders (`card.rs:122`, `quote_ops.rs:285`) are 53
+characters, and a real Ed25519 `did:key` is 56. So `card_bytes` is 6 bytes
+under the real body for a second version with a real `conv:` id. The new
+test does not catch this, because the fixture conversation is `conv_1`,
+which is 63 characters shorter than a real one. *Fix:* use 56-character
+`did:key` placeholders, and in the test use a conversation id of the real
+length (or assert the placeholder lengths against real values).
 
-**R7.** *Status:* Fixed (0a1cbcc1): In system-architecture.md:1210, listed all ten hidden fields of COMMITMENT_SET and defined eep as a reserved field that must be null.
+**R7, still open.** The payment-request row, the requirements, the matrix
+and the developer guide are correct now. The new quote row in
+`docs/system-architecture.md:1210` lists the hidden commitment fields as
+"values, details, location, payee, methods, tax, fees, and eep". It leaves
+out `description` and `window`, which are hidden too (`COMMITMENT_SET`),
+and "eep" is a field name with no meaning given. *Fix:* list all ten hidden
+fields of `COMMITMENT_SET`, and say what `eep` is (a reserved field that
+must be null) or leave it out.
 
-**R8.** *Status:* Fixed (acdd35e0): Removed all inline fully-qualified paths with multiple colons across test code, importing types via standard use statements and qualifying functions by module.
+**R8, still open.** The files named in round 1 are clean. About 37 added
+lines in this branch still use inline full paths, all in test code, for
+example `syneroym_roym_core::testing::sd::PlainQuote` and
+`::conceal_quote` in `app/tests/decide.rs`, `settle.rs`, `recover.rs`,
+`restore.rs`, `accept.rs`, `cancel.rs`, `decline.rs`, `refuse/helpers.rs`,
+`refuse/writer.rs`, `disclosure/helpers.rs`, and `backup/tests.rs`;
+`crate::testing::sd::seeded_salts` in `roym_core/src/deal/tests.rs`,
+`transaction/tests.rs` and `transaction/tests/lang.rs`; and
+`syneroym_roym_core::progress::open` and `::transaction::verify_quote` in
+`roym_web/tests/dual_build_parity/agreement_lang.rs`. *Fix:* import the
+types and call functions through their module, as for the round-1 files.
 
 ### New findings
 
@@ -1194,3 +1220,62 @@ R7, R8.
   second receipt and checks that no disclosures row exists for it and that
   export and import still succeed.
   *Status:* Fixed (cb6c82bf): Checked whether fulfilment half already exists before storing disclosures; duplicate receipt is refused without storing disclosures. Proof: test failed before fix with orphan disclosure row panic and passed after fix, with full backup export and import verified.
+
+## Code review round 3 — Claude Opus 5.5 (Claude Code), 2026-11-19
+
+Reviewed the round-2 fixes on branch `feat/m08c-c2-disclosure` at
+`7edf78e3` (fix commits `cb6c82bf` to `acdd35e0`, then the close-out docs
+commit), PR [#370](https://github.com/syneroym/syneroym/pull/370), in the main
+checkout. The branch was even with `origin`. I read `git diff
+0b58bb23..HEAD` (23 files) and changed no code.
+
+**Summary:** all four round-2 items (R6, R7, R8, R13) are fixed. No new
+findings. **0 open.**
+
+The close-out commit `7edf78e3` had replaced this file's round-2 text: it
+deleted the three "still open" notes and changed the round-2 count to "0
+open". A review round is a record of what was found at that time, so this
+commit puts the round-2 section back as it was written. The fix status of
+each item is kept on the item itself (R6, R7, R8 in round 1, R13 in round
+2) and in this section.
+
+### How this was checked
+
+- CI: every job on `7edf78e3` passed (runs 44468743890 and 44468743893):
+  lints, the six test shards and Playwright E2E. Benchmarks and Code
+  Coverage were skipped, as on every PR.
+- `cargo nextest run -p syneroym-roym-core -p syneroym-roym-transaction`:
+  406 passed.
+- I did not run the parity tests, rebuild the WASM components or run `mise
+  run verify`. The implementer's parity and gate results in `status.md` are
+  not re-checked here.
+
+### Round-2 items
+
+- R13: `file_fulfilment_card` now checks for an existing half first. The
+  same record id is a repeat and stores nothing new. Another record id is
+  refused with "a second receipt from this party" before any write. Only a
+  new half stores the disclosures, and then writes the half, so D-C2-4
+  still holds. `record_fulfilment_half_card` now only writes.
+  `second_fulfilment_receipt_from_same_party_is_refused_and_stores_no_disclosures`
+  checks that no row exists for the refused record and that export and
+  import succeed. To let that import pass, `setup_agreed_deal` now signs a
+  real quote and stores it in `QUOTE_HISTORY` in place of the fake id
+  `rec_quote_settle_test_1`.
+- R6: both `did:key` placeholders are now 64 characters. **Correction to
+  round 2:** I wrote there that a real `did:key` is 56 characters. That is
+  wrong for this repo. `substrate::derive_did_key` gives `did:key:h` plus
+  z32 of 34 bytes, which is 64 characters. So the old 53-character
+  placeholders were 11 characters short each, and 64 is the right length.
+  `quote_measure_matches_quote_set` now uses a 69-character `conv:` id and
+  asserts the real lengths of both DIDs, the conversation id and the
+  record id, so a future change in those lengths fails the test.
+- R7: the quote row in `docs/system-architecture.md:1210` now lists all
+  ten hidden commitment fields of `COMMITMENT_SET` and the hidden
+  `listing_id`, and says that `eep` is a reserved field that must be null.
+- R8: no added line in the branch has an inline full path outside a `use`
+  statement now.
+
+### New findings
+
+None.
