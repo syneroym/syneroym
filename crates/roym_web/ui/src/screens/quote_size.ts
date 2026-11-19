@@ -42,7 +42,7 @@ export function attachSizeLine(
       if (!active) return;
       line.style.display = "";
       const used = (res.bytes / 1024).toFixed(1);
-      const limit = (res.limit / 1024).toFixed(1);
+      const limit = (res.limit / 1024).toFixed(0);
 
       let text = t("quote-size-line", { used, limit });
       if (!res.fits) {
@@ -50,7 +50,7 @@ export function attachSizeLine(
         text += " " + t("quote-size-over");
       } else if (!res.mailbox_fits) {
         line.className = "quote-size-line";
-        text += " " + t("quote-size-mailbox");
+        text += "\n" + t("quote-size-mailbox");
       } else {
         line.className = "quote-size-line";
       }

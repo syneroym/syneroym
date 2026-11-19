@@ -9,6 +9,7 @@ import {
   isQuoteSuperseded,
   messageStateWord,
   openQuoteForm,
+  readQuoteForm,
   refusalText,
   renderCardActions,
   renderMessages,
@@ -292,6 +293,35 @@ describe("text that the person signs", () => {
 
     await vi.waitFor(() => expect(sentTerms).toBeDefined());
     expect((sentTerms!.scope as Record<string, unknown>).lang).toBe("hi");
+  });
+
+  it("readQuoteForm gives the terms submit sends", async () => {
+    let sentTerms: Record<string, unknown> | undefined;
+    stubRpc({
+      "quote.set": (params) => {
+        sentTerms = (params as { terms: Record<string, unknown> }).terms;
+        return { quote_id: "q1", record_id: "rec_q1" };
+      },
+    });
+
+    const anchor = document.createElement("div");
+    const request = { record_id: "rec_req" } as CardRow;
+    openQuoteForm(anchor, request, "conv1", async () => {});
+
+    const form = anchor.querySelector<HTMLElement>(".quote-form")!;
+    form.querySelector<HTMLInputElement>(".quote-scope-input")!.value = "Scope of work";
+    form.querySelector<HTMLInputElement>(".quote-currency-input")!.value = "EUR";
+    form.querySelector<HTMLInputElement>(".quote-amount-input")!.value = "100";
+    form.querySelector<HTMLInputElement>(".quote-payee-input")!.value = "Alice";
+
+    const parsed = readQuoteForm(form);
+    expect("terms" in parsed).toBe(true);
+
+    const submitBtn = form.querySelector<HTMLButtonElement>(".submit-quote-button")!;
+    submitBtn.click();
+
+    await vi.waitFor(() => expect(sentTerms).toBeDefined());
+    expect("terms" in parsed && parsed.terms).toEqual(sentTerms);
   });
 });
 

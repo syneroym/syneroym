@@ -857,7 +857,10 @@ export function openQuoteForm(
   const cancelBtn = text("button", t("common-cancel"), "button cancel-quote-button") as HTMLButtonElement;
   const errP = text("p", "", "quote-form-error");
 
-  const detachSizeLine = attachSizeLine(form, () => readQuoteForm(form));
+  const detachSizeLine = attachSizeLine(form, () => {
+    const res = readQuoteForm(form);
+    return "terms" in res ? res.terms : undefined;
+  });
 
   cancelBtn.onclick = () => {
     detachSizeLine();
@@ -866,83 +869,15 @@ export function openQuoteForm(
 
   submitBtn.onclick = async () => {
     errP.textContent = "";
-    const scope = scopeInput.value.trim();
-    if (!scope) {
-      errP.textContent = t("quote-scope-required");
+    const parsed = readQuoteForm(form);
+    if ("error" in parsed) {
+      errP.textContent = formatQuoteError(parsed.error);
       return;
     }
-    const currency = currencyInput.value.trim().toUpperCase();
-    if (!currency) {
-      errP.textContent = t("quote-currency-required");
-      return;
-    }
-    const exp = currencyMinorExponent(currency);
-    if (exp === undefined) {
-      errP.textContent = t("quote-currency-unknown", { currency });
-      return;
-    }
-    let amountMinor: number | undefined;
-    try {
-      amountMinor = toMinorUnits(amountInput.value, exp);
-    } catch (e) {
-      errP.textContent = errText(e);
-      return;
-    }
-    if (amountMinor === undefined) {
-      errP.textContent = t("quote-amount-required");
-      return;
-    }
-
-    let taxMinor = 0;
-    if (taxInput.value.trim()) {
-      try {
-        taxMinor = toMinorUnits(taxInput.value, exp) ?? 0;
-      } catch (e) {
-        errP.textContent = errText(e);
-        return;
-      }
-    }
-
-    let feesMinor = 0;
-    if (feesInput.value.trim()) {
-      try {
-        feesMinor = toMinorUnits(feesInput.value, exp) ?? 0;
-      } catch (e) {
-        errP.textContent = errText(e);
-        return;
-      }
-    }
-
-    const payee = payeeInput.value.trim();
-    if (!payee) {
-      errP.textContent = t("quote-payee-required");
-      return;
-    }
+    const terms = parsed.terms;
 
     const hours = Number.parseInt(hoursInput.value || "24", 10);
     const expires_in_secs = Math.max(300, hours * 3600);
-
-    const where = whereSelect.value as ServiceLocationKind;
-    const address = where === "at-receiver" ? addressInput.value.trim() : undefined;
-
-    const terms = buildDealTerms(
-      {
-        give: giveInput.value.trim() || undefined,
-        scope,
-        currency,
-        amountMinor,
-        taxMinor,
-        feesMinor,
-        payee,
-        timing: timingSelect.value as "before-work" | "after-work",
-        where,
-        address,
-        cancellation: cancInput.value.trim(),
-        refund: refInput.value.trim(),
-        dispute: dispInput.value.trim(),
-      },
-      quoteLang.value,
-    );
 
     submitBtn.disabled = true;
     try {
@@ -983,7 +918,33 @@ export function openQuoteForm(
   anchor.appendChild(form);
 }
 
-export function readQuoteForm(form: HTMLElement): Record<string, unknown> | undefined {
+export type QuoteFormError =
+  | { key: string; args?: Record<string, string | number> }
+  | { raw: string };
+
+export type QuoteFormResult =
+  | { terms: Record<string, unknown> }
+  | { error: QuoteFormError };
+
+export function formatQuoteError(err: QuoteFormError): string {
+  if ("raw" in err) return err.raw;
+  switch (err.key) {
+    case "quote-scope-required":
+      return t("quote-scope-required");
+    case "quote-currency-required":
+      return t("quote-currency-required");
+    case "quote-currency-unknown":
+      return t("quote-currency-unknown", err.args);
+    case "quote-amount-required":
+      return t("quote-amount-required");
+    case "quote-payee-required":
+      return t("quote-payee-required");
+    default:
+      return err.key;
+  }
+}
+
+export function readQuoteForm(form: HTMLElement): QuoteFormResult {
   const scopeInput = form.querySelector<HTMLInputElement>(".quote-scope-input");
   const giveInput = form.querySelector<HTMLInputElement>(".quote-give-input");
   const currencyInput = form.querySelector<HTMLInputElement>(".quote-currency-input");
@@ -1000,28 +961,30 @@ export function readQuoteForm(form: HTMLElement): Record<string, unknown> | unde
   const quoteLang = form.querySelector<HTMLSelectElement>(".quote-text-lang");
 
   const scope = scopeInput?.value.trim() ?? "";
-  if (!scope) return undefined;
+  if (!scope) return { error: { key: messageId("quote-scope-required") } };
 
   const currency = currencyInput?.value.trim().toUpperCase() ?? "";
-  if (!currency) return undefined;
+  if (!currency) return { error: { key: messageId("quote-currency-required") } };
 
   const exp = currencyMinorExponent(currency);
-  if (exp === undefined) return undefined;
+  if (exp === undefined) {
+    return { error: { key: messageId("quote-currency-unknown"), args: { currency } } };
+  }
 
   let amountMinor: number | undefined;
   try {
     amountMinor = toMinorUnits(amountInput?.value ?? "", exp);
-  } catch {
-    return undefined;
+  } catch (e) {
+    return { error: { raw: errText(e) } };
   }
-  if (amountMinor === undefined) return undefined;
+  if (amountMinor === undefined) return { error: { key: messageId("quote-amount-required") } };
 
   let taxMinor = 0;
   if (taxInput?.value.trim()) {
     try {
       taxMinor = toMinorUnits(taxInput.value, exp) ?? 0;
-    } catch {
-      return undefined;
+    } catch (e) {
+      return { error: { raw: errText(e) } };
     }
   }
 
@@ -1029,37 +992,39 @@ export function readQuoteForm(form: HTMLElement): Record<string, unknown> | unde
   if (feesInput?.value.trim()) {
     try {
       feesMinor = toMinorUnits(feesInput.value, exp) ?? 0;
-    } catch {
-      return undefined;
+    } catch (e) {
+      return { error: { raw: errText(e) } };
     }
   }
 
   const payee = payeeInput?.value.trim() ?? "";
-  if (!payee) return undefined;
+  if (!payee) return { error: { key: messageId("quote-payee-required") } };
 
   const where = (whereSelect?.value ?? "at-receiver") as ServiceLocationKind;
   const address = where === "at-receiver" ? addressInput?.value.trim() : undefined;
   const timing = (timingSelect?.value ?? "after-work") as "before-work" | "after-work";
   const lang = quoteLang?.value ?? "en";
 
-  return buildDealTerms(
-    {
-      give: giveInput?.value.trim() || undefined,
-      scope,
-      currency,
-      amountMinor,
-      taxMinor,
-      feesMinor,
-      payee,
-      timing,
-      where,
-      address,
-      cancellation: cancInput?.value.trim(),
-      refund: refInput?.value.trim(),
-      dispute: dispInput?.value.trim(),
-    },
-    lang,
-  );
+  return {
+    terms: buildDealTerms(
+      {
+        give: giveInput?.value.trim() || undefined,
+        scope,
+        currency,
+        amountMinor,
+        taxMinor,
+        feesMinor,
+        payee,
+        timing,
+        where,
+        address,
+        cancellation: cancInput?.value.trim(),
+        refund: refInput?.value.trim(),
+        dispute: dispInput?.value.trim(),
+      },
+      lang,
+    ),
+  };
 }
 
 function openDeleteDialog(anchor: HTMLElement, m: MessageRow, refresh: () => Promise<void>) {
