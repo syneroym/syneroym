@@ -1816,11 +1816,11 @@ fields, and stays valid for `listing_id`, `window`, `location`, `eep`, and
 the other optional fields. The settlement side goes too far (R34).
 
 **Summary: 2 findings (R34, R35): 0 blocker, 1 major, 1 minor.
-Open after this round: 2.**
+Open after this round: 0.**
 
 ### New findings
 
-- [ ] **R34 — major.** *Where:* `crates/roym_core/src/presentation/settlement.rs:100`
+- [x] **R34 — major.** *Where:* `crates/roym_core/src/presentation/settlement.rs:100`
   to `:107` (`reveal_settlement_record`).
   *Problem:* The R26 fix refuses every shown `null` on a settlement record.
   But every hidden settlement field is optional (`PaymentRequestHidden.note`,
@@ -1837,9 +1837,9 @@ Open after this round: 2.**
   into the typed `*Hidden` structs, which accept `None`. Add a test that shows
   each empty optional field of a payment request, an acknowledgement and a
   fulfilment receipt, and expects `Ok` with the field shown as `null`.
-  *Status:* Open
+  *Status:* Fixed (c593b7b2) — proved: rejecting null values caused optional_settlement_fields_shown_as_null_are_accepted to fail with FieldInvalid("note", "required field cannot be null")
 
-- [ ] **R35 — minor.** *Where:* `crates/roym_core/src/presentation/verify.rs:619`
+- [x] **R35 — minor.** *Where:* `crates/roym_core/src/presentation/verify.rs:619`
   (`check_writer_binding`), `docs/developer-guide.md` (section on
   `deal.verify-presentation`),
   `docs/planning/changes/roym-agreements/change.md` (`## Deviations`).
@@ -1854,4 +1854,4 @@ Open after this round: 2.**
   *Fix:* add one Deviations row for the AG-38 change, and extend the
   developer guide paragraph on `deal.verify-presentation` with the new
   refusals and fields.
-  *Status:* Open
+  *Status:* Fixed (c593b7b2)

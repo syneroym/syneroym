@@ -1283,6 +1283,13 @@ with the question.
 - **Deal present accepts record_id only.** `deal.present` takes `record_id`
   (a quote version's content hash) only, rather than a deal id, agreement
   id, or quote id.
+- **Snapshot writer check accepts quote or receipt issuer (AG-38).** `check_writer_binding`
+  returns `Checked` when the snapshot's envelope issuer equals either the
+  `signer_did` or the envelope `issuer` of the author half or quote record.
+  Because agreement progress snapshots on the writer node are signed with the
+  host's service key, the snapshot's issuer matches the deal signer's service
+  key (`issuer` or `signer_did`) rather than the author's person key.
+
 
 ## Close-out
 
