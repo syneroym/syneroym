@@ -151,7 +151,7 @@ async fn a_third_node_verifies_an_agreement_with_the_price_hidden() {
     let view = f.carol.rpc_ok("deal.verify-presentation", pres).await;
 
     let records = view["records"].as_array().expect("records array");
-    assert!(records.len() >= 2, "must include quote and agreement halves");
+    assert_eq!(records.len(), 3, "must include quote and agreement halves");
     for r in records {
         assert_eq!(r["verified"], true, "every presentation record must verify");
     }
@@ -170,11 +170,14 @@ async fn a_third_node_verifies_an_agreement_with_the_price_hidden() {
         hidden.iter().any(|h| h == "terms.commitments[c2].declared_value_minor"),
         "c2 declared value must be hidden"
     );
-    assert!(
-        view["terms"].get("commitments").is_none()
-            || view["terms"]["commitments"][0].get("declared_value_minor").is_none(),
-        "declared value must not appear in shown terms"
-    );
+    if let Some(comms) = view["terms"].get("commitments").and_then(|v| v.as_array()) {
+        for c in comms {
+            assert!(
+                c.get("declared_value_minor").is_none(),
+                "declared value must not appear in shown terms"
+            );
+        }
+    }
 }
 
 #[tokio::test]

@@ -503,3 +503,138 @@ fn settlement_record_with_mismatched_commitment_kind_is_refused() {
     let err2 = verify_presentation(&presentation2, 1_100).expect_err("fulfilment on currency");
     assert_eq!(err2.code(), "commitment-mismatch");
 }
+
+fn sign_test_settlement_records_with_notes(
+    fix: &TestDealFixture,
+) -> (String, Vec<String>, String, Vec<String>, String, Vec<String>) {
+    let plain_req = PlainPaymentRequest {
+        agreement: fix.quote_record_id.clone(),
+        conversation: "conv_music_deal_1234".to_string(),
+        commitment_id: "c2".to_string(),
+        quote_author_did: fix.author_did.clone(),
+        counterparty_did: fix.counterparty_did.clone(),
+        note: Some(LocalText::plain(lang_en(), "Payment request note")),
+    };
+    let (req_payload, req_discs) = conceal_payment_request(plain_req, 10);
+    let req_env = sign_test_record(
+        &fix.author_key,
+        RECORD_PAYMENT_REQUEST,
+        PAYMENT_REQUEST_VERSION,
+        &fix.quote_record_id,
+        serde_json::to_value(&req_payload).expect("json"),
+        None,
+        1_200,
+    );
+
+    let plain_ack = PlainPaymentAck {
+        agreement: fix.quote_record_id.clone(),
+        conversation: "conv_music_deal_1234".to_string(),
+        commitment_id: "c2".to_string(),
+        quote_author_did: fix.author_did.clone(),
+        counterparty_did: fix.counterparty_did.clone(),
+        role: SettlementRole::Receiver,
+        observed_at_secs: 1_200,
+        method: Some("upi".to_string()),
+        reference: Some("ref-123".to_string()),
+        settlement_note: Some(LocalText::plain(lang_en(), "Ack note")),
+    };
+    let (ack_payload, ack_discs) = conceal_payment_ack(plain_ack, 20);
+    let ack_env = sign_test_record(
+        &fix.author_key,
+        RECORD_PAYMENT_ACKNOWLEDGEMENT,
+        PAYMENT_ACKNOWLEDGEMENT_VERSION,
+        &fix.quote_record_id,
+        serde_json::to_value(&ack_payload).expect("json"),
+        None,
+        1_200,
+    );
+
+    let plain_ful = PlainFulfilment {
+        agreement: fix.quote_record_id.clone(),
+        conversation: "conv_music_deal_1234".to_string(),
+        commitment_id: "c1".to_string(),
+        counterparty_did: fix.counterparty_did.clone(),
+        quote_author_did: fix.author_did.clone(),
+        role: SettlementRole::Giver,
+        settlement_note: Some(LocalText::plain(lang_en(), "Fulfilment note")),
+    };
+    let (ful_payload, ful_discs) = conceal_fulfilment(plain_ful, 30);
+    let ful_env = sign_test_record(
+        &fix.author_key,
+        RECORD_FULFILMENT_RECEIPT,
+        FULFILMENT_RECEIPT_VERSION,
+        &fix.quote_record_id,
+        serde_json::to_value(&ful_payload).expect("json"),
+        None,
+        1_200,
+    );
+
+    (req_env, req_discs, ack_env, ack_discs, ful_env, ful_discs)
+}
+
+#[test]
+fn settlement_records_presented_with_notes_shown_and_hidden() {
+    let fix = setup_test_deal(sample_two_commitment_terms());
+    let (req_env, req_discs, ack_env, ack_discs, ful_env, ful_discs) =
+        sign_test_settlement_records_with_notes(&fix);
+
+    let pres_hidden = Presentation {
+        presentation_version: 1,
+        records: vec![
+            fix.quote_env.clone(),
+            fix.author_half_env.clone(),
+            fix.cp_half_env.clone(),
+            req_env.clone(),
+            ack_env.clone(),
+            ful_env.clone(),
+        ],
+        disclosures: vec![],
+    };
+    let view_hidden = verify_presentation(&pres_hidden, 1_300).expect("verify hidden succeeds");
+    assert_eq!(view_hidden.settlement.len(), 3);
+    for s in &view_hidden.settlement {
+        assert!(s.shown.as_object().unwrap().is_empty());
+        assert!(!s.hidden.is_empty());
+    }
+
+    let mut all_discs = Vec::new();
+    all_discs.extend(req_discs);
+    all_discs.extend(ack_discs);
+    all_discs.extend(ful_discs);
+
+    let pres_shown = Presentation {
+        presentation_version: 1,
+        records: vec![
+            fix.quote_env,
+            fix.author_half_env,
+            fix.cp_half_env,
+            req_env,
+            ack_env,
+            ful_env,
+        ],
+        disclosures: all_discs,
+    };
+    let view_shown = verify_presentation(&pres_shown, 1_300).expect("verify shown succeeds");
+    assert_eq!(view_shown.settlement.len(), 3);
+    let req_view = view_shown
+        .settlement
+        .iter()
+        .find(|s| {
+            s.commitment_id == "c2" && s.role == SettlementRole::Receiver && s.hidden.is_empty()
+        })
+        .expect("req view");
+    assert!(req_view.shown.get("note").is_some());
+
+    let ack_view = view_shown
+        .settlement
+        .iter()
+        .find(|s| s.commitment_id == "c2" && s.shown.get("method").is_some())
+        .expect("ack view");
+    assert_eq!(ack_view.shown.get("method").and_then(Value::as_str), Some("upi"));
+    assert_eq!(ack_view.shown.get("reference").and_then(Value::as_str), Some("ref-123"));
+    assert!(ack_view.shown.get("settlement_note").is_some());
+
+    let ful_view =
+        view_shown.settlement.iter().find(|s| s.commitment_id == "c1").expect("ful view");
+    assert!(ful_view.shown.get("settlement_note").is_some());
+}

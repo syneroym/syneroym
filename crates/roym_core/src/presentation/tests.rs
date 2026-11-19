@@ -14,7 +14,7 @@ use crate::{
         CommitmentProgress,
     },
     record::{RECORD_AGREEMENT_PROGRESS, RECORD_AGREEMENT_RECEIPT, RECORD_QUOTE},
-    testing::sd::{PlainQuote, conceal_quote},
+    testing::sd::{PlainPaymentRequest, PlainQuote, conceal_payment_request, conceal_quote},
     transaction::{
         AGREEMENT_RECEIPT_VERSION, AgreementReceiptPayload, DealRole, QUOTE_VERSION, TimeWindow,
         derive_quote_id,
@@ -489,19 +489,27 @@ fn records_of_two_deals_are_refused() {
 
 #[test]
 fn a_disclosure_of_another_object_is_refused() {
-    let fix1 = setup_test_deal(sample_two_commitment_terms());
-    let fix2 = setup_test_deal_seeded(sample_two_commitment_terms(), 500);
+    let fix = setup_test_deal(sample_two_commitment_terms());
 
-    // Disclose scope from deal 2 while presenting deal 1
-    let foreign_disc = fix2.disclosures[0].clone();
+    let plain_req = PlainPaymentRequest {
+        agreement: fix.quote_record_id.clone(),
+        conversation: "conv_music_deal_1234".to_string(),
+        commitment_id: "c2".to_string(),
+        quote_author_did: fix.author_did.clone(),
+        counterparty_did: fix.counterparty_did.clone(),
+        note: Some(LocalText::plain(lang_en(), "Payment request note")),
+    };
+    let (_req_payload, req_discs) = conceal_payment_request(plain_req, 10);
+    let other_object_disc = req_discs[0].clone();
 
     let presentation = Presentation {
         presentation_version: 1,
-        records: vec![fix1.author_half_env, fix1.cp_half_env],
-        disclosures: vec![foreign_disc],
+        records: vec![fix.author_half_env, fix.cp_half_env],
+        disclosures: vec![other_object_disc],
     };
 
-    let err = verify_presentation(&presentation, 1_100).expect_err("foreign disclosure must fail");
+    let err =
+        verify_presentation(&presentation, 1_100).expect_err("other object disclosure must fail");
     assert_eq!(err.code(), "disclosure-unknown-digest");
 }
 

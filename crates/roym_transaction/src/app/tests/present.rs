@@ -5,17 +5,26 @@ use std::sync::Arc;
 
 use syneroym_identity::{Identity, substrate};
 use syneroym_roym_core::{
-    deal::{DealTerms, LocalText},
+    deal::{DealTerms, LocalText, SettlementRole},
     disclosure::{Salt, decode_disclosure, disclosure_digest, encode_disclosure},
+    fulfilment::FULFILMENT_RECEIPT_VERSION,
     lang::LangTag,
     method::DisclosedVerifyInput,
-    record::{Envelope, RECORD_QUOTE, RecordDraft},
-    testing::sd::{PlainQuote, conceal_quote},
+    payment::PAYMENT_REQUEST_VERSION,
+    presentation::WriterCheck,
+    record::{
+        Envelope, RECORD_FULFILMENT_RECEIPT, RECORD_PAYMENT_REQUEST, RECORD_QUOTE, RecordDraft,
+    },
+    testing::sd::{
+        PlainFulfilment, PlainPaymentRequest, PlainQuote, conceal_fulfilment,
+        conceal_payment_request, conceal_quote,
+    },
     transaction::{Answers, QUOTE_VERSION, derive_quote_id},
 };
 
 use crate::app::{
-    QUOTE_HISTORY, disclosures, get_bytes,
+    AGREEMENT_PROGRESS, PAYMENTS, QUOTE_HISTORY, disclosures, fulfilment_ops, get_bytes,
+    payment_ops,
     present_ops::{self, PresentInclude, PresentInput},
     quote_ops,
     tests::{TestFixture, disclosure::helpers, fixture},
@@ -308,4 +317,175 @@ async fn quote_verify_refuses_invalid_revealed_fields() {
     .unwrap();
     assert!(verdict.verdict.verified);
     assert_eq!(verdict.disclosure_refused, Some("field-invalid".to_string()));
+}
+
+#[tokio::test]
+async fn present_with_settlement_and_progress_and_record_note() {
+    let (fix, quote_record_id, _quote_env, _discs) = setup_present_test().await;
+
+    let req_out = payment_ops::request(
+        &fix.host,
+        payment_ops::PaymentRequestInput {
+            agreement: quote_record_id.clone(),
+            commitment_id: "c2".to_string(),
+            note: Some(LocalText::plain(
+                LangTag::parse_canonical("en").unwrap(),
+                "Please pay for lesson",
+            )),
+        },
+    )
+    .await
+    .expect("payment request succeeds");
+
+    let req_id = req_out.record_id;
+
+    let input = PresentInput {
+        record_id: quote_record_id.clone(),
+        include: PresentInclude { quote: true, receipt: true, progress: true, settlement: true },
+        show: vec![format!("{req_id}.note")],
+    };
+
+    let pres = present_ops::present(&fix.host, input).await.expect("present succeeds");
+    assert_eq!(pres.records.len(), 5);
+    assert_eq!(pres.disclosures.len(), 1);
+
+    let view = present_ops::verify_presentation(&fix.host, pres).await.expect("verify succeeds");
+    assert_eq!(view.records.len(), 5);
+    assert_eq!(view.writer, WriterCheck::NotChecked);
+    assert_eq!(view.settlement.len(), 1);
+    let s_view = &view.settlement[0];
+    assert_eq!(s_view.record_id, req_id);
+    assert!(s_view.shown.get("note").is_some());
+    assert!(s_view.hidden.is_empty());
+
+    let input_not_included = PresentInput {
+        record_id: quote_record_id.clone(),
+        include: PresentInclude { quote: true, receipt: true, progress: false, settlement: false },
+        show: vec![format!("{req_id}.note")],
+    };
+
+    let err = present_ops::present(&fix.host, input_not_included)
+        .await
+        .expect_err("not included record path must fail");
+    let err_obj = err.error.as_ref().expect("error object");
+    assert_eq!(err_obj.code, -32602);
+}
+
+#[tokio::test]
+async fn present_storage_error_on_snapshot_or_payment_returns_internal_error() {
+    let (fix, quote_record_id, _quote_env, _discs) = setup_present_test().await;
+
+    let _req_out = payment_ops::request(
+        &fix.host,
+        payment_ops::PaymentRequestInput {
+            agreement: quote_record_id.clone(),
+            commitment_id: "c2".to_string(),
+            note: None,
+        },
+    )
+    .await
+    .expect("payment request succeeds");
+
+    fix.host.fail_read(AGREEMENT_PROGRESS, "*");
+    let input = PresentInput {
+        record_id: quote_record_id.clone(),
+        include: PresentInclude { quote: true, receipt: true, progress: true, settlement: true },
+        show: vec![],
+    };
+    let err_snap = present_ops::present(&fix.host, input.clone())
+        .await
+        .expect_err("storage error on snapshot must return error");
+    assert_eq!(err_snap.error.as_ref().unwrap().code, -32603);
+
+    fix.host.fail_read(PAYMENTS, "*");
+    let err_pay = present_ops::present(&fix.host, input)
+        .await
+        .expect_err("storage error on payment must return error");
+    assert_eq!(err_pay.error.as_ref().unwrap().code, -32603);
+}
+
+#[tokio::test]
+async fn payment_and_fulfilment_verify_with_disclosures() {
+    let fix = fixture();
+    let author_key = Identity::generate().expect("key");
+    let author_did = substrate::derive_did_key(&author_key.public_key());
+    let cp_key = Identity::generate().expect("key");
+    let cp_did = substrate::derive_did_key(&cp_key.public_key());
+
+    let plain_req = PlainPaymentRequest {
+        agreement: "rec_agr_1".to_string(),
+        conversation: "conv_1".to_string(),
+        commitment_id: "c2".to_string(),
+        quote_author_did: author_did.clone(),
+        counterparty_did: cp_did.clone(),
+        note: Some(LocalText::plain(
+            LangTag::parse_canonical("en").unwrap(),
+            "Payment request note",
+        )),
+    };
+    let (req_payload, req_discs) = conceal_payment_request(plain_req, 10);
+    let draft_req = RecordDraft {
+        version: PAYMENT_REQUEST_VERSION,
+        record_type: RECORD_PAYMENT_REQUEST.to_string(),
+        subject: "rec_agr_1".to_string(),
+        payload: serde_json::to_value(&req_payload).expect("payload"),
+        expires_at_secs: None,
+        supersedes: None,
+    };
+    let (mut env_req, req_bytes) =
+        Envelope::unsigned(draft_req, author_did.clone(), None, 1_000).expect("envelope");
+    let sig_req = author_key.sign(&req_bytes).to_bytes();
+    env_req.attach_signature(z32::encode(&sig_req)).expect("signature");
+    let req_env = env_req.to_json().expect("json");
+
+    let p_verdict = payment_ops::verify(
+        &fix.host,
+        DisclosedVerifyInput { envelope: req_env, disclosures: req_discs },
+    )
+    .await
+    .expect("payment verify succeeds");
+    assert!(p_verdict.verdict.verified);
+    assert!(p_verdict.disclosure_refused.is_none());
+    let p_shown = p_verdict.shown.expect("shown fields");
+    assert!(p_shown.get("note").is_some());
+    assert!(p_verdict.hidden.is_empty());
+
+    let plain_ful = PlainFulfilment {
+        agreement: "rec_agr_1".to_string(),
+        conversation: "conv_1".to_string(),
+        commitment_id: "c1".to_string(),
+        counterparty_did: cp_did.clone(),
+        quote_author_did: author_did.clone(),
+        role: SettlementRole::Giver,
+        settlement_note: Some(LocalText::plain(
+            LangTag::parse_canonical("en").unwrap(),
+            "Delivered goods",
+        )),
+    };
+    let (ful_payload, ful_discs) = conceal_fulfilment(plain_ful, 20);
+    let draft_ful = RecordDraft {
+        version: FULFILMENT_RECEIPT_VERSION,
+        record_type: RECORD_FULFILMENT_RECEIPT.to_string(),
+        subject: "rec_agr_1".to_string(),
+        payload: serde_json::to_value(&ful_payload).expect("payload"),
+        expires_at_secs: None,
+        supersedes: None,
+    };
+    let (mut env_ful, ful_bytes) =
+        Envelope::unsigned(draft_ful, author_did.clone(), None, 1_000).expect("envelope");
+    let sig_ful = author_key.sign(&ful_bytes).to_bytes();
+    env_ful.attach_signature(z32::encode(&sig_ful)).expect("signature");
+    let ful_env = env_ful.to_json().expect("json");
+
+    let f_verdict = fulfilment_ops::verify(
+        &fix.host,
+        DisclosedVerifyInput { envelope: ful_env, disclosures: ful_discs },
+    )
+    .await
+    .expect("fulfilment verify succeeds");
+    assert!(f_verdict.verdict.verified);
+    assert!(f_verdict.disclosure_refused.is_none());
+    let f_shown = f_verdict.shown.expect("shown fields");
+    assert!(f_shown.get("settlement_note").is_some());
+    assert!(f_verdict.hidden.is_empty());
 }
