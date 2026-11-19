@@ -406,6 +406,16 @@ fn validate_extension_and_details(c: &Commitment) -> Result<(), DealError> {
 }
 
 fn validate_scheduling_details(c: &Commitment, details: &Details) -> Result<(), DealError> {
+    let window = c.window.as_ref().ok_or_else(|| {
+        DealError::SlotDetails("scheduling commitment requires window".to_string())
+    })?;
+    validate_scheduling_slot_details(window, details)
+}
+
+pub(crate) fn validate_scheduling_slot_details(
+    window: &TimeWindow,
+    details: &Details,
+) -> Result<(), DealError> {
     if details.schema != SCHEDULING_SLOT_SCHEMA {
         return Err(DealError::SlotDetails(format!(
             "expected schema {}, got {}",
@@ -429,9 +439,6 @@ fn validate_scheduling_details(c: &Commitment, details: &Details) -> Result<(), 
         .and_then(|v| v.as_str())
         .ok_or_else(|| DealError::SlotDetails("slot_id must be a string".to_string()))?;
 
-    let window = c.window.as_ref().ok_or_else(|| {
-        DealError::SlotDetails("scheduling commitment requires window".to_string())
-    })?;
     if window.latest_secs <= window.earliest_secs {
         return Err(DealError::SlotDetails(
             "window latest must be greater than earliest".to_string(),

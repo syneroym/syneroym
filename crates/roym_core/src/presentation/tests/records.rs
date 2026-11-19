@@ -19,7 +19,7 @@ use crate::{
     transaction::{AGREEMENT_RECEIPT_VERSION, DealRole},
 };
 
-fn sign_test_payment_request(
+pub(super) fn sign_test_payment_request(
     key: &Identity,
     agreement: &str,
     author_did: &str,
@@ -47,7 +47,7 @@ fn sign_test_payment_request(
     (env, disclosures)
 }
 
-fn sign_test_payment_ack(
+pub(super) fn sign_test_payment_ack(
     key: &Identity,
     agreement: &str,
     author_did: &str,
@@ -80,7 +80,7 @@ fn sign_test_payment_ack(
     (env, disclosures)
 }
 
-fn sign_test_fulfilment_receipt(
+pub(super) fn sign_test_fulfilment_receipt(
     key: &Identity,
     agreement: &str,
     author_did: &str,

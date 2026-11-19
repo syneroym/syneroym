@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use syneroym_identity::{Identity, substrate};
 use syneroym_roym_core::{
+    clock,
     deal::{DealTerms, LocalText, SettlementRole},
     disclosure::{Salt, decode_disclosure, disclosure_digest, encode_disclosure},
     fulfilment::FULFILMENT_RECEIPT_VERSION,
@@ -33,7 +34,8 @@ use crate::app::{
 async fn setup_present_test() -> (TestFixture, String, String, Vec<String>) {
     let fix = fixture();
     let cp_key = Arc::new(Identity::generate().expect("key"));
-    let (quote_record_id, _terms) = helpers::setup_agreed_currency_deal(&fix, &cp_key, 1_000).await;
+    let now = clock::now_secs();
+    let (quote_record_id, _terms) = helpers::setup_agreed_currency_deal(&fix, &cp_key, now).await;
 
     let quote_bytes = get_bytes(&fix.host, QUOTE_HISTORY, &quote_record_id)
         .await
@@ -139,10 +141,11 @@ async fn verify_with_disclosures_shows_them() {
 async fn verify_with_a_bad_disclosure_keeps_verified_and_names_the_problem() {
     let (fix, _quote_record_id, quote_env, _discs) = setup_present_test().await;
 
+    let now = clock::now_secs();
     let (_agr_id, terms) = helpers::setup_agreed_currency_deal(
         &fix,
         &Arc::new(Identity::generate().expect("key")),
-        2_000,
+        now,
     )
     .await;
     let quote_id = derive_quote_id("conv_1", &fix.master_did, 2).expect("quote id");
@@ -351,7 +354,7 @@ async fn present_with_settlement_and_progress_and_record_note() {
 
     let view = present_ops::verify_presentation(&fix.host, pres).await.expect("verify succeeds");
     assert_eq!(view.records.len(), 5);
-    assert_eq!(view.writer, WriterCheck::NotChecked);
+    assert_eq!(view.writer, WriterCheck::Checked);
     assert_eq!(view.settlement.len(), 1);
     let s_view = &view.settlement[0];
     assert_eq!(s_view.record_id, req_id);

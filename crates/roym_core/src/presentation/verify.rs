@@ -1,12 +1,12 @@
 //! Verification logic for presentation bundles shown to third parties.
 
-use serde_json::{Map, Value};
 use syneroym_signed_record::Envelope;
 
 use super::{
+    settlement::reveal_settlement_views,
     types::{
-        CommitmentOutcome, DealHeader, MAX_PRESENTATION_RECORDS, PRESENTATION_VERSION,
-        Presentation, PresentationError, PresentationView, RecordCheck, SettlementView,
+        CommitmentOutcome, DealHeader, MAX_PRESENTATION_RECORD_BYTES, MAX_PRESENTATION_RECORDS,
+        PRESENTATION_VERSION, Presentation, PresentationError, PresentationView, RecordCheck,
         WriterCheck,
     },
     validate::validate_partial_terms_fields,
@@ -17,14 +17,11 @@ use crate::{
         sd::{SignedCommitment, SignedTerms},
     },
     disclosure::{
-        DisclosureIndex, FULFILMENT_SET, HiddenSet, PAYMENT_ACK_SET, PAYMENT_REQUEST_SET,
-        check_all_used, reveal_object,
+        DisclosureIndex, MAX_DETAILS_DISCLOSURE_BYTES, MAX_RECORD_DISCLOSURE_BYTES, SdError,
+        check_all_used,
     },
-    fulfilment::{self, FulfilmentHidden, FulfilmentReceiptPayload},
-    payment::{
-        self, PaymentAckHidden, PaymentAcknowledgementPayload, PaymentRequestHidden,
-        PaymentRequestPayload,
-    },
+    fulfilment::{self, FulfilmentReceiptPayload},
+    payment::{self, PaymentAcknowledgementPayload, PaymentRequestPayload},
     progress::{self, AGREEMENT_PROGRESS_VERSION, AgreementProgressPayload},
     record::{
         RECORD_AGREEMENT_PROGRESS, RECORD_AGREEMENT_RECEIPT, RECORD_FULFILMENT_RECEIPT,
@@ -36,7 +33,7 @@ use crate::{
     },
 };
 
-enum VerifiedRecord {
+pub(crate) enum VerifiedRecord {
     Quote(RecordVerdict<QuotePayload>, QuotePayload),
     Receipt(RecordVerdict<AgreementReceiptPayload>, AgreementReceiptPayload),
     Progress(RecordVerdict<AgreementProgressPayload>, AgreementProgressPayload),
@@ -65,6 +62,7 @@ fn check_from_verdict<P>(record_type: &str, v: &RecordVerdict<P>) -> RecordCheck
         issuer: v.issuer.clone().unwrap_or_default(),
         issued_at_secs: v.issued_at_secs.unwrap_or(0),
         verified: v.verified,
+        revocation_status: v.revocation_status.clone(),
     }
 }
 
@@ -83,15 +81,29 @@ pub fn verify_presentation(
 
     let mut verified_records = Vec::with_capacity(p.records.len());
     for raw in &p.records {
+        if raw.len() > MAX_PRESENTATION_RECORD_BYTES {
+            return Err(PresentationError::RecordRefused(format!(
+                "record exceeds maximum allowed size of {MAX_PRESENTATION_RECORD_BYTES} bytes"
+            )));
+        }
         let vr = verify_envelope_record(raw, now_secs)?;
         verified_records.push(vr);
     }
 
-    let deal_records = partition_and_check_deal(&verified_records)?;
+    let deal_records = partition_and_check_deal(&verified_records, now_secs)?;
     let writer = check_writer_binding(&deal_records);
 
     let max_disclosures = calculate_max_disclosures(&deal_records);
     let index = DisclosureIndex::build(&p.disclosures, max_disclosures)?;
+
+    let max_disclosure_bytes =
+        MAX_RECORD_DISCLOSURE_BYTES + deal_records.settlements.len() * MAX_DETAILS_DISCLOSURE_BYTES;
+    if index.total_bytes() > max_disclosure_bytes {
+        return Err(PresentationError::Sd(SdError::QuoteTooLarge {
+            bytes: index.total_bytes(),
+            limit: max_disclosure_bytes,
+        }));
+    }
 
     let partial_terms = deal_records.signed_terms.reveal(&index)?;
     let mut all_used = partial_terms.used.clone();
@@ -221,6 +233,7 @@ fn check_receipt_half<'a>(
 
 fn partition_and_check_deal<'a>(
     records: &'a [VerifiedRecord],
+    now_secs: u64,
 ) -> Result<DealRecords<'a>, PresentationError> {
     let mut quote = None;
     let mut receipts = Vec::new();
@@ -281,13 +294,22 @@ fn partition_and_check_deal<'a>(
         return Err(PresentationError::HalvesDisagree);
     }
 
-    check_settlement_and_progress_records(
+    let quote_conv = quote.map(|(_, p)| p.conversation.as_str());
+    check_conversation_consistency(quote_conv, progress_rec, &settlements)?;
+    check_progress_record(
         &quote_author_did,
         &counterparty_did,
         signed_terms,
+        quote,
+        &receipts,
         progress_rec,
-        &settlements,
     )?;
+    for s in &settlements {
+        check_settlement_record(&quote_author_did, &counterparty_did, signed_terms, s)?;
+    }
+
+    let quote_expired =
+        quote.map(|(v, _)| v.expired).unwrap_or(now_secs > signed_terms.quote_expires_at_secs);
 
     let header = DealHeader {
         quote_id,
@@ -297,6 +319,7 @@ fn partition_and_check_deal<'a>(
         currency: signed_terms.currency.clone(),
         quote_expires_at_secs: signed_terms.quote_expires_at_secs,
         quote_checked,
+        quote_expired,
     };
 
     Ok(DealRecords { header, signed_terms, quote, receipts, progress: progress_rec, settlements })
@@ -414,72 +437,179 @@ fn extract_deal_terms_and_parties<'a>(
                 true,
             ))
         }
-        (None, Some((_, r_p))) => Ok((
-            &r_p.terms,
-            None,
-            r_p.quote_author_did.clone(),
-            r_p.counterparty_did.clone(),
-            false,
-        )),
+        (None, Some((_, r_p))) => {
+            if !receipts.iter().any(|(_, p)| p.role == DealRole::QuoteAuthor) {
+                return Err(PresentationError::MissingTerms);
+            }
+            Ok((
+                &r_p.terms,
+                None,
+                r_p.quote_author_did.clone(),
+                r_p.counterparty_did.clone(),
+                false,
+            ))
+        }
         (None, None) => Err(PresentationError::MissingTerms),
     }
 }
 
-fn check_settlement_and_progress_records(
-    author_did: &str,
-    counterparty_did: &str,
-    terms: &SignedTerms,
+fn check_conversation_consistency(
+    quote_conv: Option<&str>,
     progress: Option<(&RecordVerdict<AgreementProgressPayload>, &AgreementProgressPayload)>,
     settlements: &[&VerifiedRecord],
 ) -> Result<(), PresentationError> {
+    let mut expected = quote_conv;
     if let Some((_, p)) = progress {
-        if p.quote_author_did != author_did || p.counterparty_did != counterparty_did {
-            return Err(PresentationError::PartyMismatch);
-        }
-        for cp in &p.commitments {
-            if !terms.commitments.iter().any(|c| c.commitment_id == cp.commitment_id) {
-                return Err(PresentationError::CommitmentMismatch(format!(
-                    "snapshot commitment '{}' not found in deal terms",
-                    cp.commitment_id
+        if let Some(exp) = expected {
+            if p.conversation != exp {
+                return Err(PresentationError::MultipleDeals(format!(
+                    "progress conversation '{}' does not match '{exp}'",
+                    p.conversation
                 )));
             }
+        } else {
+            expected = Some(&p.conversation);
         }
     }
-
     for s in settlements {
-        let (author, cp, cid, is_payment) = match s {
-            VerifiedRecord::PaymentRequest(_, p) => {
-                (&p.quote_author_did, &p.counterparty_did, &p.commitment_id, true)
-            }
-            VerifiedRecord::PaymentAck(_, p) => {
-                (&p.quote_author_did, &p.counterparty_did, &p.commitment_id, true)
-            }
-            VerifiedRecord::Fulfilment(_, p) => {
-                (&p.quote_author_did, &p.counterparty_did, &p.commitment_id, false)
-            }
+        let conv = match s {
+            VerifiedRecord::PaymentRequest(_, p) => &p.conversation,
+            VerifiedRecord::PaymentAck(_, p) => &p.conversation,
+            VerifiedRecord::Fulfilment(_, p) => &p.conversation,
             _ => continue,
         };
-
-        if author != author_did || cp != counterparty_did {
-            return Err(PresentationError::PartyMismatch);
+        if let Some(exp) = expected {
+            if conv != exp {
+                return Err(PresentationError::MultipleDeals(format!(
+                    "settlement conversation '{conv}' does not match '{exp}'"
+                )));
+            }
+        } else {
+            expected = Some(conv);
         }
+    }
+    Ok(())
+}
 
-        let commitment =
-            terms.commitments.iter().find(|c| &c.commitment_id == cid).ok_or_else(|| {
-                PresentationError::CommitmentMismatch(format!(
-                    "commitment '{cid}' not found in deal terms"
-                ))
-            })?;
-
-        if is_payment && commitment.kind != CommitmentKind::Currency {
+fn check_progress_record(
+    author_did: &str,
+    counterparty_did: &str,
+    terms: &SignedTerms,
+    quote: Option<(&RecordVerdict<QuotePayload>, &QuotePayload)>,
+    receipts: &[(&RecordVerdict<AgreementReceiptPayload>, &AgreementReceiptPayload)],
+    progress: Option<(&RecordVerdict<AgreementProgressPayload>, &AgreementProgressPayload)>,
+) -> Result<(), PresentationError> {
+    let Some((v, p)) = progress else {
+        return Ok(());
+    };
+    let snap_issuer = v.issuer.as_deref().ok_or(PresentationError::PartyMismatch)?;
+    let is_author = snap_issuer == author_did
+        || quote.and_then(|(v, _)| v.signer_did.as_deref()) == Some(snap_issuer)
+        || receipts.iter().any(|(v, p)| {
+            p.role == DealRole::QuoteAuthor
+                && (v.signer_did.as_deref() == Some(snap_issuer)
+                    || v.issuer.as_deref() == Some(snap_issuer))
+        });
+    let is_cp = snap_issuer == counterparty_did
+        || receipts.iter().any(|(v, p)| {
+            p.role == DealRole::Counterparty
+                && (v.signer_did.as_deref() == Some(snap_issuer)
+                    || v.issuer.as_deref() == Some(snap_issuer))
+        });
+    if !is_author && !is_cp {
+        return Err(PresentationError::PartyMismatch);
+    }
+    if p.quote_author_did != author_did || p.counterparty_did != counterparty_did {
+        return Err(PresentationError::PartyMismatch);
+    }
+    for cp in &p.commitments {
+        if !terms.commitments.iter().any(|c| c.commitment_id == cp.commitment_id) {
             return Err(PresentationError::CommitmentMismatch(format!(
-                "payment record commitment '{cid}' is not currency"
+                "snapshot commitment '{}' not found in deal terms",
+                cp.commitment_id
             )));
         }
-        if !is_payment && commitment.kind == CommitmentKind::Currency {
-            return Err(PresentationError::CommitmentMismatch(format!(
-                "fulfilment record commitment '{cid}' is currency"
-            )));
+    }
+    Ok(())
+}
+
+fn check_settlement_record(
+    author_did: &str,
+    counterparty_did: &str,
+    terms: &SignedTerms,
+    s: &VerifiedRecord,
+) -> Result<(), PresentationError> {
+    let (issuer, author, cp, cid, is_payment, payload_role) = match s {
+        VerifiedRecord::PaymentRequest(v, p) => (
+            v.issuer.as_deref().ok_or(PresentationError::PartyMismatch)?,
+            &p.quote_author_did,
+            &p.counterparty_did,
+            &p.commitment_id,
+            true,
+            None,
+        ),
+        VerifiedRecord::PaymentAck(v, p) => (
+            v.issuer.as_deref().ok_or(PresentationError::PartyMismatch)?,
+            &p.quote_author_did,
+            &p.counterparty_did,
+            &p.commitment_id,
+            true,
+            Some(p.role),
+        ),
+        VerifiedRecord::Fulfilment(v, p) => (
+            v.issuer.as_deref().ok_or(PresentationError::PartyMismatch)?,
+            &p.quote_author_did,
+            &p.counterparty_did,
+            &p.commitment_id,
+            false,
+            Some(p.role),
+        ),
+        _ => return Ok(()),
+    };
+
+    if author != author_did || cp != counterparty_did {
+        return Err(PresentationError::PartyMismatch);
+    }
+
+    let issuer_deal_role = if issuer == author_did {
+        DealRole::QuoteAuthor
+    } else if issuer == counterparty_did {
+        DealRole::Counterparty
+    } else {
+        return Err(PresentationError::PartyMismatch);
+    };
+
+    let commitment =
+        terms.commitments.iter().find(|c| &c.commitment_id == cid).ok_or_else(|| {
+            PresentationError::CommitmentMismatch(format!(
+                "commitment '{cid}' not found in deal terms"
+            ))
+        })?;
+
+    if is_payment && commitment.kind != CommitmentKind::Currency {
+        return Err(PresentationError::CommitmentMismatch(format!(
+            "payment record commitment '{cid}' is not currency"
+        )));
+    }
+    if !is_payment && commitment.kind == CommitmentKind::Currency {
+        return Err(PresentationError::CommitmentMismatch(format!(
+            "fulfilment record commitment '{cid}' is currency"
+        )));
+    }
+
+    let is_giver = issuer_deal_role == commitment.giver;
+    match payload_role {
+        None => {
+            if is_giver {
+                return Err(PresentationError::PartyMismatch);
+            }
+        }
+        Some(role) => {
+            let expected_role =
+                if is_giver { SettlementRole::Giver } else { SettlementRole::Receiver };
+            if role != expected_role {
+                return Err(PresentationError::PartyMismatch);
+            }
         }
     }
 
@@ -496,13 +626,15 @@ fn check_writer_binding(deal: &DealRecords<'_>) -> WriterCheck {
 
     let author_half = deal.receipts.iter().find(|(_, p)| p.role == DealRole::QuoteAuthor);
     if let Some((v, _)) = author_half
-        && v.signer_did.as_deref() == Some(snap_issuer)
+        && (v.signer_did.as_deref() == Some(snap_issuer)
+            || v.issuer.as_deref() == Some(snap_issuer))
     {
         return WriterCheck::Checked;
     }
 
     if let Some((v, _)) = deal.quote
-        && v.signer_did.as_deref() == Some(snap_issuer)
+        && (v.signer_did.as_deref() == Some(snap_issuer)
+            || v.issuer.as_deref() == Some(snap_issuer))
     {
         return WriterCheck::Checked;
     }
@@ -521,105 +653,6 @@ fn calculate_max_disclosures(deal: &DealRecords<'_>) -> usize {
         };
     }
     total
-}
-
-fn reveal_settlement_views(
-    settlements: &[&VerifiedRecord],
-    index: &DisclosureIndex,
-    all_used: &mut Vec<String>,
-) -> Result<Vec<SettlementView>, PresentationError> {
-    let mut views = Vec::with_capacity(settlements.len());
-    for s in settlements {
-        let view = match s {
-            VerifiedRecord::PaymentRequest(v, p) => reveal_settlement_record(
-                v.record_id.as_deref().unwrap_or_default(),
-                &p.commitment_id,
-                SettlementRole::Receiver,
-                &p.sd,
-                &PAYMENT_REQUEST_SET,
-                index,
-                all_used,
-            )?,
-            VerifiedRecord::PaymentAck(v, p) => reveal_settlement_record(
-                v.record_id.as_deref().unwrap_or_default(),
-                &p.commitment_id,
-                p.role,
-                &p.sd,
-                &PAYMENT_ACK_SET,
-                index,
-                all_used,
-            )?,
-            VerifiedRecord::Fulfilment(v, p) => reveal_settlement_record(
-                v.record_id.as_deref().unwrap_or_default(),
-                &p.commitment_id,
-                p.role,
-                &p.sd,
-                &FULFILMENT_SET,
-                index,
-                all_used,
-            )?,
-            _ => continue,
-        };
-        views.push(view);
-    }
-    Ok(views)
-}
-
-fn reveal_settlement_record(
-    record_id: &str,
-    commitment_id: &str,
-    role: SettlementRole,
-    sd: &[String],
-    set: &HiddenSet,
-    index: &DisclosureIndex,
-    all_used: &mut Vec<String>,
-) -> Result<SettlementView, PresentationError> {
-    let mut obj = Map::new();
-    obj.insert("_sd".to_string(), Value::Array(sd.iter().cloned().map(Value::String).collect()));
-    let revealed = reveal_object(&obj, set, index).map_err(PresentationError::Sd)?;
-
-    for u in revealed.used {
-        all_used.push(u);
-    }
-
-    validate_revealed_settlement_fields(&revealed.fields, set)?;
-
-    let hidden = revealed.hidden.into_iter().map(|s| s.to_string()).collect();
-    Ok(SettlementView {
-        record_id: record_id.to_string(),
-        commitment_id: commitment_id.to_string(),
-        role,
-        shown: Value::Object(revealed.fields),
-        hidden,
-    })
-}
-
-fn validate_revealed_settlement_fields(
-    fields: &Map<String, Value>,
-    set: &HiddenSet,
-) -> Result<(), PresentationError> {
-    let val = Value::Object(fields.clone());
-    if set == &PAYMENT_REQUEST_SET {
-        let h: PaymentRequestHidden = serde_json::from_value(val)
-            .map_err(|e| PresentationError::FieldInvalid("note".to_string(), e.to_string()))?;
-        h.validate()
-            .map_err(|e| PresentationError::FieldInvalid("note".to_string(), e.to_string()))?;
-    } else if set == &PAYMENT_ACK_SET {
-        let h: PaymentAckHidden = serde_json::from_value(val).map_err(|e| {
-            PresentationError::FieldInvalid("settlement".to_string(), e.to_string())
-        })?;
-        h.validate().map_err(|e| {
-            PresentationError::FieldInvalid("settlement".to_string(), e.to_string())
-        })?;
-    } else if set == &FULFILMENT_SET {
-        let h: FulfilmentHidden = serde_json::from_value(val).map_err(|e| {
-            PresentationError::FieldInvalid("settlement_note".to_string(), e.to_string())
-        })?;
-        h.validate().map_err(|e| {
-            PresentationError::FieldInvalid("settlement_note".to_string(), e.to_string())
-        })?;
-    }
-    Ok(())
 }
 
 fn build_commitment_outcomes(

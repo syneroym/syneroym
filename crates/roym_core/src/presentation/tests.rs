@@ -51,6 +51,7 @@ fn sign_test_record(
 }
 
 mod records;
+mod settlement;
 mod validation;
 
 fn sample_two_commitment_terms() -> DealTerms {
@@ -106,6 +107,7 @@ fn sample_two_commitment_terms() -> DealTerms {
 
 struct TestDealFixture {
     author_key: Identity,
+    cp_key: Identity,
     author_did: String,
     counterparty_did: String,
     quote_record_id: String,
@@ -191,6 +193,7 @@ fn setup_test_deal_seeded(terms: DealTerms, seed: u64) -> TestDealFixture {
 
     TestDealFixture {
         author_key,
+        cp_key: counterparty_key,
         author_did,
         counterparty_did,
         quote_record_id,
@@ -358,7 +361,6 @@ fn snapshot_bound_to_the_quote_authors_half_is_the_writers() {
 #[test]
 fn snapshot_from_another_key_is_writer_not_checked() {
     let fix = setup_test_deal(sample_two_commitment_terms());
-    let other_key = Identity::generate().expect("key");
 
     let progress_payload = AgreementProgressPayload {
         agreement: fix.quote_record_id.clone(),
@@ -388,7 +390,7 @@ fn snapshot_from_another_key_is_writer_not_checked() {
     };
 
     let snap_env = sign_test_record(
-        &other_key,
+        &fix.cp_key,
         RECORD_AGREEMENT_PROGRESS,
         AGREEMENT_PROGRESS_VERSION,
         &fix.quote_record_id,
@@ -405,6 +407,58 @@ fn snapshot_from_another_key_is_writer_not_checked() {
 
     let view = verify_presentation(&presentation, 1_300).expect("verify with snapshot");
     assert_eq!(view.writer, WriterCheck::NotChecked);
+}
+
+#[test]
+fn snapshot_from_stranger_key_is_refused() {
+    let fix = setup_test_deal(sample_two_commitment_terms());
+    let stranger = Identity::generate().expect("key");
+
+    let progress_payload = AgreementProgressPayload {
+        agreement: fix.quote_record_id.clone(),
+        conversation: "conv_music_deal_1234".to_string(),
+        counterparty_did: fix.counterparty_did.clone(),
+        quote_author_did: fix.author_did.clone(),
+        seq: 1,
+        state: AgreementState::Agreed,
+        state_reason: None,
+        cancel_reason: None,
+        commitments: vec![
+            CommitmentProgress {
+                commitment_id: "c1".to_string(),
+                state: CommitmentState::Promised,
+                reason: None,
+                claimed: Some(false),
+                halves: vec![],
+            },
+            CommitmentProgress {
+                commitment_id: "c2".to_string(),
+                state: CommitmentState::Promised,
+                reason: None,
+                claimed: Some(false),
+                halves: vec![],
+            },
+        ],
+    };
+
+    let snap_env = sign_test_record(
+        &stranger,
+        RECORD_AGREEMENT_PROGRESS,
+        AGREEMENT_PROGRESS_VERSION,
+        &fix.quote_record_id,
+        serde_json::to_value(&progress_payload).expect("json"),
+        None,
+        1_200,
+    );
+
+    let presentation = Presentation {
+        presentation_version: 1,
+        records: vec![fix.author_half_env, fix.cp_half_env, snap_env],
+        disclosures: vec![],
+    };
+
+    let err = verify_presentation(&presentation, 1_300).expect_err("stranger snapshot must fail");
+    assert_eq!(err.code(), "party-mismatch");
 }
 
 #[test]

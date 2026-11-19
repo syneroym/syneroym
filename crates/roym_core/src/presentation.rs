@@ -1,6 +1,7 @@
 //! Presentation format and verification for selective disclosure to third
 //! parties.
 
+pub(crate) mod settlement;
 pub mod types;
 pub(crate) mod validate;
 pub mod verify;

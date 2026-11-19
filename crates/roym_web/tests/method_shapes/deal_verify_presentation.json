@@ -19,6 +19,7 @@
     "currency": "string",
     "quote_author_did": "string",
     "quote_checked": "boolean",
+    "quote_expired": "boolean",
     "quote_expires_at_secs": "number",
     "quote_id": "string"
   },
@@ -34,6 +35,7 @@
       "issuer": "string",
       "record_id": "string",
       "record_type": "string",
+      "revocation_status": "unknown",
       "verified": "boolean"
     }
   ],

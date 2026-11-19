@@ -78,14 +78,18 @@ pub(crate) fn sample_currency_commitment(id: &str, author_did: &str) -> Commitme
 
 pub(crate) fn make_receipt_half(
     signer: &Identity,
+    delegation: Option<String>,
     role: DealRole,
     quote_record_id: &str,
     terms: &SignedTerms,
-    counterparty_did: &str,
-    quote_author_did: &str,
+    parties: (&str, &str),
     now: u64,
 ) -> ReceiptHalf {
-    let signer_did = substrate::derive_did_key(&signer.public_key());
+    let (counterparty_did, quote_author_did) = parties;
+    let issuer_did = match &delegation {
+        Some(_) => quote_author_did.to_string(),
+        None => substrate::derive_did_key(&signer.public_key()),
+    };
     let payload = AgreementReceiptPayload {
         quote_record_id: quote_record_id.to_string(),
         counterparty_did: counterparty_did.to_string(),
@@ -104,12 +108,12 @@ pub(crate) fn make_receipt_half(
         supersedes: None,
     };
     let (mut env, bytes) =
-        Envelope::unsigned(draft, signer_did.clone(), None, now).expect("draft envelope");
+        Envelope::unsigned(draft, issuer_did.clone(), delegation, now).expect("draft envelope");
     let sig = signer.sign(&bytes).to_bytes();
     env.attach_signature(z32::encode(&sig)).expect("attach signature");
     let envelope_json = env.to_json().expect("envelope to json");
     let record_id = env.record_id().expect("record id");
-    ReceiptHalf { record_id, envelope: envelope_json, issuer: signer_did, issued_at_secs: now }
+    ReceiptHalf { record_id, envelope: envelope_json, issuer: issuer_did, issued_at_secs: now }
 }
 
 async fn store_test_quote_record(
@@ -126,8 +130,9 @@ async fn store_test_quote_record(
         supersedes: None,
     };
     let (mut q_env, q_bytes) =
-        Envelope::unsigned(draft, fix.master_did.clone(), None, agreed_at).expect("draft quote");
-    let sig = fix.master.sign(&q_bytes).to_bytes();
+        Envelope::unsigned(draft, fix.master_did.clone(), Some(fix.cert_json.clone()), agreed_at)
+            .expect("draft quote");
+    let sig = fix.service_key.sign(&q_bytes).to_bytes();
     q_env.attach_signature(z32::encode(&sig)).expect("attach signature");
     let q_json = q_env.to_json().expect("json");
     let record_id = q_env.record_id().expect("record id");
@@ -216,22 +221,22 @@ pub(crate) async fn setup_agreed_currency_deal(
         .unwrap();
 
     let author_half = make_receipt_half(
-        &fix.master,
+        &fix.service_key,
+        Some(fix.cert_json.clone()),
         DealRole::QuoteAuthor,
         &quote_record_id,
         &payload.terms,
-        &counterparty_did,
-        &fix.master_did,
+        (&counterparty_did, &fix.master_did),
         agreed_at,
     );
 
     let counterparty_half = make_receipt_half(
         counterparty,
+        None,
         DealRole::Counterparty,
         &quote_record_id,
         &payload.terms,
-        &counterparty_did,
-        &fix.master_did,
+        (&counterparty_did, &fix.master_did),
         agreed_at,
     );
 

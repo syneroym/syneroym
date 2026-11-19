@@ -14,6 +14,7 @@ use crate::{
 
 pub const PRESENTATION_VERSION: u32 = 1;
 pub const MAX_PRESENTATION_RECORDS: usize = 64;
+pub const MAX_PRESENTATION_RECORD_BYTES: usize = 128 * 1024;
 
 /// A bundle of signed deal records and selected disclosures shown to a third
 /// party.
@@ -38,6 +39,8 @@ pub struct DealHeader {
     pub quote_expires_at_secs: u64,
     #[serde(default)]
     pub quote_checked: bool,
+    #[serde(default)]
+    pub quote_expired: bool,
 }
 
 /// Verification verdict for a single record within the presentation.
@@ -49,6 +52,8 @@ pub struct RecordCheck {
     pub issuer: String,
     pub issued_at_secs: u64,
     pub verified: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revocation_status: Option<String>,
 }
 
 /// Visible outcome and state of a single commitment.
@@ -74,8 +79,13 @@ pub struct CommitmentOutcome {
 #[serde(deny_unknown_fields)]
 pub struct SettlementView {
     pub record_id: String,
+    pub issuer: String,
     pub commitment_id: String,
     pub role: SettlementRole,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supersedes: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_at_secs: Option<u64>,
     pub shown: Value,
     pub hidden: Vec<String>,
 }

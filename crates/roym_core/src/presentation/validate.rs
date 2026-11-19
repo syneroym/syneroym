@@ -7,7 +7,7 @@ use serde_json::{Map, Value};
 use super::types::PresentationError;
 use crate::{
     deal::{
-        CommitmentKind, Details, LocalText, MAX_COMMITMENT_DESCRIPTION_LEN,
+        self, CommitmentKind, Details, LocalText, MAX_COMMITMENT_DESCRIPTION_LEN,
         MAX_DECLARED_VALUE_MINOR, MAX_PAYEE_LEN, MAX_PAYMENT_METHODS, MAX_SCOPE_LEN,
         MAX_TERMS_TEXT_LEN, SCHEDULING_EXTENSION,
         sd::{PartialTerms, SignedCommitment, SignedTerms},
@@ -87,9 +87,13 @@ fn validate_terms_level_texts(
         ));
     }
     for &(field, limit) in TERMS_TEXT_FIELDS {
-        if let Some(val) = obj.get(field)
-            && !val.is_null()
-        {
+        if let Some(val) = obj.get(field) {
+            if val.is_null() {
+                return Err(PresentationError::FieldInvalid(
+                    field.to_string(),
+                    format!("{field} cannot be null"),
+                ));
+            }
             let text: LocalText = serde_json::from_value(val.clone())
                 .map_err(|e| PresentationError::FieldInvalid(field.to_string(), e.to_string()))?;
             text.validate(field, limit)
@@ -134,9 +138,13 @@ fn validate_single_commitment_partial(
     all_texts: &mut Vec<LocalText>,
     not_checked: &mut Vec<String>,
 ) -> Result<(), PresentationError> {
-    if let Some(val) = c_map.get("description")
-        && !val.is_null()
-    {
+    if let Some(val) = c_map.get("description") {
+        if val.is_null() {
+            return Err(PresentationError::FieldInvalid(
+                format!("terms.commitments[{}].description", c_orig.commitment_id),
+                "description cannot be null".to_string(),
+            ));
+        }
         let desc: LocalText = serde_json::from_value(val.clone()).map_err(|e| {
             PresentationError::FieldInvalid(
                 format!("terms.commitments[{}].description", c_orig.commitment_id),
@@ -205,9 +213,13 @@ fn validate_declared_value_partial(
     c_orig: &SignedCommitment,
 ) -> Result<Option<i64>, PresentationError> {
     let cid = &c_orig.commitment_id;
-    if let Some(val_raw) = c_map.get("declared_value_minor")
-        && !val_raw.is_null()
-    {
+    if let Some(val_raw) = c_map.get("declared_value_minor") {
+        if val_raw.is_null() {
+            return Err(PresentationError::FieldInvalid(
+                format!("terms.commitments[{cid}].declared_value_minor"),
+                "declared_value_minor cannot be null".to_string(),
+            ));
+        }
         let val: i64 = serde_json::from_value(val_raw.clone()).map_err(|e| {
             PresentationError::FieldInvalid(
                 format!("terms.commitments[{cid}].declared_value_minor"),
@@ -239,9 +251,13 @@ fn validate_currency_commitment_fields_partial(
     not_checked: &mut Vec<String>,
 ) -> Result<(), PresentationError> {
     let cid = &c_orig.commitment_id;
-    if let Some(payee_val) = c_map.get("payee")
-        && !payee_val.is_null()
-    {
+    if let Some(payee_val) = c_map.get("payee") {
+        if payee_val.is_null() {
+            return Err(PresentationError::FieldInvalid(
+                format!("terms.commitments[{cid}].payee"),
+                "payee cannot be null".to_string(),
+            ));
+        }
         let payee: String = serde_json::from_value(payee_val.clone()).map_err(|e| {
             PresentationError::FieldInvalid(
                 format!("terms.commitments[{cid}].payee"),
@@ -383,9 +399,13 @@ fn validate_commitment_details_partial(
 ) -> Result<(), PresentationError> {
     let cid = &c_orig.commitment_id;
     if let Some(ref ext) = c_orig.extension {
-        if let Some(det_val) = c_map.get("details")
-            && !det_val.is_null()
-        {
+        if let Some(det_val) = c_map.get("details") {
+            if det_val.is_null() {
+                return Err(PresentationError::FieldInvalid(
+                    format!("terms.commitments[{cid}].details"),
+                    "details cannot be null when extension is set".to_string(),
+                ));
+            }
             let details: Details = serde_json::from_value(det_val.clone()).map_err(|e| {
                 PresentationError::FieldInvalid(
                     format!("terms.commitments[{cid}].details"),
@@ -399,15 +419,25 @@ fn validate_commitment_details_partial(
                 ));
             }
             if ext.id == SCHEDULING_EXTENSION {
-                if let Some(win_val) = c_map.get("window")
-                    && !win_val.is_null()
-                {
-                    let _w: TimeWindow = serde_json::from_value(win_val.clone()).map_err(|e| {
-                        PresentationError::FieldInvalid(
-                            format!("terms.commitments[{cid}].window"),
-                            e.to_string(),
-                        )
-                    })?;
+                if let Some(win_val) = c_map.get("window") {
+                    if win_val.is_null() {
+                        not_checked
+                            .push(format!("terms.commitments[{cid}].details_matches_extension"));
+                    } else {
+                        let w: TimeWindow =
+                            serde_json::from_value(win_val.clone()).map_err(|e| {
+                                PresentationError::FieldInvalid(
+                                    format!("terms.commitments[{cid}].window"),
+                                    e.to_string(),
+                                )
+                            })?;
+                        deal::validate_scheduling_slot_details(&w, &details).map_err(|e| {
+                            PresentationError::FieldInvalid(
+                                format!("terms.commitments[{cid}].details"),
+                                e.to_string(),
+                            )
+                        })?;
+                    }
                 } else {
                     not_checked.push(format!("terms.commitments[{cid}].details_matches_extension"));
                 }
