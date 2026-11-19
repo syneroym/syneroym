@@ -46,6 +46,25 @@ pub enum PaymentError {
     SdShape(String),
 }
 
+impl PaymentError {
+    #[must_use]
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::InvalidAgreement(_) => "invalid-agreement",
+            Self::InvalidCounterpartyDid(_) => "invalid-counterparty-did",
+            Self::InvalidQuoteAuthorDid(_) => "invalid-quote-author-did",
+            Self::SamePartyDid => "same-party-did",
+            Self::ConversationEmpty => "conversation-empty",
+            Self::CommitmentIdEmpty => "commitment-id-empty",
+            Self::ZeroObservedTime => "zero-observed-time",
+            Self::MethodShape(_) => "method-shape",
+            Self::ReferenceTooLong => "reference-too-long",
+            Self::Note(_) => "note",
+            Self::SdShape(_) => "sd-shape",
+        }
+    }
+}
+
 /// A request to be paid for a currency commitment.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

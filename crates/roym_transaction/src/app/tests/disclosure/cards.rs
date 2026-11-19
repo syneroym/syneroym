@@ -511,3 +511,75 @@ async fn a_settlement_card_note_is_filed_plain_and_signed_hidden() {
     let data = card_row.data.unwrap();
     assert_eq!(data["note"]["text"], "Invoice note");
 }
+
+#[tokio::test]
+async fn a_refused_acknowledgement_reason_holds_no_disclosed_value() {
+    use syneroym_roym_core::{
+        deal::SettlementRole,
+        payment::PAYMENT_ACKNOWLEDGEMENT_VERSION,
+        record::{RECORD_PAYMENT_ACKNOWLEDGEMENT, RecordDraft},
+        testing::sd::{PlainPaymentAck, conceal_payment_ack},
+    };
+
+    let fix = fixture();
+    let cp_fix = fixture();
+    let agreed_at = clock::now_secs();
+
+    let (agreement, _terms) = setup_agreed_currency_deal(&fix, &cp_fix.master, agreed_at).await;
+
+    let bad_method = "UPI:alice@bank";
+    let plain_ack = PlainPaymentAck {
+        agreement: agreement.clone(),
+        conversation: "conv_1".to_string(),
+        commitment_id: "c2".to_string(),
+        quote_author_did: fix.master_did.clone(),
+        counterparty_did: cp_fix.master_did.clone(),
+        role: SettlementRole::Giver,
+        observed_at_secs: agreed_at + 10,
+        method: Some(bad_method.to_string()),
+        reference: Some("ref-1".to_string()),
+        settlement_note: None,
+    };
+
+    let (ack_payload, disclosures) = conceal_payment_ack(plain_ack, 42);
+    let draft = RecordDraft {
+        version: PAYMENT_ACKNOWLEDGEMENT_VERSION,
+        record_type: RECORD_PAYMENT_ACKNOWLEDGEMENT.to_string(),
+        subject: agreement.clone(),
+        payload: serde_json::to_value(&ack_payload).expect("serialize ack payload"),
+        expires_at_secs: None,
+        supersedes: None,
+    };
+    let (mut env, bytes) =
+        Envelope::unsigned(draft, cp_fix.master_did.clone(), None, agreed_at + 10)
+            .expect("draft ack env");
+    let sig = cp_fix.master.sign(&bytes).to_bytes();
+    env.attach_signature(z32::encode(&sig)).expect("attach ack sig");
+    let env_json = env.to_json().expect("ack env json");
+
+    let body = card::card_body(
+        RECORD_PAYMENT_ACKNOWLEDGEMENT,
+        PAYMENT_ACKNOWLEDGEMENT_VERSION,
+        &env_json,
+        &disclosures,
+    )
+    .unwrap();
+
+    let msg = json!({
+        "id": "msg_bad_ack_leak",
+        "body": body,
+        "sender_timestamp_ms": ((agreed_at + 10) * 1000) as i64,
+    });
+
+    let res = sync::file_incoming_card(&fix.host, &msg, "conv_1", agreed_at + 10, &fix.master_did)
+        .await
+        .unwrap();
+    assert!(res.refused);
+
+    let card_row: CardRow = get_row(&fix.host, CARDS, "msg_bad_ack_leak").await.unwrap().unwrap();
+    let reason = card_row.reason.expect("refusal reason");
+    assert_eq!(reason, "payment acknowledgement hidden: method-shape");
+    assert!(!reason.contains(bad_method));
+    assert!(!reason.contains("alice"));
+    assert!(!reason.contains("UPI"));
+}

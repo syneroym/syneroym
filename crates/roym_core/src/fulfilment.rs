@@ -36,6 +36,22 @@ pub enum FulfilmentError {
     SdShape(String),
 }
 
+impl FulfilmentError {
+    #[must_use]
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::InvalidAgreement(_) => "invalid-agreement",
+            Self::InvalidCounterpartyDid(_) => "invalid-counterparty-did",
+            Self::InvalidQuoteAuthorDid(_) => "invalid-quote-author-did",
+            Self::SamePartyDid => "same-party-did",
+            Self::ConversationEmpty => "conversation-empty",
+            Self::CommitmentIdEmpty => "commitment-id-empty",
+            Self::SettlementNote(_) => "settlement-note",
+            Self::SdShape(_) => "sd-shape",
+        }
+    }
+}
+
 /// One party's attestation regarding fulfilment of a commitment.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
