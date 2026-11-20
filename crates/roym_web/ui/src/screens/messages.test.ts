@@ -8,6 +8,7 @@ import {
   computeNewestRequestMap,
   isQuoteSuperseded,
   messageStateWord,
+  openConversation,
   openQuoteForm,
   readQuoteForm,
   refusalText,
@@ -827,5 +828,70 @@ describe("request form category picker reset", () => {
     const notice = host.querySelector(".quote-waiting-notice");
     expect(notice).not.toBeNull();
     expect(notice?.textContent).toContain("Waiting for the other side to confirm...");
+  });
+
+  it("openConversation opens conversation with pre-filled listing id and category and empty description", async () => {
+    let sentEnquiry: Record<string, unknown> | undefined;
+    stubRpc({
+      whoami: () => ({ person_did: "did:key:me" }),
+      "conversation.open": (params) => {
+        expect((params as { address: string }).address).toBe("did:key:bob");
+        return { conversation_id: "conv-bob" };
+      },
+      "conversation.list": () => ({
+        conversations: [{ id: "conv-bob", peer_address: "did:key:bob", message_count: 0 }],
+      }),
+      "transaction.sync": () => ({}),
+      "transaction.thread": () => ({ cards: [] }),
+      "conversation.history": () => ({ messages: [] }),
+      "enquiry.set": (params) => {
+        sentEnquiry = params as Record<string, unknown>;
+        return { enquiry_id: "enq-1", record_id: "rec-1" };
+      },
+    });
+
+    const host = document.createElement("div");
+    const convId = await openConversation(
+      "did:key:bob",
+      { listingId: "lst_gardening_1", categories: ["gardening"] },
+      host,
+    );
+    expect(convId).toBe("conv-bob");
+
+    // The thread is rendered and request form is already open
+    const reqForm = host.querySelector<HTMLElement>(".request-form")!;
+    expect(reqForm).not.toBeNull();
+    expect(reqForm.style.display).toBe("block");
+
+    // Listing input is pre-filled with the listing id from the verified envelope
+    const listingInput = host.querySelector<HTMLInputElement>(".request-listing-input")!;
+    expect(listingInput).not.toBeNull();
+    expect(listingInput.value).toBe("lst_gardening_1");
+
+    // Category picker has the listing category pre-selected
+    const chip = host.querySelector<HTMLElement>('.request-cats-input .picker-chip[data-code="gardening"]');
+    expect(chip).not.toBeNull();
+
+    // Description is empty for the person to type
+    const descInput = host.querySelector<HTMLTextAreaElement>(".request-desc-input")!;
+    expect(descInput).not.toBeNull();
+    expect(descInput.value).toBe("");
+
+    // Person types what they need and submits
+    descInput.value = "Need hedge trimming";
+    const sendBtn = host.querySelector<HTMLButtonElement>("button.send-request-button")!;
+    sendBtn.click();
+
+    await vi.waitFor(() => expect(sentEnquiry).toBeDefined());
+    expect(sentEnquiry?.conversation).toBe("conv-bob");
+    expect(sentEnquiry?.listing_id).toBe("lst_gardening_1");
+    expect(sentEnquiry?.categories).toEqual(["gardening"]);
+    expect((sentEnquiry?.description as { text?: string })?.text).toBe("Need hedge trimming");
+
+    // After submit, form is closed and inputs cleared
+    await vi.waitFor(() => expect(reqForm.style.display).toBe("none"));
+    expect(listingInput.value).toBe("");
+    expect(descInput.value).toBe("");
+    expect(host.querySelectorAll(".request-cats-input .picker-chip")).toHaveLength(0);
   });
 });

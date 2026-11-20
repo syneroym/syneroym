@@ -307,4 +307,100 @@ describe("category search and hit display", () => {
     expect(hits[2].querySelector(".hit-title")?.hasAttribute("lang")).toBe(false);
     expect(hits[2].querySelector(".hit-summary")?.getAttribute("lang")).toBe("ta");
   });
+
+  it("hit-engage button is named Ask and opens conversation with listing id and categories", async () => {
+    let openedAddress: string | undefined;
+    stubRpc({
+      "directory.sources": () => ({ sources: [] }),
+      "directory.run-envelope": () => ({
+        envelope: JSON.stringify({
+          payload: {
+            listing_id: "lst_1",
+            categories: ["gardening"],
+          },
+        }),
+      }),
+      "conversation.open": (params) => {
+        openedAddress = (params as { address: string }).address;
+        return { conversation_id: "conv-1" };
+      },
+      "conversation.list": () => ({
+        conversations: [{ id: "conv-1", peer_address: "did:key:zConversation", message_count: 0 }],
+      }),
+      "transaction.sync": () => ({}),
+      "transaction.thread": () => ({ cards: [] }),
+      "conversation.history": () => ({ messages: [] }),
+      "directory.find": () => ({
+        run_id: "run-ask",
+        outcomes: [],
+        hits: [HIT],
+        hits_truncated: false,
+        refused: [],
+        refused_truncated: false,
+      }),
+    });
+
+    const host = document.createElement("div");
+    await renderDirectory(host);
+    host.querySelector<HTMLButtonElement>("button.run-search")!.click();
+    await vi.waitFor(() => expect(host.querySelector(".search-hit")).not.toBeNull());
+
+    const askBtn = host.querySelector<HTMLButtonElement>("button.hit-engage");
+    expect(askBtn).not.toBeNull();
+    expect(askBtn?.textContent).toBe("Ask");
+
+    askBtn?.click();
+    await vi.waitFor(() => expect(openedAddress).toBe("did:key:zConversation"));
+    // engage-address was removed; output text is empty on successful open
+    expect(host.querySelector(".hit-engage-out")?.textContent).toBe("");
+  });
+
+  it("hit-engage shows gone message if envelope is missing or lacks listing_id", async () => {
+    stubRpc({
+      "directory.sources": () => ({ sources: [] }),
+      "directory.run-envelope": () => ({ envelope: null }),
+      "directory.find": () => ({
+        run_id: "run-gone",
+        outcomes: [],
+        hits: [HIT],
+        hits_truncated: false,
+        refused: [],
+        refused_truncated: false,
+      }),
+    });
+
+    const host = document.createElement("div");
+    await renderDirectory(host);
+    host.querySelector<HTMLButtonElement>("button.run-search")!.click();
+    await vi.waitFor(() => expect(host.querySelector(".search-hit")).not.toBeNull());
+
+    const askBtn = host.querySelector<HTMLButtonElement>("button.hit-engage");
+    askBtn?.click();
+    await vi.waitFor(() =>
+      expect(host.querySelector(".hit-engage-out")?.textContent).toBe(
+        "The full listing is no longer in this run.",
+      ),
+    );
+  });
+
+  it("unverified hit has no Ask action button", async () => {
+    stubRpc({
+      "directory.sources": () => ({ sources: [] }),
+      "directory.find": () => ({
+        run_id: "run-unverified",
+        outcomes: [],
+        hits: [{ ...HIT, verified: false }],
+        hits_truncated: false,
+        refused: [],
+        refused_truncated: false,
+      }),
+    });
+
+    const host = document.createElement("div");
+    await renderDirectory(host);
+    host.querySelector<HTMLButtonElement>("button.run-search")!.click();
+    await vi.waitFor(() => expect(host.querySelector(".search-hit")).not.toBeNull());
+
+    expect(host.querySelector("button.hit-engage")).toBeNull();
+  });
 });

@@ -105,10 +105,77 @@ export interface CardRow {
   agreement_payment_methods?: string[];
 }
 
-export async function renderMessages(container: HTMLElement, currentDid?: string) {
+export interface RequestPreFill {
+  listingId?: string;
+  categories?: string[];
+}
+
+export interface MessagesInitialState {
+  conversationId?: string;
+  preFill?: RequestPreFill;
+}
+
+let pendingOpen: MessagesInitialState | null = null;
+let activeReloadMessages: ((convId: string, preFill?: RequestPreFill) => Promise<void>) | null = null;
+
+export async function openConversation(
+  address: string,
+  preFill?: RequestPreFill,
+  container?: HTMLElement,
+): Promise<string> {
+  const res = await call<{ conversation_id: string }>("conversation.open", { address });
+  const convId = res.conversation_id;
+
+  if (container) {
+    await renderMessages(container, undefined, { conversationId: convId, preFill });
+    return convId;
+  }
+
+  const activeScreen = document.querySelector<HTMLElement>(".messages-screen");
+  if (activeScreen && activeScreen.isConnected && activeReloadMessages) {
+    await activeReloadMessages(convId, preFill);
+    return convId;
+  }
+
+  pendingOpen = { conversationId: convId, preFill };
+
+  const msgTabBtn =
+    document.querySelector<HTMLButtonElement>('.tab-button[data-tab="messages"]') ??
+    Array.from(document.querySelectorAll<HTMLButtonElement>(".tab-button")).find(
+      (btn) => btn.textContent?.trim() === t("tab-messages").trim(),
+    );
+
+  if (msgTabBtn) {
+    msgTabBtn.click();
+  } else {
+    const fallback =
+      document.querySelector<HTMLElement>(".tab-content") ??
+      document.querySelector<HTMLElement>(".content-area") ??
+      document.querySelector<HTMLElement>("#app");
+    if (fallback) {
+      await renderMessages(fallback, undefined, { conversationId: convId, preFill });
+    }
+  }
+
+  return convId;
+}
+
+export async function renderMessages(
+  container: HTMLElement,
+  currentDid?: string,
+  initial?: MessagesInitialState,
+) {
   container.replaceChildren();
   const box = document.createElement("div");
   box.className = "messages-screen";
+
+  const initialConvId = initial?.conversationId ?? pendingOpen?.conversationId ?? undefined;
+  const initialPreFill = initial?.preFill ?? pendingOpen?.preFill ?? undefined;
+  pendingOpen = null;
+
+  activeReloadMessages = async (convId: string, preFill?: RequestPreFill) => {
+    await reloadList(convId, preFill);
+  };
 
   box.appendChild(text("h2", t("messages-title")));
 
@@ -230,7 +297,7 @@ export async function renderMessages(container: HTMLElement, currentDid?: string
     return rows;
   });
 
-  async function reloadList(select?: string) {
+  async function reloadList(select?: string, preFill?: RequestPreFill) {
     if (select) activeConvId = select;
     const rows = await fillList(select ?? activeConvId ?? undefined);
     if (rows === undefined) {
@@ -245,7 +312,15 @@ export async function renderMessages(container: HTMLElement, currentDid?: string
     const target = select
       ? rows.find((r) => r.id === select)
       : (activeConvId ? rows.find((r) => r.id === activeConvId) : rows[0]);
-    if (target) await renderThread(threadPane, target, myDid, onThreadActive);
+    if (target) {
+      await renderThread(
+        threadPane,
+        target,
+        myDid,
+        onThreadActive,
+        target.id === select ? preFill : undefined,
+      );
+    }
   }
 
   const removeFeed = onFeed(async (event) => {
@@ -281,7 +356,7 @@ export async function renderMessages(container: HTMLElement, currentDid?: string
     }
   });
 
-  await reloadList();
+  await reloadList(initialConvId, initialPreFill);
   container.appendChild(box);
 }
 
@@ -290,6 +365,7 @@ async function renderThread(
   conv: ConversationRow,
   myDid: string,
   onActive?: (convId: string, fill: () => Promise<void>) => void,
+  preFill?: RequestPreFill,
 ) {
   pane.replaceChildren();
   pane.appendChild(text("h3", conv.peer_person_did || conv.peer_address));
@@ -343,80 +419,6 @@ async function renderThread(
   composeRow.append(composeInput, sendBtn, composeErr, langField);
   pane.appendChild(composeRow);
 
-  // --- Send a request section -----------------------------------------------
-  const requestSection = document.createElement("div");
-  requestSection.className = "send-request-section";
-
-  const toggleReqBtn = text("button", t("request-toggle-button"), "button toggle-request-form") as HTMLButtonElement;
-  requestSection.appendChild(toggleReqBtn);
-
-  const reqForm = document.createElement("div");
-  reqForm.className = "request-form";
-  reqForm.style.display = "none";
-
-  const descInput = document.createElement("textarea");
-  descInput.placeholder = t("request-description-placeholder");
-  descInput.className = "request-desc-input";
-
-  const catsPicker = categoryPicker({
-    className: "request-cats-input",
-    max: 8,
-  });
-
-  const reqLang = textLangSelect("request-text-lang", currentLanguage());
-
-  const listingInput = document.createElement("input");
-  listingInput.placeholder = t("request-listing-placeholder");
-  listingInput.className = "request-listing-input";
-
-  // The person signs the text they read: the same string is drawn here and
-  // sent with the request.
-  const dataUseNotice = t("request-data-use-notice");
-  const noticeP = text("p", dataUseNotice, "data-use-notice");
-
-  const submitReqBtn = text("button", t("request-submit-button"), "button send-request-button") as HTMLButtonElement;
-  const reqErr = text("p", "", "request-form-error");
-
-  toggleReqBtn.onclick = () => {
-    reqForm.style.display = reqForm.style.display === "none" ? "block" : "none";
-  };
-
-  submitReqBtn.onclick = async () => {
-    const desc = descInput.value.trim();
-    if (!desc) {
-      reqErr.textContent = t("request-description-required");
-      return;
-    }
-    submitReqBtn.disabled = true;
-    reqErr.textContent = "";
-    try {
-      const categories = catsPicker.codes();
-      await call("enquiry.set", {
-        conversation: conv.id,
-        description: {
-          lang: reqLang.value,
-          text: desc,
-        },
-        categories,
-        listing_id: listingInput.value.trim() || undefined,
-        data_use_notice: dataUseNotice,
-      });
-      descInput.value = "";
-      catsPicker.clear();
-      listingInput.value = "";
-      reqForm.style.display = "none";
-      await redraw.now();
-    } catch (err) {
-      reqErr.textContent = t("request-send-failed", { detail: errText(err) });
-    } finally {
-      submitReqBtn.disabled = false;
-    }
-  };
-
-  reqForm.append(descInput, field(t("request-text-language"), reqLang), catsPicker.root, listingInput, noticeP, submitReqBtn, reqErr);
-  requestSection.appendChild(reqForm);
-  pane.appendChild(requestSection);
-
   const fillThread = async (into: DocumentFragment) => {
     const cardMap = new Map<string, CardRow>();
     let allCards: CardRow[] = [];
@@ -460,8 +462,93 @@ async function renderThread(
   };
 
   const redraw = waitingRedraw(messagesHost, fillThread, OPEN_WORK);
+  renderRequestSection(pane, conv, redraw.now, preFill);
   onActive?.(conv.id, redraw.later);
   await redraw.now();
+}
+
+function renderRequestSection(
+  pane: HTMLElement,
+  conv: ConversationRow,
+  redrawNow: () => Promise<void>,
+  preFill?: RequestPreFill,
+) {
+  const requestSection = document.createElement("div");
+  requestSection.className = "send-request-section";
+
+  const toggleReqBtn = text("button", t("request-toggle-button"), "button toggle-request-form") as HTMLButtonElement;
+  requestSection.appendChild(toggleReqBtn);
+
+  const reqForm = document.createElement("div");
+  reqForm.className = "request-form";
+  reqForm.style.display = preFill ? "block" : "none";
+
+  const descInput = document.createElement("textarea");
+  descInput.placeholder = t("request-description-placeholder");
+  descInput.className = "request-desc-input";
+
+  const catsPicker = categoryPicker({
+    className: "request-cats-input",
+    max: 8,
+    selected: preFill?.categories,
+  });
+
+  const reqLang = textLangSelect("request-text-lang", currentLanguage());
+
+  const listingInput = document.createElement("input");
+  listingInput.placeholder = t("request-listing-placeholder");
+  listingInput.className = "request-listing-input";
+  if (preFill?.listingId) {
+    listingInput.value = preFill.listingId;
+  }
+
+  // The person signs the text they read: the same string is drawn here and
+  // sent with the request.
+  const dataUseNotice = t("request-data-use-notice");
+  const noticeP = text("p", dataUseNotice, "data-use-notice");
+
+  const submitReqBtn = text("button", t("request-submit-button"), "button send-request-button") as HTMLButtonElement;
+  const reqErr = text("p", "", "request-form-error");
+
+  toggleReqBtn.onclick = () => {
+    reqForm.style.display = reqForm.style.display === "none" ? "block" : "none";
+  };
+
+  submitReqBtn.onclick = async () => {
+    const desc = descInput.value.trim();
+    if (!desc) {
+      reqErr.textContent = t("request-description-required");
+      return;
+    }
+    submitReqBtn.disabled = true;
+    reqErr.textContent = "";
+    try {
+      const categories = catsPicker.codes();
+      await call("enquiry.set", {
+        conversation: conv.id,
+        description: {
+          lang: reqLang.value,
+          text: desc,
+        },
+        categories,
+        listing_id: listingInput.value.trim() || undefined,
+        data_use_notice: dataUseNotice,
+      });
+      descInput.value = "";
+      catsPicker.clear();
+      listingInput.value = "";
+      reqForm.style.display = "none";
+      await redrawNow();
+    } catch (err) {
+      reqErr.textContent = t("request-send-failed", { detail: errText(err) });
+    } finally {
+      submitReqBtn.disabled = false;
+    }
+  };
+
+  reqForm.append(descInput, field(t("request-text-language"), reqLang), catsPicker.root, listingInput, noticeP, submitReqBtn, reqErr);
+  requestSection.appendChild(reqForm);
+  pane.appendChild(requestSection);
 }
 
 export { computeNewestQuoteMap, computeNewestRequestMap, isQuoteSuperseded, newestVersionMap };

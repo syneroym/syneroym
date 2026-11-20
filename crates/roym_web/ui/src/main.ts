@@ -13,6 +13,7 @@ import { renderGroups } from "./screens/groups";
 import { renderListings } from "./screens/listings";
 import { renderMemberships } from "./screens/memberships";
 import {
+  openConversation,
   openDeclineDialog,
   openQuoteForm,
   renderCardActions,
@@ -51,6 +52,7 @@ declare global {
       openQuoteForm: typeof openQuoteForm;
       openDeclineDialog: typeof openDeclineDialog;
       renderCardActions: typeof renderCardActions;
+      openConversation: typeof openConversation;
     };
   }
 }
@@ -63,6 +65,7 @@ window.RoymMessages = {
   openQuoteForm,
   openDeclineDialog,
   renderCardActions,
+  openConversation,
 };
 
 async function main() {
@@ -155,23 +158,24 @@ async function renderTabs(container: HTMLElement, did: string) {
     }
   };
 
-  const tabs: Array<[name: string, render: (host: HTMLElement) => Promise<void>]> = [
-    [t("tab-profile"), renderProfile],
-    [t("tab-contacts"), renderContacts],
-    [t("tab-messages"), renderMessages],
-    [t("tab-groups"), renderGroups],
-    [t("tab-listings"), renderListings],
-    [t("tab-directory"), renderDirectory],
-    [t("tab-memberships"), renderMemberships],
-    [t("tab-synorg"), renderSynOrg],
-    [t("tab-safety"), renderSafety],
-    [t("tab-backup"), renderBackup],
-    [t("tab-components"), (host) => renderHome(host, did)],
+  const tabs: Array<[name: string, render: (host: HTMLElement) => Promise<void>, tabKey: string]> = [
+    [t("tab-profile"), renderProfile, "profile"],
+    [t("tab-contacts"), renderContacts, "contacts"],
+    [t("tab-messages"), renderMessages, "messages"],
+    [t("tab-groups"), renderGroups, "groups"],
+    [t("tab-listings"), renderListings, "listings"],
+    [t("tab-directory"), renderDirectory, "directory"],
+    [t("tab-memberships"), renderMemberships, "memberships"],
+    [t("tab-synorg"), renderSynOrg, "synorg"],
+    [t("tab-safety"), renderSafety, "safety"],
+    [t("tab-backup"), renderBackup, "backup"],
+    [t("tab-components"), (host) => renderHome(host, did), "components"],
   ];
 
-  for (const [name, render] of tabs) {
+  for (const [name, render, tabKey] of tabs) {
     const btn = document.createElement("button");
     btn.className = "button tab-button";
+    btn.dataset.tab = tabKey;
     btn.textContent = name;
     btn.onclick = () => void show(render);
     nav.appendChild(btn);

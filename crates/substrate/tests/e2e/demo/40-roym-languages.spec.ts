@@ -198,16 +198,19 @@ test('Roym languages story: Alice, in Hindi, finds an English listing and accept
       await expect(hit.locator('.hit-categories')).toContainText(hubMessage('hi', 'taxonomy-category-gardening'));
     });
 
-    await step(page, "Alice's screen: ask how to reach the listing owner", async () => {
+    await step(page, "Alice's screen: tap Ask on the hit to open the conversation with the pre-filled form", async () => {
       const hit = page.locator(`.search-hit[data-listing-id="${listingId}"]`);
       await hit.locator('.hit-engage').click();
-      await expect(hit.locator('.hit-engage-out')).toContainText(bob.addr, { timeout: 15_000 });
+      await expect(page.locator('.messages-screen')).toBeVisible({ timeout: 15_000 });
+      await expect(page.locator('.request-form')).toBeVisible({ timeout: 15_000 });
+      await expect(page.locator('.request-listing-input')).toHaveValue(listingId);
+      await expect(page.locator('.request-cats-input .picker-chip[data-code="gardening"]')).toBeVisible();
+      await expect(page.locator('.request-desc-input')).toHaveValue('');
     });
 
-    await step(page, "Alice's screen: send Bob a request in Hindi; it names the category only", async () => {
-      await openMessages(page, 'hi');
-      await openConversation(page, bob.addr, 'hi');
-      await sendRequest(page, requestText, 'gardening', 'hi');
+    await step(page, "Alice's screen: send Bob a request in Hindi from the filled form", async () => {
+      await page.locator('.request-desc-input').fill(requestText);
+      await page.locator('button.send-request-button').click();
       await expect(threadMessage(page, requestText).locator('.card-enquiry')).toBeVisible({ timeout: 15_000 });
     });
 

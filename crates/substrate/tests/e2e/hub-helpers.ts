@@ -96,6 +96,15 @@ export async function ensureOwnSynOrg(
     await expect(page.locator('.synorg-save-status')).toHaveText(hubMessage(lang, 'common-saved'), { timeout: 15_000 });
     await page.getByRole('button', { name: hubMessage(lang, 'tab-synorg'), exact: true }).click();
     await issueOwnCredential(page, category);
+  } else {
+    const hasCategory = (await page.locator(`.synorg-categories .picker-chip[data-code="${category}"]`).count()) > 0;
+    if (!hasCategory) {
+      await pickCategory(page.locator('.synorg-categories'), category, lang);
+      await page.getByRole('button', { name: hubMessage(lang, 'synorg-save-button') }).click();
+      await expect(page.locator('.synorg-save-status')).toHaveText(hubMessage(lang, 'common-saved'), { timeout: 15_000 });
+      await page.getByRole('button', { name: hubMessage(lang, 'tab-synorg'), exact: true }).click();
+      await issueOwnCredential(page, category);
+    }
   }
   // Every test shares this one node, so publications from earlier tests
   // sit in the 24 h ledger. Keep the limit generous so a fresh publish
