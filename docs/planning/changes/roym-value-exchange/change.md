@@ -95,7 +95,7 @@ These hold for every module.
 10. **EEPs and barter are enforced by reputation, not by Roym.** An EEP is a commitment to make an earnest effort, not a debt. Roym records how each one was honoured and makes the pattern visible. It makes no claim about legal enforceability.
 11. **Credit grows only as far as people believe each issuer can deliver.** No interest, no issuance granted by the system, no pooled risk. Any participant with an offering can issue. Holders decide whose EEPs to accept.
 12. **Language-neutral structure, language-tagged text.** Participants speak many languages. Structured fields (categories, units, areas, commitment kinds) are codes with a label per language, so people can find and trade with each other across languages with no translation. Every free-text field (a description, a want, a quote's scope, an opinion) carries a language tag. A machine translation is shown on the reader's own node, labelled, and never signed. The signed original always wins. The rules are in the multilingual foundation change document.
-13. **The common case has the least ceremony.** Agreeing to an offering as listed is one action. Closing a deal is one action for each side, and it is optional. A deal that goes wrong (no delivery, a no-show) needs no more steps to record than one that goes well. Signatures and records stay out of sight, and the Hub shows them on request. When the other party's node has not answered yet, the Hub says the deal is waiting. It never shows a deal as agreed or done before the records exist. A deal that is easy to record gets recorded, and reputation counts only recorded deals (VX-37).
+13. **The common case has the least ceremony.** Agreeing to an offering as listed is one action. Closing a deal is one action for each side, and it is optional. A deal that goes wrong needs no extra step: a commitment that nobody confirms ends `ended-unconfirmed`, with the giver's claim if there is one, and the reason belongs in an opinion. Signatures and records stay out of sight. The Hub shows them on request. When the other party's node has not answered yet, the Hub says the deal is waiting. It never shows a deal as agreed or done before the records exist. A deal that is easy to record gets recorded. Reputation counts only recorded deals (VX-37).
 
 ## Scope and non-goals
 
@@ -140,9 +140,9 @@ These are overview criteria. Each module change document refines them into tests
 | VX-4 | A public want shows only an approximate area. The exact address is shared only inside a conversation, as today. | |
 | **List-Search** | | |
 | VX-5 | An offering found by search gets an enquiry, or is agreed as listed (VX-54). The owner answers an enquiry with a quote. The other side can ask for changes, and the owner answers each with a new version, until one side accepts or rejects. | |
-| VX-54 | A participant agrees to an offering with complete terms in one action. The owner chooses for each offering: **instant** (the owner's node forms the agreement with no action by the owner) or **confirm first** (the owner confirms in one action). Instant is possible only when the owner's node can check availability at that moment, or the owner marked the offering as not limited. The result is the same agreement record as any other deal. | |
+| VX-54 | A participant agrees to an offering with complete terms in one action. The owner chooses for each offering: **instant** (the owner's node forms the agreement with no action by the owner) or **confirm first** (the owner confirms in one action). Instant is possible only for an offering open to anyone whose availability the owner's node can check (a slot), or that the owner marked as not limited. The owner's node limits how many open instant agreements it holds. The result is the same agreement record as any other deal. | |
 | VX-6 | Want-Bid and List-Search end in the same agreement record and the same commitment states. | |
-| VX-56 | Before agreeing, each party sees what it gives, what it receives and the difference. When a quote has more than one version, each party also sees one combined summary of what changed from the first version to the latest, for each side. | |
+| VX-56 | Before agreeing, each party sees what it gives, what it receives and the difference: on the quote, or, on the as-listed path, on the offering. When a quote has more than one version, each party also sees one combined summary of what changed from the first version to the latest, for each side. | |
 | **Agreements** | | |
 | VX-7 | One agreement can hold several commitments, for example a service, ₹300 in currency and ₹200 as a new EEP. Each commitment carries its kind, its two parties and its declared value in the agreement's one currency. | |
 | VX-8 | Each commitment moves only through the states of its kind, and every kind has a failure end (see the table under Design). An agreement closes when every commitment has reached a final state. | |
@@ -284,7 +284,7 @@ An exchange starts when one participant publishes an intent and another responds
 **Shared negotiation.** In both ways:
 
 1. The quote author sends a quote. A quote lists the commitments of both sides, with declared values.
-2. The other side accepts it, rejects it, or asks for changes. A change request is a new version of the enquiry, or a message in the conversation, as today.
+2. The other side accepts it, rejects it, or asks for changes. A change request is a new version of the enquiry, or a message in the conversation, as today. The Hub's "Suggest changes" on a quote starts that message.
 3. The quote author answers a change request with a new quote version. Each version supersedes the previous one. Only the quote author writes quotes, so there is one writer and no merge.
 4. Acceptance produces the signed agreement. A quote that is not accepted before its expiry lapses.
 
@@ -296,16 +296,20 @@ A wanter can accept more than one bid for the same want, for example two farmers
 
 Most deals take an offering as it is listed: this item, at this price. Such a deal should take one action, not an enquiry, a quote and an acceptance. Agree as listed is a short path through the same negotiation flow. It adds no new record kind and no second writer.
 
-1. The participant taps "Agree as listed" on an offering. Their node sends an enquiry that names the offering version and says "as listed".
-2. The owner's node writes a quote from that offering version's terms. In **instant** mode it does this at once, with no action by the owner. In **confirm first** mode it does this when the owner confirms, in one action.
-3. The participant's node accepts the quote with no further action, but only when every term equals the offering version the participant agreed to. Any difference shows the quote as a normal quote, and the participant decides.
+1. The participant taps "Agree as listed" on an offering. Their node sends an enquiry that names the offering version, says "as listed", and states until when the consent holds.
+2. The owner's node writes a quote from the current version of the offering. In **instant** mode it does this with no action by the owner. In **confirm first** mode it does this when the owner confirms, in one action.
+3. The participant's node accepts the quote with no further action, but only when the quote's terms are exactly the terms it builds itself from the version the participant agreed to. Any difference shows the quote as a normal quote, and the participant decides.
 4. The owner's node forms the agreement as for any quote: it reserves, countersigns and sends the first snapshot.
 
 Rules:
 
-- **The owner chooses the mode for each offering.** Instant is possible only when the owner's node can check availability at that moment (a slot, through the scheduling extension), or when the owner marked the offering as not limited. Otherwise the offering is confirm first. Roym still ships no default acceptance policy (principle 1): instant is the owner's own choice, offering by offering.
-- **Complete terms** means the offering states everything a quote needs: a fixed price in one currency, what the owner accepts in return, and the defaults for cancellation, refund, dispute path and expiry.
-- **Waiting is shown as waiting.** The owner's node may be offline. The enquiry then waits in a mailbox, and the participant's Hub shows "sent, waiting for the owner's node", never "agreed". Instant means instant only while the owner's node is online.
+- **Each node drives its own steps.** Today a node moves a deal only when its person's Hub draws the conversation. Agree as listed adds a driver on each node, so that steps 2 to 4 run when the cards arrive, with no Hub open. Without it, "instant" would wait until a person opens the Hub.
+- **The owner chooses the mode for each offering.** Instant is possible only for an offering open to anyone, and only when the owner's node can check availability at that moment (a slot, through the scheduling extension) or the owner marked the offering as not limited. Otherwise the offering is confirm first. Roym still ships no default acceptance policy (principle 1): instant is the owner's own choice, offering by offering.
+- **Instant has limits.** The owner's node holds only a set number of open instant agreements for each offering, and one for each counterparty. Past the limit, the offering behaves as confirm first. The owner can cancel unconfirmed instant agreements in one action.
+- **Complete terms** means the offering itself states everything a quote needs: a fixed price in one currency, and the texts for cancellation, refund and dispute path, and how long a quote stays valid. The participant must have seen every term it agrees to, so these come from the signed offering, never from the owner's private settings. Offerings with a price per hour or per unit, with no price, or with work at the participant's address cannot be agreed as listed yet.
+- **The consent has a time limit.** The enquiry states until when the tap holds. After that, or after the participant withdraws, no node signs for it.
+- **The current version wins.** If the owner changed the offering since the tap, the owner's node answers from the current version. The quote then differs, so the participant decides. If the offering was withdrawn, the owner's node declines the enquiry.
+- **Waiting is shown as waiting.** The owner's node may be offline. The enquiry then waits in a mailbox, and the participant's Hub shows "sent, waiting for the owner's node", never "agreed". When the consent time ends with no answer, the Hub says so. When the owner's node refused the first contact, the Hub says that.
 - **The quote author stays the only writer.** The owner's node writes the quote and the agreement state, as for every other deal.
 
 The agreements change document gives the exact fields and the signing path.
@@ -593,13 +597,15 @@ Three steps, in order:
 - **Distinct counterparties** and inverse frequency in the reader's own view.
 - The UI shows when a party is supported only by sources 1 and 3 with no trusted credential.
 
+Agree as listed and closing in one action make a fake deal cheaper: a script can agree and close in three calls. The defences above are on the reader's side, and they do not depend on how many steps a deal took. One more rule protects an owner from strangers who agree and never close: an unconfirmed commitment with no claim by its giver is not, on its own, negative evidence about that giver. A complaint about such a deal belongs in an opinion.
+
 ### Event log and statement
 
 - **The event log** is append-only, on the participant's node. It records: agreement signed; commitment settled or failed; EEP issued, redeemed, declined, split, set off, transferred, reissued, refused, expired. Each entry points at the signed record behind it.
 - Nothing reads the log in a way that can block, change or delay a deal.
 - **Statement export (built in):** for a chosen period, every commitment given and received, with its resource kind, counterparty, unit of account and declared value. Barter appears like any other deal: each side's resources with their declared values.
 - **Policy hooks are later work.** A policy package (for example from an accountant or a public body) would read the event log as an observer, on the participant's node, after the participant installs it. A hook that can block a deal before signing is added only when a real policy needs it.
-- **Tax is not an acceptance rule.** Acceptance happens before a deal and is decided by a person at quote time. Tax is computed after a commitment settles.
+- **Tax is not an acceptance rule.** Acceptance happens before a deal. A person decides it at quote time, or by the tap on an offering agreed as listed (VX-54). Tax is computed after a commitment settles.
 
 ### Analytics
 

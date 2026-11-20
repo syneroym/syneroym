@@ -23,10 +23,10 @@ Both parts reshape `listing`, so they are built together, once.
 
 | Slice | Content | Needs |
 | --- | --- | --- |
-| D0 | Intents module change doc (exact intent record, in-return terms). It moves the listing's `acceptance` (`instant` or `confirm-first`) and `not_limited` fields from M08C C3c into the intent record, and says which in-return terms count as complete terms for "Agree as listed" (agreements AG-44, AG-45). | — |
+| D0 | Intents module change doc (exact intent record, in-return terms). It moves the listing's `acceptance` (`instant` or `confirm-first`), `not_limited`, `instant_cap` and `deal_terms` fields from M08C C3c into the intent record. It says which in-return terms count as complete terms for `terms_from_listing`, and whether `not_limited` is set for the offering or for each variant (agreements AG-44, AG-45). | — |
 | D1 | Intent record (offer or want) in `catalog`, with in-return terms. `listing` becomes the offer kind. The Hub's quote form fills from the in-return terms (agreements AG-48). | D0, M08C |
 | D2 | `blob-store` for Roym services. Images, thumbnails, serving by hash. | — |
-| D3 | Attribute values and variants on offerings. `storefront` record, collections, featured, links, record link grammar. | D1, M08B taxonomy |
+| D3 | Attribute values and variants on offerings. The variant goes into the enquiry and into `as_listed.variant`, and `terms_from_listing` takes it (SH-7, SH-16). `storefront` record, collections, featured, links, record link grammar. | D1, M08B taxonomy |
 | D4 | Browse query: on the owner's node (wire-reachable, read-only) and at the directory, with attribute and price columns and facets. Thumbnails stored at the directory. | D3, M08B FTS5 |
 | D5 | Hub: shop page, offering page, filter panel, and the "Agree as listed" and "Ask" actions on each offering (SH-16). `roymctl` browse. Close-out. | D4 |
 

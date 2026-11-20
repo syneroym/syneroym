@@ -18,8 +18,8 @@ Read them first. Each slice below names the change docs it builds part of.
 
 | Change doc | Status | Criteria built here |
 | --- | --- | --- |
-| [roym-agreements](../../changes/roym-agreements/change.md) | draft, open questions 1 and 3 to 12 decided by the owner (2026-11-10), 3 review rounds | `AG-1` to `AG-23`, `AG-27` to `AG-43`. `AG-24` to `AG-26` are built in M08E and M08H. |
-| [roym-value-exchange](../../changes/roym-value-exchange/change.md) (overview) | draft | `VX-1`, `VX-2`, `VX-6` to `VX-12`, `VX-45`, `VX-46`, through the `AG-*` rows that refine them |
+| [roym-agreements](../../changes/roym-agreements/change.md) | draft, open questions 1 and 3 to 12 decided by the owner (2026-11-10), 13 decided on 2026-11-20, 14 and 15 open, 3 review rounds and the PR #372 review | `AG-1` to `AG-23`, `AG-27` to `AG-50`. `AG-24` to `AG-26` are built in M08E and M08H. |
+| [roym-value-exchange](../../changes/roym-value-exchange/change.md) (overview) | draft | `VX-1`, `VX-2`, `VX-5` to `VX-12`, `VX-45`, `VX-46`, `VX-54` to `VX-56`, through the `AG-*` rows that refine them |
 | [roym-extensions](../../changes/roym-extensions/change.md) | draft, reviewed (no review file was kept) | `EX-1` to `EX-8`, `EX-10` to `EX-14`, `EX-17` to `EX-22`. `EX-11` for inline definitions only. `EX-9` (an opinion points at a step) is built in M08G. `EX-15` and `EX-16` move out of M08C (section 6, question 3). `EX-19` is the manifest field only. |
 | [roym-message-forwarding](../../changes/roym-message-forwarding/change.md) | draft, reviewed (no review file was kept) | `FW-1` to `FW-15` |
 | [roym-multilingual](../../changes/roym-multilingual/change.md) | done | the rest of `ML-26` (the widget-answer hook point) and `ML-28` (widget labels and extension step names), as its `## Deviations` says |
@@ -196,17 +196,21 @@ Change docs: roym-extensions, roym-multilingual (ML-28).
 
 Change docs: roym-extensions, roym-agreements, roym-value-exchange (VX-10).
 
-### C3c — Agree as listed (M)
+### C3c — Agree as listed (L)
 
-Added on 2026-11-20 (agreements doc, open question 13).
+Added on 2026-11-20 (agreements doc, open question 13, refined in the PR #372 review).
 
-- The enquiry's optional `as_listed` field. The listing's `acceptance` (`instant` or `confirm-first`) and `not_limited` fields, and the mode rule (AG-45).
-- On the quote author's node: the quote built from the listing version's terms, at once for `instant`, after the owner's one confirm for `confirm-first`.
-- On the counterparty's node: the automatic acceptance when every term equals the agreed version, and the normal quote card when one differs (AG-44).
-- The plan confirms that both nodes can sign through the `signing` interface when no session is open, as the writer's countersign in `transaction.sync` does today. If they cannot, the plan stops and asks the owner.
-- Hub: "Agree as listed" on a directory hit and on the listing, the owner's confirm action, and the line "sent, waiting for the owner's node" until the agreement forms.
+- The driver on each node: a deal card that arrives leads to `transaction.sync` with no Hub (AG-50). The plan picks the mechanism. `conversation` must not call `transaction`. If no driver can be built in the slice, the plan stops and asks the owner; the fallback is confirm first only, with the Hub as the trigger.
+- `terms_from_listing` in `roym_core`, shared by the native and WASM builds, and the build-and-compare check (AG-44).
+- The enquiry's optional `as_listed` and the optional `description`. The listing's `acceptance`, `not_limited`, `instant_cap` and `deal_terms`, with `listing.set`'s refusals and the projection's `can_agree_as_listed` (AG-45).
+- On the quote author's node: `quote.from-listing`, the current-version and withdrawn rules, the consent time, the limits on instant, and the fallback when signing fails (AG-45, AG-49).
+- On the counterparty's node: the automatic acceptance and its three checks immediately before signing, and the stored `viewed_lang` and `viewed_via_mt` (AG-44, AG-49).
+- Signing with no session uses the path the writer's countersign uses today (`decide.rs:695`, `signing::person_principal`). The review confirmed it on `main`.
+- Hub: "Agree as listed" on a directory hit (with a slot picker for a slot offering), the machine-translation warning before the tap, the owner's confirm, the owner's "cancel unconfirmed instant agreements", and the waiting, ended and refused lines.
 - It comes after C3b, so that `instant` works for one-shot offerings and for slots.
-- Criteria: AG-44, AG-45; VX-54.
+- Review it in two passes, by node: the owner's side (mode, driver, quote, confirm) and the counterparty's side (tap, check, waiting line).
+- New Hindi messages: the owner reviews them before the merge, as for earlier slices.
+- Criteria: AG-44, AG-45, AG-49, AG-50; VX-54.
 - Demo: extend story 50 with a deal agreed as listed (the plan confirms).
 
 Change docs: roym-agreements, roym-value-exchange (VX-54), roym-extensions (EX-18).
@@ -233,9 +237,10 @@ The owner moved C5 out on 2026-11-15 (section 6, question 3). It was: an extensi
 - The `event_log` collection, the derive step on every sync, `eventlog.list` and `eventlog.rebuild` (AG-27, AG-28).
 - `statement.export` with the EEP section (`not-available` until M08E) (AG-29, AG-30). The Hub's statement screen with a CSV and a JSON download.
 - Settlement actions in the Hub (section 6, question 2): on each commitment, the giver's claim ("I delivered" or "I paid") and the receiver's confirm ("received"), with an optional `settlement_note`. Booking steps and payment requests stay out of the Hub.
-- Closing in one action: "I gave everything" and "I received everything" on an agreement (AG-46). An unconfirmed end is shown as a normal end.
+- Closing in one action: "I gave everything" and "I received everything" on an agreement, through `agreement.close`, after a list of what will be signed (AG-46). An unconfirmed end is shown as a normal end.
 - The combined summary of what changed between a quote's first and latest version, for each side (AG-47).
-- The quote form defaults: filled from the listing, then the author's saved deal terms, then built-in text; the payee is the author; `INR` when nothing names a currency; filled fields under "More terms" (AG-48). The Hub says "Offer" and "Agree" where it says "Quote" and "Accept" today.
+- The quote form defaults: filled from the listing, then the author's saved deal terms, then built-in text; the payee from the listing, else the author; `INR` when nothing names a currency; filled fields in a section "More terms", closed at first (AG-48). The listing editor fills `deal_terms` from the same saved terms.
+- Hub words: "Offer" and "Agree" where it says "Quote" and "Accept" today. A quote card gets "Suggest changes", which starts a message in the conversation that names that quote version. The author answers with a new version, as today. New Hindi messages: the owner reviews them before the merge.
 - Criteria: AG-23 (Hub part), AG-27 to AG-30, AG-46 to AG-48; VX-55, VX-56.
 - Demo: finishes story 50.
 
@@ -265,12 +270,13 @@ Change docs: all four.
 ```text
 C1 ─▶ C2 ─▶ C3a ─▶ C3b ─▶ C3c ─▶ C4 ─▶ C6 ─▶ C8
 C0 (docs) + C2 ─▶ C7 (may run beside C3a to C6, but not beside C4)
-Hub fix "Engage opens the conversation" (any time; not beside C3c)
+Hub fix "Engage opens the conversation" (any time; not beside C3c or C6)
 ```
 
 - C1 can start before C0: no ADR is needed for it.
 - C3c changes `transaction`, the listing and the Hub's deal screens, so it runs in the C1-to-C6 line, after C3b.
-- The Engage fix is a small Hub-only change outside the slices (backlog row "A request made from a directory hit does not name the listing"). The directory hit's Engage action opens the conversation with the owner and opens the enquiry form with the listing id and its category filled in. It touches the directory screen and the enquiry form, not `transaction`, so it may run beside C3a, C3b, C4 or C7. It must not run beside C3c, which adds "Agree as listed" to the same hit. A viewer can see it, so it extends a demo story. The second-tool review of the agreements doc comes before the C1 plan.
+- C3c's driver may touch `conversation`. If it does, C7 must not run beside C3c, because C7 changes `conversation` too. The C3c plan says which.
+- The Engage fix is a small Hub-only change outside the slices (backlog row "A request made from a directory hit does not name the listing"). The directory hit's button is renamed from "Engage" to "Ask", the name the shop uses (SH-16). It opens the conversation with the owner and opens the enquiry form with the listing id and its category filled in. It touches the directory screen and the enquiry form in `messages.ts`, not `transaction`, so it may run beside C3a, C3b, C4 or C7. It must not run beside C3c, which adds "Agree as listed" to the same hit, or beside C6, which changes the forms in the same file. A viewer can see it, so it extends story 50: Alice finds Bob's listing in the directory and taps "Ask". It has no change doc, so its close-out is its row in `status.md`. The renamed button is a new Hindi message for the owner to review. The second-tool review of the agreements doc comes before the C1 plan.
 - C1, C2, C3a, C3b, C3c and C6 run in order, because they all change `roym_core`'s deal types, `transaction` and the Hub's deal screens.
 - C4 changes `conversation`, the card table and the Hub chat. It comes after C3a, which builds the generic field view it uses.
 - C6 needs only C2. It comes last, so that the deal screens are changed once more, at the end, with every commitment kind and extension in place.
@@ -292,7 +298,7 @@ Record each in the change doc's `## Deviations` when its slice is planned.
 | EX-15, EX-16 | Nothing | Events to an extension service and deal grants: the first sub-milestone whose extension needs them (backlog row) |
 | EX-19 | The `insight` manifest field | Insight extensions: after M08H |
 | ML-26 | The widget-answer hook point (C4) | Opinion: M08G. Offering, want and storefront display: M08D. |
-| AG-44, AG-45, VX-54 | Agree as listed on today's listing and directory hit (C3c) | The mode in the intent record (D0) and the actions on the offering page (D5, SH-16): M08D |
+| AG-44, AG-45, AG-49, VX-54 | Agree as listed on today's listing and directory hit (C3c) | The mode in the intent record (D0), variants in `as_listed` (D3), and the actions on the offering page (D5, SH-16): M08D. Per-hour, per-unit, by-quote and at-receiver offerings: later (backlog row) |
 | AG-48 | The fill from today's `PaymentTerms` (C6) | The fill from in-return terms: M08D (D1) |
 
 ## 6. Questions for the owner
@@ -325,6 +331,7 @@ Questions the old outline listed are now answered in the agreements doc: the dec
 | Two Roym outputs carry another node's card data as an untyped `Value` | §10 | Not targeted. C3b moves `PeerStep` (in `booking_ops.rs`) to the scheduling extension; it updates the row's file names. |
 | `RECORD_TYPES` is not read by any verifier | §12 | Not targeted. C1, C3a, C3b and C4 add record types to the table. |
 | A request made from a directory hit does not name the listing | §10 | The Engage fix closes it (section 4). C3c then adds "Agree as listed" to the same hit. |
+| Agree as listed refuses offerings priced per hour, per unit or by quote, and work at the counterparty's address (new, 2026-11-20) | §10 | Records the v1 limits of `terms_from_listing`. Target M08D or later. |
 
 ## 8. Not in this plan
 
