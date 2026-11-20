@@ -194,6 +194,36 @@ export function threadMessage(page: Page, text: string) {
   return page.locator('.thread-messages .message', { hasText: text });
 }
 
+/** The id of the conversation a node already has with an address. */
+export async function conversationWith(page: Page, address: string): Promise<string> {
+  const opened = await rpcCall(page, 'conversation.open', { address });
+  expect(opened.result?.conversation_id, 'conversation.open answers with the open thread').toBeTruthy();
+  return opened.result.conversation_id as string;
+}
+
+/** What agreement.list says about one agreement. */
+export interface AgreementSummary {
+  quote_record_id: string;
+  terms: { scope: string | { text?: string } };
+  pair: { state: string };
+  commitments: Array<{ commitment_id: string; state: string }>;
+}
+
+/** Reads the agreement of this run in one conversation from agreement.list. The scope holds the run tag. */
+export async function fetchAgreement(
+  page: Page,
+  conversation: string,
+  runTag: string,
+): Promise<AgreementSummary | undefined> {
+  await rpcCall(page, 'transaction.sync', { conversation });
+  const listed = await rpcCall(page, 'agreement.list', { conversation });
+  const agreements = (listed.result?.agreements ?? []) as AgreementSummary[];
+  return agreements.find((a) => {
+    const scopeStr = typeof a.terms.scope === 'object' && a.terms.scope !== null ? a.terms.scope.text : a.terms.scope;
+    return typeof scopeStr === 'string' && scopeStr.includes(runTag);
+  });
+}
+
 /**
  * Send a request in the open thread: a description and one category. `tag` is the Hub language,
  * which names the category in the picker. The request form closes when the send works.

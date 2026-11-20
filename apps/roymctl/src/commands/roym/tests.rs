@@ -414,3 +414,51 @@ fn parse_group_sync_check_hide_unhide() {
     let cmd = parse_group(&["unhide", "--group", "conv:g1"]).unwrap();
     assert!(matches!(cmd, GroupCommands::Unhide { .. }));
 }
+
+fn parse_step(args: &[&str]) -> Result<StepCommands, clap::Error> {
+    let mut full = vec!["roymctl"];
+    full.extend_from_slice(args);
+    Wrapper::<StepCommands>::try_parse_from(full).map(|w| w.command)
+}
+
+#[test]
+fn step_add_reads_its_flags() {
+    let cmd = parse_step(&[
+        "add",
+        "--agreement",
+        "rec_1",
+        "--commitment",
+        "c1",
+        "--type",
+        "scheduling/started",
+    ])
+    .unwrap();
+    let StepCommands::Add { agreement, commitment, step_type, data, .. } = cmd else {
+        panic!("expected step add");
+    };
+    assert_eq!(agreement, "rec_1");
+    assert_eq!(commitment, "c1");
+    assert_eq!(step_type, "scheduling/started");
+    assert_eq!(data, None);
+}
+
+#[test]
+fn step_add_needs_agreement_commitment_and_type() {
+    assert!(parse_step(&["add", "--commitment", "c1", "--type", "x/y"]).is_err());
+    assert!(parse_step(&["add", "--agreement", "rec_1", "--type", "x/y"]).is_err());
+    assert!(parse_step(&["add", "--agreement", "rec_1", "--commitment", "c1"]).is_err());
+}
+
+#[test]
+fn step_list_needs_an_agreement() {
+    assert!(parse_step(&["list"]).is_err());
+    assert!(parse_step(&["list", "--agreement", "rec_1"]).is_ok());
+}
+
+#[test]
+fn step_data_is_a_json_object_with_an_empty_default() {
+    assert_eq!(parse_step_data(None).unwrap(), json!({}));
+    assert_eq!(parse_step_data(Some(r#"{"note":"x"}"#)).unwrap(), json!({ "note": "x" }));
+    assert!(parse_step_data(Some("[1]")).is_err());
+    assert!(parse_step_data(Some("not json")).is_err());
+}

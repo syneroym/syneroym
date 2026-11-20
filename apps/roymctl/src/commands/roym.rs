@@ -15,6 +15,7 @@ pub mod directory;
 pub mod find;
 pub mod group;
 pub mod signing;
+pub mod step;
 pub mod transaction;
 pub mod trust;
 
@@ -29,6 +30,9 @@ pub use backup::{
 };
 pub use directory::{DirectoryCommands, MemberCommands};
 pub use group::GroupCommands;
+pub use step::StepCommands;
+#[cfg(test)]
+pub(crate) use step::parse_step_data;
 #[cfg(test)]
 pub(crate) use syneroym_sdk::DeployedService;
 pub use transaction::TransactionCommands;
@@ -89,6 +93,11 @@ pub enum RoymCommands {
     Group {
         #[command(subcommand)]
         command: GroupCommands,
+    },
+    /// Work steps of an extension inside a formed agreement.
+    Step {
+        #[command(subcommand)]
+        command: StepCommands,
     },
 }
 
@@ -155,5 +164,6 @@ pub async fn handle(
         RoymCommands::Group { command } => {
             group::handle_group(command, dir, run_as, ucan_path).await
         }
+        RoymCommands::Step { command } => step::handle_step(command, dir, run_as, ucan_path).await,
     }
 }
