@@ -446,3 +446,158 @@ plan said demo stories drive only the Hub, but stories 10, 20 and 30 run
 `roymctl` from a shell part (`demo/lib.sh:49`, `demo/steps.ts:15`). So the
 C3a2 demo is a new owner question, Q10, with a story as the
 recommendation.
+
+## Plan review round 2 — Claude Sonnet 5.5 (Claude Code), 2026-11-20
+
+This round checks the fix of round 1 (commit `afac7bd4`, on top of
+`45e38bfb`) against the plan and the code. The plan author is Claude Opus
+5.5; the reviewer is Claude Sonnet 5.5. I read the whole plan again (1,677
+lines), the new text of `task.md` (Z3, C3b) and the extensions doc deviation,
+and I checked the new `file:line` links and claims the fix added.
+
+**Summary: P1 to P17 are fixed and verified. 3 new findings: 0 blocker, 1
+major, 2 minor. 3 open.**
+
+### Verification of P1 to P17
+
+- **P1 verified.** D-C3a-5 now states the contract: `validate()` calls
+  `check_commitment_extension(registry(), c)` for every commitment.
+  `check_extensions` is only for callers that need the `NotChecked` list.
+  Two `reveal_terms_strict` tests are in 7.1 and a new exit criterion
+  exists. The caller list matches the code. (But see P18: the rule list that
+  `validate()` now runs has a gap.)
+- **P2 verified.** `check_details_shape` runs first and owns the `extra`
+  limits; the 8 KiB rule is said to stay in `sd.rs:174`/`:329` and
+  `quote_ops.rs:265`. Six `extra` tests are listed.
+- **P3 verified.** `check_extension_kind` (kind only, for `validate_visible`)
+  and `check_partial_details` (three results) are separate. The `not_checked`
+  entries that stay are named, and the six presentation cases are in 7.1.
+  The existing cases at `presentation/tests/validation.rs:112` to `:149`
+  are kept.
+- **P4 verified.** `MAX_STEP_DATA_BYTES` and `MAX_STEPS_PER_AGREEMENT` are
+  checked at add, filing and import, with codes and tests. For a known
+  extension the rows are bounded by commitments, types and roles; only an
+  unknown extension can reach the cap, which is the case that mattered.
+- **P5 verified.** The key has the role (`SettlementRole` is `Giver` or
+  `Receiver`, `deal.rs:106`); import checks the key's role; the test-only
+  `by: either` step is listed.
+- **P6 verified.** `code` is the eighth type (the owner chose it); the view
+  uses the quote's original `lang` for `text`, `long-text` and `extra`;
+  machine translation of `details` is a backlog row.
+- **P7 verified.** `roymctl` is named in step 3 and in D-C3a-15; there is no
+  `--one-shot` flag, and Q4 says so. Exit criterion 2 names `roymctl` and
+  `quote_terms.ts`. The lines `transaction.rs:359` to `:362` are right.
+- **P8 verified.** `#[expect(clippy::expect_used, reason = …)]` on
+  `registry()`. `xtask/src/lint_suppressions.rs` handles `too_many_lines`
+  only, so it will not reject this; step 2 still says to run the check.
+  The cited precedents `key_store.rs:44` and `keys.rs:255` exist and use
+  `allow` (the plan says so).
+- **P9 verified.** `Registry::workflow` is the lookup for deal and listing
+  paths, so an `insight` id is unknown everywhere.
+- **P10 verified.** All four loose ends are rules in D-C3a-2/-3/-4 with
+  tests; the id function is written out and the version is not part of the
+  id.
+- **P11 verified.** Q9 is answered (a); the deviation is in the extensions
+  doc (`git diff` shows one added line there); the end-user bullet has the
+  exception; the Hub message `messages-accept-extension-unknown` has its
+  branch. The branch place `messages.ts:686` to `:690` is the right one.
+- **P12 verified.** The change at `agreement_ops.rs:267` is dropped and
+  section 4 lists the five sites. I checked each line: `decide.rs:427`,
+  `agreement_ops.rs:513`, `backup/sections.rs:373`, `quote_ops.rs:150` and
+  `:427` are right.
+- **P13 verified.** Section 4 and D-C3a-9 say what really happens, and
+  `old_listing_with_booking_mode_has_no_extension` is a listed test. The
+  catalog gate at `backup.rs:63` is right.
+- **P14 verified.** The id check and its test are named.
+- **P15 verified.** `scheduling` requires `booking` (see P20 for one detail);
+  the e2e change is removed from step 5 and 7.6.
+- **P16 verified.** 6.2 step 3 names `plain_view`; both `match` statements
+  get a `step` arm; `bundles.rs` and `roym_restore_e2e.rs` are in 7.3/7.4.
+- **P17 verified.** `task.md` Z3 and the C3b line say JSON in
+  `roym_core/extensions/`.
+
+New facts the fix added, spot-checked and correct: `demo/lib.sh:49`
+(`rc1`, `rc2`), `demo/steps.ts:15` (`runScript`), `en.ftl:447` to `:449`,
+`catalog.test.ts:226` to `:234`, `transition.rs:47` (`is_final`),
+`app.rs:284`, catalog `SCHEMA_VERSION` 3 at `app.rs:23`, `deal.rs:106`.
+
+### View on Q10 (the C3a2 demo; still open for the owner)
+
+I do not answer for the owner. My view: (a), the story `60-roym-step`. The
+rule in AGENTS.md ("Mandatory Demo Close-out") counts a new command as
+visible, and `roymctl roym step add` is one. Story number 60 is free (the
+folder ends at `50-roym-deal`). One cost the plan does not list: `roymctl`
+has no command that reads a listing's slots, and its `quote --slot` needs
+the slot id and the window (`transaction.rs:341` to `:364`). The slot id is
+derived from the listing id and the window (`listing::derive_slot_id`), and
+the Hub creates the slot from local date and time fields. So the browser
+part must write the listing id and the window to a file for the shell part,
+or the story must use a fixed window. This adds a few dozen lines to the
+"about 150" estimate. It is not a reason to choose (b).
+
+### Findings
+
+- [ ] **P18 — major.** *Where:* D-C3a-5 ("Rules of
+  `check_commitment_extension`, in order", rules 1, 3 and 5), the sentence
+  that `validate_commitment_kind` is replaced, `deal.rs:349` to `:390`,
+  `deal/sd.rs:264`.
+  *Problem:* The new rule list drops two refusals that
+  `validate_commitment_kind` makes today, and rule 1 contradicts rule 5.
+  (a) Rule 1 says: no extension means the result is `None`. But today a
+  `service-in-slot` commitment with no extension is refused
+  (`deal.rs:356` to `:361`, "service-in-slot requires scheduling extension
+  v1"). Rule 5 says "`service-in-slot` needs an extension", but rule 5 is
+  never reached when the extension is absent, because rule 1 returns first.
+  (b) The pairs of resource kind and commitment kind that give
+  `kind-mismatch` (`deal.rs:384` to `:387`: `service-in-slot` or
+  `goods-or-service` with kind `currency`, and `currency` with kind
+  `fulfilment`) are in no rule. The test at `deal/tests.rs:181` would
+  catch (b) when the code is written, but nothing in the plan says where
+  the check lives, and `check_extension_kind` (the replacement for
+  `validate_commitment_kind` in `validate_visible`) takes the same inputs.
+  *Failure case:* the implementer follows the rules as written. A hand-built
+  quote with a `service-in-slot` commitment, no extension and no `details`
+  passes `validate()` on the counterparty's node, and a `goods-or-service`
+  commitment with kind `currency` is accepted. Nothing fails until a later
+  step reads `slot_id` ("missing slot_id" at `agreement_ops.rs:267`), or a
+  settlement rule meets a commitment of the wrong kind.
+  *Fix:* Add a first rule: the resource kind and kind pair must be valid
+  (`kind-mismatch`), and make rule 1 "no extension: refused if the resource
+  kind needs one (`service-in-slot`: `commitment-kind-not-supported`);
+  otherwise no `details`, result `None`". Say that `check_extension_kind`
+  runs the same two rules, and keep the extension id shape check that
+  `validate_visible` makes at `sd.rs:265` to `:269`. Add three cases to
+  7.1: `service-in-slot` with no extension, `goods-or-service` with kind
+  `currency`, and `currency` with kind `fulfilment`, each for `validate` and
+  for `validate_visible`.
+  *Status:* Open
+
+- [ ] **P19 — minor.** *Where:* Statuses of P1 to P17 in this file.
+  *Problem:* session-strategy.md ("The review file") allows the statuses
+  `Open`, `Fixed (<sha>)`, `Rejected: <reason>` and `Deferred: <link>`. The
+  fix wrote "Fixed as proposed", "Fixed with the first option" and similar,
+  with no sha. The fix commit is `afac7bd4`. The boxes are ticked, so the
+  file is readable, but a later reader cannot find the commit from the
+  status.
+  *Fix:* Start each status of P1 to P17 with `Fixed (afac7bd4)` and keep the
+  explanation after it. P3, P6, P7, P8 and P12 already say how they differ;
+  keep that.
+  *Status:* Open
+
+- [ ] **P20 — minor.** *Where:* D-C3a-9 ("The rule between `booking` and
+  the extension"), exit criterion 2 of C3a1, section 7.9 (directory size).
+  *Problem:* `ListingPayload::validate` (in `listing.rs`) now has to know
+  that the id `scheduling` needs a `booking` block. That is a match on an
+  extension id outside `extension.rs`, and exit criterion 2 says no such
+  code exists, except a list that does not name `listing.rs`. The check
+  `git grep -n 'scheduling/slot@1\|"scheduling"'` in the same criterion
+  would then find `listing.rs` if the id is written as a string. Using
+  `registry()` instead would link the registry into every verifier of a
+  listing, including `directory`, which D-C3a-6 and 7.9 say must stay
+  free of it.
+  *Fix:* Say that `listing.rs` uses the constant `SCHEDULING_EXTENSION` from
+  `extension.rs` (a constant, no registry lookup), and add `listing.rs`
+  to the exceptions of exit criterion 2 with that reason. State the reason
+  in the plan: the rule is a shape rule that a stranger's directory must
+  check without the registry.
+  *Status:* Open
