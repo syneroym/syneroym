@@ -29,6 +29,7 @@ pub const RECORD_TYPES: &[(&str, u32)] = &[
     ("payment-request", 1),
     ("bundle-manifest", 1),
     ("deal-decline", 1),
+    ("step", 1),
 ];
 
 pub const RECORD_PROFILE: &str = "profile";
@@ -43,6 +44,7 @@ pub const RECORD_PAYMENT_REQUEST: &str = "payment-request";
 pub const RECORD_PAYMENT_ACKNOWLEDGEMENT: &str = "payment-acknowledgement";
 pub const RECORD_FULFILMENT_RECEIPT: &str = "fulfilment-receipt";
 pub const RECORD_DEAL_DECLINE: &str = "deal-decline";
+pub const RECORD_STEP: &str = "step";
 pub const RECORD_BUNDLE_MANIFEST: &str = "bundle-manifest";
 /// Signed by the quote author's transaction service, not by a person, and
 /// deliberately absent from `RECORD_TYPES`: it is derived state that

@@ -4,13 +4,14 @@ use syneroym_signed_record::{Salt, seeded_salt};
 
 use crate::{
     card,
-    deal::{Answers, DealTerms, LocalText, SettlementRole},
-    disclosure::{FULFILMENT_SET, PAYMENT_ACK_SET, PAYMENT_REQUEST_SET, conceal_hidden},
+    deal::{Answers, DealTerms, ExtensionRef, LocalText, SettlementRole},
+    disclosure::{FULFILMENT_SET, PAYMENT_ACK_SET, PAYMENT_REQUEST_SET, STEP_SET, conceal_hidden},
     fulfilment::{FulfilmentHidden, FulfilmentReceiptPayload},
     payment::{
         PaymentAckHidden, PaymentAcknowledgementPayload, PaymentRequestHidden,
         PaymentRequestPayload,
     },
+    step::{StepHidden, StepPayload},
     transaction::QuotePayload,
 };
 
@@ -67,6 +68,19 @@ pub struct PlainFulfilment {
     pub quote_author_did: String,
     pub role: SettlementRole,
     pub settlement_note: Option<LocalText>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PlainStep {
+    pub agreement: String,
+    pub conversation: String,
+    pub commitment_id: String,
+    pub counterparty_did: String,
+    pub quote_author_did: String,
+    pub role: SettlementRole,
+    pub extension: ExtensionRef,
+    pub step_type: String,
+    pub data: serde_json::Value,
 }
 
 pub fn conceal_quote(payload: PlainQuote, seed: u64) -> (QuotePayload, Vec<String>) {
@@ -149,6 +163,26 @@ pub fn conceal_fulfilment(
             counterparty_did: p.counterparty_did,
             quote_author_did: p.quote_author_did,
             role: p.role,
+            sd,
+        },
+        disclosures,
+    )
+}
+
+pub fn conceal_step(p: PlainStep, seed: u64) -> (StepPayload, Vec<String>) {
+    let mut salts = seeded_salts(seed);
+    let hidden = StepHidden { data: p.data };
+    let (sd, disclosures) = conceal_hidden(&hidden, &STEP_SET, &mut salts).expect("conceal step");
+    (
+        StepPayload {
+            agreement: p.agreement,
+            conversation: p.conversation,
+            commitment_id: p.commitment_id,
+            counterparty_did: p.counterparty_did,
+            quote_author_did: p.quote_author_did,
+            role: p.role,
+            extension: p.extension,
+            step_type: p.step_type,
             sd,
         },
         disclosures,
