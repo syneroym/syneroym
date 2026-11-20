@@ -103,19 +103,38 @@ fn version_zero_is_refused() {
 
 #[test]
 fn schema_names_need_the_id_prefix_and_a_version() {
-    for name in ["form@1", "other/form@1", "demo/form", "demo/form@0", "demo/form@x"] {
+    let cases = [
+        ("form@1", "must start with 'demo/'"),
+        ("other/form@1", "must start with 'demo/'"),
+        ("demo/form", "must end with @<version>"),
+        ("demo/form@0", "must end with @<version>"),
+        ("demo/form@x", "must end with @<version>"),
+    ];
+    for (name, rule) in cases {
         let mut m = base();
         m["details"][0]["schema"] = json!(name);
-        assert!(!refused(&m).is_empty(), "schema {name:?}");
+        let err = refused(&m);
+        assert!(err.contains(rule), "schema {name:?}: {err}");
     }
 }
 
 #[test]
 fn step_types_need_the_id_prefix_and_a_limit() {
-    for step in ["done", "other/done", &format!("demo/{}", "a".repeat(60))] {
+    let cases = [
+        ("demo", "done".to_string(), "must start with 'demo/'"),
+        ("demo", "other/done".to_string(), "must start with 'demo/'"),
+        ("demo", format!("demo/{}", "a".repeat(33)), "must be [a-z0-9-]"),
+        ("demo", format!("demo/{}", "a".repeat(60)), "too long"),
+        // 32 + 1 + 32 bytes: each part is allowed, only the whole is too long.
+        ("a".repeat(32).leak(), format!("{}/{}", "a".repeat(32), "b".repeat(32)), "too long"),
+    ];
+    for (id, step, rule) in cases {
         let mut m = base();
+        m["id"] = json!(id);
+        m["details"][0]["schema"] = json!(format!("{id}/form@1"));
         m["steps"][0]["type"] = json!(step);
-        assert!(!refused(&m).is_empty(), "step {step:?}");
+        let err = refused(&m);
+        assert!(err.contains(rule), "step {step:?}: {err}");
     }
 }
 
@@ -245,6 +264,33 @@ fn two_manifests_that_make_one_message_id_are_refused() {
     });
     let err = Registry::parse(&[&first.to_string(), &second.to_string()]).unwrap_err().to_string();
     assert!(err.contains("ext-a-b-c-d"), "{err}");
+}
+
+#[test]
+fn two_versions_of_one_schema_may_share_a_field_name() {
+    let mut m = base();
+    m["details"] = json!([
+        { "schema": "demo/form@1", "fields": [{ "name": "note", "type": "text", "max_len": 100 }] },
+        { "schema": "demo/form@2", "fields": [{ "name": "note", "type": "text", "max_len": 200 }] }
+    ]);
+    parse_one(&m).unwrap();
+}
+
+#[test]
+fn two_versions_of_one_extension_may_share_ids() {
+    let first = base();
+    let mut second = base();
+    second["version"] = json!(2);
+    let loaded = Registry::parse(&[&first.to_string(), &second.to_string()]).unwrap();
+    assert_eq!(loaded.manifests().len(), 2);
+}
+
+#[test]
+fn a_header_check_ignores_an_insight() {
+    let sources = [insight().to_string(), base().to_string()];
+    let sources: Vec<&str> = sources.iter().map(String::as_str).collect();
+    assert!(super::known_workflow_in(&sources, &ext("demo", 1)));
+    assert!(!super::known_workflow_in(&sources, &ext("digest", 1)));
 }
 
 fn insight() -> Value {

@@ -33,19 +33,38 @@ pub fn step_name_id(ext_id: &str, step_type: &str) -> String {
     format!("ext-{}-step-{}", dashed(ext_id), dashed(name))
 }
 
-/// Every id that this manifest implies, in manifest order.
-pub fn manifest_message_ids(manifest: &Manifest) -> Vec<String> {
-    let mut ids = Vec::new();
+/// Every id that this manifest implies, with the place that makes it, in
+/// manifest order. A place is the extension, the kind of thing (field, choice
+/// or step), the schema's short name, the field name and the choice. The
+/// schema version is not in it, so two versions of one schema that share a
+/// field name share one place.
+pub fn manifest_message_sources(manifest: &Manifest) -> Vec<(String, String)> {
+    let ext = manifest.id.as_str();
+    let mut out = Vec::new();
     for schema in &manifest.details {
+        let short = schema_short(ext, &schema.schema);
         for field in &schema.fields {
-            ids.push(field_label_id(&manifest.id, &schema.schema, &field.name));
+            let field_place = format!("{ext}/field/{short}/{}", field.name);
+            out.push((field_label_id(ext, &schema.schema, &field.name), field_place.clone()));
             for choice in field.choices.iter().flatten() {
-                ids.push(choice_label_id(&manifest.id, &schema.schema, &field.name, choice));
+                out.push((
+                    choice_label_id(ext, &schema.schema, &field.name, choice),
+                    format!("{field_place}/{choice}"),
+                ));
             }
         }
     }
     for step in &manifest.steps {
-        ids.push(step_name_id(&manifest.id, &step.step_type));
+        let name = step.step_type.strip_prefix(ext).and_then(|r| r.strip_prefix('/'));
+        out.push((
+            step_name_id(ext, &step.step_type),
+            format!("{ext}/step/{}", name.unwrap_or(&step.step_type)),
+        ));
     }
-    ids
+    out
+}
+
+/// Every id that this manifest implies, in manifest order.
+pub fn manifest_message_ids(manifest: &Manifest) -> Vec<String> {
+    manifest_message_sources(manifest).into_iter().map(|(id, _)| id).collect()
 }

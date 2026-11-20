@@ -177,13 +177,17 @@ impl Registry {
 /// this answer (the catalog, for `listing.set`) does not link the schema
 /// checks. It always agrees with [`Registry::workflow`].
 pub fn is_known_workflow(ext: &ExtensionRef) -> bool {
+    known_workflow_in(MANIFESTS, ext)
+}
+
+fn known_workflow_in(sources: &[&str], ext: &ExtensionRef) -> bool {
     #[derive(Deserialize)]
     struct Header {
         id: String,
         version: u32,
         kind: ManifestKind,
     }
-    MANIFESTS
+    sources
         .iter()
         .filter_map(|source| serde_json::from_str::<Header>(source).ok())
         .any(|h| h.kind == ManifestKind::Workflow && h.id == ext.id && h.version == ext.version)

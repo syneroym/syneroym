@@ -1,6 +1,6 @@
 //! The rules a manifest must meet to load.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use super::{MAX_STEP_TYPE_LEN, Manifest, ManifestKind, ids, schema};
 use crate::{
@@ -133,13 +133,23 @@ fn check_field_list(fields: &[super::Field]) -> Result<(), String> {
     Ok(())
 }
 
-/// Two places must never give one message id.
+/// Two different places must never give one message id. The same place in two
+/// versions of a schema or of an extension gives the same id on purpose.
 pub(super) fn check_message_ids(manifests: &[Manifest]) -> Result<(), ManifestError> {
-    let mut seen: HashSet<String> = HashSet::new();
+    let mut seen: HashMap<String, String> = HashMap::new();
     for m in manifests {
-        for id in ids::manifest_message_ids(m) {
-            if !seen.insert(id.clone()) {
-                return Err(ManifestError::rule(&m.id, format!("message id '{id}' is made twice")));
+        for (id, place) in ids::manifest_message_sources(m) {
+            match seen.get(&id) {
+                Some(first) if *first != place => {
+                    return Err(ManifestError::rule(
+                        &m.id,
+                        format!("message id '{id}' is made twice ({first} and {place})"),
+                    ));
+                }
+                Some(_) => {}
+                None => {
+                    seen.insert(id, place);
+                }
             }
         }
     }
