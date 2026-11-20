@@ -6,8 +6,8 @@ planning conversation. This plan is meant to stand alone.*
 
 **Status: plan written, 2026-11-20, by Claude Opus 5.5. Plan review round
 1 (Claude Sonnet 5.5, [slice-c3a-review.md](slice-c3a-review.md), P1 to
-P17) is folded in. The owner answered Q1 to Q9 on 2026-11-20 (section
-2.1). One question is open: Q10, the demo of C3a2.**
+P17) and round 2 (P18 to P20) are folded in. The owner answered Q1 to Q10
+on 2026-11-20 (section 2.1). No question is open.**
 
 **Size and PRs.** [task.md](task.md) sizes C3a as M. Checked against the
 code, it is L: a registry and a schema checker in `roym_core`, a listing
@@ -174,7 +174,8 @@ C3a2:
   (Q6).
 - Both people see a new card in the chat: "Work started", in their own
   language, with who marked it and when.
-- The demo story for this is owner question Q10.
+- The demo story `60-roym-step` shows this: Bob accepts a slot booking in
+  his Hub, Alice runs the command, and both Hubs show the card (Q10).
 
 How a developer can see it work:
 
@@ -205,7 +206,8 @@ limit on step `data` (P4, D-C3a-10). Q6 (a); the row key holds the role
 `none` without an explicit yes, so C3a2's demo is the new question Q10.
 Q8 (a), plus a field type `code` for identifiers (P6, D-C3a-2). Q9 (a):
 keep the `agreement.accept` refusal for a giver, and record the deviation
-(P11; written in the extensions doc in the review commit). Q10 is open.
+(P11; written in the extensions doc in the review commit). Q10 (a): C3a2
+adds the demo story `60-roym-step`.
 
 #### Q1. Split C3a into C3a1 (frame) and C3a2 (step records)?
 
@@ -406,7 +408,7 @@ commitment whose extension it does not know (P11).
 
 **Answer:** (a). The deviation is in the extensions doc.
 
-#### Q10. The demo story of C3a2 (open)
+#### Q10. The demo story of C3a2 (answered)
 
 - **(a) A new story `60-roym-step`: a browser part
   `demo/60-roym-step.spec.ts` and a shell part `demo/60-roym-step.sh`.**
@@ -422,6 +424,30 @@ commitment whose extension it does not know (P11).
 - (b) `- none: a step is made only from roymctl; C3b's story shows the step
   card`, with the owner's explicit yes. C3b's plan then must carry a story
   that shows the step card.
+
+**Answer:** (a). One more cost, found in review round 2: `roymctl` has no
+command that reads a listing's slots, and `quote --slot` needs the slot id
+and the window (`transaction.rs:341` to `:364`). The Hub makes the slot
+from local date and time fields. So the story uses this order:
+
+1. The browser part makes Alice's listing and one slot in her Hub, with a
+   fixed window that it computes (for example tomorrow, 10:00 to 11:00 in
+   the browser's time zone). It reads the listing id from the Hub.
+2. It sets `DEMO_STEP_LISTING_ID`, `DEMO_STEP_SLOT_START` and
+   `DEMO_STEP_SLOT_END` in `process.env`, then calls
+   `runScript('60-roym-step-quote.sh')`. `execFileSync` passes
+   `process.env` to the script. The script derives nothing: it passes the
+   window to `quote --slot` as it is.
+3. Bob accepts the quote in his Hub, as in story 50. The browser part reads
+   the agreement record id with `agreement.list`, as story 50's helper does
+   (`demo/50-roym-deal.spec.ts:25` to `:38`; move it to `steps.ts` or
+   `hub-helpers.ts` so both stories use one helper), and sets
+   `DEMO_STEP_AGREEMENT_ID`.
+4. `runScript('60-roym-step-start.sh')` runs `rc1 roym step add`.
+5. Both Hubs show the "Work started" card.
+
+`runScript` takes no arguments, so the two shell steps are two files. This
+adds a few dozen lines to the estimate above.
 
 ### 2.2 Points found while reading
 
@@ -1370,9 +1396,10 @@ Done with this commit.
 - `crates/substrate/tests/roym_step_e2e.rs` on `common::SubstrateTestContext`
   and `common/roym_flow.rs`, and the step in `roym_restore_e2e.rs`
   (section 7.4).
-- The demo story of Q10 (a), if the owner picks it:
-  `demo/60-roym-step.spec.ts` and `demo/60-roym-step.sh`, listed in the
-  `demo:` close-out. Run with `mise run demo`.
+- The demo story of Q10 (a): `demo/60-roym-step.spec.ts`,
+  `demo/60-roym-step-quote.sh` and `demo/60-roym-step-start.sh`, in the
+  order of Q10's answer. The C3a2 row in status.md lists these files as
+  its demo. Run with `mise run demo`.
 
 #### Step 6 — Sizes, docs and close-out of C3a2
 
@@ -1525,7 +1552,7 @@ the import (P16).
 
 - C3a1: no change and no new spec (step 5, P15).
 - C3a2: the gallery count (`tests/roym-hub.spec.ts:199` to `:222`), and
-  the demo story of Q10 if the owner picks (a).
+  the demo story `60-roym-step` (Q10).
 - Stories 40 and 50 pass unchanged (they create no extension).
 
 ### 7.7 Not tested
@@ -1686,9 +1713,8 @@ C3a2:
 - [ ] Export and import keep steps, with their plain `data`; the
   `deal-decline` re-verify question of section 2.2, point 10 is answered
   with a test.
-- [ ] The demo of Q10 is done as the owner answered: the story passes in
-  `mise run demo`, or the owner's explicit yes to `none` is quoted in the
-  status row.
+- [ ] The demo story `60-roym-step` (Q10) passes in `mise run demo` and in
+  `npm test`, and the C3a2 row in status.md lists its three files.
 - [ ] Component sizes recorded and within limits.
 - [ ] Owner reviewed the Hindi message.
 - [ ] `mise run verify` passes with no `--skip`.

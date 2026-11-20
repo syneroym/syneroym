@@ -631,3 +631,11 @@ code. **Open: 0.** P18, P19 and P20 are verified.
 One status line was stale and is corrected in this commit: the C3a row in
 status.md said "3 open" after the fix. It now says 0 open.
 Q10 (the C3a2 demo) is still an owner question.
+
+### Owner answer to Q10 — recorded by Claude Opus 5.5, 2026-11-20
+
+The owner asked for the recommendation, which is (a): C3a2 adds the demo
+story `60-roym-step`. The plan's Q10 answer gives the order of the story
+and how the browser part passes the listing id, the slot window and the
+agreement id to the two shell parts (`60-roym-step-quote.sh`,
+`60-roym-step-start.sh`). No owner question is open.
