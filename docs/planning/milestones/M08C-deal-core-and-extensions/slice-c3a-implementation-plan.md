@@ -1684,8 +1684,9 @@ Each PR fixes the statements it makes false. C8 does the full pass.
 
 C3a1:
 
-- [ ] Every C3a1 row of section 3 names a test that exists and passes.
-- [ ] No code outside `crates/roym_core/src/extension.rs` (and its
+- [x] Every C3a1 row of section 3 names a test that exists and passes.
+  (Each named test exists; all passed in CI on `62fdff99`.)
+- [x] No code outside `crates/roym_core/src/extension.rs` (and its
   submodules) names `scheduling/slot@1` or matches on an extension id,
   except the `slot-matches-window` check, the seat code sites of section 4
   (until C3b), the users of the moved constants
@@ -1696,15 +1697,24 @@ C3a1:
   the registry; D-C3a-9). Each of these uses the constant, never a string
   literal.
   Check with `git grep -n 'scheduling/slot@1\|"scheduling"'`.
-- [ ] `DealTerms::validate` still refuses a scheduling quote whose
+  (On `629f8f28`, outside tests, only `extensions/scheduling.json` and the
+  two constants in the Hub's `extensions/registry.ts` match.)
+- [x] `DealTerms::validate` still refuses a scheduling quote whose
   `slot_id` does not match its window, on every path through
-  `reveal_terms_strict` (P1).
-- [ ] Stories 40 and 50 and the Hub cases pass unchanged.
-- [ ] Parity passes in both harnesses after `mise run build:roym`.
-- [ ] Component sizes recorded and within limits.
-- [ ] Deviations, backlog rows and living docs done.
-- [ ] Owner reviewed the five Hindi messages.
-- [ ] `mise run verify` passes with no `--skip`.
+  `reveal_terms_strict` (P1). (`reveal_strict_refuses_a_slot_id_that_does_not_match_its_window`.)
+- [x] Stories 40 and 50 and the Hub cases pass unchanged. (CI "Playwright
+  E2E" on `62fdff99`; Hub: 49 files, 599 passed.)
+- [x] Parity passes in both harnesses after `mise run build:roym`. (CI on
+  `62fdff99`; locally 264 parity tests ran after the review fixes.)
+- [x] Component sizes recorded and within limits ([task.md](task.md),
+  section 1).
+- [x] Deviations, backlog rows and living docs done.
+- [ ] Owner reviewed the five Hindi messages. Open: six messages (see the
+  roym-extensions Deviations), waiting for the owner.
+- [x] `mise run verify` passes with no `--skip`. Replaced by CI, by owner
+  decision (2026-11-20): every CI job passed on `62fdff99`
+  ([run](https://github.com/syneroym/syneroym/actions/runs/44770697189)),
+  and the commits after it change only docs.
 
 C3a2:
 

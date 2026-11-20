@@ -1,6 +1,12 @@
 ---
 status: draft
 living-docs-touched:
+  - docs/system-requirements-spec.md
+  - docs/system-architecture.md
+  - docs/developer-guide.md
+  - docs/TERMINOLOGY.md
+  - docs/planning/traceability-matrix.md
+  - docs/planning/deferred-backlog.md
 ---
 # Roym extensions
 
