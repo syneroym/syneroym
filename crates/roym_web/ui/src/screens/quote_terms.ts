@@ -1,8 +1,7 @@
 import type { ServiceLocationKind } from "../listings/editor";
 import { currencyMinorExponent, minorToDecimal } from "../money";
 
-export const SCHEDULING_EXTENSION = "scheduling";
-export const SCHEDULING_SLOT_SCHEMA = "scheduling/slot@1";
+import { SCHEDULING_EXTENSION, SCHEDULING_SLOT_SCHEMA } from "../extensions/registry";
 
 export interface QuoteFormFields {
   give?: string;

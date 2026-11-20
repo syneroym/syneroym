@@ -37,6 +37,7 @@ directory-search-failed = The search failed: { $detail }. Press { $button } to t
 directory-search-not-started = This installation could not start the search. Press { $button } to try again.
 messages-quote-expired = This quote has expired. Ask for a new one.
 messages-accept-failed = Could not accept: { $detail }
+messages-accept-extension-unknown = This deal needs a part of Roym that this device does not have. Update Roym, then accept.
 contacts-upsert-failed = Upsert failed: { $detail }
 safety-block-failed = Block failed: { $detail }
 safety-report-failed = Report failed: { $detail }
@@ -832,3 +833,11 @@ category-picker-remove = Remove { $label }
 category-picker-own-code = Use the code “{ $code }”
 category-picker-no-match = No category matches.
 category-picker-full = You can choose up to { $max } categories.
+
+## Extensions
+
+ext-details-heading = Extra terms
+ext-not-checked = Not checked on this device
+ext-scheduling-slot-listing-id = Listing code:
+ext-scheduling-slot-slot-id = Slot code:
+ext-scheduling-step-started = Work started

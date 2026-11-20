@@ -18,6 +18,22 @@ export function formatNumber(n: number): string {
   return cached("number", (l) => new Intl.NumberFormat(l)).format(n);
 }
 
+/// Hours and minutes, for example "1 hour 30 minutes". Whole minutes only;
+/// a value that is not a count of seconds is the caller's to handle.
+export function formatDuration(secs: number): string {
+  const totalMinutes = Math.round(secs / 60);
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  const unit = (n: number, name: "hour" | "minute") =>
+    cached(`duration-${name}`, (l) =>
+      new Intl.NumberFormat(l, { style: "unit", unit: name, unitDisplay: "long" }),
+    ).format(n);
+  const parts: string[] = [];
+  if (hours > 0) parts.push(unit(hours, "hour"));
+  if (minutes > 0 || hours === 0) parts.push(unit(minutes, "minute"));
+  return cached("duration-list", (l) => new Intl.ListFormat(l, { type: "unit", style: "narrow" })).format(parts);
+}
+
 /// The date for a time in milliseconds, or `undefined` when the value is not
 /// a date. `Intl` throws for such a value, and a time from another node must
 /// not be able to stop a whole screen from drawing.

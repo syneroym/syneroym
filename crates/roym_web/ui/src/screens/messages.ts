@@ -4,7 +4,7 @@ import { codeWord, currentLanguage, messageId, t } from "../i18n/i18n";
 import { languageList } from "../i18n/language_list";
 import { languageName, textLangSelect } from "../i18n/text_lang";
 import { onFeed } from "../events";
-import { call, RpcError } from "../rpc";
+import { call, refusalCode, RpcError } from "../rpc";
 import { whoami } from "../session/login";
 import { renderCard } from "../cards/render";
 import { renderRefusedCard } from "../cards/refused";
@@ -714,6 +714,8 @@ export function renderCardActions(
           const msg = err instanceof RpcError ? err.message : String(err);
           if (msg.includes("quote-expired") || msg.includes("expired")) {
             acceptErr.textContent = t("messages-quote-expired");
+          } else if (err instanceof RpcError && refusalCode(err) === "extension-unknown") {
+            acceptErr.textContent = t("messages-accept-extension-unknown");
           } else {
             acceptErr.textContent = t("messages-accept-failed", { detail: errText(err) });
           }

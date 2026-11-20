@@ -1,9 +1,6 @@
 import { describe, expect, it } from "vitest";
-import {
-  SCHEDULING_EXTENSION,
-  SCHEDULING_SLOT_SCHEMA,
-  buildDealTerms,
-} from "./quote_terms";
+import { SCHEDULING_EXTENSION, SCHEDULING_SLOT_SCHEMA } from "../extensions/registry";
+import { buildDealTerms } from "./quote_terms";
 
 interface TestCommitment {
   giver?: string;

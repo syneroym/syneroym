@@ -1,5 +1,6 @@
 import { FluentBundle, FluentResource } from "@fluent/bundle";
 import { describe, expect, it } from "vitest";
+import { allManifestMessageIds } from "../extensions/registry";
 import { taxonomyMessageIds } from "../taxonomy/taxonomy";
 import { findMessageIds } from "./scan";
 
@@ -159,15 +160,34 @@ describe("the English file", () => {
   const KEPT_FOR_RUST = ["group-add-unreachable"];
 
   it("has no message that nothing uses", () => {
-    const used = new Set(
-      Object.entries(sources)
+    // The label of an extension's field and the name of its step are derived
+    // from the manifest, so no source names them.
+    const used = new Set([
+      ...Object.entries(sources)
         .filter(([path]) => !path.endsWith(".test.ts"))
         .flatMap(([path, source]) => findMessageIds(source, path).ids),
-    );
+      ...allManifestMessageIds(),
+    ]);
     const unused = [...variablesById(english).keys()].filter(
       (id) => !used.has(id) && !KEPT_FOR_RUST.includes(id),
     );
     expect(unused).toEqual([]);
+  });
+});
+
+describe("the extension messages", () => {
+  /// Words the Hub itself uses around the labels that a manifest implies.
+  const OWN = ["ext-details-heading", "ext-not-checked"];
+  const expected = [...allManifestMessageIds(), ...OWN].sort();
+  const extIds = (text: string) =>
+    [...variablesById(text).keys()].filter((id) => id.startsWith("ext-")).sort();
+
+  it("give English exactly the ids that the manifests imply", () => {
+    expect(extIds(english)).toEqual(expected);
+  });
+
+  it("give Hindi exactly the same ids as English", () => {
+    expect(extIds(hindi)).toEqual(expected);
   });
 });
 

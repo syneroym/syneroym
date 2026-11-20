@@ -554,6 +554,52 @@ describe("the cards, in Hindi", () => {
     expect(english(el)).toEqual([]);
   });
 
+  it("draws the quote card with a slot's reference codes and an unknown extension's data", () => {
+    const commitment = (id: string, extension: object, details: object) => ({
+      commitment_id: id,
+      giver: "quote-author",
+      kind: "fulfilment",
+      resource_kind: "goods-or-service",
+      description: { lang: "hi", text: "Zq-desc" },
+      declared_value_minor: 1000,
+      extension,
+      details,
+    });
+    const el = renderQuote({
+      terms: {
+        lang: "hi",
+        scope: "Zq-scope",
+        currency: "INR",
+        commitments: [
+          commitment(
+            "c1",
+            { id: "scheduling", version: 1 },
+            {
+              extension: "scheduling",
+              schema: "scheduling/slot@1",
+              data: { listing_id: "Zq-lst", slot_id: "Zq-slot" },
+            },
+          ),
+          commitment(
+            "c2",
+            { id: "future", version: 1 },
+            {
+              extension: "future",
+              schema: "future/x@1",
+              data: { ZqKey: "Zq-value" },
+              extra: [{ label: "Zq-label", value: "Zq-extra" }],
+            },
+          ),
+        ],
+      },
+    });
+    expect(el.querySelector(".quote-details-c1")?.textContent).toMatch(/[ऀ-ॿ]/);
+    expect(el.querySelector(".quote-details-c2 .field-view-not-checked")?.textContent).toMatch(
+      /[ऀ-ॿ]/,
+    );
+    expect(english(el)).toEqual([]);
+  });
+
   it("draws the quote card showing an author translation in Hindi with binds warning", () => {
     const el = renderQuote({
       terms: {

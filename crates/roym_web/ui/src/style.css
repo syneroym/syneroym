@@ -322,3 +322,24 @@ body {
 .quote-size-over {
   color: #b91c1c;
 }
+.quote-details {
+  margin: 4px 0 8px;
+  padding-left: 12px;
+  border-left: 2px solid #cbd5e1;
+}
+.quote-details-heading {
+  font-size: 0.85em;
+  color: #475569;
+  margin: 2px 0;
+}
+.field-view-line {
+  margin: 2px 0;
+}
+.field-view-long-text {
+  white-space: pre-line;
+}
+.field-view-not-checked {
+  font-size: 0.85em;
+  color: #92400e;
+  margin: 2px 0;
+}

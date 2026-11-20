@@ -35,6 +35,7 @@ directory-search-failed = खोज नहीं हो सकी: { $detail }�
 directory-search-not-started = यह इंस्टॉलेशन खोज शुरू नहीं कर सका। फिर कोशिश करने के लिए "{ $button }" दबाएँ।
 messages-quote-expired = यह कोटेशन समाप्त हो गया है। नया कोटेशन माँगें।
 messages-accept-failed = स्वीकार नहीं हो सका: { $detail }
+messages-accept-extension-unknown = इस सौदे को Roym का एक ऐसा हिस्सा चाहिए जो इस डिवाइस में नहीं है। Roym को अपडेट करें, फिर स्वीकार करें।
 contacts-upsert-failed = संपर्क सहेजा नहीं जा सका: { $detail }
 safety-block-failed = ब्लॉक नहीं हो सका: { $detail }
 safety-report-failed = रिपोर्ट नहीं भेजी जा सकी: { $detail }
@@ -809,3 +810,11 @@ category-picker-remove = { $label } हटाएँ
 category-picker-own-code = “{ $code }” कोड का उपयोग करें
 category-picker-no-match = कोई श्रेणी मेल नहीं खाती।
 category-picker-full = आप अधिकतम { $max } श्रेणियाँ चुन सकते हैं।
+
+## Extensions
+
+ext-details-heading = अतिरिक्त शर्तें
+ext-not-checked = इस डिवाइस पर जाँचा नहीं गया
+ext-scheduling-slot-listing-id = लिस्टिंग कोड:
+ext-scheduling-slot-slot-id = स्लॉट कोड:
+ext-scheduling-step-started = काम शुरू हुआ
