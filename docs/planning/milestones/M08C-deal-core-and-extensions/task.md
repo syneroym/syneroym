@@ -18,7 +18,7 @@ Read them first. Each slice below names the change docs it builds part of.
 
 | Change doc | Status | Criteria built here |
 | --- | --- | --- |
-| [roym-agreements](../../changes/roym-agreements/change.md) | draft, open questions 1 and 3 to 12 decided by the owner (2026-11-10), 13 and 15 decided on 2026-11-20, 14 open, 3 review rounds and the PR #372 review | `AG-1` to `AG-23`, `AG-27` to `AG-50`. `AG-24` to `AG-26` are built in M08E and M08H. |
+| [roym-agreements](../../changes/roym-agreements/change.md) | draft, open questions 1 and 3 to 12 decided by the owner (2026-11-10), 13 to 15 decided on 2026-11-20, 3 review rounds and the PR #372 review | `AG-1` to `AG-23`, `AG-27` to `AG-51`. `AG-24` to `AG-26` are built in M08E and M08H. |
 | [roym-value-exchange](../../changes/roym-value-exchange/change.md) (overview) | draft | `VX-1`, `VX-2`, `VX-5` to `VX-12`, `VX-45`, `VX-46`, `VX-54` to `VX-56`, through the `AG-*` rows that refine them |
 | [roym-extensions](../../changes/roym-extensions/change.md) | draft, reviewed (no review file was kept) | `EX-1` to `EX-8`, `EX-10` to `EX-14`, `EX-17` to `EX-22`. `EX-11` for inline definitions only. `EX-9` (an opinion points at a step) is built in M08G. `EX-15` and `EX-16` move out of M08C (section 6, question 3). `EX-19` is the manifest field only. |
 | [roym-message-forwarding](../../changes/roym-message-forwarding/change.md) | draft, reviewed (no review file was kept) | `FW-1` to `FW-15` |
@@ -205,12 +205,13 @@ Added on 2026-11-20 (agreements doc, open question 13, refined in the PR #372 re
 - The enquiry's optional `as_listed` and the optional `description`. The listing's `acceptance`, `not_limited`, `instant_cap` and `deal_terms`, with `listing.set`'s refusals and the projection's `can_agree_as_listed` (AG-45).
 - On the quote author's node: `quote.from-listing`, the current-version and withdrawn rules, the consent time, the limits on instant, and the fallback when signing fails (AG-45, AG-49).
 - On the counterparty's node: the automatic acceptance and its three checks immediately before signing, and the stored `viewed_lang` and `viewed_via_mt` (AG-44, AG-49).
+- The progress snapshot's `formed_as` label: `quote`, `as-listed-instant` or `as-listed-confirmed`, the same in every snapshot (AG-51, open question 14).
 - Signing with no session uses the path the writer's countersign uses today (`decide.rs:695`, `signing::person_principal`). The review confirmed it on `main`.
 - Hub: "Agree as listed" on a directory hit (with a slot picker for a slot offering), the machine-translation warning before the tap, the owner's confirm, the owner's "cancel unconfirmed instant agreements", and the waiting, ended and refused lines.
 - It comes after C3b, so that `instant` works for one-shot offerings and for slots.
 - Review it in two passes, by node: the owner's side (mode, driver, quote, confirm) and the counterparty's side (tap, check, waiting line).
 - New Hindi messages: the owner reviews them before the merge, as for earlier slices.
-- Criteria: AG-44, AG-45, AG-49, AG-50; VX-54.
+- Criteria: AG-44, AG-45, AG-49 to AG-51; VX-54.
 - Demo: extend story 50 with a deal agreed as listed (the plan confirms).
 
 Change docs: roym-agreements, roym-value-exchange (VX-54), roym-extensions (EX-18).

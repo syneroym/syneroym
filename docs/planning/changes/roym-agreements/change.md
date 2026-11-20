@@ -156,6 +156,7 @@ Kinds of test:
 | AG-44 | "Agree as listed" on an offering with complete terms sends one enquiry with `as_listed`. The quote author's node answers it with `quote.from-listing`: with no action by the owner in `instant` mode, or after the owner's one confirm in `confirm-first` mode. The counterparty's node signs its acceptance half with no further action only when `terms_from_listing` on its stored version equals the quote's disclosed terms as one value, with `quote_expires_at_secs` checked by range. Any difference, or a missing disclosure, shows the quote as a normal quote, and the person decides (VX-54). | Unit: `terms_from_listing`, one row per refusal reason. The check, one row per field of `DealTerms` and `Commitment`, generated from the struct, so a new field without a row fails the test. Two-node: an instant offering reaches `agreed` from one call on the counterparty's node, with no `transaction.sync` call by the test on either node; the same with both Hubs closed; a confirm-first offering reaches `agreed` after one call on each node; a quote that differs in one term waits for the person. |
 | AG-45 | `listing.set` accepts `acceptance: instant` only when `open_to` is `anyone`, the offering is a slot offering or `not_limited`, and signing is installed; otherwise it refuses with `instant-not-allowed` and the reason. When it answers, the owner's node treats an instant offering as confirm first while it holds `instant_cap` open instant agreements, while the counterparty holds one for that offering, or while signing fails; the owner's Hub says why. A full slot ends `not-formed` with `slot-taken`, with no fallback. Until the agreement forms, the counterparty's Hub shows the deal as waiting, never as agreed (VX-54, principle 13). | Unit for each refusal of `listing.set`. Service: the cap, the one-per-counterparty rule, a full slot, and a failing certificate. E2E: the Hub's waiting line while the owner's node is stopped. |
 | AG-49 | The consent and the version. The owner's node declines an enquiry whose `valid_until_secs` has passed (`consent-expired`) and one whose listing is withdrawn (`offering-withdrawn`). It answers from the current version, so a changed offering gives a normal quote. The counterparty's node signs only when the quote's `issued_at_secs` is not later than `valid_until_secs` and it holds no decline or withdrawal of the enquiry, checked immediately before it signs. | Service: consent expired before the quote; withdrawal before the quote; version changed; listing withdrawn; quote expiry between the quote and the acceptance. E2E: a refused first contact shows as refused, not as waiting. |
+| AG-51 | Every progress snapshot carries `formed_as`. It is `as-listed-instant` when the writer answered an as-listed enquiry in instant mode, `as-listed-confirmed` when the owner confirmed it, and `quote` otherwise. It is the same in every snapshot of one agreement (open question 14). | Service: one agreement of each kind, checking the first and a later snapshot. Unit: a presentation that shows only the latest snapshot shows `formed_as`. |
 | AG-50 | The driver. On each node, a deal card that arrives in a conversation leads to a `transaction.sync` of that conversation with no session and no Hub, within a bounded time. The driver adds no call from `conversation` to `transaction`. | Two-node with both Hubs closed (the AG-44 case). Service: the bound on how many conversations one pass syncs. |
 | AG-46 | One Hub action ("I gave everything" or "I received everything") first lists what it will sign: each commitment and its value. It leaves out a commitment whose `window` has not started, unless the person picks it in the list. On the person's confirm, `agreement.close` signs one half per listed commitment: a claim for each commitment the person gives, a settling half for each it receives. Each half still names one commitment. A commitment already settled or final is skipped. A `payment-request` is never required: a payer claims and a payee settles straight from `promised` (VX-55). | Service: one call settles every receivable commitment of a three-commitment agreement, and a repeated call returns the same records (AG-13). E2E: the list leaves out a lesson whose window is next week. |
 | AG-47 | For a quote id with more than one version, the Hub shows each party one combined summary: for each side, the commitments added, removed or changed between the first version and the latest, and the change in that side's total. Commitments are matched by their disclosed description, as the version comparison does today. The summary is computed on the person's node from disclosures it holds. No record stores it (VX-56). | Unit for the summary function. E2E with a three-version quote. |
@@ -473,6 +474,7 @@ AgreementProgressPayload {
   state:              AgreementState      // see States
   state_reason:       string or absent    // a reason code, e.g. "slot-taken"
   cancel_reason:      CancelReason or absent   // a code, never free text
+  formed_as:          FormedAs            // how the agreement formed; the same in every snapshot
   commitments: [ {
     commitment_id:        string
     state:                CommitmentState
@@ -484,6 +486,8 @@ AgreementProgressPayload {
 ```
 
 The snapshot has no track end date. The date is `max(window.latest_secs, agreed_at_secs) + TRACK_WINDOW_SECS` (see [Commitments](#commitments)), and `window` is a hidden field. A signed date would show the hidden window end to anyone who sees the snapshot. Each party computes the date on its own node, from the `window` disclosure it holds.
+
+`FormedAs` is one of `quote` (a person accepted a quote), `as-listed-instant` (the owner's node answered an as-listed enquiry with no action by the owner) and `as-listed-confirmed` (the owner confirmed it). The writer sets it when it forms the agreement, and every later snapshot repeats it, so the latest snapshot alone shows it. It is the writer's own statement. It is visible and carries no hidden value. A reader, for example the reputation view in M08G, may give an instant deal less weight, because a script can make one cheaply. It is a weak signal: a script can also confirm (open question 14).
 
 `CancelReason` is one of `cannot-deliver`, `schedule-conflict`, `counterparty-asked`, `other`. The author's own words, if any, go in the conversation as an ordinary message. They are not part of a signed record that may be shown to strangers.
 
@@ -1053,7 +1057,7 @@ Each row is a rule from another document that this document changes. The last co
 
 ## Open questions
 
-Each has a recommendation. The owner decides. Questions 1, 3 to 13 and 15 are decided. Question 14 is open. Question 2 belongs to a C0 ADR.
+Each has a recommendation. The owner decides. Questions 1 and 3 to 15 are decided. Question 2 belongs to a C0 ADR.
 
 1. **Declared values in a mixed exchange.**
    Owner direction: there is no barter special case. An exchange is any mix of goods, services, EEPs and money. The offering says what its owner accepts in return. Each resource has a value in the unit of account. The totals need not match, and the Hub shows the difference.
@@ -1130,8 +1134,9 @@ Each has a recommendation. The owner decides. Questions 1, 3 to 13 and 15 are de
 
 14. **Should a record show that an agreement formed as listed?** (New, PR #372 review, P45.)
     Agree as listed and closing in one action make a fake deal cheap for a script. A reader could give such a deal less weight if it can see how the agreement formed.
-    Recommendation: yes. The writer's first progress snapshot carries a visible field `formed_as: quote | as-listed-instant | as-listed-confirmed`. It carries no hidden value. It is a weak signal: a script can also run confirm first. The real defences stay on the reader's side (the overview's "Known limit: fake identities").
+    Recommendation: yes. The writer's progress snapshot carries a visible field `formed_as: quote | as-listed-instant | as-listed-confirmed`. It carries no hidden value. It is a weak signal: a script can also run confirm first. The real defences stay on the reader's side (the overview's "Known limit: fake identities").
     Reason: one visible field costs little, and M08G can use it or not.
+    Owner decision (2026-11-20): agreed. Every snapshot repeats the field, so the latest one alone shows it (AG-51, [Progress snapshot](#progress-snapshot)). Built in C3c.
 
 15. **Should a receiver be able to record "not received" in one action?** (New, PR #372 review, P50.)
     Today a deal that goes wrong is shown by what does not happen: the commitment ends `ended-unconfirmed`. The only signed failure is `reservation-lost`.
@@ -1164,7 +1169,7 @@ This document does not write the two ADRs. They must decide:
 - [ ] C1: commitment model with plain `DealTerms`, records, states and transition tables, the writer's decision, the version check, `deal-decline`, per-commitment settlement records. Today's slot path stays inside `transaction` behind the new shapes. Replace today's shapes in place. (Slice cut: open question 12; kept apart from C2.)
 - [ ] C2: `_sd` and the hidden fields of every record, the disclosure encoder and verifier, `deal.present`; disclosures in the card wrapper and the backup bundle.
 - [ ] C3 (with the extensions change): move slots to the scheduling extension; the reserve, confirm and release calls at the points above; `commitment-failure`.
-- [ ] C3c: agree as listed: the driver, `terms_from_listing`, the enquiry's `as_listed`, the listing's `acceptance`, `not_limited`, `instant_cap` and `deal_terms`, `quote.from-listing`, the automatic acceptance, the Hub's "Agree as listed", the owner's confirm and the waiting line (AG-44, AG-45, AG-49, AG-50).
+- [ ] C3c: agree as listed: the driver, `terms_from_listing`, the enquiry's `as_listed`, the listing's `acceptance`, `not_limited`, `instant_cap` and `deal_terms`, `quote.from-listing`, the automatic acceptance, the Hub's "Agree as listed", the owner's confirm and the waiting line, and `formed_as` in the progress snapshot (AG-44, AG-45, AG-49 to AG-51).
 - [ ] C6: mixed exchanges in the Hub (totals and difference), the event log, `eventlog.*`, `statement.export` with the EEP section, the Hub's statement screen. Closing in one action, the combined summary of changes, and the quote form defaults (AG-46 to AG-48).
 - [ ] Demo story for enquiry, quote and agreement, as the M08C `task.md` asks.
 

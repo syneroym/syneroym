@@ -597,7 +597,7 @@ Three steps, in order:
 - **Distinct counterparties** and inverse frequency in the reader's own view.
 - The UI shows when a party is supported only by sources 1 and 3 with no trusted credential.
 
-Agree as listed and closing in one action make a fake deal cheaper: a script can agree and close in three calls. The defences above are on the reader's side, and they do not depend on how many steps a deal took. One more rule protects an owner from strangers who agree and never close: an unconfirmed commitment with no claim by its giver is not, on its own, negative evidence about that giver. A complaint about such a deal belongs in an opinion.
+Agree as listed and closing in one action make a fake deal cheaper: a script can agree and close in three calls. The defences above are on the reader's side, and they do not depend on how many steps a deal took. One more rule protects an owner from strangers who agree and never close: an unconfirmed commitment with no claim by its giver is not, on its own, negative evidence about that giver. A complaint about such a deal belongs in an opinion. Each agreement's progress record also states how it formed: from a quote, as listed with no action by the owner, or as listed after the owner confirmed. A reader may give the second kind less weight. This is a weak signal, because a script can also confirm.
 
 ### Event log and statement
 
