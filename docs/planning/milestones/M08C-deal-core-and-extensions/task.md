@@ -18,7 +18,7 @@ Read them first. Each slice below names the change docs it builds part of.
 
 | Change doc | Status | Criteria built here |
 | --- | --- | --- |
-| [roym-agreements](../../changes/roym-agreements/change.md) | draft, open questions 1 and 3 to 12 decided by the owner (2026-11-10), 13 to 15 decided on 2026-11-20, 3 review rounds and the PR #372 review | `AG-1` to `AG-23`, `AG-27` to `AG-51`. `AG-24` to `AG-26` are built in M08E and M08H. |
+| [roym-agreements](../../changes/roym-agreements/change.md) | draft, open questions 1 and 3 to 12 decided by the owner (2026-11-10), 13 to 15 decided on 2026-11-20, 3 review rounds and the PR #372 review | `AG-1` to `AG-23`, `AG-27` to `AG-52`. `AG-24` to `AG-26` are built in M08E and M08H. |
 | [roym-value-exchange](../../changes/roym-value-exchange/change.md) (overview) | draft | `VX-1`, `VX-2`, `VX-5` to `VX-12`, `VX-45`, `VX-46`, `VX-54` to `VX-56`, through the `AG-*` rows that refine them |
 | [roym-extensions](../../changes/roym-extensions/change.md) | draft, reviewed (no review file was kept) | `EX-1` to `EX-8`, `EX-10` to `EX-14`, `EX-17` to `EX-22`. `EX-11` for inline definitions only. `EX-9` (an opinion points at a step) is built in M08G. `EX-15` and `EX-16` move out of M08C (section 6, question 3). `EX-19` is the manifest field only. |
 | [roym-message-forwarding](../../changes/roym-message-forwarding/change.md) | draft, reviewed (no review file was kept) | `FW-1` to `FW-15` |
@@ -207,7 +207,7 @@ Added on 2026-11-20 (agreements doc, open question 13, refined in the PR #372 re
 - On the counterparty's node: the automatic acceptance and its three checks immediately before signing, and the stored `viewed_lang` and `viewed_via_mt` (AG-44, AG-49).
 - The progress snapshot's `formed_as` label: `quote`, `as-listed-instant` or `as-listed-confirmed`, the same in every snapshot (AG-51, open question 14).
 - Signing with no session uses the path the writer's countersign uses today (`decide.rs:695`, `signing::person_principal`). The review confirmed it on `main`.
-- Hub: "Agree as listed" on a directory hit (with a slot picker for a slot offering), the machine-translation warning before the tap, the owner's confirm, the owner's "cancel unconfirmed instant agreements", and the waiting, ended and refused lines.
+- Hub: "Agree as listed" on a directory hit (with a slot picker for a slot offering), with every term of the deal and the consent time shown where the tap is (the payee as "will be paid to …"); the machine-translation warning before the tap; the listing form, which offers `instant` only while `transaction.signing-status` says signing is installed; the owner's confirm; the owner's "limit reached" line and "cancel unconfirmed instant agreements"; and the waiting, ended and refused lines, worded from the decline `code`.
 - It comes after C3b, so that `instant` works for one-shot offerings and for slots.
 - Review it in two passes, by node: the owner's side (mode, driver, quote, confirm) and the counterparty's side (tap, check, waiting line).
 - New Hindi messages: the owner reviews them before the merge, as for earlier slices.
@@ -242,7 +242,7 @@ The owner moved C5 out on 2026-11-15 (section 6, question 3). It was: an extensi
 - The combined summary of what changed between a quote's first and latest version, for each side (AG-47).
 - The quote form defaults: filled from the listing, then the author's saved deal terms, then built-in text; the payee from the listing, else the author; `INR` when nothing names a currency; filled fields in a section "More terms", closed at first (AG-48). The listing editor fills `deal_terms` from the same saved terms.
 - Hub words: "Offer" and "Agree" where it says "Quote" and "Accept" today. A quote card gets "Suggest changes", which starts a message in the conversation that names that quote version. The author answers with a new version, as today. New Hindi messages: the owner reviews them before the merge.
-- Criteria: AG-23 (Hub part), AG-27 to AG-30, AG-46 to AG-48; VX-55, VX-56.
+- Criteria: AG-23 (Hub part), AG-27 to AG-30, AG-46 to AG-48, AG-52; VX-55, VX-56.
 - Demo: finishes story 50.
 
 Change docs: roym-agreements, roym-value-exchange (VX-2, VX-7, VX-45, VX-46).
@@ -332,7 +332,7 @@ Questions the old outline listed are now answered in the agreements doc: the dec
 | Two Roym outputs carry another node's card data as an untyped `Value` | §10 | Not targeted. C3b moves `PeerStep` (in `booking_ops.rs`) to the scheduling extension; it updates the row's file names. |
 | `RECORD_TYPES` is not read by any verifier | §12 | Not targeted. C1, C3a, C3b and C4 add record types to the table. |
 | A request made from a directory hit does not name the listing | §10 | The Engage fix closes it (section 4). C3c then adds "Agree as listed" to the same hit. |
-| Agree as listed refuses offerings priced per hour, per unit or by quote, and work at the counterparty's address (new, 2026-11-20) | §10 | Records the v1 limits of `terms_from_listing`. Target M08D or later. |
+| Agree as listed refuses offerings priced per hour, per unit or by quote, priced before tax, and work at the counterparty's address (new, 2026-11-20) | §10 | Records the v1 limits of `terms_from_listing`. Target M08D or later. |
 
 ## 8. Not in this plan
 
