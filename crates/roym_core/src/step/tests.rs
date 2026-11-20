@@ -180,3 +180,91 @@ fn data_must_be_an_object() {
         assert_eq!(StepHidden { data: bad }.validate(), Err(StepError::DataNotObject));
     }
 }
+
+fn scheduling() -> ExtensionRef {
+    ExtensionRef { id: "scheduling".to_string(), version: 1 }
+}
+
+#[test]
+fn a_declared_step_by_the_right_party_is_checked() {
+    let verdict = check_step(
+        crate::extension::registry(),
+        &scheduling(),
+        "scheduling/started",
+        SettlementRole::Giver,
+        &json!({}),
+    );
+    assert_eq!(verdict, Ok(StepCheck::Checked));
+}
+
+#[test]
+fn a_step_the_manifest_does_not_declare_is_refused() {
+    let verdict = check_step(
+        crate::extension::registry(),
+        &scheduling(),
+        "scheduling/finished",
+        SettlementRole::Giver,
+        &json!({}),
+    );
+    assert_eq!(verdict, Err(StepError::StepTypeUnknown("scheduling/finished".to_string())));
+}
+
+#[test]
+fn a_step_for_the_other_party_is_refused() {
+    let verdict = check_step(
+        crate::extension::registry(),
+        &scheduling(),
+        "scheduling/started",
+        SettlementRole::Receiver,
+        &json!({}),
+    );
+    assert_eq!(verdict, Err(StepError::NotYourStep("scheduling/started".to_string())));
+}
+
+#[test]
+fn data_that_fails_the_step_fields_is_refused() {
+    let verdict = check_step(
+        crate::extension::registry(),
+        &scheduling(),
+        "scheduling/started",
+        SettlementRole::Giver,
+        &json!({ "extra": 1 }),
+    );
+    assert!(matches!(verdict, Err(StepError::DataInvalid(_))), "{verdict:?}");
+}
+
+#[test]
+fn an_unknown_extension_is_not_checked_but_its_data_is_bounded() {
+    let future = ExtensionRef { id: "future".to_string(), version: 9 };
+    let verdict = check_step(
+        crate::extension::registry(),
+        &future,
+        "future/anything",
+        SettlementRole::Receiver,
+        &json!({ "k": 1 }),
+    );
+    assert_eq!(verdict, Ok(StepCheck::NotChecked));
+
+    let too_big = json!({ "k": "a".repeat(MAX_STEP_DATA_BYTES) });
+    let verdict = check_step(
+        crate::extension::registry(),
+        &future,
+        "future/anything",
+        SettlementRole::Receiver,
+        &too_big,
+    );
+    assert!(matches!(verdict, Err(StepError::DataTooLarge { .. })));
+}
+
+#[test]
+fn a_step_of_a_known_extension_with_a_later_version_is_not_checked() {
+    let later = ExtensionRef { id: "scheduling".to_string(), version: 2 };
+    let verdict = check_step(
+        crate::extension::registry(),
+        &later,
+        "scheduling/started",
+        SettlementRole::Giver,
+        &json!({}),
+    );
+    assert_eq!(verdict, Ok(StepCheck::NotChecked));
+}

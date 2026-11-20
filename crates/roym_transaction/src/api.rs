@@ -14,12 +14,13 @@ use syneroym_roym_core::{
         InstallCertificateInput, InstallCertificateOutput, SigningStatusOutput,
         install_signing_certificate, signing_status,
     },
+    step::StepPayload,
     transaction::{AgreementReceiptPayload, EnquiryPayload, QuotePayload, RecordVerdict},
 };
 
 use crate::app::{
     AgreementRef, HalfRecordedOutput, ListInput, agreement_ops, backup, decline_ops, enquiry_ops,
-    fulfilment_ops, payment_ops, present_ops, progress_ops, quote_ops, sync, thread,
+    fulfilment_ops, payment_ops, present_ops, progress_ops, quote_ops, step_ops, sync, thread,
 };
 
 async fn ping<H: AppHost>(_host: &H, _: NoParams) -> Reply<PingOutput> {
@@ -34,6 +35,7 @@ syneroym_roym_core::service_methods! {
     "payment.ping": ping [NoParams => PingOutput],
     "fulfilment.ping": ping [NoParams => PingOutput],
     "deal.ping": ping [NoParams => PingOutput],
+    "step.ping": ping [NoParams => PingOutput],
 
     "enquiry.set": enquiry_ops::set [enquiry_ops::EnquirySetInput => enquiry_ops::EnquirySetOutput],
     "enquiry.get": enquiry_ops::get [enquiry_ops::EnquiryKeyInput => Option<enquiry_ops::EnquiryView>],
@@ -67,6 +69,10 @@ syneroym_roym_core::service_methods! {
     "fulfilment.sign": fulfilment_ops::sign [fulfilment_ops::FulfilmentSignInput => HalfRecordedOutput],
     "fulfilment.get": fulfilment_ops::get [fulfilment_ops::FulfilmentKeyInput => fulfilment_ops::FulfilmentGetOutput],
     "fulfilment.verify": fulfilment_ops::verify [DisclosedVerifyInput => DisclosedVerdict<FulfilmentReceiptPayload>],
+
+    "step.add": step_ops::add [step_ops::StepAddInput => HalfRecordedOutput],
+    "step.list": step_ops::list [step_ops::StepListInput => step_ops::StepListOutput],
+    "step.verify": step_ops::verify [DisclosedVerifyInput => DisclosedVerdict<StepPayload>],
 
     "transaction.sync": sync::sync [sync::SyncInput => sync::SyncOutput],
     "transaction.thread": thread::thread [thread::ThreadInput => thread::ThreadOutput],

@@ -55,6 +55,8 @@ mod payment;
 mod profile;
 #[path = "dual_build_parity/search_scripts.rs"]
 mod search_scripts;
+#[path = "dual_build_parity/step.rs"]
+mod step;
 #[path = "dual_build_parity/transaction.rs"]
 mod transaction;
 #[path = "dual_build_parity/transaction_cards.rs"]

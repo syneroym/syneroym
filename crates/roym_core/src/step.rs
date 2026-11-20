@@ -13,7 +13,7 @@ use thiserror::Error;
 use crate::{
     deal::{ExtensionRef, MAX_EXTENSION_ID_LEN, SettlementRole},
     disclosure::check_sd_shape,
-    extension::MAX_STEP_TYPE_LEN,
+    extension::{MAX_STEP_TYPE_LEN, Registry, StepBy},
     listing, person,
     record::{self, RECORD_STEP, VerifyOptions},
     verdict::RecordVerdict,
@@ -57,6 +57,14 @@ pub enum StepError {
     DataNotObject,
     #[error("step data is {bytes} bytes, over the {MAX_STEP_DATA_BYTES}-byte limit")]
     DataTooLarge { bytes: usize },
+    #[error("step type '{0}' is not declared by the extension")]
+    StepTypeUnknown(String),
+    #[error("step type '{0}' is not recorded by this party of the commitment")]
+    NotYourStep(String),
+    #[error("step data: {0}")]
+    DataInvalid(String),
+    #[error("an agreement holds at most {MAX_STEPS_PER_AGREEMENT} steps")]
+    TooManySteps,
 }
 
 impl StepError {
@@ -74,6 +82,10 @@ impl StepError {
             Self::SdShape(_) => "sd-shape",
             Self::DataNotObject => "details-invalid",
             Self::DataTooLarge { .. } => "step-data-too-large",
+            Self::StepTypeUnknown(_) => "step-type-unknown",
+            Self::NotYourStep(_) => "not-your-step",
+            Self::DataInvalid(_) => "details-invalid",
+            Self::TooManySteps => "too-many-steps",
         }
     }
 }
@@ -159,6 +171,45 @@ pub fn check_data_size(data: &Value) -> Result<(), StepError> {
         return Err(StepError::DataTooLarge { bytes });
     }
     Ok(())
+}
+
+/// What the registry could say about a step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StepCheck {
+    /// Known extension: the step type, who records it and its fields pass.
+    Checked,
+    /// The extension is not a workflow extension in this registry. Only the
+    /// size of `data` was checked.
+    NotChecked,
+}
+
+/// The one rule set for a step: `step.add`, filing a received card and
+/// importing a backup all call it. `role` is the signer's role in the
+/// commitment.
+pub fn check_step(
+    registry: &Registry,
+    ext: &ExtensionRef,
+    step_type: &str,
+    role: SettlementRole,
+    data: &Value,
+) -> Result<StepCheck, StepError> {
+    check_data_size(data)?;
+    if registry.workflow(ext).is_none() {
+        return Ok(StepCheck::NotChecked);
+    }
+    let declared = registry
+        .step_type(ext, step_type)
+        .ok_or_else(|| StepError::StepTypeUnknown(step_type.to_string()))?;
+    let by_ok = match declared.by {
+        StepBy::Giver => role == SettlementRole::Giver,
+        StepBy::Receiver => role == SettlementRole::Receiver,
+        StepBy::Either => true,
+    };
+    if !by_ok {
+        return Err(StepError::NotYourStep(step_type.to_string()));
+    }
+    declared.check(data).map_err(|e| StepError::DataInvalid(e.0))?;
+    Ok(StepCheck::Checked)
 }
 
 pub fn verify_step(envelope: &str, now_secs: u64) -> RecordVerdict<StepPayload> {
