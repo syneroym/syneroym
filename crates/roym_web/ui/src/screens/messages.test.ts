@@ -8,7 +8,6 @@ import {
   computeNewestRequestMap,
   isQuoteSuperseded,
   messageStateWord,
-  openConversation,
   openQuoteForm,
   readQuoteForm,
   refusalText,
@@ -830,14 +829,10 @@ describe("request form category picker reset", () => {
     expect(notice?.textContent).toContain("Waiting for the other side to confirm...");
   });
 
-  it("openConversation opens conversation with pre-filled listing id and category and empty description", async () => {
+  it("renderMessages opens conversation with pre-filled listing id and category and empty description", async () => {
     let sentEnquiry: Record<string, unknown> | undefined;
     stubRpc({
       whoami: () => ({ person_did: "did:key:me" }),
-      "conversation.open": (params) => {
-        expect((params as { address: string }).address).toBe("did:key:bob");
-        return { conversation_id: "conv-bob" };
-      },
       "conversation.list": () => ({
         conversations: [{ id: "conv-bob", peer_address: "did:key:bob", message_count: 0 }],
       }),
@@ -851,12 +846,10 @@ describe("request form category picker reset", () => {
     });
 
     const host = document.createElement("div");
-    const convId = await openConversation(
-      "did:key:bob",
-      { listingId: "lst_gardening_1", categories: ["gardening"] },
-      host,
-    );
-    expect(convId).toBe("conv-bob");
+    await renderMessages(host, undefined, {
+      conversationId: "conv-bob",
+      preFill: { listingId: "lst_gardening_1", categories: ["gardening"] },
+    });
 
     // The thread is rendered and request form is already open
     const reqForm = host.querySelector<HTMLElement>(".request-form")!;

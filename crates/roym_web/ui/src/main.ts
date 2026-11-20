@@ -13,12 +13,12 @@ import { renderGroups } from "./screens/groups";
 import { renderListings } from "./screens/listings";
 import { renderMemberships } from "./screens/memberships";
 import {
-  openConversation,
   openDeclineDialog,
   openQuoteForm,
   renderCardActions,
   renderMessages,
 } from "./screens/messages";
+import { type MessagesInitialState, setTabOpener, type TabKey } from "./navigation";
 import { renderProfile } from "./screens/profile";
 import { renderSafety } from "./screens/safety";
 import { renderSetup } from "./screens/setup";
@@ -52,7 +52,6 @@ declare global {
       openQuoteForm: typeof openQuoteForm;
       openDeclineDialog: typeof openDeclineDialog;
       renderCardActions: typeof renderCardActions;
-      openConversation: typeof openConversation;
     };
   }
 }
@@ -65,7 +64,6 @@ window.RoymMessages = {
   openQuoteForm,
   openDeclineDialog,
   renderCardActions,
-  openConversation,
 };
 
 async function main() {
@@ -146,43 +144,61 @@ async function renderTabs(container: HTMLElement, did: string) {
   // screen that is still loading (it awaits the node before it appends)
   // then writes into a container that is already detached, so a quick tab
   // click can never leave two screens in the page.
-  const show = async (render: (host: HTMLElement) => Promise<void>) => {
+  const tabRenderers: Record<TabKey, (host: HTMLElement, initial?: unknown) => Promise<void>> = {
+    profile: renderProfile,
+    contacts: renderContacts,
+    messages: (host, initial) => renderMessages(host, undefined, initial as MessagesInitialState | undefined),
+    groups: renderGroups,
+    listings: renderListings,
+    directory: renderDirectory,
+    memberships: renderMemberships,
+    synorg: renderSynOrg,
+    safety: renderSafety,
+    backup: renderBackup,
+    components: (host) => renderHome(host, did),
+  };
+
+  const show = async (key: TabKey, initial?: unknown) => {
+    const render = tabRenderers[key];
+    if (!render) return;
     const host = document.createElement("div");
     host.className = "tab-content";
     tabContainer.replaceWith(host);
     tabContainer = host;
     try {
-      await render(host);
+      await render(host, initial);
     } catch (err) {
       host.appendChild(text("p", t("tab-error", { detail: errText(err) }), "tab-error"));
     }
   };
 
-  const tabs: Array<[name: string, render: (host: HTMLElement) => Promise<void>, tabKey: string]> = [
-    [t("tab-profile"), renderProfile, "profile"],
-    [t("tab-contacts"), renderContacts, "contacts"],
-    [t("tab-messages"), renderMessages, "messages"],
-    [t("tab-groups"), renderGroups, "groups"],
-    [t("tab-listings"), renderListings, "listings"],
-    [t("tab-directory"), renderDirectory, "directory"],
-    [t("tab-memberships"), renderMemberships, "memberships"],
-    [t("tab-synorg"), renderSynOrg, "synorg"],
-    [t("tab-safety"), renderSafety, "safety"],
-    [t("tab-backup"), renderBackup, "backup"],
-    [t("tab-components"), (host) => renderHome(host, did), "components"],
+  setTabOpener(show);
+
+  const tabs: Array<[name: string, tabKey: TabKey]> = [
+    [t("tab-profile"), "profile"],
+    [t("tab-contacts"), "contacts"],
+    [t("tab-messages"), "messages"],
+    [t("tab-groups"), "groups"],
+    [t("tab-listings"), "listings"],
+    [t("tab-directory"), "directory"],
+    [t("tab-memberships"), "memberships"],
+    [t("tab-synorg"), "synorg"],
+    [t("tab-safety"), "safety"],
+    [t("tab-backup"), "backup"],
+    [t("tab-components"), "components"],
   ];
 
-  for (const [name, render, tabKey] of tabs) {
+  for (const [name, tabKey] of tabs) {
     const btn = document.createElement("button");
     btn.className = "button tab-button";
     btn.dataset.tab = tabKey;
     btn.textContent = name;
-    btn.onclick = () => void show(render);
+    btn.onclick = () => void show(tabKey);
     nav.appendChild(btn);
   }
 
   // Default to Profile tab
-  await show(tabs[0][1]);
+  await show("profile");
 }
 
 async function renderLogin(container: HTMLElement) {

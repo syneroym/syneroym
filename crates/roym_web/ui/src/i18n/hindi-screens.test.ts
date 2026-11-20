@@ -376,6 +376,7 @@ describe("the directory screens, in Hindi", () => {
     stubRpc({
       "directory.sources": () => ({ sources: SOURCES }),
       "directory.run-envelope": () => ({ envelope: "Zq-envelope" }),
+      "conversation.open": () => ({ conversation_id: "conv-1" }),
       "directory.find": () => ({
         run_id: "Zq-run",
         outcomes: [

@@ -1,9 +1,9 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import { readDemoEnv } from '../demo-nodes';
 import {
-  directoryAddedStatus, ensureOwnSynOrg, hubMessage, issueOwnCredential, loginWithDelegatedKey,
-  openConversation, openMessages, pickCategory, publishListing, rpcCall,
-  sendQuote, sendRequest, threadMessage,
+  askFromHit, ensureOwnSynOrg, findListingHit, loginWithDelegatedKey,
+  openConversation, openMessages, publishListing, rpcCall,
+  sendQuote, sendRequest, sendRequestFromForm, threadMessage,
 } from '../hub-helpers';
 import { DELIVERY_WAIT_MS, newSession, requireEnv, step } from './steps';
 
@@ -76,43 +76,18 @@ test('Roym deal story: Alice and Bob form an agreement and decline a quote with 
 
     await step(bobPage, "Bob's screen: publish a listing for Hindi lessons", async () => {
       await ensureOwnSynOrg(bobPage, bob.directoryDid, 'language-lessons', 'en');
-      await issueOwnCredential(bobPage, 'language-lessons');
       listingId = await publishListing(
         bobPage, listingTitle, 'language-lessons', bob.directoryDid, 'en', undefined, bob.addr,
       );
     });
 
     await step(page, "Alice's screen: find Bob's listing in the directory and tap Ask", async () => {
-      await page.bringToFront();
-      await page.getByRole('button', { name: hubMessage('en', 'tab-directory'), exact: true }).click();
-      await page.locator('.add-source-did').fill(bob.directoryDid);
-      await page.getByRole('button', { name: hubMessage('en', 'directory-add-button') }).click();
-      await expect(page.locator('.add-source-status')).toHaveText(directoryAddedStatus('en'), { timeout: 15_000 });
-
-      await pickCategory(page.locator('.search-categories'), 'language-lessons', 'en');
-      const found = page.waitForResponse(
-        (res) => res.url().includes('/rpc') && res.request().postData()?.includes('directory.find') === true,
-      );
-      await page.getByRole('button', { name: hubMessage('en', 'directory-search-button'), exact: true }).click();
-      const answer = (await (await found).json()) as { result?: { hits?: Array<{ listing_id: string }> } };
-      expect((answer.result?.hits ?? []).map((h) => h.listing_id)).toContain(listingId);
-
-      const hit = page.locator(`.search-hit[data-listing-id="${listingId}"]`);
-      await expect(hit).toHaveCount(1, { timeout: 20_000 });
-      await expect(hit.locator('.hit-title')).toHaveText(listingTitle);
-
-      await hit.locator('.hit-engage').click();
-      await expect(page.locator('.messages-screen')).toBeVisible({ timeout: 15_000 });
-      await expect(page.locator('.request-form')).toBeVisible({ timeout: 15_000 });
-      await expect(page.locator('.request-listing-input')).toHaveValue(listingId);
-      await expect(page.locator('.request-cats-input .picker-chip[data-code="language-lessons"]')).toBeVisible();
-      await expect(page.locator('.request-desc-input')).toHaveValue('');
+      const hit = await findListingHit(page, bob.directoryDid, 'language-lessons', listingId, listingTitle, 'en');
+      await askFromHit(page, hit, listingId, 'language-lessons');
     });
 
     await step(page, "Alice's screen: send Bob an enquiry from the pre-filled form", async () => {
-      await page.locator('.request-desc-input').fill(enquiryText);
-      await page.locator('button.send-request-button').click();
-      await expect(threadMessage(page, enquiryText).locator('.card-enquiry')).toBeVisible({ timeout: 15_000 });
+      await sendRequestFromForm(page, enquiryText);
     });
 
     await step(bobPage, "Bob's screen: read enquiry and send a quote giving one lesson for 100 INR", async () => {
@@ -120,6 +95,7 @@ test('Roym deal story: Alice and Bob form an agreement and decline a quote with 
       await openConversation(bobPage, alice.addr);
       const enquiry = threadMessage(bobPage, enquiryText);
       await expect(enquiry).toBeVisible({ timeout: DELIVERY_WAIT_MS });
+      await expect(enquiry.locator('.request-listing')).toContainText(listingId);
       await sendQuote(bobPage, enquiryText, {
         scope: quoteScope,
         give: giveText,

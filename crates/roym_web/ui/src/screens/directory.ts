@@ -19,7 +19,7 @@ import { recordText, textFields, type TextVersion } from "../records/record_text
 import { call } from "../rpc";
 import { categoryPicker } from "../taxonomy/category_picker";
 import { categoryLabel } from "../taxonomy/taxonomy";
-import { openConversation } from "./messages";
+import { openTab } from "../navigation";
 import {
   machineNote,
   searchTargets,
@@ -448,31 +448,27 @@ function renderHitCard(hit: MergedHit, runId: string): HTMLElement {
     const engageOut = text("div", "", "hit-engage-out");
     engage.onclick = async () => {
       engageOut.textContent = "";
+      engage.disabled = true;
       try {
         const envelope = await runEnvelope(runId, hit.record_id);
         if (!envelope) {
           engageOut.textContent = t("directory-engage-gone");
           return;
         }
-        let parsed: unknown;
-        try {
-          parsed = typeof envelope === "string" ? JSON.parse(envelope) : envelope;
-        } catch {
-          engageOut.textContent = t("directory-engage-gone");
-          return;
-        }
-        const payload = (parsed as { payload?: { listing_id?: string; categories?: string[] } })?.payload;
-        const listingId = payload?.listing_id;
-        if (!listingId) {
-          engageOut.textContent = t("directory-engage-gone");
-          return;
-        }
-        await openConversation(hit.conversation_address, {
-          listingId,
-          categories: payload.categories ?? [],
+        const res = await call<{ conversation_id: string }>("conversation.open", {
+          address: hit.conversation_address,
+        });
+        await openTab("messages", {
+          conversationId: res.conversation_id,
+          preFill: {
+            listingId: hit.listing_id,
+            categories: hit.categories,
+          },
         });
       } catch (err) {
         engageOut.textContent = t("directory-engage-failed", { detail: errText(err) });
+      } finally {
+        engage.disabled = false;
       }
     };
     card.append(engage, engageOut);

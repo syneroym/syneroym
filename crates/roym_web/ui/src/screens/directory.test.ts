@@ -3,6 +3,7 @@ import HINDI from "../i18n/hi.ftl?raw";
 import { activate, activateWith } from "../i18n/i18n";
 import { stubRpc } from "../testing/stub-rpc";
 import type { MergedHit } from "../directory/search";
+import { setTabOpener } from "../navigation";
 import { membershipLine, renderDirectory } from "./directory";
 
 const NOW = Math.floor(Date.now() / 1000);
@@ -310,26 +311,16 @@ describe("category search and hit display", () => {
 
   it("hit-engage button is named Ask and opens conversation with listing id and categories", async () => {
     let openedAddress: string | undefined;
+    const openedTab = vi.fn().mockResolvedValue(undefined);
+    setTabOpener(openedTab);
+
     stubRpc({
       "directory.sources": () => ({ sources: [] }),
-      "directory.run-envelope": () => ({
-        envelope: JSON.stringify({
-          payload: {
-            listing_id: "lst_1",
-            categories: ["gardening"],
-          },
-        }),
-      }),
+      "directory.run-envelope": () => ({ envelope: "signed-env" }),
       "conversation.open": (params) => {
         openedAddress = (params as { address: string }).address;
         return { conversation_id: "conv-1" };
       },
-      "conversation.list": () => ({
-        conversations: [{ id: "conv-1", peer_address: "did:key:zConversation", message_count: 0 }],
-      }),
-      "transaction.sync": () => ({}),
-      "transaction.thread": () => ({ cards: [] }),
-      "conversation.history": () => ({ messages: [] }),
       "directory.find": () => ({
         run_id: "run-ask",
         outcomes: [],
@@ -351,11 +342,53 @@ describe("category search and hit display", () => {
 
     askBtn?.click();
     await vi.waitFor(() => expect(openedAddress).toBe("did:key:zConversation"));
+    expect(openedTab).toHaveBeenCalledWith("messages", {
+      conversationId: "conv-1",
+      preFill: {
+        listingId: "lst_1",
+        categories: ["gardening"],
+      },
+    });
     // engage-address was removed; output text is empty on successful open
     expect(host.querySelector(".hit-engage-out")?.textContent).toBe("");
   });
 
-  it("hit-engage shows gone message if envelope is missing or lacks listing_id", async () => {
+  it("hit-engage button disables while working and re-enables when done", async () => {
+    let resolveOpen: ((val: { conversation_id: string }) => void) | undefined;
+    const openPromise = new Promise<{ conversation_id: string }>((r) => {
+      resolveOpen = r;
+    });
+
+    stubRpc({
+      "directory.sources": () => ({ sources: [] }),
+      "directory.run-envelope": () => ({ envelope: "signed-env" }),
+      "conversation.open": () => openPromise,
+      "directory.find": () => ({
+        run_id: "run-disable",
+        outcomes: [],
+        hits: [HIT],
+        hits_truncated: false,
+        refused: [],
+        refused_truncated: false,
+      }),
+    });
+
+    const host = document.createElement("div");
+    await renderDirectory(host);
+    host.querySelector<HTMLButtonElement>("button.run-search")!.click();
+    await vi.waitFor(() => expect(host.querySelector(".search-hit")).not.toBeNull());
+
+    const askBtn = host.querySelector<HTMLButtonElement>("button.hit-engage")!;
+    expect(askBtn.disabled).toBe(false);
+
+    askBtn.click();
+    await vi.waitFor(() => expect(askBtn.disabled).toBe(true));
+
+    resolveOpen?.({ conversation_id: "conv-1" });
+    await vi.waitFor(() => expect(askBtn.disabled).toBe(false));
+  });
+
+  it("hit-engage shows gone message if envelope is missing", async () => {
     stubRpc({
       "directory.sources": () => ({ sources: [] }),
       "directory.run-envelope": () => ({ envelope: null }),
@@ -380,6 +413,33 @@ describe("category search and hit display", () => {
       expect(host.querySelector(".hit-engage-out")?.textContent).toBe(
         "The full listing is no longer in this run.",
       ),
+    );
+  });
+
+  it("hit-engage shows failure message if conversation.open fails", async () => {
+    stubRpc({
+      "directory.sources": () => ({ sources: [] }),
+      "directory.run-envelope": () => ({ envelope: "signed-env" }),
+      "conversation.open": () => new Error("peer unreachable"),
+      "directory.find": () => ({
+        run_id: "run-failed",
+        outcomes: [],
+        hits: [HIT],
+        hits_truncated: false,
+        refused: [],
+        refused_truncated: false,
+      }),
+    });
+
+    const host = document.createElement("div");
+    await renderDirectory(host);
+    host.querySelector<HTMLButtonElement>("button.run-search")!.click();
+    await vi.waitFor(() => expect(host.querySelector(".search-hit")).not.toBeNull());
+
+    const askBtn = host.querySelector<HTMLButtonElement>("button.hit-engage");
+    askBtn?.click();
+    await vi.waitFor(() =>
+      expect(host.querySelector(".hit-engage-out")?.textContent).toContain("Could not open: peer unreachable"),
     );
   });
 

@@ -105,60 +105,8 @@ export interface CardRow {
   agreement_payment_methods?: string[];
 }
 
-export interface RequestPreFill {
-  listingId?: string;
-  categories?: string[];
-}
-
-export interface MessagesInitialState {
-  conversationId?: string;
-  preFill?: RequestPreFill;
-}
-
-let pendingOpen: MessagesInitialState | null = null;
-let activeReloadMessages: ((convId: string, preFill?: RequestPreFill) => Promise<void>) | null = null;
-
-export async function openConversation(
-  address: string,
-  preFill?: RequestPreFill,
-  container?: HTMLElement,
-): Promise<string> {
-  const res = await call<{ conversation_id: string }>("conversation.open", { address });
-  const convId = res.conversation_id;
-
-  if (container) {
-    await renderMessages(container, undefined, { conversationId: convId, preFill });
-    return convId;
-  }
-
-  const activeScreen = document.querySelector<HTMLElement>(".messages-screen");
-  if (activeScreen && activeScreen.isConnected && activeReloadMessages) {
-    await activeReloadMessages(convId, preFill);
-    return convId;
-  }
-
-  pendingOpen = { conversationId: convId, preFill };
-
-  const msgTabBtn =
-    document.querySelector<HTMLButtonElement>('.tab-button[data-tab="messages"]') ??
-    Array.from(document.querySelectorAll<HTMLButtonElement>(".tab-button")).find(
-      (btn) => btn.textContent?.trim() === t("tab-messages").trim(),
-    );
-
-  if (msgTabBtn) {
-    msgTabBtn.click();
-  } else {
-    const fallback =
-      document.querySelector<HTMLElement>(".tab-content") ??
-      document.querySelector<HTMLElement>(".content-area") ??
-      document.querySelector<HTMLElement>("#app");
-    if (fallback) {
-      await renderMessages(fallback, undefined, { conversationId: convId, preFill });
-    }
-  }
-
-  return convId;
-}
+export { type MessagesInitialState, type RequestPreFill } from "../navigation";
+import type { MessagesInitialState, RequestPreFill } from "../navigation";
 
 export async function renderMessages(
   container: HTMLElement,
@@ -169,13 +117,8 @@ export async function renderMessages(
   const box = document.createElement("div");
   box.className = "messages-screen";
 
-  const initialConvId = initial?.conversationId ?? pendingOpen?.conversationId ?? undefined;
-  const initialPreFill = initial?.preFill ?? pendingOpen?.preFill ?? undefined;
-  pendingOpen = null;
-
-  activeReloadMessages = async (convId: string, preFill?: RequestPreFill) => {
-    await reloadList(convId, preFill);
-  };
+  const initialConvId = initial?.conversationId;
+  const initialPreFill = initial?.preFill;
 
   box.appendChild(text("h2", t("messages-title")));
 

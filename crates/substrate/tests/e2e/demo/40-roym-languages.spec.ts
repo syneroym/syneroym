@@ -1,9 +1,10 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import { readDemoEnv } from '../demo-nodes';
 import {
-  addListingTranslation, addMessageLanguage, chooseHubLanguage, directoryAddedStatus, ensureOwnSynOrg,
-  hubMessage, issueOwnCredential, loginWithDelegatedKey, openConversation, openMessages, pickCategory,
-  publishListing, rpcCall, sendMessage, sendQuote, sendRequest, threadMessage,
+  addListingTranslation, addMessageLanguage, askFromHit, chooseHubLanguage, directoryAddedStatus,
+  ensureOwnSynOrg, findListingHit, hubMessage, loginWithDelegatedKey, openConversation,
+  openMessages, pickCategory, publishListing, rpcCall, sendMessage, sendQuote, sendRequest,
+  sendRequestFromForm, threadMessage,
 } from '../hub-helpers';
 import { DELIVERY_WAIT_MS, newSession, requireEnv, step } from './steps';
 
@@ -160,7 +161,6 @@ test('Roym languages story: Alice, in Hindi, finds an English listing and accept
 
     await step(bobPage, "Bob's screen: publish an English listing about garden work", async () => {
       await ensureOwnSynOrg(bobPage, bob.directoryDid, 'gardening', 'en');
-      await issueOwnCredential(bobPage, 'gardening');
       // The listing's conversation address is Bob's own, so a person who finds it can write to him.
       listingId = await publishListing(
         bobPage, listingTitle, 'gardening', bob.directoryDid, 'en', undefined, bob.addr,
@@ -175,43 +175,18 @@ test('Roym languages story: Alice, in Hindi, finds an English listing and accept
     });
 
     await step(page, "Alice's screen: find Bob's listing by the Hindi name of its category", async () => {
-      await page.getByRole('button', { name: hubMessage('hi', 'tab-directory') }).click();
-      await page.locator('.add-source-did').fill(bob.directoryDid);
-      await page.getByRole('button', { name: hubMessage('hi', 'directory-add-button') }).click();
-      await expect(page.locator('.add-source-status')).toHaveText(directoryAddedStatus('hi'), {
-        timeout: 15_000,
-      });
-
-      await pickCategory(page.locator('.search-categories'), 'gardening', 'hi');
-      const found = page.waitForResponse(
-        (res) => res.url().includes('/rpc') && res.request().postData()?.includes('directory.find') === true,
-      );
-      await page.getByRole('button', { name: hubMessage('hi', 'directory-search-button'), exact: true }).click();
-      const answer = (await (await found).json()) as { result?: { hits?: Array<{ listing_id: string }> } };
-      expect((answer.result?.hits ?? []).map((h) => h.listing_id)).toContain(listingId);
-
-      // Alice's own directory holds other gardening listings, so the hit is found by its id.
-      const hit = page.locator(`.search-hit[data-listing-id="${listingId}"]`);
-      await expect(hit).toHaveCount(1, { timeout: 20_000 });
-      await expect(hit.locator('.hit-title')).toHaveText(listingTitle);
+      const hit = await findListingHit(page, bob.directoryDid, 'gardening', listingId, listingTitle, 'hi');
       await expect(hit.locator('.hit-title')).toHaveAttribute('lang', 'en');
       await expect(hit.locator('.hit-categories')).toContainText(hubMessage('hi', 'taxonomy-category-gardening'));
     });
 
     await step(page, "Alice's screen: tap Ask on the hit to open the conversation with the pre-filled form", async () => {
       const hit = page.locator(`.search-hit[data-listing-id="${listingId}"]`);
-      await hit.locator('.hit-engage').click();
-      await expect(page.locator('.messages-screen')).toBeVisible({ timeout: 15_000 });
-      await expect(page.locator('.request-form')).toBeVisible({ timeout: 15_000 });
-      await expect(page.locator('.request-listing-input')).toHaveValue(listingId);
-      await expect(page.locator('.request-cats-input .picker-chip[data-code="gardening"]')).toBeVisible();
-      await expect(page.locator('.request-desc-input')).toHaveValue('');
+      await askFromHit(page, hit, listingId, 'gardening');
     });
 
     await step(page, "Alice's screen: send Bob a request in Hindi from the filled form", async () => {
-      await page.locator('.request-desc-input').fill(requestText);
-      await page.locator('button.send-request-button').click();
-      await expect(threadMessage(page, requestText).locator('.card-enquiry')).toBeVisible({ timeout: 15_000 });
+      await sendRequestFromForm(page, requestText);
     });
 
     await step(bobPage, "Bob's screen: read the request and send a quote in rupees", async () => {
@@ -220,6 +195,7 @@ test('Roym languages story: Alice, in Hindi, finds an English listing and accept
       const request = threadMessage(bobPage, requestText);
       await expect(request).toBeVisible({ timeout: DELIVERY_WAIT_MS });
       await expect(request.locator('.request-description')).toHaveAttribute('lang', 'hi');
+      await expect(request.locator('.request-listing')).toContainText(listingId);
       await sendQuote(bobPage, requestText, {
         scope: quoteScope, currency: 'INR', amount: '100000.50', payee: bob.did,
       });
