@@ -6,6 +6,7 @@ pub mod decide;
 pub mod decline_ops;
 pub mod disclosures;
 pub mod enquiry_ops;
+mod extension_rules;
 pub mod fulfilment_ops;
 pub mod hold;
 pub mod ledger;

@@ -37,8 +37,9 @@ use syneroym_roym_core::{
 
 use super::{
     ENQUIRY_HISTORY, ListInput, OutgoingCard, QUOTE_HISTORY, QUOTES, RecordPointerRow, SendState,
-    conversation_mine_filter, count_mine, decline_ops, disclosures, ensure_collections, get_bytes,
-    get_row, is_deal_ended, put_bytes, put_row, resolve_principal_and_owner, send_card_and_file,
+    conversation_mine_filter, count_mine, decline_ops, disclosures, ensure_collections,
+    extension_rules, get_bytes, get_row, is_deal_ended, put_bytes, put_row,
+    resolve_principal_and_owner, send_card_and_file,
 };
 
 #[derive(Debug, Deserialize)]
@@ -483,6 +484,7 @@ async fn validate_and_conceal_terms<H: AppHost>(
         return Err(Response::invalid_params(e.to_string())
             .with_data(serde_json::json!({ "code": e.code() })));
     }
+    extension_rules::require_known_extensions(terms)?;
     let salts = disclosures::fresh_salts(host, terms.hidden_field_count() as u32).await?;
     let mut salts_iter = salts.into_iter();
     terms.conceal(&mut salts_iter).map_err(|e| {

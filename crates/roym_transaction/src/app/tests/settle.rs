@@ -38,7 +38,7 @@ use crate::app::{
     sync::settle_receipts::file_fulfilment_card,
 };
 
-fn make_service_commitment(id: &str) -> Commitment {
+pub(super) fn make_service_commitment(id: &str) -> Commitment {
     Commitment {
         commitment_id: id.to_string(),
         giver: DealRole::QuoteAuthor,
@@ -62,7 +62,7 @@ fn make_service_commitment(id: &str) -> Commitment {
     }
 }
 
-fn make_currency_commitment(id: &str, author_did: &str) -> Commitment {
+pub(super) fn make_currency_commitment(id: &str, author_did: &str) -> Commitment {
     Commitment {
         commitment_id: id.to_string(),
         giver: DealRole::Counterparty,
@@ -86,7 +86,7 @@ fn make_currency_commitment(id: &str, author_did: &str) -> Commitment {
     }
 }
 
-fn sample_note(text: &str) -> LocalText {
+pub(super) fn sample_note(text: &str) -> LocalText {
     LocalText::plain(LangTag::parse_canonical("en").expect("parse lang"), text)
 }
 
@@ -158,7 +158,7 @@ async fn store_open_snapshot(
     snap1_payload
 }
 
-fn incoming_card_row(
+pub(super) fn incoming_card_row(
     message_id: &str,
     conversation: &str,
     card_type: &str,
@@ -191,7 +191,7 @@ fn incoming_card_row(
     }
 }
 
-fn make_signed_fulfilment_envelope(
+pub(super) fn make_signed_fulfilment_envelope(
     counterparty: &Identity,
     cp_did: &str,
     agreement: &str,
@@ -213,7 +213,7 @@ fn make_signed_fulfilment_envelope(
     env.to_json().expect("envelope to json")
 }
 
-async fn setup_agreed_deal(
+pub(super) async fn setup_agreed_deal(
     fix: &super::TestFixture,
     counterparty: &Identity,
     commitments: Vec<Commitment>,

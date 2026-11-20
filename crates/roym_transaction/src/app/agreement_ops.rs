@@ -26,7 +26,7 @@ use syneroym_roym_core::{
 
 use super::{
     AGREEMENTS, AgreementRow, OutgoingCard, QUOTES, RecordPointerRow, SendState,
-    default_list_limit_u64, disclosures, ensure_collections, get_row,
+    default_list_limit_u64, disclosures, ensure_collections, extension_rules, get_row,
     hold::{Reservations, ReserveOutcome, SeatLedger},
     is_deal_ended, progress_ops, put_row, resolve_principal_and_owner, send_card_and_file,
 };
@@ -173,6 +173,8 @@ pub(crate) async fn accept_at<H: AppHost>(
         now,
     )
     .await?;
+
+    extension_rules::require_known_extensions_given_by(&row.terms, role)?;
 
     reserve_counterparty_slots(host, &input.quote_record_id, &row.terms.commitments, now).await?;
 
