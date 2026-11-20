@@ -72,6 +72,8 @@ Directory search filters only by category, area, free text, `open_to` and bookin
 | SH-13 | A directory answers the same query over the offerings published to it, and returns facets: counts per attribute value and per sub-category for the current filters. | |
 | SH-14 | Each result is the signed offering itself (or a projection that names the record and its hash), plus its thumbnail hash and source. The client verifies it as it does today. | |
 | SH-15 | A browse answer is JSON only. The Hub renders it as a shop page and a filtered list. A test drives the same answer through `roymctl` to prove no Hub logic is needed. | |
+| **Actions on an offering** | | |
+| SH-16 | An offering page and a search result each offer two actions. "Agree as listed" appears when the offering has complete terms (agreements AG-44). For an offering with variants it names the chosen variant in `as_listed.variant`. "Ask" opens the conversation with the owner, with an enquiry form that already names the offering (and the variant) and its category. Neither action asks the person to copy an address or an id. | |
 
 ## Design
 
