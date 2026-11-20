@@ -598,7 +598,7 @@ listing's `extension` field (C3c builds the function).
   - the `fulfil:` kind check on import (`backup/sections.rs:373`);
   - `validate_and_apply_slot` (`quote_ops.rs:150`, and `:427` reads the
     slot from `catalog`).
-  `Manifest::has_reserve_hook` is still built in C3a1, because rule 5 of
+  `Manifest::has_reserve_hook` is still built in C3a1, because rule 6 of
   D-C3a-5 and the loader use it.
 - The hidden fields of the quote and of every commitment. `details` stays
   one hidden field.
@@ -857,34 +857,51 @@ pub fn check_partial_details(
 ) -> Result<PartialCheck, DealError>;
 ```
 
-Rules of `check_commitment_extension`, in order:
+Rules of `check_commitment_extension`, in order. Rules 1 and 2 are
+today's `validate_commitment_kind` refusals (`deal.rs:349` to `:390`),
+kept with the same codes (P18):
 
-1. No extension: the commitment must have no `details` (`details-mismatch`,
-   as today), and the result is `None`.
-2. `check_details_shape`.
-3. `currency` names no extension (`commitment-kind-not-supported`).
-4. `registry.workflow(ext)` is `None`: the result is `NotChecked`. An
+1. The pair of resource kind and commitment kind is valid: `service-in-slot`
+   or `goods-or-service` with kind `fulfilment`, `currency` with kind
+   `currency`. Any other pair is `kind-mismatch` (`deal.rs:384` to `:387`).
+2. No extension: a `service-in-slot` commitment is refused with
+   `commitment-kind-not-supported` (`deal.rs:356` to `:361`), because a
+   slot needs an extension with a reserve hook. Otherwise the commitment
+   must have no `details` (`details-mismatch`, as today), and the result
+   is `None`.
+3. `check_details_shape` (it includes the extension id shape, today's
+   check at `sd.rs:265` to `:269`).
+4. `currency` names no extension (`commitment-kind-not-supported`).
+5. `registry.workflow(ext)` is `None`: the result is `NotChecked`. An
    `insight` manifest is not a workflow manifest, so naming one gives
    `NotChecked` here and `extension-unknown` from every caller that
    refuses `NotChecked` (P9).
-5. The manifest lists the resource kind (`commitment-kind-not-supported`
-   otherwise, the code used today). `service-in-slot` needs an extension,
-   and its manifest must have a reserve hook.
-6. `details.schema` is one of the manifest's schemas (`details-mismatch`).
-7. `Schema::check` (`details-invalid`).
-8. Each named check. `slot-matches-window` keeps its code `slot-details`
+6. The manifest lists the resource kind (`commitment-kind-not-supported`
+   otherwise, the code used today). For `service-in-slot`, the manifest
+   must have a reserve hook (`commitment-kind-not-supported`).
+7. `details.schema` is one of the manifest's schemas (`details-mismatch`).
+8. `Schema::check` (`details-invalid`).
+9. Each named check. `slot-matches-window` keeps its code `slot-details`
    and needs the window (a missing window is `slot-details`, as today).
+
+`check_extension_kind` runs the rules that need neither `details` nor
+`window`: 1, 2 without its `details` part, the extension id shape of
+rule 3, 4, 5 and 6. It returns `NotChecked` for an unknown extension.
+`validate_visible` keeps its other checks (`sd.rs:259` to `:285`).
 
 `check_partial_details` runs the same rules on what is visible. With
 hidden `details`, it returns `Partial`. With visible `details`, it runs
-rules 2, 6 and 7 for a known extension (the schema check needs no window).
+rules 3, 7 and 8 for a known extension (the schema check needs no window).
 A named check that needs a hidden window gives `Partial`. A window that is
 visible gives the full check. An unknown extension with visible `details`
-runs rule 2 and returns `NotChecked`. Errors map to
+runs rule 3 and returns `NotChecked`. Errors map to
 `PresentationError::FieldInvalid` at the same field paths as today
 (`presentation/validate.rs:394` to `:451`). The entries that stay in
 `not_checked`: `details_matches_extension` for hidden `details`, for a
 hidden window when a named check needs it, and for an unknown extension.
+The presentation checker reaches `check_partial_details` only after the
+commitment passed `validate_visible`, so rules 1, 2 and 4 to 6 have
+already run.
 
 **`DealTerms::validate` keeps its protection (P1).** `validate()` is not
 only called by `quote.set` and `file_quote_card`. It is the last step of
@@ -994,7 +1011,13 @@ lived inside it. The new rule, in `ListingPayload::validate`:
   cancellation window and per-booking maximum are slot rules). A new
   `ListingError::BookingRequired`, message "booking terms are required
   when the listing names the scheduling extension". This is a shape rule
-  of a known id, so a stranger's directory checks it too;
+  of a known id, so a stranger's directory checks it too. So
+  `ListingPayload::validate` compares the id with the constant
+  `extension::SCHEDULING_EXTENSION`, and does not call `registry()`: a
+  `pub const &str` links no registry code, and every verifier of a listing,
+  `directory` included, must check this rule without the registry
+  (D-C3a-6, section 7.9). This is the one match on an extension id in
+  `listing.rs`, and exit criterion 2 names it (P20);
 - `one-shot` and no extension may have a `booking` block or not;
 - a `booking` block with no extension is allowed (today's `enquiry` with
   lead time).
@@ -1405,6 +1428,11 @@ The check (`deal/tests.rs`):
   `reveal_strict_reveals_a_quote_with_an_unknown_extension`.
 - `validate_visible`: an unknown extension passes; a known one on a
   resource kind it does not list is refused.
+- The kind rules (P18), each for `validate` and for `validate_visible`:
+  `service-in-slot` with no extension (`commitment-kind-not-supported`),
+  `goods-or-service` with kind `currency` (`kind-mismatch`), and
+  `currency` with kind `fulfilment` (`kind-mismatch`). Today's case at
+  `deal/tests.rs:181` keeps passing.
 - The presentation checker (P3; `presentation/tests/validation.rs:112` to
   `:149` keep passing unchanged): scheduling with a good window (checked);
   a wrong `slot_id` with a visible window (`FieldInvalid`); a hidden
@@ -1633,9 +1661,13 @@ C3a1:
 - [ ] No code outside `crates/roym_core/src/extension.rs` (and its
   submodules) names `scheduling/slot@1` or matches on an extension id,
   except the `slot-matches-window` check, the seat code sites of section 4
-  (until C3b), and the two users of the moved constants:
-  `apps/roymctl/src/commands/roym/transaction.rs` and the Hub's
-  `quote_terms.ts` (which imports them from `extensions/registry.ts`).
+  (until C3b), the users of the moved constants
+  (`apps/roymctl/src/commands/roym/transaction.rs` and the Hub's
+  `quote_terms.ts`, which imports them from `extensions/registry.ts`), and
+  the `booking-required` rule in `listing.rs` (it uses the constant
+  `SCHEDULING_EXTENSION`, because a stranger's directory checks it without
+  the registry; D-C3a-9). Each of these uses the constant, never a string
+  literal.
   Check with `git grep -n 'scheduling/slot@1\|"scheduling"'`.
 - [ ] `DealTerms::validate` still refuses a scheduling quote whose
   `slot_id` does not match its window, on every path through
