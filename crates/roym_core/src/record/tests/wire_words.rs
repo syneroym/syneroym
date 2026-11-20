@@ -13,14 +13,14 @@ use syneroym_signed_record::decode_disclosure;
 use crate::{
     area::Area,
     deal::{
-        Answers, Commitment, CommitmentKind, DealTerms, LocalText, ResourceKind, SettlementRole,
-        TextTranslation, transition::CommitmentState,
+        Answers, Commitment, CommitmentKind, DealTerms, ExtensionRef, LocalText, ResourceKind,
+        SettlementRole, TextTranslation, transition::CommitmentState,
     },
     lang::LangTag,
     listing::{
-        AddressDisclosure, BookingMode, BookingTerms, ListingPayload, ListingStatus,
-        ListingTranslation, LocationTerms, OpenTo, PaymentModel, PaymentTerms, ProductCondition,
-        ProductDetail, RelationshipTerms, ServiceDetail, ServiceLocation, ServiceRecordTerms,
+        AddressDisclosure, BookingTerms, ListingPayload, ListingStatus, ListingTranslation,
+        LocationTerms, OpenTo, PaymentModel, PaymentTerms, ProductCondition, ProductDetail,
+        RelationshipTerms, ServiceDetail, ServiceLocation, ServiceRecordTerms,
     },
     progress::{AgreementProgressPayload, AgreementState, CancelReason, CommitmentProgress},
     testing::sd::{self, PlainFulfilment, PlainPaymentAck, PlainPaymentRequest, PlainQuote},
@@ -284,8 +284,8 @@ fn listing(place: ServiceLocation, open_to: OpenTo) -> ListingPayload {
         categories: vec!["gardening".to_string()],
         conversation_address: "did:key:zListingOwnerConv".to_string(),
         status: ListingStatus::Active,
+        extension: Some(ExtensionRef { id: "scheduling".to_string(), version: 1 }),
         booking: Some(BookingTerms {
-            mode: BookingMode::Slots,
             lead_time_secs: 3_600,
             cancellation_window_secs: 86_400,
             max_per_booking: 2,
@@ -359,7 +359,6 @@ fn the_other_wire_enums_say_no_old_word_in_any_variant() {
         ListingStatus,
         [ListingStatus::Draft, ListingStatus::Active, ListingStatus::Withdrawn]
     );
-    let modes = every!(BookingMode, [BookingMode::Slots, BookingMode::Order, BookingMode::Enquiry]);
     let models = every!(
         PaymentModel,
         [
@@ -376,7 +375,6 @@ fn the_other_wire_enums_say_no_old_word_in_any_variant() {
     let disclosures =
         every!(AddressDisclosure, [AddressDisclosure::OnAgreement, AddressDisclosure::Public]);
     assert_no_old_words("listing status", &statuses);
-    assert_no_old_words("booking mode", &modes);
     assert_no_old_words("payment model", &models);
     assert_no_old_words("product condition", &conditions);
     assert_no_old_words("address disclosure", &disclosures);

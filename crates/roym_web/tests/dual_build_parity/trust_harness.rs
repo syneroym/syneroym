@@ -185,7 +185,6 @@ fn canned_listing_envelope() -> String {
         "conversation_address": "did:key:zListingOwnerConv",
         "status": "active",
         "booking": {
-            "mode": "enquiry",
             "lead_time_secs": 0,
             "cancellation_window_secs": 0,
             "max_per_booking": 1
@@ -542,7 +541,6 @@ fn signed_canned_listing(
         "conversation_address": "did:key:zConv",
         "status": "active",
         "booking": {
-            "mode": "enquiry",
             "lead_time_secs": 0,
             "cancellation_window_secs": 0,
             "max_per_booking": 1,

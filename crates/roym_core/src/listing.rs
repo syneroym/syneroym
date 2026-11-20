@@ -13,6 +13,8 @@ use syneroym_signed_record::{EnvelopeError, content_digest};
 
 use crate::{
     area::{self, Area, AreaError},
+    deal::{ExtensionRef, MAX_EXTENSION_ID_LEN},
+    extension::SCHEDULING_EXTENSION,
     lang::{LangTag, TranslationError, check_text, check_translation_langs},
     money,
 };
@@ -48,17 +50,8 @@ pub enum ListingStatus {
     Withdrawn,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum BookingMode {
-    Slots,
-    Order,
-    Enquiry,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BookingTerms {
-    pub mode: BookingMode,
     pub lead_time_secs: u64,
     pub cancellation_window_secs: u64,
     pub max_per_booking: u32,
@@ -206,6 +199,10 @@ pub struct ListingPayload {
     pub conversation_address: String,
     pub status: ListingStatus,
 
+    /// The Roym extension that books this offering. Absent for the plain
+    /// enquiry flow.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extension: Option<ExtensionRef>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub booking: Option<BookingTerms>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -242,8 +239,14 @@ pub enum ListingError {
     ListingIdEmpty,
     #[error("currency '{0}' is not a currency code this build knows")]
     CurrencyUnknown(String),
-    #[error("payment terms are required unless booking.mode is enquiry")]
+    #[error("payment terms are required when the listing names an extension")]
     PaymentRequired,
+    #[error(
+        "extension '{0}' is not an id of 1..=32 chars of [a-z0-9-] with a version of 1 or more"
+    )]
+    ExtensionShape(String),
+    #[error("booking terms are required when the listing names the scheduling extension")]
+    BookingRequired,
     #[error("amount_minor is required for a non-quote-only payment model")]
     AmountMinorRequired,
     #[error("amount_minor must be absent for a quote-only payment model")]
@@ -311,10 +314,9 @@ impl ListingPayload {
             }
         }
 
-        let booking_is_enquiry =
-            matches!(self.booking.as_ref().map(|b| b.mode), Some(BookingMode::Enquiry));
+        self.validate_extension()?;
         match &self.payment {
-            None if !booking_is_enquiry => return Err(ListingError::PaymentRequired),
+            None if self.extension.is_some() => return Err(ListingError::PaymentRequired),
             None => {}
             Some(p) => {
                 if money::currency_minor_exponent(&p.currency).is_none() {
@@ -374,6 +376,21 @@ impl ListingPayload {
         self.validate_relationship()?;
         self.validate_translations()?;
 
+        Ok(())
+    }
+
+    /// The shape of the extension a listing names. A stranger's directory runs
+    /// this too, so it needs no registry: the one rule on an id is a constant.
+    fn validate_extension(&self) -> Result<(), ListingError> {
+        let Some(ext) = &self.extension else {
+            return Ok(());
+        };
+        if !valid_token(&ext.id, MAX_EXTENSION_ID_LEN) || ext.version == 0 {
+            return Err(ListingError::ExtensionShape(ext.id.clone()));
+        }
+        if ext.id == SCHEDULING_EXTENSION && self.booking.is_none() {
+            return Err(ListingError::BookingRequired);
+        }
         Ok(())
     }
 

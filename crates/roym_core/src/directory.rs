@@ -16,7 +16,7 @@ use crate::{area::Area, listing, safety::PublicationLimits};
 /// row by row. Version 5 renames the service-location and audience values
 /// inside signed listings, so a bundle with the old values is refused the
 /// same way.
-pub const DIRECTORY_SCHEMA_VERSION: u32 = 5;
+pub const DIRECTORY_SCHEMA_VERSION: u32 = 6;
 pub const MAX_SYNORG_NAME_LEN: usize = 128;
 pub const MAX_RULES_LEN: usize = 8192;
 pub const MAX_CONTACT_LEN: usize = 256;
@@ -168,8 +168,10 @@ pub struct SearchQuery {
     pub area: Option<Area>,
     #[serde(default)]
     pub open_to: Option<listing::OpenTo>,
+    /// An extension id, such as `scheduling`. Listings with no extension
+    /// cannot be asked for.
     #[serde(default)]
-    pub booking_mode: Option<listing::BookingMode>,
+    pub extension: Option<String>,
     #[serde(default)]
     pub limit: Option<u32>,
 }

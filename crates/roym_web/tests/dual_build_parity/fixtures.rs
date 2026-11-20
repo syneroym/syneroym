@@ -93,8 +93,8 @@ pub(crate) fn full_listing_params(slug: &str, title: &str) -> Value {
         "summary": "Neat hedges, fortnightly.",
         "categories": ["gardening", "outdoor"],
         "conversation_address": "did:key:zListingOwnerConv",
+        "extension": { "id": "scheduling", "version": 1 },
         "booking": {
-            "mode": "slots",
             "lead_time_secs": 3600,
             "cancellation_window_secs": 86400,
             "max_per_booking": 2
@@ -131,9 +131,9 @@ pub(crate) fn full_listing_params(slug: &str, title: &str) -> Value {
 pub(crate) fn expected_schema_version(service: &str) -> u32 {
     match service {
         "transaction" => 6,
-        "directory" => 5,
+        "directory" => 6,
         "conversation" => 4,
-        "catalog" => 3,
+        "catalog" => 4,
         "profile" => 2,
         _ => 1,
     }

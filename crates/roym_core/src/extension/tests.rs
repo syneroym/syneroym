@@ -1,3 +1,5 @@
+use std::{collections::HashMap, fs, path::PathBuf};
+
 use serde_json::{Value, json};
 
 use super::{
@@ -271,4 +273,32 @@ fn insight_and_workflow_keys_do_not_mix() {
     let mut m = base();
     m["reads"] = json!(["event-log"]);
     assert!(refused(&m).contains("reads"));
+}
+
+/// The Hub imports the same JSON files, in the same order, as `MANIFESTS`.
+#[test]
+fn the_hub_registry_lists_the_manifests_that_this_crate_compiles_in() {
+    let path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../roym_web/ui/src/extensions/registry.ts");
+    let ts = fs::read_to_string(&path).expect("read the Hub's extension registry");
+
+    let mut files_by_name: HashMap<&str, &str> = HashMap::new();
+    for line in ts.lines().filter(|l| l.starts_with("import ")) {
+        let name = line.split_whitespace().nth(1).expect("import name");
+        let file = line.split("/roym_core/extensions/").nth(1).expect("import path");
+        files_by_name.insert(name, file.split('"').next().expect("file name"));
+    }
+    let array = ts
+        .lines()
+        .find(|l| l.contains("MANIFESTS: readonly Manifest[]"))
+        .expect("the MANIFESTS array");
+    let inside = array.split('[').nth(2).and_then(|rest| rest.split(']').next()).expect("array");
+    let hub_files: Vec<&str> = inside.split(',').map(|n| files_by_name[n.trim()]).collect();
+
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("extensions");
+    let hub_sources: Vec<String> = hub_files
+        .iter()
+        .map(|file| fs::read_to_string(dir.join(file)).expect("read a manifest file"))
+        .collect();
+    assert_eq!(hub_sources, MANIFESTS);
 }

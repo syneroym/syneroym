@@ -9,7 +9,10 @@ use std::sync::LazyLock;
 
 use serde::Deserialize;
 
-use crate::deal::{ExtensionRef, ResourceKind};
+use crate::{
+    deal::{ExtensionRef, MAX_EXTENSION_ID_LEN, ResourceKind},
+    listing,
+};
 
 pub mod check;
 pub mod ids;
@@ -33,6 +36,12 @@ pub const SCHEDULING_SLOT_SCHEMA: &str = "scheduling/slot@1";
 /// the same files.
 pub const MANIFESTS: &[&str] =
     &[include_str!("../extensions/scheduling.json"), include_str!("../extensions/one-shot.json")];
+
+/// Whether `id` has the shape of an extension id. A directory uses this to
+/// check a search filter without loading the registry.
+pub fn is_extension_id(id: &str) -> bool {
+    listing::valid_token(id, MAX_EXTENSION_ID_LEN)
+}
 
 /// Longest step type, including the extension id prefix.
 pub const MAX_STEP_TYPE_LEN: usize = 64;

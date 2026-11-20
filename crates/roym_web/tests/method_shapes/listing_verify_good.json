@@ -7,13 +7,16 @@
     "booking": {
       "cancellation_window_secs": "number",
       "lead_time_secs": "number",
-      "max_per_booking": "number",
-      "mode": "string"
+      "max_per_booking": "number"
     },
     "categories": [
       "string"
     ],
     "conversation_address": "string",
+    "extension": {
+      "id": "string",
+      "version": "number"
+    },
     "lang": "string",
     "listing_id": "string",
     "location": {

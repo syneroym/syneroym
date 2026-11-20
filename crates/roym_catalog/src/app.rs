@@ -20,7 +20,7 @@ use crate::api;
 
 /// Version 2 gave the service its first state. Version 3 renames the
 /// service-location values inside signed listings.
-pub const SCHEMA_VERSION: u32 = 3;
+pub const SCHEMA_VERSION: u32 = 4;
 
 pub const LISTINGS: &str = "listings";
 pub const LISTING_HISTORY: &str = "listing_history";
