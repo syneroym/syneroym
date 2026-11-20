@@ -135,6 +135,63 @@ async fn scenario_145_currency_unknown_refused_and_jpy_accepted_parity() {
 }
 
 #[tokio::test]
+async fn scenario_244_quote_set_with_a_one_shot_or_unknown_extension_parity() {
+    let h = harness().await;
+    enrol_signing(&h, "conversation").await;
+    enrol_signing(&h, "transaction").await;
+    let conv = open_conv(&h, &peer_did()).await;
+
+    let (req_rec_id, req_env) = peer_signed_request(&conv, 1, 1_000);
+    let card_msg = inbound_card(
+        "m-req-244",
+        &conv,
+        &peer_did(),
+        1_000,
+        transaction::RECORD_ENQUIRY,
+        transaction::ENQUIRY_VERSION,
+        &req_env,
+    );
+    h.deliver(true, card_msg.clone()).await;
+    h.deliver(false, card_msg).await;
+    both_rpc(&h, "transaction.sync", json!({ "conversation": conv })).await;
+
+    let params_for = |extension: &str| {
+        let mut terms = sample_quote_terms();
+        terms["commitments"][0]["extension"] = json!({ "id": extension, "version": 1 });
+        terms["commitments"][0]["details"] = json!({
+            "extension": extension,
+            "schema": format!("{extension}/order@1"),
+            "data": {},
+        });
+        json!({ "enquiry_record_id": req_rec_id, "expires_in_secs": 3600, "terms": terms })
+    };
+
+    // A one-shot commitment is signed on both builds.
+    let (w, n) = both_rpc(&h, "quote.set", params_for("one-shot")).await;
+    assert!(w["error"].is_null(), "{w}");
+    assert_eq!(w["result"]["quote_id"], n["result"]["quote_id"]);
+    let (gw, gn) = both_rpc(&h, "quote.get", json!({ "quote_id": w["result"]["quote_id"] })).await;
+    for res in [&gw, &gn] {
+        let commitment = &res["result"]["terms"]["commitments"][0];
+        assert_eq!(commitment["extension"], json!({ "id": "one-shot", "version": 1 }), "{res}");
+    }
+
+    // An extension this build does not ship is refused the same way on both.
+    let (w, n) = both_rpc(&h, "quote.set", params_for("future")).await;
+    assert_eq!(w, n);
+    assert_eq!(w["error"]["code"], -32602, "{w}");
+    assert_eq!(w["error"]["data"]["code"], "extension-unknown", "{w}");
+
+    // `details.data` that the schema refuses is refused the same way on both.
+    let mut bad = params_for("one-shot");
+    bad["terms"]["commitments"][0]["details"]["data"] = json!({ "stray": 1 });
+    let (w, n) = both_rpc(&h, "quote.set", bad).await;
+    assert_eq!(w, n);
+    assert_eq!(w["error"]["code"], -32602, "{w}");
+    assert_eq!(w["error"]["data"]["code"], "details-invalid", "{w}");
+}
+
+#[tokio::test]
 async fn scenario_146_peer_replaying_older_request_or_quote_refused_parity() {
     let h = harness().await;
     enrol_signing(&h, "conversation").await;

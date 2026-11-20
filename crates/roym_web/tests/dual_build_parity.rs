@@ -35,6 +35,8 @@ mod deal;
 mod directory;
 #[path = "dual_build_parity/directory_compat.rs"]
 mod directory_compat;
+#[path = "dual_build_parity/directory_extension.rs"]
+mod directory_extension;
 #[path = "dual_build_parity/directory_find.rs"]
 mod directory_find;
 #[path = "dual_build_parity/disclosure.rs"]
