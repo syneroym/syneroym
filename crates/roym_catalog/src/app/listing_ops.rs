@@ -359,7 +359,11 @@ async fn write_version<H: AppHost>(
     };
 
     if let Err(e) = payload.validate() {
-        return Err(Response::invalid_params(e.to_string()));
+        let response = Response::invalid_params(e.to_string());
+        return Err(match e.code() {
+            Some(code) => response.with_data(json!({ "code": code })),
+            None => response,
+        });
     }
 
     let prior = match load_listing_row(host, &payload.listing_id).await {

@@ -1854,9 +1854,10 @@ Add every derived id to the `## Extensions` section of `en.ftl` and `hi.ftl`. A 
 | `extension-unknown` | `quote.set` or `listing.set` names an extension this node does not know. `agreement.accept` refuses it when this node gives that part of the deal. |
 | `details-invalid` | A field of `details.data` does not fit its schema. |
 | `details-mismatch` | `details` and the extension do not match, or the schema is not one of the manifest's. |
-| `extension-shape` | The id, the schema name or `details.extra` has a wrong shape or is too large. |
+| `extension-shape` | The id, the schema name or `details.extra` has a wrong shape or is too large. `listing.set` sends it for a bad extension id or version. |
 | `slot-details` | `slot_id` does not match the commitment's window. |
 | `booking-required` | A listing names `scheduling` and has no `booking` block. |
+| `payment-required` | A listing names an extension and has no `payment` block. |
 
 #### Call a JSON-RPC method on a WASM app via HTTP Proxy
 

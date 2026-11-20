@@ -277,6 +277,19 @@ pub enum ListingError {
     Translation(#[from] TranslationError),
 }
 
+impl ListingError {
+    /// The stable code a client reads in `error.data.code`. Only the
+    /// refusals about the extension have one; the others are a message only.
+    pub fn code(&self) -> Option<&'static str> {
+        match self {
+            Self::PaymentRequired => Some("payment-required"),
+            Self::ExtensionShape(_) => Some("extension-shape"),
+            Self::BookingRequired => Some("booking-required"),
+            _ => None,
+        }
+    }
+}
+
 fn is_slug_char(c: char) -> bool {
     c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'
 }

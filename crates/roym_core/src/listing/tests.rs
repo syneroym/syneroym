@@ -254,6 +254,14 @@ fn payment_required_when_the_listing_names_an_extension() {
 }
 
 #[test]
+fn the_extension_refusals_have_codes() {
+    assert_eq!(ListingError::PaymentRequired.code(), Some("payment-required"));
+    assert_eq!(ListingError::ExtensionShape("x".to_string()).code(), Some("extension-shape"));
+    assert_eq!(ListingError::BookingRequired.code(), Some("booking-required"));
+    assert_eq!(ListingError::TitleEmpty.code(), None);
+}
+
+#[test]
 fn the_extension_has_a_shape() {
     let mut p = core();
     for id in ["", "Scheduling", "has space", "a_b", &"a".repeat(33)] {

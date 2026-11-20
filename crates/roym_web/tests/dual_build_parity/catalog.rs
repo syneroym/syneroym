@@ -108,7 +108,7 @@ async fn scenario_243_listing_set_with_an_unknown_extension_refused_parity() {
     let (w, n) = both_rpc(&h, "listing.set", params).await;
     assert_eq!(w, n);
     assert!(is_err(&w, -32602));
-    assert!(w["error"]["message"].as_str().unwrap().contains("booking terms"), "{w}");
+    assert_eq!(w["error"]["data"]["code"], "booking-required", "{w}");
 }
 
 #[tokio::test]
