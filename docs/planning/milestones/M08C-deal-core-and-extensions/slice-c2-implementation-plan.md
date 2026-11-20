@@ -1673,7 +1673,7 @@ C2a:
 - [x] Deviations, backlog rows and living docs done.
 - [x] `mise run verify` passes with no `--skip` (on `5362e5ce`; the nextest
   gate passed as a separate full `--no-fail-fast` run, see status.md).
-- [ ] Owner reviewed the three Hindi messages.
+- [x] Owner reviewed the three Hindi messages.
 
 C2b:
 
