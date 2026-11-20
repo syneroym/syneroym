@@ -1053,7 +1053,7 @@ Each row is a rule from another document that this document changes. The last co
 
 ## Open questions
 
-Each has a recommendation. The owner decides. Questions 1 and 3 to 13 are decided. Questions 14 and 15 are open. Question 2 belongs to a C0 ADR.
+Each has a recommendation. The owner decides. Questions 1, 3 to 13 and 15 are decided. Question 14 is open. Question 2 belongs to a C0 ADR.
 
 1. **Declared values in a mixed exchange.**
    Owner direction: there is no barter special case. An exchange is any mix of goods, services, EEPs and money. The offering says what its owner accepts in return. Each resource has a value in the unit of account. The totals need not match, and the Hub shows the difference.
@@ -1137,6 +1137,7 @@ Each has a recommendation. The owner decides. Questions 1 and 3 to 13 are decide
     Today a deal that goes wrong is shown by what does not happen: the commitment ends `ended-unconfirmed`. The only signed failure is `reservation-lost`.
     Recommendation: not in M08C. Decide it with M08G, because the value of a signed "not received" claim depends on how reputation reads it. Until then the receiver writes an opinion.
     Reason: a new failure record touches the state tables of every kind, and it is only useful once evidence exists.
+    Owner decision (2026-11-20): agreed.
 
 ## What the C0 ADRs must decide
 

@@ -18,7 +18,7 @@ Read them first. Each slice below names the change docs it builds part of.
 
 | Change doc | Status | Criteria built here |
 | --- | --- | --- |
-| [roym-agreements](../../changes/roym-agreements/change.md) | draft, open questions 1 and 3 to 12 decided by the owner (2026-11-10), 13 decided on 2026-11-20, 14 and 15 open, 3 review rounds and the PR #372 review | `AG-1` to `AG-23`, `AG-27` to `AG-50`. `AG-24` to `AG-26` are built in M08E and M08H. |
+| [roym-agreements](../../changes/roym-agreements/change.md) | draft, open questions 1 and 3 to 12 decided by the owner (2026-11-10), 13 and 15 decided on 2026-11-20, 14 open, 3 review rounds and the PR #372 review | `AG-1` to `AG-23`, `AG-27` to `AG-50`. `AG-24` to `AG-26` are built in M08E and M08H. |
 | [roym-value-exchange](../../changes/roym-value-exchange/change.md) (overview) | draft | `VX-1`, `VX-2`, `VX-5` to `VX-12`, `VX-45`, `VX-46`, `VX-54` to `VX-56`, through the `AG-*` rows that refine them |
 | [roym-extensions](../../changes/roym-extensions/change.md) | draft, reviewed (no review file was kept) | `EX-1` to `EX-8`, `EX-10` to `EX-14`, `EX-17` to `EX-22`. `EX-11` for inline definitions only. `EX-9` (an opinion points at a step) is built in M08G. `EX-15` and `EX-16` move out of M08C (section 6, question 3). `EX-19` is the manifest field only. |
 | [roym-message-forwarding](../../changes/roym-message-forwarding/change.md) | draft, reviewed (no review file was kept) | `FW-1` to `FW-15` |
