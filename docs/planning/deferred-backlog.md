@@ -725,7 +725,7 @@ Live `TODO`/`FIXME` markers that encode a real deferral. Remove both the code ma
 ## Recently resolved
 
 | **A countersigned card whose send fails is never sent again** | Resolved in M08C C1a (R2/R3): transport send errors return an error to retry on next sync; lasting send errors leave the decision row in `deciding` state so repeat syncs or the C1b recovery sweep resend any stored card lacking a message id. |
-| **A request made from a directory hit does not name the listing** | Resolved on 2026-11-20 (Engage fix): tapping "Ask" on a verified directory hit opens or creates the conversation with the owner, displays that thread in Messages, and opens the request form with the listing id and categories pre-filled from the verified envelope. |
+| **A request made from a directory hit does not name the listing** | Resolved on 2026-11-20 (Engage fix, [PR #373](https://github.com/syneroym/syneroym/pull/373)): tapping "Ask" on a verified directory hit opens or creates the conversation with the owner, displays that thread in Messages, and opens the request form with the listing id and categories pre-filled from the verified envelope. |
 
 | **The payment and fulfilment records name the deal parties, not the giver and receiver** | Resolved in M08C C1a: settlement cards and receipt records now name `commitment_id` and the giver/receiver role derived from the commitment definition. |
 | **The receipt card does not show what each party read** | Resolved in M08C C1a: the agreement receipt card displays "{name} read this in {language}{, machine translation}" for each party's signed half. |
