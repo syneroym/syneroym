@@ -639,3 +639,252 @@ story `60-roym-step`. The plan's Q10 answer gives the order of the story
 and how the browser part passes the listing id, the slot window and the
 agreement id to the two shell parts (`60-roym-step-quote.sh`,
 `60-roym-step-start.sh`). No owner question is open.
+
+## Code review round 1 — Claude Opus 5.5 (Claude Code), 2026-11-20
+
+Reviewed part C3a1, PR [#374](https://github.com/syneroym/syneroym/pull/374)
+(draft), branch `feat/m08c-c3a-deal-extension-frame` at `90f9bf00`, with
+`git diff origin/main...HEAD`. This is the main checkout (`.git` is a
+directory, not a worktree). `git pull` said "Already up to date". The code
+was written by Claude Sonnet 5.5, so this round meets the cross-tool rule.
+There is no earlier code review round of C3a, so there are no Fixed or
+Rejected items to check again. While this review ran, another session
+committed `d252297f` (`fix(deps): update wasmtime to 48.0.10`, only
+`Cargo.toml` and `Cargo.lock`) on top of `90f9bf00`. This review does not
+cover it.
+
+Read: AGENTS.md, session-strategy.md ("The review file"), the plan, this
+file's plan review rounds, the code review rounds of
+[slice-c1-review.md](slice-c1-review.md) and
+[slice-c2-review.md](slice-c2-review.md), and both change docs
+(roym-extensions, roym-multilingual). The branch also holds `c0fb9e0a`
+(agreements doc P61 and P62); its doc changes were read only for scope.
+
+CI: `gh pr checks 374` is green on `90f9bf00` (six test shards, Playwright
+E2E, "Lints, licenses & checks", "CI Pipeline", CLA). I did not run the
+full suite or `mise run verify`. I ran the Hub unit tests and the five
+`roym_*` crates of the status row to check its counts (see "Status
+counts"), and one temporary test to prove R1, which I then removed with
+`git checkout`. I changed no code.
+
+**Summary: 6 findings (R1 to R6): 0 blocker, 1 major, 5 minor.**
+
+### What was checked and found correct
+
+- **One check for every caller (D-C3a-5).** `DealTerms::validate` calls
+  `check_commitment_extension(registry(), c)` for each commitment, so
+  `reveal_terms_strict` and every load of a held quote keep the full check
+  for a known extension (P1). `validate_visible` calls
+  `check_extension_kind`; the presentation checker calls
+  `check_partial_details` with the same field paths and the same
+  `not_checked` entry. The old functions (`validate_commitment_kind`,
+  `validate_extension_and_details`, `validate_scheduling_details`,
+  `validate_scheduling_slot_details`) are gone, and the `extra` loop moved
+  into the shape check, so it holds for one-shot and unknown extensions
+  too (P2). The rule order matches the plan: kind pair (`kind-mismatch`),
+  `service-in-slot` with no extension (`commitment-kind-not-supported`),
+  shape, currency, unknown, resource kind and reserve hook, schema, field
+  check, named check (`slot-details`). The changed codes against `main`
+  happen only for malformed input that `main` refused too (for example a
+  currency commitment with an extension and no `details` is now
+  `details-mismatch`, not `commitment-kind-not-supported`); every one is a
+  refusal before and after.
+- **Who refuses (D-C3a-6).** `quote.set` refuses `NotChecked` after
+  `validate()` in `validate_and_conceal_terms`. `file_quote_card` needs no
+  change: `validate()` now passes `NotChecked`. `accept_at` refuses only a
+  `NotChecked` commitment that this node gives, after the eligibility
+  check and before `reserve_counterparty_slots`. The seat code is not
+  changed (P12), and it stays safe with an unknown extension:
+  `reserve_counterparty_slots` reads a slot only for a commitment that the
+  counterparty gives, which accept has already refused, and the author's
+  sites see only quotes that its own `quote.set` checked.
+  `validate_and_apply_slot` runs before the refusal, but it only reads the
+  catalog and holds nothing.
+- **Listing (D-C3a-9).** `BookingMode` and `BookingTerms.mode` are gone;
+  `ListingPayload.extension` is `serde(default)` with no
+  `deny_unknown_fields`, so an old listing parses with no extension
+  (`old_listing_with_booking_mode_has_no_extension`). The payment rule, the
+  shape rule and `booking-required` use only `valid_token` and the
+  constant `SCHEDULING_EXTENSION`, so `directory` links no registry code.
+  `listing.set` runs `extension::is_known_workflow` (deviation recorded);
+  `listing.withdraw` and the catalog import do not, which is right: an
+  owner can withdraw a listing whose extension a later build dropped.
+- **Directory.** `SearchQuery.extension` is checked with
+  `is_extension_id` before it goes into the filter, the index column is
+  `extension`, `DIRECTORY_SCHEMA_VERSION` is 6 and the catalog's
+  `SCHEMA_VERSION` is 4, with the fixtures, the method shape and the
+  substrate test moved with them. The Hub and `roymctl` sent no
+  `booking_mode`, so nothing else changes.
+- **Exit criterion 2.** `git grep -n 'scheduling/slot@1\|"scheduling"'`
+  outside tests and docs finds only the manifest and the two constants.
+  `roymctl`, `listing.rs`, the presentation tests and
+  `quote_terms.ts` use the moved constants.
+- **Manifest loader (D-C3a-1, D-C3a-2, D-C3a-4).** `deny_unknown_fields` on
+  the manifest, schema, field and step type; every limit of the field
+  table, the hook rule, the insight/workflow split and the name forms are
+  load rules with a failing case each. `registry()` uses
+  `#[expect(clippy::expect_used, reason = …)]` and
+  `every_shipped_manifest_loads` covers it. `Schema::check` refuses a
+  non-object, an unknown key, a float and a missing required field.
+- **Hub (D-C3a-7, D-C3a-8).** `registry.ts` imports the same JSON files.
+  The Rust test reads `registry.ts` and compares the files in order with
+  `MANIFESTS`, and the Vitest test checks the folder (deviation
+  recorded). The id functions match `ids.rs` on the same cases. The field
+  view uses `textContent` and `recordValue` only, gives `text`,
+  `long-text` and `extra` the quote's original `lang`, gives `code` none,
+  and draws an unknown extension's keys with `lang=""` and the "not
+  checked" line. The accept branch keys on `data.code ===
+  "extension-unknown"`, not on the message. The listing editor keeps the
+  three choices, moves the select out of the booking block, and locks the
+  booking block while "slots" is picked; `buildSetListingParams` also
+  sends `booking` for "slots", so the Hub never meets `booking-required`.
+- **Change docs.** The question numbers and meanings in the extensions
+  doc's Deviations (Q2, Q3, Q8, Q9) match the plan. Q2 is also in the
+  agreements doc (open question 3), where it belongs. Every test name that
+  the EX-1, EX-2, EX-3, EX-18 and EX-19 rows cite exists. The three new
+  backlog rows of section 8 are there. Living docs: requirements `:727`,
+  the architecture's quote row and registry paragraph, the developer
+  guide's new section and query fields, and TERMINOLOGY.md are updated and
+  say nothing the code does not do. The traceability matrix has no EX or
+  ML row and no row about booking modes, so it needs no change.
+- **Rules.** No planning ids in `.rs`, `.ts`, `.json` or `.ftl` lines of
+  the diff, no new `TODO` or `FIXME`. Every new `.rs` file is under 300
+  lines; `deal.rs` shrank. No new `too_many_lines` suppression. No new
+  dependency.
+- **Status counts.** Hub unit tests: 49 files, 599 passed, as status.md
+  says. `cargo nextest run` on `roym-core`, `roym-catalog`,
+  `roym-directory`, `roym-federated-query` and `roym-transaction`: 563
+  tests run, 563 passed, 0 skipped, as status.md says. The `roym-web` and
+  substrate counts are not checked here; CI ran them.
+
+### New findings
+
+- [ ] **R1 — major.** *Where:* `crates/roym_core/src/extension/load.rs:137`
+  (`check_message_ids`), `crates/roym_core/src/extension/ids.rs:20` to
+  `:34`.
+  *Problem:* D-C3a-3 says the schema version is not part of a message id,
+  "so `slot@1` and `slot@2` share the label of a field with the same name",
+  and the developer guide tells a manifest author the same. It also says
+  the loader refuses an id "that comes from two places". The code refuses
+  every repeated id: it puts each derived id in one `HashSet` and fails on
+  the second insert. A field that two versions of one schema share is one
+  place, not two, but it is refused. The same holds across manifest
+  versions: a `scheduling` version 2 manifest beside version 1 (so that
+  old quotes stay checked) always repeats `ext-scheduling-step-started`.
+  *Failure case:* a manifest with `details` `demo/form@1` and `demo/form@2`,
+  both with field `note`, gives `Err(extension 'demo': message id
+  'ext-demo-form-note' is made twice)` from `Registry::parse`. Shipped,
+  that manifest would make `every_shipped_manifest_loads` fail, and
+  `registry()` would panic at the first deal check of every node. So the
+  only way to add a second version of a schema or of an extension is to
+  rename every field and step, which D-C3a-3 says is needed only when the
+  meaning changes. Proven with a temporary test on top of `base()` in
+  `extension/tests.rs` (1 passed, removed).
+  *Fix:* In `check_message_ids`, keep a map from each id to its source: the
+  extension id, the kind (field, choice or step), the schema's short name,
+  the field name and the choice (or the step name). Refuse only when one
+  id has two different sources. Tests: two versions of one schema that
+  share a field load; two versions of one extension that share a step
+  load; the `a-b`/`c` against `a`/`b-c` case is still refused.
+  *Status:* Open.
+
+- [ ] **R2 — minor.** *Where:* `crates/roym_catalog/src/app/listing_ops.rs:361`
+  (`write_version`), `crates/roym_core/src/listing.rs:240` to `:249`;
+  `docs/developer-guide.md:1859`.
+  *Problem:* The plan (section 4, "New error codes"), the extensions doc
+  and the developer guide's "Refusals" table, whose first column is
+  "Code", name `booking-required` as an error code. `listing.set` never
+  sends it: `write_version` turns every `ListingError` into
+  `invalid_params(e.to_string())` with no `data.code`, and `ListingError`
+  has no `code()`. The new `ExtensionShape` and the changed
+  `PaymentRequired` are the same. The parity scenario 243 has to match the
+  message text ("booking terms").
+  *Failure case:* a client that follows the developer guide and checks
+  `error.data.code == "booking-required"` never sees it, and has to parse
+  the English message.
+  *Fix:* Add `ListingError::code()` (at least `booking-required`,
+  `payment-required` and `extension-shape`) and send it from
+  `write_version` with `with_data({ "code": … })`, as `listing.set`
+  already does for `extension-unknown`. Make scenario 243 check
+  `data.code`. If the owner prefers no listing codes now, change the
+  developer guide row and the plan's wire list to say it is a message.
+  *Status:* Open.
+
+- [ ] **R3 — minor.** *Where:* plan section 7.3 and 7.2;
+  `crates/roym_directory/src/app/search_ops/tests.rs:102`.
+  *Problem:* Two planned tests are missing, and no Deviation says why.
+  (a) Section 7.3: "one quote scenario with a one-shot commitment" in the
+  dual-build parity harness. No parity scenario sets a one-shot or an
+  unknown extension on `quote.set`, so the WASM `transaction` component's
+  answer to `extension-unknown` and `details-invalid` is not compared with
+  the native one. (b) Section 7.2: "a search with `extension:
+  "scheduling"` finds only the listings that name it". The test
+  `an_extension_filter_matches_only_listings_that_name_it` checks the
+  filter's JSON text and the index row's field one by one. It never runs a
+  search, so its name claims more than it proves.
+  *Failure case:* a bug in how the data layer matches the `extension`
+  clause (for example a row with the key absent) passes every test.
+  *Fix:* (a) Add a parity scenario: `quote.set` with a one-shot commitment
+  succeeds on both builds with equal output, and with an unknown extension
+  both answer `extension-unknown`. (b) Add a directory scenario that
+  indexes one listing with `scheduling` and one with none, and checks that
+  `directory.search` with `extension: "scheduling"` returns only the
+  first; or rename the unit test to what it checks.
+  *Status:* Open.
+
+- [ ] **R4 — minor.** *Where:* `crates/roym_core/src/extension/tests.rs:105`,
+  `:114`, `:307`; `crates/roym_core/src/extension.rs:179`.
+  *Problem:* Three tests can pass for the wrong reason. (a)
+  `step_types_need_the_id_prefix_and_a_limit`: the long case
+  (`demo/` and 60 letters) is refused by the 32-letter name rule in
+  `name_after_prefix`, not by `MAX_STEP_TYPE_LEN`. The 64-byte rule bites
+  only for a 32-letter id with a 32-letter name (65 bytes), and no test
+  has that case. (b) This test and
+  `schema_names_need_the_id_prefix_and_a_version` assert only that some
+  error came back. (c) `the_header_check_agrees_with_the_registry` cannot
+  test the `kind == Workflow` filter of `is_known_workflow`, because no
+  insight manifest is in `MANIFESTS`. Deleting that filter keeps every
+  test green, and then `listing.set` would accept an insight id once one
+  ships (P9).
+  *Failure case:* removing the `MAX_STEP_TYPE_LEN` check, or the insight
+  filter in `is_known_workflow`, fails no test.
+  *Fix:* (a) Add the 32 + 32 case and assert "too long". (b) Assert the
+  rule's text in each case. (c) Let `is_known_workflow` call a private
+  `known_workflow_in(sources: &[&str], ext)` and test that with an insight
+  source and a workflow source.
+  *Status:* Open.
+
+- [ ] **R5 — minor.** *Where:* `crates/roym_catalog/src/app.rs:21` to
+  `:23`; `crates/roym_core/src/directory.rs:10` to `:18`.
+  *Problem:* Both schema-version doc comments list the reason for each
+  earlier version ("Version 3 renames the service-location values…",
+  "Version 5 renames…"). The bumps to 4 and 6 add no line, so the "why"
+  of the new version is lost.
+  *Failure case:* a reader of `SCHEMA_VERSION = 4` cannot tell why a
+  version 3 catalog bundle is refused.
+  *Fix:* Add one sentence each: catalog version 4, "a listing names its
+  extension, and `booking.mode` is gone"; directory version 6, "the same
+  listing change, and the index column `booking_mode` is now
+  `extension`".
+  *Status:* Open.
+
+- [ ] **R6 — minor.** *Where:* `docs/planning/deferred-backlog.md:608`;
+  `docs/planning/changes/roym-multilingual/change.md:135`.
+  *Problem:* Two statements are now false or incomplete. (a) The backlog
+  row says `SearchQuery` filters on "`open_to` and `booking_mode` only";
+  the field is `extension` now. (b) The ML-28 row's Test column still says
+  "Later: extension field labels and step names (M08C C3a)". C3a1 built
+  the field labels, with tests (`fields.test.ts`, `catalog.test.ts` "the
+  extension messages", `hindi-screens.test.ts` "draws the quote card with
+  a slot's reference codes and an unknown extension's data"), and plan
+  section 3 names them for ML-28.
+  *Failure case:* a reader of the backlog looks for a `booking_mode`
+  filter that does not exist; a reader of ML-28 thinks no extension label
+  comes from the catalog yet.
+  *Fix:* (a) Write `extension` in the backlog row. (b) Add the three Hub
+  tests to the ML-28 Test column for field labels, and keep "Later: step
+  names (M08C C3a2) and widget labels (M08C C4)".
+  *Status:* Open.
+
+Not findings, for the close-out: plan exit criterion "Owner reviewed the
+Hindi messages" is still open (six messages, deviation recorded).
