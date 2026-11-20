@@ -7,7 +7,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use syneroym_app_host::AppHost;
 use syneroym_roym_core::{
-    backup::{SECTION_AGREEMENT_PROGRESS, SECTION_FULFILMENTS, SECTION_LEDGER, SECTION_PAYMENTS},
+    backup::{
+        SECTION_AGREEMENT_PROGRESS, SECTION_FULFILMENTS, SECTION_LEDGER, SECTION_PAYMENTS,
+        SECTION_STEPS,
+    },
     deal::{Commitment, CommitmentKind, ResourceKind, SettlementRole, SignedCommitment},
     envelope::Response,
     fulfilment, payment, progress,
@@ -17,17 +20,19 @@ use syneroym_roym_core::{
 use super::{
     super::{
         AGREEMENT_PROGRESS, AgreementRow, FULFILMENTS, FulfilmentsRow, LEDGER, PAYMENTS,
-        PaymentsRow,
+        PaymentsRow, STEPS,
         decide::{CountersignRow, DecisionRow, DecisionState, RefusedRow, SnapshotRow},
         decline_ops::DeclineRow,
         hold::{HoldLedgerRow, SeatLedgerRow},
         ledger::LedgerRow,
         put_row,
+        step_ops::StepRow,
     },
     ImportedQuote, QuotesByRecordId,
+    steps::{self, ValidatedSteps},
 };
 
-type HistoryEntry = (String, String, String);
+pub(super) type HistoryEntry = (String, String, String);
 type ValidatedPayments = (Vec<(String, PaymentsRow)>, Vec<HistoryEntry>);
 type ValidatedFulfilments = (Vec<(String, FulfilmentsRow)>, Vec<HistoryEntry>);
 type ValidatedLedger = (Vec<(String, ValidatedLedgerRow)>, Vec<HistoryEntry>);
@@ -48,6 +53,7 @@ pub(crate) enum ValidatedLedgerRow {
 pub(crate) struct ValidatedVerticalSections {
     pub(crate) payments: Vec<(String, PaymentsRow)>,
     pub(crate) fulfilments: Vec<(String, FulfilmentsRow)>,
+    pub(crate) steps: Vec<(String, StepRow)>,
     pub(crate) ledger: Vec<(String, ValidatedLedgerRow)>,
     pub(crate) progress: Vec<(String, SnapshotRow)>,
     pub(crate) history_entries: Vec<HistoryEntry>,
@@ -567,7 +573,7 @@ pub(crate) fn validate_ledger(
     now: u64,
 ) -> Result<ValidatedLedger, Response> {
     let mut validated_ledger = Vec::new();
-    let history = Vec::new();
+    let mut history = Vec::new();
     let mut active_holds = std::collections::HashSet::new();
 
     for r in &ledger_rows {
@@ -582,6 +588,13 @@ pub(crate) fn validate_ledger(
             now,
             &mut active_holds,
         )? {
+            if let ValidatedLedgerRow::Decline(decline) = &row {
+                history.push((
+                    decline.record_id.clone(),
+                    "deal-decline".to_string(),
+                    decline.envelope.clone(),
+                ));
+            }
             validated_ledger.push((id.to_string(), row));
         }
     }
@@ -656,7 +669,7 @@ pub(crate) fn validate_vertical_sections(
     agreements_map: &HashMap<String, AgreementRow>,
     quotes_by_record_id: &QuotesByRecordId,
     enquiries_by_record_id: &HashMap<String, String>,
-    _owner: &str,
+    disclosures_by_record_id: &HashMap<String, Vec<String>>,
     now: u64,
 ) -> Result<ValidatedVerticalSections, Response> {
     let pay_rows = bundle_sections.get(SECTION_PAYMENTS).cloned().unwrap_or_default();
@@ -669,6 +682,10 @@ pub(crate) fn validate_vertical_sections(
     history_entries.extend(h_pay);
     let (fulfilments, h_ful) = validate_fulfilments(ful_rows, agreements_map, now)?;
     history_entries.extend(h_ful);
+    let step_rows = bundle_sections.get(SECTION_STEPS).cloned().unwrap_or_default();
+    let (steps, h_steps): ValidatedSteps =
+        steps::validate_steps(step_rows, agreements_map, disclosures_by_record_id, now)?;
+    history_entries.extend(h_steps);
     let (ledger, h_led) = validate_ledger(
         led_rows,
         quotes_by_record_id,
@@ -680,7 +697,14 @@ pub(crate) fn validate_vertical_sections(
     let (progress, h_prog) = validate_progress(prog_rows, quotes_by_record_id, now)?;
     history_entries.extend(h_prog);
 
-    Ok(ValidatedVerticalSections { payments, fulfilments, ledger, progress, history_entries })
+    Ok(ValidatedVerticalSections {
+        payments,
+        fulfilments,
+        steps,
+        ledger,
+        progress,
+        history_entries,
+    })
 }
 
 pub(crate) async fn write_vertical_sections<H: AppHost>(
@@ -696,6 +720,9 @@ pub(crate) async fn write_vertical_sections<H: AppHost>(
     }
     for (id, row) in validated.fulfilments {
         put_row(host, FULFILMENTS, &id, &row).await.map_err(Response::internal_error)?;
+    }
+    for (id, row) in validated.steps {
+        put_row(host, STEPS, &id, &row).await.map_err(Response::internal_error)?;
     }
     for (id, row) in validated.ledger {
         put_row(host, LEDGER, &id, &row).await.map_err(Response::internal_error)?;

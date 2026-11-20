@@ -2,6 +2,7 @@
 
 pub(crate) mod disclosures;
 pub(crate) mod sections;
+pub(crate) mod steps;
 #[cfg(test)]
 mod tests;
 
@@ -14,21 +15,21 @@ use syneroym_roym_core::{
     backup::{
         self, Bundle, ImportInput, SECTION_AGREEMENT_PROGRESS, SECTION_AGREEMENTS, SECTION_CARDS,
         SECTION_DISCLOSURES, SECTION_ENQUIRIES, SECTION_ENQUIRY_HISTORY, SECTION_FULFILMENTS,
-        SECTION_LEDGER, SECTION_PAYMENTS, SECTION_QUOTE_HISTORY, SECTION_QUOTES,
+        SECTION_LEDGER, SECTION_PAYMENTS, SECTION_QUOTE_HISTORY, SECTION_QUOTES, SECTION_STEPS,
     },
     clock,
     deal::DealTerms,
     envelope::Response,
     fulfilment,
     method::{NoParams, Reply},
-    paging, payment, progress, signing,
+    paging, payment, progress, signing, step,
     transaction::{self, DealRole, QuotePayload, ReceiptHalf},
 };
 
 use super::{
     AGREEMENT_PROGRESS, AGREEMENTS, AgreementRow, CARDS, CardRow, DISCLOSURES, ENQUIRIES,
     ENQUIRY_HISTORY, FULFILMENTS, LEDGER, PAYMENTS, QUOTE_HISTORY, QUOTES, RecordPointerRow,
-    SCHEMA_VERSION, ensure_collections, get_bytes, put_bytes, put_row,
+    SCHEMA_VERSION, STEPS, ensure_collections, get_bytes, put_bytes, put_row,
 };
 
 #[derive(Debug, Serialize)]
@@ -57,6 +58,7 @@ pub(crate) async fn export<H: AppHost>(host: &H, _input: NoParams) -> Reply<Bund
             (SECTION_AGREEMENT_PROGRESS, AGREEMENT_PROGRESS),
             (SECTION_PAYMENTS, PAYMENTS),
             (SECTION_FULFILMENTS, FULFILMENTS),
+            (SECTION_STEPS, STEPS),
             (SECTION_DISCLOSURES, DISCLOSURES),
         ],
     )
@@ -136,7 +138,7 @@ pub(crate) async fn import<H: AppHost>(
         &agreements_map,
         &quotes_by_record_id,
         &enquiries_by_record_id,
-        &owner,
+        &validated_disclosures.by_record_id,
         now,
     ) {
         Ok(v) => v,
@@ -744,6 +746,8 @@ async fn write_imported_cards<H: AppHost>(
                     "fulfilment-receipt" => {
                         fulfilment::verify_fulfilment_receipt(env, now).verified
                     }
+                    "step" => step::verify_step(env, now).verified,
+                    "deal-decline" => transaction::verify_deal_decline(env, now).verified,
                     _ => false,
                 };
                 row.verified = is_verified;

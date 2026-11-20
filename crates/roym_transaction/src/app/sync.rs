@@ -3,6 +3,7 @@
 pub(crate) mod decline;
 pub(crate) mod receipts;
 pub(crate) mod settle_receipts;
+pub(crate) mod steps;
 #[cfg(test)]
 mod tests;
 
@@ -361,6 +362,10 @@ async fn dispatch_known_card<H: AppHost>(
                 owner,
             )
             .await
+        }
+        "step" => {
+            steps::file_step_card(host, row, &card.envelope, &card.disclosures, conversation, now)
+                .await
         }
         "deal-decline" => {
             decline::file_deal_decline_card(

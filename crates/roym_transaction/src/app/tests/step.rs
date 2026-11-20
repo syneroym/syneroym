@@ -2,19 +2,21 @@
 //! makes the second call a repeat, and what the stored step shows.
 
 use serde_json::{Value, json};
-use syneroym_identity::Identity;
+use syneroym_identity::{Identity, substrate};
 use syneroym_roym_core::{
     clock,
-    deal::{SettlementRole, transition::CommitmentState},
+    deal::{Details, ExtensionRef, SettlementRole, transition::CommitmentState},
     method::DisclosedVerifyInput,
-    step::MAX_STEP_DATA_BYTES,
+    record::{Envelope, RECORD_STEP, RecordDraft},
+    step::{MAX_STEP_DATA_BYTES, STEP_VERSION},
+    testing::sd::{PlainStep, conceal_step},
     transaction::DealRole,
 };
 
 use super::{
     TestFixture, fixture,
     refuse::helpers::slot_commitment,
-    settle::{make_currency_commitment, setup_agreed_deal},
+    settle::{make_currency_commitment, make_service_commitment, setup_agreed_deal},
 };
 use crate::app::{
     AGREEMENTS, AgreementRow, CARDS, CardRow, SendState, disclosures, get_row, put_row,
@@ -23,6 +25,8 @@ use crate::app::{
 
 pub(super) struct StepDeal {
     pub(super) fix: TestFixture,
+    pub(super) counterparty: Identity,
+    pub(super) cp_did: String,
     pub(super) agreement: String,
     pub(super) agreed_at: u64,
 }
@@ -39,7 +43,74 @@ pub(super) async fn slot_deal(slot_giver: DealRole) -> StepDeal {
     let payment = make_currency_commitment("c2", &fix.master_did);
     let (agreement, _) =
         setup_agreed_deal(&fix, &counterparty, vec![slot, payment], agreed_at).await;
-    StepDeal { fix, agreement, agreed_at }
+    let cp_did = substrate::derive_did_key(&counterparty.public_key());
+    StepDeal { fix, counterparty, cp_did, agreement, agreed_at }
+}
+
+/// A formed agreement whose `c1` is a plain service that names `extension`
+/// (version 1), given by the node under test. With an id that this build does
+/// not ship, the node cannot check the extension's steps.
+pub(super) async fn extension_deal(extension: &str, giver: DealRole) -> StepDeal {
+    let fix = fixture();
+    let counterparty = Identity::generate().expect("generate counterparty");
+    let agreed_at = clock::now_secs();
+    let mut service = make_service_commitment("c1");
+    service.giver = giver;
+    service.extension = Some(ExtensionRef { id: extension.to_string(), version: 1 });
+    service.details = Some(Details {
+        extension: extension.to_string(),
+        schema: format!("{extension}/order@1"),
+        data: json!({}),
+        extra: vec![],
+    });
+    let payment = make_currency_commitment("c2", &fix.master_did);
+    let (agreement, _) =
+        setup_agreed_deal(&fix, &counterparty, vec![service, payment], agreed_at).await;
+    let cp_did = substrate::derive_did_key(&counterparty.public_key());
+    StepDeal { fix, counterparty, cp_did, agreement, agreed_at }
+}
+
+impl StepDeal {
+    /// A step record that the counterparty signs, with its disclosures. `seed`
+    /// makes the salt, so two seeds give two different records of one step.
+    pub(super) fn counterparty_step(
+        &self,
+        step_type: &str,
+        role: SettlementRole,
+        data: Value,
+        seed: u64,
+    ) -> (String, Vec<String>, String) {
+        let extension = step_type.split('/').next().unwrap_or_default();
+        let (payload, disclosures) = conceal_step(
+            PlainStep {
+                agreement: self.agreement.clone(),
+                conversation: "conv_1".to_string(),
+                commitment_id: "c1".to_string(),
+                counterparty_did: self.cp_did.clone(),
+                quote_author_did: self.fix.master_did.clone(),
+                role,
+                extension: ExtensionRef { id: extension.to_string(), version: 1 },
+                step_type: step_type.to_string(),
+                data,
+            },
+            seed,
+        );
+        let draft = RecordDraft {
+            version: STEP_VERSION,
+            record_type: RECORD_STEP.to_string(),
+            subject: self.agreement.clone(),
+            payload: serde_json::to_value(&payload).expect("payload to value"),
+            expires_at_secs: None,
+            supersedes: None,
+        };
+        let (mut env, bytes) =
+            Envelope::unsigned(draft, self.cp_did.clone(), None, self.agreed_at + 30)
+                .expect("draft step");
+        env.attach_signature(z32::encode(&self.counterparty.sign(&bytes).to_bytes()))
+            .expect("attach signature");
+        let record_id = env.record_id().expect("record id");
+        (env.to_json().expect("envelope json"), disclosures, record_id)
+    }
 }
 
 pub(super) fn started(agreement: &str) -> StepAddInput {

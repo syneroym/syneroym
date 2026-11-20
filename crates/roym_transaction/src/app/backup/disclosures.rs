@@ -7,12 +7,13 @@ use syneroym_app_host::{AppDataLayer, AppHost, types::data_layer::RecordWriteVal
 use syneroym_roym_core::{
     deal::{DealTerms, sd},
     disclosure::{
-        FULFILMENT_SET, PAYMENT_ACK_SET, PAYMENT_REQUEST_SET, decode_base64url, decode_disclosure,
-        reveal_hidden_strict,
+        FULFILMENT_SET, PAYMENT_ACK_SET, PAYMENT_REQUEST_SET, STEP_SET, decode_base64url,
+        decode_disclosure, reveal_hidden_strict,
     },
     envelope::Response,
     fulfilment::{self, FulfilmentHidden},
     payment::{self, PaymentAckHidden, PaymentRequestHidden},
+    step::{self, StepHidden},
     transaction,
 };
 
@@ -187,6 +188,19 @@ fn verify_record_disclosures(
         return Ok(None);
     }
 
+    let step_verdict = step::verify_step(env_str, now);
+    if step_verdict.verified {
+        let p = step_verdict.payload.ok_or_else(|| {
+            Response::invalid_params(format!("step '{record_id}' missing payload"))
+        })?;
+        reveal_hidden_strict::<StepHidden>(&p.sd, &STEP_SET, disclosures).map_err(|e| {
+            Response::invalid_params(format!(
+                "step '{record_id}' disclosures do not strictly reveal: {e}"
+            ))
+        })?;
+        return Ok(None);
+    }
+
     Err(Response::invalid_params(format!(
         "disclosures '{record_id}': record envelope does not verify as a known deal record"
     )))
@@ -250,6 +264,16 @@ fn collect_bundle_record_envelopes(
                     map.insert(rid.to_string(), env.to_string());
                 }
             }
+        }
+    }
+
+    for r in sections.get("steps").unwrap_or(&empty) {
+        if let Some(payload) = r.get("payload")
+            && let Some(half) = payload.get("half")
+            && let Some(rid) = half.get("record_id").and_then(Value::as_str)
+            && let Some(env) = half.get("envelope").and_then(Value::as_str)
+        {
+            map.insert(rid.to_string(), env.to_string());
         }
     }
 
@@ -336,7 +360,32 @@ pub(crate) fn rebuild_card_data(
                 }
             }
         }
+        "step" => {
+            let v = step::verify_step(env_str, now);
+            let payload =
+                v.payload.as_ref().map(|p| serde_json::to_value(p).unwrap_or(Value::Null));
+            rebuild_from_disclosures(row, payload, disclosures_map);
+        }
         _ => {}
+    }
+}
+
+/// Sets the card's plain `data` from the record's own disclosures, or marks
+/// the card not verified when this node holds none.
+fn rebuild_from_disclosures(
+    row: &mut CardRow,
+    payload: Option<Value>,
+    disclosures_map: &HashMap<String, Vec<String>>,
+) {
+    let (Some(payload), Some(rid)) = (payload, row.record_id.clone()) else {
+        return;
+    };
+    match disclosures_map.get(&rid) {
+        Some(disc) => row.data = Some(plain_view(&payload, disc)),
+        None => {
+            row.verified = false;
+            row.reason = Some("disclosures missing".to_string());
+        }
     }
 }
 

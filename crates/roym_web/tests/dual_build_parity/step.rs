@@ -42,6 +42,20 @@ async fn scenario_246_step_add_list_and_verify_parity() {
     assert_eq!(vw["result"]["verified"], true, "{vw}");
     assert_eq!(vw["result"]["hidden"], json!(["data"]));
 
+    // The step survives an export and an import on both builds.
+    let (exp_w, exp_n) = both_rpc(&h, "transaction.export", json!({})).await;
+    for exp in [&exp_w, &exp_n] {
+        assert_eq!(exp["result"]["sections"]["steps"].as_array().map(Vec::len), Some(1), "{exp}");
+    }
+    let imp_w = one_rpc(&h, true, "transaction.import", json!({ "bundle": exp_w["result"] })).await;
+    let imp_n =
+        one_rpc(&h, false, "transaction.import", json!({ "bundle": exp_n["result"] })).await;
+    assert_eq!(imp_w["result"]["imported"], true, "{imp_w}");
+    assert_eq!(imp_n["result"]["imported"], true, "{imp_n}");
+    let (aw, an) = both_rpc(&h, "step.list", json!({ "agreement": agreement })).await;
+    assert_eq!(aw, lw);
+    assert_eq!(an, ln);
+
     // Refusals are the same on both builds.
     let mut other_type = json!({ "agreement": agreement, "commitment_id": "c1" });
     other_type["step_type"] = json!("scheduling/finished");

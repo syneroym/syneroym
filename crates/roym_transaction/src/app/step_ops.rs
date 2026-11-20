@@ -111,13 +111,16 @@ async fn load_agreement<H: AppHost>(host: &H, agreement: &str) -> Result<Agreeme
     }
 }
 
-async fn load_step_row<H: AppHost>(host: &H, key: &str) -> Result<Option<StepRow>, Response> {
-    get_row(host, STEPS, key).await.map_err(Response::internal_error)
+pub(crate) async fn load_step_row<H: AppHost>(
+    host: &H,
+    key: &str,
+) -> Result<Option<StepRow>, String> {
+    get_row(host, STEPS, key).await
 }
 
-async fn count_steps<H: AppHost>(host: &H, agreement: &str) -> Result<usize, Response> {
+pub(crate) async fn count_steps<H: AppHost>(host: &H, agreement: &str) -> Result<usize, String> {
     let filter = json!({ "agreement": agreement }).to_string();
-    paging::count(host, STEPS, Some(filter)).await.map_err(Response::internal_error)
+    paging::count(host, STEPS, Some(filter)).await
 }
 
 /// What the commitment says about a new step.
@@ -182,7 +185,7 @@ pub(crate) async fn add_in<H: AppHost>(
     let target = step_target(&agr, &input.commitment_id, &owner)?;
 
     let key = step_id(&input.agreement, &input.commitment_id, &input.step_type, target.role);
-    if let Some(existing) = load_step_row(host, &key).await? {
+    if let Some(existing) = load_step_row(host, &key).await.map_err(Response::internal_error)? {
         return answer_existing(host, existing, deal_role, now).await;
     }
 
@@ -196,7 +199,8 @@ pub(crate) async fn add_in<H: AppHost>(
         }
         Err(e) => return Err(refusal(&e)),
     }
-    if count_steps(host, &input.agreement).await? >= MAX_STEPS_PER_AGREEMENT {
+    let held = count_steps(host, &input.agreement).await.map_err(Response::internal_error)?;
+    if held >= MAX_STEPS_PER_AGREEMENT {
         return Err(refusal(&StepError::TooManySteps));
     }
 
@@ -219,7 +223,9 @@ pub(crate) async fn add_in<H: AppHost>(
         },
         state: SendState::NotSent,
     };
-    if let Some(winner) = claim_step_row(host, &key, &row).await? {
+    if let Some(winner) =
+        claim_step_row(host, &key, &row).await.map_err(Response::internal_error)?
+    {
         return answer_existing(host, winner, deal_role, now).await;
     }
     send_step(host, row, &signed.disclosures, deal_role, now).await
@@ -284,20 +290,20 @@ async fn sign_step<H: AppHost>(
 
 /// Writes the row. If another call already wrote one for this key, that row
 /// is returned and nothing is written.
-async fn claim_step_row<H: AppHost>(
+pub(crate) async fn claim_step_row<H: AppHost>(
     host: &H,
     key: &str,
     row: &StepRow,
-) -> Result<Option<StepRow>, Response> {
-    let payload = serde_json::to_vec(row).map_err(|e| Response::internal_error(e.to_string()))?;
+) -> Result<Option<StepRow>, String> {
+    let payload = serde_json::to_vec(row).map_err(|e| e.to_string())?;
     let write = RecordWriteValue { id: key.to_string(), payload };
     match AppDataLayer::create(host, STEPS.to_string(), vec![write]).await {
         Ok(None) => Ok(None),
         Ok(Some(_)) => match load_step_row(host, key).await? {
             Some(winner) => Ok(Some(winner)),
-            None => Err(Response::internal_error(format!("step row '{key}' vanished"))),
+            None => Err(format!("step row '{key}' vanished")),
         },
-        Err(e) => Err(Response::internal_error(e.to_string())),
+        Err(e) => Err(e.to_string()),
     }
 }
 
