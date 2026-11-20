@@ -32,7 +32,7 @@ The agreements doc is the module doc that the old outline listed as "to write fi
 | --- | --- | --- | --- |
 | Z1 | **Deal core types** in `roym_core`: `DealTerms`, `Commitment`, `LocalText`, the resource and commitment kind table, the agreement and commitment states, and the pure transition function. | Every slice that touches a deal; EEP kinds in M08E | C1 |
 | Z2 | **Disclosure encoder and verifier** (RFC 9901 disclosures, digests, `_sd`), and the `Presentation` format. | Every signed deal record (C2); evidence in M08G | C2 |
-| Z3 | **Extension manifest and the fixed extension registry** in `roym_core`. A TOML manifest in each extension's crate, read at build time (agreements doc, open question 3). | Scheduling, one-shot, widgets, step names | C3a |
+| Z3 | **Extension manifest and the fixed extension registry** in `roym_core`. One JSON manifest per extension in `crates/roym_core/extensions/`, compiled in with `include_str!` and read by the Hub from the same file (owner decision, 2026-11-20, C3a plan question Q2; this changes the file format and place of the agreements doc, open question 3). | Scheduling, one-shot, widgets, step names | C3a |
 | Z4 | **Generic field view** in the Hub: shows labelled fields from a schema's field types, with labels from the string catalog. | `step` card (C3a), `details` of an unknown extension (C3a), widgets (C4) | C3a |
 | Z5 | **Reserve, confirm and release** local methods of an extension, with expiry and owner-side clean-up. | Scheduling (C3b); later any extension with a reserve hook | C3b |
 
@@ -187,7 +187,7 @@ Change docs: roym-extensions, roym-multilingual (ML-28).
 
 ### C3b — Scheduling extension and reserve hooks (L)
 
-- A new Roym service for the scheduling extension (`crates/roym_scheduling`, package `syneroym-roym-scheduling`). It takes `availability.*` from `catalog`, and the seat rows and the booking track from `transaction`. `catalog` and `transaction` keep no slot code (EX-17). Linking it into `transaction` as a library is rejected (agreements doc, "Rejected options").
+- A new Roym service for the scheduling extension (`crates/roym_scheduling`, package `syneroym-roym-scheduling`). Its manifest stays in `crates/roym_core/extensions/scheduling.json` (Z3); the service crate holds the code, not the manifest. It takes `availability.*` from `catalog`, and the seat rows and the booking track from `transaction`. `catalog` and `transaction` keep no slot code (EX-17). Linking it into `transaction` as a library is rejected (agreements doc, "Rejected options").
 - Z5: `reserve`, `confirm` and `release`, idempotent by (agreement id, commitment id), with a 15-minute expiry and clean-up on the owner's node (EX-20, EX-21, EX-22). Each giver reserves on its own node when it signs (agreements doc, "Who reserves"; this changes EX-5's text).
 - The `commitment-failure` record and card, and the `other-commitment-failed` cancel in the same snapshot.
 - Today's booking tests pass through the extension, including the race for the last seat.
