@@ -75,6 +75,19 @@ Every component is within its limit.
 
 Every component is within its limit.
 
+**C2b sizes** (release `wasm32-wasip2`, one `target/` folder, 2026-11-19; base on `main` at `581403ca`, branch at `5362e5ce`, after all review fixes), in bytes:
+
+| Component | `main` `581403ca` | branch `5362e5ce` | Change | Limit |
+| --- | --- | --- | --- | --- |
+| `transaction` | 2,008,936 | 2,115,515 | +106,579 (+5.31%) | +15% (301,340), new record code |
+| `catalog` | 930,212 | 930,212 | 0 | +40 KB |
+| `conversation` | 812,580 | 812,580 | 0 | +40 KB |
+| `directory` | 1,468,103 | 1,468,103 | 0 | +40 KB |
+| `profile` | 772,423 | 772,423 | 0 | +40 KB |
+| `web` | 310,784 | 310,784 | 0 | +40 KB |
+
+Every component is within its limit.
+
 **Parity runs need a fresh WASM build.** The dual-build parity harness loads pre-built `wasm32-wasip2` components. Every slice that changes a `roym_*` crate runs `mise run build:roym` before it trusts a parity run.
 
 ## 2. Facts checked in the code for this plan

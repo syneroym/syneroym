@@ -26,6 +26,7 @@ pub mod money;
 pub mod paging;
 pub mod payment;
 pub mod person;
+pub mod presentation;
 pub mod progress;
 pub mod record;
 pub mod router;

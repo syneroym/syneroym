@@ -2552,9 +2552,43 @@ roym transaction.thread "{\"conversation\":\"$CONV\"}" | jq .result.cards
 
 `transaction.thread` takes `{conversation, limit?, cursor?}`. Each card has `message_id`, `direction`, `card_type`, `version`, `known`, `verified`, `expired`, `deal_state`, `reason` and `data`. `deal_state` reports the deal lifecycle state: `quoted`, `accepted`, `agreed`, `declined`, `expired`, `not-formed`, `cancelled`, or `closed`. Card `data` holds the revealed plain form of the record, reconstructed from the signed envelope and its disclosures; it never exposes raw digests or unrevealed hashes. Show a card only when `known` and `verified` are true. The card types of the first version, all with `version` 1, are `enquiry`, `quote`, `agreement-receipt`, `agreement-progress`, `payment-request`, `payment-acknowledgement`, `fulfilment-receipt` and `deal-decline`. For any other type or version, and for a card that is not verified, show a plain notice with the `reason`, and do not guess what the `data` means.
 
-`quote.get`, `quote.list` and `quote.history` return the plain `terms` alongside the envelope. `quote.measure` takes `{terms}` and computes the total disclosure bytes, limits, estimated card body bytes, and `mailbox_fits` (whether the card fits within the 13 KiB sealed mailbox threshold). Verification verbs (`quote.verify`, `agreement.verify`, `payment.verify`, `fulfilment.verify`) return the signed wire form holding `_sd` digests in place of hidden fields.
+`quote.get`, `quote.list` and `quote.history` return the plain `terms` alongside the envelope. `quote.measure` takes `{terms}` and computes the total disclosure bytes, limits, estimated card body bytes, and `mailbox_fits` (whether the card fits within the 13 KiB sealed mailbox threshold). Verification verbs (`quote.verify`, `agreement.verify`, `payment.verify`, `fulfilment.verify`) return the signed wire form holding `_sd` digests in place of hidden fields. When passed `disclosures`, they verify the disclosures against the record's digests and reveal matching fields under `shown`, with remaining concealed paths under `hidden` and any invalid disclosure listed under `disclosure_refused`.
 
-### 6.8. Errors and unknown fields
+### 6.8. Presenting a deal to a third party
+
+A party to a deal can present signed records to a third party with selected fields hidden (such as hiding prices or payee details).
+
+To build a presentation, call `deal.present`:
+
+```bash
+roym deal.present '{"record_id":"<quote_record_id>","show":["terms.scope"]}'
+```
+
+`include` selects which records to bundle:
+- `quote` (boolean, defaults to `true`)
+- `receipt` (boolean, defaults to `true`)
+- `progress` (boolean, defaults to `false`)
+- `settlement` (boolean, defaults to `false`)
+
+`show` lists the dotted field paths to reveal (for example `terms.scope`, `terms.commitments[c1].declared_value_minor`, or a settlement record's note: `<record_id>.note`). Only fields that are concealed by default can be named in `show`. Naming a visible field, naming a field of a record not included in `include`, or passing unknown keys in `include` is refused with error code `-32602` (invalid params) naming the offending path in `data.field`.
+
+Example presenting settlement records with a revealed note:
+
+```bash
+roym deal.present '{"record_id":"<quote_record_id>","include":{"settlement":true},"show":["<payment_request_record_id>.note"]}'
+```
+
+A third party verifies the presentation using `deal.verify-presentation`:
+
+```bash
+roym deal.verify-presentation '<presentation_json>' | jq '{verified: (.records | all(.verified)), hidden: .hidden}'
+```
+
+This checks all cryptographic signatures, ensures all records belong to the same deal, validates that author and counterparty halves agree, verifies the selective disclosure digests, and checks writer state without leaking any unrevealed values. The response reports verified records, shown terms, hidden field paths, commitment outcomes, settlement views, and writer checks. In `records`, each item reports `record_id`, `verified`, and its `revocation_status`. The `deal` header reports `quote_checked` and `quote_expired`. Each entry in `settlement` reports `record_id`, `issuer`, `commitment_id`, `role`, `supersedes`, `observed_at_secs`, `shown`, and `hidden`.
+
+Every receipt half, payment record, fulfilment receipt and progress snapshot must name the same two parties as the deal. If one does not, the call fails with `party-mismatch`. Every payment or fulfilment record must point to a commitment of the right kind in the terms. If one does not, the call fails with `commitment-mismatch`. A payment request may only come from the receiver of the commitment. A payment acknowledgement or fulfilment receipt must match the signer's deal role (giver or receiver). If a settlement role does not match its signer, the call fails with `party-mismatch`. A presentation with only the counterparty half and no quote is refused with `missing-terms`. All records that carry a conversation identifier must agree on that conversation, or the call fails with `multiple-deals`. Records and disclosures must also respect size limits: each record string must be 128 KiB or less (`record-refused`), and the total disclosure bytes must fit the combined disclosure budget (`quote-too-large`). When the presentation includes the quote, the parties come from the quote's signer and its `counterparty_did`, and `deal.quote_checked` is `true`. When it has no quote, the parties are only what the agreement halves claim, and `deal.quote_checked` is `false`.
+
+### 6.9. Errors and unknown fields
 
 `POST /rpc` answers HTTP 200 with a JSON-RPC `error` object for most wrong calls. These are the codes a client meets:
 

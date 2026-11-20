@@ -13,14 +13,14 @@ use syneroym_roym_core::{
     deal::{Commitment, DealTerms, ResourceKind, SignedTerms, transition::track_end},
     envelope::Response,
     lang::LangTag,
-    method::{self, ParamError, Reply, VerifyInput},
+    method::{self, DisclosedVerdict, DisclosedVerifyInput, ParamError, Reply},
     paging,
     progress::{AgreementState, CancelReason, CommitmentProgress},
     record::{Envelope, RECORD_AGREEMENT_RECEIPT},
     signing,
     transaction::{
         self, AGREEMENT_RECEIPT_VERSION, AgreementReceiptPayload, DealRole, PairState,
-        QuotePayload, ReceiptHalf, RecordVerdict, pair_state,
+        QuotePayload, ReceiptHalf, pair_state,
     },
 };
 
@@ -551,7 +551,11 @@ pub(crate) async fn list<H: AppHost>(
 
 pub(crate) async fn verify<H: AppHost>(
     _host: &H,
-    input: VerifyInput,
-) -> Reply<RecordVerdict<AgreementReceiptPayload>> {
-    method::verify_with(input, transaction::verify_agreement_receipt)
+    input: DisclosedVerifyInput,
+) -> Reply<DisclosedVerdict<AgreementReceiptPayload>> {
+    let now = clock::now_secs();
+    let verdict = transaction::verify_agreement_receipt(&input.envelope, now);
+    Ok(method::verify_disclosed(verdict, &input.disclosures, |p, d| {
+        method::reveal_disclosed_terms(&p.terms, d)
+    }))
 }

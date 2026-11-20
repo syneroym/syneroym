@@ -1279,3 +1279,611 @@ each item is kept on the item itself (R6, R7, R8 in round 1, R13 in round
 ### New findings
 
 None.
+
+## Code review round 4 — Claude Opus 5.5 (Claude Code), 2026-11-19
+
+This is the first code review of part C2b (round 1 of C2b). The numbering
+continues this file, so it is round 4: code review rounds 1 to 3 above were
+for C2a, which is merged. The prompt for this review also said "round 1".
+
+Reviewed part C2b, PR [#371](https://github.com/syneroym/syneroym/pull/371),
+branch `feat/m08c-c2b-presentation` at `58390028`, against `origin/main`
+(`581403ca`, C2a), with `git diff origin/main...HEAD` (40 files, 6 commits).
+This is the main checkout (`.git` is a directory, not a worktree). `git pull`
+said "Already up to date". The code was written by Gemini 3.8 Flash, so this
+round meets the cross-tool rule. The plan, REVIEW and status.md use the
+name `slice-c2-*` for both parts, so this file is the review file of C2b too.
+
+**Earlier items.** Code review round 3 (the last one) has no item marked
+Fixed or Rejected, so there was nothing to re-check against a fix commit. I
+confirmed that the C2a fixes still stand in this branch (the R13 order in
+`sync/settle_receipts.rs:456` to `:459` and the 64-character `did:key`
+placeholders in `card.rs`); this branch changes neither file.
+
+**CI.** `gh pr checks 371` on `58390028`: every job except the CLA check is
+still pending (run 44498321447). So CI is **not yet** proof that the full
+suite passes on this sha. I did not run the full suite or `mise run verify`.
+
+**What I ran (all small):**
+
+- `cargo nextest run -p syneroym-roym-core presentation`: 10 passed.
+- `cargo nextest run -p syneroym-roym-transaction present`: 4 passed.
+- `cargo nextest run -p syneroym-roym-web --test method_contract`: 36 passed.
+- `cargo xtask check-file-lengths`, `check-change-docs`,
+  `check-lint-suppressions` (38 of 38) and `check-duplication` (6.83%,
+  ceiling 7.0%): all pass.
+- Three temporary tests in `presentation/tests.rs`, one for each of R14, R15
+  and R16. Each one showed the defect. I removed them with `git checkout`.
+  The tree is clean.
+- I did not run `roym_disclosure_e2e` and I did not rebuild the WASM
+  components, so the size numbers in task.md and the two-node test are not
+  checked here.
+
+**Summary: 11 findings (R14 to R24): 1 blocker, 3 major, 7 minor.
+Open after this round: 0 (10 fixed, 1 rejected).**
+
+The verifier checks each record on its own, but it does not tie the records
+to each other and to the quote's two parties. A third party can be shown an
+"agreement", a payment or a snapshot that no party to the quote signed, and
+the answer says `verified`. That is what AG-18 is for, so R14 blocks the
+merge.
+
+### What was checked and found correct
+
+- **Plan decisions.** D-C2-9 (`DisclosedVerifyInput` is `deny_unknown_fields`
+  with `disclosures` defaulting to empty; the envelope verdict is unchanged
+  and `verified` still means only "the envelope verifies"), D-C2-14 (`include`
+  keys `quote`, `receipt`, `progress`, `settlement`; at most 64 records;
+  `-32602` with the path), D-C2-15 (paths are parsed by the one `FieldPath::parse`),
+  D-C2-21 (the disclosure count is checked before any decode: `max_disclosures`
+  is the sum over the records) and the AG-38 rule (the snapshot is the
+  writer's only when its issuer equals the `signer_did` of the quote author's
+  half or of the quote) are in the code as planned.
+- **Access control.** `deal.present` and `deal.verify-presentation` sit in
+  `api.rs` behind the same local-only admission as every `transaction`
+  method, and both are in the wire-refusal list of parity scenario 144. Both
+  input types are `deny_unknown_fields` and every output is a typed struct
+  (`method_contract` count 40). No method became wire-reachable.
+  `deal.present` picks a stored disclosure only when its digest sits in the
+  named object's `_sd` list (`locate_matching_disclosure`), so a path cannot
+  pull a disclosure of another object. The `<record_id>.<field>` path works
+  only for an included record.
+- **Existing function bodies.** `payment_ops::verify`, `agreement_ops::verify`,
+  `fulfilment_ops::verify` and `quote_ops::verify` keep the check order and
+  the verdict fields they had; the old `verify_with` call became the same
+  three steps. No "why" comment was lost. No existing check was moved.
+- **ML-18.** `validate_scope_receipt_ml18` repeats `check_viewed`'s rule
+  (`viewed_via_mt` with `viewed_lang` equal to the scope's language) over
+  both halves, and reports it as not checked when `scope` is hidden (Q5).
+- **Tests and counts.** The names in plan 7.1 for C2b all exist. The counts in
+  status.md match what the tests print: 10, 4, 36. I did not run the two
+  e2e cases (2 in status.md).
+- **Rules.** No planning id, review id or size rule in any code comment, test
+  name or shape file (a grep over the added lines found none). No new
+  `too_many_lines` suppression. No new `TODO` or `FIXME`. No new dependency.
+  No new `.ftl` message (C2b adds none). The new files are well under 800
+  lines (`verify.rs` 566, `validate.rs` 352, `present_ops.rs` 331,
+  `presentation/tests.rs` 536). The e2e file's header `allow` is the same as
+  `roym_trust_e2e.rs` has.
+- **Sizes.** The percent in task.md follows from its own bytes (100,016 of
+  2,008,936 is 4.98%; the +15% limit is 301,340). I did not rebuild, so the
+  bytes themselves are not checked.
+- **Backlog.** The two rows the plan named (no Hub screen; ML-18 and
+  one-language on hidden text) are there with a target, and the
+  `RECORD_TYPES` row got the note the plan asked for.
+
+### New findings
+
+- [x] **R14 — blocker.** *Where:* `crates/roym_core/src/presentation/verify.rs:192`
+  (`partition_and_check_deal`), `:306` (`check_all_records_match_agreement`),
+  `:353` (`extract_deal_terms_and_parties`).
+  *Problem:* The verifier never checks that the receipt halves were signed by
+  the quote's two parties. Each half is verified against its own payload
+  (the issuer must equal that payload's `quote_author_did` or
+  `counterparty_did`). Then the halves are matched to the quote only by
+  `quote_record_id` and by equal `terms`. `quote_record_id` is the quote's
+  public content hash and the wire `terms` are public in the quote. Nothing
+  compares the halves' `quote_author_did` and `counterparty_did` with the
+  quote's issuer and `counterparty_did`. The `deal` header is built from the
+  quote (`:353` to `:378`), so it shows the real parties while the records are
+  signed by others.
+  *Failure case:* Mallory has seen Alice's quote to Bob. She makes two keys
+  M1 and M2, builds a `QuoteAuthor` half and a `Counterparty` half that name
+  M1 and M2, copy the quote's `terms` and carry the quote's `record_id`, signs
+  each with its own key, and presents `[quote, half1, half2]` to Carol. Carol's
+  node answers `Ok`: three records `verified: true`, `deal.quote_author_did`
+  and `counterparty_did` are the real Alice and Bob. Bob never agreed to
+  anything. *Proof:* a temporary test built exactly this
+  (`fix.quote_env` plus two stranger halves with `fix.terms`); the result was
+  `Ok(...)` with the three record issuers being the real author and two keys
+  that are not the real counterparty.
+  *Fix:* when a quote is present, require for every half
+  `quote_author_did == quote issuer` and
+  `counterparty_did == quote payload counterparty_did`; refuse with a new
+  `PresentationError::PartyMismatch` (code `party-mismatch`). With no quote,
+  the halves are only checked against each other; then name the parties in
+  the view as the halves' own claim (for example `deal.quote_checked: false`)
+  so a reader does not take them as checked. Add
+  `halves_signed_by_other_keys_than_the_quotes_parties_are_refused`, and the
+  same with only the counterparty half forged.
+  *Status:* Fixed (b589ba12): verified party match against quote author/counterparty; added `PartyMismatch` and `quote_checked` flag; proof tested: `halves_signed_by_other_keys_than_the_quotes_parties_are_refused` and `counterparty_half_signed_by_other_key_is_refused` fail with `PartyMismatch` when check is bypassed.
+
+- [x] **R15 — major.** *Where:* `crates/roym_core/src/presentation/verify.rs:306`
+  to `:350` (`check_all_records_match_agreement`), `:380`
+  (`check_writer_binding`), `:459` (`reveal_settlement_record`),
+  `:538` (`build_commitment_outcomes`).
+  *Problem:* A settlement record (payment request, payment acknowledgement,
+  fulfilment receipt) and the progress snapshot are matched to the deal only
+  by the `agreement` string. Their own `quote_author_did`, `counterparty_did`
+  and `commitment_id` are not compared with the deal's parties or with the
+  commitments in the terms. Each verifier only checks that the issuer is one
+  of the two DIDs written in that same record. The snapshot's commitment
+  list is matched by id and any id that is not in the terms is silently
+  dropped.
+  *Failure case:* anyone who knows the quote's record id can write a payment
+  acknowledgement that names two keys of their own and `agreement =
+  <that id>`, sign it, and include it with the real quote. The view lists a
+  settlement for the real deal. *Proof:* a temporary test signed an
+  acknowledgement with `commitment_id: "no-such-commitment"` and two
+  unrelated keys for the fixture's `agreement`; `verify_presentation` returned
+  `Ok` with `settlement.len() == 1`. Settlement outcomes are what a reputation
+  reader trusts without consent (the "outcomes need no consent" rule), so a
+  forged one is worse than a wrong price.
+  *Fix:* after R14 fixes the parties, require for each settlement record and
+  for the snapshot: `quote_author_did` and `counterparty_did` equal the
+  deal's; `commitment_id` is a commitment in the terms; for a payment record
+  the commitment's kind is `currency`, and for a fulfilment record it is not.
+  A snapshot commitment id that is not in the terms refuses the presentation.
+  Tests: one forged-party case and one unknown-commitment case for each of the
+  three settlement types and for the snapshot.
+  *Status:* Fixed (b589ba12): settlement records and snapshot checked against deal parties and commitment existence and type; snapshot unknown commitment refuses; proof tested: `settlement_records_with_unrelated_parties_or_commitments_refused` and `snapshot_with_unknown_commitment_refused` fail when checks are bypassed.
+
+- [x] **R16 — major.** *Where:* `crates/roym_core/src/presentation/validate.rs:217`
+  to `:301` (`validate_commitment_values_partial`), `:145`
+  (`validate_single_commitment_partial`);
+  `crates/roym_core/src/method.rs:89` (`reveal_disclosed_terms`) and `:133`
+  to `:195` (the three settlement reveals).
+  *Problem:* D-C2-16 says each shown field is parsed into its Rust type and
+  runs its own limit check. The code does that for the texts, `window`,
+  `location` and `details`, but not for the numbers or the payment list.
+  `declared_value_minor`, `tax_minor` and `fees_minor` are read with
+  `Value::as_i64`; a value that is not an integer (a string, or a number over
+  `i64::MAX`) gives `None` and is treated as "not shown": there is no error,
+  and for a currency commitment a misleading "not checked" note. `payment_methods`
+  is never checked (count, token shape), although `DealTerms::validate`
+  (`deal.rs:479`) checks it. The single-record `*.verify` methods run no field
+  check at all: `reveal_disclosed_terms` only reveals.
+  *Failure case:* a quote author signs a quote whose `declared_value_minor`
+  disclosure holds the string `"free"`. Our parties' nodes refuse it when
+  filing, but a presentation of it verifies and `view.terms` shows
+  `declared_value_minor: "free"` with `not_checked` empty. *Proof:* a
+  temporary test swapped that one disclosure (and its digest in the sorted
+  `_sd`) and presented the quote with it: `Ok`, with the string shown.
+  *Fix:* parse the revealed commitment and terms into the typed shapes (all
+  fields optional), and call the same validators `DealTerms::validate` calls,
+  as D-C2-17 did for the visible fields. A shown field of the wrong type or
+  outside its limit refuses with `field-invalid`. Call the same function from
+  `reveal_disclosed_terms`, and for the settlement reveals call
+  `PaymentRequestHidden::validate`, `PaymentAckHidden::validate` and
+  `FulfilmentHidden::validate` (R21). Tests: a string, a negative number, a
+  number over `i64::MAX`, and a bad `payment_methods` list, each through
+  `verify_presentation` and `quote.verify`.
+  *Status:* Fixed (ca6b9477): added typed validation for `declared_value_minor`, `tax_minor`, `fees_minor`, `payment_methods`, `payee` in partial terms; delegated settlement validation to typed hidden validators; proof tested: `declared_value_as_string_is_refused` and `quote_verify_refuses_invalid_revealed_fields` fail on string `"free"` when validation is bypassed.
+
+- [x] **R17 — major.** *Where:* `crates/roym_core/src/presentation/tests.rs`,
+  `crates/roym_transaction/src/app/tests/present.rs`,
+  `crates/substrate/tests/roym_disclosure_e2e.rs:164` to `:178`,
+  `crates/roym_web/tests/dual_build_parity/` (no new scenario).
+  *Problem:* The settlement half of the feature has no test at any level.
+  `include.progress` and `include.settlement`, `collect_settlement_records`,
+  the `<record_id>.<field>` path (`locate_settlement_disclosure`),
+  `payment.verify` and `fulfilment.verify` with disclosures (the three
+  `reveal_disclosed_*` functions), `validate_revealed_settlement_fields` and
+  `reveal_settlement_views` are not run by any test (a search of the new test
+  files for `settlement`, `payment` and `fulfilment` finds only commitment
+  fixtures and shape files that send no disclosures). R15 sits in exactly this
+  code. Also, plan 7.3 asks for a parity scenario in which `deal.present` and
+  `deal.verify-presentation` give equal answers on both builds; the only
+  parity change is the two names in the wire-refusal list. The e2e boots the WASM components; nothing
+  runs both builds on these two methods. Last, three assertions are weaker
+  than they read: `a_third_node_verifies_an_agreement_with_the_price_hidden`
+  asserts `records.len() >= 2` (it should be exactly 3: the quote and the two
+  halves), and its "declared value must not appear" check looks only at
+  `commitments[0]`; `a_disclosure_of_another_object_is_refused` uses a
+  disclosure of another deal, which fails as "unknown digest" and does not
+  test "another object" of the same deal.
+  *Failure case:* a change in `locate_settlement_disclosure` that returns the
+  disclosure of another record, or a settlement view that shows a hidden note,
+  passes every test.
+  *Fix:* add (1) a `roym_core` presentation test with a payment request, an
+  acknowledgement and a fulfilment receipt: one with the note shown, one with
+  it hidden, and the refusals of R15 and R16; (2) a `present.rs` test with
+  `include.settlement` and `include.progress`, a `<record_id>.note` path, and a
+  path for a record that is not included (`-32602`); (3) a `payment.verify`
+  and a `fulfilment.verify` test with a disclosure; (4) one parity scenario in
+  `dual_build_parity/disclosure.rs` (next free number) that calls
+  `deal.present` and `deal.verify-presentation` on both builds and compares
+  them; (5) tighten the three assertions above; (6) for "another object", use
+  one commitment's disclosure named in another commitment's path.
+  *Status:* Fixed (b0ca4eaf): added settlement presentation tests in roym_core and roym_transaction; dual-build parity scenario 242; tightened e2e assertions to exactly 3 records and all commitments; tested same-deal cross-object disclosure refusal; proof tested: breaking parity assertion fails test run across native/WASM.
+
+- [x] **R18 — minor.** *Where:* `crates/roym_core/src/method.rs:110` to `:131`
+  (`all_terms_hidden_paths`).
+  *Problem:* It repeats the hidden field names by hand and leaves out
+  `terms.listing_id`. `TERMS_SET.hidden` has five names
+  (`disclosure.rs:60`), the list has four. On the refusal path of
+  `quote.verify` and `agreement.verify` (bad disclosure) `hidden` lacks
+  `terms.listing_id`; on the success path it is there (it comes from the
+  reveal). Two answers for one record disagree. The same hand-made lists are
+  in `payment_ops.rs` (`vec!["note"]`, `["method", "reference",
+  "settlement_note"]`) and in `method.rs:138`, `:159`, `:183`.
+  *Fix:* build every list from `TERMS_SET.hidden`, `COMMITMENT_SET.hidden`
+  and the three settlement sets. Add a test that the refusal-path list equals
+  the all-hidden list of a verify with no disclosures.
+  *Status:* Fixed (ca6b9477): paths dynamically built from `TERMS_SET.hidden` and `COMMITMENT_SET.hidden`; added dynamic helpers for settlement hidden sets; verified by `refusal_path_hidden_list_equals_all_hidden_list_with_no_disclosures`.
+
+- [x] **R19 — minor.** *Where:* `docs/developer-guide.md:2567`.
+  *Problem:* The guide says `include` takes `quote`, `agreement`, `receipts`,
+  `snapshot`, `settlements` and "defaults to true for held records". The input
+  type (`present_ops.rs:41` to `:56`) takes `quote`, `receipt`, `progress`,
+  `settlement`, is `deny_unknown_fields`, and defaults `progress` and
+  `settlement` to false. A reader who copies the guide's names gets
+  `-32602`. The guide also does not show the `<record_id>.<field>` path of a
+  settlement record, and it says nothing about the answer when `show` names
+  a field that is not hidden.
+  *Failure case:* `{"include":{"settlements":true}}` is refused with an
+  unknown-field error.
+  *Fix:* use the real key names and defaults, add one example with
+  `"include":{"settlement":true}` and a `<record_id>.note` path, and say what
+  `-32602` means here. Put one `jq` line that checks `verified` and `hidden` in
+  the verify example.
+  *Status:* Fixed (0d4e35fc): developer guide updated with real include keys, defaults, settlement note path example, -32602 explanation, and jq command line.
+
+- [x] **R20 — minor.** *Where:* `docs/planning/traceability-matrix.md:14`.
+  *Problem:* The `[PRD-TRU]` row still says "showing chosen fields to a third
+  party is not built yet". C2b builds it, and the requirements spec was
+  changed to say so. Plan section 9 names this file for the C2 rows. The
+  `Verified by` list has no presentation test file.
+  *Fix:* change the sentence to say a party can present chosen fields and a
+  third node verifies them, and add `presentation/tests.rs` and
+  `roym_disclosure_e2e.rs` to the list. Do this after R14 to R17, so the
+  statement is true.
+  *Status:* Fixed (0d4e35fc): updated `[PRD-TRU]` row to describe third-party presentation and verification; added `presentation/tests.rs` and `roym_disclosure_e2e.rs` to acceptance evidence.
+
+- [x] **R21 — minor.** *Where:* `crates/roym_core/src/method.rs:133` to `:195`;
+  `crates/roym_core/src/presentation/verify.rs:211` to `:235`, `:488` to `:536`;
+  `crates/roym_core/src/presentation/validate.rs:68` to `:115`;
+  `crates/roym_transaction/src/app/{quote_ops,agreement_ops,fulfilment_ops}.rs`
+  (the `verify` bodies).
+  *Problem:* Copies of one shape, which is how R18 and R16 got in. The three
+  `reveal_disclosed_*` functions are the same code with another set and
+  count. `validate_revealed_settlement_fields` re-writes
+  `PaymentRequestHidden::validate`, `PaymentAckHidden::validate` and
+  `FulfilmentHidden::validate` field by field, so a limit changed there is
+  not changed here. `validate_terms_level_texts` has four copies of one
+  block. The `quote`, `agreement` and `fulfilment` `verify` bodies are three
+  copies of the same `if verified { if let Some(p) ... }` ladder. The
+  `VerifiedRecord::Receipt` arm of `partition_and_check_deal` is 19 lines,
+  over the match-arm rule (about 10).
+  *Fix:* one `reveal_settlement(set, sd, disclosures)`; typed validation as in
+  R16; a loop over the four terms texts; one `verify_disclosed` helper for the
+  three terms-based verifies; move the half's role check out of the arm into
+  a function.
+  *Status:* Fixed (ca6b9477): consolidated reveals into `reveal_settlement`, terms text check loop, `verify_disclosed` helper, extracted receipt role check, and unified settlement validation with typed hidden models.
+
+- [x] **R22 — minor.** *Where:* `crates/roym_transaction/src/app/present_ops.rs:155`,
+  `:173`, `:185`.
+  *Problem:* `if let Ok(Some(row)) = get_row(...)` turns a storage error into
+  "no row". A failed read of the snapshot or of one commitment's payment row
+  gives a presentation with that record missing, with no error, and the
+  holder cannot tell. `collect_settlement_records` also returns `Result` but
+  never returns an error.
+  *Fix:* return `internal_error` on a storage error, and add a test with a
+  failing `get_row` for the snapshot and for a payment row.
+  *Status:* Fixed (06682f3c): errors propagated on storage failures; added read fault injection to TestHost and added `present_storage_error_on_snapshot_or_payment_returns_internal_error`.
+
+- [x] **R23 — minor.** *Where:* `docs/planning/changes/roym-agreements/change.md`
+  (`## Deviations`, the C2b rows at `:1270` to `:1276`; Methods table at
+  `:850`, `:857`).
+  *Problem:* Two differences from the doc are not recorded. D-C2-9 says that
+  `payment.verify` and `fulfilment.verify` also take `disclosures`, and that
+  this is a deviation to write down; the Methods table lists only
+  `quote.verify` and `agreement.verify`, and no Deviations row says it.
+  `payment.verify` also answers `{kind, verdict, shown, hidden,
+  disclosure_refused}` and not the flattened `DisclosedVerdict` that D-C2-9
+  names (`payment_ops.rs:86` to `:96`). And `deal.present` takes a quote
+  version's `record_id` only, while the Methods row says "a quote id or an
+  agreement id" (`quote_id` is not accepted).
+  *Fix:* add the three rows; or change the code to match the plan.
+  *Status:* Fixed (0d4e35fc): added deviation rows for payment/fulfilment verify accepting disclosures, payment.verify response shape, and deal.present record_id only input; aligned methods table.
+
+- [ ] **R24 — minor.** *Where:* `.cargo/audit.toml:78` to `:89`,
+  `docs/planning/deferred-backlog.md:181` (commit `eda7137f`).
+  *Problem:* This commit is not part of C2b. It is by the owner (author
+  `Parikshit Samant`), so this is a note for the owner and not a defect of the
+  implementer. It ignores eight `wasmtime` advisories (RUSTSEC-2026-0566 to
+  0573). Every other ignore in the file says why the advisory does not apply
+  here. This one does not, and `wasmtime` runs the guest components, which is
+  the sandbox. The backlog row has target `TBD`. It also rides in a feature
+  PR.
+  *Fix:* the owner decides: move it to its own PR with a line for each
+  advisory on why it does not reach our use (or bump `wasmtime` to 48.0.9
+  there), and keep it out of C2b.
+  *Status:* Rejected: committed directly by repo owner to unblock cargo audit; out of scope for C2b PR fixes (as noted by reviewer)
+
+## Code review round 5 — Claude Sonnet 5.5 (Claude Code subagent), checked by Claude Opus 5.5, 2026-11-19
+
+This is the second code review of part C2b. The owner asked for a review
+with a different model after round 4 was fixed. A Claude Sonnet 5.5 subagent
+did a read-only review of `feat/m08c-c2b-presentation` at `1b180a13`. Claude
+Opus 5.5 then checked each finding against the code before writing it here.
+
+**Round-4 items.** R14 to R23 are fixed as their status lines say. I checked
+each fix in the code and ran the new tests: `presentation::` 30 passed,
+`present` 8 passed. R24 was rejected by the owner (out of C2b scope), which
+is right.
+
+**CI on `1b180a13`.** Two jobs failed:
+
+- `Test 5/6`: `method_contract` `shapes_transaction::deal_shapes` failed. The
+  R14 fix added `deal.quote_checked` to the `deal.verify-presentation` output,
+  but `tests/method_shapes/deal_verify_presentation.json` was not updated.
+  Round 4's "method_contract 36 passed" was true on `58390028` only. Fixed in
+  `1392e3a2` (the shape file, and one paragraph in the developer guide on
+  `quote_checked`, `party-mismatch` and `commitment-mismatch`). 36 passed after
+  the fix.
+- `Playwright E2E`: failed while `apt` installed browser packages (network
+  timeout to `security.ubuntu.com`). This is not a code failure.
+
+**What was checked and found correct.** No way was found to forge a record or
+reuse a disclosure so that it verifies:
+
+- Each record goes through its own verifier. A receipt half's issuer must
+  match its role, so a half signed by a third key is refused. Quote and
+  receipt `terms` must be equal, and the halves must agree.
+- Settlement records and the snapshot must name the deal's two parties and a
+  commitment of the right kind.
+- `reveal_object` checks the exact `_sd` length, sorted order, and that each
+  name is in the hidden set and not in the visible set. A repeated disclosure
+  gives `DigestRepeated`. An unused disclosure is refused, so a disclosure
+  used for another object fails.
+- `deal.present` gives out only the disclosures named in `show`. It finds each
+  one by exact digest in the target object's `_sd`.
+- Both new methods are local-only (`require_internal`).
+- Typed checks for shown numbers and `payment_methods` work (R16).
+
+A note, not a finding: AG-38 compares the snapshot's `issuer` with another
+record's `signer_did`. A writer who signs with a delegated key gets
+`writer: not-checked` for an honest snapshot. This is the plan's rule.
+
+**Summary: 9 findings (R25 to R33): 0 blocker, 2 major, 7 minor.
+Open after this round: 0.**
+
+### New findings
+
+- [x] **R25 — major.** *Where:* `crates/roym_core/src/presentation/verify.rs:449`
+  to `:484` (`check_settlement_and_progress_records`), `:534` to `:560`
+  (`reveal_settlement_views`), `crates/roym_core/src/presentation/types.rs:75`
+  (`SettlementView`); `payment.rs:256`, `payment.rs:303`, `fulfilment.rs:148`.
+  *Problem:* A settlement record's `role` is not tied to who signed it. The
+  record verifiers only check that the issuer is one of the two parties. The
+  presentation shows every payment request as `role: receiver` (`:537`), and
+  shows an acknowledgement's or fulfilment receipt's `role` exactly as its
+  signer wrote it. `SettlementView` has no `issuer`.
+  *Failure case:* the payer of currency commitment `c1` signs a payment
+  acknowledgement with `role: receiver` ("payment received"). The third party
+  sees `settlement[]` for `c1` with `role: receiver`, which reads as the payee
+  confirming the payment. The payer can also sign a payment request, and it is
+  shown as the receiver's. Read from the code; not tested.
+  *Fix:* in `check_settlement_and_progress_records`, find the issuer's
+  `DealRole` (issuer equals `quote_author_did` or `counterparty_did`). Require
+  `role == Giver` exactly when that role equals `commitment.giver`, and a
+  payment request only from the receiver. Refuse with `party-mismatch`
+  otherwise. Add `issuer` to `SettlementView`. Tests: a payer-signed
+  acknowledgement with `role: receiver`, a payer-signed payment request, and a
+  receiver-signed fulfilment receipt with `role: giver`, each refused.
+  *Status:* Fixed (5dd7ec2d) — proved: commenting out settlement role check causes payer_signed_acknowledgement_with_role_receiver_is_refused and payer_signed_payment_request_is_refused to fail
+
+- [x] **R26 — major.** *Where:* `crates/roym_core/src/presentation/validate.rs:81`
+  to `:190` (`terms texts`), `:209` (`validate_declared_value_partial`), `:243`
+  (`payee`); used by `crates/roym_core/src/method.rs` (`reveal_disclosed_terms`).
+  *Problem:* Every check starts with `!val.is_null()`. So a disclosed JSON
+  `null` for a required field counts as "nothing to check". The field is then
+  shown as `null`, not hidden, with no `not_checked` entry. This is a gap in
+  the R16 fix.
+  *Failure case:* a quote author signs a quote whose `c1` digest is for
+  `[salt, "declared_value_minor", null]`. The author's own node would refuse
+  it (`reveal_terms_strict`), but a third party never runs that. The
+  presentation verifies and shows `declared_value_minor: null`. The same works
+  for `description`, `scope` and `payee` on a currency commitment. Proved by
+  the subagent's temporary test (four cases, all `Ok`), then removed.
+  *Fix:* a disclosed `null` is `field-invalid` for every field that is
+  required in `DealTerms` and `Commitment`: `scope`, `cancellation_terms`,
+  `refund_terms`, `dispute_path`, `description`, `declared_value_minor`, and
+  `payee` on a currency commitment. `null` stays valid only where the full
+  check allows it. Tests: one `null` case per required field, through
+  `verify_presentation` and `quote.verify`.
+  *Status:* Fixed (5dd7ec2d) — proved: allowing null values for required terms fields causes null_disclosed_for_required_fields_is_refused to fail
+
+- [x] **R27 — minor.** *Where:* `crates/roym_core/src/presentation/verify.rs:489`
+  (`check_writer_binding`), `:625` (`build_commitment_outcomes`);
+  `crates/roym_core/src/progress.rs` (`verify_agreement_progress`).
+  *Problem:* A snapshot signed by a key that is neither party is accepted. It
+  only needs to name the real parties in its payload. It is shown with
+  `writer: not-checked`, as AG-38 says, but `commitments[]` still copies its
+  `state`, `reason` and `claimed`. The test
+  `snapshot_from_another_key_is_writer_not_checked` uses such a stranger key.
+  *Failure case:* a stranger signs a snapshot that names Alice and Bob and
+  marks every commitment `fulfilled`. The view shows those states, and only
+  the `writer` field says they are not checked.
+  *Fix:* refuse a snapshot whose `issuer` is neither `quote_author_did` nor
+  `counterparty_did` (`party-mismatch`). A delegated key does not change the
+  issuer, so this refuses no honest snapshot. Change the test to sign with the
+  counterparty's key, which is a real "not checked" case.
+  *Status:* Fixed (5dd7ec2d)
+
+- [x] **R28 — minor.** *Where:* `crates/roym_core/src/presentation/verify.rs`
+  `extract_deal_terms_and_parties`, the `(None, Some(_))` arm.
+  *Problem:* A presentation with only the counterparty's half and no quote is
+  accepted. Its `terms` and `quote_author_did` are only what the counterparty
+  wrote, and the header names the other party as if they agreed.
+  `quote_checked: false` is the only sign. `deal.present` never builds this
+  bundle, because the holder of a counterparty half also holds the other half.
+  *Fix:* refuse a lone counterparty half when there is no quote
+  (`missing-terms`). A lone quote-author half is fine: the author is the one
+  who signed the terms.
+  *Status:* Fixed (5dd7ec2d)
+
+- [x] **R29 — minor.** *Where:* `crates/roym_core/src/presentation/validate.rs:379`
+  to `:427` (`validate_commitment_details_partial`).
+  *Problem:* A shown scheduling `details` is only checked for
+  `details.extension == ext.id`, and that `window` parses. The full rule
+  (`deal.rs`, scheduling details) also checks the schema, the two keys, the
+  `slot_id` derived from the window, and the extras limits. A wrong `slot_id`
+  verifies with no `not_checked` entry.
+  *Fix:* when `details` and `window` are both shown, call the same scheduling
+  validator as the full check. When only `details` is shown, add
+  `details_matches_extension` to `not_checked`.
+  *Status:* Fixed (5dd7ec2d)
+
+- [x] **R30 — minor.** *Where:* `crates/roym_core/src/presentation/types.rs:75`
+  (`SettlementView`), `verify.rs:588`.
+  *Problem:* `SettlementView` drops `supersedes` and `observed_at_secs`.
+  `deal.present` includes the whole acknowledgement history, so a correction
+  and the acknowledgement it replaces look like two equal entries.
+  *Fix:* add `supersedes` (or `superseded: bool`) and `observed_at_secs` to
+  the view.
+  *Status:* Fixed (5dd7ec2d)
+
+- [x] **R31 — minor.** *Where:* `crates/roym_core/src/presentation/types.rs:46`
+  (`RecordCheck`), `verify.rs` `verify_presentation`.
+  *Problem:* The view drops `revocation_status` and `expired`, which the
+  single-record `*.verify` methods return. Because the record verifiers run
+  with `allowing_expired()`, `now_secs` has no effect on the answer.
+  *Fix:* add `revocation_status` to `RecordCheck`, and `quote_expired` to
+  `DealHeader`.
+  *Status:* Fixed (5dd7ec2d)
+
+- [x] **R32 — minor.** *Where:* `crates/roym_core/src/presentation/verify.rs:513`
+  (`calculate_max_disclosures`) and the disclosure index build.
+  *Problem:* Only the disclosure count and the per-item size are capped. The
+  total size of the disclosures is not, while `reveal_terms_strict` checks
+  `index.total_bytes()`. The record strings have no size cap of their own
+  either. Both methods are local-only, so the risk is low.
+  *Fix:* check `index.total_bytes()` against the terms budget plus the
+  settlement budget, and cap each record string.
+  *Status:* Fixed (5dd7ec2d)
+
+- [x] **R33 — minor.** *Where:* `crates/roym_core/src/presentation/verify.rs`
+  `check_settlement_and_progress_records`.
+  *Problem:* The `conversation` of the snapshot and of the settlement records
+  is not compared with the quote's or the receipts'. Only party-signed records
+  are involved, so a party can only mislead about their own deal.
+  *Fix:* require one `conversation` value across all records that carry it.
+  *Status:* Fixed (5dd7ec2d)
+
+## Code review round 6 — Claude Opus 5.5 (Claude Code), 2026-11-19
+
+This round re-checks the round-5 fixes on `19f8823a` (fix commit
+`5dd7ec2d`). The code was written by Gemini 3.8 Flash.
+
+**CI.** `gh pr checks 371` on `19f8823a`: every job passed, Playwright E2E
+included (run 44533670036). `mise run verify` was not run on this sha.
+
+**What I ran:** `presentation::` 41 passed; `present` 8 passed;
+`method_contract` 36 passed; clippy with `-D warnings` on `roym_core` and
+`roym_transaction` clean; `check-file-lengths`, `check-change-docs` and
+`check-duplication` (6.88%) pass. One temporary test for R34, removed with
+`git checkout`.
+
+**Round-5 items.** R25, R27 to R33 are fixed as their status lines say:
+
+- R25: `check_settlement_record` finds the signer's deal role and requires the
+  settlement role to match the commitment's giver. A payment request must come
+  from the receiver. `SettlementView` now has `issuer`.
+- R27: a snapshot whose issuer is not a party (or a party's signing key) is
+  refused with `party-mismatch`.
+- R28: a lone counterparty half without the quote gives `missing-terms`.
+- R29: shown scheduling `details` with a shown `window` go through
+  `validate_scheduling_slot_details`.
+- R30, R31: the view has `supersedes`, `observed_at_secs`, `revocation_status`
+  and `deal.quote_expired`.
+- R32: records over 128 KiB and disclosures over the total budget are refused.
+- R33: one `conversation` across the quote, snapshot and settlement records.
+
+R26 is fixed on the terms side: `null` is refused only for the required
+fields, and stays valid for `listing_id`, `window`, `location`, `eep`, and
+the other optional fields. The settlement side goes too far (R34).
+
+**Summary: 2 findings (R34, R35): 0 blocker, 1 major, 1 minor.
+Open after this round: 0.**
+
+### New findings
+
+- [x] **R34 — major.** *Where:* `crates/roym_core/src/presentation/settlement.rs:100`
+  to `:107` (`reveal_settlement_record`).
+  *Problem:* The R26 fix refuses every shown `null` on a settlement record.
+  But every hidden settlement field is optional (`PaymentRequestHidden.note`,
+  `PaymentAckHidden.method`, `.reference`, `.settlement_note`,
+  `FulfilmentHidden.settlement_note`), and `conceal_object` writes a missing
+  value as a `null` disclosure. So showing an empty optional field on an honest
+  record now fails the whole presentation. `deal.present` builds that
+  presentation without complaint, and `deal.verify-presentation` refuses it.
+  *Failure case:* the quote author (receiver of `c2`) signs a payment
+  acknowledgement with no `method`, `reference` or `settlement_note`. With no
+  disclosures it verifies. With any one of its three disclosures shown, it
+  fails with `field-invalid`. Proved with a temporary test.
+  *Fix:* delete the loop. `validate_revealed_settlement_fields` already parses
+  into the typed `*Hidden` structs, which accept `None`. Add a test that shows
+  each empty optional field of a payment request, an acknowledgement and a
+  fulfilment receipt, and expects `Ok` with the field shown as `null`.
+  *Status:* Fixed (c593b7b2) — proved: rejecting null values caused optional_settlement_fields_shown_as_null_are_accepted to fail with FieldInvalid("note", "required field cannot be null")
+
+- [x] **R35 — minor.** *Where:* `crates/roym_core/src/presentation/verify.rs:619`
+  (`check_writer_binding`), `docs/developer-guide.md` (section on
+  `deal.verify-presentation`),
+  `docs/planning/changes/roym-agreements/change.md` (`## Deviations`).
+  *Problem:* `check_writer_binding` now also returns `Checked` when the
+  snapshot's issuer equals the author half's or the quote's `issuer`, not only
+  its `signer_did`. That widens AG-38 (it fixes the delegated-key note from
+  round 5), but no Deviations row records it. The developer guide does not
+  name the new refusals (a settlement role that does not match its signer, a
+  lone counterparty half, a different `conversation`, size limits) or the new
+  view fields (`issuer`, `supersedes`, `observed_at_secs`, `revocation_status`,
+  `deal.quote_expired`).
+  *Fix:* add one Deviations row for the AG-38 change, and extend the
+  developer guide paragraph on `deal.verify-presentation` with the new
+  refusals and fields.
+  *Status:* Fixed (c593b7b2)
+
+## Close-out check — Claude Opus 5.5 (Claude Code), 2026-11-19
+
+This closes the C2 reviews on `5362e5ce` (fix commit `c593b7b2`).
+
+**Round-6 items.** R34 is fixed: the loop that refused every shown `null` on
+a settlement record is gone, and
+`optional_settlement_fields_shown_as_null_are_accepted` shows each empty
+optional field of a payment request, an acknowledgement and a fulfilment
+receipt. R35 is fixed: the developer guide lists the new refusals and view
+fields, and the agreements doc has a Deviations row for the AG-38 change. Its
+reason is true: `progress.rs` signs a snapshot with `Principal::Service`, so
+the snapshot's issuer is the service key, which is the `signer_did` of the
+writer's own records.
+
+**Open: 0.** Every finding R14 to R35 is Fixed, except R24 (Rejected, owner
+commit out of scope).
+
+**Evidence on `5362e5ce`:**
+
+- CI: every job passed, Playwright E2E included.
+- `mise run verify` with no `--skip`, run twice: every gate passed except
+  nextest. Each time nextest stopped at its first failure, and each failure
+  was a timing or port test outside this branch, on a heavily loaded machine:
+  `conversation_cross_node_e2e` (relay port already in use, os error 48) and
+  `roym_group_offline_e2e` ("removal step overran the 40s observation
+  window"). Each of those binaries passed when run alone (9 of 9, 4 of 4).
+  The branch changes no conversation, mailbox or group code.
+- `cargo nextest run --workspace --no-fail-fast` after that: 4,833 run, 4,833
+  passed, 6 skipped. So the nextest gate passes on this sha; the other 15
+  gates passed in the same verify runs.
+- Component sizes: task.md section 1, C2b table (branch `5362e5ce`).

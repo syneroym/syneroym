@@ -23,7 +23,7 @@ use syneroym_roym_core::{
     disclosure::{MAX_DETAILS_DISCLOSURE_BYTES, MAX_RECORD_DISCLOSURE_BYTES, Salt},
     envelope::Response,
     method::{
-        self, Reply, SiblingError, VerifyInput, call_sibling,
+        self, DisclosedVerdict, DisclosedVerifyInput, Reply, SiblingError, call_sibling,
         catalog::{SlotKeyInput, SlotRow},
     },
     paging,
@@ -685,9 +685,13 @@ pub(crate) async fn history<H: AppHost>(
 
 pub(crate) async fn verify<H: AppHost>(
     _host: &H,
-    input: VerifyInput,
-) -> Reply<RecordVerdict<QuotePayload>> {
-    method::verify_with(input, transaction::verify_quote)
+    input: DisclosedVerifyInput,
+) -> Reply<DisclosedVerdict<QuotePayload>> {
+    let now = clock::now_secs();
+    let verdict = transaction::verify_quote(&input.envelope, now);
+    Ok(method::verify_disclosed(verdict, &input.disclosures, |p, d| {
+        method::reveal_disclosed_terms(&p.terms, d)
+    }))
 }
 
 pub(crate) async fn store_received_quote<H: AppHost>(

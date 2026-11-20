@@ -1,5 +1,9 @@
 {
+  "hidden": [
+    "string"
+  ],
   "kind": "payment-request",
+  "shown": {},
   "verdict": {
     "expired": "boolean",
     "issued_at_secs": "number",

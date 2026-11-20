@@ -55,6 +55,7 @@ pub struct TestHost {
     pub(crate) crashed_write_hit: Mutex<bool>,
     pub(crate) fail_prefix: Mutex<Option<(String, String)>>,
     pub(crate) failed_write_hit: Mutex<bool>,
+    pub(crate) fail_read_prefix: Mutex<Option<(String, String)>>,
     pub(crate) call_handlers: Mutex<HashMap<(String, String), CallHandler>>,
     pub(crate) sent_cards: Mutex<Vec<String>>,
     pub(crate) salt_seed: Mutex<u64>,
@@ -150,6 +151,7 @@ impl TestHost {
         *self.is_crashed.lock().unwrap() = false;
         *self.crash_prefix.lock().unwrap() = None;
         *self.fail_prefix.lock().unwrap() = None;
+        *self.fail_read_prefix.lock().unwrap() = None;
     }
 
     pub fn is_crashed(&self) -> bool {
@@ -164,6 +166,10 @@ impl TestHost {
         *self.fail_prefix.lock().unwrap() = Some((collection.into(), key_prefix.into()));
     }
 
+    pub fn fail_read(&self, collection: impl Into<String>, key_prefix: impl Into<String>) {
+        *self.fail_read_prefix.lock().unwrap() = Some((collection.into(), key_prefix.into()));
+    }
+
     pub fn was_failed_write_hit(&self) -> bool {
         *self.failed_write_hit.lock().unwrap()
     }
@@ -175,6 +181,24 @@ impl TestHost {
     pub fn set_salt_seed(&self, seed: u64) {
         *self.salt_seed.lock().unwrap() = seed;
         self.salt_counter.store(0, Ordering::Relaxed);
+    }
+
+    pub(crate) fn check_read_fault(
+        &self,
+        collection: &str,
+        id: &str,
+    ) -> Result<(), DataLayerError> {
+        let mut fail = self.fail_read_prefix.lock().unwrap();
+        if let Some((target_col, target_prefix)) = fail.as_ref()
+            && collection == target_col
+            && (target_prefix == "*" || id.starts_with(target_prefix.as_str()))
+        {
+            *fail = None;
+            return Err(DataLayerError::Internal(format!(
+                "injected read failure to {collection}/{id}"
+            )));
+        }
+        Ok(())
     }
 
     pub(crate) fn check_write_fault(

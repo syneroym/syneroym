@@ -6,8 +6,20 @@ use syneroym_app_host::{AppHost, types::proxy::CallTarget};
 
 use crate::{
     clock,
+    deal::sd::SignedTerms,
+    disclosure::{
+        COMMITMENT_SET, DisclosureIndex, FULFILMENT_SET, HiddenSet, PAYMENT_ACK_SET,
+        PAYMENT_REQUEST_SET, TERMS_SET, check_all_used, reveal_object,
+    },
     envelope::{Request, Response, RpcError},
+    fulfilment::{FulfilmentHidden, FulfilmentReceiptPayload},
+    payment::{
+        PaymentAckHidden, PaymentAcknowledgementPayload, PaymentRequestHidden,
+        PaymentRequestPayload,
+    },
+    presentation::validate::validate_partial_terms_fields,
     services::Service,
+    verdict::RecordVerdict,
 };
 
 pub mod catalog;
@@ -53,6 +65,180 @@ pub struct VerifyInput {
 /// Runs one record verifier on the envelope text, at the current time.
 pub fn verify_with<V>(input: VerifyInput, verify: fn(&str, u64) -> V) -> Reply<V> {
     Ok(verify(&input.envelope, clock::now_secs()))
+}
+
+/// Input for verify methods taking record envelope text and optional
+/// disclosures.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DisclosedVerifyInput {
+    pub envelope: String,
+    #[serde(default)]
+    pub disclosures: Vec<String>,
+}
+
+/// Output for verify methods with disclosed and hidden fields.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DisclosedVerdict<P> {
+    #[serde(flatten)]
+    pub verdict: RecordVerdict<P>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shown: Option<Value>,
+    pub hidden: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disclosure_refused: Option<String>,
+}
+
+pub fn reveal_disclosed_terms(
+    signed: &SignedTerms,
+    disclosures: &[String],
+) -> (Option<Value>, Vec<String>, Option<String>) {
+    let all_hidden = all_terms_hidden_paths(signed);
+    let max_disclosures = 5 + signed.commitments.len() * 10;
+    let index = match DisclosureIndex::build(disclosures, max_disclosures) {
+        Ok(idx) => idx,
+        Err(e) => return (None, all_hidden, Some(e.code().to_string())),
+    };
+    let partial = match signed.reveal(&index) {
+        Ok(p) => p,
+        Err(e) => return (None, all_hidden, Some(e.code().to_string())),
+    };
+    if let Err(e) = check_all_used(&index, &partial.used) {
+        return (None, all_hidden, Some(e.code().to_string()));
+    }
+    let mut not_checked = Vec::new();
+    if let Err(e) = validate_partial_terms_fields(&partial, signed, &[], &mut not_checked) {
+        return (None, all_hidden, Some(e.code().to_string()));
+    }
+    let hidden = partial.hidden.into_iter().map(|p| p.to_string()).collect();
+    (Some(partial.value), hidden, None)
+}
+
+pub fn all_terms_hidden_paths(signed: &SignedTerms) -> Vec<String> {
+    let mut hidden = Vec::with_capacity(
+        TERMS_SET.hidden.len() + signed.commitments.len() * COMMITMENT_SET.hidden.len(),
+    );
+    for name in TERMS_SET.hidden {
+        hidden.push(format!("terms.{name}"));
+    }
+    for c in &signed.commitments {
+        let cid = &c.commitment_id;
+        for name in COMMITMENT_SET.hidden {
+            hidden.push(format!("terms.commitments[{cid}].{name}"));
+        }
+    }
+    hidden
+}
+
+pub fn all_payment_request_hidden() -> Vec<String> {
+    PAYMENT_REQUEST_SET.hidden.iter().map(|&s| s.to_string()).collect()
+}
+
+pub fn all_payment_ack_hidden() -> Vec<String> {
+    PAYMENT_ACK_SET.hidden.iter().map(|&s| s.to_string()).collect()
+}
+
+pub fn all_fulfilment_hidden() -> Vec<String> {
+    FULFILMENT_SET.hidden.iter().map(|&s| s.to_string()).collect()
+}
+
+pub fn reveal_settlement(
+    set: &HiddenSet,
+    sd: &[String],
+    disclosures: &[String],
+) -> Result<(Value, Vec<String>), String> {
+    let index =
+        DisclosureIndex::build(disclosures, set.hidden.len()).map_err(|e| e.code().to_string())?;
+    let mut obj = Map::new();
+    obj.insert("_sd".to_string(), Value::Array(sd.iter().cloned().map(Value::String).collect()));
+    let revealed = reveal_object(&obj, set, &index).map_err(|e| e.code().to_string())?;
+    check_all_used(&index, &revealed.used).map_err(|e| e.code().to_string())?;
+    let hidden = revealed.hidden.into_iter().map(|s| s.to_string()).collect();
+    Ok((Value::Object(revealed.fields), hidden))
+}
+
+pub fn reveal_disclosed_payment_request(
+    p: &PaymentRequestPayload,
+    disclosures: &[String],
+) -> (Option<Value>, Vec<String>, Option<String>) {
+    let all_hidden = all_payment_request_hidden();
+    let (val, hidden) = match reveal_settlement(&PAYMENT_REQUEST_SET, &p.sd, disclosures) {
+        Ok(r) => r,
+        Err(code) => return (None, all_hidden, Some(code)),
+    };
+    let hidden_struct: Result<PaymentRequestHidden, _> = serde_json::from_value(val.clone());
+    match hidden_struct {
+        Ok(h) => {
+            if h.validate().is_err() {
+                return (None, all_hidden, Some("field-invalid".to_string()));
+            }
+        }
+        Err(_) => return (None, all_hidden, Some("field-invalid".to_string())),
+    }
+    (Some(val), hidden, None)
+}
+
+pub fn reveal_disclosed_payment_ack(
+    p: &PaymentAcknowledgementPayload,
+    disclosures: &[String],
+) -> (Option<Value>, Vec<String>, Option<String>) {
+    let all_hidden = all_payment_ack_hidden();
+    let (val, hidden) = match reveal_settlement(&PAYMENT_ACK_SET, &p.sd, disclosures) {
+        Ok(r) => r,
+        Err(code) => return (None, all_hidden, Some(code)),
+    };
+    let hidden_struct: Result<PaymentAckHidden, _> = serde_json::from_value(val.clone());
+    match hidden_struct {
+        Ok(h) => {
+            if h.validate().is_err() {
+                return (None, all_hidden, Some("field-invalid".to_string()));
+            }
+        }
+        Err(_) => return (None, all_hidden, Some("field-invalid".to_string())),
+    }
+    (Some(val), hidden, None)
+}
+
+pub fn reveal_disclosed_fulfilment(
+    p: &FulfilmentReceiptPayload,
+    disclosures: &[String],
+) -> (Option<Value>, Vec<String>, Option<String>) {
+    let all_hidden = all_fulfilment_hidden();
+    let (val, hidden) = match reveal_settlement(&FULFILMENT_SET, &p.sd, disclosures) {
+        Ok(r) => r,
+        Err(code) => return (None, all_hidden, Some(code)),
+    };
+    let hidden_struct: Result<FulfilmentHidden, _> = serde_json::from_value(val.clone());
+    match hidden_struct {
+        Ok(h) => {
+            if h.validate().is_err() {
+                return (None, all_hidden, Some("field-invalid".to_string()));
+            }
+        }
+        Err(_) => return (None, all_hidden, Some("field-invalid".to_string())),
+    }
+    (Some(val), hidden, None)
+}
+
+pub fn verify_disclosed<P, F>(
+    verdict: RecordVerdict<P>,
+    disclosures: &[String],
+    reveal_fn: F,
+) -> DisclosedVerdict<P>
+where
+    F: FnOnce(&P, &[String]) -> (Option<Value>, Vec<String>, Option<String>),
+{
+    let (shown, hidden, disclosure_refused) = if verdict.verified {
+        if let Some(ref p) = verdict.payload {
+            reveal_fn(p, disclosures)
+        } else {
+            (None, Vec::new(), None)
+        }
+    } else {
+        (None, Vec::new(), None)
+    };
+    DisclosedVerdict { verdict, shown, hidden, disclosure_refused }
 }
 
 /// Output for history methods returning an envelope chain.

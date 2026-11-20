@@ -155,3 +155,34 @@ async fn scenario_241_payment_ack_with_note_parity() {
     let sd = env.payload["_sd"].as_array().unwrap();
     assert_eq!(sd.len(), 3);
 }
+
+#[tokio::test]
+async fn scenario_242_deal_present_and_verify_presentation_parity() {
+    let h = harness().await;
+    enrol_signing(&h, "conversation").await;
+    enrol_signing(&h, "transaction").await;
+    let conv = open_conv(&h, &peer_did()).await;
+
+    let (agr_rec, _terms) = setup_active_agreement(&h, &conv, "after-work").await;
+
+    let present_input = json!({
+        "record_id": agr_rec,
+        "show": ["terms.scope"],
+    });
+    let (pres_w, pres_n) = both_rpc(&h, "deal.present", present_input).await;
+    assert!(pres_w["error"].is_null(), "deal.present failed: {pres_w}");
+    assert_eq!(pres_w["result"]["presentation_version"], 1);
+    assert_eq!(pres_w["result"]["presentation_version"], pres_n["result"]["presentation_version"]);
+    assert_eq!(pres_w["result"]["records"].as_array().unwrap().len(), 3);
+    assert_eq!(pres_w["result"]["records"], pres_n["result"]["records"]);
+    assert_eq!(pres_w["result"]["disclosures"], pres_n["result"]["disclosures"]);
+
+    let (vw, vn) = both_rpc(&h, "deal.verify-presentation", pres_w["result"].clone()).await;
+    assert!(vw["error"].is_null(), "deal.verify-presentation failed: {vw}");
+    assert_eq!(vw["result"]["deal"]["agreement"], agr_rec);
+    assert_eq!(vw["result"]["deal"], vn["result"]["deal"]);
+    assert_eq!(vw["result"]["records"], vn["result"]["records"]);
+    assert_eq!(vw["result"]["terms"]["scope"], vn["result"]["terms"]["scope"]);
+    assert_eq!(vw["result"]["hidden"], vn["result"]["hidden"]);
+    assert_eq!(vw["result"]["commitments"], vn["result"]["commitments"]);
+}

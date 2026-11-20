@@ -4,6 +4,7 @@ mod fence;
 
 use fence::{AckFenceClaim, claim_payment_ack_fence, claim_payment_request_fence};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use syneroym_app_host::{
     AppHost, AppSigning,
     types::signing::{Principal, RecordDraft},
@@ -13,7 +14,7 @@ use syneroym_roym_core::{
     deal::{CommitmentKind, LocalText, SettlementRole, transition::CommitmentState},
     disclosure::{PAYMENT_ACK_SET, PAYMENT_REQUEST_SET, conceal_hidden},
     envelope::Response,
-    method::{Reply, VerifyInput},
+    method::{self, DisclosedVerifyInput, Reply},
     payment::{
         self, PaymentAckHidden, PaymentAcknowledgementPayload, PaymentRequestHidden,
         PaymentRequestPayload,
@@ -82,10 +83,16 @@ pub struct PaymentGetOutput {
     pub track: CommitmentState,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PaymentVerdict {
     pub kind: String,
     pub verdict: RecordVerdict<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shown: Option<Value>,
+    pub hidden: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disclosure_refused: Option<String>,
 }
 
 pub(crate) async fn request<H: AppHost>(
@@ -383,9 +390,18 @@ pub(crate) async fn get<H: AppHost>(host: &H, input: PaymentKeyInput) -> Reply<P
     })
 }
 
-pub(crate) async fn verify<H: AppHost>(_host: &H, input: VerifyInput) -> Reply<PaymentVerdict> {
-    let v_req = payment::verify_payment_request(&input.envelope, clock::now_secs());
+pub(crate) async fn verify<H: AppHost>(
+    _host: &H,
+    input: DisclosedVerifyInput,
+) -> Reply<PaymentVerdict> {
+    let now = clock::now_secs();
+    let v_req = payment::verify_payment_request(&input.envelope, now);
     if v_req.verified {
+        let (shown, hidden, disclosure_refused) = if let Some(ref p) = v_req.payload {
+            method::reveal_disclosed_payment_request(p, &input.disclosures)
+        } else {
+            (None, method::all_payment_request_hidden(), None)
+        };
         return Ok(PaymentVerdict {
             kind: "payment-request".to_string(),
             verdict: RecordVerdict {
@@ -401,11 +417,19 @@ pub(crate) async fn verify<H: AppHost>(_host: &H, input: VerifyInput) -> Reply<P
                 supersedes: v_req.supersedes,
                 payload: v_req.payload.map(|p| serde_json::to_value(p).unwrap_or_default()),
             },
+            shown,
+            hidden,
+            disclosure_refused,
         });
     }
 
-    let v_ack = payment::verify_payment_acknowledgement(&input.envelope, clock::now_secs());
+    let v_ack = payment::verify_payment_acknowledgement(&input.envelope, now);
     if v_ack.verified {
+        let (shown, hidden, disclosure_refused) = if let Some(ref p) = v_ack.payload {
+            method::reveal_disclosed_payment_ack(p, &input.disclosures)
+        } else {
+            (None, method::all_payment_ack_hidden(), None)
+        };
         return Ok(PaymentVerdict {
             kind: "payment-acknowledgement".to_string(),
             verdict: RecordVerdict {
@@ -421,6 +445,9 @@ pub(crate) async fn verify<H: AppHost>(_host: &H, input: VerifyInput) -> Reply<P
                 supersedes: v_ack.supersedes,
                 payload: v_ack.payload.map(|p| serde_json::to_value(p).unwrap_or_default()),
             },
+            shown,
+            hidden,
+            disclosure_refused,
         });
     }
 
@@ -429,6 +456,9 @@ pub(crate) async fn verify<H: AppHost>(_host: &H, input: VerifyInput) -> Reply<P
         verdict: RecordVerdict::refused(
             "envelope did not verify as payment request or acknowledgement",
         ),
+        shown: None,
+        hidden: Vec::new(),
+        disclosure_refused: None,
     })
 }
 
