@@ -324,6 +324,8 @@ function buildEditor(onSaved: () => Promise<void>): { root: HTMLElement } {
   address.className = "listing-address-input";
   const status = select(codeOptions(STATUS_LABELS, ["active", "draft", "withdrawn"]), "active");
   status.classList.add("listing-status-select");
+  const bookingMode = select(codeOptions(BOOKING_MODE_LABELS, ["enquiry", "slots", "order"]), "enquiry");
+  bookingMode.classList.add("listing-mode-select");
 
   root.append(
     field(t("listing-label-title"), title),
@@ -334,20 +336,29 @@ function buildEditor(onSaved: () => Promise<void>): { root: HTMLElement } {
     field(t("listing-label-categories"), categories.root),
     field(t("listing-label-address"), address),
     field(t("listing-label-status"), status),
+    field(t("listing-label-mode"), bookingMode),
   );
 
   // --- booking ---
   const booking = block("booking", t("listing-block-booking"));
-  const bookingMode = select(codeOptions(BOOKING_MODE_LABELS, ["enquiry", "slots", "order"]), "enquiry");
   const bookingLead = input(t("listing-placeholder-lead-time"), "0");
   const bookingCancel = input(t("listing-placeholder-cancellation-window"), "0");
   const bookingMax = input(t("listing-placeholder-max-per-booking"), "1");
   booking.body.append(
-    field(t("listing-label-mode"), bookingMode),
     field(t("listing-label-lead-time"), bookingLead),
     field(t("listing-label-cancellation-window"), bookingCancel),
     field(t("listing-label-max-per-booking"), bookingMax),
   );
+  // Slots need booking terms, so picking them switches the block on and
+  // keeps it on until another mode is picked.
+  bookingMode.onchange = () => {
+    const slots = bookingMode.value === "slots";
+    if (slots) {
+      booking.enabled.checked = true;
+      booking.details.open = true;
+    }
+    booking.enabled.disabled = slots;
+  };
 
   // --- payment ---
   const payment = block("payment", t("listing-block-payment"));
@@ -470,10 +481,10 @@ function buildEditor(onSaved: () => Promise<void>): { root: HTMLElement } {
       categories: categories.codes(),
       conversation_address: address.value,
       status: status.value as ListingForm["status"],
+      mode: bookingMode.value as ListingForm["mode"],
       booking: {
         enabled: booking.enabled.checked,
         value: {
-          mode: bookingMode.value as "slots" | "order" | "enquiry",
           lead_time_secs: bookingLead.value,
           cancellation_window_secs: bookingCancel.value,
           max_per_booking: bookingMax.value,

@@ -85,6 +85,36 @@ describe("the listing list", () => {
     });
   });
 
+  it("keeps the same three booking choices, outside the booking block", async () => {
+    stubRpc({ "listing.list": () => ({ listings: [] }) });
+    const host = document.createElement("div");
+    await renderListings(host);
+    const mode = host.querySelector<HTMLSelectElement>(".listing-mode-select");
+    expect([...(mode?.options ?? [])].map((o) => o.value)).toEqual(["enquiry", "slots", "order"]);
+    expect(mode?.value).toBe("enquiry");
+    expect(host.querySelector(".block-booking")?.contains(mode ?? null)).toBe(false);
+  });
+
+  it("switches the booking block on and locks it while slots are picked", async () => {
+    stubRpc({ "listing.list": () => ({ listings: [] }) });
+    const host = document.createElement("div");
+    await renderListings(host);
+    const mode = host.querySelector<HTMLSelectElement>(".listing-mode-select")!;
+    const box = host.querySelector<HTMLInputElement>(".block-booking .block-enabled")!;
+    expect(box.checked).toBe(false);
+    expect(box.disabled).toBe(false);
+
+    mode.value = "slots";
+    mode.dispatchEvent(new Event("change"));
+    expect(box.checked).toBe(true);
+    expect(box.disabled).toBe(true);
+
+    mode.value = "order";
+    mode.dispatchEvent(new Event("change"));
+    expect(box.disabled).toBe(false);
+    expect(box.checked).toBe(true);
+  });
+
   it("unit list starts at piece and has one option per unit with its label", async () => {
     stubRpc({ "listing.list": () => ({ listings: [] }) });
     const host = document.createElement("div");
