@@ -1,7 +1,10 @@
 use syneroym_signed_record::seeded_salt;
 
 use super::*;
-use crate::extension::{self, ExtensionCheck, Registry, registry};
+use crate::{
+    deal::sd::{ConcealedTerms, reveal_terms_strict},
+    extension::{self, ExtensionCheck, Registry, registry},
+};
 
 fn one_shot_commitment(id: &str, giver: DealRole) -> Commitment {
     let mut c = sample_service_commitment(id, giver, 100);
@@ -200,7 +203,7 @@ fn the_extension_and_schema_names_have_their_form() {
     assert_eq!(code_of(version_zero), "extension-shape");
 }
 
-fn conceal(terms: &DealTerms, seed: u64) -> crate::deal::sd::ConcealedTerms {
+fn conceal(terms: &DealTerms, seed: u64) -> ConcealedTerms {
     let mut salts = (0..).map(|n| seeded_salt(seed, n));
     terms.conceal(&mut salts).unwrap()
 }
@@ -210,8 +213,7 @@ fn reveal_strict_refuses_a_slot_id_that_does_not_match_its_window() {
     let mut c = sample_slot_commitment("c1", DealRole::QuoteAuthor, 100);
     c.details.as_mut().unwrap().data["slot_id"] = json!("slot_wrong");
     let concealed = conceal(&sample_deal_terms(vec![c]), 31);
-    let err = crate::deal::sd::reveal_terms_strict(&concealed.signed, &concealed.disclosures)
-        .unwrap_err();
+    let err = reveal_terms_strict(&concealed.signed, &concealed.disclosures).unwrap_err();
     assert!(err.to_string().contains("does not match"), "{err}");
 }
 
@@ -219,8 +221,7 @@ fn reveal_strict_refuses_a_slot_id_that_does_not_match_its_window() {
 fn reveal_strict_reveals_a_quote_with_an_unknown_extension() {
     let terms = sample_deal_terms(vec![unknown_commitment("c1", DealRole::QuoteAuthor)]);
     let concealed = conceal(&terms, 32);
-    let revealed =
-        crate::deal::sd::reveal_terms_strict(&concealed.signed, &concealed.disclosures).unwrap();
+    let revealed = reveal_terms_strict(&concealed.signed, &concealed.disclosures).unwrap();
     assert_eq!(revealed, terms);
 }
 

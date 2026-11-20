@@ -25,7 +25,7 @@ use super::{
     },
 };
 use crate::app::{
-    AGREEMENTS, AgreementRow, CARDS, CardRow, ENQUIRY_HISTORY,
+    AGREEMENTS, AgreementRef, AgreementRow, CARDS, CardRow, ENQUIRY_HISTORY,
     agreement_ops::{self, AgreementAcceptInput},
     fulfilment_ops::{self, FulfilmentSignInput},
     get_row,
@@ -258,13 +258,9 @@ async fn one_shot_commitment_settles_like_today() {
     .expect("receiver fulfilment card");
     assert!(filed.filed && !filed.refused);
 
-    let progress = progress_ops::progress_at(
-        &fix.host,
-        crate::app::AgreementRef { agreement },
-        agreed_at + 80,
-    )
-    .await
-    .expect("progress");
+    let progress = progress_ops::progress_at(&fix.host, AgreementRef { agreement }, agreed_at + 80)
+        .await
+        .expect("progress");
     let snapshot = &progress.snapshots[0].snapshot;
     assert_eq!(snapshot.commitments[0].state, CommitmentState::Fulfilled);
     assert_eq!(snapshot.state, AgreementState::Closed);

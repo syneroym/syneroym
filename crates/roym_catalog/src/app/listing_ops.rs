@@ -467,7 +467,7 @@ pub(crate) async fn set<H: AppHost>(host: &H, input: SetListingInput) -> Reply<L
 /// owner never publishes an offering that its own node cannot book.
 fn require_known_extension(ext: Option<&ExtensionRef>) -> Result<(), Response> {
     match ext {
-        Some(ext) if extension::registry().workflow(ext).is_none() => {
+        Some(ext) if !extension::is_known_workflow(ext) => {
             let error = DealError::ExtensionUnknown(ext.id.clone());
             Err(Response::invalid_params(error.to_string())
                 .with_data(serde_json::json!({ "code": error.code() })))

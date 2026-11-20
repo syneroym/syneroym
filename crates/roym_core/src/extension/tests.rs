@@ -302,3 +302,20 @@ fn the_hub_registry_lists_the_manifests_that_this_crate_compiles_in() {
         .collect();
     assert_eq!(hub_sources, MANIFESTS);
 }
+
+#[test]
+fn the_header_check_agrees_with_the_registry() {
+    let names = ["scheduling", "one-shot", "future", "digest", ""];
+    for id in names {
+        for version in 0..4 {
+            let ext = ext(id, version);
+            assert_eq!(
+                super::is_known_workflow(&ext),
+                registry().workflow(&ext).is_some(),
+                "{id} v{version}"
+            );
+        }
+    }
+    assert!(super::is_known_workflow(&ext("scheduling", 1)));
+    assert!(!super::is_known_workflow(&ext("scheduling", 2)));
+}

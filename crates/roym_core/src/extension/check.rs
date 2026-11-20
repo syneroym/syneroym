@@ -3,6 +3,8 @@
 //! the deal terms, the selective-disclosure shape and the presentation
 //! checker.
 
+use serde_json::Value;
+
 use super::{Check, Manifest, Registry};
 use crate::{
     deal::{
@@ -266,7 +268,7 @@ fn slot_matches_window(window: Option<&TimeWindow>, details: &Details) -> Result
         details
             .data
             .get(key)
-            .and_then(serde_json::Value::as_str)
+            .and_then(Value::as_str)
             .ok_or_else(|| DealError::SlotDetails(format!("{key} must be a string")))
     };
     let listing_id = text("listing_id")?;
