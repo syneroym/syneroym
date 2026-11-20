@@ -759,7 +759,7 @@ counts"), and one temporary test to prove R1, which I then removed with
 
 ### New findings
 
-- [ ] **R1 — major.** *Where:* `crates/roym_core/src/extension/load.rs:137`
+- [x] **R1 — major.** *Where:* `crates/roym_core/src/extension/load.rs:137`
   (`check_message_ids`), `crates/roym_core/src/extension/ids.rs:20` to
   `:34`.
   *Problem:* D-C3a-3 says the schema version is not part of a message id,
@@ -786,9 +786,9 @@ counts"), and one temporary test to prove R1, which I then removed with
   id has two different sources. Tests: two versions of one schema that
   share a field load; two versions of one extension that share a step
   load; the `a-b`/`c` against `a`/`b-c` case is still refused.
-  *Status:* Open.
+  *Status:* Fixed (79b208f3). As proposed. `check_message_ids` keeps a map from each id to its place (extension, field or choice or step, schema short name, field name, choice) and refuses only two different places; `ids::manifest_message_sources` gives the places. Tests: two versions of one schema that share a field load, two versions of one extension load, and the `a-b`/`c` against `a`/`b-c` case is still refused. Proof: with the old loader restored, both new tests fail ("is made twice"); with the fix they pass.
 
-- [ ] **R2 — minor.** *Where:* `crates/roym_catalog/src/app/listing_ops.rs:361`
+- [x] **R2 — minor.** *Where:* `crates/roym_catalog/src/app/listing_ops.rs:361`
   (`write_version`), `crates/roym_core/src/listing.rs:240` to `:249`;
   `docs/developer-guide.md:1859`.
   *Problem:* The plan (section 4, "New error codes"), the extensions doc
@@ -808,9 +808,9 @@ counts"), and one temporary test to prove R1, which I then removed with
   already does for `extension-unknown`. Make scenario 243 check
   `data.code`. If the owner prefers no listing codes now, change the
   developer guide row and the plan's wire list to say it is a message.
-  *Status:* Open.
+  *Status:* Fixed (f6c06c37). As proposed: `ListingError::code()` gives `payment-required`, `extension-shape` and `booking-required`, and `write_version` sends it in `data.code`; other listing refusals stay a message only. Scenario 243 now checks `data.code == "booking-required"`, and the developer guide table gets a `payment-required` row. Proof: with the code removed from `write_version` on the native build only, scenario 243 fails (the two builds differ); restored, it passes after `mise run build:roym`.
 
-- [ ] **R3 — minor.** *Where:* plan section 7.3 and 7.2;
+- [x] **R3 — minor.** *Where:* plan section 7.3 and 7.2;
   `crates/roym_directory/src/app/search_ops/tests.rs:102`.
   *Problem:* Two planned tests are missing, and no Deviation says why.
   (a) Section 7.3: "one quote scenario with a one-shot commitment" in the
@@ -830,9 +830,9 @@ counts"), and one temporary test to prove R1, which I then removed with
   indexes one listing with `scheduling` and one with none, and checks that
   `directory.search` with `extension: "scheduling"` returns only the
   first; or rename the unit test to what it checks.
-  *Status:* Open.
+  *Status:* Fixed (fed8b071, aa0f50f7). (a) New scenario 244: `quote.set` with a one-shot commitment is signed on both builds with equal ids, an unknown extension answers `extension-unknown`, and bad `details.data` answers `details-invalid`, equal on both. (b) New scenario 245 (own file `directory_extension.rs`, because `directory.rs` is over the size limit): three listings (scheduling, one-shot, none) are published and `directory.search` with `extension` returns only the matching one on both builds. The unit test is also renamed to `an_extension_filter_and_its_index_column_are_written`, so its name claims only what it checks. Proof: with the code of `extension-unknown` changed on the native build only, 244 fails; with the `extension` clause removed from the native filter, 245 fails; both restored.
 
-- [ ] **R4 — minor.** *Where:* `crates/roym_core/src/extension/tests.rs:105`,
+- [x] **R4 — minor.** *Where:* `crates/roym_core/src/extension/tests.rs:105`,
   `:114`, `:307`; `crates/roym_core/src/extension.rs:179`.
   *Problem:* Three tests can pass for the wrong reason. (a)
   `step_types_need_the_id_prefix_and_a_limit`: the long case
@@ -852,9 +852,9 @@ counts"), and one temporary test to prove R1, which I then removed with
   rule's text in each case. (c) Let `is_known_workflow` call a private
   `known_workflow_in(sources: &[&str], ext)` and test that with an insight
   source and a workflow source.
-  *Status:* Open.
+  *Status:* Fixed (79b208f3). (a) Partly rejected: the `demo/` + 60 letters case was already refused by `MAX_STEP_TYPE_LEN`, because that check runs before the name rule (5 + 60 = 65 bytes). The real gap was that no test could tell the two rules apart. The test now asserts the rule text per case: a 33-letter name gives "must be [a-z0-9-]", 60 letters gives "too long", and the 32 + 32 case gives "too long" too. (b) Both tests assert the rule text. (c) `is_known_workflow` calls a private `known_workflow_in(sources, ext)`; new test `a_header_check_ignores_an_insight`. Proof: with the length check disabled, `step_types_need_the_id_prefix_and_a_limit` fails; with the insight filter removed, `a_header_check_ignores_an_insight` fails; both restored.
 
-- [ ] **R5 — minor.** *Where:* `crates/roym_catalog/src/app.rs:21` to
+- [x] **R5 — minor.** *Where:* `crates/roym_catalog/src/app.rs:21` to
   `:23`; `crates/roym_core/src/directory.rs:10` to `:18`.
   *Problem:* Both schema-version doc comments list the reason for each
   earlier version ("Version 3 renames the service-location values…",
@@ -866,9 +866,9 @@ counts"), and one temporary test to prove R1, which I then removed with
   extension, and `booking.mode` is gone"; directory version 6, "the same
   listing change, and the index column `booking_mode` is now
   `extension`".
-  *Status:* Open.
+  *Status:* Fixed (aa0f50f7). As proposed: one sentence each for catalog version 4 and directory version 6.
 
-- [ ] **R6 — minor.** *Where:* `docs/planning/deferred-backlog.md:608`;
+- [x] **R6 — minor.** *Where:* `docs/planning/deferred-backlog.md:608`;
   `docs/planning/changes/roym-multilingual/change.md:135`.
   *Problem:* Two statements are now false or incomplete. (a) The backlog
   row says `SearchQuery` filters on "`open_to` and `booking_mode` only";
@@ -884,7 +884,7 @@ counts"), and one temporary test to prove R1, which I then removed with
   *Fix:* (a) Write `extension` in the backlog row. (b) Add the three Hub
   tests to the ML-28 Test column for field labels, and keep "Later: step
   names (M08C C3a2) and widget labels (M08C C4)".
-  *Status:* Open.
+  *Status:* Fixed (57c4bdb2). As proposed: the backlog row says `extension`, and ML-28 cites `fields.test.ts`, `catalog.test.ts` ("the extension messages") and `hindi-screens.test.ts`, with "Later: extension step names (M08C C3a2) and widget labels (M08C C4)".
 
 Not findings, for the close-out: plan exit criterion "Owner reviewed the
 Hindi messages" is still open (six messages, deviation recorded).
