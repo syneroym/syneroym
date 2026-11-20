@@ -1,8 +1,9 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import { readDemoEnv } from '../demo-nodes';
 import {
-  loginWithDelegatedKey, openConversation, openMessages, rpcCall, sendQuote,
-  sendRequest, threadMessage,
+  askFromHit, ensureOwnSynOrg, findListingHit, loginWithDelegatedKey,
+  openConversation, openMessages, publishListing, rpcCall,
+  sendQuote, sendRequest, sendRequestFromForm, threadMessage,
 } from '../hub-helpers';
 import { DELIVERY_WAIT_MS, newSession, requireEnv, step } from './steps';
 
@@ -41,9 +42,14 @@ test('Roym deal story: Alice and Bob form an agreement and decline a quote with 
   const env = readDemoEnv();
   const need = (key: string) => requireEnv(env, key, SCRIPT);
   const alice = { hub: need('ALICE_HUB_URL'), key: need('ALICE_KEY'), did: need('ALICE_DID'), addr: need('ALICE_ADDR') };
-  const bob = { hub: need('BOB_HUB_URL'), key: need('BOB_KEY'), did: need('BOB_DID'), addr: need('BOB_ADDR') };
+  const bob = {
+    hub: need('BOB_HUB_URL'), key: need('BOB_KEY'), did: need('BOB_DID'), addr: need('BOB_ADDR'),
+    directoryDid: need('BOB_DIRECTORY_DID'),
+  };
 
   const runTag = Date.now().toString(36);
+  const listingTitle = `Hindi lessons (${runTag})`;
+  let listingId = '';
   const enquiryText = `Hindi lessons for my son (${runTag})`;
   const quoteScope = `Hindi lessons (${runTag})`;
   const giveText = 'One lesson, one hour';
@@ -68,11 +74,20 @@ test('Roym deal story: Alice and Bob form an agreement and decline a quote with 
       await loginWithDelegatedKey(bobPage, bob.key);
     });
 
-    await step(page, "Alice's screen: send Bob an enquiry for Hindi lessons", async () => {
-      await openMessages(page);
-      await openConversation(page, bob.addr);
-      await sendRequest(page, enquiryText, 'language-lessons');
-      await expect(threadMessage(page, enquiryText).locator('.card-enquiry')).toBeVisible({ timeout: 15_000 });
+    await step(bobPage, "Bob's screen: publish a listing for Hindi lessons", async () => {
+      await ensureOwnSynOrg(bobPage, bob.directoryDid, 'language-lessons', 'en');
+      listingId = await publishListing(
+        bobPage, listingTitle, 'language-lessons', bob.directoryDid, 'en', undefined, bob.addr,
+      );
+    });
+
+    await step(page, "Alice's screen: find Bob's listing in the directory and tap Ask", async () => {
+      const hit = await findListingHit(page, bob.directoryDid, 'language-lessons', listingId, listingTitle, 'en');
+      await askFromHit(page, hit, listingId, 'language-lessons');
+    });
+
+    await step(page, "Alice's screen: send Bob an enquiry from the pre-filled form", async () => {
+      await sendRequestFromForm(page, enquiryText);
     });
 
     await step(bobPage, "Bob's screen: read enquiry and send a quote giving one lesson for 100 INR", async () => {
@@ -80,6 +95,7 @@ test('Roym deal story: Alice and Bob form an agreement and decline a quote with 
       await openConversation(bobPage, alice.addr);
       const enquiry = threadMessage(bobPage, enquiryText);
       await expect(enquiry).toBeVisible({ timeout: DELIVERY_WAIT_MS });
+      await expect(enquiry.locator('.request-listing')).toContainText(listingId);
       await sendQuote(bobPage, enquiryText, {
         scope: quoteScope,
         give: giveText,

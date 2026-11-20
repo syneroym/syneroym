@@ -18,6 +18,7 @@ import {
   renderCardActions,
   renderMessages,
 } from "./screens/messages";
+import { setTabOpener, type TabKey, type TabOpener, type TabStateMap } from "./navigation";
 import { renderProfile } from "./screens/profile";
 import { renderSafety } from "./screens/safety";
 import { renderSetup } from "./screens/setup";
@@ -143,42 +144,64 @@ async function renderTabs(container: HTMLElement, did: string) {
   // screen that is still loading (it awaits the node before it appends)
   // then writes into a container that is already detached, so a quick tab
   // click can never leave two screens in the page.
-  const show = async (render: (host: HTMLElement) => Promise<void>) => {
+  type TabRenderers = {
+    [K in TabKey]: (host: HTMLElement, initial?: TabStateMap[K]) => Promise<void>;
+  };
+
+  const tabRenderers: TabRenderers = {
+    profile: renderProfile,
+    contacts: renderContacts,
+    messages: (host, initial) => renderMessages(host, undefined, initial),
+    groups: renderGroups,
+    listings: renderListings,
+    directory: renderDirectory,
+    memberships: renderMemberships,
+    synorg: renderSynOrg,
+    safety: renderSafety,
+    backup: renderBackup,
+    components: (host) => renderHome(host, did),
+  };
+
+  const show: TabOpener = async (key, initial) => {
+    const render = tabRenderers[key];
     const host = document.createElement("div");
     host.className = "tab-content";
     tabContainer.replaceWith(host);
     tabContainer = host;
     try {
-      await render(host);
+      await render(host, initial as never);
     } catch (err) {
       host.appendChild(text("p", t("tab-error", { detail: errText(err) }), "tab-error"));
     }
   };
 
-  const tabs: Array<[name: string, render: (host: HTMLElement) => Promise<void>]> = [
-    [t("tab-profile"), renderProfile],
-    [t("tab-contacts"), renderContacts],
-    [t("tab-messages"), renderMessages],
-    [t("tab-groups"), renderGroups],
-    [t("tab-listings"), renderListings],
-    [t("tab-directory"), renderDirectory],
-    [t("tab-memberships"), renderMemberships],
-    [t("tab-synorg"), renderSynOrg],
-    [t("tab-safety"), renderSafety],
-    [t("tab-backup"), renderBackup],
-    [t("tab-components"), (host) => renderHome(host, did)],
+  setTabOpener(show);
+
+  const tabs: Array<[name: string, tabKey: TabKey]> = [
+    [t("tab-profile"), "profile"],
+    [t("tab-contacts"), "contacts"],
+    [t("tab-messages"), "messages"],
+    [t("tab-groups"), "groups"],
+    [t("tab-listings"), "listings"],
+    [t("tab-directory"), "directory"],
+    [t("tab-memberships"), "memberships"],
+    [t("tab-synorg"), "synorg"],
+    [t("tab-safety"), "safety"],
+    [t("tab-backup"), "backup"],
+    [t("tab-components"), "components"],
   ];
 
-  for (const [name, render] of tabs) {
+  for (const [name, tabKey] of tabs) {
     const btn = document.createElement("button");
     btn.className = "button tab-button";
+    btn.dataset.tab = tabKey;
     btn.textContent = name;
-    btn.onclick = () => void show(render);
+    btn.onclick = () => void show(tabKey);
     nav.appendChild(btn);
   }
 
   // Default to Profile tab
-  await show(tabs[0][1]);
+  await show("profile");
 }
 
 async function renderLogin(container: HTMLElement) {

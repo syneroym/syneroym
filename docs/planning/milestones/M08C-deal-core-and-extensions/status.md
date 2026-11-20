@@ -16,7 +16,7 @@ The plan and the slice order are in [task.md](task.md). This file records what i
 | C3a | Not started | — | — | — | — | — |
 | C3b | Not started | — | — | — | — | — |
 | C3c | Not started | — | — | — | — | — |
-| Engage fix (Hub only, outside the slices) | Not started | — | — | — | — | — |
+| Engage fix (Hub only, outside the slices) | Implemented | — | — | Gemini 3.8 Flash | — | [PR #373](https://github.com/syneroym/syneroym/pull/373). Tapping "Ask" on a verified directory hit opens the conversation with the owner, displays that thread in Messages, and opens the request form with the listing id and categories pre-filled from the verified hit. Hub UI Vitest: 48 files, 575 passed; Playwright demo stories (8 of 8 passed); full pre-completion verification with no `--skip`: all 16 gates passed (nextest: 4,833 passed, 6 skipped across 158 binaries; e2e: 87 passed). Ready for owner review: Hindi message `directory-engage-button = पूछें` (was `इस लिस्टिंग के मालिक को संदेश भेजें`), `directory-engage-address` removed. |
 | C4 | Not started | — | — | — | — | — |
 | C6 | Not started | — | — | — | — | — |
 | C7 | Not started | — | — | — | — | — |

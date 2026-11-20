@@ -76,9 +76,9 @@ ignore = [
     "RUSTSEC-2026-0542",
     "RUSTSEC-2026-0543",
 
-    # --- wasmtime 48.0.8 advisories (published 2026-11-16) ---
-    # Wasmtime LTS 48.0.8 advisories fixed in 48.0.9. Wasmtime is locked at
-    # 48.0.8; upgrade to 48.0.9 will be performed in a separate dependency bump.
+    # --- wasmtime 48.0.8 advisories (published 2026-11-16 / 2026-11-19) ---
+    # Wasmtime LTS 48.0.8 advisories fixed in 48.0.9 / 48.0.10. Wasmtime is locked at
+    # 48.0.8; upgrade to newer LTS will be performed in a separate dependency bump.
     "RUSTSEC-2026-0566",
     "RUSTSEC-2026-0567",
     "RUSTSEC-2026-0568",
@@ -87,4 +87,5 @@ ignore = [
     "RUSTSEC-2026-0571",
     "RUSTSEC-2026-0572",
     "RUSTSEC-2026-0573",
+    "RUSTSEC-2026-0587",
 ]

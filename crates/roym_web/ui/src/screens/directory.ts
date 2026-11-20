@@ -19,6 +19,7 @@ import { recordText, textFields, type TextVersion } from "../records/record_text
 import { call } from "../rpc";
 import { categoryPicker } from "../taxonomy/category_picker";
 import { categoryLabel } from "../taxonomy/taxonomy";
+import { openTab } from "../navigation";
 import {
   machineNote,
   searchTargets,
@@ -350,116 +351,130 @@ function renderHits(host: HTMLElement, hits: MergedHit[], truncated: boolean, ru
     return;
   }
   for (const hit of hits) {
-    const card = document.createElement("div");
-    card.className = "search-hit";
-    card.dataset.verified = String(hit.verified);
-    card.dataset.listingId = hit.listing_id;
-
-    interface HitTextFields {
-      title: string;
-      summary: string;
-    }
-    const versions: TextVersion<HitTextFields>[] = [
-      {
-        lang: hit.lang,
-        fields: {
-          title: hit.title,
-          summary: hit.summary,
-        },
-        byAuthor: false,
-      },
-      ...(hit.translations || []).map((tr) => ({
-        lang: tr.lang,
-        fields: {
-          title: tr.title,
-          summary: tr.summary ?? "",
-        },
-        byAuthor: true,
-      })),
-    ];
-    recordText(card, versions, (v) => {
-      let titleEl: HTMLElement;
-      if (v.fields.title) {
-        titleEl = text("div", v.fields.title, "hit-title");
-        titleEl.setAttribute("lang", langAttr(v.lang));
-      } else {
-        titleEl = text("div", t("directory-untitled"), "hit-title");
-      }
-
-      const summaryEl = text("div", v.fields.summary, "hit-summary");
-      summaryEl.setAttribute("lang", langAttr(v.lang));
-
-      return [titleEl, summaryEl];
-    }, textFields<HitTextFields>(["title", "summary"]), `hit:${hit.listing_id}`);
-    if (hit.categories.length) {
-      const labels = hit.categories.map((c) => categoryLabel(c)).join(", ");
-      card.appendChild(
-        text("div", t("directory-hit-categories", { categories: labels }), "hit-categories"),
-      );
-    }
-    card.appendChild(text("div", t("directory-hit-offered-by", { issuer: hit.issuer }), "hit-issuer"));
-    card.appendChild(text("div", t("directory-signed-age", { age: formatAge(hit.age_secs) }), "hit-age"));
-
-    const evidence = document.createElement("div");
-    evidence.className = "hit-evidence";
-    // Never the word "verified" without a qualifier, and every missing
-    // piece of evidence is spelled "unknown" / "not checked", never left
-    // absent for the reader to assume the best.
-    evidence.appendChild(
-      text(
-        "div",
-        hit.verified
-          ? t("directory-signature-ok")
-          : t("directory-signature-bad"),
-        "evidence-signature",
-      ),
-    );
-    evidence.appendChild(
-      text(
-        "div",
-        t("directory-revocation", {
-          status: codeWord(REVOCATION_LABELS, hit.revocation_status),
-        }),
-        "evidence-revocation",
-      ),
-    );
-    for (const source of hit.sources) evidence.appendChild(membershipLine(source, hit));
-    card.appendChild(evidence);
-
-    const from = hit.sources.map((s) => s.directory).join(", ");
-    card.appendChild(text("div", t("directory-seen-at", { from }), "hit-sources"));
-    if (hit.versions_differ) {
-      card.appendChild(
-        text("div", t("directory-versions-differ"), "hit-versions-differ"),
-      );
-    }
-
-    if (hit.verified) {
-      const engage = text("button", t("directory-engage-button"), "button hit-engage") as HTMLButtonElement;
-      const engageOut = text("div", "", "hit-engage-out");
-      engage.onclick = async () => {
-        engageOut.textContent = "";
-        try {
-          const envelope = await runEnvelope(runId, hit.record_id);
-          if (!envelope) {
-            engageOut.textContent = t("directory-engage-gone");
-            return;
-          }
-          engageOut.textContent = t("directory-engage-address", {
-            address: hit.conversation_address,
-          });
-        } catch (err) {
-          engageOut.textContent = t("directory-engage-failed", { detail: errText(err) });
-        }
-      };
-      card.append(engage, engageOut);
-    }
-
-    host.appendChild(card);
+    host.appendChild(renderHitCard(hit, runId));
   }
   if (truncated) {
     host.appendChild(text("p", t("directory-truncated"), "hits-truncated"));
   }
+}
+
+function renderHitCard(hit: MergedHit, runId: string): HTMLElement {
+  const card = document.createElement("div");
+  card.className = "search-hit";
+  card.dataset.verified = String(hit.verified);
+  card.dataset.listingId = hit.listing_id;
+
+  interface HitTextFields {
+    title: string;
+    summary: string;
+  }
+  const versions: TextVersion<HitTextFields>[] = [
+    {
+      lang: hit.lang,
+      fields: {
+        title: hit.title,
+        summary: hit.summary,
+      },
+      byAuthor: false,
+    },
+    ...(hit.translations || []).map((tr) => ({
+      lang: tr.lang,
+      fields: {
+        title: tr.title,
+        summary: tr.summary ?? "",
+      },
+      byAuthor: true,
+    })),
+  ];
+  recordText(card, versions, (v) => {
+    let titleEl: HTMLElement;
+    if (v.fields.title) {
+      titleEl = text("div", v.fields.title, "hit-title");
+      titleEl.setAttribute("lang", langAttr(v.lang));
+    } else {
+      titleEl = text("div", t("directory-untitled"), "hit-title");
+    }
+
+    const summaryEl = text("div", v.fields.summary, "hit-summary");
+    summaryEl.setAttribute("lang", langAttr(v.lang));
+
+    return [titleEl, summaryEl];
+  }, textFields<HitTextFields>(["title", "summary"]), `hit:${hit.listing_id}`);
+  if (hit.categories.length) {
+    const labels = hit.categories.map((c) => categoryLabel(c)).join(", ");
+    card.appendChild(
+      text("div", t("directory-hit-categories", { categories: labels }), "hit-categories"),
+    );
+  }
+  card.appendChild(text("div", t("directory-hit-offered-by", { issuer: hit.issuer }), "hit-issuer"));
+  card.appendChild(text("div", t("directory-signed-age", { age: formatAge(hit.age_secs) }), "hit-age"));
+
+  const evidence = document.createElement("div");
+  evidence.className = "hit-evidence";
+  // Never the word "verified" without a qualifier, and every missing
+  // piece of evidence is spelled "unknown" / "not checked", never left
+  // absent for the reader to assume the best.
+  evidence.appendChild(
+    text(
+      "div",
+      hit.verified
+        ? t("directory-signature-ok")
+        : t("directory-signature-bad"),
+      "evidence-signature",
+    ),
+  );
+  evidence.appendChild(
+    text(
+      "div",
+      t("directory-revocation", {
+        status: codeWord(REVOCATION_LABELS, hit.revocation_status),
+      }),
+      "evidence-revocation",
+    ),
+  );
+  for (const source of hit.sources) evidence.appendChild(membershipLine(source, hit));
+  card.appendChild(evidence);
+
+  const from = hit.sources.map((s) => s.directory).join(", ");
+  card.appendChild(text("div", t("directory-seen-at", { from }), "hit-sources"));
+  if (hit.versions_differ) {
+    card.appendChild(
+      text("div", t("directory-versions-differ"), "hit-versions-differ"),
+    );
+  }
+
+  if (hit.verified) {
+    const engage = text("button", t("directory-engage-button"), "button hit-engage") as HTMLButtonElement;
+    const engageOut = text("div", "", "hit-engage-out");
+    engage.onclick = async () => {
+      engageOut.textContent = "";
+      engage.disabled = true;
+      try {
+        const envelope = await runEnvelope(runId, hit.record_id);
+        if (!envelope) {
+          engageOut.textContent = t("directory-engage-gone");
+          return;
+        }
+        const res = await call<{ conversation_id: string }>("conversation.open", {
+          address: hit.conversation_address,
+        });
+        await openTab("messages", {
+          conversationId: res.conversation_id,
+          preFill: {
+            listingId: hit.listing_id,
+            categories: hit.categories,
+          },
+        });
+      } catch (err) {
+        engageOut.textContent = t("directory-engage-failed", { detail: errText(err) });
+      } finally {
+        engage.disabled = false;
+      }
+    };
+    card.append(engage, engageOut);
+  }
+
+  return card;
 }
 
 function renderRefused(host: HTMLElement, refused: RefusedHit[], truncated: boolean) {

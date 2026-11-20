@@ -95,7 +95,14 @@ export async function ensureOwnSynOrg(
     await page.getByRole('button', { name: hubMessage(lang, 'synorg-save-button') }).click();
     await expect(page.locator('.synorg-save-status')).toHaveText(hubMessage(lang, 'common-saved'), { timeout: 15_000 });
     await page.getByRole('button', { name: hubMessage(lang, 'tab-synorg'), exact: true }).click();
-    await issueOwnCredential(page, category);
+  } else {
+    const hasCategory = (await page.locator(`.synorg-categories .picker-chip[data-code="${category}"]`).count()) > 0;
+    if (!hasCategory) {
+      await pickCategory(page.locator('.synorg-categories'), category, lang);
+      await page.getByRole('button', { name: hubMessage(lang, 'synorg-save-button') }).click();
+      await expect(page.locator('.synorg-save-status')).toHaveText(hubMessage(lang, 'common-saved'), { timeout: 15_000 });
+      await page.getByRole('button', { name: hubMessage(lang, 'tab-synorg'), exact: true }).click();
+    }
   }
   // Every test shares this one node, so publications from earlier tests
   // sit in the 24 h ledger. Keep the limit generous so a fresh publish
@@ -105,6 +112,9 @@ export async function ensureOwnSynOrg(
   await page.locator('.limit-max').fill('1000'); // the ceiling; 0 would block every publish
   await page.getByRole('button', { name: hubMessage(lang, 'synorg-limit-save') }).click();
   await expect(page.locator('.limit-status')).toHaveText(hubMessage(lang, 'common-saved'), { timeout: 15_000 });
+
+  // A publish needs a credential: always ensure one is issued for the category.
+  await issueOwnCredential(page, category);
 }
 
 /**
@@ -195,6 +205,67 @@ export async function sendRequest(page: Page, description: string, category: str
   await pickCategory(page.locator('.request-cats-input'), category, tag);
   await page.locator('.send-request-button').click();
   await expect(page.locator('.request-form')).not.toBeVisible({ timeout: 15_000 });
+}
+
+/**
+ * Send a request from the already-open pre-filled form: description only.
+ * The request form closes when the send works.
+ */
+export async function sendRequestFromForm(page: Page, description: string) {
+  await page.locator('.request-desc-input').fill(description);
+  await page.locator('button.send-request-button').click();
+  await expect(page.locator('.request-form')).not.toBeVisible({ timeout: 15_000 });
+}
+
+/**
+ * In the directory, add a source, search for a category, and return the hit matching the listing id.
+ */
+export async function findListingHit(
+  page: Page,
+  directoryDid: string,
+  category: string,
+  listingId: string,
+  listingTitle: string,
+  lang = 'en',
+): Promise<Locator> {
+  await page.bringToFront();
+  await page.getByRole('button', { name: hubMessage(lang, 'tab-directory'), exact: true }).click();
+  await page.locator('.add-source-did').fill(directoryDid);
+  await page.getByRole('button', { name: hubMessage(lang, 'directory-add-button') }).click();
+  await expect(page.locator('.add-source-status')).toHaveText(directoryAddedStatus(lang), {
+    timeout: 15_000,
+  });
+
+  await pickCategory(page.locator('.search-categories'), category, lang);
+  const found = page.waitForResponse(
+    (res) => res.url().includes('/rpc') && res.request().postData()?.includes('directory.find') === true,
+  );
+  await page.getByRole('button', { name: hubMessage(lang, 'directory-search-button'), exact: true }).click();
+  const answer = (await (await found).json()) as { result?: { hits?: Array<{ listing_id: string }> } };
+  expect((answer.result?.hits ?? []).map((h) => h.listing_id)).toContain(listingId);
+
+  const hit = page.locator(`.search-hit[data-listing-id="${listingId}"]`);
+  await expect(hit).toHaveCount(1, { timeout: 20_000 });
+  await expect(hit.locator('.hit-title')).toHaveText(listingTitle);
+  return hit;
+}
+
+/**
+ * Tap "Ask" on a directory hit, assert navigation to Messages, and assert the request form
+ * has the listing id and category pre-filled with an empty description.
+ */
+export async function askFromHit(
+  page: Page,
+  hit: Locator,
+  listingId: string,
+  category: string,
+): Promise<void> {
+  await hit.locator('.hit-engage').click();
+  await expect(page.locator('.messages-screen')).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator('.request-form')).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator('.request-listing-input')).toHaveValue(listingId);
+  await expect(page.locator(`.request-cats-input .picker-chip[data-code="${category}"]`)).toBeVisible();
+  await expect(page.locator('.request-desc-input')).toHaveValue('');
 }
 
 /**
