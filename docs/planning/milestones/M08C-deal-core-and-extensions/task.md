@@ -195,6 +195,8 @@ Change docs: roym-agreements, roym-value-exchange (VX-11).
 - Step records come here, not in C4 as the outline had it, because C3b turns today's `scheduled` and `in-progress` booking states into scheduling steps.
 - Criteria: EX-1, EX-2, EX-3, EX-7, EX-8, EX-18, EX-19; ML-28 (step names).
 - Demo: the plan decides (one-shot looks the same as today's order to a person).
+- **Split (owner decision, 2026-11-20, [C3a plan](slice-c3a-implementation-plan.md), Q1):** C3a1 (extension frame) and C3a2 (step records). Each is one PR.
+- **C3a1 result ([PR #374](https://github.com/syneroym/syneroym/pull/374)):** the `scheduling` and `one-shot` manifests and the fixed registry in `roym_core`; one `details` check for every caller; unknown extensions (the writer refuses, the counterparty files, a giver cannot accept, Q9); a listing names its extension in place of `BookingMode`; the Hub field view with catalog labels. The `step` record and card and the step names are C3a2.
 
 Change docs: roym-extensions, roym-multilingual (ML-28).
 
