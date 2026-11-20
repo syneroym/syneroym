@@ -2,10 +2,12 @@
 //! makes the second call a repeat, and what the stored step shows.
 
 use serde_json::{Value, json};
+use syneroym_app_host::types::proxy::ProxyError;
 use syneroym_identity::{Identity, substrate};
 use syneroym_roym_core::{
     clock,
     deal::{Details, ExtensionRef, SettlementRole, transition::CommitmentState},
+    envelope::Response,
     method::DisclosedVerifyInput,
     record::{Envelope, RECORD_STEP, RecordDraft},
     step::{MAX_STEP_DATA_BYTES, STEP_VERSION},
@@ -19,7 +21,7 @@ use super::{
     settle::{make_currency_commitment, make_service_commitment, setup_agreed_deal},
 };
 use crate::app::{
-    AGREEMENTS, AgreementRow, CARDS, CardRow, SendState, disclosures, get_row, put_row,
+    AGREEMENTS, AgreementRow, CARDS, CardRow, STEPS, SendState, disclosures, get_row, put_row,
     step_ops::{self, StepAddInput},
 };
 
@@ -122,11 +124,11 @@ pub(super) fn started(agreement: &str) -> StepAddInput {
     }
 }
 
-fn code_of(err: &syneroym_roym_core::envelope::Response) -> Value {
+fn code_of(err: &Response) -> Value {
     err.error.as_ref().and_then(|e| e.data.clone()).unwrap_or(Value::Null)
 }
 
-fn message_of(err: &syneroym_roym_core::envelope::Response) -> String {
+fn message_of(err: &Response) -> String {
     err.error.as_ref().map(|e| e.message.clone()).unwrap_or_default()
 }
 
@@ -195,9 +197,9 @@ async fn a_repeat_returns_the_stored_record() {
 #[tokio::test]
 async fn a_step_whose_card_was_never_sent_is_sent_by_the_repeat() {
     let deal = slot_deal(DealRole::QuoteAuthor).await;
-    deal.fix.host.on_call("conversation", "send", |_| {
-        Err(syneroym_app_host::types::proxy::ProxyError::Transport("offline".to_string()))
-    });
+    deal.fix
+        .host
+        .on_call("conversation", "send", |_| Err(ProxyError::Transport("offline".to_string())));
     let first = step_ops::add_at(&deal.fix.host, started(&deal.agreement), deal.agreed_at + 10)
         .await
         .expect("the record is stored even when the send fails");
@@ -321,7 +323,7 @@ async fn verify_shows_the_data_with_its_disclosure() {
 
     let row: step_ops::StepRow = get_row(
         &deal.fix.host,
-        crate::app::STEPS,
+        STEPS,
         &step_ops::step_id(&deal.agreement, "c1", "scheduling/started", SettlementRole::Giver),
     )
     .await

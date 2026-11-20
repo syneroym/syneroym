@@ -1845,6 +1845,15 @@ A field has a `name` (`[a-z0-9_]`, up to 32 characters), a `type`, and `required
 
 Add every derived id to the `## Extensions` section of `en.ftl` and `hi.ftl`. A Hub test checks that both files have exactly these ids.
 
+**Steps.** A step record is one signed work step of an extension, for one commitment of a formed agreement. The manifest declares the step types. A step does not change any deal state. Its `data` is hidden like a commitment's `details`: the record holds one `_sd` digest, and the card carries the disclosure. `data` is a JSON object of at most 8 KiB. For a known extension it must also fit the step's `fields`.
+
+- `step.add` takes `{agreement, commitment_id, step_type, data?}`. It signs the record, stores it, and sends the card to the other party. A party records one step of a type once for each commitment. A repeat answers with the stored record and `state: "already-recorded"`. If the first card was never sent, the repeat sends it.
+- `step.list` takes `{agreement}`. It lists the steps of the agreement, oldest first, each with its plain `data`, `verified`, `checked` and its signed `envelope`. `checked` is false when this node does not know the extension.
+- `step.verify` takes `{envelope, disclosures?}` and answers like `fulfilment.verify`.
+- `roymctl roym step add --agreement <rec_…> --commitment <id> --type <extension>/<name> [--data <json>]` and `roymctl roym step list --agreement <rec_…>` call these methods.
+
+An agreement holds at most 64 step rows, of both parties together. A receiving node checks the card as it checks `step.add`, and also checks that the issuer is the party that the record's `role` names for that commitment. It files a step of an extension it does not know, marked not checked. A backup carries the steps in the `steps` section, and an import checks every row again. A step's own fields have no derived label yet. A step type with fields needs that rule first.
+
 **Checks.** One set of functions in `crates/roym_core/src/extension/check.rs` decides whether a commitment's extension is valid. `DealTerms::validate`, the check of a quote with hidden fields and the presentation checker all call it. A node that does not know the extension checks only the shape of `details` (the `extra` limits, the id and schema names). It marks the commitment as not checked.
 
 **Refusals.**
@@ -1856,6 +1865,10 @@ Add every derived id to the `## Extensions` section of `en.ftl` and `hi.ftl`. A 
 | `details-mismatch` | `details` and the extension do not match, or the schema is not one of the manifest's. |
 | `extension-shape` | The id, the schema name or `details.extra` has a wrong shape or is too large. `listing.set` sends it for a bad extension id or version. |
 | `slot-details` | `slot_id` does not match the commitment's window. |
+| `step-type-unknown` | `step.add` names a step type that the commitment's extension does not declare. |
+| `not-your-step` | The manifest does not let this party of the commitment record that step type. |
+| `step-data-too-large` | A step's `data` is more than 8 KiB. |
+| `too-many-steps` | The agreement already holds 64 steps. |
 | `booking-required` | A listing names `scheduling` and has no `booking` block. |
 | `payment-required` | A listing names an extension and has no `payment` block. |
 
@@ -2592,9 +2605,9 @@ roym transaction.thread "{\"conversation\":\"$CONV\"}" | jq .result.cards
 
 `agreement.accept` takes `{quote_record_id, viewed_lang?, viewed_via_mt?}`. The two optional fields say what the person read, and the node signs them into the acceptance. Without them the node signs the quote's own language and `false`. `viewed_lang` must be a canonical tag. When `viewed_via_mt` is `false`, it must be the quote's `terms.lang` or the tag of one of its author translations. When `viewed_via_mt` is `true`, it can be any language except `terms.lang`. A value that breaks this rule answers `-32602` with `data.field` set to `viewed_lang` or `viewed_via_mt`.
 
-`transaction.thread` takes `{conversation, limit?, cursor?}`. Each card has `message_id`, `direction`, `card_type`, `version`, `known`, `verified`, `expired`, `deal_state`, `reason` and `data`. `deal_state` reports the deal lifecycle state: `quoted`, `accepted`, `agreed`, `declined`, `expired`, `not-formed`, `cancelled`, or `closed`. Card `data` holds the revealed plain form of the record, reconstructed from the signed envelope and its disclosures; it never exposes raw digests or unrevealed hashes. Show a card only when `known` and `verified` are true. The card types of the first version, all with `version` 1, are `enquiry`, `quote`, `agreement-receipt`, `agreement-progress`, `payment-request`, `payment-acknowledgement`, `fulfilment-receipt` and `deal-decline`. For any other type or version, and for a card that is not verified, show a plain notice with the `reason`, and do not guess what the `data` means.
+`transaction.thread` takes `{conversation, limit?, cursor?}`. Each card has `message_id`, `direction`, `card_type`, `version`, `known`, `verified`, `expired`, `deal_state`, `reason` and `data`. `deal_state` reports the deal lifecycle state: `quoted`, `accepted`, `agreed`, `declined`, `expired`, `not-formed`, `cancelled`, or `closed`. Card `data` holds the revealed plain form of the record, reconstructed from the signed envelope and its disclosures; it never exposes raw digests or unrevealed hashes. Show a card only when `known` and `verified` are true. The card types of the first version, all with `version` 1, are `enquiry`, `quote`, `agreement-receipt`, `agreement-progress`, `payment-request`, `payment-acknowledgement`, `fulfilment-receipt`, `deal-decline` and `step`. For any other type or version, and for a card that is not verified, show a plain notice with the `reason`, and do not guess what the `data` means.
 
-`quote.get`, `quote.list` and `quote.history` return the plain `terms` alongside the envelope. `quote.measure` takes `{terms}` and computes the total disclosure bytes, limits, estimated card body bytes, and `mailbox_fits` (whether the card fits within the 13 KiB sealed mailbox threshold). Verification verbs (`quote.verify`, `agreement.verify`, `payment.verify`, `fulfilment.verify`) return the signed wire form holding `_sd` digests in place of hidden fields. When passed `disclosures`, they verify the disclosures against the record's digests and reveal matching fields under `shown`, with remaining concealed paths under `hidden` and any invalid disclosure listed under `disclosure_refused`.
+`quote.get`, `quote.list` and `quote.history` return the plain `terms` alongside the envelope. `quote.measure` takes `{terms}` and computes the total disclosure bytes, limits, estimated card body bytes, and `mailbox_fits` (whether the card fits within the 13 KiB sealed mailbox threshold). Verification verbs (`quote.verify`, `agreement.verify`, `payment.verify`, `fulfilment.verify`, `step.verify`) return the signed wire form holding `_sd` digests in place of hidden fields. When passed `disclosures`, they verify the disclosures against the record's digests and reveal matching fields under `shown`, with remaining concealed paths under `hidden` and any invalid disclosure listed under `disclosure_refused`.
 
 ### 6.8. Presenting a deal to a third party
 

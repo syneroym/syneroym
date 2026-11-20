@@ -1,9 +1,13 @@
 ---
 status: draft
+demo:
+  - crates/substrate/tests/e2e/demo/60-roym-step.spec.ts
 living-docs-touched:
   - docs/system-requirements-spec.md
   - docs/system-architecture.md
+  - docs/roym-integrated-experience-spec.md
   - docs/developer-guide.md
+  - docs/demo/demo.md
   - docs/TERMINOLOGY.md
   - docs/planning/traceability-matrix.md
   - docs/planning/deferred-backlog.md
@@ -72,8 +76,8 @@ The chat has the same limit. The Hub has seven fixed card templates (`crates/roy
 | EX-21 | Reserve and release are idempotent, keyed by (agreement id, commitment id). A repeated reserve returns the same reservation. A release of an unknown or already released reservation succeeds and changes nothing. | |
 | EX-22 | A reservation becomes firm only when the resource owner's node receives the formed agreement and confirms it. A confirm after the expiry is refused if the resource was given to someone else, and the agreement writer then marks that commitment failed with a named reason. | |
 | **Step records** | | |
-| EX-7 | An extension step is a signed `step` record. It names the agreement, the commitment, the extension, the step type and its data. Either party can verify it. | |
-| EX-8 | A step record shows in the deal's conversation as one generic card type. A client that does not know the extension shows the step's fields as labelled text. | |
+| EX-7 | An extension step is a signed `step` record. It names the agreement, the commitment, the extension, the step type and its data. Either party can verify it. | `crates/roym_core/src/step/tests.rs` (`verify_accepts_a_good_envelope_and_refuses_a_tampered_or_wrong_type_one`, `data_at_the_limit_passes_and_one_byte_more_fails`), `crates/roym_transaction/src/app/tests/step.rs` (`the_giver_adds_a_step_and_it_is_listed`, `verify_shows_the_data_with_its_disclosure`), `crates/roym_transaction/src/app/tests/step_filing.rs` (`a_step_from_the_giver_is_filed_and_listed`, `an_agreement_holds_at_most_the_step_limit`), `crates/roym_transaction/src/app/tests/step_backup.rs` (`export_and_import_keep_a_step_with_its_data`), `crates/substrate/tests/roym_step_e2e.rs` (`the_giver_records_a_step_and_the_other_node_lists_it`), `crates/roym_web/tests/dual_build_parity/step.rs` (`scenario_246_step_add_list_and_verify_parity`) |
+| EX-8 | A step record shows in the deal's conversation as one generic card type. A client that does not know the extension shows the step's fields as labelled text. | `crates/roym_web/ui/src/cards/templates/templates.test.ts` ("renderStep"), `crates/roym_web/ui/src/i18n/hindi-screens.test.ts` ("draws a step card with its name in Hindi, and an unknown extension's step as it came"), `crates/roym_transaction/src/app/tests/step_filing.rs` (`a_step_of_an_unknown_extension_is_filed_and_not_checked`), `crates/substrate/tests/roym_step_e2e.rs`, and the demo story `crates/substrate/tests/e2e/demo/60-roym-step.spec.ts` |
 | EX-9 | An opinion can point at one step record. | |
 | **Widgets** | | |
 | EX-10 | A widget is a declarative definition: a widget type, a semantic tag (for example `poll`, `form`, `checklist`, `location-share`, `document-request`), typed fields, and message ids for its labels. It carries no markup and no script. | |
@@ -197,7 +201,7 @@ The manifest reserves `kind = "insight"`, with a `reads` list (for example `even
 - [ ] Write the M08C slice plans.
 - [x] Manifest format and the extension registry inside Roym.
 - [x] Commitment `details` in the deal core, and schema checks.
-- [ ] `step` record and card, the generic step view in the Hub.
+- [x] `step` record and card, the generic step view in the Hub.
 - [ ] Widget definition (inline up to the size limit), `widget` and `widget-answer` records and cards, the generic renderer, the poll renderer.
 - [ ] Reserve, confirm and release hooks, with expiry, idempotency and owner-side cleanup.
 - [ ] Extension services: event subscription, deal grants.
@@ -224,6 +228,21 @@ The manifest reserves `kind = "insight"`, with a `reads` list (for example `even
 - **`listing.set` asks a small question.** `extension::is_known_workflow` reads only the header of each manifest. The catalog component would otherwise link all the schema code and grow by more than its size limit.
 - **The Hub draws `details` under each commitment line.** The slice plan said once, outside the text-version switch. The view is drawn inside the card's commitment lines, and always with the quote's original language, so it never takes the tag of an author translation. Free text in `details` is not offered to machine translation. Backlog row: "Free text in `details` is not offered to machine translation".
 - **The Hindi review has six messages in C3a1, not five.** `ext-scheduling-step-started` ships with the scheduling manifest, so the catalog test that checks every derived id needs it now. The Hub shows the step name in the step slice.
+
+**Rules and differences in C3a2 (2026-11-21, [slice plan](../../milestones/M08C-deal-core-and-extensions/slice-c3a-implementation-plan.md)).**
+
+- **The first step type, `scheduling/started`, ships in C3a2, not C3b (owner decision, question Q6).** The giver of the commitment records it with `step.add` or `roymctl roym step add`. It is a card, not a state: the commitment does not move to `in-progress`. The Hub has no button for it.
+- **A step has no pointer to an earlier step.** The sketch under "Step records" has one. No step type in M08C needs it. Instead, a party records one step of a type once for each commitment (the key is the agreement, the commitment, the step type and the signer's role in that commitment). With `by: either`, each party may record it once. An agreement holds at most 64 step rows (`MAX_STEPS_PER_AGREEMENT`), and a step's `data` is at most 8 KiB (`MAX_STEP_DATA_BYTES`). Backlog row: "A step cannot point at an earlier step".
+- **`data` is a hidden field**, like `details` (owner decision, question Q5). The record holds one `_sd` digest and the card carries the disclosure.
+- **`step.add` looks for a stored step before it checks `data` and the step count.** The plan checked them first. A repeat at the limit of 64 steps, or with other data, then answers with the stored record. It does not refuse an action that already happened.
+- **A repeat of a step whose card was never sent sends the card.** The row keeps the send state. The plan only returned `already-recorded`.
+- **`step.list` also returns the signed `envelope` of each step**, so a client can call `step.verify` without another lookup. The plan did not list it.
+- **A step's own fields have no derived label ids.** The plan derives the step's name only. The card draws a step field under its own name. No shipped step has fields. This needs a rule before the first step with fields ships.
+- **The step card shows the signer's role** ("Giver" or "Receiver"), as the fulfilment card does. The plan said "you" or the other person's name, and the time. The message around the card already shows the direction and the time.
+- **An import now also checks a `deal-decline` card.** The plan expected a missing re-verify arm. The test `a_decline_card_is_verified_after_export_and_import` showed that an imported decline card was marked not verified, because the import kept no history entry for a decline record either. Both are added.
+- **The backup schema version of `transaction` is unchanged.** The new `steps` section is optional, and a bundle with no `steps` section imports as before. A development node that is older than this change ignores the section.
+- **The demo story differs a little from the plan.** `quote --slot` needs the slot id, so the browser part reads it, with the window, from `availability.list` and the script derives nothing. The quote answers an enquiry, so Bob sends Alice one first. Alice's listing names no extension: only the slot matters for the quote. Story 50 and story 60 share `conversationWith` and `fetchAgreement` in `hub-helpers.ts`.
+- **Hindi review.** One message is new in C3a2 for the owner to review: `ext-scheduling-step-started`. It already shipped with C3a1.
 
 ## Close-out
 

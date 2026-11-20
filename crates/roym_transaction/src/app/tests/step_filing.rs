@@ -4,6 +4,7 @@ use serde_json::json;
 use syneroym_roym_core::{
     deal::SettlementRole,
     extension::Registry,
+    paging,
     record::RECORD_STEP,
     step::{MAX_STEP_DATA_BYTES, MAX_STEPS_PER_AGREEMENT, STEP_VERSION},
     transaction::DealRole,
@@ -200,7 +201,7 @@ async fn a_card_for_an_agreement_not_formed_here_waits_and_is_filed_after() {
 
 /// `step.list` refuses an agreement that is not held; this reads the rows.
 async fn listed_without_check(deal: &StepDeal) -> Vec<StepRow> {
-    syneroym_roym_core::paging::query_all(
+    paging::query_all(
         &deal.fix.host,
         STEPS,
         Some(json!({ "agreement": deal.agreement }).to_string()),

@@ -736,7 +736,7 @@ unknown card type renders it safely and never executes sender-supplied code.
 service) and the participant (the Hub) are built in different slices, and a rule
 decided inside either one gets decided twice, differently.
 
-The first release has **eight card types**, and no others:
+The first release has **nine card types**, and no others:
 
 | Type | Signed by | Appears at |
 |---|---|---|
@@ -748,9 +748,10 @@ The first release has **eight card types**, and no others:
 | `payment-acknowledgement` | Each side, separately | C19 — what each party observed |
 | `fulfilment-receipt` | Both | C20 — both agreed the work was done |
 | `deal-decline` | Decliner | Counterparty declines a quote or withdraws its own enquiry; quote author declines an enquiry |
+| `step` | The party the extension's manifest allows | One work step of an extension for one commitment of a formed agreement, for example that the giver started the work |
 
 Each renders through a **fixed template chosen by `(type, version)`**. The Hub
-ships eight templates plus one fallback; it is not a general interpreter.
+ships nine templates plus one fallback; it is not a general interpreter.
 For quotes and settlement cards, the card wrapper carries RFC 9901 `disclosures`
 that reveal concealed fields to the filing node. The card row stores and draws
 the verified plain form.

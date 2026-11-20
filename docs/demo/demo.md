@@ -1327,6 +1327,33 @@ roymctl --dir "$S2_DIR" --as owner roym transaction agreement get --agreement <A
 previous command's output or `roym transaction thread`. The required flags for `quote`
 were read from `--help`; check the values accepted for `--timing` and `--where`.
 
+### R4b Work started on a booked slot
+
+Alice gives a booked slot. She marks the work as started. Both people see a card.
+
+Automated: `mise run demo`. The script is the source of truth. This text may lag.
+
+In alice's Hub, **Listings** tab: publish a listing and add one time slot for tomorrow. In
+bob's Hub, send alice an enquiry. In a terminal, alice answers it with a quote for the slot
+(`roymctl roym transaction quote ... --listing-id <LISTING-ID> --slot <SLOT-ID> --schedule
+<START>,<END>`). Bob presses **Accept**. When the agreement is formed, alice marks the work as
+started:
+
+```bash
+roymctl --dir "$S1_DIR" --as owner roym step add --agreement <AGREEMENT-ID> \
+  --commitment c1 --type scheduling/started \
+  --gateway-url "http://127.0.0.1:$S1_GW" --host "$ROYM1_HOST"
+```
+
+**Expect:** a card **Work started** in the chat of both Hubs. The step does not change the
+state of the deal.
+
+**Say:** "A step is a signed record of one piece of work. Both people keep it. It never changes
+what the deal is."
+
+The scripts are `crates/substrate/tests/e2e/demo/60-roym-step.spec.ts`, `60-roym-step-quote.sh`
+and `60-roym-step-start.sh`. They are the reference for the clicks and commands.
+
 ### R5 Directory and SynOrg (a group of providers)
 
 **Message:** A *SynOrg* is a guild or association. It runs a *Directory*. People add a
