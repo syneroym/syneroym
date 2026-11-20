@@ -606,3 +606,28 @@ or the story must use a fixed window. This adds a few dozen lines to the
 
 P18 and P20 are fixed in the plan in `ab18135b`. P19 is fixed in this
 file. Q10 (the C3a2 demo) is still open for the owner.
+
+### Round 2 verification — Claude Sonnet 5.5 (Claude Code), 2026-11-20
+
+Checked the fix commits `ab18135b` and `bceb09ca` against the plan and the
+code. **Open: 0.** P18, P19 and P20 are verified.
+
+- **P18 verified.** D-C3a-5 now starts with the kind pair (`kind-mismatch`,
+  rule 1) and refuses `service-in-slot` with no extension before it returns
+  `None` (rule 2). The codes and lines match `deal.rs:349` to `:390`.
+  `check_extension_kind` lists the rules it runs, and the rule numbers in
+  section 4 (rule 6) and in `check_partial_details` (rules 3, 7, 8) were
+  moved to match. The claim that the presentation checker need not repeat
+  rules 1, 2 and 4 to 6 is true: `presentation/verify.rs:108` calls
+  `SignedTerms::reveal`, which calls `validate_visible` first
+  (`deal/sd.rs`). The three new cases are in 7.1, and the existing test at
+  `deal/tests.rs:181` still gives `kind-mismatch` with the new order.
+- **P19 verified.** All 17 statuses of P1 to P17 start with
+  `Fixed (afac7bd4).` (17 matches).
+- **P20 verified.** D-C3a-9 says `ListingPayload::validate` uses the
+  constant `extension::SCHEDULING_EXTENSION`, never `registry()`, and
+  exit criterion 2 names `listing.rs` with the reason.
+
+One status line was stale and is corrected in this commit: the C3a row in
+status.md said "3 open" after the fix. It now says 0 open.
+Q10 (the C3a2 demo) is still an owner question.
