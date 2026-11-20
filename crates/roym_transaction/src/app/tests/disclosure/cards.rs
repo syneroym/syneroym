@@ -7,12 +7,12 @@ use syneroym_roym_core::{
     clock,
     deal::{
         Commitment, CommitmentKind, DealTerms, Details, DetailsExtra, ExtensionRef, LocalText,
-        ResourceKind, SCHEDULING_EXTENSION, SCHEDULING_SLOT_SCHEMA, SettlementRole,
-        TextTranslation, commitment_id,
+        ResourceKind, SettlementRole, TextTranslation, commitment_id,
     },
     disclosure::{
         MAX_RECORD_DISCLOSURE_BYTES, Salt, decode_disclosure, encode_base64url, encode_disclosure,
     },
+    extension::{SCHEDULING_EXTENSION, SCHEDULING_SLOT_SCHEMA},
     lang::LangTag,
     listing,
     payment::PAYMENT_ACKNOWLEDGEMENT_VERSION,

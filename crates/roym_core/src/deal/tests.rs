@@ -1,11 +1,14 @@
 use serde_json::json;
 
+mod extension;
+
 use crate::{
     deal::{
-        Answers, Commitment, CommitmentKind, DealTerms, Details, ExtensionRef, LocalText,
-        MAX_COMMITMENTS, MAX_DECLARED_VALUE_MINOR, ResourceKind, SCHEDULING_EXTENSION,
-        SCHEDULING_SLOT_SCHEMA, TextTranslation, commitment_id,
+        Answers, Commitment, CommitmentKind, DealTerms, Details, DetailsExtra, ExtensionRef,
+        LocalText, MAX_COMMITMENTS, MAX_DECLARED_VALUE_MINOR, ResourceKind, TextTranslation,
+        commitment_id,
     },
+    extension::{SCHEDULING_EXTENSION, SCHEDULING_SLOT_SCHEMA},
     lang::LangTag,
     listing,
     testing::sd,

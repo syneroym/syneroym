@@ -356,10 +356,10 @@ fn build_quote_commitments(
         c1["resource_kind"] = json!("service-in-slot");
         c1["kind"] = json!("fulfilment");
         c1["extension"] =
-            json!({ "id": syneroym_roym_core::deal::SCHEDULING_EXTENSION, "version": 1 });
+            json!({ "id": syneroym_roym_core::extension::SCHEDULING_EXTENSION, "version": 1 });
         c1["details"] = json!({
-            "extension": syneroym_roym_core::deal::SCHEDULING_EXTENSION,
-            "schema": syneroym_roym_core::deal::SCHEDULING_SLOT_SCHEMA,
+            "extension": syneroym_roym_core::extension::SCHEDULING_EXTENSION,
+            "schema": syneroym_roym_core::extension::SCHEDULING_SLOT_SCHEMA,
             "data": { "listing_id": listing_id.unwrap_or_default(), "slot_id": sl },
         });
     } else {

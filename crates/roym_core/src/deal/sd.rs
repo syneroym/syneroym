@@ -8,15 +8,15 @@ use syneroym_signed_record::{Salt, encode_disclosure};
 
 use crate::{
     deal::{
-        CommitmentKind, DealError, DealTerms, ExtensionRef, MAX_COMMITMENTS, MAX_EXTENSION_ID_LEN,
-        ResourceKind, commitment_id, validate_after_graph_entries, validate_commitment_kind,
+        CommitmentKind, DealError, DealTerms, ExtensionRef, MAX_COMMITMENTS, ResourceKind,
+        commitment_id, validate_after_graph_entries,
     },
     disclosure::{
         COMMITMENT_SET, DisclosureIndex, FieldPath, MAX_DETAILS_DISCLOSURE_BYTES,
         MAX_RECORD_DISCLOSURE_BYTES, SdError, TERMS_SET, check_all_used, check_sd_shape,
         conceal_object, reveal_object,
     },
-    listing, money,
+    extension, money,
     transaction::DealRole,
 };
 
@@ -261,12 +261,12 @@ impl SignedTerms {
             if c.commitment_id != expected_id {
                 return Err(DealError::CommitmentId(i, expected_id, c.commitment_id.clone()));
             }
-            validate_commitment_kind(c.resource_kind, c.kind, c.extension.as_ref())?;
-            if let Some(ref ext) = c.extension
-                && !listing::valid_token(&ext.id, MAX_EXTENSION_ID_LEN)
-            {
-                return Err(DealError::ExtensionShape(format!("invalid extension id: {}", ext.id)));
-            }
+            extension::check_extension_kind(
+                extension::registry(),
+                c.resource_kind,
+                c.kind,
+                c.extension.as_ref(),
+            )?;
             validate_sd_list(&c.sd, 10, &c.commitment_id)?;
             for d in &c.sd {
                 if !seen_digests.insert(d.as_str()) {

@@ -11,6 +11,7 @@ use serde::Deserialize;
 
 use crate::deal::{ExtensionRef, ResourceKind};
 
+pub mod check;
 pub mod ids;
 mod load;
 pub mod schema;
@@ -18,6 +19,10 @@ pub mod schema;
 #[cfg(test)]
 mod tests;
 
+pub use check::{
+    ExtensionCheck, PartialCheck, check_commitment_extension, check_details_shape,
+    check_extension_kind, check_partial_details,
+};
 pub use load::ManifestError;
 pub use schema::{Check, Field, FieldType, Schema, SchemaError};
 

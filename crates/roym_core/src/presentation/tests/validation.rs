@@ -3,7 +3,8 @@ use syneroym_signed_record::{Salt, decode_disclosure, disclosure_digest, encode_
 
 use super::*;
 use crate::{
-    deal::{Details, ExtensionRef, ResourceKind, SCHEDULING_EXTENSION, SCHEDULING_SLOT_SCHEMA},
+    deal::{Details, ExtensionRef, ResourceKind},
+    extension::{SCHEDULING_EXTENSION, SCHEDULING_SLOT_SCHEMA},
     listing,
     method::{all_terms_hidden_paths, reveal_disclosed_terms},
     presentation::{Presentation, verify_presentation},
