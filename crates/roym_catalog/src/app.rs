@@ -19,7 +19,9 @@ use syneroym_roym_core::{
 use crate::api;
 
 /// Version 2 gave the service its first state. Version 3 renames the
-/// service-location values inside signed listings.
+/// service-location values inside signed listings. Version 4 makes a listing
+/// name its extension, and `booking.mode` is gone, so an older bundle is
+/// refused.
 pub const SCHEMA_VERSION: u32 = 4;
 
 pub const LISTINGS: &str = "listings";

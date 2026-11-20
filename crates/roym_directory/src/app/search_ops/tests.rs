@@ -99,7 +99,7 @@ fn search_refuses_an_extension_filter_that_is_not_an_id() {
 }
 
 #[test]
-fn an_extension_filter_matches_only_listings_that_name_it() {
+fn an_extension_filter_and_its_index_column_are_written() {
     let filter = build_search_filter(&query_for_extension("scheduling"), 1000).unwrap();
     assert!(filter.to_string().contains(r#"{"extension":"scheduling"}"#));
 
