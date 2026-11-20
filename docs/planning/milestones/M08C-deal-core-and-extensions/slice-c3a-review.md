@@ -132,7 +132,7 @@ I do not answer for the owner. My view on each one:
   `NotChecked` (`quote.set`, `accept`, and the Hub's data). Add a unit test
   that `reveal_terms_strict` refuses a scheduling quote whose `slot_id` does
   not match its window, and that it reveals one with an unknown extension.
-  *Status:* Fixed as proposed. D-C3a-5 states the contract: `validate()` calls `check_commitment_extension(registry(), c)` for every commitment, so every caller of `validate` and `reveal_terms_strict` keeps today's protection; `check_extensions` is only for callers that need the `NotChecked` list. Two `reveal_terms_strict` tests in 7.1; a new exit criterion.
+  *Status:* Fixed (afac7bd4). As proposed. D-C3a-5 states the contract: `validate()` calls `check_commitment_extension(registry(), c)` for every commitment, so every caller of `validate` and `reveal_terms_strict` keeps today's protection; `check_extensions` is only for callers that need the `NotChecked` list. Two `reveal_terms_strict` tests in 7.1; a new exit criterion.
 
 - [x] **P2 — major.** *Where:* D-C3a-5 (the rule order and the `NotChecked`
   rule), D-C3a-4, `deal.rs:456` to `:474`.
@@ -158,7 +158,7 @@ I do not answer for the owner. My view on each one:
   one-shot commitment with 17 `extra` items, one with a 65-byte label, one
   with a 513-byte value, and the same three for an unknown extension. Each
   gets `extension-shape`.
-  *Status:* Fixed as proposed. New `check_details_shape` runs first for every commitment with an extension; the `extra` loop moves into it. "The details size limit" is dropped from the unknown rule: D-C3a-5 says it stays in `sd.rs` and `quote_ops.rs:265`. Six `extra` tests in 7.1.
+  *Status:* Fixed (afac7bd4). As proposed. New `check_details_shape` runs first for every commitment with an extension; the `extra` loop moves into it. "The details size limit" is dropped from the unknown rule: D-C3a-5 says it stays in `sd.rs` and `quote_ops.rs:265`. Six `extra` tests in 7.1.
 
 - [x] **P3 — major.** *Where:* D-C3a-5 (`check_visible_extension`),
   section 2.2 point 5, step 3, `presentation/validate.rs:395` to `:451`.
@@ -189,7 +189,7 @@ I do not answer for the owner. My view on each one:
   mapping of errors to `PresentationError::FieldInvalid`. Test list in 7.1:
   scheduling with a good window, a wrong `slot_id`, a hidden window, hidden
   details; an unknown extension with visible details.
-  *Status:* Fixed as proposed, with one change: `SignedTerms::validate_visible` keeps a kind-only function, renamed `check_extension_kind`, and the presentation checker gets `check_partial_details` with the three results. D-C3a-5 lists the `not_checked` entries that stay; 7.1 lists the six presentation cases.
+  *Status:* Fixed (afac7bd4). As proposed, with one change: `SignedTerms::validate_visible` keeps a kind-only function, renamed `check_extension_kind`, and the presentation checker gets `check_partial_details` with the three results. D-C3a-5 lists the `not_checked` entries that stay; 7.1 lists the six presentation cases.
 
 - [x] **P4 — major.** *Where:* D-C3a-10, D-C3a-11, D-C3a-12, D-C3a-13.
   *Problem:* A step's `data` has no size limit. `step_type` is capped (64
@@ -212,7 +212,7 @@ I do not answer for the owner. My view on each one:
   of `data` is refused at add, at filing and at import; the 65th step of an
   agreement is refused at filing. (4) Add both limits to the deviation and
   backlog text if the owner wants different values.
-  *Status:* Fixed as proposed: `MAX_STEP_DATA_BYTES` (8 KiB) and `MAX_STEPS_PER_AGREEMENT` (64) in D-C3a-10, checked at add, filing and import (D-C3a-11 to -13), new codes `step-data-too-large` and `too-many-steps`, tests in 7.1 and 7.2, and both values in the backlog row.
+  *Status:* Fixed (afac7bd4). As proposed: `MAX_STEP_DATA_BYTES` (8 KiB) and `MAX_STEPS_PER_AGREEMENT` (64) in D-C3a-10, checked at add, filing and import (D-C3a-11 to -13), new codes `step-data-too-large` and `too-many-steps`, tests in 7.1 and 7.2, and both values in the backlog row.
 
 - [x] **P5 — minor.** *Where:* D-C3a-11 step 5, D-C3a-12 (the last sentence).
   *Problem:* The row key does not contain the role of the signer. The
@@ -228,7 +228,7 @@ I do not answer for the owner. My view on each one:
   and state that "once" means once per role. Update D-C3a-13's import check
   (the key's role equals the payload's `role`) and the backlog row text
   ("each step type happens once per role of a commitment").
-  *Status:* Fixed as proposed: the key is `step:<agreement>:<commitment_id>:<type>:<role>`, "once" means once per role (D-C3a-1, -11, -12), the import checks the key's role, and the backlog row text says "once per role". Test with a test-only `by: either` step.
+  *Status:* Fixed (afac7bd4). As proposed: the key is `step:<agreement>:<commitment_id>:<type>:<role>`, "once" means once per role (D-C3a-1, -11, -12), the import checks the key's role, and the backlog row text says "once per role". Test with a test-only `by: either` step.
 
 - [x] **P6 — minor.** *Where:* D-C3a-2 (the `text` row and `choice`), D-C3a-8
   (`extra`), D-C3a-1 (`listing_id`, `slot_id` typed `text`), section "How
@@ -252,7 +252,7 @@ I do not answer for the owner. My view on each one:
   and use it for the two scheduling fields, or give a field `hidden_in_view:
   true` so the generic view skips ids; and correct the end-user bullet to say
   what the card really shows.
-  *Status:* Fixed. (a) Not routed through `recordText`: `details` has no author translations, so drawing it inside the version switch would give `extra` a translation's tag. The field view is drawn once, with the quote's original `lang` on `text`, `long-text` and `extra` (D-C3a-2, -8); machine translation of `details` is a new backlog row. (b) The owner chose a field type `code` (Q8 answer); the scheduling fields use it, and the end-user bullet now says the card shows two reference codes.
+  *Status:* Fixed (afac7bd4). (a) Not routed through `recordText`: `details` has no author translations, so drawing it inside the version switch would give `extra` a translation's tag. The field view is drawn once, with the quote's original `lang` on `text`, `long-text` and `extra` (D-C3a-2, -8); machine translation of `details` is a new backlog row. (b) The owner chose a field type `code` (Q8 answer); the scheduling fields use it, and the end-user bullet now says the card shows two reference codes.
 
 - [x] **P7 — minor.** *Where:* Q4 (the sentence "Who sets `one-shot`"),
   D-C3a-15, step 3, `apps/roymctl/src/commands/roym/transaction.rs:358` to
@@ -271,7 +271,7 @@ I do not answer for the owner. My view on each one:
   JSON". Exit criterion 2 ("no code outside `extension.rs` names
   `scheduling/slot@1`") must also name `roymctl` and the Hub's
   `quote_terms.ts`.
-  *Status:* Fixed. (a) Step 3 and D-C3a-15 name the `roymctl` import fix, with a `git grep` check. (b) No `--one-shot` flag: Q4 now says only tests make a one-shot quote in C3a, and C3c's `terms_from_listing` is the first real caller; a flag would be a new visible command for a record no person makes yet. Exit criterion 2 names `roymctl` and `quote_terms.ts`.
+  *Status:* Fixed (afac7bd4). (a) Step 3 and D-C3a-15 name the `roymctl` import fix, with a `git grep` check. (b) No `--one-shot` flag: Q4 now says only tests make a one-shot quote in C3a, and C3c's `terms_from_listing` is the first real caller; a flag would be a new visible command for a record no person makes yet. Exit criterion 2 names `roymctl` and `quote_terms.ts`.
 
 - [x] **P8 — minor.** *Where:* D-C3a-4 (`registry()` and its comment).
   *Problem:* The comment says the `expect` "cannot fire in a shipped build".
@@ -286,7 +286,7 @@ I do not answer for the owner. My view on each one:
   covers `too_many_lines` only; check that it does not reject this), or
   return `Result` from `registry()`. Keep the unit test
   `every_shipped_manifest_loads`.
-  *Status:* Fixed: `#[expect(clippy::expect_used, reason = …)]` on `registry()` only, after the pattern of `key_store.rs:44` and `keys.rs:255` (they use `allow`); step 2 checks that `check-lint-suppressions` accepts it. The comment no longer claims the `expect` cannot fire.
+  *Status:* Fixed (afac7bd4). `#[expect(clippy::expect_used, reason = …)]` on `registry()` only, after the pattern of `key_store.rs:44` and `keys.rs:255` (they use `allow`); step 2 checks that `check-lint-suppressions` accepts it. The comment no longer claims the `expect` cannot fire.
 
 - [x] **P9 — minor.** *Where:* D-C3a-5 (rule 2), D-C3a-6 (`listing.set`),
   7.1 `insight_manifest_loads_and_cannot_be_named`.
@@ -302,7 +302,7 @@ I do not answer for the owner. My view on each one:
   paths returns only `workflow` manifests (add `Registry::workflow(ext)`), so
   an `insight` id is unknown everywhere and gives `extension-unknown`. Say so
   in D-C3a-5 and keep the test as written.
-  *Status:* Fixed as proposed: `Registry::workflow(ext)` replaces `get` on the deal and listing paths, so an `insight` id is `NotChecked` and gives `extension-unknown` everywhere. The test is kept and now also checks `workflow`.
+  *Status:* Fixed (afac7bd4). As proposed: `Registry::workflow(ext)` replaces `get` on the deal and listing paths, so an `insight` id is `NotChecked` and gives `extension-unknown` everywhere. The test is kept and now also checks `workflow`.
 
 - [x] **P10 — minor.** *Where:* D-C3a-4 (`Schema::check`, "`Registry::parse`
   checks"), D-C3a-2, D-C3a-3.
@@ -325,7 +325,7 @@ I do not answer for the owner. My view on each one:
   *Fix:* Add the four rules to `Registry::parse` and its failing tests; write
   the exact id function (and decide on the version) in D-C3a-3; make `parse`
   refuse a manifest set whose derived ids are not unique.
-  *Status:* Fixed. (a) The `currency` sentence is replaced: a `money` value needs no currency. (b) Every limit is a load rule (D-C3a-2 table, D-C3a-4 list), with a failing test each. (c) D-C3a-3 writes the exact id function; the version is not part of the id, with the author rule that a changed meaning needs a new field name. (d) `parse` refuses a registry with a repeated derived id; test in 7.1.
+  *Status:* Fixed (afac7bd4). (a) The `currency` sentence is replaced: a `money` value needs no currency. (b) Every limit is a load rule (D-C3a-2 table, D-C3a-4 list), with a failing test each. (c) D-C3a-3 writes the exact id function; the version is not part of the id, with the author rule that a changed meaning needs a new field name. (d) `parse` refuses a registry with a repeated derived id; test in 7.1.
 
 - [x] **P11 — minor.** *Where:* D-C3a-6 (`agreement.accept`), section 9
   (deviations), section "How this is shown to an end user" (C3a1, third
@@ -341,7 +341,7 @@ I do not answer for the owner. My view on each one:
   rule. Add it to the roym-extensions `## Deviations` list in section 9. Add
   the exception to the end-user bullet ("unless this person is the one who
   gives that part of the deal; then Roym asks them to update first").
-  *Status:* Fixed: owner question Q9 (answered (a): keep the refusal), the deviation is written in the extensions doc in this commit, and the end-user bullet names the exception. One addition: the Hub shows a plain message for this refusal (`messages-accept-extension-unknown`, one branch in `messages.ts`), so the bullet is true.
+  *Status:* Fixed (afac7bd4). Owner question Q9 (answered (a): keep the refusal), the deviation is written in the extensions doc in this commit, and the end-user bullet names the exception. One addition: the Hub shows a plain message for this refusal (`messages-accept-extension-unknown`, one branch in `messages.ts`), so the bullet is true.
 
 - [x] **P12 — minor.** *Where:* "Stays the same" (section 4), step 4.
   *Problem:* The plan moves one seat-code test to the registry:
@@ -358,7 +358,7 @@ I do not answer for the owner. My view on each one:
   scheduling, and the diff is smaller), and drop the change at `:267`. Or
   change all four and add a test per site. Either way list the four sites in
   section 4 so the C3b plan finds them.
-  *Status:* Fixed with the first option: the change at `agreement_ops.rs:267` is dropped, the seat code is not changed in C3a, and section 4 lists the five sites (the reviewer's four plus `quote_ops.rs:427`) for C3b's plan.
+  *Status:* Fixed (afac7bd4). With the first option: the change at `agreement_ops.rs:267` is dropped, the seat code is not changed in C3a, and section 4 lists the five sites (the reviewer's four plus `quote_ops.rs:427`) for C3b's plan.
 
 - [x] **P13 — minor.** *Where:* Section 4 ("Wire changes": "stored listings
   of version 3 are not read"), `DIRECTORY_SCHEMA_VERSION` 5 to 6.
@@ -376,7 +376,7 @@ I do not answer for the owner. My view on each one:
   development nodes start empty). Add one test that an old listing with
   `booking.mode` parses as "no extension", so the behaviour is known and not
   a surprise. Do not claim "not read".
-  *Status:* Fixed as proposed: section 4 and D-C3a-9 state the real behaviour (an old listing parses with no extension; the bump gates only the catalog backup import), and the test `old_listing_with_booking_mode_has_no_extension` is added. `deny_unknown_fields` is not added, because an older node would then refuse a newer node's listing.
+  *Status:* Fixed (afac7bd4). As proposed: section 4 and D-C3a-9 state the real behaviour (an old listing parses with no extension; the bump gates only the catalog backup import), and the test `old_listing_with_booking_mode_has_no_extension` is added. `deny_unknown_fields` is not added, because an older node would then refuse a newer node's listing.
 
 - [x] **P14 — minor.** *Where:* Section 4 ("Directory search"),
   `search_ops.rs:296`, `directory.rs:172`.
@@ -388,7 +388,7 @@ I do not answer for the owner. My view on each one:
   *Fix:* Check the query value with `listing::valid_token(.., MAX_EXTENSION_ID_LEN)`
   and answer `invalid_params` otherwise; add a test. State in the
   directory doc line that "no extension" cannot be asked for.
-  *Status:* Fixed as proposed: `directory.search` checks the value with `valid_token(.., MAX_EXTENSION_ID_LEN)` and answers `invalid_params`; test `search_refuses_an_extension_filter_that_is_not_an_id`; "no extension" cannot be asked for, said in Q3 and in a backlog row. The value is not checked against the registry, so a directory can index listings of extensions it does not know.
+  *Status:* Fixed (afac7bd4). As proposed: `directory.search` checks the value with `valid_token(.., MAX_EXTENSION_ID_LEN)` and answers `invalid_params`; test `search_refuses_an_extension_filter_that_is_not_an_id`; "no extension" cannot be asked for, said in Q3 and in a backlog row. The value is not checked against the registry, so a directory can index listings of extensions it does not know.
 
 - [x] **P15 — minor.** *Where:* D-C3a-9, step 5 (the e2e line), `roym-hub.spec.ts:344`.
   *Problem:* Two points. (a) Before this change, `slots` lived inside the
@@ -405,7 +405,7 @@ I do not answer for the owner. My view on each one:
   `ListingPayload::validate`, the Hub editor (disable "slots" while the block
   is off, or switch it on) and the tests. (b) Remove the e2e change from step
   5 and 7.6, or say why it is needed.
-  *Status:* Fixed as proposed. (a) `scheduling` requires `booking` (new `booking-required`); `one-shot` or no extension may have either; in the Hub, picking "slots" switches the booking block on and locks it. (b) The e2e change is removed from step 5 and 7.6.
+  *Status:* Fixed (afac7bd4). As proposed. (a) `scheduling` requires `booking` (new `booking-required`); `one-shot` or no extension may have either; in the Hub, picking "slots" switches the booking block on and locks it. (b) The e2e change is removed from step 5 and 7.6.
 
 - [x] **P16 — minor.** *Where:* D-C3a-13, 6.2 step 3, 7.3 (parity).
   *Problem:* (a) The plan says `transaction.thread` builds a step card's
@@ -423,7 +423,7 @@ I do not answer for the owner. My view on each one:
   *Fix:* Correct the sentence in 6.2 step 3, add the `step` arm to both
   matches, and add one test that an imported step card has its plain `data`.
   Add `bundles.rs` and `roym_restore_e2e.rs` to the C3a2 test list.
-  *Status:* Fixed as proposed: 6.2 step 3 names `plain_view` for the live paths; D-C3a-13 adds the `step` arm to both `match` statements, with the test `imported_step_card_has_its_plain_data`; `bundles.rs` and `roym_restore_e2e.rs` are in the C3a2 tests (7.3, 7.4).
+  *Status:* Fixed (afac7bd4). As proposed: 6.2 step 3 names `plain_view` for the live paths; D-C3a-13 adds the `step` arm to both `match` statements, with the test `imported_step_card_has_its_plain_data`; `bundles.rs` and `roym_restore_e2e.rs` are in the C3a2 tests (7.3, 7.4).
 
 - [x] **P17 — minor.** *Where:* Section 9 ("Change docs ... not living
   docs"), Q2, task.md section 1 (Z3).
@@ -435,7 +435,7 @@ I do not answer for the owner. My view on each one:
   *Fix:* Add "update task.md Z3 and the C3b line about the manifest" to
   section 9 and to step 7 of 6.1. The roym-extensions deviation already
   covers the sketch.
-  *Status:* Fixed: task.md Z3 and the C3b line are updated in this commit (owner answer to Q2), and section 9 says so.
+  *Status:* Fixed (afac7bd4). `task.md` Z3 and the C3b line are updated in that commit (owner answer to Q2), and section 9 says so.
 
 ### Round 1 close-out — Claude Opus 5.5, 2026-11-20
 
@@ -537,7 +537,7 @@ or the story must use a fixed window. This adds a few dozen lines to the
 
 ### Findings
 
-- [ ] **P18 — major.** *Where:* D-C3a-5 ("Rules of
+- [x] **P18 — major.** *Where:* D-C3a-5 ("Rules of
   `check_commitment_extension`, in order", rules 1, 3 and 5), the sentence
   that `validate_commitment_kind` is replaced, `deal.rs:349` to `:390`,
   `deal/sd.rs:264`.
@@ -570,9 +570,9 @@ or the story must use a fixed window. This adds a few dozen lines to the
   7.1: `service-in-slot` with no extension, `goods-or-service` with kind
   `currency`, and `currency` with kind `fulfilment`, each for `validate` and
   for `validate_visible`.
-  *Status:* Open
+  *Status:* Fixed (ab18135b). As proposed. D-C3a-5's rule list starts with today's two `validate_commitment_kind` refusals: rule 1 is the kind pair (`kind-mismatch`), and rule 2 refuses `service-in-slot` with no extension before it returns `None`. `check_extension_kind` runs rules 1, 2 (without its `details` part), the id shape and rules 4 to 6, so `validate_visible` keeps them. Three cases for each of `validate` and `validate_visible` in 7.1. The plan also says why `check_partial_details` need not repeat them: `presentation/verify.rs:108` runs `reveal`, and so `validate_visible`, first.
 
-- [ ] **P19 — minor.** *Where:* Statuses of P1 to P17 in this file.
+- [x] **P19 — minor.** *Where:* Statuses of P1 to P17 in this file.
   *Problem:* session-strategy.md ("The review file") allows the statuses
   `Open`, `Fixed (<sha>)`, `Rejected: <reason>` and `Deferred: <link>`. The
   fix wrote "Fixed as proposed", "Fixed with the first option" and similar,
@@ -582,9 +582,9 @@ or the story must use a fixed window. This adds a few dozen lines to the
   *Fix:* Start each status of P1 to P17 with `Fixed (afac7bd4)` and keep the
   explanation after it. P3, P6, P7, P8 and P12 already say how they differ;
   keep that.
-  *Status:* Open
+  *Status:* Fixed in this file, in the commit after ab18135b (the fix is these status lines, so it cannot name its own sha). Every status of P1 to P17 now starts with `Fixed (afac7bd4).`, and the explanation follows.
 
-- [ ] **P20 — minor.** *Where:* D-C3a-9 ("The rule between `booking` and
+- [x] **P20 — minor.** *Where:* D-C3a-9 ("The rule between `booking` and
   the extension"), exit criterion 2 of C3a1, section 7.9 (directory size).
   *Problem:* `ListingPayload::validate` (in `listing.rs`) now has to know
   that the id `scheduling` needs a `booking` block. That is a match on an
@@ -600,4 +600,9 @@ or the story must use a fixed window. This adds a few dozen lines to the
   to the exceptions of exit criterion 2 with that reason. State the reason
   in the plan: the rule is a shape rule that a stranger's directory must
   check without the registry.
-  *Status:* Open
+  *Status:* Fixed (ab18135b). As proposed. D-C3a-9 says `ListingPayload::validate` compares the id with the constant `extension::SCHEDULING_EXTENSION` and never calls `registry()`, with the reason (a stranger's directory checks the rule without the registry). Exit criterion 2 names `listing.rs` and says every exception uses the constant, not a string literal.
+
+### Round 2 close-out — Claude Opus 5.5, 2026-11-20
+
+P18 and P20 are fixed in the plan in `ab18135b`. P19 is fixed in this
+file. Q10 (the C3a2 demo) is still open for the owner.
