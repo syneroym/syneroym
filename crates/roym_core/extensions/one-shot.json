@@ -1,0 +1,11 @@
+{
+  "id": "one-shot",
+  "version": 1,
+  "kind": "workflow",
+  "resource_kinds": ["goods-or-service"],
+  "hooks": [],
+  "details": [
+    { "schema": "one-shot/order@1", "fields": [] }
+  ],
+  "steps": []
+}
