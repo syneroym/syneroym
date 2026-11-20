@@ -197,7 +197,7 @@ test.describe('Roym Hub', () => {
     await expect(page.locator('.search-hit')).toHaveCount(1);
   });
 
-  test('3. card gallery: eight known types and the unknown fallback render', async ({ page }) => {
+  test('3. card gallery: nine known types and the unknown fallback render', async ({ page }) => {
     await page.goto(HUB_URL);
     await page.waitForLoadState('networkidle');
     await loginWithDelegatedKey(page);
@@ -214,6 +214,7 @@ test.describe('Roym Hub', () => {
       'payment-acknowledgement',
       'fulfilment-receipt',
       'deal-decline',
+      'step',
     ];
     for (const type of knownTypes) {
       await expect(page.locator(`.card-${type}`)).toHaveCount(1);

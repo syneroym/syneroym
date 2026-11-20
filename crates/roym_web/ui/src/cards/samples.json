@@ -140,6 +140,19 @@
     }
   },
   {
+    "type": "step",
+    "version": 1,
+    "data": {
+      "agreement": "rec_agreement_sample",
+      "conversation": "conv-sample-123",
+      "commitment_id": "c1",
+      "role": "giver",
+      "extension": { "id": "scheduling", "version": 1 },
+      "step_type": "scheduling/started",
+      "data": {}
+    }
+  },
+  {
     "type": "not-a-real-type",
     "version": 1,
     "data": {}
