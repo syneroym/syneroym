@@ -1,0 +1,438 @@
+# M08C slice C3a — review
+
+*Reader: the developer who fixes the C3a plan or code, and the project
+owner. This file holds every review finding for slice C3a (parts C3a1 and
+C3a2). Plan review findings are P1, P2, …; code review findings are R1, R2,
+…. Ids are never renumbered.*
+
+## Plan review round 1 — Claude Sonnet 5.5 (Claude Code), 2026-11-20
+
+Checked [slice-c3a-implementation-plan.md](slice-c3a-implementation-plan.md)
+on branch `feat/m08c-c3a-deal-extension-frame` at `e359686a` (the plan
+commit, on top of `main` at `e11fed33`). `git pull` ran and the branch was
+already up to date. The checkout is the main one, not a worktree. The plan
+was written by Claude Opus 5.5; this round runs on Claude Sonnet 5.5, so the
+reviewer is a different model from the author.
+
+Read: AGENTS.md ("Writing for readers" and the code rules);
+session-strategy.md ("The review file"); the plan; task.md and status.md of
+M08C; both change docs named in the prompt (roym-extensions: the criteria,
+"Design", "Deviations"; roym-multilingual: ML-28, the rule "Commitment kinds
+and extension fields", "Deviations"); the agreements doc where the plan
+cites it ("The `details` block", open question 3, the state table); the C1
+and C2 review files (kinds of findings before). task.md's C3a section names
+the same two change docs as the prompt, so no change doc is missing from the
+list.
+
+**Summary: 17 findings: 0 blocker, 4 major, 13 minor.**
+
+### What was checked and found correct
+
+- **Line counts and file names.** `sync.rs` 717, `app.rs` 688,
+  `quote_ops.rs` 749, `backup.rs` 766, `agreement_ops.rs` 561, `deal.rs` 600,
+  `listing.rs` 584: all match the plan's table (section 7.8). I spot-checked
+  19 `file:line` links of the plan (`disclosure.rs:105/:431/:456`,
+  `fulfilment.rs:70`, `app.rs:284/:477/:549`, `record.rs:18`,
+  `receipts.rs:23`, `disclosures.rs:33`, `fulfilment_ops.rs:579`,
+  `transition.rs:47`, `listing.rs:315`, `render.ts:28`, `quote.ts:99`,
+  `labelled` in `dom.ts:55`): all hit the named item.
+- **Section 2.2 facts.** Point 1 (`SCHEMA_VERSION` 6, eight card types),
+  point 2 (no deal code reads `BookingMode`; the only readers are
+  `ListingPayload::validate`, the directory index and filter, and the Hub
+  editor), point 4 (the Hub's quote form never passes `listingId` or
+  `slotId`, `messages.ts:1009`), point 5 (three copies of the scheduling
+  rule), point 6 (`file_quote_card` refuses on `validate()`, `sync.rs:526`),
+  point 10 (`backup.rs:735` has no `deal-decline` arm): all true on this
+  branch.
+- **Q2 facts.** `toml` is a dev-dependency of `roym_core` only
+  (`Cargo.toml:24`). The taxonomy pattern (`include_str!` at
+  `taxonomy.rs:19`, the Hub import at `taxonomy.ts:1`) is real, and the
+  relative path from `ui/src/extensions/` has the same depth as from
+  `ui/src/taxonomy/`.
+- **The `BookingMode` caller list.** `git grep` finds the same files as the
+  plan: `listing.rs`, `listing/tests.rs`, `wire_words.rs`, `directory.rs`,
+  `search_ops.rs` and its tests, `listing_ops.rs`, `editor.ts`, and the
+  fixtures `fixtures.rs:96`, `trust_harness.rs:187/:544`,
+  `listing_verify_good.json`. No fixture is missing, and no `.rs`, `.ts` or
+  `.json` file under `apps/` or `test-components/` names a booking mode.
+- **`extension-unknown` is a new code.** `DealError` has no such code now.
+- **The wire list is right.** `directory.search` is wire-reachable
+  (`SearchQuery` is serde, no `deny_unknown_fields`); an old node that gets
+  `extension` ignores it.
+- **Component size plan.** `directory` links only the shape check, as the
+  plan says (checked in `search_ops.rs`, `publication_ops.rs`).
+
+### View on the owner questions
+
+I do not answer for the owner. My view on each one:
+
+- **Q1 (split).** (a). The two parts have different callers and different
+  review questions. I would not merge them.
+- **Q2 (JSON in `roym_core`).** (a). It is the taxonomy pattern, with no new
+  dependency and no build script. Two consequences the plan does not list:
+  task.md's Z3 row says "TOML in each extension's crate" (P17), and the
+  loader rules are not complete (P10).
+- **Q3 (listing names its extension).** (a). It removes the two names for one
+  fact. It needs the answers of P13, P14 and P15 first (what an old listing
+  becomes, how the query string is checked, and the rule between `booking`
+  and the extension). One cost is real: the directory can no longer ask for
+  "plain enquiry listings only". This is acceptable; say it in the doc.
+- **Q4 (one-shot needs no service).** (a). Nothing in M08C calls a service
+  method. But the plan says `roymctl` can make a one-shot quote, and it
+  cannot today (P7).
+- **Q5 (step `data` is hidden).** (a). One rule for every deal record is
+  right. It needs a size limit for `data` (P4).
+- **Q6 (`scheduling/started`, `roymctl` only).** (a). It closes the backlog
+  row for `roymctl` users and needs no new Hub screen. Two notes: the step
+  does not change the progress snapshot (the plan says so; the backlog row
+  text must say "a card, not a state" so nobody reads it as `in-progress`),
+  and the row key needs the role (P5).
+- **Q7 (demo).** (a) for C3a1 is right: nothing a viewer sees changes. For
+  C3a2 I would not accept `none` without an explicit owner "yes". AGENTS.md
+  ("Mandatory Demo Close-out") lists "a new command" as something a viewer
+  can see, and C3a2 adds `roymctl roym step add`. If the owner accepts (a),
+  the plan should say that it is an exception to that rule, and C3b's plan
+  must carry the story that shows the step card.
+- **Q8 (seven scalar field types).** (a). `location`, `file-pointer` and
+  `record-pointer` have their own rules and no M08C manifest needs them. The
+  plan should also split identifier text from free text (P6).
+- **Unrecorded decision, new Q9.** D-C3a-6 makes `agreement.accept` refuse a
+  quote when this node gives a commitment whose extension it does not know.
+  EX-2 says the person "may still sign". The rule is sensible (a giver must
+  run its extension's steps), but it is a product choice that the owner has
+  not been asked about and the deviation list does not record (P11). My view:
+  keep the rule, ask the owner, and record the deviation.
+
+### Findings
+
+- [ ] **P1 — major.** *Where:* D-C3a-5 (the last paragraph), step 3, and
+  the callers of `DealTerms::validate`.
+  *Problem:* The plan says `validate` "keeps every other rule and no longer
+  refuses an unknown extension", and adds `check_extensions` as the new check.
+  It does not say whether `validate` still runs the registry check for a
+  *known* extension. `validate()` is not called in three places only. It is
+  the last step of `reveal_terms_strict` (`deal/sd.rs:384`), which every
+  load of a held quote, agreement receipt and settlement record goes through
+  (`load_quote` at `disclosures.rs:100`, which every accept, settle,
+  fulfilment and presentation call uses; the backup import at
+  `backup/disclosures.rs:138`; `quote_ops.rs:599`; `sync.rs:519`). Besides
+  that it is called directly at `quote_ops.rs:482` and `sync.rs:526`.
+  *Failure case:* the implementer reads "validate no longer checks the
+  extension" and calls `check_extensions` only at the three places the plan
+  names (`quote.set`, `file_quote_card`, `accept`). Then `reveal_terms_strict`
+  stops checking `scheduling/slot@1` details. A quote restored from a backup,
+  or an agreement receipt revealed on the counterparty, is accepted with a
+  `slot_id` that does not match the window. Today's protection is lost on
+  every path that is not named.
+  *Fix:* State the contract in D-C3a-5. Recommended: `validate()` runs the
+  registry check for every commitment through `registry()` (a known extension
+  is checked, an unknown one passes the shape rules only), so every existing
+  caller keeps today's protection and none needs a change. `check_extensions`
+  is then only for the callers that need to know *which* commitments were
+  `NotChecked` (`quote.set`, `accept`, and the Hub's data). Add a unit test
+  that `reveal_terms_strict` refuses a scheduling quote whose `slot_id` does
+  not match its window, and that it reveals one with an unknown extension.
+  *Status:* Open
+
+- [ ] **P2 — major.** *Where:* D-C3a-5 (the rule order and the `NotChecked`
+  rule), D-C3a-4, `deal.rs:456` to `:474`.
+  *Problem:* Today the limits of `details.extra` (16 items; label 64 bytes;
+  value 512 bytes, `MAX_DETAILS_EXTRA*`, `deal.rs:32` to `:34`) are checked
+  only inside `validate_scheduling_slot_details`. The plan moves that
+  function into a named check (`slot-matches-window`) and lists no generic
+  rule for `extra`. So `extra` of a one-shot commitment and of an unknown
+  extension would have no count or length limit. The plan also says an
+  unknown extension is checked for "the `details` size limit". That limit
+  (`MAX_DETAILS_DISCLOSURE_BYTES`, 8 KiB) is not enforced in `deal.rs` at all;
+  it is enforced only in `sd.rs` (conceal and reveal) and `quote_ops.rs:265`.
+  *Failure case:* a one-shot quote carries 500 `extra` entries of 10 bytes.
+  `quote.set` accepts it (5 KB is under 8 KiB), the Hub's field view draws 500
+  lines, and the agreements doc rule "0 to 16; label 64 bytes, value 512
+  bytes" (`:441`) is broken for every extension except scheduling.
+  *Fix:* Add one generic function, `check_details_shape(details, ext)`, run
+  first for every commitment with an extension (known or unknown): `extra`
+  count and lengths, `details.extension == extension.id`, and the schema-name
+  shape. Move the `extra` loop out of the scheduling function into it. Either
+  drop "the details size limit" from the unknown rule (sd.rs enforces it), or
+  say where it is checked in `deal.rs` and with which constant. Tests: a
+  one-shot commitment with 17 `extra` items, one with a 65-byte label, one
+  with a 513-byte value, and the same three for an unknown extension. Each
+  gets `extension-shape`.
+  *Status:* Open
+
+- [ ] **P3 — major.** *Where:* D-C3a-5 (`check_visible_extension`),
+  section 2.2 point 5, step 3, `presentation/validate.rs:395` to `:451`.
+  *Problem:* The plan says the presentation checker calls
+  `check_visible_extension(registry, resource_kind, kind, ext)`. That
+  function has no `details` and no `window` parameter. But the presentation
+  checker does more than check the kind. In `validate_commitment_details_partial`
+  it reads `details` (which may be absent), reads `window` (which may be
+  hidden or `null`), calls `validate_scheduling_slot_details`, and pushes the
+  names `details_matches_extension` into `not_checked`. A function that sees
+  neither `details` nor `window` cannot replace it. Also, with the new
+  registry a *known* extension whose `details` are shown can now be
+  schema-checked in a presentation even when the window is hidden (only
+  `slot-matches-window` needs the window).
+  *Failure case:* the implementer follows the signature, makes the
+  presentation checker call the kind check only, and deletes the scheduling
+  branch. A presentation of a scheduling commitment with a wrong `slot_id`
+  is now `verified`. The existing cases in
+  `presentation/tests/validation.rs:112` to `:149` fail, or worse are
+  deleted.
+  *Fix:* Add a third function to D-C3a-5, for example
+  `check_partial_details(registry, ext, details: Option<&Details>, window:
+  Option<Option<&TimeWindow>>, currency) -> Result<PartialCheck, DealError>`
+  where the result is `Checked`, `NotChecked` (unknown extension) or
+  `Partial` (a part is hidden: push `details_matches_extension`). Say which
+  of today's `not_checked` entries stay (`details_matches_extension` for a
+  hidden window or hidden details; the unknown extension case). Keep the
+  mapping of errors to `PresentationError::FieldInvalid`. Test list in 7.1:
+  scheduling with a good window, a wrong `slot_id`, a hidden window, hidden
+  details; an unknown extension with visible details.
+  *Status:* Open
+
+- [ ] **P4 — major.** *Where:* D-C3a-10, D-C3a-11, D-C3a-12, D-C3a-13.
+  *Problem:* A step's `data` has no size limit. `step_type` is capped (64
+  bytes), but `data` is a free JSON object, and for an unknown extension the
+  field list does not exist to bound it. The row key is
+  `step:<agreement>:<commitment_id>:<step_type>`, so a party can add one row
+  per distinct `step_type` string for an unknown extension. The only limit
+  is `MAX_CARDS_PER_CONVERSATION` (2,000, `transaction.rs:85`) and the card
+  size.
+  *Failure case:* a counterparty with an agreement sends 2,000 step cards
+  with step types `x/a`, `x/b`, … for an extension this node does not know.
+  Each is filed as `checked: false`. The conversation's card cap is used up
+  and every later card (a payment request, a decline) is refused with the
+  cap message. A step with a 90 KiB `data` also passes the filing check.
+  *Fix:* (1) Define `MAX_STEP_DATA_BYTES` (use the same 8 KiB as `details`)
+  and check it in `step.add`, in the filing, and in the import check of
+  D-C3a-13 (`conceal_hidden` does not limit a single field). (2) Cap the
+  steps per agreement (for example 64) in `step.add` and in the filing, and
+  count only rows of that agreement. (3) Tests: a step with 8 KiB + 1 byte
+  of `data` is refused at add, at filing and at import; the 65th step of an
+  agreement is refused at filing. (4) Add both limits to the deviation and
+  backlog text if the owner wants different values.
+  *Status:* Open
+
+- [ ] **P5 — minor.** *Where:* D-C3a-11 step 5, D-C3a-12 (the last sentence).
+  *Problem:* The row key does not contain the role of the signer. The
+  manifest format allows `by: either` and `by: receiver` (D-C3a-1). With a
+  key of agreement, commitment and step type only, the first step filed for
+  a type blocks the other party's step of the same type: "refuses a
+  different record for the same key". `scheduling/started` is `giver` only,
+  so nothing ships that hits this, but the format promises it works.
+  *Failure case:* a later extension declares `{ "type": "docs/received", "by":
+  "either" }`. Alice adds it; Bob's own step is refused as "a second step of
+  this type".
+  *Fix:* Put the role in the key: `step:<agreement>:<commitment_id>:<type>:<role>`
+  and state that "once" means once per role. Update D-C3a-13's import check
+  (the key's role equals the payload's `role`) and the backlog row text
+  ("each step type happens once per role of a commitment").
+  *Status:* Open
+
+- [ ] **P6 — minor.** *Where:* D-C3a-2 (the `text` row and `choice`), D-C3a-8
+  (`extra`), D-C3a-1 (`listing_id`, `slot_id` typed `text`), section "How
+  this is shown to an end user".
+  *Problem:* Two gaps in how text from the other party is drawn.
+  (a) A `text` or `long-text` field and every `extra` value are free text
+  inside a quote that has one `lang` tag (roym-multilingual, "Language-tagged
+  free text": one tag covers every free-text field of the record). The plan
+  draws them "as data" with the language unknown, and outside
+  `recordText`, so they get no `lang` attribute and no machine-translation
+  action. A term hidden in `extra` that a person cannot read is accepted
+  after the person read a translation of the other fields.
+  (b) `listing_id` and `slot_id` are identifiers, not free text, but the only
+  text type is `text`. The end-user section says the card shows "the chosen
+  slot", but the card would show two lines of raw ids (`Listing id: lst_…`,
+  `Slot id: slot_…`). That helps nobody.
+  *Fix:* (a) Draw `extra` and `text` fields through the same record-text
+  path as the quote's other free text (the quote's `lang`), or record in the
+  backlog that they are outside the translate hook. (b) Add a field type
+  `code` (identifier, not shown through language rules, drawn as plain data)
+  and use it for the two scheduling fields, or give a field `hidden_in_view:
+  true` so the generic view skips ids; and correct the end-user bullet to say
+  what the card really shows.
+  *Status:* Open
+
+- [ ] **P7 — minor.** *Where:* Q4 (the sentence "Who sets `one-shot`"),
+  D-C3a-15, step 3, `apps/roymctl/src/commands/roym/transaction.rs:358` to
+  `:365`.
+  *Problem:* (a) `roymctl roym transaction quote` builds the scheduling
+  extension from `syneroym_roym_core::deal::SCHEDULING_EXTENSION` and
+  `SCHEDULING_SLOT_SCHEMA`. Step 3 moves both constants to `extension.rs` and
+  lists only the `roym_transaction` tests (`cards.rs:10`). `roymctl` stops
+  compiling. D-C3a-15 says C3a1 has "none" for `roymctl`. (b) Q4 says a
+  one-shot quote comes "from `roymctl` and tests", but `build_quote_commitments`
+  makes a one-shot commitment only as a `goods-or-service` with no
+  extension; there is no flag for `one-shot`.
+  *Fix:* Add `apps/roymctl` to step 3's import fixes. Either add a
+  `--one-shot` flag to the quote command (one test in `cli_args.rs`) or
+  change Q4's sentence to "tests, and `roymctl` through a raw `quote.set`
+  JSON". Exit criterion 2 ("no code outside `extension.rs` names
+  `scheduling/slot@1`") must also name `roymctl` and the Hub's
+  `quote_terms.ts`.
+  *Status:* Open
+
+- [ ] **P8 — minor.** *Where:* D-C3a-4 (`registry()` and its comment).
+  *Problem:* The comment says the `expect` "cannot fire in a shipped build".
+  The workspace lints `expect_used = "warn"` (`Cargo.toml:241`), and
+  `roym_core` allows `expect` only under `cfg(test)` or the `test-host`
+  feature (`lib.rs:3`). `mise run verify` runs clippy with `-D warnings`. A
+  plain `expect` in `registry()` fails that gate. Nothing in `roym_core`
+  parses embedded JSON at run time today (the Rust side of the taxonomy only
+  parses in tests), so there is no example to copy.
+  *Fix:* Say how: `#[expect(clippy::expect_used, reason = "…")]` on that one
+  function (the suppression ratchet in `xtask/src/lint_suppressions.rs`
+  covers `too_many_lines` only; check that it does not reject this), or
+  return `Result` from `registry()`. Keep the unit test
+  `every_shipped_manifest_loads`.
+  *Status:* Open
+
+- [ ] **P9 — minor.** *Where:* D-C3a-5 (rule 2), D-C3a-6 (`listing.set`),
+  7.1 `insight_manifest_loads_and_cannot_be_named`.
+  *Problem:* The test says that a commitment naming a loaded `insight`
+  manifest is refused with `extension-unknown`. But the rules say a *known*
+  extension that does not list the resource kind gives
+  `commitment-kind-not-supported`, and an `insight` manifest has no
+  `resource_kinds`, so by the rules the answer is
+  `commitment-kind-not-supported`. For a listing the plan says
+  `extension-unknown`. The two paths give two codes for one fact, and the
+  plan does not choose.
+  *Fix:* Choose one. Simplest: `Registry::get` for the deal and listing
+  paths returns only `workflow` manifests (add `Registry::workflow(ext)`), so
+  an `insight` id is unknown everywhere and gives `extension-unknown`. Say so
+  in D-C3a-5 and keep the test as written.
+  *Status:* Open
+
+- [ ] **P10 — minor.** *Where:* D-C3a-4 (`Schema::check`, "`Registry::parse`
+  checks"), D-C3a-2, D-C3a-3.
+  *Problem:* Four loose ends in the schema part.
+  (a) `Schema::check(&self, data)` has no `currency`, but its doc comment
+  says "`currency` is the deal's, for `money` fields". A `money` value is an
+  integer of at least 0, so no currency is needed. Drop the sentence, or add
+  the parameter and say what it checks.
+  (b) The loader checks list has no rule for the field limits of D-C3a-2:
+  `max_len` required for `text` and `long-text` and at most 512 and 2048;
+  `min` at most `max`; `choices` not empty, each a code `[a-z0-9-]`, no
+  duplicates; `required` only where it means something. A manifest with
+  `max_len: 100000` would load and defeat the card size rules.
+  (c) D-C3a-3 does not say how the id is made from `scheduling/slot@1`. The
+  example `ext-scheduling-slot-listing-id` drops the `scheduling/` prefix and
+  the `@1`. Is the version part of the id? If not, `slot@1` and `slot@2`
+  share labels for fields that may change meaning.
+  (d) The derived ids can collide: extension `a-b` with schema `c`, and
+  extension `a` with schema `b-c`, give the same prefix `ext-a-b-c-`.
+  *Fix:* Add the four rules to `Registry::parse` and its failing tests; write
+  the exact id function (and decide on the version) in D-C3a-3; make `parse`
+  refuse a manifest set whose derived ids are not unique.
+  *Status:* Open
+
+- [ ] **P11 — minor.** *Where:* D-C3a-6 (`agreement.accept`), section 9
+  (deviations), section "How this is shown to an end user" (C3a1, third
+  bullet), `roym-extensions` EX-2.
+  *Problem:* EX-2 says a party without the extension "may still sign". The
+  plan makes `agreement.accept` refuse with `extension-unknown` when this
+  node is the giver of an unknown-extension commitment. The deviation list
+  in section 9 does not record this, the end-user bullet says "The person may
+  still accept" without the exception, and no owner question covers it. The
+  rule is reasonable (a giver must run the extension's hooks and steps), but
+  it changes a criterion of the change doc.
+  *Fix:* Add it as owner question Q9, with the recommendation to keep the
+  rule. Add it to the roym-extensions `## Deviations` list in section 9. Add
+  the exception to the end-user bullet ("unless this person is the one who
+  gives that part of the deal; then Roym asks them to update first").
+  *Status:* Open
+
+- [ ] **P12 — minor.** *Where:* "Stays the same" (section 4), step 4.
+  *Problem:* The plan moves one seat-code test to the registry:
+  `reserve_counterparty_slots` (`agreement_ops.rs:267`) asks
+  `has_reserve_hook`. Three more places in `transaction` still match
+  `ResourceKind::ServiceInSlot` and read `details.data.slot_id`:
+  `reserve_author_holds` (`decide.rs:418` to `:431`), the release at expiry
+  (`agreement_ops.rs:512` to `:515`), and the `fulfil:` kind check on import
+  (`backup/sections.rs:373`); and `validate_and_apply_slot`
+  (`quote_ops.rs:151`) reads the slot from `catalog`. After step 4 the
+  counterparty side asks the registry and the author side does not: two
+  answers to one question in one slice.
+  *Fix:* Leave all of them as they are until C3b (the result is the same for
+  scheduling, and the diff is smaller), and drop the change at `:267`. Or
+  change all four and add a test per site. Either way list the four sites in
+  section 4 so the C3b plan finds them.
+  *Status:* Open
+
+- [ ] **P13 — minor.** *Where:* Section 4 ("Wire changes": "stored listings
+  of version 3 are not read"), `DIRECTORY_SCHEMA_VERSION` 5 to 6.
+  *Problem:* The statement is not what the code does. `ListingPayload` and
+  `BookingTerms` have no `deny_unknown_fields` (`listing.rs`), so a stored or
+  held listing with `booking.mode` still parses: the old key is ignored and
+  the listing becomes a listing with no extension. A former `slots` listing
+  silently stops naming scheduling, and it still verifies (the envelope bytes
+  are not changed). The version bump gates only the catalog backup import
+  (`roym_catalog/src/app/backup.rs:63`); I found no start-up refusal.
+  *Failure case:* a developer node with an old `slots` listing is upgraded.
+  The listing stays `active`, now plain, and its `availability.*` rows are
+  unused.
+  *Fix:* State the real behaviour (no migration, per the owner's rule, so
+  development nodes start empty). Add one test that an old listing with
+  `booking.mode` parses as "no extension", so the behaviour is known and not
+  a surprise. Do not claim "not read".
+  *Status:* Open
+
+- [ ] **P14 — minor.** *Where:* Section 4 ("Directory search"),
+  `search_ops.rs:296`, `directory.rs:172`.
+  *Problem:* `SearchQuery.extension` is a plain string on a wire-reachable
+  method. The old field was an enum, so the value was always one of three
+  words. Categories go through `category_tokens` / `normalize_category`
+  (`search_ops.rs:284`). The plan does not say what happens to a long or odd
+  string. Also there is no value that means "plain enquiry listings only".
+  *Fix:* Check the query value with `listing::valid_token(.., MAX_EXTENSION_ID_LEN)`
+  and answer `invalid_params` otherwise; add a test. State in the
+  directory doc line that "no extension" cannot be asked for.
+  *Status:* Open
+
+- [ ] **P15 — minor.** *Where:* D-C3a-9, step 5 (the e2e line), `roym-hub.spec.ts:344`.
+  *Problem:* Two points. (a) Before this change, `slots` lived inside the
+  `booking` block, so a slot listing always had lead time, cancellation
+  window and per-booking maximum. After the select moves out, a listing can
+  name `scheduling` with no `booking` block, or have a `booking` block with
+  no extension. The plan states no rule. (b) The plan says the e2e line "turns
+  the booking block on to set the mode". The test only enables the block, so
+  the block's fields are valid; it never sets or asserts the mode (the
+  assertions at `:351` to `:362` check only that numbers are integers). The
+  line needs no change when the select moves out.
+  *Fix:* (a) Choose a rule and test it: recommended, extension `scheduling`
+  requires `booking`; `booking` without an extension is allowed. Say so in
+  `ListingPayload::validate`, the Hub editor (disable "slots" while the block
+  is off, or switch it on) and the tests. (b) Remove the e2e change from step
+  5 and 7.6, or say why it is needed.
+  *Status:* Open
+
+- [ ] **P16 — minor.** *Where:* D-C3a-13, 6.2 step 3, 7.3 (parity).
+  *Problem:* (a) The plan says `transaction.thread` builds a step card's
+  plain `data` "as for a fulfilment card (`disclosures::rebuild_card_data`,
+  called at `backup.rs:750`)". `rebuild_card_data`
+  (`backup/disclosures.rs:263`) is used only on import. The live path uses
+  `plain_view` (`app.rs:496`, `sync.rs:564`, `sync.rs:682`). (b)
+  `rebuild_card_data` has its own `match` by card kind (five arms, then
+  `_ => {}`), separate from the `match` at `backup.rs:735`. The plan names
+  only the second one. A `step` arm missing there leaves an imported step
+  card with `data: None` and no error. (c) The bundle parity file
+  (`dual_build_parity/bundles.rs`) and `roym_restore_e2e.rs` list the
+  fulfilment methods and sections; a new `steps` section must appear in
+  both.
+  *Fix:* Correct the sentence in 6.2 step 3, add the `step` arm to both
+  matches, and add one test that an imported step card has its plain `data`.
+  Add `bundles.rs` and `roym_restore_e2e.rs` to the C3a2 test list.
+  *Status:* Open
+
+- [ ] **P17 — minor.** *Where:* Section 9 ("Change docs ... not living
+  docs"), Q2, task.md section 1 (Z3).
+  *Problem:* Q2 changes the manifest format and place. task.md's shared-part
+  row Z3 still says "A TOML manifest in each extension's crate, read at build
+  time", and the "Extension manifest" sketch in the roym-extensions doc shows
+  TOML and a string `version`. Section 9 lists deviations for the change docs
+  but not the Z3 row of task.md, and C3b's text says "scheduling crate".
+  *Fix:* Add "update task.md Z3 and the C3b line about the manifest" to
+  section 9 and to step 7 of 6.1. The roym-extensions deviation already
+  covers the sketch.
+  *Status:* Open
