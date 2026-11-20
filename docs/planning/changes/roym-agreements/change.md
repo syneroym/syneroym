@@ -59,6 +59,10 @@ This has four results:
 - See the state of each commitment, not only of the whole deal. When something fails, see which commitment failed and whose step is missing.
 - Show a deal to someone else with chosen fields hidden, for example the price. The signatures still verify.
 - Export a statement for a period: every commitment given and received, with its declared value.
+- Agree to an offering with complete terms as listed, in one action (see [Agree as listed](#agree-as-listed)).
+- Close its own side of a deal in one action: everything it gave, or everything it received.
+- See, before agreeing, one combined summary of what changed from a quote's first version to its latest.
+- Write a quote with most fields already filled from the offering and the author's own saved terms.
 
 ## Scope and non-goals
 
@@ -148,6 +152,12 @@ Kinds of test:
 | AG-28 | Nothing on the deal path reads the event log. A full deal runs under a test host that records every data-layer read, and no read touches the `event_log` collection (VX-45). | Service. |
 | AG-29 | `statement.export` for a period lists every commitment settled in that period, by the signed time of its settling half (`occurred_at_secs`), so both parties put it in the same period. It lists commitments given and received, with resource kind, commitment kind, counterparty, currency and declared value, and totals per currency. Commitments of agreements with and without money appear the same way (VX-46). | Service, and E2E for the Hub's export. |
 | AG-30 | The statement has an `eeps` section. Before the `obligation` service exists, it says `not-available`. With an `obligation` sibling, it lists the EEPs outstanding (issued and held) at the start and at the end of the period. If the sibling call fails, it says `unavailable` with the reason. It is never left out and never empty in place of an error. | Service, with a fake `obligation` sibling. |
+| **Low-ceremony paths** (owner decision 2026-11-20, open question 13) | | |
+| AG-44 | "Agree as listed" on an offering with complete terms sends one enquiry with `as_listed` set to the offering version's `record_id`. The quote author's node answers it with a quote built from that version's terms: at once in `instant` mode, or when the owner confirms in `confirm-first` mode. The counterparty's node signs its acceptance half with no further action only when every term of the quote equals that version's terms. Any difference shows the quote as a normal quote, and the person decides (VX-54). | Unit: the "terms equal the version" check, with one table row per term that can differ. Two-node: an instant offering reaches `agreed` from one call on the counterparty's node; a confirm-first offering reaches `agreed` after one call on each node; a quote that differs in one term waits for the person. |
+| AG-45 | An offering is `instant` only when the owner chose it and either the extension can reserve at that moment (a slot) or the owner marked the offering `not_limited`. Otherwise the owner's node treats it as `confirm-first`. Until the agreement forms, the counterparty's Hub shows the deal as waiting for the owner's node, never as agreed (VX-54, principle 13). | Unit for the mode rule. E2E: the Hub's waiting line while the owner's node is stopped. |
+| AG-46 | One Hub action signs every half the person may sign on one agreement: a claim for each commitment it gives, or a settling half for each commitment it receives. Each half still names one commitment. A commitment already settled or final is skipped. A `payment-request` is never required: a payer claims and a payee settles straight from `promised` (VX-55). | Service: one call settles every receivable commitment of a three-commitment agreement, and a repeated call returns the same records (AG-13). E2E for the Hub action. |
+| AG-47 | For a quote id with more than one version, the Hub shows each party one combined summary: for each side, the commitments added, removed or changed between the first version and the latest, and the change in that side's total. Commitments are matched by their disclosed description, as the version comparison does today. The summary is computed on the person's node from disclosures it holds. No record stores it (VX-56). | Unit for the summary function. E2E with a three-version quote. |
+| AG-48 | The Hub's quote form fills each field from, in order: the offering (currency, price, payment timing, location), the author's saved deal terms (cancellation, refund, dispute path, expiry), then built-in text. The payee is the author's own identity. When nothing names a currency, the default is `INR`. Fields with a value are folded under "More terms". The quote card still shows every term to the counterparty. | Unit for the fill order. E2E: a quote sent from a listing with only the scope typed. |
 | **Methods and language** | | |
 | AG-31 | Every `transaction` method answers `-32013` when called from another node. | Service: extend the admission test table. |
 | AG-32 | Each acceptance half carries `viewed_lang` and `viewed_via_mt` outside `terms`. The two halves of one agreement may differ only in `role`, `viewed_lang` and `viewed_via_mt` (ML-18, kept). | Unit. |
@@ -202,6 +212,30 @@ The design builds on these facts about today's code. They were first checked on 
 ```
 
 All traffic between the two parties is Conversation cards, as today. No step needs a wire-reachable method.
+
+### Agree as listed
+
+A short path through the flow above for the most common deal: an offering taken as listed. The overview gives the rules ([Agree as listed](../roym-value-exchange/change.md#agree-as-listed)). The records are the ones above. Nothing new is signed.
+
+```text
+ Counterparty node                               Quote author node (writer)
+ ─────────────────                               ──────────────────────────
+ one action: "Agree as listed"
+ enquiry.set { as_listed: "rec_…" } ─────────▶  files it
+                                                 instant: quote.set from that version's terms
+                                                 confirm-first: owner confirms, then quote.set
+             ◀──────────────── quote card + all disclosures ──
+ terms equal the agreed version?
+   yes: agreement.accept, no person needed
+   no:  show as a normal quote
+             ── receipt half card ─────────────▶  as in the flow above
+```
+
+- **`as_listed`** is an optional field of the enquiry: the `record_id` of the offering version the person agreed to. `listing_id` stays as today. An enquiry with `as_listed` needs no description.
+- **The mode** is a field of today's listing in M08C: `acceptance: instant | confirm-first`, and a flag `not_limited`. M08D moves both into the intent record. AG-45 gives the rule.
+- **Signing with no person present.** In instant mode the owner's node signs the quote, and the counterparty's node signs its acceptance half later, when the quote arrives. Neither person is at the screen then. Both sign through the `signing` interface with the person's delegation, as the writer's countersign in `transaction.sync` does today (AG-41). The person's one action is the consent: the owner's when it chose instant for that offering, the counterparty's when it tapped "Agree as listed" for that version. The C3c plan confirms that this path signs when no session is open.
+- **Language.** The counterparty's acceptance half records the language of the offering version it saw (`viewed_lang`, `viewed_via_mt`). If it saw a machine translation, the Hub warns at the one action, as it does before an acceptance today.
+- **Time limit for confirm first.** If the owner does not confirm, the enquiry is not answered, as today. The C3c plan decides whether the counterparty's Hub shows a time after which it may withdraw.
 
 ### Common rules for every record
 
@@ -451,6 +485,7 @@ FulfilmentReceiptPayload {         // signed by the giver (a claim) or the recei
 - The hidden fields of a settlement record use the same encoding as the quote. The signer of that record picks its salts and sends the disclosures with the card.
 - A settlement record does not repeat the terms. To read what was delivered, a reader needs the receipt and the disclosures. This is the price of hiding.
 - Today's rule stays: the receiver's half settles a commitment, and the giver's half alone is a claim.
+- **Closing in one action** (AG-46). The Hub offers "I gave everything" and "I received everything" on an agreement. Each action signs one half per commitment, so every record still names one commitment. Per-commitment actions stay available for a partial or corrected settlement. Closing is optional: a commitment nobody settles ends `ended-unconfirmed` (AG-7), and the Hub shows that as a normal end, not as an error.
 
 ### Who signs what
 
@@ -727,6 +762,8 @@ Every agreement is an exchange of resources for resources. It holds 1 to 16 comm
   The difference is shown whenever the totals differ. There is no threshold. It never blocks signing.
 - **The difference is computed, never stored.** It is a sum of values both parties already signed. A stored copy could disagree with them. An author who wants to explain a difference writes it in `scope`, or in the conversation.
 - **What the counterparty may give.** An offering says what its owner accepts in return. In M08C the listing still has only today's `PaymentTerms` (`crates/roym_core/src/listing.rs:77`), which names one currency. So the Hub pre-fills one currency commitment from the counterparty. M08D replaces `PaymentTerms` with the in-return terms (accepted currency methods, goods or services, EEPs), and the Hub pre-fills from them. Either way this is only a starting point. No node checks a quote against the offering: the quote author owns both, and may agree to something its offering does not list.
+- **Quote form defaults.** The author types only what the offering cannot say, usually the scope. AG-48 gives the fill order. The author's saved deal terms are local settings of the author's own node, not a record. Defaults save typing for the author only: the counterparty still sees every term on the quote card, because what binds is what was signed.
+- **What changed between versions.** Before agreeing, the Hub shows one combined summary for each side (AG-47). It shows facts only: what each side gives, what changed, and the totals. Roym does not judge whether a deal is fair.
 - **Settled in another form.** At handover, the parties may agree to a different form than the agreement says, for example part cash and part goods. The receiver settles the commitment as usual and writes the real form in `settlement_note`. Because each resource has a value in the unit of account, the declared value usually stays right, and only the form differs. If the receiver accepts less than the declared value, the note says so. The statement still shows the declared value, next to the note, and the participant corrects it by hand if needed. Roym does not record a second value per commitment.
 - An agreement with a booked slot on each side uses both reserve paths (writer and counterparty) from the section above.
 - The statement lists each commitment with its declared value. Its totals per currency and direction show what the participant gave and received over the period.
@@ -889,7 +926,7 @@ With the three generic cards of the extensions change (`step`, `widget`, `widget
 - **Extensions.** A commitment names its extension and carries its `details`. A `step` record names an `agreement` and a `commitment_id` from this document. Reserve and confirm are called at the points above.
 - **Message forwarding (FW-7).** A forwarded quote travels as its signed envelope. Its hidden fields stay hidden unless the forward carries disclosures. In M08C, the forward action carries none. Whether a private forward may show the price is the M08G disclosure ADR's question.
 - **EEPs (M08E, M08H).** The three EEP kinds, the `eep` hidden field, AG-24 to AG-26 and the statement's EEP section are reserved here. The obligations document fixes the `eep` field's shape and the settlement records. One open point for it: whether an EEP's face-value currency must equal the agreement's currency. The rule "one currency per agreement" suggests it must.
-- **Intents and wants (M08D, M08F).** `answers.kind = "want"` and `home_exchange` are filled by M08F, and their places in the record exist now. `listing_id` is renamed in place when M08D renames listings to intents. The product is not released, so that change needs no migration.
+- **Intents and wants (M08D, M08F).** `answers.kind = "want"` and `home_exchange` are filled by M08F, and their places in the record exist now. `listing_id` and `as_listed` are renamed in place when M08D renames listings to intents, and the listing's `acceptance` and `not_limited` fields move into the intent record. The product is not released, so that change needs no migration.
 - **Reputation (M08G).** Evidence embeds a `Presentation`. The progress snapshot and the receipt halves show outcomes with no disclosure.
 - **Multilingual (M08B).** `LocalText` uses M08B's tags and limits. `viewed_lang` and `viewed_via_mt` (ML-18) sit in each acceptance half.
 
@@ -957,7 +994,7 @@ Each row is a rule from another document that this document changes. The last co
 
 ## Open questions
 
-Each has a recommendation. The owner decides. Questions 1 and 3 to 12 are decided. Question 2 belongs to a C0 ADR.
+Each has a recommendation. The owner decides. Questions 1 and 3 to 13 are decided. Question 2 belongs to a C0 ADR.
 
 1. **Declared values in a mixed exchange.**
    Owner direction: there is no barter special case. An exchange is any mix of goods, services, EEPs and money. The offering says what its owner accepts in return. Each resource has a value in the unit of account. The totals need not match, and the Hub shows the difference.
@@ -1024,6 +1061,13 @@ Each has a recommendation. The owner decides. Questions 1 and 3 to 12 are decide
     Applied: keep them apart. C1 alone already carries about 25 acceptance rows (AG-1 to AG-15, AG-22, AG-23, AG-31 to AG-33, AG-35 to AG-37, AG-39, AG-41 to AG-43): every record shape, the state tables, the writer's decision and settlement. C2 adds 8 more (AG-17 to AG-21, AG-34, AG-38, AG-40) and a second hard area, the RFC 9901 encoding and its test vectors. One review should not have to check the state machine and the byte encoding at the same time.
     Check again when the C1 slice plan is written: if C1's plan turns out small (for example, if the settlement records or `deal-decline` move to a later slice), fold C2 into it.
 
+13. **How much ceremony does a common deal need?** (New, 2026-11-20, from a review of the Hub's deal screens.)
+    Today every deal needs an enquiry, a quote and an acceptance, even for an item at a fixed price. Writing a quote means filling about fifteen fields. Closing needs a separate step for each commitment.
+    Owner direction: the common case must take very little ceremony, and negotiation must still be possible. The quote author stays the only writer of terms. The other side asks for changes in the conversation, and the author answers with a new version. Letting either party write the next version was considered and is not needed.
+    Recommendation: agree as listed, with `instant` and `confirm-first` modes chosen per offering (AG-44, AG-45); closing in one action for each side, with closing optional (AG-46); a combined summary of changes across versions (AG-47); quote form defaults with `INR` as the last fallback currency (AG-48).
+    Reason: a deal that is easy to record gets recorded, and reputation counts only recorded deals. Each item reuses the records above. None adds a writer or a wire-reachable method.
+    Owner decision (2026-11-20): agreed. Agree as listed is built in M08C slice C3c. AG-46 to AG-48 are built in C6.
+
 ## What the C0 ADRs must decide
 
 This document does not write the two ADRs. They must decide:
@@ -1049,7 +1093,8 @@ This document does not write the two ADRs. They must decide:
 - [ ] C1: commitment model with plain `DealTerms`, records, states and transition tables, the writer's decision, the version check, `deal-decline`, per-commitment settlement records. Today's slot path stays inside `transaction` behind the new shapes. Replace today's shapes in place. (Slice cut: open question 12; kept apart from C2.)
 - [ ] C2: `_sd` and the hidden fields of every record, the disclosure encoder and verifier, `deal.present`; disclosures in the card wrapper and the backup bundle.
 - [ ] C3 (with the extensions change): move slots to the scheduling extension; the reserve, confirm and release calls at the points above; `commitment-failure`.
-- [ ] C6: mixed exchanges in the Hub (totals and difference), the event log, `eventlog.*`, `statement.export` with the EEP section, the Hub's statement screen.
+- [ ] C3c: agree as listed: the enquiry's `as_listed`, the listing's `acceptance` and `not_limited`, the automatic quote and acceptance, the Hub's "Agree as listed" and waiting line (AG-44, AG-45).
+- [ ] C6: mixed exchanges in the Hub (totals and difference), the event log, `eventlog.*`, `statement.export` with the EEP section, the Hub's statement screen. Closing in one action, the combined summary of changes, and the quote form defaults (AG-46 to AG-48).
 - [ ] Demo story for enquiry, quote and agreement, as the M08C `task.md` asks.
 
 ## Deviations

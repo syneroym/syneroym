@@ -20,6 +20,8 @@ Related Milestone 8 changes, which this document relies on:
 
 **Owner decision (2026-10-26): no legal gate.** Roym builds EEP transfer, bundles and listing EEPs for trade. They come in M08H, after discovery and reputation, for user value only (see [Tasks](#tasks)). Legal and tax questions about EEPs belong to the participants and operators. Roym's job is to keep faithful, complete, signed records with the details a statement needs. Features that present EEPs as investments are still left out, as a product choice (see [EEPs and investment](#eeps-and-investment)).
 
+**Owner decision (2026-11-20): the common case has the least ceremony.** Most deals take an offering as it is listed. Such a deal takes one action to agree and one action for each side to close. See principle 13, [Agree as listed](#agree-as-listed), and VX-54 to VX-56. The quote author stays the only writer of terms. The other side asks for changes in the conversation, as today. The exchange holds no deal data.
+
 ## Problem
 
 Today Roym has two fixed roles. A **provider** lists offerings. A **consumer** searches a SynOrg directory, agrees terms and pays. Payment is always in a currency, outside Roym. Roym only records what both sides say about it (`payment-acknowledgement`).
@@ -40,7 +42,7 @@ This change merges them into one design: the **Roym Value Exchange**.
 - Everything that changes hands is a **resource**: a service, goods, currency, or an EEP. A deal is resources for resources. Paying in currency and bartering are the same kind of deal.
 - A participant starts an exchange in one of **two ways**:
   - **Want-Bid:** publish a **want** (what they need). Others answer with **bids**. The participant compares bids, asks for changes, and accepts or rejects.
-  - **List-Search:** publish an **offering** (what they can give). Others find it by search and send an **enquiry**. The two sides change the terms until one accepts or rejects.
+  - **List-Search:** publish an **offering** (what they can give). Others find it by search. When the offering states complete terms, another participant can **agree to it as listed**, in one action. Otherwise they send an **enquiry**, and the two sides change the terms until one accepts or rejects.
 - Both ways end in the same **agreement**. One agreement can hold several resources on each side.
 - A participant can issue an **earnest effort promise (EEP)**: a signed commitment, with a face value, to make an earnest effort to accept it against the issuer's own offerings. EEPs can change hands, one at a time or as a bundle. Roym tracks them as first-class records.
 - Before a deal, a participant can judge the other party from **evidence** (signed facts) and **opinions** (signed views). Both parties to a deal can write an opinion of the other.
@@ -93,6 +95,7 @@ These hold for every module.
 10. **EEPs and barter are enforced by reputation, not by Roym.** An EEP is a commitment to make an earnest effort, not a debt. Roym records how each one was honoured and makes the pattern visible. It makes no claim about legal enforceability.
 11. **Credit grows only as far as people believe each issuer can deliver.** No interest, no issuance granted by the system, no pooled risk. Any participant with an offering can issue. Holders decide whose EEPs to accept.
 12. **Language-neutral structure, language-tagged text.** Participants speak many languages. Structured fields (categories, units, areas, commitment kinds) are codes with a label per language, so people can find and trade with each other across languages with no translation. Every free-text field (a description, a want, a quote's scope, an opinion) carries a language tag. A machine translation is shown on the reader's own node, labelled, and never signed. The signed original always wins. The rules are in the multilingual foundation change document.
+13. **The common case has the least ceremony.** Agreeing to an offering as listed is one action. Closing a deal is one action for each side, and it is optional. A deal that goes wrong (no delivery, a no-show) needs no more steps to record than one that goes well. Signatures and records stay out of sight, and the Hub shows them on request. When the other party's node has not answered yet, the Hub says the deal is waiting. It never shows a deal as agreed or done before the records exist. A deal that is easy to record gets recorded, and reputation counts only recorded deals (VX-37).
 
 ## Scope and non-goals
 
@@ -136,8 +139,10 @@ These are overview criteria. Each module change document refines them into tests
 | VX-3 | A want is published to an exchange and found by search. Another participant answers it with a bid. The wanter sees all bids side by side, can ask a bidder for a revised bid, and can accept or reject each one. | |
 | VX-4 | A public want shows only an approximate area. The exact address is shared only inside a conversation, as today. | |
 | **List-Search** | | |
-| VX-5 | An offering found by search gets an enquiry. The owner answers with a quote. Either side can ask for changes, and each change is a new version, until one side accepts or rejects. | |
+| VX-5 | An offering found by search gets an enquiry, or is agreed as listed (VX-54). The owner answers an enquiry with a quote. The other side can ask for changes, and the owner answers each with a new version, until one side accepts or rejects. | |
+| VX-54 | A participant agrees to an offering with complete terms in one action. The owner chooses for each offering: **instant** (the owner's node forms the agreement with no action by the owner) or **confirm first** (the owner confirms in one action). Instant is possible only when the owner's node can check availability at that moment, or the owner marked the offering as not limited. The result is the same agreement record as any other deal. | |
 | VX-6 | Want-Bid and List-Search end in the same agreement record and the same commitment states. | |
+| VX-56 | Before agreeing, each party sees what it gives, what it receives and the difference. When a quote has more than one version, each party also sees one combined summary of what changed from the first version to the latest, for each side. | |
 | **Agreements** | | |
 | VX-7 | One agreement can hold several commitments, for example a service, ₹300 in currency and ₹200 as a new EEP. Each commitment carries its kind, its two parties and its declared value in the agreement's one currency. | |
 | VX-8 | Each commitment moves only through the states of its kind, and every kind has a failure end (see the table under Design). An agreement closes when every commitment has reached a final state. | |
@@ -145,6 +150,7 @@ These are overview criteria. Each module change document refines them into tests
 | VX-10 | A booking reserves its slot under the slot owner's single-writer fence, through the scheduling extension's reserve hook, also when the slot owner is not the quote author. If the reserve fails, the agreement is not formed. | |
 | VX-11 | A party can show a quote or an agreement with chosen fields hidden (for example the price), and the signatures still verify. Neither record carries the hidden terms in plain form. | |
 | VX-12 | Reputation shows which party failed which commitment, not only that a deal failed. | |
+| VX-55 | Each party can settle, in one action, every commitment of an agreement that it gives (a claim) or receives (a confirmation). Closing is optional. A commitment that nobody confirms ends `ended-unconfirmed` at the end of its track, and the agreement still counts as a recorded deal. Evidence shows that commitment as unconfirmed, not as failed. | |
 | **EEPs between two parties** | | |
 | VX-13 | A participant with no published offering cannot issue an EEP. | |
 | VX-14 | An EEP's face value is in a currency that appears in the issuer's own offerings, in integer minor units. | |
@@ -285,6 +291,24 @@ An exchange starts when one participant publishes an intent and another responds
 A wanter can accept more than one bid for the same want, for example two farmers who each deliver half. Each accepted bid is its own agreement.
 
 **Why one flow.** Two separate protocols would double the states, the records and the tests, and reputation could not compare deals made in different ways. Want-Bid adds only a new kind of published intent (the want) and a new name for a quote that answers it (the bid). Everything after the first quote is shared.
+
+### Agree as listed
+
+Most deals take an offering as it is listed: this item, at this price. Such a deal should take one action, not an enquiry, a quote and an acceptance. Agree as listed is a short path through the same negotiation flow. It adds no new record kind and no second writer.
+
+1. The participant taps "Agree as listed" on an offering. Their node sends an enquiry that names the offering version and says "as listed".
+2. The owner's node writes a quote from that offering version's terms. In **instant** mode it does this at once, with no action by the owner. In **confirm first** mode it does this when the owner confirms, in one action.
+3. The participant's node accepts the quote with no further action, but only when every term equals the offering version the participant agreed to. Any difference shows the quote as a normal quote, and the participant decides.
+4. The owner's node forms the agreement as for any quote: it reserves, countersigns and sends the first snapshot.
+
+Rules:
+
+- **The owner chooses the mode for each offering.** Instant is possible only when the owner's node can check availability at that moment (a slot, through the scheduling extension), or when the owner marked the offering as not limited. Otherwise the offering is confirm first. Roym still ships no default acceptance policy (principle 1): instant is the owner's own choice, offering by offering.
+- **Complete terms** means the offering states everything a quote needs: a fixed price in one currency, what the owner accepts in return, and the defaults for cancellation, refund, dispute path and expiry.
+- **Waiting is shown as waiting.** The owner's node may be offline. The enquiry then waits in a mailbox, and the participant's Hub shows "sent, waiting for the owner's node", never "agreed". Instant means instant only while the owner's node is online.
+- **The quote author stays the only writer.** The owner's node writes the quote and the agreement state, as for every other deal.
+
+The agreements change document gives the exact fields and the signing path.
 
 ### Agreements made of commitments
 
@@ -515,6 +539,7 @@ The reader's node gathers evidence from three sources and opinions from the part
 - A contact chooses whether to answer and how much to show. Questions are rate-limited.
 
 **3. Evidence published to an exchange.**
+- **Only recorded deals count.** A deal made in chat with no agreement leaves no evidence. An agreement that nobody closed still counts, and its open commitments show as unconfirmed (VX-55). This is why agreeing and closing must each cost one action (principle 13).
 - **No agreement, no publish.** The publisher must be a party to an agreement that names the subject. The subject must be listed on that exchange. The publisher need not be a member. The exchange's publishing policy may require membership for evidence too.
 - **Labelled by the publisher's standing.** Each record shows whether its publisher holds a credential from an authority the reader trusts (principle 8).
 - The evidence record holds: the subject's signed agreement, with only the fields the publisher chooses to show and with amounts hidden unless the subject granted them; the outcome of each commitment; an optional opinion; and pointers to attachments.
@@ -687,8 +712,8 @@ Milestone 8 is split into sub-milestones, in dependency order. Each has a folder
 
 - [x] **M08A, open foundation.** [Roym open foundation](../roym-open-foundation/change.md): the participant rename, the federated query library, the event feed, remote clients, typed methods.
 - [x] **M08B, language and structure.** [Roym multilingual foundation](../roym-multilingual/change.md): string catalog, local formats, taxonomy with attributes, language tags, search keys and FTS5, translation hook points.
-- [ ] **M08C, deal core and extensions.** Resource kinds. Commitments with kinds, states (each with a failure end), details and declared values, in one currency. Quote author as the single writer. Reserve and release hooks. Selective disclosure on the quote and the receipt. Barter. The event log and the statement export. [Roym extensions](../roym-extensions/change.md), with scheduling and one-shot. [Message forwarding](../roym-message-forwarding/change.md).
-- [ ] **M08D, intents and shop.** Offerings and wants as one intent record in `catalog`, with in-return terms. [Roym shop](../roym-shop/change.md).
+- [ ] **M08C, deal core and extensions.** Resource kinds. Commitments with kinds, states (each with a failure end), details and declared values, in one currency. Quote author as the single writer. Reserve and release hooks. Selective disclosure on the quote and the receipt. Barter. Agree as listed (instant or confirm first) and closing in one action. The event log and the statement export. [Roym extensions](../roym-extensions/change.md), with scheduling and one-shot. [Message forwarding](../roym-message-forwarding/change.md).
+- [ ] **M08D, intents and shop.** Offerings and wants as one intent record in `catalog`, with in-return terms. The instant or confirm-first mode moves into the intent record. [Roym shop](../roym-shop/change.md).
 - [ ] **M08E, EEPs between two parties.** First: revocations gain `effective_from` and a reason, with the countersign rule after a key compromise, and the mailbox signs its `stored` receipt. Then the `obligation` service, deployed `public`, with its wire-reachable methods and mailbox paths: issue, redemption with the claim rule, decline, set-off, split signed by the issuer, expiry, holder acknowledgements, the restore rule, the per-issuer limit, the stated outstanding total. Work items: a wallet screen in the Hub and card types for EEP records.
 - [ ] **M08F, discovery and matching.** Wants and bids (Want-Bid) next to offerings and enquiries (List-Search), with one negotiation flow. [Roym intent matching](../roym-intent-matching/change.md). Split the directory into `membership` and `exchange`. Friend exchanges with one-hop forwarding and the v1 merge rule.
 - [ ] **M08G, reputation, evidence and opinions.** An ADR for the disclosure rule first. Evidence records, responses and withdrawals on the exchange, with credential labels. Opinions from both parties: sealed writing, reveal to each other, resolution window, then publish. Feedback that points at an extension step. Contact queries over Conversation, one level. The three-source view.

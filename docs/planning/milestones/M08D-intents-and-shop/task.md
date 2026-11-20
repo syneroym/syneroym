@@ -16,18 +16,19 @@ Both parts reshape `listing`, so they are built together, once.
 
 - [roym-value-exchange](../../changes/roym-value-exchange/change.md): intents, offerings and wants (`VX-1`, `VX-4`).
 - [roym-shop](../../changes/roym-shop/change.md) (`SH-*`).
+- [roym-agreements](../../changes/roym-agreements/change.md): the agree-as-listed mode in the intent record and the quote form's fill from in-return terms (`AG-44`, `AG-45`, `AG-48`).
 - [roym-intent-matching](../../changes/roym-intent-matching/change.md): the intent fields only (`IM-1`, `IM-2`).
 
 ## Slices (first cut)
 
 | Slice | Content | Needs |
 | --- | --- | --- |
-| D0 | Intents module change doc (exact intent record, in-return terms). | — |
-| D1 | Intent record (offer or want) in `catalog`, with in-return terms. `listing` becomes the offer kind. | D0, M08C |
+| D0 | Intents module change doc (exact intent record, in-return terms). It moves the listing's `acceptance` (`instant` or `confirm-first`) and `not_limited` fields from M08C C3c into the intent record, and says which in-return terms count as complete terms for "Agree as listed" (agreements AG-44, AG-45). | — |
+| D1 | Intent record (offer or want) in `catalog`, with in-return terms. `listing` becomes the offer kind. The Hub's quote form fills from the in-return terms (agreements AG-48). | D0, M08C |
 | D2 | `blob-store` for Roym services. Images, thumbnails, serving by hash. | — |
 | D3 | Attribute values and variants on offerings. `storefront` record, collections, featured, links, record link grammar. | D1, M08B taxonomy |
 | D4 | Browse query: on the owner's node (wire-reachable, read-only) and at the directory, with attribute and price columns and facets. Thumbnails stored at the directory. | D3, M08B FTS5 |
-| D5 | Hub: shop page, offering page, filter panel. `roymctl` browse. Close-out. | D4 |
+| D5 | Hub: shop page, offering page, filter panel, and the "Agree as listed" and "Ask" actions on each offering (SH-16). `roymctl` browse. Close-out. | D4 |
 
 ## Open before planning
 

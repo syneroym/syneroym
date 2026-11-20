@@ -80,7 +80,7 @@ The chat has the same limit. The Hub has seven fixed card templates (`crates/roy
 | EX-16 | The counterparty of a deal can call an extension service's declared methods only with a grant that names that agreement or conversation, that counterparty, and an expiry. Every other call is refused. The grant ends when the agreement closes, unless the owner extends it. | |
 | **First extensions** | | |
 | EX-17 | Scheduling: slots, seat capacity, slot claim and the booking track run as the scheduling extension. `catalog` and `transaction` hold no slot code. Today's booking tests pass through the extension. | |
-| EX-18 | One-shot: an agreement for goods or a service with no slot settles with a payment acknowledgement and a fulfilment receipt, through the same deal core. | |
+| EX-18 | One-shot: an agreement for goods or a service with no slot settles with a payment acknowledgement and a fulfilment receipt, through the same deal core. A one-shot offering can be agreed as listed (agreements AG-44). It has nothing to reserve, so it is `instant` only when the owner marked it `not_limited` (AG-45). | |
 | **Insight extensions** | | |
 | EX-19 | The manifest has an `insight` kind. Its fields say what it may read. It may not sign, send, or reach the network. Only the manifest field is built in M8. | |
 
