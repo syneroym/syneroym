@@ -888,3 +888,57 @@ counts"), and one temporary test to prove R1, which I then removed with
 
 Not findings, for the close-out: plan exit criterion "Owner reviewed the
 Hindi messages" is still open (six messages, deviation recorded).
+
+## Close-out check of code review round 1 — Claude Opus 5.5 (Claude Code), 2026-11-20
+
+Checked the fixes of R1 to R6 on `b81a873f`, in the main checkout. `git
+pull` said "Already up to date". The branch was rebased since round 1:
+the round 1 commit is now `739a784c`, and the wasmtime bump is
+`b099e9bb`. I read `git diff 739a784c..HEAD` (the fix commits `3ebf4934`
+to `b81a873f`) against each finding and its proposed fix. I did not run
+the full suite or `mise run verify`.
+
+CI: `gh pr checks 374` on `b81a873f` was still running when I checked
+("Lints, licenses & checks" and CLA passed; the six test shards and
+Playwright E2E pending). The last finished run, on `3c290874`, passed.
+The parity scenarios 243 to 245 run only in those test shards, so their
+proof is that CI run, not this check.
+
+Targeted run: `cargo nextest run -p syneroym-roym-core extension::
+listing::`: 78 passed. These include the new tests of R1, R2 and R4.
+
+- **R1 — verified fixed.** `check_message_ids` maps each id to its place
+  and refuses only a second, different place. The place has no schema
+  version and no extension version, so `demo/form@1` and `@2` with field
+  `note` share one id, as D-C3a-3 says. I checked the near cases by hand:
+  a field `x-y` and a choice `y` of field `x` give one id from two places,
+  and a schema named `step` against a step give one id from two places, so
+  both are still refused. `two_manifests_that_make_one_message_id_are_refused`
+  (the `a-b`/`c` against `a`/`b-c` case) still passes. The two new tests
+  are the same case as my round 1 proof.
+- **R2 — verified fixed.** `ListingError::code()` gives the three codes,
+  `write_version` sends them in `data.code`, and every other listing
+  refusal stays a message only. Scenario 243 checks `data.code`. The
+  developer guide table now has `payment-required`, and its
+  `extension-shape` row names `listing.set`.
+- **R3 — verified fixed.** (a) Scenario 244 covers a one-shot `quote.set`
+  on both builds, and the `extension-unknown` and `details-invalid`
+  refusals. (b) Scenario 245 publishes three listings and checks that
+  `directory.search` with `extension` returns only the match on both
+  builds. The unit test name now claims only what it checks.
+- **R4 — verified; (a) partly rejected, rejection accepted.** My round 1
+  premise was wrong. `check_steps` checks `MAX_STEP_TYPE_LEN` before the
+  name rule (`load.rs:113` to `:116`), so the `demo/` + 60 letters case was
+  already refused by the length rule. The real gap, that no test could
+  tell the two rules apart, is closed: each case now asserts its rule's
+  text, and the 32 + 1 + 32 case reaches the length rule only. (b) Both
+  tests assert the rule text. (c) `known_workflow_in` is tested with an
+  insight source.
+- **R5 — verified fixed.** Both doc comments give the reason for the new
+  version.
+- **R6 — verified fixed.** The backlog row says `extension`. The three
+  Hub tests that ML-28 now cites exist under those names.
+
+No new findings. **0 open.** Still open outside the findings: the owner's
+review of the six Hindi messages (plan exit criterion), and CI on the head
+after this commit.
