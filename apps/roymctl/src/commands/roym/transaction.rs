@@ -8,7 +8,11 @@ use std::{
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
 use serde_json::{Value, json};
-use syneroym_roym_core::{lang::LangTag, money, transaction};
+use syneroym_roym_core::{
+    extension::{SCHEDULING_EXTENSION, SCHEDULING_SLOT_SCHEMA},
+    lang::LangTag,
+    money, transaction,
+};
 
 use super::{
     directory::{RpcCtx, call_and_print},
@@ -355,11 +359,10 @@ fn build_quote_commitments(
     if let Some(sl) = slot {
         c1["resource_kind"] = json!("service-in-slot");
         c1["kind"] = json!("fulfilment");
-        c1["extension"] =
-            json!({ "id": syneroym_roym_core::deal::SCHEDULING_EXTENSION, "version": 1 });
+        c1["extension"] = json!({ "id": SCHEDULING_EXTENSION, "version": 1 });
         c1["details"] = json!({
-            "extension": syneroym_roym_core::deal::SCHEDULING_EXTENSION,
-            "schema": syneroym_roym_core::deal::SCHEDULING_SLOT_SCHEMA,
+            "extension": SCHEDULING_EXTENSION,
+            "schema": SCHEDULING_SLOT_SCHEMA,
             "data": { "listing_id": listing_id.unwrap_or_default(), "slot_id": sl },
         });
     } else {

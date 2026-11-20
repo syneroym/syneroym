@@ -13,6 +13,7 @@ use syneroym_roym_core::{
         category_tokens, normalize_category,
     },
     envelope::Response,
+    extension,
     listing::{self, ListingStatus},
     membership::{self, CheckInput, ListingRef, MembershipEvidence, MembershipVerdict},
     method::{NoParams, Reply, directory::SearchOutput},
@@ -55,7 +56,7 @@ pub(in crate::app) struct SearchIndexRow {
     #[serde(skip_serializing_if = "Option::is_none")]
     open_to: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    booking_mode: Option<String>,
+    extension: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     min_lat_e6: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -120,7 +121,7 @@ pub(in crate::app) fn build_index_rows(
     let categories = category_tokens(&payload.categories);
     let text = index_text(payload);
     let open_to = payload.relationship.as_ref().map(|r| serde_str(&r.open_to));
-    let booking_mode = payload.booking.as_ref().map(|b| serde_str(&b.mode));
+    let extension = payload.extension.as_ref().map(|e| e.id.clone());
 
     let areas: Vec<Area> =
         payload.location.as_ref().map(|l| l.service_area.clone()).unwrap_or_default();
@@ -137,7 +138,7 @@ pub(in crate::app) fn build_index_rows(
             text,
             area_label: None,
             open_to,
-            booking_mode,
+            extension,
             min_lat_e6: None,
             max_lat_e6: None,
             min_lon_e6: None,
@@ -168,7 +169,7 @@ pub(in crate::app) fn build_index_rows(
                 text: text.clone(),
                 area_label,
                 open_to: open_to.clone(),
-                booking_mode: booking_mode.clone(),
+                extension: extension.clone(),
                 min_lat_e6: bbox.map(|b| b.min_lat_e6),
                 max_lat_e6: bbox.map(|b| b.max_lat_e6),
                 min_lon_e6: bbox.map(|b| b.min_lon_e6),
@@ -293,8 +294,11 @@ fn build_search_filter(query: &SearchQuery, now: u64) -> Result<Value, Response>
     if let Some(open_to) = &query.open_to {
         and_clauses.push(json!({ "open_to": serde_str(open_to) }));
     }
-    if let Some(booking_mode) = &query.booking_mode {
-        and_clauses.push(json!({ "booking_mode": serde_str(booking_mode) }));
+    if let Some(extension) = &query.extension {
+        if !extension::is_extension_id(extension) {
+            return Err(Response::invalid_params("extension is not an extension id"));
+        }
+        and_clauses.push(json!({ "extension": extension }));
     }
     let geometric_query = matches!(query.area, Some(Area::Bbox { .. }) | Some(Area::Circle { .. }));
     if let Some(q_area) = &query.area

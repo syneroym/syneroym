@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderQuote } from "../cards/templates/quote";
+import { RpcError } from "../rpc";
 import { stubRpc } from "../testing/stub-rpc";
 import { fakeEngine, readerReads, unavailableEngine } from "../testing/translation";
 import { setTargetsForTest } from "../translation/translation";
@@ -63,6 +64,35 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   setTargetsForTest([]);
+});
+
+describe("Accept refused for an extension this device does not have", () => {
+  it("says to update Roym, and lets the person try again", async () => {
+    stubRpc({
+      "agreement.accept": () =>
+        new RpcError(-32602, "extension not known to this node: future", "Other", {
+          code: "extension-unknown",
+        }),
+    });
+    const wrap = drawn(quoteCard());
+    const button = wrap.querySelector<HTMLButtonElement>(".accept-quote-button")!;
+    button.click();
+    await vi.waitFor(() =>
+      expect(wrap.querySelector(".accept-quote-error")?.textContent).toBe(
+        "This deal needs a part of Roym that this device does not have. Update Roym, then accept.",
+      ),
+    );
+    expect(button.disabled).toBe(false);
+  });
+
+  it("shows any other refusal as a failure with its detail", async () => {
+    stubRpc({ "agreement.accept": () => new RpcError(-32602, "other-code", "Other", { code: "other" }) });
+    const wrap = drawn(quoteCard());
+    wrap.querySelector<HTMLButtonElement>(".accept-quote-button")!.click();
+    await vi.waitFor(() =>
+      expect(wrap.querySelector(".accept-quote-error")?.textContent).toContain("Could not accept"),
+    );
+  });
 });
 
 describe("Accept says what the person read", () => {

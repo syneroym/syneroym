@@ -240,6 +240,92 @@ describe("Card templates", () => {
       expect(el.querySelector(".quote-original-binds")).toBeNull();
       expect(el.querySelector(".record-text-note")?.textContent).toBe("Original text, in Hindi.");
     });
+
+    describe("with commitment details", () => {
+      const commitment = (extension: object, details: object): Record<string, unknown> => ({
+        commitment_id: "c1",
+        giver: "quote-author",
+        kind: "fulfilment",
+        resource_kind: "goods-or-service",
+        description: { lang: "hi", text: "सेवा" },
+        declared_value_minor: 5000,
+        extension,
+        details,
+      });
+      const quoteWith = (c: Record<string, unknown>) =>
+        renderQuote({ terms: { lang: "hi", scope: "काम", currency: "INR", commitments: [c] } });
+
+      it("shows the two reference codes of a slot as labelled lines", () => {
+        const el = quoteWith(
+          commitment(
+            { id: "scheduling", version: 1 },
+            {
+              extension: "scheduling",
+              schema: "scheduling/slot@1",
+              data: { listing_id: "lst_abc", slot_id: "slot_def" },
+            },
+          ),
+        );
+        const lines = [...el.querySelectorAll(".quote-details-c1 .field-view-line")].map(
+          (p) => p.textContent,
+        );
+        expect(lines).toEqual(["Listing code: lst_abc", "Slot code: slot_def"]);
+        expect(el.querySelector(".quote-details-heading")?.textContent).toBe("Extra terms");
+        expect(el.querySelector(".field-view-not-checked")).toBeNull();
+        // A code has no language; the heading is the Hub's own text.
+        expect(el.querySelector(".field-view-code span[lang]")).toBeNull();
+      });
+
+      it("draws the free terms in the language of the quote, on every version", () => {
+        const c = commitment(
+          { id: "one-shot", version: 1 },
+          {
+            extension: "one-shot",
+            schema: "one-shot/order@1",
+            data: {},
+            extra: [{ label: "लाओ", value: "पुरानी रिपोर्ट" }],
+          },
+        );
+        const el = renderQuote({
+          terms: { lang: "hi", scope: "काम", currency: "INR", commitments: [c] },
+          translations: [
+            {
+              lang: "en",
+              scope: "Work",
+              cancellation_terms: "c",
+              refund_terms: "r",
+              dispute_path: "d",
+            },
+          ],
+        });
+        const langs = () =>
+          [...el.querySelectorAll(".field-view-extra span")].map((s) => s.getAttribute("lang"));
+        expect(langs()).toEqual(["hi", "hi"]);
+        (el.querySelector(".record-text-switch") as HTMLButtonElement).click();
+        expect(langs()).toEqual(["hi", "hi"]);
+      });
+
+      it("says an unknown extension was not checked and draws its data as it came", () => {
+        const el = quoteWith(
+          commitment(
+            { id: "future", version: 2 },
+            { extension: "future", schema: "future/thing@1", data: { tracking: "T-77" } },
+          ),
+        );
+        const lines = [...el.querySelectorAll(".quote-details-c1 p")].map((p) => p.textContent);
+        expect(lines).toEqual(["Extra terms", "tracking: T-77", "Not checked on this device"]);
+      });
+
+      it("draws nothing for an extension with no fields and no free terms", () => {
+        const el = quoteWith(
+          commitment(
+            { id: "one-shot", version: 1 },
+            { extension: "one-shot", schema: "one-shot/order@1", data: {} },
+          ),
+        );
+        expect(el.querySelector(".quote-details")).toBeNull();
+      });
+    });
   });
 
   describe("renderAgreementReceipt", () => {

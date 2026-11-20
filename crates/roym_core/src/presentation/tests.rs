@@ -50,6 +50,7 @@ fn sign_test_record(
     env.to_json().expect("to json")
 }
 
+mod extension;
 mod records;
 mod settlement;
 mod validation;

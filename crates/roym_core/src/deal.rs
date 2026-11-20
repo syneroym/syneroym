@@ -5,6 +5,7 @@ use std::collections::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    extension::{self, ExtensionCheck, Registry},
     lang::{LangTag, TranslationError, check_text, check_translation_langs},
     listing, money,
     transaction::{DealRole, QuoteLocation, TimeWindow},
@@ -22,8 +23,6 @@ pub const MAX_DECLARED_VALUE_MINOR: i64 = 1_000_000_000_000_000; // 10^15
 pub const MAX_COMMITMENT_DESCRIPTION_LEN: usize = 2048;
 pub const MAX_AFTER: usize = 15;
 pub const MAX_EXTENSION_ID_LEN: usize = 32;
-pub const SCHEDULING_EXTENSION: &str = "scheduling";
-pub const SCHEDULING_SLOT_SCHEMA: &str = "scheduling/slot@1";
 pub const MAX_PAYEE_LEN: usize = 256;
 pub const MAX_PAYMENT_METHODS: usize = 16;
 pub const MAX_PAYMENT_METHOD_LEN: usize = 64;
@@ -220,6 +219,10 @@ pub enum DealError {
     DetailsMismatch,
     #[error("slot details invalid: {0}")]
     SlotDetails(String),
+    #[error("extension not known to this node: {0}")]
+    ExtensionUnknown(String),
+    #[error("details do not fit their schema: {0}")]
+    DetailsInvalid(String),
     #[error("home exchange not supported")]
     HomeExchangeNotSupported,
     #[error(transparent)]
@@ -256,6 +259,8 @@ impl DealError {
             Self::ExtensionShape(_) => "extension-shape",
             Self::DetailsMismatch => "details-mismatch",
             Self::SlotDetails(_) => "slot-details",
+            Self::ExtensionUnknown(_) => "extension-unknown",
+            Self::DetailsInvalid(_) => "details-invalid",
             Self::HomeExchangeNotSupported => "home-exchange-not-supported",
             Self::Text(_) => "text",
             Self::TextLangMismatch { .. } => "text-lang-mismatch",
@@ -304,6 +309,15 @@ pub fn check_record_text<'a>(
 }
 
 impl DealTerms {
+    /// How the registry judges each commitment, in order. For the callers
+    /// that must know which commitments are `NotChecked`.
+    pub fn check_extensions(&self, registry: &Registry) -> Result<Vec<ExtensionCheck>, DealError> {
+        self.commitments
+            .iter()
+            .map(|c| extension::check_commitment_extension(registry, c))
+            .collect()
+    }
+
     pub fn validate(&self) -> Result<(), DealError> {
         if self.commitments.is_empty() || self.commitments.len() > MAX_COMMITMENTS {
             return Err(DealError::CommitmentCount(self.commitments.len()));
@@ -330,8 +344,7 @@ impl DealTerms {
 }
 
 fn validate_commitment(c: &Commitment) -> Result<(), DealError> {
-    validate_commitment_kind(c.resource_kind, c.kind, c.extension.as_ref())?;
-    validate_extension_and_details(c)?;
+    extension::check_commitment_extension(extension::registry(), c)?;
     validate_commitment_values(c)?;
     if c.eep.is_some() {
         return Err(DealError::EepField);
@@ -343,131 +356,6 @@ fn validate_commitment(c: &Commitment) -> Result<(), DealError> {
         loc.validate().map_err(|e| DealError::Location(e.to_string()))?;
     }
     validate_local_text(&c.description, "description", MAX_COMMITMENT_DESCRIPTION_LEN)?;
-    Ok(())
-}
-
-pub fn validate_commitment_kind(
-    resource_kind: ResourceKind,
-    kind: CommitmentKind,
-    extension: Option<&ExtensionRef>,
-) -> Result<(), DealError> {
-    match (resource_kind, kind) {
-        (ResourceKind::ServiceInSlot, CommitmentKind::Fulfilment) => {
-            let ext = extension.ok_or_else(|| {
-                DealError::CommitmentKindNotSupported(
-                    "service-in-slot requires scheduling extension v1".to_string(),
-                )
-            })?;
-            if ext.id != SCHEDULING_EXTENSION || ext.version != 1 {
-                return Err(DealError::CommitmentKindNotSupported(format!(
-                    "extension '{}' version {} not supported",
-                    ext.id, ext.version
-                )));
-            }
-        }
-        (ResourceKind::GoodsOrService, CommitmentKind::Fulfilment) => {
-            if let Some(ext) = extension {
-                return Err(DealError::CommitmentKindNotSupported(format!(
-                    "goods-or-service does not support extension '{}'",
-                    ext.id
-                )));
-            }
-        }
-        (ResourceKind::Currency, CommitmentKind::Currency) => {
-            if let Some(ext) = extension {
-                return Err(DealError::CommitmentKindNotSupported(format!(
-                    "currency does not support extension '{}'",
-                    ext.id
-                )));
-            }
-        }
-        (ResourceKind::ServiceInSlot | ResourceKind::GoodsOrService, CommitmentKind::Currency)
-        | (ResourceKind::Currency, CommitmentKind::Fulfilment) => {
-            return Err(DealError::KindMismatch(resource_kind, kind));
-        }
-    }
-    Ok(())
-}
-
-fn validate_extension_and_details(c: &Commitment) -> Result<(), DealError> {
-    if c.extension.is_some() != c.details.is_some() {
-        return Err(DealError::DetailsMismatch);
-    }
-    let (Some(ext), Some(details)) = (&c.extension, &c.details) else {
-        return Ok(());
-    };
-    if details.extension != ext.id {
-        return Err(DealError::DetailsMismatch);
-    }
-    if ext.id == SCHEDULING_EXTENSION {
-        validate_scheduling_details(c, details)?;
-    }
-    Ok(())
-}
-
-fn validate_scheduling_details(c: &Commitment, details: &Details) -> Result<(), DealError> {
-    let window = c.window.as_ref().ok_or_else(|| {
-        DealError::SlotDetails("scheduling commitment requires window".to_string())
-    })?;
-    validate_scheduling_slot_details(window, details)
-}
-
-pub(crate) fn validate_scheduling_slot_details(
-    window: &TimeWindow,
-    details: &Details,
-) -> Result<(), DealError> {
-    if details.schema != SCHEDULING_SLOT_SCHEMA {
-        return Err(DealError::SlotDetails(format!(
-            "expected schema {}, got {}",
-            SCHEDULING_SLOT_SCHEMA, details.schema
-        )));
-    }
-    let obj = details.data.as_object().ok_or_else(|| {
-        DealError::SlotDetails("scheduling details data must be an object".to_string())
-    })?;
-    if obj.len() != 2 {
-        return Err(DealError::SlotDetails(
-            "scheduling data must have exactly listing_id and slot_id".to_string(),
-        ));
-    }
-    let listing_id = obj
-        .get("listing_id")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| DealError::SlotDetails("listing_id must be a string".to_string()))?;
-    let slot_id = obj
-        .get("slot_id")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| DealError::SlotDetails("slot_id must be a string".to_string()))?;
-
-    if window.latest_secs <= window.earliest_secs {
-        return Err(DealError::SlotDetails(
-            "window latest must be greater than earliest".to_string(),
-        ));
-    }
-    let expected_slot_id =
-        listing::derive_slot_id(listing_id, window.earliest_secs, window.latest_secs)
-            .map_err(|e| DealError::SlotDetails(e.to_string()))?;
-    if slot_id != expected_slot_id {
-        return Err(DealError::SlotDetails(format!(
-            "slot_id {} does not match derived {}",
-            slot_id, expected_slot_id
-        )));
-    }
-    if details.extra.len() > MAX_DETAILS_EXTRA {
-        return Err(DealError::ExtensionShape(format!(
-            "details.extra length {} exceeds {}",
-            details.extra.len(),
-            MAX_DETAILS_EXTRA
-        )));
-    }
-    for extra in &details.extra {
-        if extra.label.len() > MAX_DETAILS_EXTRA_LABEL_LEN {
-            return Err(DealError::ExtensionShape("extra label too long".to_string()));
-        }
-        if extra.value.len() > MAX_DETAILS_EXTRA_VALUE_LEN {
-            return Err(DealError::ExtensionShape("extra value too long".to_string()));
-        }
-    }
     Ok(())
 }
 

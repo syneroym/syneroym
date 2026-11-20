@@ -16,6 +16,15 @@ export class RpcError extends Error {
   }
 }
 
+/// The code that the service put in `data.code` of a refusal, if it did.
+export function refusalCode(err: RpcError): string | undefined {
+  const data = err.data;
+  if (typeof data === "object" && data !== null && "code" in data && typeof data.code === "string") {
+    return data.code;
+  }
+  return undefined;
+}
+
 /// A reply the node sent, as far as `call` reads it.
 interface Reply {
   result?: unknown;

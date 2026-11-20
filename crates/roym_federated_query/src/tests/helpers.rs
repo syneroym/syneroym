@@ -121,6 +121,7 @@ pub fn sign_max_payload_listing_with_issuer(
         categories: vec!["services".to_string()],
         conversation_address: format!("{issuer}#conv"),
         status: ListingStatus::Active,
+        extension: None,
         booking: None,
         payment: Some(PaymentTerms {
             currency: "EUR".to_string(),
@@ -197,6 +198,7 @@ fn sign_test_listing_with_issuer_and_translations(
         categories: vec!["services".to_string()],
         conversation_address: format!("{issuer}#conv"),
         status: ListingStatus::Active,
+        extension: None,
         booking: None,
         payment: Some(PaymentTerms {
             currency: "EUR".to_string(),

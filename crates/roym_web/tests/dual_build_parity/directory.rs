@@ -714,7 +714,7 @@ async fn scenario_117_directory_export_import_round_trip_reindexes_and_carries_t
     assert_eq!(stripped(&xw), stripped(&xn));
     for section in DIRECTORY_BUNDLE_SECTIONS {
         assert_eq!(
-            xw["result"]["manifest"]["sections"][section]["schema_version"], 5,
+            xw["result"]["manifest"]["sections"][section]["schema_version"], 6,
             "section '{section}' must carry the bumped schema version: {xw}"
         );
     }

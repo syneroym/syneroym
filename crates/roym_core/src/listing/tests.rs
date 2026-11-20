@@ -88,6 +88,7 @@ fn core() -> ListingPayload {
         categories: vec!["gardening".to_string(), "outdoor".to_string()],
         conversation_address: "did:key:zListingOwnerConv".to_string(),
         status: ListingStatus::Active,
+        extension: None,
         booking: None,
         payment: Some(PaymentTerms {
             currency: "EUR".to_string(),
@@ -109,8 +110,8 @@ fn core() -> ListingPayload {
 #[test]
 fn a_full_payload_validates_and_signs() {
     let mut p = core();
+    p.extension = Some(ExtensionRef { id: "scheduling".to_string(), version: 1 });
     p.booking = Some(BookingTerms {
-        mode: BookingMode::Slots,
         lead_time_secs: 3600,
         cancellation_window_secs: 86_400,
         max_per_booking: 2,
@@ -241,17 +242,82 @@ fn currency_unknown() {
 }
 
 #[test]
-fn payment_required_unless_enquiry() {
+fn payment_required_when_the_listing_names_an_extension() {
     let mut p = core();
     p.payment = None;
+    assert!(p.validate().is_ok(), "no extension: the plain enquiry flow needs no payment block");
+    p.booking =
+        Some(BookingTerms { lead_time_secs: 0, cancellation_window_secs: 0, max_per_booking: 1 });
+    assert!(p.validate().is_ok(), "booking terms with no extension need no payment block");
+    p.extension = Some(ExtensionRef { id: "one-shot".to_string(), version: 1 });
     assert_eq!(p.validate(), Err(ListingError::PaymentRequired));
+}
+
+#[test]
+fn the_extension_refusals_have_codes() {
+    assert_eq!(ListingError::PaymentRequired.code(), Some("payment-required"));
+    assert_eq!(ListingError::ExtensionShape("x".to_string()).code(), Some("extension-shape"));
+    assert_eq!(ListingError::BookingRequired.code(), Some("booking-required"));
+    assert_eq!(ListingError::TitleEmpty.code(), None);
+}
+
+#[test]
+fn the_extension_has_a_shape() {
+    let mut p = core();
+    for id in ["", "Scheduling", "has space", "a_b", &"a".repeat(33)] {
+        p.extension = Some(ExtensionRef { id: id.to_string(), version: 1 });
+        assert!(matches!(p.validate(), Err(ListingError::ExtensionShape(_))), "id {id:?}");
+    }
+    p.extension = Some(ExtensionRef { id: "one-shot".to_string(), version: 0 });
+    assert!(matches!(p.validate(), Err(ListingError::ExtensionShape(_))));
+    // A shape that no registry knows is still a valid listing: a stranger's
+    // directory checks shape only.
+    p.extension = Some(ExtensionRef { id: "future".to_string(), version: 7 });
+    assert!(p.validate().is_ok());
+}
+
+#[test]
+fn scheduling_needs_booking_terms_and_the_other_choices_do_not() {
+    let mut p = core();
+    p.extension = Some(ExtensionRef { id: "scheduling".to_string(), version: 1 });
+    assert_eq!(p.validate(), Err(ListingError::BookingRequired));
     p.booking = Some(BookingTerms {
-        mode: BookingMode::Enquiry,
-        lead_time_secs: 0,
-        cancellation_window_secs: 0,
-        max_per_booking: 1,
+        lead_time_secs: 3600,
+        cancellation_window_secs: 86_400,
+        max_per_booking: 2,
     });
-    assert!(p.validate().is_ok(), "enquiry-mode booking needs no payment block");
+    assert!(p.validate().is_ok());
+
+    p.booking = None;
+    p.extension = Some(ExtensionRef { id: "one-shot".to_string(), version: 1 });
+    assert!(p.validate().is_ok(), "one-shot needs no booking terms");
+}
+
+#[test]
+fn old_listing_with_booking_mode_has_no_extension() {
+    let old = serde_json::json!({
+        "listing_id": derive_listing_id("did:key:zIssuer", "hedge-trimming").unwrap(),
+        "slug": "hedge-trimming",
+        "title": "Hedge trimming",
+        "summary": "Neat hedges.",
+        "lang": "en",
+        "conversation_address": "did:key:zListingOwnerConv",
+        "status": "active",
+        "booking": {
+            "mode": "slots",
+            "lead_time_secs": 3600,
+            "cancellation_window_secs": 86400,
+            "max_per_booking": 2
+        },
+        "payment": {
+            "currency": "EUR", "model": "per-hour", "amount_minor": 3500,
+            "tax_included": true, "payee": "A. Gardener"
+        }
+    });
+    let p: ListingPayload = serde_json::from_value(old).unwrap();
+    assert_eq!(p.extension, None, "the old key is ignored");
+    assert!(p.booking.is_some());
+    assert!(p.validate().is_ok());
 }
 
 #[test]

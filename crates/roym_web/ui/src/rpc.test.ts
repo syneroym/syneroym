@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { errText } from "./dom";
-import { call, RpcError } from "./rpc";
+import { call, refusalCode, RpcError } from "./rpc";
 
 describe("rpc call", () => {
   it("maps -32010 to NotSignedIn", async () => {
@@ -98,5 +98,16 @@ describe("rpc call", () => {
     );
     const caught = await call("test").catch((e: unknown) => e);
     expect((caught as RpcError).code).toBe(0);
+  });
+});
+
+describe("refusalCode", () => {
+  it("reads the code in `data.code` and nothing else", () => {
+    expect(refusalCode(new RpcError(-32602, "m", "Other", { code: "extension-unknown" }))).toBe(
+      "extension-unknown",
+    );
+    expect(refusalCode(new RpcError(-32602, "m", "Other", "writer-countersigns"))).toBeUndefined();
+    expect(refusalCode(new RpcError(-32602, "m", "Other", { code: 5 }))).toBeUndefined();
+    expect(refusalCode(new RpcError(-32602, "m", "Other"))).toBeUndefined();
   });
 });

@@ -198,9 +198,11 @@ iroh = "1.4"
 iroh-relay = { version = "1.4", features = ["server"] }
 
 # WASM
-# patch-pin: 48.0.0 to 48.0.6 have the aarch64 `br_table` flaw (RUSTSEC-2026-0379).
-wasmtime = { version = "48.0.7", features = ["component-model", "cache"] }
-wasmtime-wasi = "48.0.7" # patch-pin: same release as wasmtime.
+# 48.0.0 to 48.0.6 have the aarch64 `br_table` flaw (RUSTSEC-2026-0379), and
+# wasmtime-wasi before 48.0.10 has a Windows filesystem sandbox escape.
+# patch-pin: RUSTSEC-2026-0379 and RUSTSEC-2026-0587, see above.
+wasmtime = { version = "48.0.10", features = ["component-model", "cache"] }
+wasmtime-wasi = "48.0.10" # patch-pin: same release as wasmtime.
 wit-bindgen = "0.57"
 wit-parser = "0.251"
 

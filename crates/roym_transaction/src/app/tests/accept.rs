@@ -65,7 +65,7 @@ fn slot_commitment(
     (commitment, slot_id)
 }
 
-fn author_service_commitment(id: &str) -> Commitment {
+pub(super) fn author_service_commitment(id: &str) -> Commitment {
     Commitment {
         commitment_id: id.to_string(),
         giver: DealRole::QuoteAuthor,
@@ -96,6 +96,18 @@ fn build_and_sign_quote(
     expires_at_secs: u64,
     now: u64,
 ) -> (HeldQuote, String, String) {
+    quote_answering(author, counterparty_did, "rec_enq_1", commitments, expires_at_secs, now)
+}
+
+/// A quote signed by `author` that answers the enquiry `enquiry_record_id`.
+pub(super) fn quote_answering(
+    author: &Identity,
+    counterparty_did: &str,
+    enquiry_record_id: &str,
+    commitments: Vec<Commitment>,
+    expires_at_secs: u64,
+    now: u64,
+) -> (HeldQuote, String, String) {
     let author_did = substrate::derive_did_key(&author.public_key());
     let quote_id = derive_quote_id("conv_1", &author_did, 1).expect("derive quote id");
     let terms = DealTerms {
@@ -122,7 +134,7 @@ fn build_and_sign_quote(
         quote_id,
         conversation: "conv_1".to_string(),
         sequence: 1,
-        answers: Answers::Enquiry { record_id: "rec_enq_1".to_string() },
+        answers: Answers::Enquiry { record_id: enquiry_record_id.to_string() },
         counterparty_did: counterparty_did.to_string(),
         terms: terms.clone(),
     };

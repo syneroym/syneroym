@@ -32,7 +32,7 @@ The agreements doc is the module doc that the old outline listed as "to write fi
 | --- | --- | --- | --- |
 | Z1 | **Deal core types** in `roym_core`: `DealTerms`, `Commitment`, `LocalText`, the resource and commitment kind table, the agreement and commitment states, and the pure transition function. | Every slice that touches a deal; EEP kinds in M08E | C1 |
 | Z2 | **Disclosure encoder and verifier** (RFC 9901 disclosures, digests, `_sd`), and the `Presentation` format. | Every signed deal record (C2); evidence in M08G | C2 |
-| Z3 | **Extension manifest and the fixed extension registry** in `roym_core`. A TOML manifest in each extension's crate, read at build time (agreements doc, open question 3). | Scheduling, one-shot, widgets, step names | C3a |
+| Z3 | **Extension manifest and the fixed extension registry** in `roym_core`. One JSON manifest per extension in `crates/roym_core/extensions/`, compiled in with `include_str!` and read by the Hub from the same file (owner decision, 2026-11-20, C3a plan question Q2; this changes the file format and place of the agreements doc, open question 3). | Scheduling, one-shot, widgets, step names | C3a |
 | Z4 | **Generic field view** in the Hub: shows labelled fields from a schema's field types, with labels from the string catalog. | `step` card (C3a), `details` of an unknown extension (C3a), widgets (C4) | C3a |
 | Z5 | **Reserve, confirm and release** local methods of an extension, with expiry and owner-side clean-up. | Scheduling (C3b); later any extension with a reserve hook | C3b |
 
@@ -87,6 +87,19 @@ Every component is within its limit.
 | `web` | 310,784 | 310,784 | 0 | +40 KB |
 
 Every component is within its limit.
+
+**C3a1 sizes** (release `wasm32-wasip2`, one `target/` folder, 2026-11-20; base on `main` at `e11fed33`, branch at the C3a1 code before its review), in bytes:
+
+| Component | `main` `e11fed33` | branch | Change | Limit |
+| --- | --- | --- | --- | --- |
+| `transaction` | 2,115,515 | 2,173,903 | +58,388 (+2.76%) | +15% (317,327), registry and schema code (slice plan, 7.9) |
+| `catalog` | 930,212 | 944,532 | +14,320 (+1.54%) | +40 KB |
+| `conversation` | 812,580 | 812,889 | +309 (+0.04%) | +40 KB |
+| `directory` | 1,468,103 | 1,466,519 | -1,584 (-0.11%) | +40 KB |
+| `profile` | 772,423 | 772,732 | +309 (+0.04%) | +40 KB |
+| `web` | 310,784 | 311,023 | +239 (+0.08%) | +40 KB |
+
+Every component is within its limit. The first build of `catalog` grew by 66,763 bytes, because `listing.set` linked the whole registry to ask if an id is known. `extension::is_known_workflow` reads only the manifest headers, and the growth fell to 14,320 bytes. `directory` does not link the registry, as planned.
 
 **Parity runs need a fresh WASM build.** The dual-build parity harness loads pre-built `wasm32-wasip2` components. Every slice that changes a `roym_*` crate runs `mise run build:roym` before it trusts a parity run.
 
@@ -187,7 +200,7 @@ Change docs: roym-extensions, roym-multilingual (ML-28).
 
 ### C3b — Scheduling extension and reserve hooks (L)
 
-- A new Roym service for the scheduling extension (`crates/roym_scheduling`, package `syneroym-roym-scheduling`). It takes `availability.*` from `catalog`, and the seat rows and the booking track from `transaction`. `catalog` and `transaction` keep no slot code (EX-17). Linking it into `transaction` as a library is rejected (agreements doc, "Rejected options").
+- A new Roym service for the scheduling extension (`crates/roym_scheduling`, package `syneroym-roym-scheduling`). Its manifest stays in `crates/roym_core/extensions/scheduling.json` (Z3); the service crate holds the code, not the manifest. It takes `availability.*` from `catalog`, and the seat rows and the booking track from `transaction`. `catalog` and `transaction` keep no slot code (EX-17). Linking it into `transaction` as a library is rejected (agreements doc, "Rejected options").
 - Z5: `reserve`, `confirm` and `release`, idempotent by (agreement id, commitment id), with a 15-minute expiry and clean-up on the owner's node (EX-20, EX-21, EX-22). Each giver reserves on its own node when it signs (agreements doc, "Who reserves"; this changes EX-5's text).
 - The `commitment-failure` record and card, and the `other-commitment-failed` cancel in the same snapshot.
 - Today's booking tests pass through the extension, including the race for the last seat.

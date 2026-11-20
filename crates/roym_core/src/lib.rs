@@ -17,6 +17,7 @@ pub mod directory;
 pub mod disclosure;
 pub mod dual_build;
 pub mod envelope;
+pub mod extension;
 pub mod fulfilment;
 pub mod lang;
 pub mod listing;

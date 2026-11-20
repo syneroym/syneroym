@@ -1,0 +1,20 @@
+{
+  "id": "scheduling",
+  "version": 1,
+  "kind": "workflow",
+  "resource_kinds": ["service-in-slot"],
+  "hooks": ["reserve", "confirm", "release"],
+  "details": [
+    {
+      "schema": "scheduling/slot@1",
+      "fields": [
+        { "name": "listing_id", "type": "code", "max_len": 128, "required": true },
+        { "name": "slot_id", "type": "code", "max_len": 128, "required": true }
+      ],
+      "checks": ["slot-matches-window"]
+    }
+  ],
+  "steps": [
+    { "type": "scheduling/started", "by": "giver", "fields": [] }
+  ]
+}

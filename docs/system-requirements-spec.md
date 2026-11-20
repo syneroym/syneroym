@@ -724,7 +724,7 @@ When multiple counterparties accept quotes for the same limited availability slo
 
 The reference SynApp implements variation dimensions across workflows using seven strongly typed, optional named blocks in `ListingPayload`:
 
-- **Booking (`BookingTerms`):** Event slots, consulting time slots, and open-ended job requests, modeled by `BookingMode` (`Slots`, `Order`, `Enquiry`). Slot bookings enforce capacity limits (`MAX_SLOT_CAPACITY = 64`) and first-claim concurrency fences.
+- **Booking (`BookingTerms` and the listing's `extension`):** Event slots, consulting time slots, and open-ended job requests. A listing names the Roym extension that books it: `scheduling` for slots, `one-shot` for an order, and none for an enquiry. `BookingTerms` holds the lead time, the cancellation window and the per-booking maximum, and a listing that names `scheduling` must have it. Slot bookings enforce capacity limits (`MAX_SLOT_CAPACITY = 64`) and first-claim concurrency fences.
 - **Payment (`PaymentTerms`):** One-time quote-based payments with pre-delivery or post-delivery timing. This block is modeled by `PaymentModel` (`Fixed`, `PerHour`, `PerUnit`, `QuoteOnly`), currency, and minor-unit amounts.
   > **Envisioned.** Not built yet. Multi-part payments, subscriptions, decentralized escrow, system coins, and mutual credit networks. Today quotes support single out-of-band payments only.
 - **Product type (`ProductDetail`):** Physical goods with unit, pack size, SKU, and condition (`New`, `Used`, `Refurbished`). The unit is a code of `[a-z0-9-]`; the Hub offers the base unit list.

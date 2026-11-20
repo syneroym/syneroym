@@ -5,6 +5,7 @@ import { leftoverLatin } from "../testing/latin-words";
 import {
   buildSetListingParams,
   currencyMinorExponent,
+  extensionForMode,
   ListingInputError,
   MoneyInputError,
   slotFromLocalDatetimes,
@@ -22,10 +23,10 @@ function emptyForm(): ListingForm {
     categories: [],
     conversation_address: "",
     status: "active",
+    mode: "enquiry",
     booking: {
       enabled: false,
       value: {
-        mode: "enquiry",
         lead_time_secs: "0",
         cancellation_window_secs: "0",
         max_per_booking: "1",
@@ -152,6 +153,40 @@ describe("buildSetListingParams", () => {
     });
   });
 
+  it("names no extension for an enquiry and sends no booking block when it is off", () => {
+    const f = emptyForm();
+    f.title = "Advice";
+    const params = buildSetListingParams(f);
+    expect(params).not.toHaveProperty("extension");
+    expect(params).not.toHaveProperty("booking");
+  });
+
+  it("maps each booking mode to the extension that it names", () => {
+    expect(extensionForMode("enquiry")).toBeUndefined();
+    expect(extensionForMode("slots")).toEqual({ id: "scheduling", version: 1 });
+    expect(extensionForMode("order")).toEqual({ id: "one-shot", version: 1 });
+
+    const f = emptyForm();
+    f.title = "Order";
+    f.mode = "order";
+    expect(buildSetListingParams(f).extension).toEqual({ id: "one-shot", version: 1 });
+    expect(buildSetListingParams(f)).not.toHaveProperty("booking");
+  });
+
+  it("always sends booking terms with slots, as the node refuses slots without them", () => {
+    const f = emptyForm();
+    f.title = "Haircut";
+    f.mode = "slots";
+    f.booking.enabled = false;
+    const params = buildSetListingParams(f);
+    expect(params.extension).toEqual({ id: "scheduling", version: 1 });
+    expect(params.booking).toEqual({
+      lead_time_secs: 0,
+      cancellation_window_secs: 0,
+      max_per_booking: 1,
+    });
+  });
+
   it("emits an integer amount_minor for a decimal price and never a decimal anywhere", () => {
     const f = emptyForm();
     f.title = "Hedge trimming";
@@ -164,7 +199,7 @@ describe("buildSetListingParams", () => {
     f.product.enabled = true;
     f.product.value.unit = "piece";
     f.booking.enabled = true;
-    f.booking.value.mode = "slots";
+    f.mode = "slots";
     f.booking.value.lead_time_secs = "3600";
     f.service.enabled = true;
     f.service.value.duration_secs = "1800";

@@ -7,11 +7,12 @@ use serde_json::{Map, Value};
 use super::types::PresentationError;
 use crate::{
     deal::{
-        self, CommitmentKind, Details, LocalText, MAX_COMMITMENT_DESCRIPTION_LEN,
+        CommitmentKind, Details, LocalText, MAX_COMMITMENT_DESCRIPTION_LEN,
         MAX_DECLARED_VALUE_MINOR, MAX_PAYEE_LEN, MAX_PAYMENT_METHODS, MAX_SCOPE_LEN,
-        MAX_TERMS_TEXT_LEN, SCHEDULING_EXTENSION,
+        MAX_TERMS_TEXT_LEN,
         sd::{PartialTerms, SignedCommitment, SignedTerms},
     },
+    extension::{self, PartialCheck},
     listing::{self, MAX_PAYMENT_METHOD_LEN},
     transaction::{AgreementReceiptPayload, QuoteLocation, RecordVerdict, TimeWindow},
 };
@@ -398,51 +399,42 @@ fn validate_commitment_details_partial(
     not_checked: &mut Vec<String>,
 ) -> Result<(), PresentationError> {
     let cid = &c_orig.commitment_id;
+    let details_path = format!("terms.commitments[{cid}].details");
     if let Some(ref ext) = c_orig.extension {
-        if let Some(det_val) = c_map.get("details") {
-            if det_val.is_null() {
+        let details = match c_map.get("details") {
+            Some(det_val) if det_val.is_null() => {
                 return Err(PresentationError::FieldInvalid(
-                    format!("terms.commitments[{cid}].details"),
+                    details_path,
                     "details cannot be null when extension is set".to_string(),
                 ));
             }
-            let details: Details = serde_json::from_value(det_val.clone()).map_err(|e| {
-                PresentationError::FieldInvalid(
-                    format!("terms.commitments[{cid}].details"),
-                    e.to_string(),
-                )
-            })?;
-            if details.extension != ext.id {
-                return Err(PresentationError::FieldInvalid(
-                    format!("terms.commitments[{cid}].details"),
-                    "details extension mismatch".to_string(),
-                ));
+            Some(det_val) => {
+                Some(serde_json::from_value::<Details>(det_val.clone()).map_err(|e| {
+                    PresentationError::FieldInvalid(details_path.clone(), e.to_string())
+                })?)
             }
-            if ext.id == SCHEDULING_EXTENSION {
-                if let Some(win_val) = c_map.get("window") {
-                    if win_val.is_null() {
-                        not_checked
-                            .push(format!("terms.commitments[{cid}].details_matches_extension"));
-                    } else {
-                        let w: TimeWindow =
-                            serde_json::from_value(win_val.clone()).map_err(|e| {
-                                PresentationError::FieldInvalid(
-                                    format!("terms.commitments[{cid}].window"),
-                                    e.to_string(),
-                                )
-                            })?;
-                        deal::validate_scheduling_slot_details(&w, &details).map_err(|e| {
-                            PresentationError::FieldInvalid(
-                                format!("terms.commitments[{cid}].details"),
-                                e.to_string(),
-                            )
-                        })?;
-                    }
-                } else {
-                    not_checked.push(format!("terms.commitments[{cid}].details_matches_extension"));
-                }
+            None => None,
+        };
+        let window = match c_map.get("window") {
+            Some(win_val) if win_val.is_null() => Some(None),
+            Some(win_val) => {
+                Some(Some(serde_json::from_value::<TimeWindow>(win_val.clone()).map_err(|e| {
+                    PresentationError::FieldInvalid(
+                        format!("terms.commitments[{cid}].window"),
+                        e.to_string(),
+                    )
+                })?))
             }
-        } else {
+            None => None,
+        };
+        let verdict = extension::check_partial_details(
+            extension::registry(),
+            ext,
+            details.as_ref(),
+            window.as_ref().map(Option::as_ref),
+        )
+        .map_err(|e| PresentationError::FieldInvalid(details_path, e.to_string()))?;
+        if verdict != PartialCheck::Checked {
             not_checked.push(format!("terms.commitments[{cid}].details_matches_extension"));
         }
     } else if let Some(det_val) = c_map.get("details")

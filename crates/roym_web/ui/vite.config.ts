@@ -4,7 +4,11 @@ export default defineConfig({
   base: './',
   server: {
     fs: {
-      allow: ['.', '../../roym_core/taxonomy'],
+      allow: [
+        '.',
+        '../../roym_core/taxonomy',
+        '../../roym_core/extensions',
+      ],
     },
   },
   build: {

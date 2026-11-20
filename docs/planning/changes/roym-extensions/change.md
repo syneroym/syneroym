@@ -55,9 +55,9 @@ The chat has the same limit. The Hub has seven fixed card templates (`crates/roy
 | ID | Criterion | Test |
 | --- | --- | --- |
 | **Deal core and details** | | |
-| EX-1 | A commitment carries an optional `details` block: an extension id, a schema id with a version, and data. The block is inside the signed commitment. | |
-| EX-2 | Each party's node checks `details` against its schema before it signs, when it has the extension. A party without the extension sees the details as labelled plain fields marked "not checked on this device", and may still sign. Once the agreement forms, the agreement writer's check is the binding one. A later node that disagrees shows a warning. It never treats the signatures as invalid. | |
-| EX-3 | `details` may also carry free extra fields (label and value text), so a party can add terms that no schema has. | |
+| EX-1 | A commitment carries an optional `details` block: an extension id, a schema id with a version, and data. The block is inside the signed commitment. | `crates/roym_core/src/deal/tests/extension.rs` (`one_shot_goods_commitment_is_checked`, `a_slot_commitment_with_bad_fields_is_refused`, `reveal_strict_refuses_a_slot_id_that_does_not_match_its_window`), `crates/roym_core/src/extension/schema/tests.rs` (one case per field type), `crates/roym_transaction/src/app/tests/extension.rs` (`quote_set_refuses_details_that_fail_the_schema`) |
+| EX-2 | Each party's node checks `details` against its schema before it signs, when it has the extension. A party without the extension sees the details as labelled plain fields marked "not checked on this device", and may still sign. Once the agreement forms, the agreement writer's check is the binding one. A later node that disagrees shows a warning. It never treats the signatures as invalid. | `crates/roym_transaction/src/app/tests/extension.rs` (`quote_set_refuses_an_unknown_extension`, `counterparty_files_a_quote_with_an_unknown_extension`, `accept_refuses_when_this_node_gives_an_unknown_extension`), `crates/roym_core/src/presentation/tests/extension.rs` (`an_unknown_extension_with_visible_details_is_verified_but_not_checked`), `crates/roym_core/src/deal/tests/extension.rs` (`reveal_strict_reveals_a_quote_with_an_unknown_extension`), `crates/roym_web/ui/src/cards/fields.test.ts` ("fieldView of an unknown extension"), `crates/roym_web/ui/src/screens/messages_translate.test.ts` ("Accept refused for an extension this device does not have") |
+| EX-3 | `details` may also carry free extra fields (label and value text), so a party can add terms that no schema has. | `crates/roym_core/src/deal/tests/extension.rs` (`extra_limits_hold_for_every_extension`), `crates/roym_web/ui/src/cards/fields.test.ts` ("fieldView extra lines") |
 | EX-4 | The deal core's states are the same for every extension. A test runs one agreement with scheduling and one with one-shot and checks that both pass through the same states. | |
 | **Reserve and release** | | |
 | EX-5 | When an agreement is accepted, the deal core calls the reserve hook of each extension named in a commitment. If one reserve fails, the agreement does not form, and every reserve that succeeded is released. | |
@@ -80,9 +80,9 @@ The chat has the same limit. The Hub has seven fixed card templates (`crates/roy
 | EX-16 | The counterparty of a deal can call an extension service's declared methods only with a grant that names that agreement or conversation, that counterparty, and an expiry. Every other call is refused. The grant ends when the agreement closes, unless the owner extends it. | |
 | **First extensions** | | |
 | EX-17 | Scheduling: slots, seat capacity, slot claim and the booking track run as the scheduling extension. `catalog` and `transaction` hold no slot code. Today's booking tests pass through the extension. | |
-| EX-18 | One-shot: an agreement for goods or a service with no slot settles with a payment acknowledgement and a fulfilment receipt, through the same deal core. A one-shot offering can be agreed as listed (agreements AG-44). It has nothing to reserve, so it is `instant` only when the owner marked it `not_limited` (AG-45). | |
+| EX-18 | One-shot: an agreement for goods or a service with no slot settles with a payment acknowledgement and a fulfilment receipt, through the same deal core. A one-shot offering can be agreed as listed (agreements AG-44). It has nothing to reserve, so it is `instant` only when the owner marked it `not_limited` (AG-45). | `crates/roym_transaction/src/app/tests/extension.rs` (`one_shot_commitment_settles_like_today`). The agree-as-listed half is not built yet. |
 | **Insight extensions** | | |
-| EX-19 | The manifest has an `insight` kind. Its fields say what it may read. It may not sign, send, or reach the network. Only the manifest field is built in M8. | |
+| EX-19 | The manifest has an `insight` kind. Its fields say what it may read. It may not sign, send, or reach the network. Only the manifest field is built in M8. | `crates/roym_core/src/extension/tests.rs` (`insight_manifest_loads_and_cannot_be_named`, `insight_and_workflow_keys_do_not_mix`), `crates/roym_core/src/deal/tests/extension.rs` (`a_commitment_naming_an_insight_is_not_checked`) |
 
 ## Design
 
@@ -189,20 +189,35 @@ The manifest reserves `kind = "insight"`, with a `reads` list (for example `even
 
 - [ ] ADR: deal grants (counterparty access to an extension service, scoped to one deal).
 - [ ] Write the M08C slice plans.
-- [ ] Manifest format and the extension registry inside Roym.
-- [ ] Commitment `details` in the deal core, and schema checks.
+- [x] Manifest format and the extension registry inside Roym.
+- [x] Commitment `details` in the deal core, and schema checks.
 - [ ] `step` record and card, the generic step view in the Hub.
 - [ ] Widget definition (inline up to the size limit), `widget` and `widget-answer` records and cards, the generic renderer, the poll renderer.
 - [ ] Reserve, confirm and release hooks, with expiry, idempotency and owner-side cleanup.
 - [ ] Extension services: event subscription, deal grants.
-- [ ] Move scheduling out of `catalog` and `transaction`. Add one-shot.
-- [ ] The `insight` kind in the manifest only.
+- [ ] Move scheduling out of `catalog` and `transaction`.
+- [x] Add one-shot.
+- [x] The `insight` kind in the manifest only.
 
 ## Deviations
 
 - **EX-15 and EX-16 are not built in M08C** (owner decision, 2026-11-15, [M08C task.md](../../milestones/M08C-deal-core-and-extensions/task.md), section 6, question 3). No M08C extension needs events or a deal grant: scheduling confirms and releases through local calls on its own node, and no counterparty calls it. Events to an extension service, deal grants and the deal-grant ADR come with the first extension that needs them. Backlog row: "Extension services cannot receive events or take calls from a counterparty".
 - **EX-11 is built for inline definitions only** (owner decision, 2026-11-15, same task.md, question 4). A widget definition larger than 8 KB is refused. Fetch by hash from the sender's node would need a new wire-reachable method on `conversation`. Backlog row: "A widget definition larger than 8 KB is refused".
 - **EX-1 and EX-3 (shape only) are built in M08C C1a, not C3a** (owner decision, 2026-11-16, [M08C slice C1 plan](../../milestones/M08C-deal-core-and-extensions/slice-c1-implementation-plan.md), question Q3). C1 must keep slot booking working, and the slot moves into `details.data`. So C1a adds a commitment's `extension` and `details` (with `extra`) in their final shape, and checks one case in code: extension `scheduling` version 1, schema `scheduling/slot@1`, data `{ listing_id, slot_id }`. Any other extension is refused. C3a replaces this fixed check with the manifest, the fixed registry and the schema check (EX-2), and adds one-shot; C3b moves the slot to the scheduling service.
+
+- **EX-19 is built as the manifest field only** ([M08C task.md](../../milestones/M08C-deal-core-and-extensions/task.md), section 5). C3a's manifest format has `kind = "insight"` and its `reads` list, and a commitment or a listing cannot name an insight extension. No insight extension ships, and nothing enforces "may not sign, send, or reach the network" yet. Backlog row: "Analytics and insight extensions".
+- **EX-2: a giver cannot accept a deal part whose extension its node does not know** (owner decision, 2026-11-20, [M08C slice C3a plan](../../milestones/M08C-deal-core-and-extensions/slice-c3a-implementation-plan.md), question Q9). EX-2 says a party without the extension "may still sign". That stays true for a receiver. When this node gives a commitment whose extension it does not know, `agreement.accept` refuses with `extension-unknown`, because the giver's node must run that extension's hooks and steps. The Hub asks the person to update Roym first.
+
+**Rules and differences in C3a1 (2026-11-20, [slice plan](../../milestones/M08C-deal-core-and-extensions/slice-c3a-implementation-plan.md)).**
+
+- **The manifest is JSON in `roym_core` (owner decision, question Q2).** The sketch under "Extension manifest" shows TOML and a string `version`. The manifests are JSON files in `crates/roym_core/extensions/`, and `version` is a number, as `ExtensionRef.version` is. `resource_kinds`, `hooks`, `checks` and `reads` are keys that the sketch does not show. `[[widgets]]` and `[service]` are not built: a manifest with a key that no code reads does not load. Widgets come with C4.
+- **Eight field types, not ten (owner decision, question Q8).** `text`, `long-text`, `number`, `money`, `date-time`, `duration` and `choice` are built, with an eighth type, `code`, for identifiers such as a listing id. `location`, `file-pointer` and `record-pointer` are not built, and a manifest that names one does not load. Backlog row: "Extension field types `location`, `file-pointer` and `record-pointer` are not built".
+- **A listing names its extension in place of a booking mode (owner decision, question Q3).** `BookingMode` is gone. A listing has an `extension` (`id` and `version`), or none for the plain enquiry flow. A listing that names `scheduling` must have booking terms (`booking-required`). A listing that names no extension may leave out `payment`: this is the old `enquiry` rule, and it now also holds for a listing with no booking block. `listing.set` refuses an extension this node does not know (`extension-unknown`). The directory filters by extension id, and cannot ask for "no extension". Backlog row: "The directory cannot search for listings with no extension".
+- **`details` is checked against the manifest's schema, with one shape check for every extension.** The `extra` limits, the form of the extension id and of the schema name (`<id>/<name>@<version>`) hold for an unknown extension too. A schema name that does not start with the extension's id is `extension-shape`. The code `details-mismatch` is for a well-formed schema that the manifest does not list.
+- **The list of manifest files is checked from the Rust side.** The slice plan asked for a Vitest test that reads `extension.rs`. Vite does not serve a `.rs` file, so `roym_core` has the test, as it has for the Hub's card registry: it reads `registry.ts` and compares the files, in order, with `MANIFESTS`. A Vitest test checks that the Hub holds every JSON file of the folder.
+- **`listing.set` asks a small question.** `extension::is_known_workflow` reads only the header of each manifest. The catalog component would otherwise link all the schema code and grow by more than its size limit.
+- **The Hub draws `details` under each commitment line.** The slice plan said once, outside the text-version switch. The view is drawn inside the card's commitment lines, and always with the quote's original language, so it never takes the tag of an author translation. Free text in `details` is not offered to machine translation. Backlog row: "Free text in `details` is not offered to machine translation".
+- **The Hindi review has six messages in C3a1, not five.** `ext-scheduling-step-started` ships with the scheduling manifest, so the catalog test that checks every derived id needs it now. The Hub shows the step name in the step slice.
 
 ## Close-out
 

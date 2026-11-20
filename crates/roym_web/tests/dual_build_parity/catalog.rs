@@ -84,6 +84,34 @@ async fn scenario_40_listing_set_float_amount_refused_parity() {
 }
 
 #[tokio::test]
+async fn scenario_243_listing_set_with_an_unknown_extension_refused_parity() {
+    let h = harness().await;
+    enrol_signing(&h, "catalog").await;
+
+    let mut params = full_listing_params("hedge-trimming", "Hedge trimming");
+    params["extension"] = json!({ "id": "future", "version": 1 });
+    let (w, n) = both_rpc(&h, "listing.set", params).await;
+    assert_eq!(w, n);
+    assert!(is_err(&w, -32602));
+    assert_eq!(w["error"]["data"]["code"], "extension-unknown", "{w}");
+
+    // A version this build does not ship is unknown as well.
+    let mut params = full_listing_params("hedge-trimming", "Hedge trimming");
+    params["extension"] = json!({ "id": "scheduling", "version": 2 });
+    let (w, n) = both_rpc(&h, "listing.set", params).await;
+    assert_eq!(w, n);
+    assert_eq!(w["error"]["data"]["code"], "extension-unknown", "{w}");
+
+    // `scheduling` needs booking terms.
+    let mut params = full_listing_params("hedge-trimming", "Hedge trimming");
+    params.as_object_mut().unwrap().remove("booking");
+    let (w, n) = both_rpc(&h, "listing.set", params).await;
+    assert_eq!(w, n);
+    assert!(is_err(&w, -32602));
+    assert_eq!(w["error"]["data"]["code"], "booking-required", "{w}");
+}
+
+#[tokio::test]
 async fn scenario_41_listing_address_from_profile_parity() {
     let h = harness().await;
     enrol_signing(&h, "profile").await;
@@ -274,7 +302,7 @@ async fn scenario_49_catalog_export_integrity_parity() {
         let bundle: Bundle = serde_json::from_value(side["result"].clone()).unwrap();
         bundle.check_integrity().expect("exported bundle integrity");
         let sections = &bundle.manifest.sections;
-        assert_eq!(sections["listings"].schema_version, 3);
+        assert_eq!(sections["listings"].schema_version, 4);
         assert!(sections.contains_key("availability"));
     }
 

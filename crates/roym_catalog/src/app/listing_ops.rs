@@ -11,7 +11,9 @@ use syneroym_app_host::{
 };
 use syneroym_roym_core::{
     clock,
+    deal::{DealError, ExtensionRef},
     envelope::Response,
+    extension,
     lang::LangTag,
     listing::{self, ListingPayload, ListingStatus, ListingTranslation, ListingVerdict},
     method::{
@@ -91,6 +93,8 @@ pub struct SetListingInput {
     pub categories: Vec<String>,
     pub conversation_address: Option<String>,
     pub status: Option<ListingStatus>,
+    #[serde(default)]
+    pub extension: Option<ExtensionRef>,
     #[serde(default)]
     pub booking: Option<listing::BookingTerms>,
     #[serde(default)]
@@ -355,7 +359,11 @@ async fn write_version<H: AppHost>(
     };
 
     if let Err(e) = payload.validate() {
-        return Err(Response::invalid_params(e.to_string()));
+        let response = Response::invalid_params(e.to_string());
+        return Err(match e.code() {
+            Some(code) => response.with_data(json!({ "code": code })),
+            None => response,
+        });
     }
 
     let prior = match load_listing_row(host, &payload.listing_id).await {
@@ -434,6 +442,7 @@ async fn build_payload<H: AppHost>(
         categories: p.categories,
         conversation_address: address,
         status: forced_status.or(p.status).or(prior_status).unwrap_or(ListingStatus::Active),
+        extension: p.extension,
         booking: p.booking,
         payment: p.payment,
         product: p.product,
@@ -454,7 +463,21 @@ pub(crate) async fn set<H: AppHost>(host: &H, input: SetListingInput) -> Reply<L
         Err(e) => return Err(Response::internal_error(e.to_string())),
     };
     let payload = build_payload(host, input, &owner, None).await?;
+    require_known_extension(payload.extension.as_ref())?;
     write_version(host, payload, true, now).await
+}
+
+/// A listing may name only an extension this node's registry knows, so the
+/// owner never publishes an offering that its own node cannot book.
+fn require_known_extension(ext: Option<&ExtensionRef>) -> Result<(), Response> {
+    match ext {
+        Some(ext) if !extension::is_known_workflow(ext) => {
+            let error = DealError::ExtensionUnknown(ext.id.clone());
+            Err(Response::invalid_params(error.to_string())
+                .with_data(serde_json::json!({ "code": error.code() })))
+        }
+        _ => Ok(()),
+    }
 }
 
 pub(crate) async fn withdraw<H: AppHost>(

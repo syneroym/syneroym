@@ -24,6 +24,7 @@ import {
   textFields,
   type TextVersion,
 } from "../../records/record_text";
+import { commitmentDetailsView } from "../details";
 import { renderLink } from "../link";
 
 export interface QuoteTranslationData {
@@ -234,6 +235,11 @@ export function renderQuote(data?: QuoteData): HTMLElement {
           });
           nodes.push(valP);
         }
+
+        // `details` has no author translations, so it is drawn with the
+        // original language of the quote on every version.
+        const detailsView = commitmentDetailsView(c, terms.currency, termsLang);
+        if (detailsView) nodes.push(detailsView);
       }
     }
 

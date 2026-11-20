@@ -21,7 +21,6 @@ export interface BlockToggle<T> {
 }
 
 export interface BookingFields {
-  mode: BookingMode;
   lead_time_secs: string;
   cancellation_window_secs: string;
   max_per_booking: string;
@@ -79,6 +78,10 @@ export interface ListingForm {
   categories: string[];
   conversation_address: string;
   status: ListingStatus;
+  /// How the listing is booked. It names the extension that the listing
+  /// carries: slots are the scheduling extension, an order is one-shot, and
+  /// an enquiry names none.
+  mode: BookingMode;
   booking: BlockToggle<BookingFields>;
   payment: BlockToggle<PaymentFields>;
   product: BlockToggle<ProductFields>;
@@ -96,6 +99,7 @@ import {
   formatMinor,
   toMinorUnits,
 } from "../money.js";
+import { type ExtensionRef, ONE_SHOT_REF, SCHEDULING_REF } from "../extensions/registry";
 import { HubError } from "../hub-error";
 import { currentLanguage, t } from "../i18n/i18n";
 
@@ -156,9 +160,20 @@ export function tokens(input: string): string[] {
 
 type Block = Record<string, unknown>;
 
+/// The extension a booking mode names, or `undefined` for an enquiry.
+export function extensionForMode(mode: BookingMode): ExtensionRef | undefined {
+  switch (mode) {
+    case "slots":
+      return SCHEDULING_REF;
+    case "order":
+      return ONE_SHOT_REF;
+    case "enquiry":
+      return undefined;
+  }
+}
+
 function bookingBlock(f: BookingFields): Block {
   return {
-    mode: f.mode,
     lead_time_secs: requireWhole(f.lead_time_secs, t("listing-field-lead-time")),
     cancellation_window_secs: requireWhole(f.cancellation_window_secs, t("listing-field-cancellation-window")),
     max_per_booking: requireWhole(f.max_per_booking, t("listing-field-max-per-booking")),
@@ -295,7 +310,12 @@ export function buildSetListingParams(form: ListingForm): Record<string, unknown
   const address = form.conversation_address.trim();
   if (address) params.conversation_address = address;
 
-  if (form.booking.enabled) params.booking = bookingBlock(form.booking.value);
+  const extension = extensionForMode(form.mode);
+  if (extension) params.extension = extension;
+  // Slots need lead time, a cancellation window and a seat limit.
+  if (form.booking.enabled || form.mode === "slots") {
+    params.booking = bookingBlock(form.booking.value);
+  }
   if (form.payment.enabled) params.payment = paymentBlock(form.payment.value);
   if (form.product.enabled) params.product = productBlock(form.product.value);
   if (form.service.enabled) params.service = serviceBlock(form.service.value);
