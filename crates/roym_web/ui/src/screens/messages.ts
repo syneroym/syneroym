@@ -16,6 +16,7 @@ import { waitingRedraw } from "./thread_redraw";
 import { categoryPicker } from "../taxonomy/category_picker";
 import { buildDealTerms } from "./quote_terms";
 import { attachSizeLine } from "./quote_size";
+import type { MessagesInitialState, RequestPreFill } from "../navigation";
 import {
   computeNewestQuoteMap,
   computeNewestRequestMap,
@@ -104,9 +105,6 @@ export interface CardRow {
   agreement_payee?: string;
   agreement_payment_methods?: string[];
 }
-
-export { type MessagesInitialState, type RequestPreFill } from "../navigation";
-import type { MessagesInitialState, RequestPreFill } from "../navigation";
 
 export async function renderMessages(
   container: HTMLElement,

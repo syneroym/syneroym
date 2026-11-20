@@ -18,7 +18,7 @@ import {
   renderCardActions,
   renderMessages,
 } from "./screens/messages";
-import { type MessagesInitialState, setTabOpener, type TabKey } from "./navigation";
+import { setTabOpener, type TabKey, type TabOpener, type TabStateMap } from "./navigation";
 import { renderProfile } from "./screens/profile";
 import { renderSafety } from "./screens/safety";
 import { renderSetup } from "./screens/setup";
@@ -144,10 +144,14 @@ async function renderTabs(container: HTMLElement, did: string) {
   // screen that is still loading (it awaits the node before it appends)
   // then writes into a container that is already detached, so a quick tab
   // click can never leave two screens in the page.
-  const tabRenderers: Record<TabKey, (host: HTMLElement, initial?: unknown) => Promise<void>> = {
+  type TabRenderers = {
+    [K in TabKey]: (host: HTMLElement, initial?: TabStateMap[K]) => Promise<void>;
+  };
+
+  const tabRenderers: TabRenderers = {
     profile: renderProfile,
     contacts: renderContacts,
-    messages: (host, initial) => renderMessages(host, undefined, initial as MessagesInitialState | undefined),
+    messages: (host, initial) => renderMessages(host, undefined, initial),
     groups: renderGroups,
     listings: renderListings,
     directory: renderDirectory,
@@ -158,15 +162,14 @@ async function renderTabs(container: HTMLElement, did: string) {
     components: (host) => renderHome(host, did),
   };
 
-  const show = async (key: TabKey, initial?: unknown) => {
+  const show: TabOpener = async (key, initial) => {
     const render = tabRenderers[key];
-    if (!render) return;
     const host = document.createElement("div");
     host.className = "tab-content";
     tabContainer.replaceWith(host);
     tabContainer = host;
     try {
-      await render(host, initial);
+      await render(host, initial as never);
     } catch (err) {
       host.appendChild(text("p", t("tab-error", { detail: errText(err) }), "tab-error"));
     }

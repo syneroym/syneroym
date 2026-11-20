@@ -65,6 +65,7 @@ async function clickCheck(line: HTMLElement) {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  setTabOpener(null);
 });
 
 describe("a search card's membership line", () => {
