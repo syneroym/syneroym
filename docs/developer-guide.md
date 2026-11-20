@@ -1817,6 +1817,47 @@ When a client sends invalid parameters to a Roym method:
 - **Profile envelope format.** When calling `contacts.upsert`, pass `profile_envelope` as a serialized JSON string, not a JSON object.
 - **Verify envelope format.** Send a signed envelope to a `*.verify` method as text, not as a JSON object.
 
+##### Roym extensions
+
+*Reader: a developer who adds or changes a Roym extension.*
+
+A Roym extension adds typed `details` to a commitment, and work steps to a deal. It never changes the deal's states. Each extension is one JSON manifest in `crates/roym_core/extensions/<id>.json`. The manifests that ship with a build are listed in `MANIFESTS` in `crates/roym_core/src/extension.rs`. They form a fixed registry. There is no run-time install.
+
+The Hub imports the same files in `crates/roym_web/ui/src/extensions/registry.ts`. A test in `roym_core` checks that both lists name the same files in the same order.
+
+A manifest has these keys. Any other key stops the manifest from loading.
+
+- `id`: `[a-z0-9-]`, 1 to 32 characters. `version`: a number, at least 1.
+- `kind`: `workflow` or `insight`. An `insight` has only `reads` (a list of codes) and no other key below. No insight ships. A commitment or a listing cannot name one.
+- `resource_kinds`: the commitment kinds that may name this extension, for example `service-in-slot` or `goods-or-service`.
+- `hooks`: `reserve`, `confirm` and `release`, all three or none. A `service-in-slot` extension needs all three.
+- `details`: a list of schemas. Each has a `schema` name `<id>/<name>@<version>`, a list of `fields`, and optional `checks`. `slot-matches-window` is the one built-in check: it ties `slot_id` to the commitment's window.
+- `steps`: a list of step types. Each has a `type` name `<id>/<name>`, who may record it (`by`: `giver`, `receiver` or `either`), and its `fields`.
+
+A field has a `name` (`[a-z0-9_]`, up to 32 characters), a `type`, and `required`. The eight types are `text`, `long-text`, `code`, `number`, `money`, `date-time`, `duration` and `choice`. `text`, `long-text` and `code` need `max_len` (at most 512, 2048 and 128 bytes). `number` may have `min` and `max`. `choice` needs `choices`, a list of codes. Every number is an integer. A `code` is an identifier with no language, for example a listing id. `Registry::parse` checks every limit when the manifest loads.
+
+**Labels.** A manifest names no message id. The ids are derived from the codes, by the same rules in Rust (`extension/ids.rs`) and in the Hub (`registry.ts`):
+
+- A field label: `ext-<extension>-<schema name>-<field>`, for example `ext-scheduling-slot-listing-id`.
+- A choice: the field label, then `-<choice>`.
+- A step name: `ext-<extension>-step-<step name>`.
+- In every part, `_` becomes `-`. The schema version is not part of an id. A new schema version that changes what a field means needs a new field name.
+
+Add every derived id to the `## Extensions` section of `en.ftl` and `hi.ftl`. A Hub test checks that both files have exactly these ids.
+
+**Checks.** One set of functions in `crates/roym_core/src/extension/check.rs` decides whether a commitment's extension is valid. `DealTerms::validate`, the check of a quote with hidden fields and the presentation checker all call it. A node that does not know the extension checks only the shape of `details` (the `extra` limits, the id and schema names). It marks the commitment as not checked.
+
+**Refusals.**
+
+| Code | Meaning |
+|---|---|
+| `extension-unknown` | `quote.set` or `listing.set` names an extension this node does not know. `agreement.accept` refuses it when this node gives that part of the deal. |
+| `details-invalid` | A field of `details.data` does not fit its schema. |
+| `details-mismatch` | `details` and the extension do not match, or the schema is not one of the manifest's. |
+| `extension-shape` | The id, the schema name or `details.extra` has a wrong shape or is too large. |
+| `slot-details` | `slot_id` does not match the commitment's window. |
+| `booking-required` | A listing names `scheduling` and has no `booking` block. |
+
 #### Call a JSON-RPC method on a WASM app via HTTP Proxy
 
 > [!TIP]
@@ -2527,7 +2568,7 @@ roym directory.find '{"query":{"text":"plumber"}}' | jq '.result | {outcomes, hi
 - `refused`: evidence that failed a check, for example a listing with a wrong signature. Show it apart from `hits`; never mix the two. `refused_truncated` is the same flag for this list.
 - `run_id`: the id of this search.
 
-A source with no listings that match gives `error: null` and adds no hit. The query fields are `text`, `categories`, `area`, `open_to`, `booking_mode` and `limit`. All are optional.
+A source with no listings that match gives `error: null` and adds no hit. The query fields are `text`, `categories`, `area`, `open_to`, `extension` and `limit`. All are optional. `extension` is an extension id, for example `scheduling`. It must have the form of an id, or the directory answers `invalid_params`. A listing with no extension cannot be asked for.
 
 `text` must have every word in the title, the summary, the categories or an author translation, in any order. It works in every script. A word in Latin letters also finds the same word written in Devanagari or Tamil, and common Latin spellings meet (`nal wala` finds `naal waala` and `नल वाला`). A word matches anywhere inside the text. Punctuation breaks a word, so a number matches as a substring (`50%` finds `500`). A `text` with no word (only punctuation), or with more than 16 words, is `-32602`.
 

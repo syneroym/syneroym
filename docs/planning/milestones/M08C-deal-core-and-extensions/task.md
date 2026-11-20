@@ -88,6 +88,19 @@ Every component is within its limit.
 
 Every component is within its limit.
 
+**C3a1 sizes** (release `wasm32-wasip2`, one `target/` folder, 2026-11-20; base on `main` at `e11fed33`, branch at the C3a1 code before its review), in bytes:
+
+| Component | `main` `e11fed33` | branch | Change | Limit |
+| --- | --- | --- | --- | --- |
+| `transaction` | 2,115,515 | 2,173,903 | +58,388 (+2.76%) | +15% (317,327), registry and schema code (slice plan, 7.9) |
+| `catalog` | 930,212 | 944,532 | +14,320 (+1.54%) | +40 KB |
+| `conversation` | 812,580 | 812,889 | +309 (+0.04%) | +40 KB |
+| `directory` | 1,468,103 | 1,466,519 | -1,584 (-0.11%) | +40 KB |
+| `profile` | 772,423 | 772,732 | +309 (+0.04%) | +40 KB |
+| `web` | 310,784 | 311,023 | +239 (+0.08%) | +40 KB |
+
+Every component is within its limit. The first build of `catalog` grew by 66,763 bytes, because `listing.set` linked the whole registry to ask if an id is known. `extension::is_known_workflow` reads only the manifest headers, and the growth fell to 14,320 bytes. `directory` does not link the registry, as planned.
+
 **Parity runs need a fresh WASM build.** The dual-build parity harness loads pre-built `wasm32-wasip2` components. Every slice that changes a `roym_*` crate runs `mise run build:roym` before it trusts a parity run.
 
 ## 2. Facts checked in the code for this plan

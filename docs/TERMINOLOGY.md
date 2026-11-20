@@ -84,6 +84,9 @@ neighbourhood.
 | **Latin fold** | A fixed, ordered list of rewrite rules over Latin letters (for example `w` becomes `v`, a doubled letter becomes one). It runs on typed Latin text and on the output of a transliteration table. | A language-specific spelling rule. |
 | **Machine translation (MT)** | Text translated by software, not by its author. It is for display only and is never signed. A client names the engine next to every machine translation, and the original text always binds. The node has no engine in this version. | An author translation, which is signed by the author. |
 | **Translation hook point** | A place in a Roym flow where the translation interface is called: the search box, record text, a chat message and a quote before acceptance. A translate action is drawn there only when the node can translate. | A place that always shows a translate button. |
+| **Roym extension** | A package that adds typed `details` and work steps to a deal. It plugs into the deal core and never changes its states. Today only extensions that ship with Roym exist: `scheduling` and `one-shot`. | A SynApp or a SynSvc, which are deployed units. It is not a plugin loaded into the substrate. |
+| **Extension manifest** | The JSON file `crates/roym_core/extensions/<id>.json` that names one extension, its commitment kinds, `details` schemas, step types and hooks. | The SynApp manifest (`roym.toml`). |
+| **Extension registry** | The fixed list of extension manifests that ship with a build. It is compiled into `roym_core`, and the Hub imports the same files. | The Community Registry and the App Registry. |
 | **Author translation** | An alternative translation signed by the author inside the record envelope (up to 4 translations per record). The original text always binds. | Machine translation (MT), which is unsigned software output. |
 
 ## Key phrasings

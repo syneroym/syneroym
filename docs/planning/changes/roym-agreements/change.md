@@ -1449,6 +1449,10 @@ with the question.
   host's service key, the snapshot's issuer matches the deal signer's service
   key (`issuer` or `signer_did`) rather than the author's person key.
 
+**Rules and differences in C3a1 (2026-11-20).**
+
+- **Open question 3: the manifest is JSON in `roym_core` (owner decision, 2026-11-20).** The recommendation was a TOML manifest in each extension's crate, read at build time. The manifests are JSON files in `crates/roym_core/extensions/`, read with `include_str!` and `serde_json`. The Hub imports the same files. `roym_core` cannot depend on an extension crate, one-shot has no crate, and `toml` is not linked into the Roym components. The registry is still a fixed list in `roym_core`, and a listing still names its extension by `id` and `version`. The manifest keys are in [roym-extensions](../roym-extensions/change.md).
+
 
 ## Close-out
 
