@@ -1852,7 +1852,7 @@ Add every derived id to the `## Extensions` section of `en.ftl` and `hi.ftl`. A 
 - `step.verify` takes `{envelope, disclosures?}` and answers like `fulfilment.verify`.
 - `roymctl roym step add --agreement <rec_…> --commitment <id> --type <extension>/<name> [--data <json>]` and `roymctl roym step list --agreement <rec_…>` call these methods.
 
-An agreement holds at most 64 step rows, of both parties together. A receiving node checks the card as it checks `step.add`, and also checks that the issuer is the party that the record's `role` names for that commitment. It files a step of an extension it does not know, marked not checked. A backup carries the steps in the `steps` section, and an import checks every row again. A step's own fields have no derived label yet. A step type with fields needs that rule first.
+An agreement holds at most 64 step rows, of both parties together. A receiving node checks the card against the agreement: parties, conversation, issuer and role, and the commitment's extension. For a known extension it checks the step against the manifest's rules (step type, role, data schema); for an unknown extension it files the step marked not checked. It also checks the size limit and step count, and does not look at whether the agreement or commitment is closed. A backup carries the steps in the `steps` section, and an import checks every row again. A step's own fields have no derived label yet. A step type with fields needs that rule first.
 
 **Checks.** One set of functions in `crates/roym_core/src/extension/check.rs` decides whether a commitment's extension is valid. `DealTerms::validate`, the check of a quote with hidden fields and the presentation checker all call it. A node that does not know the extension checks only the shape of `details` (the `extra` limits, the id and schema names). It marks the commitment as not checked.
 
@@ -1860,8 +1860,8 @@ An agreement holds at most 64 step rows, of both parties together. A receiving n
 
 | Code | Meaning |
 |---|---|
-| `extension-unknown` | `quote.set` or `listing.set` names an extension this node does not know. `agreement.accept` refuses it when this node gives that part of the deal. |
-| `details-invalid` | A field of `details.data` does not fit its schema. |
+| `extension-unknown` | `quote.set`, `listing.set` or `step.add` names an extension this node does not know. `agreement.accept` refuses it when this node gives that part of the deal. |
+| `details-invalid` | A field of `details.data` or step `data` does not fit its schema, or step `data` is not an object. |
 | `details-mismatch` | `details` and the extension do not match, or the schema is not one of the manifest's. |
 | `extension-shape` | The id, the schema name or `details.extra` has a wrong shape or is too large. `listing.set` sends it for a bad extension id or version. |
 | `slot-details` | `slot_id` does not match the commitment's window. |
