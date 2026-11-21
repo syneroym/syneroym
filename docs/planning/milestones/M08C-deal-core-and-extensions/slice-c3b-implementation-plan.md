@@ -4,8 +4,10 @@
 owner, who answers the questions in section 2.1. You do not have the
 planning conversation. This plan is meant to stand alone.*
 
-**Status: plan written, 2026-11-21, by Claude Opus 5.5. Not reviewed yet.
-The owner answered Q1 to Q8 on 2026-11-21 (section 2.1) and asked for
+**Status: plan written, 2026-11-21, by Claude Opus 5.5. Plan review round
+1 (Claude Sonnet 5.5, [slice-c3b-review.md](slice-c3b-review.md), P1 to
+P12) is folded in: P1, P2, P4 to P12 as proposed, and P3 with a narrower
+fix (D-C3b-16). The owner answered Q1 to Q8 on 2026-11-21 (section 2.1) and asked for
 three risk measures: a test that every list of services is complete
 (D-C3b-15), a size check of the new component before any wiring (C3b1
 step 3), and a `confirm` that never takes a seat again (D-C3b-5). No
@@ -181,7 +183,10 @@ C3b2:
   seat can go to another booking. Then both people see a new card in the
   chat: "This part of the deal cannot go ahead: the slot was given to
   someone else." The agreement card shows that part as "Failed" and the
-  other parts as "Cancelled".
+  other parts as "Cancelled". When no part has been paid or delivered yet,
+  every part is now ended, so the card also shows the whole agreement as
+  "Closed". A part that was already paid or delivered keeps its own path,
+  and the agreement stays open until that part ends.
 - The demo is the owner's choice (Q6). The plan recommends no new story,
   because this case needs a wait of 15 minutes.
 
@@ -503,6 +508,10 @@ Not met here: EX-15, EX-16 (moved out of M08C). AG-44, AG-45 (C3c builds
   `admit::require_internal`. The router routes `availability.` and
   `scheduling.` to it. It does **not** route `reservation.`: only
   `transaction` calls the hooks, so a Hub call gets `-32601`.
+- **Two outputs of `transaction` gain fields.** `transaction.import`:
+  `reservations_restored` and `reservations_failed` (C3b1, D-C3b-16).
+  `transaction.sync`: `unsent_failures` (C3b2, D-C3b-11). Both are added
+  fields; a client that does not read them sees no change.
 - **`roym.toml`** (C3b1): a seventh service `scheduling`
   (`visibility = "private"`, no `depends_on`); `transaction`'s `depends_on`
   becomes `["conversation", "scheduling"]` (Q8); `web`'s gets `scheduling`.
@@ -529,11 +538,14 @@ Not met here: EX-15, EX-16 (moved out of M08C). AG-44, AG-45 (C3c builds
   the same.
 - **C3b1: a release can no longer free another agreement's seat** (section
   2.2, point 6). This fixes a race; nothing else changes.
-- **C3b1: the scheduling backup is restored on its own.** Today the seat
+- **C3b1: the scheduling backup is a separate bundle.** Today the seat
   rows are checked against the quotes in the same `transaction` bundle
   (`sections.rs:498` to `:520`, `:600` to `:615`). After the move,
-  `scheduling.import` can check only its own rows (D-C3b-9). A backlog row
-  records this.
+  `scheduling.import` checks only its own rows (D-C3b-9), and
+  `transaction.import` reserves again the seat of every restored agreement
+  (D-C3b-16). Its output gains `reservations_restored` and
+  `reservations_failed`. A restored seat with no agreement stays taken
+  (a backlog row).
 - **C3b2: an unconfirmed reservation older than 15 minutes can be taken by
   another booking** (Q4). The writer confirms its own at once, so this
   happens only to a counterparty that gives a slot and whose writer has not
@@ -629,18 +641,39 @@ service. `scheduling` signs nothing, so it has no `signing-status` or
 | `crates/substrate/src/runtime/roym.rs` | `init_roym_scheduling`, a copy of `init_roym_profile` (`:209` to `:246`) with the scheduling names; added to the factory list (`:87` to `:95`) and the owner loop (`:105` to `:116`); in `wire_roym_topology` (`:453`), `transaction`'s binding to `scheduling` in place of `catalog` (Q8) |
 | `crates/core/src/test_constants.rs:179` | `roym_scheduling_wasm_path()` |
 | `crates/roym_web/Cargo.toml:55` | dev dependency, for the parity and method-contract harnesses |
-| `crates/roym_web/tests/dual_build_parity/helpers.rs:893`, `test_proxies.rs:14` | the scheduling native service and WASM path |
+| `crates/roym_web/tests/dual_build_parity/helpers.rs` | five places: the `status` arm (`:377` to `:384`), the native-service arm (`:645` to `:651`; it `panic!`s on an unknown name), the WASM path list (`:890` to `:897`), the factories and native services (`:1092` to `:1117` and the `Arc::new(Native…)` blocks after them), and the wire factory list (`:1183` to `:1215`) |
+| `crates/roym_web/tests/dual_build_parity/test_proxies.rs` | the import (`:14`) and the dispatch by DID (`:150` to `:160`) |
+| `crates/roym_web/tests/dual_build_parity/fixtures.rs:131` to `:138` | `expected_schema_version`: `transaction` 7, `catalog` 5 (`scheduling` falls to the default 1, which is its version) |
+| `crates/substrate/tests/e2e/node-boot.ts:32` | `ROYM_SERVICES` gets `'scheduling'`: the Playwright setup builds each component from this list (`:115` to `:117`) |
+| `crates/substrate/tests/common/roym.rs:81` | `service_visibility` gets `"scheduling" => Visibility::Private`, so the test deploy matches `roym.toml` |
+| `crates/substrate/tests/roym_restore_e2e.rs:27`, `:28` | `EXPORT_SERVICES` and `IMPORT_ORDER`, in the orders of D-C3b-16 |
+| `crates/substrate/tests/roym_trust_e2e.rs:340` | `DATA_SERVICES` |
 | `crates/roym_web/tests/method_contract/contract.rs:11`, `:29`, `:138` | `scheduling_api::method_table()` in the per-service table |
 | `mise.toml:64` | `scheduling` in the `build:roym` loop |
 | `xtask/src/main.rs:155` to `:162` | `"syneroym-roym-scheduling"` in `check_roym_deps`'s `siblings` |
-| `apps/roymctl/src/commands/roym/backup.rs:33` to `:35` | `scheduling` in both orders, before `transaction` |
-| `crates/roym_web/ui/src/screens/backup.ts:7` | a sixth bundle `scheduling` with `backup-bundle-scheduling` |
+| `apps/roymctl/src/commands/roym/backup.rs:33` to `:35` | `scheduling` in both orders: after `transaction` when exporting, before it when importing (D-C3b-16) |
+| `crates/roym_web/ui/src/screens/backup.ts:5` to `:38` | a sixth bundle `scheduling` with `backup-bundle-scheduling`, above `transaction` (D-C3b-16); the comment at `:5` ("The five app-data bundles") says six |
 | `crates/substrate/tests/e2e/global-setup.ts:131` to `:138`, `node-boot.ts:58` | the "six" in comments and the log line become "seven" |
 
-Before the step that adds the service, `git grep -n 'roym_directory\|roym-directory\|DIRECTORY\b'`
-over `crates/ apps/ xtask/ mise.toml .github/` is run, and every hit that
-lists services one by one is checked against this table. A hit that the
-table misses is added in the same step.
+Lists that are **not** changed, because they name the services that sign
+and `scheduling` signs nothing: `roymctl`'s `signing.rs:13`, the test
+harness's `SIGNING_SERVICES` (`common/roym.rs:38`), the Hub's
+`session/enrolment.ts:7`, and the router test
+`every_certificate_mounted_service_routes_under_its_own_name`
+(`router.rs:273`).
+
+Before the step that adds the service, this search is run, and **every
+hit is read** and checked against this table. It finds the identifier
+forms and the string forms (`['…', 'directory']`), which a search for
+identifiers alone misses:
+
+```bash
+git grep -nE "['\"]directory['\"]|roym[_-]directory|DIRECTORY\b" -- crates apps xtask mise.toml .github scripts
+```
+
+Most hits are not service lists (a directory hit's `sources[].directory`
+field, for example). A hit that is a list and that the table misses is
+added to the table and to D-C3b-15 in the same step.
 
 **D-C3b-3. The manifest names its service and its hooks (Q2, Q3).**
 `scheduling.json`:
@@ -691,9 +724,10 @@ pub struct PrepareInput { pub details: Details, pub window: Option<TimeWindow>,
                           pub listing_id: Option<String> }  // the terms' listing_id
 pub struct PrepareOutput { pub window: TimeWindow }
 
+/// No `window`: the slot id already names its window (D-C3b-5).
 #[serde(deny_unknown_fields)]
 pub struct ReserveInput { pub agreement: String, pub commitment_id: String,
-                          pub details: Details, pub window: Option<TimeWindow> }
+                          pub details: Details }
 
 pub enum ReservationState { Held, Confirmed }   // kebab-case on the wire
 pub struct ReservationView {
@@ -728,11 +762,26 @@ pointer row `key:`. The rows:
 
 | Row id | Payload | Written |
 | --- | --- | --- |
-| `rsv:<r>` | `{ agreement, commitment_id, generation, slot_id, seat, round, created_at_secs, expires_at_secs }` | created with its seat row |
-| `seat:<slot_id>:<seat>:<round>` | `{ reservation: r, slot_id, seat, round }` | created with its `rsv:` row |
-| `key:<agreement>:<commitment_id>` | `{ generation }` | `put` after the claim; a pointer only |
-| `decided:<r>` | `{ state: "confirmed" \| "lapsed", at_secs }` | created once |
-| `free:<r>` | `{ why: "released" \| "lapsed", at_secs }` | created once |
+| `rsv:<r>` | `{ kind: "rsv", agreement, commitment_id, generation, slot_id, seat, round, created_at_secs, expires_at_secs }` | created with its seat row, **first in the `create` list** |
+| `seat:<slot_id>:<seat>:<round>` | `{ kind: "seat", reservation: r, slot_id, seat, round }` | created with its `rsv:` row, second in the list |
+| `key:<agreement>:<commitment_id>` | `{ kind: "key", generation }` | `put` after the claim; a pointer only |
+| `decided:<r>` | `{ kind: "decided", state: "confirmed" \| "lapsed", at_secs }` | created once |
+| `free:<r>` | `{ kind: "free", why: "released" \| "lapsed", at_secs }` | created once |
+
+Every row has `kind`, as today's `hold:` and `seat:` rows do
+(`hold.rs:64`, `:74`). The collection indexes `kind` and `slot_id`, and
+the seat query filters on both, because `rsv:` rows carry `slot_id` too.
+
+**The order of the claim matters.** When any id in a `create` exists,
+`create` writes nothing and names the *first* existing id in the list
+(`data-layer.wit:186` to `:201`;
+`data_db/src/tests_create.rs:99`,
+`create_writes_nothing_and_names_the_first_existing_id`). `rsv:<r>` goes
+first, so a second caller with the same key gets the `rsv:` id back, not
+the seat id. Today's code uses the same order: the hold row first
+(`hold.rs:145` to `:163`). And the id alone never decides: after any
+`Some(id)`, `reserve` reads `current(key)` again, and returns the
+reservation if it now exists.
 
 - `r = content_digest("rsv_", { agreement, commitment_id, generation })`
   (`signed_record::content_digest`, the id rule of every Roym record).
@@ -758,17 +807,19 @@ reserve(input, now):
   if cur exists and free:<cur> absent:                # a repeat (EX-21)
       return view(cur)
   slot = availability row slot_id; None or capacity 0 -> refuse slot-unavailable
-  window must equal (slot.start_secs, slot.end_secs) -> else refuse slot-unavailable
   r = rid(agreement, commitment_id, g + 1)
   seats = query reservations where kind = "seat" and slot_id = slot_id  (all rounds)
   for n in 1..=min(slot.capacity, MAX_SLOT_CAPACITY):
       top = highest round of seat n in `seats` (0 if none)
       if top > 0 and not is_free(seats[n][top], now):    # C3b2: lapse_if_due here
           continue
-      match create([seat:<slot_id>:<n>:<top+1>, rsv:<r>]):
-          None               -> put key {g + 1}; return view(r)
-          Some(rsv:<r>)      -> put key {g + 1}; return view(r)   # an earlier crash
-          Some(seat id)      -> continue                          # lost the race for n
+      match create([rsv:<r>, seat:<slot_id>:<n>:<top+1>]):   # rsv first
+          None -> put key {g + 1}; return view(r)
+          Some(_) ->
+              (_, now_cur) = current(key)                 # never decide by the id alone
+              if now_cur exists and free:<now_cur> absent:
+                  put key; return view(now_cur)            # a same-key caller won, or a crash
+              continue                                     # another key won seat n
   refuse slot-taken
 
 is_free(row, now) = free:<row.reservation> exists
@@ -807,9 +858,20 @@ lapse(r, now):                                         # C3b2
   confirmed reservation that was later released (the writer's step 4
   releases confirmed ones) answers its stored `confirmed`; no caller asks
   for it, because `transaction` confirms only `promised` commitments.
-- The `seats` query uses an index on `slot_id` (`ensure_coll` with an
-  index, as `transaction`'s collections do). One query and at most 64
-  `get`s of `free:` rows per reserve. A slot has at most 64 seats.
+- The `seats` query uses the `kind` and `slot_id` indexes (`ensure_coll`
+  with indexes, as `transaction`'s collections do). It reads every round of
+  every seat of one slot, and then at most 64 `get`s of `free:` rows (one
+  per seat's top round). Rounds are never removed, so the read grows with
+  the number of bookings that one slot ever had. A slot is one time window
+  of one listing, so this stays small: each new round needs a release or a
+  lapse first. If a slot ever needs many rounds, the change is to read only
+  the top round of each seat by `get`, from a stored top round per seat;
+  it is not built now.
+- No `window` check in `reserve` (P9 of the review). The slot id is
+  `derive_slot_id(listing_id, start_secs, end_secs)`, and the schema check
+  `slot-matches-window` has already proved that the commitment's window
+  gives that id. So the stored slot cannot have another window.
+  `ReserveInput` has no `window` field (D-C3b-4).
 - `availability.remove` does not touch reservations, as today it does not
   touch holds.
 
@@ -847,6 +909,15 @@ pub struct ExtensionHooks;
   to `Refused { reason: code }`; a `Refused` with no code, and
   `BadReply`, to `Err` (a bug, not a refusal); `Transport` to `Err`, as
   `hold.rs:114` to `:117` does today for the catalog call.
+- **The reason is checked before it is used** (review P6). It goes into a
+  signed `not-formed` snapshot (`state_reason`) and into the
+  `reserve-failed` error, and `progress::validate` checks only that
+  `state_reason` is present for `not-formed` (`progress.rs:152`). Today the
+  reasons are two fixed strings (`decide.rs:443`, `:446`). So
+  `ExtensionHooks` accepts a code only when it is `[a-z0-9-]{1,64}`, the
+  form of every Roym reason code; any other code is `Err` (a bug in the
+  extension, not a refusal). A unit test covers a good code, a 65-byte code
+  and a code with an upper-case letter.
 - `reserve_counterparty_slots` (`agreement_ops.rs:260`) becomes
   `reserve_own(host, agreement, terms, DealRole::Counterparty, &hooks)`.
   On a refusal it releases what it reserved and answers `reserve-failed`
@@ -860,7 +931,9 @@ pub struct ExtensionHooks;
   form of D-C3b-12. No site matches `ResourceKind::ServiceInSlot` any more.
 - `prepare_terms` (`quote_ops.rs:144`) calls `reservation.prepare` for
   each commitment the author gives whose manifest has a prepare hook, and
-  sets `window` from the answer. `validate_and_apply_slot` (`:419` to
+  sets `window` from the answer. It has two callers, `quote.set`
+  (`quote_ops.rs:190`) and `quote.measure` (`measure_at`, `:254`), so both
+  make the call and both answer the same refusal codes (review P7). `validate_and_apply_slot` (`:419` to
   `:470`) and the `SlotKeyInput`/`SlotRow` imports go. This needs the
   manifest from the plain `CommitmentInput`; the registry lookup uses its
   `extension`.
@@ -878,7 +951,7 @@ code:
 
 | Point | Node | Call | Code |
 | --- | --- | --- | --- |
-| `quote.set` | author | `prepare` for each own commitment with the hook | `prepare_terms` |
+| `quote.set`, `quote.measure` | author | `prepare` for each own commitment with the hook | `prepare_terms` |
 | `agreement.accept` | counterparty | `reserve` own; on a refusal `release` the others, answer `reserve-failed` | `reserve_own` |
 | decision step 3 | writer | `reserve` own | `reserve_author_holds` |
 | decision step 4 | writer | `confirm` own; on a refusal store `not-formed`, `release` all own | `decide.rs:122`, `:587`; `recover.rs:185` |
@@ -888,6 +961,17 @@ code:
 | `not-formed` or `cancelled` snapshot filed | counterparty | `release` all own | `apply_newer_snapshot` |
 | countersigned half filed (C3b2) | counterparty | `confirm` own; on a refusal sign `commitment-failure` | D-C3b-11 |
 | a commitment ends `failed` or `cancelled` (C3b2) | each giver | `release` that commitment | D-C3b-12 |
+
+**The release at the quote's expiry runs once per agreement** (review
+P10). `agreement.get` (`agreement_ops.rs:508`) and `tick_conversation_at`
+(`progress_ops.rs:341`) run on every call after the expiry. Today that
+costs one local `get` that misses. With the hook client each call would be
+one sibling call per slot commitment, and a log line whenever
+`scheduling` answers an error. So after the first release that succeeds
+for every own commitment, the counterparty's node writes
+`released:<agreement>` in `ledger`, and both sites skip an agreement that
+has it. A lost marker costs one more idempotent release. The C3b1 import
+accepts the row when it names a held agreement.
 
 `release` is never called for a commitment that has a settlement half: the
 cascade leaves such a commitment on its own path (AG-36), and a cancel is
@@ -919,9 +1003,62 @@ anything:
   `derive_slot_id(listing_id, start_secs, end_secs)`.
 
 It cannot check a reservation against an agreement: that is in
-`transaction`'s bundle, and `scheduling` has no dependency on it. A backlog
-row records this. A restored reservation of an unknown agreement holds its
-seat until released (C3b1) or until it lapses (C3b2, if never confirmed).
+`transaction`'s bundle, and `scheduling` has no dependency on it. D-C3b-16
+says how a restore keeps the two in step.
+
+`scheduling.import` refuses an `rsv:` row whose id already exists in the
+store with other content (`reservation-differs`). Import merges rows into
+the store, as every Roym import does, so this is what stops a bundle from
+moving a restored reservation to another seat.
+
+**D-C3b-16. A restore keeps every agreed seat** (review P3). Today the seat
+rows and the agreements are in one bundle and are checked together
+(`sections.rs:498` to `:520`, `:600` to `:615`). After the move they are
+two bundles, exported one after the other, and the Hub imports each file
+on its own, in any order (`backup.ts:7` to `:38`). Two cases can then
+happen:
+
+| Case | Effect | How C3b handles it |
+| --- | --- | --- |
+| An agreement is restored, its reservation is not | the seat looks free: a second booking can take it — a double booking | **fixed**: `transaction.import` reserves again (below) |
+| A reservation is restored, its agreement is not | one seat stays taken by nobody | **documented**: safe, and visible as one seat fewer; a backlog row |
+
+What `transaction.import` does, after it has written its rows:
+
+```text
+for each restored agreement that is not ended
+        (not declined, expired, not-formed, cancelled or closed),
+    for each commitment that this node gives and that needs_reservation,
+        with no settlement half, and whose state is promised (or no snapshot yet):
+        reserve(agreement, c)            # idempotent: a restored reservation is found
+        if the agreement holds the writer's countersigned half: confirm(agreement, c)
+        a refusal or an error -> listed in the import output, not a failed import
+ImportOutput gains: reservations_restored: u32, reservations_failed: [{agreement, commitment_id, reason}]
+```
+
+- When `scheduling` was imported first, every `reserve` finds its restored
+  reservation and changes nothing.
+- When `transaction` is imported first, the slots are not there yet, so
+  each `reserve` is refused `slot-unavailable` and is listed. The fix is
+  to import `scheduling`, then `transaction` again; an import of the same
+  bundle again is a repeat (rows are merged, and every reserve is now
+  found). The Hub's backup screen lists `scheduling` above `transaction`,
+  and its import line for `transaction` shows the failed list with that
+  sentence (`backup-reservations-failed`, a new message).
+- `roymctl roym backup` imports in the fixed order, `scheduling` before
+  `transaction`, and prints the failed list.
+- **Export order:** `transaction` first, then `scheduling`. A booking that
+  is made between the two exports then has its seat in the archive and no
+  agreement: the safe case. The other order would give the double booking.
+  The `EXPORT_ORDER` in `roymctl` gets a comment that says this.
+
+**Why not also release a reservation with no agreement.** The reviewer
+proposed this too: `transaction.import` lists every reservation through a
+new local `reservation.list` and releases the ones no restored agreement
+names. It is rejected for C3b. The case is safe (no double booking), it
+needs one more hook, and a `transaction` import would then free seats of
+agreements that a second, later `transaction` import would bring back. The
+backlog row "A restored seat with no agreement stays taken" records it.
 
 **D-C3b-10 (C3b2). The `commitment-failure` record.** A new module
 `crates/roym_core/src/commitment_failure.rs` (with `commitment_failure/tests.rs`),
@@ -991,10 +1128,35 @@ match hooks.confirm(agreement, c):
   Err(transport or bug)      -> leave it; the next sync tries again
 make_failure:
   stored = get ledger failure:<agr>:<cid>
-  if none: sign the record; create failure:<agr>:<cid> { envelope, record_id, message_id: None }
+  if none:
+      sign the record
+        signing error (NotEnrolled, Expired, Stale) -> write no row;
+              count it in SyncOutput.unsent_failures; the next sync tries again
+      create failure:<agr>:<cid> { envelope, record_id, message_id: None }
            (a lost race on the create reuses the stored row)
   if message_id is None: send the card; patch message_id
+        send error -> keep the row; count it in SyncOutput.unsent_failures
 ```
+
+**A failure that cannot be signed or sent is reported** (review P5).
+Signing uses the person key with no session, and it can fail with
+`NotEnrolled`, `Expired` or `Stale` (`resolve_principal_and_owner`,
+`app.rs:288` to `:312`). No row is written then, so no unsigned record can
+ever be sent, and the next sync confirms again (refused again) and tries to
+sign again. `SyncOutput` (`sync.rs:46` to `:54`) has no error field today.
+C3b2 adds `unsent_failures: u32`: the number of commitment failures this
+sync could not sign or send. The Hub needs no change for it; `roymctl roym
+transaction sync` prints the field with the others. The method shape
+`transaction_sync` is regenerated.
+
+**The deviation this rule makes** (review P4). The agreements doc says a
+counterparty "that released its reservations at the expiry and then gets a
+late countersigned half confirms as usual; a refused confirm ends in
+`reservation-lost`" (`:620`). Because `confirm` never takes a seat (owner
+answer, section 2.1), that confirm is always refused, also when the seat is
+free. So such a deal always ends with the commitment `failed`
+`reservation-lost`. The roym-agreements Deviations record it (section 9),
+and `:620` is corrected at its close-out.
 
 The record is made once: the row is stored before the send, and a repeat
 sends the stored record again (the pattern of `step.add`,
@@ -1093,7 +1255,11 @@ file uses:
 | `../../apps/roymctl/src/commands/roym/backup.rs` | `"<s>"` in both order lists (not `web`) |
 | `../roym_web/ui/src/screens/backup.ts` | `exportMethod: "<s>.export"` (not `web`) |
 | `../substrate/src/runtime/roym.rs` | `fn init_roym_<s>(` (all six exist today, `roym.rs:132` to `:388`) |
-| `../roym_web/tests/dual_build_parity/helpers.rs` | `("<s>", test_constants::roym_<s>_wasm_path())`, `web` included (the list at `helpers.rs:890` to `:897` has all six today) |
+| `../roym_web/tests/dual_build_parity/helpers.rs` | `("<s>", test_constants::roym_<s>_wasm_path())`, `web` included (the list at `helpers.rs:890` to `:897` has all six today), and `"<s>" => self.` (the two match arms) |
+| `../substrate/tests/e2e/node-boot.ts` | `'<s>'` inside the `ROYM_SERVICES = [` line |
+| `../substrate/tests/common/roym.rs` | for each service whose `roym.toml` `visibility` is not `public`: `"<s>" => Visibility::<Private or Internal>` in `service_visibility`, matching the manifest |
+| `../substrate/tests/roym_restore_e2e.rs` | `"<s>"` in `EXPORT_SERVICES` and in `IMPORT_ORDER` (not `web`) |
+| `../substrate/tests/roym_trust_e2e.rs` | `"<s>"` in `DATA_SERVICES` (not `web`) |
 
 - Each row is one small check with a message that names the file and the
   missing service, so a failure says what to add.
@@ -1176,12 +1342,18 @@ Done with this commit.
 
 - `app/hooks.rs` (D-C3b-6); delete `hold.rs`. Every site of section 2.2,
   point 3, in the order of D-C3b-7. `prepare_terms` calls `prepare`.
+- `LedgerKind::Released` for the marker of D-C3b-7, with its import check.
 - `LedgerKind::Hold` and `::Seat` go (`ledger.rs:11`, `:12`), with
   `HoldLedgerRow`, `SeatLedgerRow` and their import checks
   (`sections.rs:498` to `:520`, `:600` to `:615`). `SCHEMA_VERSION` 6 to 7,
   with its doc sentence.
 - `roym.toml` and `wire_roym_topology`: `transaction` depends on
   `conversation` and `scheduling` (Q8).
+- `transaction.import` reserves again after it writes its rows, and its
+  output gains `reservations_restored` and `reservations_failed`
+  (D-C3b-16); the code goes in a new `backup/reservations.rs`, because
+  `backup.rs` is at 770 lines. Regenerate the `transaction_import` method
+  shape.
 - `catalog`: D-C3b-8.
 - The tests that read `hold:` and `seat:` rows change to read the fake's
   state or the outcome (section 7.3): `tests/accept.rs:289` to `:474`,
@@ -1196,13 +1368,17 @@ Done with this commit.
 #### Step 6 — `roymctl`, Hub and two-node
 
 - `roymctl roym backup` orders (D-C3b-2).
-- Hub: the backup screen's sixth bundle, `backup-bundle-scheduling` in
-  `en.ftl` and `hi.ftl`, the backup screen's test.
+- Hub: the backup screen's sixth bundle, listed above `transaction`;
+  `backup-bundle-scheduling` and `backup-reservations-failed` ("Some booked
+  slots could not be restored. Import the Scheduling file, then import the
+  Transaction file again.") in `en.ftl` and `hi.ftl`; the backup screen's
+  test, including the failed-list line (D-C3b-16).
 - Two-node: `roym_booking_e2e.rs` passes unchanged (its calls go through
-  the router). `roym_restore_e2e.rs:33` to `:42` exports and imports each
-  service by name: add `scheduling` to its list, and check after the
-  import that the booked seat is still taken (a second reserve of the last
-  seat is refused).
+  the router). `roym_restore_e2e.rs` exports and imports each service by
+  name from `EXPORT_SERVICES` and `IMPORT_ORDER` (`:27`, `:28`; the
+  functions at `:33` to `:42`): add `scheduling` in the orders of
+  D-C3b-16, and check after the import that the booked seat is still taken
+  (a second booking of the last seat ends `not-formed` with `slot-taken`).
 - `roym_app_e2e.rs:10`, `:149` (comments that say six services).
 
 #### Step 7 — Sizes, docs and close-out of C3b1
@@ -1287,6 +1463,14 @@ On `TestHost`, with `_at(now)` entry points.
 
 - `the_last_seat_goes_to_one_of_two_reserves`: capacity 1, two keys, one
   `Held`, one `slot-taken`.
+- `two_reserves_of_one_key_return_one_reservation` (EX-21, review P1): the
+  first caller's claim is written between the second caller's `seats` read
+  and its `create` (call the claim function with the stale `seats` list,
+  if `TestHost` has no hook to run a write between two calls). Both get
+  the same reservation; there is one `rsv:` row and one `seat:` row.
+- `a_seat_query_counts_only_seat_rows`: capacity 2, one booking: a second
+  key still gets `Held` (the `rsv:` row, which also has `slot_id`, is not
+  counted as a seat).
 - `a_repeat_reserve_returns_the_same_reservation` (EX-21), also after a
   crash between the claim and the `key:` put (`crash_on_write("reservations",
   "key:")`, then a repeat finds the `rsv:` row).
@@ -1298,7 +1482,7 @@ On `TestHost`, with `_at(now)` entry points.
   (section 2.2, point 6).
 - `a_reserve_after_release_takes_a_new_generation`.
 - `capacity_is_capped_at_64`; `capacity_0_is_slot_unavailable`; a missing
-  slot is `slot-unavailable`; a window that is not the slot's is refused.
+  slot is `slot-unavailable`.
 - `confirm_of_an_unknown_key_is_reservation_unknown`; a repeat confirm
   succeeds.
 
@@ -1306,7 +1490,15 @@ On `TestHost`, with `_at(now)` entry points.
 with the same text as today's `quote.set` errors.
 
 `backup.rs` (C3b1): export then import keeps a held and a confirmed
-reservation and its seat; one refused case per rule of D-C3b-9.
+reservation and its seat; one refused case per rule of D-C3b-9; an `rsv:`
+row that exists with other content is refused `reservation-differs`.
+
+`transaction` restore (C3b1, `tests/restore_reservations.rs`, D-C3b-16):
+`import_reserves_again_the_seat_of_an_agreed_deal` (the fake's store is
+empty: one reserve and one confirm, `reservations_restored: 1`);
+`import_finds_a_restored_reservation` (no change);
+`import_before_scheduling_lists_the_failed_seats` (`slot-unavailable`
+listed, the import itself succeeds); `an_ended_agreement_is_not_reserved`.
 
 `lapse.rs` (C3b2):
 
@@ -1341,6 +1533,16 @@ C3b1, with the fake hooks of D-C3b-6:
   `tests/refuse/writer.rs` (a refusal of a superseded version releases).
 - `quote_set_fills_the_window_from_the_prepare_hook`, and one refusal
   passed through with its code.
+- `quote_measure_refuses_the_same_codes_as_quote_set` (review P7): the
+  three `prepare` refusals, each through both methods.
+- `an_extension_reason_that_is_not_a_code_is_an_error` (review P6): the
+  fake answers a 65-byte code and an upper-case code; `agreement.accept`
+  answers an internal error and signs nothing; a good code passes through
+  as `reserve-failed` with `data.reason`.
+- `the_expiry_release_runs_once_per_agreement` (review P10): after the
+  quote's expiry, a first `agreement.get` releases (one hook call) and
+  writes `released:<agreement>`; a second `agreement.get` and a sync make
+  no hook call.
 - `scheduling_and_one_shot_pass_the_same_states` (EX-4): one agreement with
   a scheduling commitment and one with a one-shot commitment; both go
   `accepted` → `agreed` → `closed` with the same snapshot states; only the
@@ -1361,6 +1563,17 @@ C3b2, new file `tests/commitment_failure.rs`:
   sync sends the same record id.
 - `a_transport_error_on_confirm_retries_on_the_next_sync`, and writes no
   failure.
+- `a_failure_that_cannot_be_signed_is_retried_and_reported` (review P5):
+  the signing certificate is expired; the sync writes no `failure:` row,
+  answers `unsent_failures: 1`, and sends nothing; after a new certificate
+  is installed, the next sync signs and sends one record.
+- `a_late_half_after_the_expiry_release_gives_a_commitment_failure`
+  (review P4): the counterparty accepts; its clock passes the quote's
+  expiry and `agreement.get` releases its seat; then the writer's
+  countersigned half (signed before the expiry) is filed. The deal moves
+  to `agreed`, the confirm is refused `reservation-lost`, and one failure
+  is signed and sent. The fake models the real rule: a released key
+  refuses `confirm`.
 - `a_confirmed_commitment_is_not_confirmed_again` (the marker row).
 - `an_ended_commitment_is_never_confirmed`: a counterparty commitment that
   the snapshot shows `cancelled`, with no marker row, gets no `confirm`
@@ -1370,7 +1583,8 @@ C3b2, new file `tests/commitment_failure.rs`:
   author's service, a currency commitment the counterparty pays); the
   writer files the failure; its next snapshot has `c1 failed
   reservation-lost`, `c2 cancelled other-commitment-failed`, `c3 cancelled
-  other-commitment-failed`.
+  other-commitment-failed`, and the agreement's state is `closed`, because
+  every commitment is now final (`progress.rs:243`; review P11).
 - `a_commitment_with_a_half_keeps_its_path`: c3's payer half is filed
   first; c3 stays `claimed`.
 - `the_writer_refuses_a_failure_from_the_wrong_signer`, `…_for_a_commitment_with_no_reserve_hook`,
@@ -1477,7 +1691,7 @@ branch. C3b2 grows
 ### 7.10 Hindi text
 
 New messages for the owner to review before each merge. C3b1:
-`backup-bundle-scheduling`. C3b2: the seven of D-C3b-13, and the removal of
+`backup-bundle-scheduling`, `backup-reservations-failed`. C3b2: the seven of D-C3b-13, and the removal of
 `commitment-state-other-failed`. Each has a Devanagari letter
 (`catalog.test.ts:119` to `:131`).
 
@@ -1521,7 +1735,7 @@ New messages for the owner to review before each merge. C3b1:
 | "One Roym output carries another node's card data as an untyped `Value`" (`:537`) | Not targeted. No file name of the row changes (`PeerStep` is gone already, section 2.2 point 2). |
 | "`RECORD_TYPES` is not read by any verifier" | Not targeted. C3b2 adds `commitment-failure` to the table; note it in the row. |
 | "Hub transaction action panel …" | Unchanged. The failure card is drawn, and needs no action. |
-| New: "The scheduling backup is not checked against `transaction`'s agreements" (D-C3b-9) | C3b1 adds it. Target: TBD, with a composed signed bundle (the Hub's backup comment, `backup.ts:5`). |
+| New: "A restored seat with no agreement stays taken" (D-C3b-16) | C3b1 adds it. A reservation restored from the `scheduling` bundle whose agreement is not in the restored `transaction` bundle holds its seat for good (a confirmed one never lapses). It is safe (no double booking) and shows as one seat fewer; the workaround is to raise the slot's capacity. Target: TBD, with a composed signed bundle (the Hub's backup comment, `backup.ts:5`). |
 | New: "A reservation lapses only when another booking needs its seat" (Q4 (a)) | C3b2 adds it, as a note on the design, not a defect: the seat is free for every new booking, and nothing frees it eagerly. Target: none unless a screen shows free seats. |
 | New: "A reservation's expiry cannot be tested across two nodes" (Q5 (a)) | C3b2 adds it. Target: TBD, when nodes get a test clock. |
 | New: "The receiver of a commitment cannot own its reservation" | C3b1 adds it from the agreements doc ("Who reserves", `:763`): a visible `reserved_by` field if M08F needs it. Target: M08F. |
@@ -1536,6 +1750,8 @@ Each PR fixes the statements it makes false. C8 does the full pass.
 - `AGENTS.md:263` (Architecture, Roym product): "a SynApp of six services"
   becomes seven, with `scheduling` in the crate list and one sentence on
   what it holds (C3b1).
+- `docs/system-architecture.md:559` ("The six Roym services use this to be
+  local-only": seven) (C3b1).
 - `docs/system-architecture.md:1143`, `:1180`, `:3096` (six services; add
   `scheduling`, its collections and that `transaction` reaches it through
   the reserve hooks) (C3b1); the card types count near `:3123`
@@ -1566,7 +1782,11 @@ Each PR fixes the statements it makes false. C8 does the full pass.
   - roym-agreements `## Deviations`: AG-14 and AG-15 now run through the
     scheduling extension (closes the C1 note at `:1233`); AG-36's snapshot
     and release part (closes the C1 note at `:1243`); `conversation` in
-    `CommitmentFailurePayload` (D-C3b-10); AG-16's test kind (Q5).
+    `CommitmentFailurePayload` (D-C3b-10); AG-16's test kind (Q5); a late
+    countersigned half after the counterparty's expiry release ends in
+    `reservation-lost`, because `confirm` never takes a seat (owner answer
+    on `confirm`; `:620` is corrected at close-out); `transaction.import`
+    reserves again the seats of restored agreements (D-C3b-16).
   - roym-value-exchange `## Deviations`: VX-10 met through the hook (no
     text change).
   - [task.md](task.md): the C3b result line (as C3a's), and section 1's
@@ -1595,7 +1815,10 @@ C3b1:
   next to `profile`'s.
 - [ ] Component sizes recorded, with `scheduling` alone, and within limits.
 - [ ] Deviations, backlog rows and living docs done.
-- [ ] Owner reviewed `backup-bundle-scheduling` in Hindi.
+- [ ] A restore of the two bundles in either order ends with every agreed
+  seat taken, after the documented repeat (D-C3b-16).
+- [ ] Owner reviewed `backup-bundle-scheduling` and
+  `backup-reservations-failed` in Hindi.
 - [ ] `mise run verify` passes with no `--skip`.
 
 C3b2:
