@@ -210,6 +210,7 @@ Change docs: roym-agreements, roym-value-exchange (VX-11).
 - Demo: the plan decides (one-shot looks the same as today's order to a person).
 - **Split (owner decision, 2026-11-20, [C3a plan](slice-c3a-implementation-plan.md), Q1):** C3a1 (extension frame) and C3a2 (step records). Each is one PR.
 - **C3a1 result ([PR #374](https://github.com/syneroym/syneroym/pull/374)):** the `scheduling` and `one-shot` manifests and the fixed registry in `roym_core`; one `details` check for every caller; unknown extensions (the writer refuses, the counterparty files, a giver cannot accept, Q9); a listing names its extension in place of `BookingMode`; the Hub field view with catalog labels. The `step` record and card and the step names are C3a2.
+- **C3a2 result ([PR #376](https://github.com/syneroym/syneroym/pull/376)):** the signed `step` record (`step.add`, `step.list`, `step.verify`, `roymctl roym step`), filed on the other node and kept in export and import; the first step type, `scheduling/started`, recorded by the giver; the generic `step` card in the Hub, with the step name from the catalog in the reader's language; the two-node test and the demo story `60-roym-step`. Work started is a card, not a state. The Hub has no button to make a step (C6). Widget labels are C4.
 
 Change docs: roym-extensions, roym-multilingual (ML-28).
 

@@ -14,6 +14,7 @@ living-docs-touched:
   - AGENTS.md
 demo:
   - crates/substrate/tests/e2e/demo/40-roym-languages.spec.ts
+  - crates/substrate/tests/e2e/demo/60-roym-step.spec.ts
 ---
 # Roym multilingual foundation
 
@@ -612,7 +613,7 @@ Checked: `@fluent/bundle` 0.19.1 (Apache-2.0, no runtime dependencies) adds 4,20
 - **An existing directory index is not rebuilt automatically.** The node owner runs `directory.reindex`. No migration code before release.
 - **The chat snippet starts at the beginning of a cross-script hit**, because the Hub cannot find the matched word in another script.
 - **ML-26 is met in M08B for four hook points only.** M08B builds the hook points that exist now: the search query, record display (`listing`, `request`, `quote`), the chat message and agreement review. The widget answer hook point comes with M08C (widgets), the opinion hook point with M08G (opinions), and the display of offerings, wants and storefronts with M08D. Each of those sub-milestones adds its hook point and its test.
-- **ML-28 is met in M08B for taxonomy attribute names and choice values only.** Widgets and extensions do not exist yet. In M08C, extension field labels come from the string catalog in C3a1 and extension step names in C3a2, and widget labels in C4. Each part adds its messages and tests ([M08C task.md](../../milestones/M08C-deal-core-and-extensions/task.md), C3a and C4).
+- **ML-28 is met in M08B for taxonomy attribute names and choice values only.** Widgets and extensions do not exist yet. In M08C, extension field labels come from the string catalog (built in C3a1) and extension step names (built in C3a2); widget labels are still open and come in C4. Each part adds its messages and tests ([M08C task.md](../../milestones/M08C-deal-core-and-extensions/task.md), C3a and C4).
 - **Hook points ask for the list of target languages once and make no `translate` call with the v1 node.** ML-26 reads as if each hook point calls the interface and gets `unavailable`. The Hub asks `translation.targets` once after sign-in, and a hook point draws its translate action only when the list allows it (ML-16, ML-27). With the v1 node the list is empty, so no hook point calls `translate`. The `unavailable` answer is tested with a stub engine that answers `-32020`, not by the v1 node.
 - **The search-query hook point runs in the Hub, not in the directory service (Q1).** The person sees the translated query and can change it before the search. A query translated inside the service would change results silently. `roymctl` has no translation.
 - **`detect-language` has no Roym method (Q6).** Every hook point knows the source language of its text or sends none, so no caller exists in v1. The host function and the WIT stay, and the parity test calls it on both builds.

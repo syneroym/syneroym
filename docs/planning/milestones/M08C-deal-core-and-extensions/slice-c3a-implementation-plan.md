@@ -1719,7 +1719,8 @@ C3a1:
 C3a2:
 
 - [x] Every C3a2 row of section 3 names a test that exists and passes.
-  (EX-7, EX-8 and ML-28 name them in their change docs; all passed locally.)
+  (EX-7, EX-8 and ML-28 name them in their change docs; all passed locally
+  and in CI on `3d72a38c`.)
 - [x] The two-node step test passes with no hardcoded port.
   (`roym_step_e2e`; the restore test also keeps a step.)
 - [x] Export and import keep steps, with their plain `data`; the
@@ -1727,13 +1728,17 @@ C3a2:
   with a test. (`imported_step_card_has_its_plain_data`. The decline card
   was marked not verified after an import; fixed, with
   `a_decline_card_is_verified_after_export_and_import`.)
-- [ ] The demo story `60-roym-step` (Q10) passes in `mise run demo` and in
+- [x] The demo story `60-roym-step` (Q10) passes in `mise run demo` and in
   `npm test`, and the C3a2 row in status.md lists its three files.
-  (Stories 20, 50 and 60 passed together locally, and the main and
-  multihop Playwright suites passed. The full run is CI's.)
+  (Stories 20, 50 and 60 passed together locally; CI "Playwright E2E"
+  passed on `3d72a38c`. The story is listed in the `demo:` list of the
+  extensions and multilingual change docs.)
 - [x] Component sizes recorded and within limits.
-- [ ] Owner reviewed the Hindi message.
-- [ ] `mise run verify` passes with no `--skip`.
+- [ ] Owner reviewed the Hindi message. Open: `ext-scheduling-step-started`,
+  waiting for the owner.
+- [x] `mise run verify` passes with no `--skip`. Replaced by CI, by owner
+  decision (2026-11-21): every CI job passed on `3d72a38c`
+  ([run](https://github.com/syneroym/syneroym/actions/runs/44861623903)).
 
 ## 11. What C3a does not do
 
