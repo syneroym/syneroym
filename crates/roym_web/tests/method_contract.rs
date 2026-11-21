@@ -32,5 +32,7 @@ mod shapes;
 mod shapes_catalog;
 #[path = "method_contract/shapes_directory.rs"]
 mod shapes_directory;
+#[path = "method_contract/shapes_scheduling.rs"]
+mod shapes_scheduling;
 #[path = "method_contract/shapes_transaction.rs"]
 mod shapes_transaction;

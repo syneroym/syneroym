@@ -12,6 +12,7 @@ use syneroym_roym_catalog::native::NativeCatalog;
 use syneroym_roym_conversation::native::NativeConversation;
 use syneroym_roym_directory::native::NativeDirectory;
 use syneroym_roym_profile::native::NativeProfile;
+use syneroym_roym_scheduling::native::NativeScheduling;
 use syneroym_roym_transaction::native::NativeTransaction;
 use syneroym_roym_web::native::NativeWeb;
 use syneroym_rpc::{
@@ -106,6 +107,7 @@ pub(crate) struct TestNativeServiceProxy {
     pub(crate) conversation: Arc<NativeConversation<NativeAppHost>>,
     pub(crate) catalog: Arc<NativeCatalog<NativeAppHost>>,
     pub(crate) transaction: Arc<NativeTransaction<NativeAppHost>>,
+    pub(crate) scheduling: Arc<NativeScheduling<NativeAppHost>>,
     pub(crate) directory: Arc<NativeDirectory<NativeAppHost>>,
     /// `host_for_wire`-built instances the foreign-wire targets route to,
     /// so a fan-out call is a real wire round trip on the native stack too.
@@ -154,6 +156,8 @@ impl ServiceProxy for TestNativeServiceProxy {
             self.catalog.clone()
         } else if target == did_for_service("transaction") {
             self.transaction.clone()
+        } else if target == did_for_service("scheduling") {
+            self.scheduling.clone()
         } else if target == did_for_service("directory") {
             self.directory.clone()
         } else if target == did_for_service("web") {

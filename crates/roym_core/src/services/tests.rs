@@ -100,6 +100,30 @@ fn every_service_but_web_is_in_the_cli_backup_orders() {
     require_in_list(file, "const IMPORT_ORDER", &without_web());
 }
 
+/// A restore keeps every agreed seat only when the seats are exported after
+/// the agreements and imported before them.
+#[test]
+fn the_backup_orders_put_scheduling_around_transaction() {
+    for file in
+        ["../../apps/roymctl/src/commands/roym/backup.rs", "../substrate/tests/roym_restore_e2e.rs"]
+    {
+        let text = read(file);
+        let position = |list: &str, name: &str| {
+            list_after(&text, list).find(&format!("\"{name}\"")).expect("service in list")
+        };
+        assert!(
+            position("const EXPORT_SERVICES", "transaction")
+                < position("const EXPORT_SERVICES", "scheduling"),
+            "{file}: export transaction before scheduling"
+        );
+        assert!(
+            position("const IMPORT_ORDER", "scheduling")
+                < position("const IMPORT_ORDER", "transaction"),
+            "{file}: import scheduling before transaction"
+        );
+    }
+}
+
 #[test]
 fn every_service_but_web_has_a_backup_line_in_the_hub() {
     require_text("../roym_web/ui/src/screens/backup.ts", &without_web(), |name| {
@@ -145,8 +169,10 @@ fn the_test_harness_visibility_matches_the_manifest() {
             "private" => "Private",
             _ => continue,
         };
+        let arm = format!("=> Visibility::{word}");
+        let named = format!("\"{}\"", service.name);
         assert!(
-            arms.contains(&format!("\"{}\" => Visibility::{word}", service.name)),
+            arms.lines().any(|line| line.contains(&arm) && line.contains(&named)),
             "crates/substrate/tests/common/roym.rs: service_visibility must map '{}' to {word}, \
              as app/roym.toml does",
             service.name
@@ -185,4 +211,13 @@ fn every_service_but_web_is_in_each_signing_list() {
         "export const SIGNING_SERVICES",
         &without_web(),
     );
+}
+
+#[test]
+fn by_name_finds_each_service_and_nothing_else() {
+    for service in ALL {
+        assert_eq!(super::by_name(service.name), Some(service));
+    }
+    assert_eq!(super::by_name("nope"), None);
+    assert_eq!(super::by_name(""), None);
 }

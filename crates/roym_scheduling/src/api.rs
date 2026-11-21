@@ -11,6 +11,10 @@ use syneroym_roym_core::{
         },
     },
     services,
+    signing::verbs::{
+        InstallCertificateInput, InstallCertificateOutput, SigningStatusOutput,
+        install_signing_certificate, signing_status,
+    },
 };
 
 use crate::app::{availability, backup, prepare, reservation};
@@ -31,6 +35,8 @@ syneroym_roym_core::service_methods! {
     "reservation.release": reservation::release [ReservationKey => ReleaseOutput],
     "scheduling.export": backup::export [NoParams => Bundle],
     "scheduling.import": backup::import [ImportInput => backup::SchedulingImportOutput],
+    "scheduling.signing-status": signing_status [NoParams => SigningStatusOutput],
+    "scheduling.install-signing-certificate": install_signing_certificate [InstallCertificateInput => InstallCertificateOutput],
 }
 
 pub fn method_table() -> Vec<MethodInfo> {

@@ -30,9 +30,16 @@ pub const RESTORE_DATA_SUCCESS_NOTICE: &str =
      you talk to, and start new conversations with them. Repeated imports are safe to run if a \
      previous restore was interrupted.";
 
+/// The transaction bundle is exported before the scheduling bundle: a booking
+/// made between the two exports then has its seat in the archive and no
+/// agreement, which only leaves one seat taken. The other order would archive
+/// an agreement whose seat is missing.
 const EXPORT_SERVICES: &[&str] =
-    &["profile", "catalog", "conversation", "transaction", "directory"];
-const IMPORT_ORDER: &[&str] = &["profile", "catalog", "conversation", "transaction", "directory"];
+    &["profile", "catalog", "conversation", "transaction", "scheduling", "directory"];
+/// Scheduling is imported before transaction, so the transaction import
+/// finds each agreed seat already held.
+const IMPORT_ORDER: &[&str] =
+    &["profile", "catalog", "conversation", "scheduling", "transaction", "directory"];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RoymArchive {

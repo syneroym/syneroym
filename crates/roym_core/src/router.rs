@@ -1,6 +1,8 @@
 //! Method prefix routing table.
 
-use crate::services::{CATALOG, CONVERSATION, DIRECTORY, PROFILE, Service, TRANSACTION};
+use crate::services::{
+    CATALOG, CONVERSATION, DIRECTORY, PROFILE, SCHEDULING, Service, TRANSACTION,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MethodAuth {
@@ -27,7 +29,6 @@ const ROUTES: &[(&str, Service, MethodAuth)] = &[
     ("block.", PROFILE, MethodAuth::Owner),
     ("report.", PROFILE, MethodAuth::Owner),
     ("listing.", CATALOG, MethodAuth::Owner),
-    ("availability.", CATALOG, MethodAuth::Owner),
     // The certificate verbs (`catalog.signing-status` /
     // `catalog.install-signing-certificate`) reach the catalog through
     // its own name; without this row `roym enrol-signing` cannot see it.
@@ -45,6 +46,13 @@ const ROUTES: &[(&str, Service, MethodAuth)] = &[
     // service through its own name, and `transaction.sync` / `.thread` /
     // `.export` / `.import` ride the same prefix.
     ("transaction.", TRANSACTION, MethodAuth::Owner),
+    // Slots are answered by the scheduling service. Only `transaction` calls
+    // its `reservation.*` hooks, through the sibling call, so no row routes
+    // them.
+    ("availability.", SCHEDULING, MethodAuth::Owner),
+    // The certificate verbs and the bundle methods ride the service's own
+    // name, as for `catalog.` and `transaction.`.
+    ("scheduling.", SCHEDULING, MethodAuth::Owner),
     ("directory.", DIRECTORY, MethodAuth::Owner),
     ("member.", DIRECTORY, MethodAuth::Owner),
     ("credential.", DIRECTORY, MethodAuth::Owner),
@@ -267,10 +275,11 @@ mod tests {
 
     #[test]
     fn every_certificate_mounted_service_routes_under_its_own_name() {
-        // The five services list their certificate verbs in their method
+        // The six services list their certificate verbs in their method
         // tables; each must have a routable `<name>.signing-status`, or
         // `roym enrol-signing` cannot reach it.
-        let expected = ["profile", "catalog", "conversation", "transaction", "directory"];
+        let expected =
+            ["profile", "catalog", "conversation", "transaction", "scheduling", "directory"];
         for name in expected {
             let method = format!("{name}.signing-status");
             let service = route(&method).unwrap_or_else(|| panic!("{method} is not routable"));

@@ -29,7 +29,15 @@ export const GREETER_WASM = path.join(
 // Encryption Keys with the node's KEK before they persist anything.
 export const TEST_KEK = '21'.repeat(32);
 
-const ROYM_SERVICES = ['profile', 'conversation', 'catalog', 'transaction', 'directory', 'web'];
+const ROYM_SERVICES = [
+  'profile',
+  'conversation',
+  'catalog',
+  'transaction',
+  'scheduling',
+  'directory',
+  'web',
+];
 
 // The setups run under a fixed `globalTimeout`. A plain `npm install` still
 // makes registry round trips even when everything is on disk -- observed at
@@ -55,7 +63,7 @@ export interface BuildOptions {
   miniappClient?: boolean;
   /** Client bundle and WASM component of the mini-app that runs in the sandbox. */
   miniappWasm?: boolean;
-  /** Roym Hub bundle and the six Roym service components. */
+  /** Roym Hub bundle and the seven Roym service components. */
   roym?: boolean;
   /** The greeter component used by the substrate demo story. */
   greeter?: boolean;

@@ -1,0 +1,6 @@
+{
+  "imported": {
+    "availability": "number",
+    "reservations": "number"
+  }
+}

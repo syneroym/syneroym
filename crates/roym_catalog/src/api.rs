@@ -8,7 +8,6 @@ use syneroym_roym_core::{
         EnvelopeHistoryOutput, MethodInfo, NoParams, PingOutput, PublicationLimitsInput, Reply,
         VerifyInput,
         catalog::{ListingGetOutput, ListingKeyInput},
-        scheduling::{SlotKeyInput, SlotRow},
     },
     safety::PublicationLimits,
     services,
@@ -18,7 +17,7 @@ use syneroym_roym_core::{
     },
 };
 
-use crate::app::{availability, backup, limits, listing_ops};
+use crate::app::{backup, limits, listing_ops};
 
 async fn ping<H: AppHost>(_host: &H, _: NoParams) -> Reply<PingOutput> {
     Ok(PingOutput { service: services::CATALOG.name.to_string() })
@@ -34,10 +33,6 @@ syneroym_roym_core::service_methods! {
     "listing.verify": listing_ops::verify [VerifyInput => ListingVerdict],
     "listing.limits": limits::limits [NoParams => PublicationLimits],
     "listing.set-limits": limits::set_limits [PublicationLimitsInput => PublicationLimits],
-    "availability.set": availability::set [availability::AvailabilitySetInput => availability::AvailabilitySetOutput],
-    "availability.get": availability::get [SlotKeyInput => Option<SlotRow>],
-    "availability.list": availability::list [availability::AvailabilityListInput => availability::AvailabilityListOutput],
-    "availability.remove": availability::remove [SlotKeyInput => availability::AvailabilityRemoveOutput],
     "catalog.export": backup::export [NoParams => Bundle],
     "catalog.import": backup::import [ImportInput => backup::CatalogImportOutput],
     "catalog.signing-status": signing_status [NoParams => SigningStatusOutput],

@@ -21,12 +21,11 @@ use crate::api;
 /// Version 2 gave the service its first state. Version 3 renames the
 /// service-location values inside signed listings. Version 4 makes a listing
 /// name its extension, and `booking.mode` is gone, so an older bundle is
-/// refused.
-pub const SCHEMA_VERSION: u32 = 4;
+/// refused. Version 5 moves slots to the scheduling service.
+pub const SCHEMA_VERSION: u32 = 5;
 
 pub const LISTINGS: &str = "listings";
 pub const LISTING_HISTORY: &str = "listing_history";
-pub const AVAILABILITY: &str = "availability";
 pub const PUBLICATIONS: &str = "publications";
 pub const SETTINGS: &str = "settings";
 pub const PUBLICATION_LIMITS_KEY: &str = "publication_limits";
@@ -65,15 +64,6 @@ pub(crate) async fn ensure_listings<H: AppHost>(host: &H) -> Result<(), String> 
     .await
 }
 
-pub(crate) async fn ensure_availability<H: AppHost>(host: &H) -> Result<(), String> {
-    ensure_coll(
-        host,
-        AVAILABILITY,
-        &[idx("listing_id", IndexType::String), idx("start_secs", IndexType::Numeric)],
-    )
-    .await
-}
-
 pub async fn invoke<H: AppHost>(host: &H, req: Request) -> Response {
     if let Some(resp) = admit::require_internal(host).await {
         return resp;
@@ -84,7 +74,6 @@ pub async fn invoke<H: AppHost>(host: &H, req: Request) -> Response {
     Response::method_not_found(&req.method)
 }
 
-pub(crate) mod availability;
 pub(crate) mod backup;
 pub(crate) mod limits;
 pub(crate) mod listing_ops;

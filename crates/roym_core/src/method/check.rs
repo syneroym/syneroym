@@ -29,14 +29,32 @@ use crate::{method::MethodInfo, router, services::Service};
 /// - The unknown-field probe checks only top-level fields; nested input structs
 ///   must explicitly add `#[serde(deny_unknown_fields)]` because the check does
 ///   not inspect them.
-#[expect(clippy::panic, reason = "test-assertion helper for service tables")]
 pub fn assert_service_table(
     service: Service,
     rows: &[MethodInfo],
     wire: &[&str],
     service_src_dir: &Path,
 ) {
+    assert_service_table_with_unrouted(service, rows, wire, &[], service_src_dir);
+}
+
+/// [`assert_service_table`] for a service that has methods only a sibling
+/// calls. Each name in `unrouted` must be in the table and must route
+/// nowhere: a Hub call to it is then `-32601`.
+#[expect(clippy::panic, reason = "test-assertion helper for service tables")]
+pub fn assert_service_table_with_unrouted(
+    service: Service,
+    rows: &[MethodInfo],
+    wire: &[&str],
+    unrouted: &[&str],
+    service_src_dir: &Path,
+) {
     let mut problems = Vec::new();
+    for name in unrouted {
+        if !rows.iter().any(|r| r.name == *name) {
+            problems.push(format!("unrouted method {name} is not in the method table"));
+        }
+    }
 
     // Duplicate name
     let mut seen = HashSet::new();
@@ -48,7 +66,11 @@ pub fn assert_service_table(
 
     // Routing
     for row in rows {
-        if router::route(&row.name) != Some(service) {
+        if unrouted.contains(&row.name.as_str()) {
+            if router::route(&row.name).is_some() {
+                problems.push(format!("method {} must not route to any service", row.name));
+            }
+        } else if router::route(&row.name) != Some(service) {
             problems.push(format!(
                 "method {} does not route to service {:?} (routes to {:?})",
                 row.name,

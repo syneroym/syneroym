@@ -97,6 +97,7 @@ syneroym-text-lang = { path = "crates/text_lang" }
 syneroym-roym-web = { path = "crates/roym_web" }
 syneroym-roym-conversation = { path = "crates/roym_conversation" }
 syneroym-roym-profile = { path = "crates/roym_profile" }
+syneroym-roym-scheduling = { path = "crates/roym_scheduling" }
 syneroym-roym-catalog = { path = "crates/roym_catalog" }
 syneroym-roym-transaction = { path = "crates/roym_transaction" }
 syneroym-roym-directory = { path = "crates/roym_directory" }

@@ -337,7 +337,8 @@ async fn revocation_reaches_the_searcher_on_check(t: &Trio, credential_id: &str)
     assert_eq!(checked["verdict"]["state"], "revoked", "{checked}");
 }
 
-const DATA_SERVICES: &[&str] = &["profile", "catalog", "conversation", "transaction", "directory"];
+const DATA_SERVICES: &[&str] =
+    &["profile", "catalog", "conversation", "transaction", "scheduling", "directory"];
 
 /// Step 13: X's data goes onto a clean installation under X's own owner
 /// identity. The held membership for Y still evaluates `revoked` there --

@@ -6,9 +6,13 @@ use std::path::Path;
 use serde_json::{Value, json};
 use syneroym_roym_catalog::api as catalog_api;
 use syneroym_roym_conversation::api as conversation_api;
-use syneroym_roym_core::{method::check::assert_service_table, router, services};
+use syneroym_roym_core::{
+    method::check::{assert_service_table, assert_service_table_with_unrouted},
+    router, services,
+};
 use syneroym_roym_directory::api as directory_api;
 use syneroym_roym_profile::api as profile_api;
+use syneroym_roym_scheduling::api as scheduling_api;
 use syneroym_roym_transaction::api as transaction_api;
 use syneroym_roym_web::api as web_api;
 
@@ -45,12 +49,31 @@ fn every_conversation_method_has_typed_input_and_output() {
 #[test]
 fn every_catalog_method_has_typed_input_and_output() {
     let table = catalog_api::method_table();
-    assert_eq!(table.len(), 17);
+    assert_eq!(table.len(), 13);
     assert_service_table(
         services::CATALOG,
         &table,
         &[],
         &Path::new(env!("CARGO_MANIFEST_DIR")).join("../roym_catalog/src"),
+    );
+}
+
+#[test]
+fn every_scheduling_method_has_typed_input_and_output() {
+    let table = scheduling_api::method_table();
+    assert_eq!(table.len(), 13);
+    // Only `transaction` calls the reservation hooks, as a sibling.
+    assert_service_table_with_unrouted(
+        services::SCHEDULING,
+        &table,
+        &[],
+        &[
+            "reservation.prepare",
+            "reservation.reserve",
+            "reservation.confirm",
+            "reservation.release",
+        ],
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../roym_scheduling/src"),
     );
 }
 
@@ -135,6 +158,7 @@ async fn every_listed_method_is_dispatched() {
         (services::CONVERSATION, conversation_api::method_table()),
         (services::CATALOG, catalog_api::method_table()),
         (services::TRANSACTION, transaction_api::method_table()),
+        (services::SCHEDULING, scheduling_api::method_table()),
         (services::DIRECTORY, directory_api::method_table()),
     ];
     for (service, table) in tables {

@@ -6,7 +6,7 @@ use super::{
     ExtensionRef, MANIFESTS, ManifestError, ManifestKind, Registry, SCHEDULING_EXTENSION,
     SCHEDULING_SLOT_SCHEMA, ids, registry,
 };
-use crate::deal::ResourceKind;
+use crate::{deal::ResourceKind, services};
 
 fn ext(id: &str, version: u32) -> ExtensionRef {
     ExtensionRef { id: id.to_string(), version }
@@ -205,12 +205,14 @@ fn hooks_are_all_three_or_none() {
     }
     let mut m = base();
     m["hooks"] = json!(["reserve", "confirm", "release"]);
+    m["service"] = json!("scheduling");
     parse_one(&m).unwrap();
 }
 
 #[test]
 fn prepare_is_only_allowed_with_the_three_hooks() {
     let mut m = base();
+    m["service"] = json!("scheduling");
     m["hooks"] = json!(["prepare"]);
     assert!(refused(&m).contains("prepare needs"));
     m["hooks"] = json!(["prepare", "reserve", "confirm", "release"]);
@@ -218,6 +220,36 @@ fn prepare_is_only_allowed_with_the_three_hooks() {
     assert!(loaded.manifests()[0].has_prepare_hook());
     m["hooks"] = json!(["reserve", "confirm", "release"]);
     assert!(!parse_one(&m).unwrap().manifests()[0].has_prepare_hook());
+}
+
+#[test]
+fn hooks_need_a_service_and_a_service_needs_hooks() {
+    let mut m = base();
+    m["hooks"] = json!(["reserve", "confirm", "release"]);
+    assert!(refused(&m).contains("need a service"));
+    m["service"] = json!("scheduling");
+    parse_one(&m).unwrap();
+    let mut m = base();
+    m["service"] = json!("scheduling");
+    assert!(refused(&m).contains("only for an extension with hooks"));
+}
+
+#[test]
+fn the_service_of_hooks_is_a_roym_service_that_is_not_web() {
+    for name in ["no-such-service", "web", ""] {
+        let mut m = base();
+        m["hooks"] = json!(["reserve", "confirm", "release"]);
+        m["service"] = json!(name);
+        assert!(refused(&m).contains("not a Roym service"), "{name}");
+    }
+}
+
+#[test]
+fn the_hooks_of_scheduling_go_to_the_scheduling_service() {
+    let scheduling = registry().workflow(&ext("scheduling", 1)).unwrap();
+    assert_eq!(scheduling.hook_service(), Some(services::SCHEDULING));
+    let one_shot = registry().workflow(&ext("one-shot", 1)).unwrap();
+    assert_eq!(one_shot.hook_service(), None);
 }
 
 #[test]

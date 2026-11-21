@@ -298,7 +298,8 @@ backup-intro = This exports and imports application data. It never exports or to
 backup-separate-note = Each bundle below is signed by you when it is exported, and is refused on import if it was changed. An encrypted backup of everything, including your identity, is made with `roymctl roym backup create`.
 backup-bundle-profile = Profile, contacts, and safety records
 backup-bundle-conversation = Conversations and messages
-backup-bundle-catalog = Listings and availability
+backup-bundle-catalog = Listings
+backup-bundle-scheduling = Scheduling: available times and booked slots
 backup-bundle-transaction = Requests, quotes, and agreements
 backup-bundle-directory = This installation's SynOrg directory, if it runs one
 backup-export = Export
@@ -307,6 +308,7 @@ backup-reading = Reading file...
 backup-importing = Importing...
 backup-imported = Imported: { $count } record(s).
 backup-imported-unknown = Imported: bundle record(s).
+backup-reservations-failed = Some booked slots could not be restored. Import the Scheduling file, then import the Requests, quotes, and agreements file again.
 
 ## Safety
 

@@ -286,24 +286,15 @@ async fn scenario_49_catalog_export_integrity_parity() {
     enrol_signing(&h, "catalog").await;
     let (set, _) =
         both_rpc(&h, "listing.set", full_listing_params("hedge-trimming", "Hedge trimming")).await;
-    let listing_id = set["result"]["listing_id"].as_str().unwrap().to_string();
-    both_rpc(
-        &h,
-        "availability.set",
-        json!({ "listing_id": listing_id, "slots": [
-            { "start_secs": 1_000_000, "end_secs": 1_003_600, "capacity": 1 }
-        ] }),
-    )
-    .await;
-
+    assert!(set["result"]["listing_id"].is_string());
     let (mut w, mut n) = both_rpc(&h, "catalog.export", json!({})).await;
 
     for side in [&w, &n] {
         let bundle: Bundle = serde_json::from_value(side["result"].clone()).unwrap();
         bundle.check_integrity().expect("exported bundle integrity");
         let sections = &bundle.manifest.sections;
-        assert_eq!(sections["listings"].schema_version, 4);
-        assert!(sections.contains_key("availability"));
+        assert_eq!(sections["listings"].schema_version, 5);
+        assert!(!sections.contains_key("availability"), "slots are in the scheduling bundle");
     }
 
     verify_and_strip_manifest_signature(&mut w);
@@ -320,15 +311,6 @@ async fn scenario_50_catalog_import_roundtrip_parity() {
     let (set, _) =
         both_rpc(&h, "listing.set", full_listing_params("hedge-trimming", "Hedge trimming")).await;
     let listing_id = set["result"]["listing_id"].as_str().unwrap().to_string();
-    both_rpc(
-        &h,
-        "availability.set",
-        json!({ "listing_id": listing_id, "slots": [
-            { "start_secs": 1_000_000, "end_secs": 1_003_600, "capacity": 1 }
-        ] }),
-    )
-    .await;
-
     let (exp, _) = both_rpc(&h, "catalog.export", json!({})).await;
     let bundle = exp["result"].clone();
     let (impw, impn) = both_rpc(&h, "catalog.import", json!({ "bundle": bundle })).await;
@@ -343,8 +325,6 @@ async fn scenario_50_catalog_import_roundtrip_parity() {
             .await;
     assert_eq!(vw["result"]["verified"], true);
     assert_eq!(vn["result"]["verified"], true);
-    let (aw, an) = both_rpc(&h, "availability.list", json!({ "listing_id": listing_id })).await;
-    assert_eq!(aw["result"]["slots"], an["result"]["slots"]);
     let _ = getn;
 }
 

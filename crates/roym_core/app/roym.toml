@@ -10,7 +10,7 @@ description = "Roym"
 service_type = "wasm"
 source = "target/wasm32-wasip2/release/syneroym_roym_web.wasm"
 interfaces = ["syneroym-roym:web/api@0.1.0"]
-depends_on = ["conversation", "profile", "catalog", "transaction", "directory"]
+depends_on = ["conversation", "profile", "catalog", "transaction", "scheduling", "directory"]
 visibility = "internal"
 # `/rpc` is public at the stream boundary so an unauthenticated request
 # can reach `web` at all -- the login screen and the policy statement are
@@ -76,12 +76,22 @@ source = "target/wasm32-wasip2/release/syneroym_roym_transaction.wasm"
 interfaces = ["syneroym-roym:transaction/api@0.1.0"]
 visibility = "public"
 # A card is sent over a conversation and read back from it, and a quote
-# that names a slot reads that slot from the catalog -- at quote time to
-# bind it, and at acceptance time to read its capacity.
-depends_on = ["conversation", "catalog"]
+# that names a slot reads that slot from the scheduling service -- at quote
+# time to bind it, and at acceptance time to read its capacity.
+depends_on = ["conversation", "scheduling"]
 
 [services.transaction.health_check.rpc]
 interface = "syneroym-roym:transaction/api@0.1.0"
+method = "status"
+
+[services.scheduling]
+service_type = "wasm"
+source = "target/wasm32-wasip2/release/syneroym_roym_scheduling.wasm"
+interfaces = ["syneroym-roym:scheduling/api@0.1.0"]
+visibility = "private"
+
+[services.scheduling.health_check.rpc]
+interface = "syneroym-roym:scheduling/api@0.1.0"
 method = "status"
 
 [services.directory]

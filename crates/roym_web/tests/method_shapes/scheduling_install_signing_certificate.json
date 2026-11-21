@@ -1,0 +1,4 @@
+{
+  "expires_at_secs": "number",
+  "master_did": "string"
+}

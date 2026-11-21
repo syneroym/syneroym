@@ -1,0 +1,6 @@
+{
+  "window": {
+    "earliest_secs": "number",
+    "latest_secs": "number"
+  }
+}

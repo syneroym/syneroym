@@ -191,6 +191,11 @@ pub fn roym_transaction_wasm_path() -> PathBuf {
         .join("../../target/wasm32-wasip2/release/syneroym_roym_transaction.wasm")
 }
 
+pub fn roym_scheduling_wasm_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/wasm32-wasip2/release/syneroym_roym_scheduling.wasm")
+}
+
 pub fn roym_directory_wasm_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../target/wasm32-wasip2/release/syneroym_roym_directory.wasm")

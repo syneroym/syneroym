@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use super::{Hook, MAX_STEP_TYPE_LEN, Manifest, ManifestKind, ids, schema};
 use crate::{
     deal::{MAX_EXTENSION_ID_LEN, ResourceKind},
-    listing,
+    listing, services,
 };
 
 /// Why a manifest does not load.
@@ -80,10 +80,25 @@ fn check_hooks(m: &Manifest) -> Result<(), String> {
     if distinct.contains(&Hook::Prepare) && held == 0 {
         return Err("hooks: prepare needs reserve, confirm and release".to_string());
     }
+    check_hook_service(m)?;
     if m.resource_kinds.contains(&ResourceKind::ServiceInSlot) && m.hooks.is_empty() {
         return Err("service-in-slot needs the reserve, confirm and release hooks".to_string());
     }
     Ok(())
+}
+
+/// `service` is there exactly when there are hooks, and it names a Roym
+/// service that can answer them.
+fn check_hook_service(m: &Manifest) -> Result<(), String> {
+    match (&m.service, m.hooks.is_empty()) {
+        (None, true) => Ok(()),
+        (None, false) => Err("hooks need a service that answers them".to_string()),
+        (Some(_), true) => Err("a service is only for an extension with hooks".to_string()),
+        (Some(name), false) => match services::by_name(name) {
+            Some(service) if service != services::WEB => Ok(()),
+            _ => Err(format!("service '{name}' is not a Roym service that can answer hooks")),
+        },
+    }
 }
 
 /// Splits `<id>/<name>` and checks that `<name>` is a code.

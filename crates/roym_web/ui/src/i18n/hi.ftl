@@ -287,7 +287,8 @@ backup-intro = यह ऐप का डेटा एक्सपोर्ट औ
 backup-separate-note = नीचे हर बंडल एक्सपोर्ट के समय आपके हस्ताक्षर से बंद होता है, और बदला गया हो तो इम्पोर्ट पर मना कर दिया जाता है। आपकी पहचान समेत सब कुछ का एन्क्रिप्टेड बैकअप `roymctl roym backup create` से बनता है।
 backup-bundle-profile = प्रोफ़ाइल, संपर्क और सुरक्षा के रिकॉर्ड
 backup-bundle-conversation = बातचीत और संदेश
-backup-bundle-catalog = लिस्टिंग और उपलब्ध समय
+backup-bundle-catalog = लिस्टिंग
+backup-bundle-scheduling = शेड्यूलिंग: उपलब्ध समय और बुक हुए स्लॉट
 backup-bundle-transaction = अनुरोध, कोटेशन और समझौते
 backup-bundle-directory = इस इंस्टॉलेशन की SynOrg डायरेक्टरी, अगर वह चलाता हो
 backup-export = एक्सपोर्ट
@@ -296,6 +297,7 @@ backup-reading = फ़ाइल पढ़ी जा रही है...
 backup-importing = इम्पोर्ट हो रहा है...
 backup-imported = इम्पोर्ट हुए: { $count } रिकॉर्ड।
 backup-imported-unknown = बंडल के रिकॉर्ड इम्पोर्ट हुए।
+backup-reservations-failed = कुछ बुक हुए स्लॉट वापस नहीं लाए जा सके। पहले शेड्यूलिंग की फ़ाइल इम्पोर्ट करें, फिर "अनुरोध, कोटेशन और समझौते" की फ़ाइल दोबारा इम्पोर्ट करें।
 
 ## Safety
 
