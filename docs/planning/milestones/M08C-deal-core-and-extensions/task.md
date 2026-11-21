@@ -128,6 +128,20 @@ Every component is within its limit. Only `transaction` grew: it holds the step 
 
 Every component is within its limit. `scheduling` was measured alone before it was wired in: 694,741 bytes, 77,991 below `profile` (the plan's stop rule is 40 KB above). It grew by 17,667 bytes when it got the two signing verbs. `catalog` lost its slot code and `transaction` its seat code; `transaction` gained the hook client.
 
+**C3b2 sizes** (release `wasm32-wasip2`, one `target/` folder, 2026-11-21; before: the C3b1 table's after column, the same code as `main` at `a46cc98d`; after: the C3b2 code), in bytes:
+
+| Component | before | after | Change | Limit |
+| --- | --- | --- | --- | --- |
+| `transaction` | 2,288,044 | 2,338,420 | +50,376 (+2.20%) | +15% (343,207), new record code |
+| `scheduling` | 712,408 | 714,859 | +2,451 | +40 KB |
+| `catalog` | 896,138 | 896,138 | 0 | +40 KB |
+| `conversation` | 813,818 | 813,818 | 0 | +40 KB |
+| `directory` | 1,466,527 | 1,466,527 | 0 | +40 KB |
+| `profile` | 772,732 | 772,732 | 0 | +40 KB |
+| `web` | 311,202 | 311,202 | 0 | +40 KB |
+
+Every component is within its limit. `transaction` grew with the commitment-failure record, the confirm pass, the filing of the failure and the checks of three more ledger rows on import. `scheduling` grew by the lapse.
+
 **Parity runs need a fresh WASM build.** The dual-build parity harness loads pre-built `wasm32-wasip2` components. Every slice that changes a `roym_*` crate runs `mise run build:roym` before it trusts a parity run.
 
 ## 2. Facts checked in the code for this plan
@@ -226,6 +240,7 @@ Change docs: roym-agreements, roym-value-exchange (VX-11).
 - **C3a1 result ([PR #374](https://github.com/syneroym/syneroym/pull/374)):** the `scheduling` and `one-shot` manifests and the fixed registry in `roym_core`; one `details` check for every caller; unknown extensions (the writer refuses, the counterparty files, a giver cannot accept, Q9); a listing names its extension in place of `BookingMode`; the Hub field view with catalog labels. The `step` record and card and the step names are C3a2.
 - **C3a2 result ([PR #376](https://github.com/syneroym/syneroym/pull/376)):** the signed `step` record (`step.add`, `step.list`, `step.verify`, `roymctl roym step`), filed on the other node and kept in export and import; the first step type, `scheduling/started`, recorded by the giver; the generic `step` card in the Hub, with the step name from the catalog in the reader's language; the two-node test and the demo story `60-roym-step`. Work started is a card, not a state. The Hub has no button to make a step (C6). Widget labels are C4.
 - **C3b1 result (PR link in [status.md](status.md)):** the seventh Roym service, `scheduling`, with `availability.*` (moved out of `catalog`) and the local hooks `reservation.prepare`, `.reserve`, `.confirm` and `.release`; `transaction` calls the hooks of the service that a commitment's extension manifest names and holds no slot code; a seat is taken by one unique insert and no seat row is deleted; a restore takes the seats of restored agreements again; the Hub backup screen has a scheduling bundle. A reservation does not expire yet. Expiry, the counterparty's confirm and `commitment-failure` are C3b2.
+- **C3b2 result (PR link in [status.md](status.md)):** a reservation carries a 15-minute expiry and lapses when another booking needs its seat; the counterparty's node confirms its own reservations when it files the writer's countersigned half; a refused confirm gives one signed `commitment-failure`, stored before it is sent; the writer files it, marks the commitment `failed` and cancels the open ones in the same snapshot; each giver releases the reservations of its failed and cancelled commitments, and a release that fails is tried again by the next sync; the Hub draws the failure card and has words for `claimed`, `failed` and `cancelled`.
 
 Change docs: roym-extensions, roym-multilingual (ML-28).
 

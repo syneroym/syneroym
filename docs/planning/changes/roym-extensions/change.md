@@ -203,7 +203,7 @@ The manifest reserves `kind = "insight"`, with a `reads` list (for example `even
 - [x] Commitment `details` in the deal core, and schema checks.
 - [x] `step` record and card, the generic step view in the Hub.
 - [ ] Widget definition (inline up to the size limit), `widget` and `widget-answer` records and cards, the generic renderer, the poll renderer.
-- [ ] Reserve, confirm and release hooks, with expiry, idempotency and owner-side cleanup. The hooks, idempotency and release are built; the 15-minute expiry is not.
+- [x] Reserve, confirm and release hooks, with expiry, idempotency and owner-side cleanup.
 - [ ] Extension services: event subscription, deal grants.
 - [x] Move scheduling out of `catalog` and `transaction`.
 - [x] Add one-shot.
@@ -262,6 +262,17 @@ The manifest reserves `kind = "insight"`, with a `reads` list (for example `even
 - **The step order of the plan was changed in two places.** `catalog` lost its slot code and `transaction` was bound to `scheduling` in the same step that added the service, because the router change (`availability.` now routes to `scheduling`) left the booking tests failing between the two steps. `transaction`'s edge to `catalog` is replaced by an edge to `scheduling` there.
 - **The restore e2e test checks the live reservation in the `scheduling` bundle.** A second booking of the last seat after a restore needs a new conversation with the restored node. The test reads the exported `reservations` section and checks that each agreed agreement has a reservation that no `free:` row ends, in both import orders.
 - **A changed Hindi message.** `backup-bundle-catalog` no longer says "and availability", because the catalog bundle holds listings only. English "Listings", Hindi "लिस्टिंग". The owner reviews it with the two new messages `backup-bundle-scheduling` and `backup-reservations-failed`.
+
+**Rules and differences in C3b2 (2026-11-21, [slice plan](../../milestones/M08C-deal-core-and-extensions/slice-c3b-implementation-plan.md)).**
+
+- **EX-20: a reservation expires lazily (owner decision, question Q4).** A reservation carries `expires_at_secs`, 15 minutes after it was taken. Nothing runs on a timer. When another booking needs the seat of an unconfirmed reservation that is past its expiry, that booking ends the old one with one unique insert (`decided` `lapsed` and `free`) and takes the seat. The owner's node needs no other node. Backlog row: "A reservation lapses only when another booking needs its seat".
+- **EX-22 is narrower than the text: a confirm after the expiry succeeds only while nobody took the seat, and is refused after a takeover or a release.** A confirm never takes a seat (see the C3b1 notes above). A confirmed reservation never lapses.
+- **The counterparty's node confirms its own reservations, and signs a `commitment-failure` when a confirm is refused.** See the agreements change, "Commitment failure" and the C3b2 notes.
+- **A release error is not logged, and it is not dropped either.** The exit criterion "no `let _ =` drops a release error without a log line" cannot be met with a log line, because no Roym service can write one. It is met this way: a release at a snapshot writes a ledger row when it works, and the next sync releases again until the row exists. The two other kinds of release site (a refused accept, the writer's not-formed path) are repeated by the quote's expiry release and by that same sync pass. The release of an extension is idempotent. The marker `released:<agreement>:<commitment>` is local, has no signature, and is checked on import against a held agreement and commitment.
+- **The `release_ended` of the plan reads the snapshot and the agreement row, not a snapshot payload alone.** The sync pass has only the row. A commitment whose snapshot entry lists a settlement half is never released.
+- **The `scheduling` import keeps its write order with lapse rows.** It writes `seat:`, then `rsv:`, then `key:`, then `decided:` and `free:`, and refuses any changed row except `key:`. A lapse writes its `decided:` `lapsed` row and its `free:` row together in one unique insert; an import writes them as puts, and a stopped import can leave only one of them. A `decided:` row alone keeps the seat taken, and a `free:` row alone is the same as a release, so neither lets a second booking take a seat that its holder still has.
+- **The `ReservationView` of a confirmed reservation still shows its expiry.** The value is not used after a confirm, because a confirmed reservation never lapses.
+- **The 15 minutes are a constant, not a setting (owner decision, question Q5).** No Roym service reads the app configuration yet.
 
 ## Close-out
 

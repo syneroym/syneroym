@@ -1,6 +1,7 @@
 //! Transaction data backup: export and import.
 
 pub(crate) mod disclosures;
+pub(crate) mod failure;
 pub(crate) mod reservations;
 pub(crate) mod sections;
 pub(crate) mod steps;
@@ -18,7 +19,7 @@ use syneroym_roym_core::{
         SECTION_DISCLOSURES, SECTION_ENQUIRIES, SECTION_ENQUIRY_HISTORY, SECTION_FULFILMENTS,
         SECTION_LEDGER, SECTION_PAYMENTS, SECTION_QUOTE_HISTORY, SECTION_QUOTES, SECTION_STEPS,
     },
-    clock,
+    clock, commitment_failure,
     deal::DealTerms,
     envelope::Response,
     fulfilment,
@@ -759,6 +760,9 @@ async fn write_imported_cards<H: AppHost>(
                     }
                     "step" => step::verify_step(env, now).verified,
                     "deal-decline" => transaction::verify_deal_decline(env, now).verified,
+                    "commitment-failure" => {
+                        commitment_failure::verify_commitment_failure(env, now).verified
+                    }
                     _ => false,
                 };
                 row.verified = is_verified;

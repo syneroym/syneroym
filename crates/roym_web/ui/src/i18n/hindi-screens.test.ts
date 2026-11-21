@@ -1,5 +1,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { renderAgreementProgress } from "../cards/templates/agreement_progress";
 import { renderAgreementReceipt } from "../cards/templates/agreement_receipt";
+import { renderCommitmentFailure } from "../cards/templates/commitment_failure";
 import { renderFulfilmentReceipt } from "../cards/templates/fulfilment_receipt";
 import { renderQuote } from "../cards/templates/quote";
 import { renderStep } from "../cards/templates/step";
@@ -575,6 +577,26 @@ describe("the cards, in Hindi", () => {
     });
     expect(unknown.querySelector(".field-view-not-checked")?.textContent).toMatch(/[ऀ-ॿ]/);
     expect(english(unknown)).toEqual([]);
+  });
+
+  it("draws a commitment-failure card and the progress words for its states in Hindi", () => {
+    const failure = renderCommitmentFailure({ commitment_id: "Zq-c1", reason: "reservation-lost" });
+    expect(failure.querySelector("h3")?.textContent).toMatch(/[ऀ-ॿ]/);
+    expect(failure.querySelector(".failure-reason")?.textContent).toMatch(/[ऀ-ॿ]/);
+    expect(english(failure)).toEqual([]);
+
+    const progress = renderAgreementProgress({
+      state: "agreed",
+      commitments: [
+        { commitment_id: "Zq-c1", state: "failed", reason: "reservation-lost" },
+        { commitment_id: "Zq-c2", state: "cancelled", reason: "other-commitment-failed" },
+        { commitment_id: "Zq-c3", state: "claimed" },
+      ],
+    });
+    for (const line of progress.querySelectorAll(".progress-commitment")) {
+      expect(line.textContent).toMatch(/[ऀ-ॿ]/);
+    }
+    expect(english(progress)).toEqual([]);
   });
 
   it("draws the quote card with a slot's reference codes and an unknown extension's data", () => {

@@ -79,7 +79,8 @@ pub struct ReservationView {
     pub agreement: String,
     pub commitment_id: String,
     pub state: ReservationState,
-    /// `None` when the reservation never expires.
+    /// The time from which another booking may take the seat, unless the
+    /// reservation is confirmed first.
     pub expires_at_secs: Option<u64>,
 }
 

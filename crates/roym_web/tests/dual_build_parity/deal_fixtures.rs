@@ -161,6 +161,17 @@ pub(crate) async fn setup_author_slot_quote_accepted_by_peer(
     conv: &str,
     listing_name: &str,
 ) -> String {
+    setup_slot_quote_accepted_by_peer(h, conv, listing_name, "quote-author").await
+}
+
+/// Like [`setup_author_slot_quote_accepted_by_peer`], with the slot given by
+/// `slot_giver` (`"quote-author"` or `"counterparty"`).
+pub(crate) async fn setup_slot_quote_accepted_by_peer(
+    h: &Harness,
+    conv: &str,
+    listing_name: &str,
+    slot_giver: &str,
+) -> String {
     let start = wall_now() + 1_000_000;
     let end = start + 3600;
     let (listing_id, slot_id) = setup_listing_with_slot(h, listing_name, start, end, 1).await;
@@ -168,6 +179,7 @@ pub(crate) async fn setup_author_slot_quote_accepted_by_peer(
     let mut q_slot_params = valid_quote_params(conv, &peer_req_id);
     q_slot_params["terms"]["listing_id"] = json!(listing_id);
     let c0 = &mut q_slot_params["terms"]["commitments"][0];
+    c0["giver"] = json!(slot_giver);
     c0["resource_kind"] = json!("service-in-slot");
     c0["kind"] = json!("fulfilment");
     c0["extension"] = json!({ "id": "scheduling", "version": 1 });

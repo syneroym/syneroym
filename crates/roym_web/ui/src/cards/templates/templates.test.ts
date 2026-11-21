@@ -8,6 +8,7 @@ import { renderRefusedCard } from "../refused.js";
 import { renderAgreementReceipt } from "./agreement_receipt.js";
 import { renderAgreementProgress, renderBookingProgress } from "./agreement_progress.js";
 import { renderFulfilmentReceipt } from "./fulfilment_receipt.js";
+import { renderCommitmentFailure } from "./commitment_failure.js";
 import { renderDealDecline } from "./deal_decline.js";
 import { renderPaymentAcknowledgement } from "./payment_acknowledgement.js";
 import { renderPaymentRequest } from "./payment_request.js";
@@ -595,6 +596,40 @@ describe("Card templates", () => {
     });
   });
 
+  describe("renderCommitmentFailure", () => {
+    it("says which part cannot go ahead and why", () => {
+      const el = renderCommitmentFailure({
+        agreement: "rec_agreement",
+        conversation: "conv_1",
+        commitment_id: "c1",
+        reason: "reservation-lost",
+      });
+      expect(el.classList.contains("card-commitment-failure")).toBe(true);
+      expect(el.querySelector("h3")?.textContent).toBe("This part of the deal cannot go ahead");
+      expect(el.querySelector(".failure-commitment")?.textContent).toBe("c1");
+      expect(el.querySelector(".failure-reason")?.textContent).toBe(
+        "The slot was given to someone else.",
+      );
+    });
+
+    it("shows a reason it does not know as it came, and nothing for a missing field", () => {
+      for (const reason of ["out-of-stock", "constructor", "__proto__"]) {
+        const el = renderCommitmentFailure({ commitment_id: "c1", reason });
+        expect(el.querySelector(".failure-reason")?.textContent).toBe(reason);
+      }
+      const empty = renderCommitmentFailure(undefined);
+      expect(empty.querySelector(".failure-commitment")).toBeNull();
+      expect(empty.querySelector(".failure-reason")).toBeNull();
+    });
+
+    it("draws a malicious commitment id as plain text", () => {
+      const xss = "<img src=x onerror=alert(1)>";
+      const el = renderCommitmentFailure({ commitment_id: xss, reason: xss });
+      expect(el.querySelectorAll("img").length).toBe(0);
+      expect(el.textContent).toContain(xss);
+    });
+  });
+
   describe("renderFulfilmentReceipt", () => {
     it("renders fields and never says verified", () => {
       const data = {
@@ -709,6 +744,29 @@ describe("Card templates", () => {
       expect(el.textContent).toContain("Agreed");
       expect(el.textContent).toContain("c1: Promised");
       expect(el.textContent).toContain("c2: Promised");
+    });
+
+    it("gives a word to claimed, failed and cancelled, and a sentence to each reason", () => {
+      const el = renderAgreementProgress({
+        state: "agreed",
+        commitments: [
+          { commitment_id: "c1", state: "failed", reason: "reservation-lost" },
+          { commitment_id: "c2", state: "cancelled", reason: "other-commitment-failed" },
+          { commitment_id: "c3", state: "claimed" },
+        ],
+      });
+      const line = (id: string) => el.querySelector(`.progress-commitment-${id}`)?.textContent;
+      expect(line("c1")).toBe("c1: Failed (The slot was given to someone else)");
+      expect(line("c2")).toBe("c2: Cancelled (Another part of the deal failed)");
+      expect(line("c3")).toBe("c3: Claimed");
+    });
+
+    it("shows a commitment state or reason it does not know as it came", () => {
+      const el = renderAgreementProgress({
+        state: "agreed",
+        commitments: [{ commitment_id: "c1", state: "other-failed" as "failed", reason: "future-code" }],
+      });
+      expect(el.textContent).toContain("c1: other-failed (future-code)");
     });
   });
 

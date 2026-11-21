@@ -1,6 +1,8 @@
 //! Transaction synchronization across conversation history.
 
+pub(crate) mod confirm;
 pub(crate) mod decline;
+pub(crate) mod failure;
 pub(crate) mod receipts;
 pub(crate) mod settle_receipts;
 pub(crate) mod steps;
@@ -31,7 +33,8 @@ use syneroym_roym_core::{
 use super::{
     AGREEMENTS, AgreementRow, CARDS, CardRow, ENQUIRY_HISTORY, LEDGER, QUOTE_HISTORY, SYNC_STATE,
     SyncStateRow, decide, disclosures, enquiry_ops::store_received_enquiry, ensure_collections,
-    get_bytes, get_row, progress_ops, put_card, put_row, quote_ops::store_received_quote,
+    get_bytes, get_row, hooks::ExtensionHooks, progress_ops, put_card, put_row,
+    quote_ops::store_received_quote,
 };
 
 #[derive(Debug, Deserialize)]
@@ -50,6 +53,9 @@ pub struct SyncOutput {
     pub unknown: u32,
     pub countersigned: u32,
     pub deferred: u32,
+    /// Commitment failures this sync could not sign or send. The next sync
+    /// tries them again.
+    pub unsent_failures: u32,
     pub last_seq: u64,
 }
 
@@ -122,6 +128,10 @@ pub(crate) async fn sync_at<H: AppHost>(host: &H, input: SyncInput, now: u64) ->
         return Err(Response::internal_error(e));
     }
 
+    let unsent_failures =
+        confirm::confirm_own_reservations(host, &ExtensionHooks, &input.conversation, &owner, now)
+            .await
+            .map_err(Response::internal_error)?;
     let _ = progress_ops::tick_conversation_at(host, &input.conversation, now).await;
     let _ = decide::recover_deciding_rows(host, now).await;
 
@@ -132,6 +142,7 @@ pub(crate) async fn sync_at<H: AppHost>(host: &H, input: SyncInput, now: u64) ->
         unknown: stats.unknown,
         countersigned: stats.countersigned,
         deferred: stats.deferred,
+        unsent_failures,
         last_seq: new_last_seq,
     })
 }
@@ -363,6 +374,21 @@ async fn dispatch_known_card<H: AppHost>(
             )
             .await
         }
+        _ => dispatch_later_card(host, row, card, conversation, now, owner).await,
+    }
+}
+
+/// The cards that follow an agreement: steps, declines and commitment
+/// failures.
+async fn dispatch_later_card<H: AppHost>(
+    host: &H,
+    row: CardRow,
+    card: &card::Card,
+    conversation: &str,
+    now: u64,
+    owner: &str,
+) -> Result<FileCardResult, String> {
+    match card.card_type.as_str() {
         "step" => {
             steps::file_step_card(host, row, &card.envelope, &card.disclosures, conversation, now)
                 .await
@@ -375,6 +401,18 @@ async fn dispatch_known_card<H: AppHost>(
                 &card.disclosures,
                 conversation,
                 now,
+            )
+            .await
+        }
+        "commitment-failure" => {
+            failure::file_commitment_failure_card(
+                host,
+                row,
+                &card.envelope,
+                &card.disclosures,
+                conversation,
+                now,
+                owner,
             )
             .await
         }

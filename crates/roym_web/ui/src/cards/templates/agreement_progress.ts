@@ -11,8 +11,17 @@ import { codeWord, messageId, t } from "../../i18n/i18n";
 
 export interface CommitmentProgressData {
   commitment_id: string;
-  state: "promised" | "payment-requested" | "fulfilled" | "acknowledged" | "ended-unconfirmed" | "other-failed";
-  state_reason?: string;
+  state:
+    | "promised"
+    | "payment-requested"
+    | "claimed"
+    | "fulfilled"
+    | "acknowledged"
+    | "ended-unconfirmed"
+    | "failed"
+    | "cancelled";
+  /// Why the commitment ended `failed` or `cancelled`.
+  reason?: string;
   giver_claim?: boolean;
   track_end_secs?: number;
 }
@@ -47,10 +56,17 @@ const STATE_WORDS = new Map<string, string>([
 const COMMITMENT_STATE_WORDS = new Map<string, string>([
   ["promised", messageId("commitment-state-promised")],
   ["payment-requested", messageId("commitment-state-payment-requested")],
+  ["claimed", messageId("commitment-state-claimed")],
   ["fulfilled", messageId("commitment-state-fulfilled")],
   ["acknowledged", messageId("commitment-state-acknowledged")],
   ["ended-unconfirmed", messageId("commitment-state-ended-unconfirmed")],
-  ["other-failed", messageId("commitment-state-other-failed")],
+  ["failed", messageId("commitment-state-failed")],
+  ["cancelled", messageId("commitment-state-cancelled")],
+]);
+
+const COMMITMENT_REASON_WORDS = new Map<string, string>([
+  ["reservation-lost", messageId("commitment-reason-reservation-lost")],
+  ["other-commitment-failed", messageId("commitment-reason-other-commitment-failed")],
 ]);
 
 const CONFLICT_SENTENCES = new Map<string, string>([
@@ -94,7 +110,8 @@ export function renderAgreementProgress(data?: AgreementProgressData): HTMLEleme
       const comP = document.createElement("p");
       comP.className = `progress-commitment progress-commitment-${c.commitment_id}`;
       const stateWord = codeWord(COMMITMENT_STATE_WORDS, c.state);
-      comP.textContent = `${c.commitment_id}: ${stateWord}`;
+      const reasonWord = c.reason ? ` (${codeWord(COMMITMENT_REASON_WORDS, c.reason)})` : "";
+      comP.textContent = `${c.commitment_id}: ${stateWord}${reasonWord}`;
       card.appendChild(comP);
     }
   }

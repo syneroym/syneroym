@@ -13,7 +13,7 @@ use super::{
         decide::{SnapshotRow, snapshot_id},
         disclosures::{self, HeldQuote, LoadQuoteError},
         get_row,
-        hooks::{self, ExtensionHooks},
+        hooks::{self, Ended, ExtensionHooks},
         put_card, put_row,
     },
     FileCardResult, refuse_card,
@@ -285,10 +285,8 @@ async fn apply_newer_snapshot<H: AppHost>(
     agr.updated_at_secs = ctx.now;
     put_row(host, AGREEMENTS, &p.agreement, &agr).await?;
 
-    if p.state == AgreementState::NotFormed || p.state == AgreementState::Cancelled {
-        hooks::release_own(host, &ExtensionHooks, &p.agreement, &agr.terms, DealRole::Counterparty)
-            .await;
-    }
+    let ended = Ended { state: p.state, commitments: &p.commitments };
+    hooks::release_ended(host, &ExtensionHooks, &agr, DealRole::Counterparty, ended, ctx.now).await;
 
     let _ = host
         .record_event(EVENT_PROGRESS.to_string(), p.conversation.clone(), Some(p.agreement.clone()))

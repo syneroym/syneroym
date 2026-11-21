@@ -478,6 +478,7 @@ one.
 | `agreement-receipt` | Both | Both parties accepted these exact terms (signing their digests via selective disclosure), including payee, expiry, cancellation and refund terms, and dispute path. Each party also states which language it read and whether that text was a machine translation | That either side will perform, or that the two parties read the same language |
 | `payment-acknowledgement` | Each side, separately | Each party stated what they observed about a payment | **That money moved.** Only a supported payment provider's own attestation could show that, and none is integrated |
 | `fulfilment-receipt` | Both | Both parties agreed the work was done | Quality, or that no dispute follows |
+| `commitment-failure` | The giver of one commitment | This giver's node could not keep the reservation it took for one commitment (the only reason today is `reservation-lost`) | That the giver is at fault, or that the resource was given to anyone in particular |
 | `moderation-decision` | SynOrg | This group applied this rule to this member at this time | Global truth; another group is free to disagree |
 | `bundle-manifest` | The person | This person exported these sections with these content hashes | That the export is complete, or that any section's content is honest |
 
@@ -737,7 +738,7 @@ unknown card type renders it safely and never executes sender-supplied code.
 service) and the participant (the Hub) are built in different slices, and a rule
 decided inside either one gets decided twice, differently.
 
-The first release has **nine card types**, and no others:
+The first release has **ten card types**, and no others:
 
 | Type | Signed by | Appears at |
 |---|---|---|
@@ -750,9 +751,10 @@ The first release has **nine card types**, and no others:
 | `fulfilment-receipt` | Both | C20 — both agreed the work was done |
 | `deal-decline` | Decliner | Counterparty declines a quote or withdraws its own enquiry; quote author declines an enquiry |
 | `step` | The party the extension's manifest allows | One work step of an extension for one commitment of a formed agreement, for example that the giver started the work |
+| `commitment-failure` | The giver of one commitment | The giver's node could not keep the reservation it took for that commitment, so that part of the deal cannot go ahead. The writer marks the commitment failed and cancels the open ones |
 
 Each renders through a **fixed template chosen by `(type, version)`**. The Hub
-ships nine templates plus one fallback; it is not a general interpreter.
+ships ten templates plus one fallback; it is not a general interpreter.
 For quotes and settlement cards, the card wrapper carries RFC 9901 `disclosures`
 that reveal concealed fields to the filing node. The card row stores and draws
 the verified plain form.
