@@ -1319,6 +1319,55 @@ nextest run -p syneroym-substrate --test roym_step_e2e`: 1 passed.
   *Status:* Fixed (3cea3be8). (a) The test is now `a_repeat_during_the_send_sends_no_second_card`. (b) New `losing_the_race_to_store_the_row_sends_no_card_and_drops_the_disclosure` in `tests/step.rs`: the signer hook writes the winner row after the load and before the `create`; the test checks `already-recorded`, no `conversation.send`, and no stored disclosure for the loser's record id. To let the hook keep signing, the fixture's signer body is now the function `sign_record` in `tests.rs`. (c) `store_step`'s claim match is now `claim_received_row` (with `Stored` made `pub(crate)`), and the new `losing_the_race_to_store_a_received_row_drops_its_disclosure` in `tests/step_filing.rs` calls it with a winner row already stored. Proved failure: with the `disclosures::delete` in `add_in` removed, the add test fails; with `send_step` called in its `create`-lost branch, it fails (state is not `already-recorded`); with the `disclosures::delete` in `claim_received_row` removed, the received-row test fails. All three restored.
 
 Counts: 2 new findings (R12, R13: 0 blocker, 0 major, 2 minor). R7 to R11
-are fixed. R12 and R13 are fixed (code fix round 1 follow-up). **0 open.** Still open outside the findings: the owner's review
+are fixed. **2 open.** Still open outside the findings: the owner's review
 of the Hindi message `ext-scheduling-step-started`, and `mise run verify`
 with no `--skip` (status.md says CI runs it).
+
+## Check of the R12 and R13 fixes — Claude Opus 5.5 (Claude Code), 2026-11-21
+
+Checked the fixes of R12 and R13 on `adfa7cb2`, in the main checkout. I
+read `git diff 48362a95..HEAD` (the fix commits `3cea3be8` to `adfa7cb2`)
+against each finding and its proposed fix. I changed no code. I did not
+run the full suite or `mise run verify`. The fix commit `adfa7cb2` had
+also changed the counts line of the section above to "0 open"; I set it
+back to "2 open", because that section records what was true when it was
+written. This section records the new state.
+
+CI: `gh pr checks 376` on `adfa7cb2` was still running when I checked
+("Lints, licenses & checks" and CLA passed; the six test shards and
+Playwright E2E pending). The run on `13da1acd` was cancelled by the next
+push, so the last finished CI run is on `7e15c16a`, which passed.
+
+Targeted run: `cargo nextest run -p syneroym-roym-transaction`: 151 run,
+151 passed, 0 skipped. These include the three tests below. I did not
+rebuild the WASM components, so this run does not cover the parity
+scenarios: the only production change, `claim_received_row`, moves
+existing code into its own function. The CI test shards cover parity.
+
+- **R12 — verified fixed.** The code is unchanged, as the fix proposed.
+  The developer guide (`:1850`) and the Deviation line now say "If the
+  first send failed, the repeat sends the card again". The Deviation
+  also names the stopped-node case and the backlog row. The backlog row
+  "A step card is not resent when the node stops during its send" gives
+  the reason (no idempotency key in the conversation service), notes
+  `fulfilment.add`, and has target `TBD`. The doc comment of
+  `answer_existing` now says "first send failed".
+- **R13 — verified fixed.** (a) The test is now named
+  `a_repeat_during_the_send_sends_no_second_card`, which is what it
+  checks. (b) `losing_the_race_to_store_the_row_sends_no_card_and_drops_the_disclosure`
+  writes the winner row from the signer hook, so the row appears after
+  `load_step_row` and before `claim_step_row`. It checks
+  `already-recorded`, the winner's record id, no `conversation.send`, and
+  no disclosure for the loser's record. Removing the `disclosures::delete`
+  line, or sending in the `create`-lost branch, fails it. The signer body
+  moved into `tests.rs::sign_record`, so the hook signs as the fixture
+  does; test code only. (c) `store_step` now calls
+  `claim_received_row`, and
+  `losing_the_race_to_store_a_received_row_drops_its_disclosure` calls it
+  with a different winner already stored and checks the refusal and the
+  deleted disclosure.
+
+No new findings. **0 open.** Still open outside the findings: CI on the
+head, the owner's review of the Hindi message `ext-scheduling-step-started`,
+and `mise run verify` with no `--skip` (or the owner accepts CI instead,
+as for C3a1).
