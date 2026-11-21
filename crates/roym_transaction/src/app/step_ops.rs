@@ -221,12 +221,20 @@ pub(crate) async fn add_in<H: AppHost>(
             issuer: signed.issuer,
             issued_at_secs: signed.issued_at_secs,
         },
-        state: SendState::NotSent,
+        state: SendState::Pending,
     };
     if let Some(winner) =
         claim_step_row(host, &key, &row).await.map_err(Response::internal_error)?
     {
-        return answer_existing(host, winner, deal_role, now).await;
+        if winner.half.record_id != signed.record_id {
+            let _ = disclosures::delete(host, &signed.record_id).await;
+        }
+        return Ok(HalfRecordedOutput {
+            record_id: winner.half.record_id,
+            role: deal_role,
+            message_id: None,
+            state: SendState::AlreadyRecorded,
+        });
     }
     send_step(host, row, &signed.disclosures, deal_role, now).await
 }

@@ -1,6 +1,16 @@
 //! `step.add`, `step.list` and `step.verify`: who may record a step, what
 //! makes the second call a repeat, and what the stored step shows.
 
+use std::{
+    future::Future,
+    pin::pin,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+    task::{Context, Poll, Waker},
+};
+
 use serde_json::{Value, json};
 use syneroym_app_host::types::proxy::ProxyError;
 use syneroym_identity::{Identity, substrate};
@@ -215,6 +225,49 @@ async fn a_step_whose_card_was_never_sent_is_sent_by_the_repeat() {
     assert_eq!(again.record_id, first.record_id, "no second record is signed");
     assert_eq!(again.state, SendState::Deposited);
     assert_eq!(again.message_id.as_deref(), Some("m1"));
+}
+
+fn block_on<F: Future>(fut: F) -> F::Output {
+    let waker = Waker::noop();
+    match pin!(fut).poll(&mut Context::from_waker(waker)) {
+        Poll::Ready(v) => v,
+        Poll::Pending => panic!("test future pended unexpectedly"),
+    }
+}
+
+#[tokio::test]
+async fn concurrent_add_sends_only_one_card_and_leaves_no_orphan_disclosures() {
+    let deal = slot_deal(DealRole::QuoteAuthor).await;
+    let host = deal.fix.host.clone();
+    let agr = deal.agreement.clone();
+    let agreed_at = deal.agreed_at;
+    let second_done = Arc::new(AtomicBool::new(false));
+    let second_done_clone = Arc::clone(&second_done);
+    let second_out = Arc::new(Mutex::new(None));
+    let second_out_clone = Arc::clone(&second_out);
+
+    deal.fix.host.on_call("conversation", "send", move |_| {
+        if !second_done_clone.swap(true, Ordering::SeqCst) {
+            let h = host.clone();
+            let inp = started(&agr);
+            let out = block_on(step_ops::add_at(&h, inp, agreed_at + 15));
+            *second_out_clone.lock().unwrap() = Some(out);
+        }
+        Ok(json!({ "message_id": "m1", "state": "deposited", "sender_timestamp_ms": 1000 })
+            .to_string())
+    });
+
+    let first = step_ops::add_at(&deal.fix.host, started(&deal.agreement), deal.agreed_at + 10)
+        .await
+        .expect("first add succeeds");
+    assert_ne!(first.state, SendState::AlreadyRecorded);
+    assert_eq!(first.message_id.as_deref(), Some("m1"));
+
+    let second =
+        second_out.lock().unwrap().take().expect("second call ran").expect("second call succeeds");
+    assert_eq!(second.record_id, first.record_id);
+    assert_eq!(second.state, SendState::AlreadyRecorded);
+    assert_eq!(second.message_id, None);
 }
 
 #[tokio::test]

@@ -52,6 +52,13 @@ pub(crate) async fn store<H: AppHost>(
     }
 }
 
+/// Deletes the stored disclosures for a signed record.
+pub(crate) async fn delete<H: AppHost>(host: &H, record_id: &str) -> Result<(), String> {
+    AppDataLayer::delete(host, DISCLOSURES.to_string(), record_id.to_string())
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// Loads the stored disclosures for a signed record.
 pub(crate) async fn load<H: AppHost>(
     host: &H,

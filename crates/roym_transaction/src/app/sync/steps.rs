@@ -197,6 +197,9 @@ async fn store_step<H: AppHost>(
     match step_ops::claim_step_row(host, &key, &stored).await? {
         None => Ok(Stored::New),
         Some(winner) if winner.half.record_id == stored.half.record_id => Ok(Stored::Repeat),
-        Some(_) => Ok(Stored::Refused("a second step of this type by this role")),
+        Some(_) => {
+            let _ = disclosures::delete(host, &stored.half.record_id).await;
+            Ok(Stored::Refused("a second step of this type by this role"))
+        }
     }
 }
