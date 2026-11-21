@@ -179,3 +179,33 @@ async fn a_repeat_reserve_of_a_lapsed_key_takes_a_new_generation() {
     assert_eq!(again.state, ReservationState::Held);
     assert_eq!(row_ids(&host, "rsv:").await.len(), 3);
 }
+
+#[tokio::test]
+async fn a_free_seat_is_taken_before_an_expired_reservation_is_lapsed() {
+    let host = host();
+    let slot_id = slot(&host, 2).await;
+    reservation::reserve_at(&host, reserve_input("agr-a", "c1", &slot_id), NOW).await.unwrap();
+    let taker = reservation::reserve_at(&host, reserve_input("agr-b", "c1", &slot_id), DUE + 1)
+        .await
+        .unwrap();
+    assert_eq!(taker.state, ReservationState::Held);
+    assert!(row_ids(&host, "decided:").await.is_empty(), "nothing was lapsed");
+    let confirmed = reservation::confirm_at(&host, key("agr-a", "c1"), DUE + 2).await.unwrap();
+    assert_eq!(confirmed.state, ReservationState::Confirmed);
+}
+
+#[tokio::test]
+async fn an_expired_reservation_is_lapsed_when_no_seat_is_free() {
+    let host = host();
+    let slot_id = slot(&host, 2).await;
+    reservation::reserve_at(&host, reserve_input("agr-a", "c1", &slot_id), NOW).await.unwrap();
+    reservation::reserve_at(&host, reserve_input("agr-b", "c1", &slot_id), DUE + 1).await.unwrap();
+    // Both seats are used now, and A's is past its expiry.
+    let third = reservation::reserve_at(&host, reserve_input("agr-c", "c1", &slot_id), DUE + 2)
+        .await
+        .unwrap();
+    assert_eq!(third.state, ReservationState::Held);
+    assert_eq!(row_ids(&host, "decided:").await.len(), 1);
+    let lost = reservation::confirm_at(&host, key("agr-a", "c1"), DUE + 3).await;
+    assert_eq!(code_of(&lost.unwrap_err()), code::RESERVATION_LOST);
+}

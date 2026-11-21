@@ -12,8 +12,8 @@
 //! X pays. Y reserves its seat when it accepts and confirms it when it files
 //! the writer's countersigned half. A node cannot move its clock by 15
 //! minutes, so the failure itself is a card that the test signs with Y's
-//! person key: the writer's side of it, and the release on both nodes, are
-//! real.
+//! person key: the writer's filing of it, its snapshot, and Y's release of
+//! the seat are real.
 
 use std::time::Duration;
 
@@ -22,6 +22,7 @@ use serde_json::{Value, json};
 use syneroym_identity::{Identity, substrate};
 use syneroym_roym_core::{
     card::{self, CARD_CONTENT_TYPE},
+    clock,
     commitment_failure::{COMMITMENT_FAILURE_VERSION, CommitmentFailurePayload, FailureReason},
     record::{Envelope, RECORD_COMMITMENT_FAILURE, RecordDraft},
 };
@@ -227,15 +228,12 @@ fn failure_card(pair: &Pair, owner: &Identity, agreement: &str) -> String {
         supersedes: None,
     };
     let (mut env, bytes) =
-        Envelope::unsigned(draft, pair.owner_y_did.clone(), None, now_secs()).expect("envelope");
+        Envelope::unsigned(draft, pair.owner_y_did.clone(), None, clock::now_secs())
+            .expect("envelope");
     env.attach_signature(z32::encode(&owner.sign(&bytes).to_bytes())).expect("signature");
     let envelope = env.to_json().expect("json");
     card::card_body(RECORD_COMMITMENT_FAILURE, COMMITMENT_FAILURE_VERSION, &envelope, &[])
         .expect("card body")
-}
-
-fn now_secs() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()
 }
 
 /// The commitments of the newest snapshot that X holds: `(state, reason)` of
@@ -257,7 +255,7 @@ async fn commitments_on(node: &Node, agreement: &str) -> Vec<(String, String, Op
 }
 
 #[tokio::test]
-async fn the_writer_marks_a_failed_slot_and_both_nodes_release() {
+async fn the_writer_marks_a_failed_slot_and_the_giver_releases_it() {
     let _guard = common::serial_guard().await;
     let _ = ring::default_provider().install_default();
     if !roym_artifacts_present() {

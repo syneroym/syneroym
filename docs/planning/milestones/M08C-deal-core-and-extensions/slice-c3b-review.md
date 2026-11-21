@@ -815,7 +815,7 @@ removed them (the working tree is clean). I changed no code.
 
 ### New findings
 
-- [ ] **R10 — major.** *Where:* `crates/roym_scheduling/src/app/reservation.rs:276`
+- [x] **R10 — major.** *Where:* `crates/roym_scheduling/src/app/reservation.rs:276`
   to `:283` (`claim`); the plan's D-C3b-5 pseudo-code has the same order.
   *Problem:* `claim` walks the seats from 1 and calls `seat_is_free` on
   each occupant, and `seat_is_free` lapses an expired unconfirmed occupant
@@ -837,9 +837,9 @@ removed them (the working tree is clean). I changed no code.
   `tests/lapse.rs`: capacity 2, A at `NOW`, B at `DUE + 1`; B holds seat
   2, no `decided:` row exists, and A's confirm succeeds. Record the change
   to the D-C3b-5 pseudo-code under the extensions doc's C3b2 Deviations.
-  *Status:* Open.
+  *Status:* Fixed (SHA). Agreed. `claim` now makes two passes: the first takes only a seat that is free already (never used, or ended by a `free:` row), and the second lapses an expired, unconfirmed occupant. The seat attempt moved to `try_seat`. New tests in `tests/lapse.rs`: `a_free_seat_is_taken_before_an_expired_reservation_is_lapsed` (capacity 2: B holds seat 2, no `decided:` row, A's confirm works) and `an_expired_reservation_is_lapsed_when_no_seat_is_free`. The change to the pseudo-code is in the extensions doc's C3b2 Deviations.
 
-- [ ] **R11 — minor.** *Where:* `crates/roym_transaction/src/app/sync/failure.rs:101`
+- [x] **R11 — minor.** *Where:* `crates/roym_transaction/src/app/sync/failure.rs:101`
   to `:104`, `:42`.
   *Problem:* The writer runs the transition (`apply_failure`) and stores
   the `failure:` row after it. If the store fails or the node stops in
@@ -857,9 +857,9 @@ removed them (the working tree is clean). I changed no code.
   transition. On a repeat whose `record_id` matches, run the transition
   again when the latest snapshot does not yet show the commitment
   `failed` (it answers `Ok(None)` when it does). Add the crash test above.
-  *Status:* Open.
+  *Status:* Fixed (SHA). Agreed. The `failure:` row is created before the transition. A card whose row exists with the same record runs the transition again unless the latest snapshot already shows the commitment `failed`. A card whose transition is refused deletes the row it created, so a refused card leaves no row. New tests `a_stop_before_the_snapshot_does_not_lose_the_failure` (`crash_on_write` of the snapshot, then the same card is filed and not refused) and `a_refused_transition_leaves_no_failure_row`.
 
-- [ ] **R12 — minor.** *Where:* `crates/roym_transaction/src/app/sync/confirm.rs:100`
+- [x] **R12 — minor.** *Where:* `crates/roym_transaction/src/app/sync/confirm.rs:100`
   to `:102`; extensions doc and agreements doc C3b2 Deviations ("Every
   refused confirm is signed as `reservation-lost`").
   *Problem:* Every refusal of `confirm` signs a failure, also
@@ -880,9 +880,9 @@ removed them (the working tree is clean). I changed no code.
   reserve or confirm is refused. Keep `reservation-lost` as today. Add a
   test with the fake that has no reservation for the key, and correct the
   Deviation line.
-  *Status:* Open.
+  *Status:* Fixed (SHA). Agreed. A `reservation-unknown` answer to `confirm` now makes the node reserve again and confirm, as the import does; only a refused new reserve or confirm is signed as `reservation-lost`. Any other refusal is signed as before. New tests `a_missing_reservation_is_taken_again_and_confirmed`, `a_missing_reservation_that_cannot_be_taken_again_is_a_lost_reservation` and `any_other_refusal_of_a_confirm_is_a_lost_reservation`. The old test that signed a failure for `reservation-unknown` is replaced. The Deviation and the backlog row are corrected.
 
-- [ ] **R13 — minor.** *Where:* `crates/roym_transaction/src/app/sync.rs:131`
+- [x] **R13 — minor.** *Where:* `crates/roym_transaction/src/app/sync.rs:131`
   to `:136`.
   *Problem:* The confirm pass returns its storage errors with `?`, after
   the watermark is stored and before the tick and
@@ -898,9 +898,9 @@ removed them (the working tree is clean). I changed no code.
   error like a tick error: count the commitment as not done (it is tried
   again next sync) and still answer the stats. Add a test with
   `fail_write(LEDGER, "confirmed:")` that the sync answers its stats.
-  *Status:* Open.
+  *Status:* Fixed (SHA). Agreed. `confirm_own_reservations` no longer returns an error: a storage error stops only the commitment it happened on (the next sync does it again), and a failing agreement query counts as nothing to do. The tick and the recovery run as before. New test `a_storage_error_in_the_confirm_pass_does_not_fail_the_sync` (`fail_write` of `confirmed:`).
 
-- [ ] **R14 — minor.** *Where:* `docs/planning/changes/roym-extensions/change.md:271`;
+- [x] **R14 — minor.** *Where:* `docs/planning/changes/roym-extensions/change.md:271`;
   `docs/planning/deferred-backlog.md:680`;
   `crates/roym_transaction/src/app/agreement_ops.rs:274`.
   *Problem:* The Deviation and the backlog row say a failed release at a
@@ -917,9 +917,9 @@ removed them (the working tree is clean). I changed no code.
   *Fix:* say in both places that a reservation left by a refused accept is
   never confirmed, so it lapses when another booking needs its seat
   (EX-20); no retry exists for it.
-  *Status:* Open.
+  *Status:* Fixed (SHA). Agreed, the claim was wrong. A refused accept stores no row, so nothing repeats its release. The Deviation and the backlog row now say that such a reservation is never confirmed and lapses when another booking needs its seat (EX-20), and that no retry exists for it. I did not add a retry: the plan's cases of a lost release are the ended agreements, and this one is bounded by the expiry.
 
-- [ ] **R15 — minor.** *Where:* `crates/substrate/tests/roym_reservation_e2e.rs:260`;
+- [x] **R15 — minor.** *Where:* `crates/substrate/tests/roym_reservation_e2e.rs:260`;
   `docs/planning/changes/roym-agreements/change.md:1467`.
   *Problem:* The test is named `…_both_nodes_release`, and the AG-16
   Deviation says "the release on both nodes are real". In the test only Y
@@ -933,9 +933,9 @@ removed them (the working tree is clean). I changed no code.
   `the_writer_marks_a_failed_slot_and_the_giver_releases_it`) and say in
   the Deviation that the giver's release is real across two nodes and the
   writer's release is a service test.
-  *Status:* Open.
+  *Status:* Fixed (SHA). Agreed. The test is renamed `the_writer_marks_a_failed_slot_and_the_giver_releases_it`, its header says what is real, and the AG-16 Deviation says that the giver's release is real across two nodes and the writer's release is the service test `each_giver_releases_the_reservations_of_ended_commitments`.
 
-- [ ] **R16 — minor.** *Where:* `docs/planning/changes/roym-agreements/change.md:1244`
+- [x] **R16 — minor.** *Where:* `docs/planning/changes/roym-agreements/change.md:1244`
   to `:1246` and the C3b2 notes at `:1465`; `docs/planning/changes/roym-extensions/change.md:272`.
   *Problem:* Section 9 of the plan asks the agreements Deviations to record
   AG-36's snapshot and release part, which closes the C1 note "The
@@ -952,9 +952,9 @@ removed them (the working tree is clean). I changed no code.
   release by each giver are built, closing the C1 note, proved by
   `tests/commitment_failure_writer.rs` and `roym_reservation_e2e`. Move the
   `release_ended` line there.
-  *Status:* Open.
+  *Status:* Fixed (SHA). Agreed. The agreements Deviations have a new AG-36 line (the cascade in one snapshot and the release by each giver, closing the C1 note), and the `release_ended` line moved there from the extensions doc, which now points to it.
 
-- [ ] **R17 — minor.** *Where:* `crates/roym_transaction/src/app/tests/commitment_failure.rs:198`
+- [x] **R17 — minor.** *Where:* `crates/roym_transaction/src/app/tests/commitment_failure.rs:198`
   to `:211`.
   *Problem:* The plan's 7.3 case (review P4) is: the counterparty accepts,
   its clock passes the quote's expiry, `agreement.get` releases the seat,
@@ -971,9 +971,9 @@ removed them (the working tree is clean). I changed no code.
   the expiry (check the hook release and the marker), then file the
   writer's countersigned half with `issued_at_secs` before the expiry
   (as `counterparty_files_author_countersigned_half_delivered_after_expiry` in `tests/accept.rs` does), then run the pass and check one failure.
-  *Status:* Open.
+  *Status:* Fixed (SHA). Agreed. The test `a_late_half_after_the_expiry_release_gives_a_commitment_failure` now runs the whole case: accept, `agreement.get` after the expiry (hook release and the `released:` row checked), the writer's half signed before the expiry and delivered after it, `sync_at` (half filed, one failure signed and sent, the seat still released). The two helpers of `tests/accept.rs` are `pub(super)` for it.
 
-- [ ] **R18 — minor.** *Where:* `crates/substrate/tests/roym_reservation_e2e.rs:237`
+- [x] **R18 — minor.** *Where:* `crates/substrate/tests/roym_reservation_e2e.rs:237`
   to `:239`.
   *Problem:* `now_secs` writes
   `std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)`,
@@ -983,6 +983,6 @@ removed them (the working tree is clean). I changed no code.
   *Failure case:* none at run time; the import cleanup pass missed it.
   *Fix:* import `syneroym_roym_core::clock` and call `clock::now_secs()`;
   drop the local function.
-  *Status:* Open.
+  *Status:* Fixed (SHA). Agreed. `now_secs` is gone; the test uses `clock::now_secs()`.
 
-**Open after code review round 2: 9** (R10 to R18).
+**Open after code review round 2: 0.** Fixed: 9 (R10 to R18), on the branch after `920671a7`. The reviewer checks the fixes.

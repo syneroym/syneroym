@@ -10,6 +10,7 @@ use syneroym_roym_core::{
     deal::{Commitment, transition::CommitmentState},
     progress::AgreementState,
     signing::{CERTIFICATE_ID, CERTIFICATES, StoredCertificate},
+    testing::TestHost,
     transaction::DealRole,
 };
 
@@ -29,13 +30,20 @@ use crate::app::{
 /// the counterparty here. The writer's countersigned half is held, and the
 /// node has reserved its own seat.
 async fn counterparty_deal() -> StepDeal {
+    let deal = unreserved_counterparty_deal().await;
+    let row = agreement(&deal).await;
+    let held = ExtensionHooks.reserve(&deal.fix.host, &deal.agreement, &slot(&row)).await;
+    held.expect("the node reserves its own seat");
+    deal
+}
+
+/// The same deal, before the node reserved its seat.
+async fn unreserved_counterparty_deal() -> StepDeal {
     let deal = slot_deal(DealRole::Counterparty).await;
     let mut row = agreement(&deal).await;
     row.quote_author_did = deal.cp_did.clone();
     row.counterparty_did = deal.fix.master_did.clone();
     put_row(&deal.fix.host, AGREEMENTS, &deal.agreement, &row).await.unwrap();
-    let held = ExtensionHooks.reserve(&deal.fix.host, &deal.agreement, &slot(&row)).await;
-    held.expect("the node reserves its own seat");
     deal
 }
 
@@ -52,7 +60,6 @@ async fn edit_agreement(deal: &StepDeal, edit: impl FnOnce(&mut AgreementRow)) {
 async fn pass(deal: &StepDeal, now: u64) -> u32 {
     confirm_own_reservations(&deal.fix.host, &ExtensionHooks, "conv_1", &deal.fix.master_did, now)
         .await
-        .expect("the pass does not fail")
 }
 
 async fn failure_row(deal: &StepDeal) -> Option<FailureRow> {
@@ -65,9 +72,11 @@ async fn confirmed_row(deal: &StepDeal) -> Option<LedgerRow> {
 
 /// The cards of type `commitment-failure` that the node sent.
 fn sent_failures(deal: &StepDeal) -> Vec<Value> {
-    deal.fix
-        .host
-        .sent_cards()
+    sent_failures_of(&deal.fix.host)
+}
+
+fn sent_failures_of(host: &TestHost) -> Vec<Value> {
+    host.sent_cards()
         .iter()
         .filter_map(|body| serde_json::from_str::<Value>(body).ok())
         .filter(|card| card["type"] == "commitment-failure")
@@ -111,13 +120,34 @@ async fn a_refused_confirm_signs_one_failure_and_sends_it() {
 }
 
 #[tokio::test]
-async fn every_refusal_code_ends_as_a_lost_reservation() {
-    let deal = counterparty_deal().await;
-    deal.fix.scheduling.refuse_confirms("reservation-unknown");
-    pass(&deal, deal.agreed_at + 5).await;
+async fn a_missing_reservation_is_taken_again_and_confirmed() {
+    let deal = unreserved_counterparty_deal().await;
+    assert_eq!(pass(&deal, deal.agreed_at + 5).await, 0);
+    assert_eq!(deal.fix.scheduling.calls("reservation.reserve"), 1);
+    assert!(deal.fix.scheduling.is_confirmed(&deal.agreement, "c1"));
+    assert!(confirmed_row(&deal).await.is_some());
+    assert!(failure_row(&deal).await.is_none());
+    assert!(sent_failures(&deal).is_empty());
+}
+
+#[tokio::test]
+async fn a_missing_reservation_that_cannot_be_taken_again_is_a_lost_reservation() {
+    let deal = unreserved_counterparty_deal().await;
+    deal.fix.scheduling.refuse_reserves("slot-taken");
+    assert_eq!(pass(&deal, deal.agreed_at + 5).await, 0);
     let stored = failure_row(&deal).await.expect("the failure row");
     let payload = verify_commitment_failure(&stored.envelope, deal.agreed_at + 5).payload;
     assert_eq!(payload.expect("payload").reason, FailureReason::ReservationLost);
+    assert_eq!(sent_failures(&deal).len(), 1);
+}
+
+#[tokio::test]
+async fn any_other_refusal_of_a_confirm_is_a_lost_reservation() {
+    let deal = counterparty_deal().await;
+    deal.fix.scheduling.refuse_confirms("some-other-code");
+    pass(&deal, deal.agreed_at + 5).await;
+    assert!(failure_row(&deal).await.is_some());
+    assert_eq!(deal.fix.scheduling.calls("reservation.reserve"), 1, "no new reserve");
 }
 
 /// A conversation that fails its sends while `down` is set, and keeps every
@@ -191,21 +221,6 @@ async fn a_failure_that_cannot_be_signed_is_retried_and_reported() {
     host.set_storage_row(CERTIFICATES, CERTIFICATE_ID, &good);
     assert_eq!(pass(&deal, deal.agreed_at + 6).await, 0);
     assert_eq!(sent_failures(&deal).len(), 1);
-    assert!(failure_row(&deal).await.is_some());
-}
-
-#[tokio::test]
-async fn a_late_half_after_the_expiry_release_gives_a_commitment_failure() {
-    let deal = counterparty_deal().await;
-    // The quote expired with no countersigned half, and the node released
-    // its seat. Then the writer's half, signed before the expiry, is filed.
-    let row = agreement(&deal).await;
-    ExtensionHooks.release(&deal.fix.host, &deal.agreement, &slot(&row)).await.unwrap();
-    assert!(deal.fix.scheduling.is_released(&deal.agreement, "c1"));
-
-    assert_eq!(pass(&deal, row.terms.quote_expires_at_secs + 60).await, 0);
-    assert_eq!(sent_failures(&deal).len(), 1, "a confirm never takes the seat again");
-    assert!(deal.fix.scheduling.is_released(&deal.agreement, "c1"));
     assert!(failure_row(&deal).await.is_some());
 }
 
@@ -380,5 +395,95 @@ mod snapshot {
         snap.state = AgreementState::Closed;
         file(&f, &author, &snap, "msg_p2", now + 20).await;
         assert!(f.scheduling.is_released(&rec_id, "c1"), "the failed commitment is released");
+    }
+}
+
+#[tokio::test]
+async fn a_storage_error_in_the_confirm_pass_does_not_fail_the_sync() {
+    use crate::app::sync::{SyncInput, sync_at};
+
+    let deal = counterparty_deal().await;
+    deal.fix.host.fail_write(LEDGER, "confirmed:");
+    let input = || SyncInput { conversation: "conv_1".to_string(), full: false };
+    let out = sync_at(&deal.fix.host, input(), deal.agreed_at + 5).await.expect("the sync answers");
+    assert_eq!(out.unsent_failures, 0);
+    assert!(confirmed_row(&deal).await.is_none(), "the marker was not written");
+
+    // The next sync does the commitment again.
+    deal.fix.host.restart();
+    sync_at(&deal.fix.host, input(), deal.agreed_at + 6).await.expect("the next sync");
+    assert!(confirmed_row(&deal).await.is_some());
+}
+
+mod late_half {
+    use syneroym_identity::{Identity, substrate};
+    use syneroym_roym_core::{record::RECORD_QUOTE, transaction::verify_quote};
+
+    use super::{super::fixture, sent_failures_of};
+    use crate::app::{
+        AGREEMENTS, AgreementRow, LEDGER,
+        agreement_ops::{self, AgreementAcceptInput, QuoteRecordInput},
+        disclosures, get_row,
+        hooks::released_id,
+        ledger::LedgerRow,
+        quote_ops::store_received_quote,
+        sync::{SyncInput, sync_at},
+        tests::accept::{
+            build_and_sign_quote, make_author_countersigned_half_card,
+            mock_author_half_delivered_at, slot_commitment,
+        },
+    };
+
+    #[tokio::test]
+    async fn a_late_half_after_the_expiry_release_gives_a_commitment_failure() {
+        let f = fixture();
+        let author = Identity::generate().expect("author identity");
+        let author_did = substrate::derive_did_key(&author.public_key());
+        let now = 1_000_000;
+        let (c1, _) = slot_commitment("c1", "listing_123", now + 1_000, now + 4_600);
+        let (quote, rec_id, env) =
+            build_and_sign_quote(&author, &f.master_did, vec![c1], now + 300, now);
+        let verdict = verify_quote(&env, now);
+        store_received_quote(&f.host, &env, &verdict, &quote.signed, now, &f.master_did)
+            .await
+            .expect("store quote");
+        disclosures::store(&f.host, &rec_id, RECORD_QUOTE, &quote.disclosures, now)
+            .await
+            .expect("store disclosures");
+        let accept = AgreementAcceptInput {
+            quote_record_id: rec_id.clone(),
+            viewed_lang: None,
+            viewed_via_mt: None,
+        };
+        agreement_ops::accept_at(&f.host, accept, now + 10).await.expect("accept");
+        assert!(f.scheduling.is_held(&rec_id, "c1"));
+
+        // The quote expires with no countersigned half: the node releases its seat.
+        let get = QuoteRecordInput { quote_record_id: rec_id.clone() };
+        agreement_ops::get_at(&f.host, get, now + 310).await.expect("get after the expiry");
+        assert!(f.scheduling.is_released(&rec_id, "c1"));
+        let marker: Option<LedgerRow> =
+            get_row(&f.host, LEDGER, &released_id(&rec_id)).await.unwrap();
+        assert!(marker.is_some(), "the expiry release is recorded");
+
+        // The writer's half, signed before the expiry, arrives after it.
+        let half = make_author_countersigned_half_card(
+            &author,
+            &author_did,
+            &f.master_did,
+            &rec_id,
+            &quote.signed.terms,
+            now + 50,
+        );
+        mock_author_half_delivered_at(&f.host, author_did, now + 400, half);
+        let input = SyncInput { conversation: "conv_1".to_string(), full: false };
+        let out = sync_at(&f.host, input, now + 400).await.expect("sync");
+        assert_eq!(out.filed, 1);
+        assert_eq!(out.unsent_failures, 0);
+
+        let row: AgreementRow = get_row(&f.host, AGREEMENTS, &rec_id).await.unwrap().unwrap();
+        assert!(row.quote_author.is_some(), "the late half is filed");
+        assert_eq!(sent_failures_of(&f.host).len(), 1, "a confirm never takes the seat again");
+        assert!(f.scheduling.is_released(&rec_id, "c1"));
     }
 }

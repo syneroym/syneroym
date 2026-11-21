@@ -262,7 +262,17 @@ pub(crate) fn claim_rows(
     (rows, rsv)
 }
 
-/// Tries each seat in turn. Of two calls for one seat, only one `create`
+/// What one try at one seat came to.
+enum Attempt {
+    Done(Claim),
+    /// Another key took this seat, or the seat was not free: try the next.
+    Next,
+}
+
+/// Tries each seat in turn, twice. The first pass takes only a seat that is
+/// free already (never used, or freed). Only when none is left does the second
+/// pass end an expired, unconfirmed reservation, so a booking never lapses
+/// one while a seat is free. Of two calls for one seat, only one `create`
 /// works. `rsv:` is first in the list, so a second call with the same key
 /// gets the `rsv:` id back and not the seat id.
 pub(crate) async fn claim<H: AppHost>(
@@ -273,37 +283,57 @@ pub(crate) async fn claim<H: AppHost>(
     now: u64,
 ) -> Result<Claim, Response> {
     let r = reservation_id(&key.agreement, &key.commitment_id, generation)?;
-    for n in 1..=slot.capacity.min(MAX_SLOT_CAPACITY) {
-        let occupant = slot.seats.top.get(&n);
-        if let Some(held) = occupant
-            && !seat_is_free(host, &held.reservation, now).await?
-        {
-            continue;
-        }
-        let round = occupant.map_or(0, |s| s.round) + 1;
-        let (rows, rsv) = claim_rows(key, &r, generation, slot.slot_id, (n, round), now);
-        if create_rows(host, rows).await?.is_none() {
-            put_row(
-                host,
-                key_id(&key.agreement, &key.commitment_id),
-                &Row::Key(Key { generation }),
-            )
-            .await?;
-            return Ok(Claim::Held(view(host, &r, &rsv).await?));
-        }
-        // Never decide by the id alone: read the key again.
-        let now_current = current(host, key).await?;
-        let found_generation = now_current.generation;
-        if let Some((other, other_rsv)) = live(host, now_current).await? {
-            let pointer = Key { generation: found_generation };
-            put_row(host, key_id(&key.agreement, &key.commitment_id), &Row::Key(pointer)).await?;
-            return Ok(Claim::Held(view(host, &other, &other_rsv).await?));
-        }
-        if found_generation >= generation {
-            return Ok(Claim::Again);
+    for may_lapse in [false, true] {
+        for n in 1..=slot.capacity.min(MAX_SLOT_CAPACITY) {
+            let occupant = slot.seats.top.get(&n);
+            if let Some(held) = occupant {
+                let free = if may_lapse {
+                    seat_is_free(host, &held.reservation, now).await?
+                } else {
+                    is_free(host, &held.reservation).await?
+                };
+                if !free {
+                    continue;
+                }
+            }
+            let round = occupant.map_or(0, |s| s.round) + 1;
+            if let Attempt::Done(done) =
+                try_seat(host, key, &r, generation, slot.slot_id, (n, round), now).await?
+            {
+                return Ok(done);
+            }
         }
     }
     Ok(Claim::Full)
+}
+
+async fn try_seat<H: AppHost>(
+    host: &H,
+    key: &ReservationKey,
+    r: &str,
+    generation: u64,
+    slot_id: &str,
+    seat_round: (u32, u32),
+    now: u64,
+) -> Result<Attempt, Response> {
+    let (rows, rsv) = claim_rows(key, r, generation, slot_id, seat_round, now);
+    if create_rows(host, rows).await?.is_none() {
+        let pointer = Row::Key(Key { generation });
+        put_row(host, key_id(&key.agreement, &key.commitment_id), &pointer).await?;
+        return Ok(Attempt::Done(Claim::Held(view(host, r, &rsv).await?)));
+    }
+    // Never decide by the id alone: read the key again.
+    let now_current = current(host, key).await?;
+    let found_generation = now_current.generation;
+    if let Some((other, other_rsv)) = live(host, now_current).await? {
+        let pointer = Key { generation: found_generation };
+        put_row(host, key_id(&key.agreement, &key.commitment_id), &Row::Key(pointer)).await?;
+        return Ok(Attempt::Done(Claim::Held(view(host, &other, &other_rsv).await?)));
+    }
+    if found_generation >= generation {
+        return Ok(Attempt::Done(Claim::Again));
+    }
+    Ok(Attempt::Next)
 }
 
 async fn load_slot<H: AppHost>(host: &H, slot_id: &str) -> Result<Option<SlotRow>, Response> {

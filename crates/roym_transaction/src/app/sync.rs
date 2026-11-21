@@ -130,8 +130,7 @@ pub(crate) async fn sync_at<H: AppHost>(host: &H, input: SyncInput, now: u64) ->
 
     let unsent_failures =
         confirm::confirm_own_reservations(host, &ExtensionHooks, &input.conversation, &owner, now)
-            .await
-            .map_err(Response::internal_error)?;
+            .await;
     let _ = progress_ops::tick_conversation_at(host, &input.conversation, now).await;
     let _ = decide::recover_deciding_rows(host, now).await;
 

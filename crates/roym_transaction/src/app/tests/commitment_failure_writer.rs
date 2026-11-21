@@ -364,3 +364,66 @@ async fn a_commitment_with_a_half_is_never_released() {
     .await;
     assert_eq!(deal.fix.scheduling.calls("reservation.release"), 0);
 }
+
+#[tokio::test]
+async fn a_stop_before_the_snapshot_does_not_lose_the_failure() {
+    let deal = three_part_deal().await;
+    let envelope = counterparty_failure(&deal, "c1");
+    // The node stops when it writes the next snapshot, after the failure row.
+    deal.fix.host.crash_on_write(AGREEMENT_PROGRESS, format!("snapshot:{}:2", deal.agreement));
+    let row = incoming_card_row(
+        "msg_f1",
+        "conv_1",
+        RECORD_COMMITMENT_FAILURE,
+        COMMITMENT_FAILURE_VERSION,
+        &deal.cp_did,
+        deal.agreed_at + 30,
+    );
+    let stopped = file_commitment_failure_card(
+        &deal.fix.host,
+        row,
+        &envelope,
+        &[],
+        "conv_1",
+        deal.agreed_at + 40,
+        &deal.fix.master_did,
+    )
+    .await;
+    assert!(stopped.is_err(), "the filing stops");
+    assert!(deal.fix.host.was_crashed_write_hit());
+    deal.fix.host.restart();
+
+    // The same card is filed again and is not refused.
+    let res = file(&deal, "msg_f1", &counterparty_failure(&deal, "c1"), &[]).await;
+    assert!(res.filed && !res.refused, "{res:?}");
+    assert_eq!(card(&deal.fix, "msg_f1").await.reason, None);
+    let row = agreement(&deal).await;
+    assert_eq!(progress_of(&row, "c1").0, &CommitmentState::Failed);
+    assert_eq!(row.state, Some(AgreementState::Closed));
+    let key = failure_id(&deal.agreement, "c1");
+    let stored: Option<FailureRow> = get_row(&deal.fix.host, LEDGER, &key).await.unwrap();
+    assert!(stored.is_some(), "the writer holds the record");
+}
+
+#[tokio::test]
+async fn a_refused_transition_leaves_no_failure_row() {
+    let deal = three_part_deal().await;
+    // c1 ended unconfirmed by the track window: a failure cannot move it.
+    let late = deal.agreed_at + 1_000_000_000;
+    progress_ops::transition_at(
+        &deal.fix.host,
+        &deal.agreement,
+        AgreementEvent::Tick { now_secs: late },
+        late,
+    )
+    .await
+    .expect("tick");
+    let mut row = agreement(&deal).await;
+    row.state = Some(AgreementState::Agreed);
+    put_row(&deal.fix.host, AGREEMENTS, &deal.agreement, &row).await.unwrap();
+    let reason = refused_reason(&deal, "msg_f1", &counterparty_failure(&deal, "c1"), &[]).await;
+    assert!(!reason.contains("not agreed") && !reason.contains("only the"), "{reason}");
+    let key = failure_id(&deal.agreement, "c1");
+    let stored: Option<FailureRow> = get_row(&deal.fix.host, LEDGER, &key).await.unwrap();
+    assert!(stored.is_none(), "a refused card leaves no row");
+}

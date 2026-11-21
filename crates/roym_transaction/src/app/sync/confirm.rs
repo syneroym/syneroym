@@ -14,6 +14,7 @@ use syneroym_app_host::{
 use syneroym_roym_core::{
     commitment_failure::{COMMITMENT_FAILURE_VERSION, CommitmentFailurePayload, FailureReason},
     deal::{Commitment, transition::CommitmentState},
+    method::scheduling::code,
     paging,
     record::{Envelope, RECORD_COMMITMENT_FAILURE},
     transaction::DealRole,
@@ -21,7 +22,7 @@ use syneroym_roym_core::{
 
 use super::super::{
     AGREEMENTS, AgreementRow, LEDGER, OutgoingCard, get_row,
-    hooks::{self, ConfirmOutcome, Reservations},
+    hooks::{self, ConfirmOutcome, Reservations, ReserveOutcome},
     ledger::{FailureRow, LedgerKind, LedgerRow, confirmed_id, failure_id},
     put_row, resolve_principal_and_owner, send_card_and_file,
 };
@@ -45,23 +46,28 @@ fn awaiting_confirm(row: &AgreementRow) -> impl Iterator<Item = &Commitment> {
 
 /// Confirms every reservation this node owns in `conversation` that still
 /// waits for it. Answers how many failure records could not be signed or sent
-/// in this pass: the next sync tries them again.
+/// in this pass: the next sync tries them again. A storage error stops only
+/// the commitment it happened on, and the next sync tries that one again too,
+/// so the pass never fails the sync that runs it.
 pub(crate) async fn confirm_own_reservations<H: AppHost, R: Reservations>(
     host: &H,
     hooks: &R,
     conversation: &str,
     owner: &str,
     now: u64,
-) -> Result<u32, String> {
+) -> u32 {
     let filter = json!({ "conversation": conversation }).to_string();
-    let rows: Vec<AgreementRow> = paging::query_all(host, AGREEMENTS, Some(filter)).await?;
+    let Ok(rows) = paging::query_all::<_, AgreementRow>(host, AGREEMENTS, Some(filter)).await
+    else {
+        return 0;
+    };
     let mut unsent = 0;
     for row in rows.iter().filter(|r| r.counterparty_did == owner) {
         for c in awaiting_confirm(row) {
-            unsent += confirm_one(host, hooks, row, c, now).await?;
+            unsent += confirm_one(host, hooks, row, c, now).await.unwrap_or(0);
         }
     }
-    Ok(unsent)
+    unsent
 }
 
 /// One commitment. Answers 1 when its failure record is not sent yet.
@@ -82,7 +88,7 @@ async fn confirm_one<H: AppHost, R: Reservations>(
     {
         return send_failure(host, stored, now).await;
     }
-    match hooks.confirm(host, agreement, c).await {
+    match confirm_or_retake(host, hooks, agreement, c).await {
         Ok(ConfirmOutcome::Confirmed) => {
             let marker = LedgerRow {
                 kind: LedgerKind::Confirmed,
@@ -97,11 +103,33 @@ async fn confirm_one<H: AppHost, R: Reservations>(
             put_row(host, LEDGER, &confirmed, &marker).await?;
             Ok(0)
         }
-        // Every refusal means the giver cannot keep the resource, whatever
+        // Every other refusal means the giver cannot keep the resource, whatever
         // code the extension gave.
         Ok(ConfirmOutcome::Refused { .. }) => make_failure(host, row, c, now).await,
         // A fault is not an answer: the next sync asks again.
         Err(_) => Ok(0),
+    }
+}
+
+/// Confirms the reservation. An extension that has no reservation for the key
+/// answers `reservation-unknown`. That is the state of a restore that brought
+/// the agreement back before the extension's own data, so the node takes the
+/// reservation again, as the import does, and confirms that. Only a refusal of
+/// the new reserve or confirm is a lost reservation.
+async fn confirm_or_retake<H: AppHost, R: Reservations>(
+    host: &H,
+    hooks: &R,
+    agreement: &str,
+    c: &Commitment,
+) -> Result<ConfirmOutcome, String> {
+    match hooks.confirm(host, agreement, c).await? {
+        ConfirmOutcome::Refused { reason } if reason == code::RESERVATION_UNKNOWN => {
+            match hooks.reserve(host, agreement, c).await? {
+                ReserveOutcome::Held => hooks.confirm(host, agreement, c).await,
+                ReserveOutcome::Refused { reason } => Ok(ConfirmOutcome::Refused { reason }),
+            }
+        }
+        other => Ok(other),
     }
 }
 

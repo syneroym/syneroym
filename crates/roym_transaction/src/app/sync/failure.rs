@@ -9,7 +9,7 @@ use serde_json::Value;
 use syneroym_app_host::{AppDataLayer, AppHost, types::data_layer::RecordWriteValue};
 use syneroym_roym_core::{
     commitment_failure::{CommitmentFailurePayload, verify_commitment_failure},
-    deal::Commitment,
+    deal::{Commitment, transition::CommitmentState},
     progress::{AgreementEvent, AgreementState},
     transaction::DealRole,
 };
@@ -98,11 +98,19 @@ pub(crate) async fn file_commitment_failure_card<H: AppHost>(
                 {
                     return refuse_card(host, row, reason).await;
                 }
-                if let Err(reason) = apply_failure(host, p, now).await {
-                    return refuse_card(host, row, reason).await;
-                }
+                // The row comes first: a stop after the snapshot must leave
+                // a row that the next filing of this card finds.
                 store_failure(host, &key, p, envelope, &rec_id, now).await?;
             }
+        }
+        if !shows_failed(&agr, &p.commitment_id)
+            && let Err(reason) = apply_failure(host, p, now).await
+        {
+            if !row.repeat {
+                // Nothing came of the card, so it leaves no row behind.
+                let _ = AppDataLayer::delete(host, LEDGER.to_string(), key).await;
+            }
+            return refuse_card(host, row, reason).await;
         }
     }
 
@@ -119,6 +127,14 @@ pub(crate) async fn file_commitment_failure_card<H: AppHost>(
         countersigned: false,
         deferred: false,
     })
+}
+
+/// Whether the latest snapshot that this node holds already shows the
+/// commitment `failed`.
+fn shows_failed(agr: &AgreementRow, commitment_id: &str) -> bool {
+    agr.commitments
+        .iter()
+        .any(|c| c.commitment_id == commitment_id && c.state == CommitmentState::Failed)
 }
 
 /// Marks the commitment failed in the next snapshot. A refusal of the
