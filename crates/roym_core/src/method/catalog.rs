@@ -20,20 +20,3 @@ pub struct ListingGetOutput {
     pub status: ListingStatus,
     pub updated_at_secs: u64,
 }
-
-/// Input for methods identifying a slot by slot_id.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SlotKeyInput {
-    pub slot_id: String,
-}
-
-/// A stored availability slot row.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SlotRow {
-    pub slot_id: String,
-    pub listing_id: String,
-    pub start_secs: u64,
-    pub end_secs: u64,
-    pub capacity: u32,
-}

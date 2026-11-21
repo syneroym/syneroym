@@ -60,6 +60,9 @@ pub enum ManifestKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Hook {
+    /// Checks and completes a commitment's `details` and `window` when its
+    /// quote is signed.
+    Prepare,
     Reserve,
     Confirm,
     Release,
@@ -102,7 +105,8 @@ pub struct Manifest {
     /// The commitment kinds that may name this extension.
     #[serde(default)]
     pub resource_kinds: Vec<ResourceKind>,
-    /// All of `reserve`, `confirm` and `release`, or none.
+    /// All of `reserve`, `confirm` and `release`, or none. `prepare` is
+    /// optional and only with them.
     #[serde(default)]
     pub hooks: Vec<Hook>,
     #[serde(default)]
@@ -121,6 +125,10 @@ impl Manifest {
 
     pub fn has_reserve_hook(&self) -> bool {
         self.hooks.contains(&Hook::Reserve)
+    }
+
+    pub fn has_prepare_hook(&self) -> bool {
+        self.hooks.contains(&Hook::Prepare)
     }
 }
 

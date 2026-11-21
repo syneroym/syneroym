@@ -7,7 +7,8 @@ use syneroym_roym_core::{
     method::{
         EnvelopeHistoryOutput, MethodInfo, NoParams, PingOutput, PublicationLimitsInput, Reply,
         VerifyInput,
-        catalog::{ListingGetOutput, ListingKeyInput, SlotKeyInput, SlotRow},
+        catalog::{ListingGetOutput, ListingKeyInput},
+        scheduling::{SlotKeyInput, SlotRow},
     },
     safety::PublicationLimits,
     services,

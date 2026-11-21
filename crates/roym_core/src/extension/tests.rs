@@ -63,9 +63,11 @@ fn shipped_manifests_say_what_they_allow() {
     assert!(scheduling.allows(ResourceKind::ServiceInSlot));
     assert!(!scheduling.allows(ResourceKind::GoodsOrService));
     assert!(scheduling.has_reserve_hook());
+    assert!(scheduling.has_prepare_hook());
     let one_shot = registry().workflow(&ext("one-shot", 1)).unwrap();
     assert!(one_shot.allows(ResourceKind::GoodsOrService));
     assert!(!one_shot.has_reserve_hook());
+    assert!(!one_shot.has_prepare_hook());
     assert!(registry().workflow(&ext("scheduling", 2)).is_none());
     assert!(registry().workflow(&ext("future", 1)).is_none());
     assert!(registry().details_schema(&ext("scheduling", 1), SCHEDULING_SLOT_SCHEMA).is_some());
@@ -195,6 +197,7 @@ fn hooks_are_all_three_or_none() {
         json!(["reserve"]),
         json!(["reserve", "confirm"]),
         json!(["reserve", "reserve", "confirm"]),
+        json!(["prepare", "reserve", "confirm"]),
     ] {
         let mut m = base();
         m["hooks"] = hooks;
@@ -203,6 +206,18 @@ fn hooks_are_all_three_or_none() {
     let mut m = base();
     m["hooks"] = json!(["reserve", "confirm", "release"]);
     parse_one(&m).unwrap();
+}
+
+#[test]
+fn prepare_is_only_allowed_with_the_three_hooks() {
+    let mut m = base();
+    m["hooks"] = json!(["prepare"]);
+    assert!(refused(&m).contains("prepare needs"));
+    m["hooks"] = json!(["prepare", "reserve", "confirm", "release"]);
+    let loaded = parse_one(&m).unwrap();
+    assert!(loaded.manifests()[0].has_prepare_hook());
+    m["hooks"] = json!(["reserve", "confirm", "release"]);
+    assert!(!parse_one(&m).unwrap().manifests()[0].has_prepare_hook());
 }
 
 #[test]

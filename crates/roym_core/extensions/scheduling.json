@@ -3,7 +3,7 @@
   "version": 1,
   "kind": "workflow",
   "resource_kinds": ["service-in-slot"],
-  "hooks": ["reserve", "confirm", "release"],
+  "hooks": ["prepare", "reserve", "confirm", "release"],
   "details": [
     {
       "schema": "scheduling/slot@1",

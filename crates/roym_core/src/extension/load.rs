@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::{MAX_STEP_TYPE_LEN, Manifest, ManifestKind, ids, schema};
+use super::{Hook, MAX_STEP_TYPE_LEN, Manifest, ManifestKind, ids, schema};
 use crate::{
     deal::{MAX_EXTENSION_ID_LEN, ResourceKind},
     listing,
@@ -67,8 +67,18 @@ fn check_workflow(m: &Manifest) -> Result<(), String> {
 
 fn check_hooks(m: &Manifest) -> Result<(), String> {
     let distinct: HashSet<_> = m.hooks.iter().collect();
-    if !m.hooks.is_empty() && (m.hooks.len() != 3 || distinct.len() != 3) {
-        return Err("hooks must be all of reserve, confirm and release, or none".to_string());
+    if distinct.len() != m.hooks.len() {
+        return Err("hooks lists a hook twice".to_string());
+    }
+    let held = [Hook::Reserve, Hook::Confirm, Hook::Release]
+        .iter()
+        .filter(|h| distinct.contains(h))
+        .count();
+    if held != 0 && held != 3 {
+        return Err("hooks must have all of reserve, confirm and release, or none".to_string());
+    }
+    if distinct.contains(&Hook::Prepare) && held == 0 {
+        return Err("hooks: prepare needs reserve, confirm and release".to_string());
     }
     if m.resource_kinds.contains(&ResourceKind::ServiceInSlot) && m.hooks.is_empty() {
         return Err("service-in-slot needs the reserve, confirm and release hooks".to_string());

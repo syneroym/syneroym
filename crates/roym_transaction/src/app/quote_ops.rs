@@ -24,7 +24,7 @@ use syneroym_roym_core::{
     envelope::Response,
     method::{
         self, DisclosedVerdict, DisclosedVerifyInput, Reply, SiblingError, call_sibling,
-        catalog::{SlotKeyInput, SlotRow},
+        scheduling::{SlotKeyInput, SlotRow},
     },
     paging,
     record::{Envelope, RECORD_QUOTE},

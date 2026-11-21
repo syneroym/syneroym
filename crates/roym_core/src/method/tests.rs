@@ -16,7 +16,7 @@ use syneroym_text_lang::LangTag;
 
 use super::{
     MethodInfo, NoParams, ParamError, Reply, SiblingError, VerifyInput, call_sibling,
-    catalog::{ListingGetOutput, SlotRow},
+    catalog::ListingGetOutput,
     check::assert_service_table,
     conversation::SendInput,
     parse_value,
@@ -24,6 +24,7 @@ use super::{
         AdmissionKind, AdmitFirstContactOutput, BlockCheckOutput, BlockedSince, ProfileRecord,
         ResolveAddressOutput,
     },
+    scheduling::SlotRow,
     typed,
 };
 use crate::{
@@ -708,7 +709,7 @@ async fn call_sibling_with_test_host() {
 }
 
 #[test]
-fn slot_row_reads_the_five_keys_the_catalog_writes() {
+fn slot_row_reads_the_five_keys_the_scheduling_service_writes() {
     let row: SlotRow = serde_json::from_value(json!({
         "slot_id": "slot-1",
         "listing_id": "list-1",

@@ -8,14 +8,12 @@ use syneroym_app_host::{
 use syneroym_roym_core::{
     method::{
         SiblingError, call_sibling,
-        catalog::{SlotKeyInput, SlotRow},
+        scheduling::{MAX_SLOT_CAPACITY, SlotKeyInput, SlotRow},
     },
     services,
 };
 
 use super::{LEDGER, get_row};
-
-pub const MAX_SLOT_CAPACITY: u32 = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReserveOutcome {
