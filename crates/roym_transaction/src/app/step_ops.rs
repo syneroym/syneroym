@@ -345,8 +345,8 @@ async fn send_step<H: AppHost>(
     })
 }
 
-/// A repeat of a step that is already stored. A step whose card was never
-/// sent is sent again; any other repeat only answers with the stored record.
+/// A repeat of a step that is already stored. A step whose first send failed
+/// is sent again; any other repeat only answers with the stored record.
 async fn answer_existing<H: AppHost>(
     host: &H,
     row: StepRow,

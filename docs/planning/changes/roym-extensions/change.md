@@ -236,7 +236,7 @@ The manifest reserves `kind = "insight"`, with a `reads` list (for example `even
 - **`data` is a hidden field**, like `details` (owner decision, question Q5). The record holds one `_sd` digest and the card carries the disclosure.
 - **`step.add` refuses a commitment whose extension this node does not know with `extension-unknown`, not `step-type-unknown`.** A party cannot sign a step under an extension that this node cannot check.
 - **`step.add` looks for a stored step before it checks `data` and the step count.** The plan checked them first. A repeat at the limit of 64 steps, or with other data, then answers with the stored record. It does not refuse an action that already happened.
-- **A repeat of a step whose card was never sent sends the card.** The row keeps the send state. The plan only returned `already-recorded`.
+- **A repeat of a step whose first send failed sends the card again.** The row keeps the send state. The plan only returned `already-recorded`. A node that stops during the send leaves the row `pending`, and no repeat sends the card. Backlog row: "A step card is not resent when the node stops during its send".
 - **`step.list` also returns the signed `envelope` of each step**, so a client can call `step.verify` without another lookup. The plan did not list it.
 - **A step's own fields have no derived label ids.** The plan derives the step's name only. The card draws a step field under its own name. No shipped step has fields. This needs a rule before the first step with fields ships.
 - **The step card shows the signer's role** ("Giver" or "Receiver"), as the fulfilment card does. The plan said "you" or the other person's name, and the time. The message around the card already shows the direction and the time.

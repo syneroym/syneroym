@@ -1847,7 +1847,7 @@ Add every derived id to the `## Extensions` section of `en.ftl` and `hi.ftl`. A 
 
 **Steps.** A step record is one signed work step of an extension, for one commitment of a formed agreement. The manifest declares the step types. A step does not change any deal state. Its `data` is hidden like a commitment's `details`: the record holds one `_sd` digest, and the card carries the disclosure. `data` is a JSON object of at most 8 KiB. For a known extension it must also fit the step's `fields`.
 
-- `step.add` takes `{agreement, commitment_id, step_type, data?}`. It signs the record, stores it, and sends the card to the other party. A party records one step of a type once for each commitment. A repeat answers with the stored record and `state: "already-recorded"`. If the first card was never sent, the repeat sends it.
+- `step.add` takes `{agreement, commitment_id, step_type, data?}`. It signs the record, stores it, and sends the card to the other party. A party records one step of a type once for each commitment. A repeat answers with the stored record and `state: "already-recorded"`. If the first send failed, the repeat sends the card again.
 - `step.list` takes `{agreement}`. It lists the steps of the agreement, oldest first, each with its plain `data`, `verified`, `checked` and its signed `envelope`. `checked` is false when this node does not know the extension.
 - `step.verify` takes `{envelope, disclosures?}` and answers like `fulfilment.verify`.
 - `roymctl roym step add --agreement <rec_…> --commitment <id> --type <extension>/<name> [--data <json>]` and `roymctl roym step list --agreement <rec_…>` call these methods.
