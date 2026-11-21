@@ -5,7 +5,11 @@ owner, who answers the questions in section 2.1. You do not have the
 planning conversation. This plan is meant to stand alone.*
 
 **Status: plan written, 2026-11-21, by Claude Opus 5.5. Not reviewed yet.
-Questions Q1 to Q8 (section 2.1) are open for the owner.**
+The owner answered Q1 to Q8 on 2026-11-21 (section 2.1) and asked for
+three risk measures: a test that every list of services is complete
+(D-C3b-15), a size check of the new component before any wiring (C3b1
+step 3), and a `confirm` that never takes a seat again (D-C3b-5). No
+question is open.**
 
 **Size and PRs.** [task.md](task.md) sizes C3b as L. Checked against the
 code, it is L: a seventh Roym service with its whole wiring (WIT world,
@@ -201,6 +205,23 @@ How a developer can see it work:
 
 Each question has options and a recommendation. The plan is written for
 the recommended answer.
+
+**Owner answers, 2026-11-21.** Q1 (a) to Q8 (a): the recommendation of each.
+For Q6 this is the owner's explicit yes to `- none` for both parts. In the
+same answer the owner chose three risk measures from the planning talk:
+
+- **A test that every list of services is complete** (D-C3b-15), so a
+  missed place fails a test, not a review.
+- **The size of the new component is measured before it is wired in**
+  (C3b1 step 3), so a size problem stops the slice early.
+- **`confirm` never takes a seat again** (D-C3b-5). A confirm finds the
+  reservation that exists and confirms it, or refuses `reservation-lost`.
+  After a release (for example the counterparty's release at the quote's
+  expiry, followed by a late countersigned half), the confirm is refused.
+  This is narrower than EX-22's "a confirm after the expiry succeeds if
+  the resource is still free": it still succeeds after the expiry while
+  nobody took the seat (Q4), but not after a release. The extensions doc's
+  Deviations record it.
 
 #### Q1. Split C3b into C3b1 (the service) and C3b2 (expiry and failure)?
 
@@ -449,7 +470,7 @@ will read the current listing from `catalog` again (agreements doc,
 | roym-extensions | EX-17 | C3b1: slots, seat capacity and the seat claim run in the scheduling service; `catalog` and `transaction` hold no slot code | exit criterion grep (section 10); `roym_booking_e2e` |
 | roym-extensions | EX-20 | C3b2: a 15-minute expiry set by the owner's node; the owner's node frees the seat for any new booking with no other node (Q4) | scheduling `lapse` tests |
 | roym-extensions | EX-21 | C3b1: reserve and release are idempotent by (agreement, commitment); release of an unknown or released reservation succeeds; release also frees a confirmed one | scheduling unit tests |
-| roym-extensions | EX-22 | C3b2: firm only after confirm; a confirm after the expiry succeeds while the seat is free, and is refused after a takeover | scheduling unit tests; service `tests/commitment_failure.rs` |
+| roym-extensions | EX-22 | C3b2: firm only after confirm; a confirm after the expiry succeeds while nobody took the seat, and is refused after a takeover or a release (narrower, see section 2.1) | scheduling unit tests; service `tests/commitment_failure.rs` |
 | roym-value-exchange | VX-10 | C3b1: the reserve goes through the scheduling extension's hook, under the slot owner's fence, also when the owner is not the quote author | as AG-14 and AG-15 |
 
 Not met here: EX-15, EX-16 (moved out of M08C). AG-44, AG-45 (C3c builds
@@ -755,8 +776,8 @@ is_free(row, now) = free:<row.reservation> exists
 
 confirm(key, now):
   (_, cur) = current(key); none -> refuse reservation-unknown
-  if free:<cur> exists:                                # C3b2 only: released at expiry
-      return reserve(again for the same slot) then confirm it, or refuse reservation-lost
+  if free:<cur> exists and decided:<cur> absent:       # released before any confirm
+      refuse reservation-lost                          # never takes a seat again
   match create([decided:<cur> {confirmed}]):
       None -> return view(cur, confirmed)
       Some(_) -> decided says confirmed -> return view(cur, confirmed)  # a repeat
@@ -779,6 +800,13 @@ lapse(r, now):                                         # C3b2
   `release` for a commitment that has a half (D-C3b-7).
 - In C3b1 `expires_at_secs` is `None` and `lapse` is never called. So a
   reservation never ends but by `release`, as today.
+- **`confirm` never takes a seat** (owner answer, section 2.1). It writes
+  only a `decided:` row for the reservation that exists. Only `reserve`
+  creates `seat:` rows. A confirm after a release is refused
+  `reservation-lost`, even when the seat is free. A repeat confirm of a
+  confirmed reservation that was later released (the writer's step 4
+  releases confirmed ones) answers its stored `confirmed`; no caller asks
+  for it, because `transaction` confirms only `promised` commitments.
 - The `seats` query uses an index on `slot_id` (`ensure_coll` with an
   index, as `transaction`'s collections do). One query and at most 64
   `get`s of `free:` rows per reserve. A slot has at most 64 seats.
@@ -939,11 +967,20 @@ agreement of the conversation where:
   `confirmed:<agreement>:<commitment_id>` nor a
   `failure:<agreement>:<commitment_id>` row in `ledger`.
 
-The `promised` rule matters. `confirm` takes the seat again when the
-reservation was released (D-C3b-5, for a release at the quote's expiry
-followed by a late countersigned half). A commitment that ended `failed`
-or `cancelled` was also released, and must never take a seat again. A
-test checks it (`an_ended_commitment_is_never_confirmed`, 7.3).
+The `promised` rule saves calls and keeps the meaning clear: a commitment
+that ended `failed` or `cancelled` was released, and a confirm of it
+could only be refused. `confirm` itself never takes a seat (D-C3b-5), so
+even a wrong call cannot book a seat again. A test checks the rule
+(`an_ended_commitment_is_never_confirmed`, 7.3).
+
+**A late countersigned half after the counterparty's release.** The
+counterparty releases its own reservations when the quote expires with no
+countersign (D-C3b-7). The writer may still have countersigned before the
+expiry, and that half may arrive later (agreements doc, "One way out of an
+end state", `:620`). The deal then moves to `agreed`, and the confirm pass
+gets `reservation-lost`: the counterparty signs a `commitment-failure`, as
+for a lapse. The agreements doc already says "a refused confirm ends in
+`reservation-lost`" for this case.
 
 For each such commitment:
 
@@ -1037,6 +1074,42 @@ that gives the reason: the writer confirms its own reservation at once,
 and a counterparty's reservation waits only for the writer's countersign
 (agreements doc, open question 4). It is not tied to the quote's expiry.
 
+**D-C3b-15. One test checks every list of services** (owner answer,
+section 2.1). D-C3b-2's table has about 15 places that list the Roym
+services one by one. A `git grep` before the step finds them once; a test
+keeps them right later. A new file
+`crates/roym_core/src/services/tests.rs` (with `#[cfg(test)] mod tests;`
+in `services.rs`, and `services.rs` beside `services/`, the module layout
+rule) reads each file as text, by a path from `CARGO_MANIFEST_DIR`, and
+checks that each service of `services::ALL` appears in it in the form that
+file uses:
+
+| File | Form checked for each service `s` (and `web` left out where noted) |
+| --- | --- |
+| `app/roym.toml` | a `[services.<s>]` table, and no other service table |
+| `../../mise.toml` | `<s>` inside the `build:roym` task's `for pkg in …` line |
+| `../../xtask/src/main.rs` | `"syneroym-roym-<s>"` |
+| `../core/src/test_constants.rs` | `syneroym_roym_<s>.wasm` |
+| `../../apps/roymctl/src/commands/roym/backup.rs` | `"<s>"` in both order lists (not `web`) |
+| `../roym_web/ui/src/screens/backup.ts` | `exportMethod: "<s>.export"` (not `web`) |
+| `../substrate/src/runtime/roym.rs` | `fn init_roym_<s>(` (all six exist today, `roym.rs:132` to `:388`) |
+| `../roym_web/tests/dual_build_parity/helpers.rs` | `("<s>", test_constants::roym_<s>_wasm_path())`, `web` included (the list at `helpers.rs:890` to `:897` has all six today) |
+
+- Each row is one small check with a message that names the file and the
+  missing service, so a failure says what to add.
+- The checks are text checks on purpose. The test needs no new
+  dependency: `toml` is already a dev-dependency of `roym_core`
+  (`router.rs:155` uses it), and the rest is `str::contains` on one line or
+  one block. It follows the pattern of the Hub card registry test, which
+  also reads a file of another crate as text (`card.rs`,
+  `the_ui_card_registry_matches_this_crate`).
+- The test is written first, in C3b1 step 4, **before** the new service
+  is added: on `main`'s six services it must pass. Then `scheduling` is
+  added to `ALL`, the test fails and names every place still missing, and
+  the step adds them until it passes.
+- `roymctl`'s signing list (`signing.rs:13`) is not checked: it lists the
+  services that sign, and `scheduling` signs nothing (D-C3b-1).
+
 ## 6. Step-by-step changes
 
 Each step builds, and its tests pass, before the next starts.
@@ -1064,12 +1137,23 @@ Done with this commit.
 - `reservation.rs` and `rows.rs` (D-C3b-5, no lapse), `prepare.rs` (Q3),
   `backup.rs` (D-C3b-9). Unit and service tests of section 7.2 on
   `roym_core::testing::TestHost`.
-- `cargo component build -p syneroym-roym-scheduling` builds the
-  component.
+- `cargo component build --release --target wasm32-wasip2 -p syneroym-roym-scheduling`
+  builds the component.
+- **Measure its size now, before step 4 wires it in** (owner answer,
+  section 2.1). Record the size of `syneroym_roym_scheduling.wasm` and of
+  `syneroym_roym_profile.wasm` from the same `target/` folder in the C3b1
+  status row. `profile` is the nearest service in shape (the same host
+  glue, a small method set): 772,732 bytes at C3a2 ([task.md](task.md),
+  section 1). If `scheduling` is more than 40 KB larger than `profile`,
+  stop and tell the owner before step 4, with the size of each crate it
+  links (`cargo tree -p syneroym-roym-scheduling --target wasm32-wasip2 -e normal`).
 
 #### Step 4 — Wire the seventh service
 
+- First the service-list test of D-C3b-15, on today's six services. It
+  must pass before anything else in this step.
 - Every row of the table in D-C3b-2, after the `git grep` check it names.
+  The test of D-C3b-15 then fails until every place has `scheduling`.
   `SCHEDULING`, `ALL`, `SIBLINGS`, `by_name`, the router rows and
   `roym.toml` change in one commit, because the router's tests compare
   them (section 2.2, point 9).
@@ -1135,8 +1219,8 @@ Done with this commit.
 
 - `RESERVATION_TTL_SECS` (D-C3b-14); `expires_at_secs` set at reserve;
   `lapse` and its call in `is_free`; `confirm` refuses `reservation-lost`
-  after a lapse, and re-reserves after a release (D-C3b-5). Tests: 7.2,
-  "lapse".
+  after a lapse and after a release, and never takes a seat (D-C3b-5).
+  Tests: 7.2, "lapse".
 
 #### Step 2 — The record (`roym_core`, pure)
 
@@ -1181,6 +1265,11 @@ hooks; `service` that names no Roym service; `service = "web"`; `prepare`
 alone; two of the three reserve hooks. `hook_service` of `scheduling` is
 `services::SCHEDULING`; `one-shot` has none. `services::by_name` finds each
 of `ALL` and nothing else.
+
+Service lists (`services/tests.rs`, D-C3b-15): one test per file of its
+table, for example `every_service_is_in_the_roym_build_task`,
+`every_service_has_a_backup_line_in_the_hub`. Each passes on six services
+before the new service is added, and on seven after.
 
 Router (`router.rs` tests, unchanged in shape): `availability.set` routes to
 `scheduling`; `reservation.reserve` routes nowhere; the manifest tests pass
@@ -1229,9 +1318,12 @@ reservation and its seat; one refused case per rule of D-C3b-9.
 - `a_confirmed_reservation_never_lapses`.
 - `confirm_after_the_expiry_succeeds_while_nobody_took_the_seat` (EX-22).
 - `confirm_after_a_takeover_is_reservation_lost` (EX-22).
-- `confirm_after_a_release_takes_the_seat_again_when_free`, and is
-  `reservation-lost` when another reservation holds it (agreements doc,
-  "One way out of an end state", `:620`).
+- `confirm_after_a_release_is_reservation_lost_and_takes_no_seat`: reserve,
+  release, confirm: refused `reservation-lost`, and the slot has no held
+  seat after it (agreements doc, "One way out of an end state", `:620`;
+  owner answer on `confirm`).
+- `confirm_never_creates_a_seat_row`: across every confirm case above, the
+  count of `seat:` rows does not change.
 - `two_takers_of_one_lapsed_seat_give_it_to_one`.
 
 ### 7.3 In-crate service tests (`crates/roym_transaction/src/app/tests/`)
@@ -1375,7 +1467,10 @@ service and load one more component. Expect a few seconds more per run.
 before and after, from one build folder, and C3b reports `scheduling`
 alone. Expected: C3b1 makes `catalog` and `transaction` smaller (the slot
 code leaves) and adds `scheduling` (its own size, likely near `profile`'s
-772,732 bytes, because both link the same host glue). C3b2 grows
+772,732 bytes, because both link the same host glue). The first
+measurement is in C3b1 step 3, before the wiring; its stop rule is there.
+The size table at close-out repeats the measurement on the finished
+branch. C3b2 grows
 `transaction` (new record code, limit +15%) and `scheduling` (lapse, limit
 +40 KB). Over a limit: stop and tell the owner.
 
@@ -1403,8 +1498,13 @@ New messages for the owner to review before each merge. C3b1:
 - **Who signed is not checked** (C2 R24, R26): D-C3b-12 rule 3.
 - **Import trusts the bundle** (C1 R13, C2 R31): D-C3b-9 and C3b2 step 4
   check every row.
-- **A service list left behind** (new risk here): D-C3b-2's table and its
-  `git grep` check.
+- **A service list left behind** (new risk here): D-C3b-2's table, its
+  `git grep` check, and the test of D-C3b-15, which keeps the lists right
+  after this slice too.
+- **A size surprise found at the end** (new risk here): the new component
+  is measured in C3b1 step 3, before it is wired in.
+- **A hook that books a seat by accident**: `confirm` never creates a seat
+  row (D-C3b-5, `confirm_never_creates_a_seat_row`).
 - **Tests that prove less than their names** (C3a R3, R4): each name in
   section 7 says the outcome it checks; `git grep 'fn <name>'` before a
   change doc names it.
@@ -1460,7 +1560,9 @@ Each PR fixes the statements it makes false. C8 does the full pass.
     `prepare` (Q2, Q3); lazy expiry (Q4); the `availability.*` names kept
     (Q7); EX-5's text (each giver reserves on its own node, already
     recorded by the agreements doc's "Differences" table, `:1066`); EX-21's
-    "release also frees a confirmed reservation" (`:1068`).
+    "release also frees a confirmed reservation" (`:1068`); EX-22 is
+    narrower: a confirm after a release is refused even when the seat is
+    free, because `confirm` never takes a seat (owner answer, 2026-11-21).
   - roym-agreements `## Deviations`: AG-14 and AG-15 now run through the
     scheduling extension (closes the C1 note at `:1233`); AG-36's snapshot
     and release part (closes the C1 note at `:1243`); `conversation` in
@@ -1486,6 +1588,11 @@ C3b1:
 - [ ] Stories 40, 50 and 60 and the Hub cases pass unchanged.
 - [ ] Parity and method-contract pass after `mise run build:roym`, with
   seven services.
+- [ ] The service-list test of D-C3b-15 passes, and it passed on six
+  services before `scheduling` was added (the step 4 commit order shows
+  it).
+- [ ] The size of `scheduling` was recorded in step 3, before the wiring,
+  next to `profile`'s.
 - [ ] Component sizes recorded, with `scheduling` alone, and within limits.
 - [ ] Deviations, backlog rows and living docs done.
 - [ ] Owner reviewed `backup-bundle-scheduling` in Hindi.
