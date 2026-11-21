@@ -11,7 +11,7 @@ use crate::{
     listing::{self, MAX_PAYMENT_METHOD_LEN},
     person,
     record::{self, RECORD_PAYMENT_ACKNOWLEDGEMENT, RECORD_PAYMENT_REQUEST, VerifyOptions},
-    verdict::RecordVerdict,
+    verdict::{self, PartyRecordPayload, RecordVerdict},
 };
 
 pub const PAYMENT_REQUEST_VERSION: u32 = 1;
@@ -271,52 +271,38 @@ pub fn verify_payment_request(
     }
 }
 
+impl PartyRecordPayload for PaymentAcknowledgementPayload {
+    type Error = PaymentError;
+
+    fn validate(&self) -> Result<(), Self::Error> {
+        self.validate()
+    }
+
+    fn agreement(&self) -> &str {
+        &self.agreement
+    }
+
+    fn quote_author_did(&self) -> &str {
+        &self.quote_author_did
+    }
+
+    fn counterparty_did(&self) -> &str {
+        &self.counterparty_did
+    }
+}
+
 pub fn verify_payment_acknowledgement(
     envelope: &str,
     now_secs: u64,
 ) -> RecordVerdict<PaymentAcknowledgementPayload> {
-    let opts = VerifyOptions::new(now_secs).allowing_expired();
-    let verified = match record::verify_json(envelope, &opts) {
-        Ok(v) => v,
-        Err(e) => return RecordVerdict::refused(e.to_string()),
-    };
-    if verified.record_type != RECORD_PAYMENT_ACKNOWLEDGEMENT
-        || verified.version != PAYMENT_ACKNOWLEDGEMENT_VERSION
-    {
-        return RecordVerdict::refused(
-            "not a payment-acknowledgement record this build understands",
-        );
-    }
-    let payload: PaymentAcknowledgementPayload =
-        match serde_json::from_value(verified.payload.clone()) {
-            Ok(p) => p,
-            Err(e) => return RecordVerdict::refused(format!("payload: {e}")),
-        };
-    if let Err(e) = payload.validate() {
-        return RecordVerdict::refused(e.to_string());
-    }
-    if verified.subject != payload.agreement {
-        return RecordVerdict::refused("envelope subject does not match agreement");
-    }
-    if verified.expires_at_secs.is_some() {
-        return RecordVerdict::refused("a payment acknowledgement may not declare an expiry");
-    }
-    if verified.issuer != payload.quote_author_did && verified.issuer != payload.counterparty_did {
-        return RecordVerdict::refused("acknowledgement issuer is not a party to the agreement");
-    }
-    RecordVerdict {
-        verified: true,
-        expired: false,
-        reason: None,
-        revocation_status: Some(listing::revocation_status_word(verified.revocation_status)),
-        record_id: Some(verified.record_id),
-        issuer: Some(verified.issuer),
-        signer_did: Some(verified.signer_did),
-        issued_at_secs: Some(verified.issued_at_secs),
-        expires_at_secs: None,
-        supersedes: verified.supersedes,
-        payload: Some(payload),
-    }
+    verdict::verify_party_record(
+        envelope,
+        now_secs,
+        RECORD_PAYMENT_ACKNOWLEDGEMENT,
+        PAYMENT_ACKNOWLEDGEMENT_VERSION,
+        "payment acknowledgement",
+        "acknowledgement",
+    )
 }
 
 #[cfg(test)]

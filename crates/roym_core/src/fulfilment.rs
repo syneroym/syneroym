@@ -8,9 +8,9 @@ use crate::{
     deal::{LocalText, SettlementRole},
     disclosure::check_sd_shape,
     lang::TranslationError,
-    listing, person,
-    record::{self, RECORD_FULFILMENT_RECEIPT, VerifyOptions},
-    verdict::RecordVerdict,
+    person,
+    record::RECORD_FULFILMENT_RECEIPT,
+    verdict::{self, PartyRecordPayload, RecordVerdict},
 };
 
 pub const FULFILMENT_RECEIPT_VERSION: u32 = 1;
@@ -118,49 +118,38 @@ pub fn fulfilment_halves_agree(a: &FulfilmentReceiptPayload, b: &FulfilmentRecei
         && a.role != b.role
 }
 
+impl PartyRecordPayload for FulfilmentReceiptPayload {
+    type Error = FulfilmentError;
+
+    fn validate(&self) -> Result<(), Self::Error> {
+        self.validate()
+    }
+
+    fn agreement(&self) -> &str {
+        &self.agreement
+    }
+
+    fn quote_author_did(&self) -> &str {
+        &self.quote_author_did
+    }
+
+    fn counterparty_did(&self) -> &str {
+        &self.counterparty_did
+    }
+}
+
 pub fn verify_fulfilment_receipt(
     envelope: &str,
     now_secs: u64,
 ) -> RecordVerdict<FulfilmentReceiptPayload> {
-    let opts = VerifyOptions::new(now_secs).allowing_expired();
-    let verified = match record::verify_json(envelope, &opts) {
-        Ok(v) => v,
-        Err(e) => return RecordVerdict::refused(e.to_string()),
-    };
-    if verified.record_type != RECORD_FULFILMENT_RECEIPT
-        || verified.version != FULFILMENT_RECEIPT_VERSION
-    {
-        return RecordVerdict::refused("not a fulfilment-receipt record this build understands");
-    }
-    let payload: FulfilmentReceiptPayload = match serde_json::from_value(verified.payload.clone()) {
-        Ok(p) => p,
-        Err(e) => return RecordVerdict::refused(format!("payload: {e}")),
-    };
-    if let Err(e) = payload.validate() {
-        return RecordVerdict::refused(e.to_string());
-    }
-    if verified.subject != payload.agreement {
-        return RecordVerdict::refused("envelope subject does not match agreement");
-    }
-    if verified.expires_at_secs.is_some() {
-        return RecordVerdict::refused("a fulfilment receipt may not declare an expiry");
-    }
-    if verified.issuer != payload.quote_author_did && verified.issuer != payload.counterparty_did {
-        return RecordVerdict::refused("fulfilment receipt issuer is not a party to the agreement");
-    }
-    RecordVerdict {
-        verified: true,
-        expired: false,
-        reason: None,
-        revocation_status: Some(listing::revocation_status_word(verified.revocation_status)),
-        record_id: Some(verified.record_id),
-        issuer: Some(verified.issuer),
-        signer_did: Some(verified.signer_did),
-        issued_at_secs: Some(verified.issued_at_secs),
-        expires_at_secs: None,
-        supersedes: verified.supersedes,
-        payload: Some(payload),
-    }
+    verdict::verify_party_record(
+        envelope,
+        now_secs,
+        RECORD_FULFILMENT_RECEIPT,
+        FULFILMENT_RECEIPT_VERSION,
+        "fulfilment receipt",
+        "fulfilment receipt",
+    )
 }
 
 #[cfg(test)]

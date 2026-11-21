@@ -15,8 +15,8 @@ use crate::{
     disclosure::check_sd_shape,
     extension::{MAX_STEP_TYPE_LEN, Registry, StepBy},
     listing, person,
-    record::{self, RECORD_STEP, VerifyOptions},
-    verdict::RecordVerdict,
+    record::RECORD_STEP,
+    verdict::{self, PartyRecordPayload, RecordVerdict},
 };
 
 pub const STEP_VERSION: u32 = 1;
@@ -212,44 +212,28 @@ pub fn check_step(
     Ok(StepCheck::Checked)
 }
 
+impl PartyRecordPayload for StepPayload {
+    type Error = StepError;
+
+    fn validate(&self) -> Result<(), Self::Error> {
+        self.validate()
+    }
+
+    fn agreement(&self) -> &str {
+        &self.agreement
+    }
+
+    fn quote_author_did(&self) -> &str {
+        &self.quote_author_did
+    }
+
+    fn counterparty_did(&self) -> &str {
+        &self.counterparty_did
+    }
+}
+
 pub fn verify_step(envelope: &str, now_secs: u64) -> RecordVerdict<StepPayload> {
-    let opts = VerifyOptions::new(now_secs).allowing_expired();
-    let verified = match record::verify_json(envelope, &opts) {
-        Ok(v) => v,
-        Err(e) => return RecordVerdict::refused(e.to_string()),
-    };
-    if verified.record_type != RECORD_STEP || verified.version != STEP_VERSION {
-        return RecordVerdict::refused("not a step record this build understands");
-    }
-    let payload: StepPayload = match serde_json::from_value(verified.payload.clone()) {
-        Ok(p) => p,
-        Err(e) => return RecordVerdict::refused(format!("payload: {e}")),
-    };
-    if let Err(e) = payload.validate() {
-        return RecordVerdict::refused(e.to_string());
-    }
-    if verified.subject != payload.agreement {
-        return RecordVerdict::refused("envelope subject does not match agreement");
-    }
-    if verified.expires_at_secs.is_some() {
-        return RecordVerdict::refused("a step may not declare an expiry");
-    }
-    if verified.issuer != payload.quote_author_did && verified.issuer != payload.counterparty_did {
-        return RecordVerdict::refused("step issuer is not a party to the agreement");
-    }
-    RecordVerdict {
-        verified: true,
-        expired: false,
-        reason: None,
-        revocation_status: Some(listing::revocation_status_word(verified.revocation_status)),
-        record_id: Some(verified.record_id),
-        issuer: Some(verified.issuer),
-        signer_did: Some(verified.signer_did),
-        issued_at_secs: Some(verified.issued_at_secs),
-        expires_at_secs: None,
-        supersedes: verified.supersedes,
-        payload: Some(payload),
-    }
+    verdict::verify_party_record(envelope, now_secs, RECORD_STEP, STEP_VERSION, "step", "step")
 }
 
 #[cfg(test)]

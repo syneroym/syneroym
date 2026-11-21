@@ -1,4 +1,11 @@
-use serde::{Deserialize, Serialize};
+use std::fmt;
+
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
+
+use crate::{
+    listing,
+    record::{self, VerifyOptions},
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecordVerdict<P> {
@@ -49,5 +56,69 @@ impl<P> RecordVerdict<P> {
             supersedes: None,
             payload: None,
         }
+    }
+}
+
+/// A payload for a party-signed record tied to an agreement.
+pub trait PartyRecordPayload: DeserializeOwned {
+    type Error: fmt::Display;
+
+    fn validate(&self) -> Result<(), Self::Error>;
+    fn agreement(&self) -> &str;
+    fn quote_author_did(&self) -> &str;
+    fn counterparty_did(&self) -> &str;
+}
+
+/// Verifies a party-signed deal record against its envelope.
+pub fn verify_party_record<P: PartyRecordPayload>(
+    envelope: &str,
+    now_secs: u64,
+    record_type: &str,
+    version: u32,
+    noun: &str,
+    issuer_noun: &str,
+) -> RecordVerdict<P> {
+    let opts = VerifyOptions::new(now_secs).allowing_expired();
+    let verified = match record::verify_json(envelope, &opts) {
+        Ok(v) => v,
+        Err(e) => return RecordVerdict::refused(e.to_string()),
+    };
+    if verified.record_type != record_type || verified.version != version {
+        return RecordVerdict::refused(format!(
+            "not a {record_type} record this build understands"
+        ));
+    }
+    let payload: P = match serde_json::from_value(verified.payload.clone()) {
+        Ok(p) => p,
+        Err(e) => return RecordVerdict::refused(format!("payload: {e}")),
+    };
+    if let Err(e) = payload.validate() {
+        return RecordVerdict::refused(e.to_string());
+    }
+    if verified.subject != payload.agreement() {
+        return RecordVerdict::refused("envelope subject does not match agreement");
+    }
+    if verified.expires_at_secs.is_some() {
+        return RecordVerdict::refused(format!("a {noun} may not declare an expiry"));
+    }
+    if verified.issuer != payload.quote_author_did()
+        && verified.issuer != payload.counterparty_did()
+    {
+        return RecordVerdict::refused(format!(
+            "{issuer_noun} issuer is not a party to the agreement"
+        ));
+    }
+    RecordVerdict {
+        verified: true,
+        expired: false,
+        reason: None,
+        revocation_status: Some(listing::revocation_status_word(verified.revocation_status)),
+        record_id: Some(verified.record_id),
+        issuer: Some(verified.issuer),
+        signer_did: Some(verified.signer_did),
+        issued_at_secs: Some(verified.issued_at_secs),
+        expires_at_secs: None,
+        supersedes: verified.supersedes,
+        payload: Some(payload),
     }
 }
