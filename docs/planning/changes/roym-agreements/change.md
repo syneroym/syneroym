@@ -1454,6 +1454,13 @@ with the question.
 - **Open question 3: the manifest is JSON in `roym_core` (owner decision, 2026-11-20).** The recommendation was a TOML manifest in each extension's crate, read at build time. The manifests are JSON files in `crates/roym_core/extensions/`, read with `include_str!` and `serde_json`. The Hub imports the same files. `roym_core` cannot depend on an extension crate, one-shot has no crate, and `toml` is not linked into the Roym components. The registry is still a fixed list in `roym_core`, and a listing still names its extension by `id` and `version`. The manifest keys are in [roym-extensions](../roym-extensions/change.md).
 
 
+**Rules and differences in C3b1 (2026-11-21).**
+
+- **AG-14 and AG-15 now run through the scheduling extension.** The reserve, confirm and release steps of the writer, and the counterparty's reserve before it signs, call the reserve hooks of the commitment's extension. They no longer write seat rows in `transaction`'s ledger. This closes the C1 note on AG-14 and AG-15 above. The step order and the refusal reasons (`slot-taken`, `slot-unavailable`, `reserve-failed`) are unchanged.
+- **`transaction.import` takes the seats of restored agreements again.** The agreements and the seats are now in two bundles. After it writes its rows, the import reserves again each open commitment that this node gives, and confirms it when the agreement holds the writer's countersigned half. A refusal or an error is listed in the import's `reservations_failed` and does not fail the import. Export `transaction` first and `scheduling` second. Import `scheduling` first.
+- **A late countersigned half after the counterparty's expiry release.** `confirm` never takes a seat, so such a confirm will always be refused with `reservation-lost`. The text of "One way out of an end state" says the counterparty "confirms as usual". The counterparty's confirm comes with the next part of the slice, and the text is corrected then.
+- **The `released:<agreement>` ledger row.** The counterparty's release at the quote's expiry runs in `agreement.get` and in the sync tick, on every call after the expiry. After every release worked, a local row `released:<agreement>` stops the later calls. An import accepts the row for an agreement it holds. The transaction backup version is 7.
+
 ## Close-out
 
 Before merge, update the living docs (requirements, architecture, integrated spec, developer guide, terminology) so they describe the result. Then set `status: done` and fill in `living-docs-touched` and `demo`. Record anything you postponed in [deferred-backlog.md](../../deferred-backlog.md).

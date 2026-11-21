@@ -741,8 +741,11 @@ async fn verify_node_y3_import(
     let first = import_transaction_before_scheduling(&node_y3, &restore_bundles_y3).await;
     assert_eq!(first["imported"], true, "the import itself succeeds: {first}");
     let failed = first["reservations_failed"].as_array().expect("a failed list");
-    assert_eq!(failed.len(), 2, "both seats are listed: {first}");
-    assert!(failed.iter().all(|f| f["reason"] == "slot-unavailable"), "{first}");
+    // The first agreement has settlement halves, so it is not reserved again;
+    // its seat comes back with the scheduling bundle. The second is still open.
+    assert_eq!(failed.len(), 1, "the open agreement's seat is listed: {first}");
+    assert_eq!(failed[0]["agreement"], tx_sched.quote_record_id);
+    assert_eq!(failed[0]["reason"], "slot-unavailable", "{first}");
     // The scheduling bundle was imported right after, so a second transaction
     // import finds every seat.
     let again = node_y3

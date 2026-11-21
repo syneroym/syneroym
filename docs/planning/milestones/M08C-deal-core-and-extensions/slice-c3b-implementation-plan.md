@@ -1796,29 +1796,29 @@ Each PR fixes the statements it makes false. C8 does the full pass.
 
 C3b1:
 
-- [ ] Every C3b1 row of section 3 names a test that exists and passes.
-- [ ] `git grep -n 'ServiceInSlot\|slot_id\|availability\.\|MAX_SLOT_CAPACITY'`
+- [x] Every C3b1 row of section 3 names a test that exists and passes.
+- [x] `git grep -n 'ServiceInSlot\|slot_id\|availability\.\|MAX_SLOT_CAPACITY'`
   over `crates/roym_transaction/src` and `crates/roym_catalog/src`, tests
   left out, shows only the `fulfil:` kind rule (`backup/sections.rs`).
   `transaction` has no `call_sibling` to `CATALOG`.
-- [ ] No `transaction` code names `services::SCHEDULING` or the string
+- [x] No `transaction` code names `services::SCHEDULING` or the string
   `"scheduling"`; it reaches the service through the manifest (Q2).
-- [ ] `roym_booking_e2e` (the last-seat race) passes through the
+- [x] `roym_booking_e2e` (the last-seat race) passes through the
   scheduling service.
-- [ ] Stories 40, 50 and 60 and the Hub cases pass unchanged.
-- [ ] Parity and method-contract pass after `mise run build:roym`, with
+- [ ] Stories 40, 50 and 60 and the Hub cases pass unchanged. (The Hub unit cases pass; the Playwright stories run in CI.)
+- [x] Parity and method-contract pass after `mise run build:roym`, with
   seven services.
-- [ ] The service-list test of D-C3b-15 passes, and it passed on six
+- [x] The service-list test of D-C3b-15 passes, and it passed on six
   services before `scheduling` was added (the step 4 commit order shows
   it).
-- [ ] The size of `scheduling` was recorded in step 3, before the wiring,
+- [x] The size of `scheduling` was recorded in step 3, before the wiring,
   next to `profile`'s.
-- [ ] Component sizes recorded, with `scheduling` alone, and within limits.
-- [ ] Deviations, backlog rows and living docs done.
-- [ ] A restore of the two bundles in either order ends with every agreed
+- [x] Component sizes recorded, with `scheduling` alone, and within limits.
+- [x] Deviations, backlog rows and living docs done.
+- [x] A restore of the two bundles in either order ends with every agreed
   seat taken, after the documented repeat (D-C3b-16).
 - [ ] Owner reviewed `backup-bundle-scheduling` and
-  `backup-reservations-failed` in Hindi.
+  `backup-reservations-failed` in Hindi (and the changed `backup-bundle-catalog`).
 - [ ] `mise run verify` passes with no `--skip`.
 
 C3b2:

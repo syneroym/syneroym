@@ -556,7 +556,7 @@ WebSocket is an option for one app. The guest declares an HTTP route with `targe
 **Access control.** There are three layers. No single component holds all of them.
 
 1. **Stream identity.** The router builds the caller identity from the route preamble when the stream opens. A caller proves possession of its key by signing the destination, interface, and timestamp (`ts`) with its private key in the `sig` field. The router checks that the timestamp is within 15 minutes of the node clock, and verifies the signature against the key in `pubkey`. If `pubkey` is present and the signature is invalid or missing, or the timestamp is outside the window, the router immediately refuses the stream with JSON-RPC error code `-32097` (`Unauthenticated`). A caller can send a delegation certificate. The caller's master DID (the stable identity of a person or a service member) signs a certificate for a temporary key. When the preamble has a certificate, the router checks the signature, the validity window and the scope (`routing` or `service-instance`) of the certificate. It checks that the temporary key of the certificate is the key named in `pubkey`. It checks that the master has not revoked that temporary key. When the preamble has a key and no certificate, the router accepts that key as the caller's own master key after verifying the signature. When it has neither, the caller is anonymous. When a service forwards a call on behalf of a user, it carries an `on_behalf` proof with the user's signature. The destination uses that proof only to answer `resolve-relation` about the user. The service still reads and writes rows as itself (ADR-0016 Amendment 3). A caller can add a signed chain of capability tokens (ADR-0015) to gain more rights.
-2. **Per-service admission.** A native service rejects a caller without a verified identity. A service can also admit or refuse each method. A WASM guest may admit anonymous callers. The six Roym services use this to be local-only. Each of them answers the error code `-32013` on `invoke` to a caller that did not arrive through a local dispatch path. A local dispatch path is a call from another service of this node or from the node's own machinery. A guest learns this with the `caller` function of the `syneroym:invocation` interface, which answers `internal`, `verified` or `anonymous`. `status` stays open on every service, for the health probe. The `directory` service has one table of four methods that a remote node may call: `directory.search`, `directory.info` and `directory.standing` admit any caller, and `directory.publish` admits a caller with a verified identity. All other `directory` methods are local-only, including `credential.*`, `revocation.*`, `member.suspend` and `member.lift`.
+2. **Per-service admission.** A native service rejects a caller without a verified identity. A service can also admit or refuse each method. A WASM guest may admit anonymous callers. The seven Roym services use this to be local-only. Each of them answers the error code `-32013` on `invoke` to a caller that did not arrive through a local dispatch path. A local dispatch path is a call from another service of this node or from the node's own machinery. A guest learns this with the `caller` function of the `syneroym:invocation` interface, which answers `internal`, `verified` or `anonymous`. `status` stays open on every service, for the health probe. The `directory` service has one table of four methods that a remote node may call: `directory.search`, `directory.info` and `directory.standing` admit any caller, and `directory.publish` admits a caller with a verified identity. All other `directory` methods are local-only, including `credential.*`, `revocation.*`, `member.suspend` and `member.lift`.
 3. **Row-level policy.** FDAE (Federated Data-Aware Authorization Engine, ADR-0017) compiles a policy into the data-layer query. A caller sees only the rows and fields it may see.
 
 **Node ownership.** A node has one owner, called the controller. The node and the controller both sign a `ControllerAgreement` that names the two DIDs. `roymctl substrate claim --controller <name>` makes it. It must run on the host of the node, because it reads the private key of the node. The controller must be a different identity from the node. By default the agreement is the file `agreement.json` in the data directory of the node, and the substrate reads it at start. The substrate checks the agreement only at start, including its optional expiry. Only an agreement with two valid signatures makes the controller the owner. The router then grants `substrate/admin` to the caller whose verified DID is the controller. This covers every node-wide ability, including deploy, undeploy and status, and the `security` interface (KEK injection). `[iam].admin_ucan_root` is only a fallback for a node with no verified agreement. A node with neither a verified agreement nor `admin_ucan_root` runs unowned: no caller holds a node-wide capability, so nobody can deploy to it. The setting `[iam].grant_resolve_to_node_did` (off by default) gives a caller whose DID is the node's own the ability `supervisor/resolve`, and nothing else. A client gateway or a coordinator on the same node uses it to resolve logical service names.
@@ -1140,15 +1140,16 @@ Roym is the SynApp built so far. A deal between two people is a chain of signed 
 
 #### Component Architecture
 
-The manifest of Roym declares six services: `web`, `profile`, `conversation`, `catalog`, `transaction`, and `directory`.
+The manifest of Roym declares seven services: `web`, `profile`, `conversation`, `catalog`, `transaction`, `scheduling`, and `directory`.
 
 | Service | What it does | Declared dependencies |
 |---|---|---|
-| `web` | Serves the Hub UI and `POST /rpc`. It forwards each method to the service that owns the method prefix. Every method that it forwards, except `profile.policy`, needs a session of the node owner. It answers `session.whoami`, `translation.targets` and `translation.translate` itself. `session.whoami` is answered without a session. The two translation methods need the node owner. | `conversation`, `profile`, `catalog`, `transaction`, `directory` |
+| `web` | Serves the Hub UI and `POST /rpc`. It forwards each method to the service that owns the method prefix. Every method that it forwards, except `profile.policy`, needs a session of the node owner. It answers `session.whoami`, `translation.targets` and `translation.translate` itself. `session.whoami` is answered without a session. The two translation methods need the node owner. | `conversation`, `profile`, `catalog`, `transaction`, `scheduling`, `directory` |
 | `profile` | The person's own profile, contacts, block list, and reports. | none |
 | `conversation` | One-to-one messages and private groups. It uses the conversation interface of the substrate for encryption, the outbox and delivery. | `profile` |
-| `catalog` | The listing owner's listings and availability slots. | `profile` |
-| `transaction` | Enquiries, quotes, agreements, progress, payments, and fulfilments. Agreement logic and settlement records are code inside this service. A quote that names a slot reads that slot from `catalog`. | `conversation`, `catalog` |
+| `catalog` | The listing owner's listings. | `profile` |
+| `transaction` | Enquiries, quotes, agreements, progress, payments, and fulfilments. Agreement logic and settlement records are code inside this service. A quote that names a slot, and each reservation of a slot, goes through the reserve hooks of the extension that the commitment names. For the scheduling extension that is the `scheduling` service. | `conversation`, `scheduling` |
+| `scheduling` | The scheduling extension's service. It holds the availability slots and the seat reservations. A reservation is a unique insert on the resource owner's own node, and no row of a seat is ever deleted. It holds a signed backup bundle of its own. | none |
 | `directory` | A SynOrg's member list, published listings, search index, and membership credentials. On every installation it also keeps that node's own list of directories and its search runs. | `catalog` |
 
 A call to the `invoke` export of a service that does not come from inside the installation is answered with error `-32013`, except for four `directory` methods. `directory.search`, `directory.info` and `directory.standing` accept any caller. `directory.publish` accepts a caller whose identity the router verified. These four methods ignore unknown fields, so a newer node can call an older one. So `transaction` and `catalog` cannot be called by another node. The `status` export stays open on every service, so health checks work. Two nodes talk in two ways. They use the conversation transport of the substrate, which carries the cards (the `prekey-bundle` and `deliver` calls). They also use the four `directory` methods. Inside the installation, `web` checks the session before it forwards a call.
@@ -1168,6 +1169,7 @@ flowchart TD
         CONV[conversation]
         CATALOG[catalog]
         TXN[transaction]
+        SCHED[scheduling]
         DIR[directory]
 
         subgraph SUBSTRATE["Substrate"]
@@ -1177,16 +1179,16 @@ flowchart TD
         end
     end
 
-    PEER["Other person's substrate: the same six services"]
+    PEER["Other person's substrate: the same seven services"]
     SYNORG["SynOrg's substrate: directory service"]
 
     HUB -->|"JSON-RPC 2.0, HTTP POST /rpc"| GW
     GW --> WEB
-    WEB -->|"forwards by method prefix"| PROFILE & CONV & CATALOG & TXN & DIR
+    WEB -->|"forwards by method prefix"| PROFILE & CONV & CATALOG & TXN & SCHED & DIR
     CONV -->|"depends on"| PROFILE
     CATALOG -->|"depends on"| PROFILE
     TXN -->|"depends on"| CONV
-    TXN -->|"depends on"| CATALOG
+    TXN -->|"reserve hooks"| SCHED
     DIR -->|"depends on"| CATALOG
     CONV --> MSG
     MSG -->|"end-to-end encrypted messages that carry cards"| PEER
@@ -3093,7 +3095,7 @@ The unified authorization engine (FDAE, [ADR-0017](decisions/0017-fdae-policy-sc
 
 ## Phase 6: High-Level Applications (SynApps)
 
-Roym is the one SynApp built so far. It has six services: `web`, `profile`, `conversation`, `catalog`, `transaction`, and `directory`. The product is described in the [Roym spec](roym-integrated-experience-spec.md). Each item below says what is built today and marks the rest as Envisioned.
+Roym is the one SynApp built so far. It has seven services: `web`, `profile`, `conversation`, `catalog`, `transaction`, `scheduling`, and `directory`. The product is described in the [Roym spec](roym-integrated-experience-spec.md). Each item below says what is built today and marks the rest as Envisioned.
 
 ### 0. Core Client Architecture (The Syneroym Hub)
 *Addresses the architecture of the universal UI shell.*
