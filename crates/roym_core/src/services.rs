@@ -28,3 +28,6 @@ pub const ALL: [Service; 6] = [WEB, CONVERSATION, PROFILE, CATALOG, TRANSACTION,
 
 /// The five `web` declares `depends_on` (everything but itself).
 pub const SIBLINGS: [Service; 5] = [CONVERSATION, PROFILE, CATALOG, TRANSACTION, DIRECTORY];
+
+#[cfg(test)]
+mod tests;
