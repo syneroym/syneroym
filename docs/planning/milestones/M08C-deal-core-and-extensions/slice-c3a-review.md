@@ -942,3 +942,432 @@ listing::`: 78 passed. These include the new tests of R1, R2 and R4.
 No new findings. **0 open.** Still open outside the findings: the owner's
 review of the six Hindi messages (plan exit criterion), and CI on the head
 after this commit.
+
+## Code review round 1 (C3a2) — Claude Opus 5.5 (Claude Code), 2026-11-21
+
+Reviewed part C3a2, PR [#376](https://github.com/syneroym/syneroym/pull/376)
+(draft), branch `feat/m08c-c3a2-step-records` at `7e15c16a`, with
+`git diff origin/main...HEAD` (seven commits, `41433d9b` to `7e15c16a`).
+This is the main checkout (`.git` is a directory, not a worktree). `git
+pull` said "Already up to date". The code was written by Claude Sonnet 5.5,
+so this round meets the cross-tool rule. The rounds above with ids R1 to R6
+are C3a1's. C3a2 has no earlier code review round, so there are no Fixed or
+Rejected items to check again. The new ids start at R7.
+
+Read: AGENTS.md, session-strategy.md ("The review file"), the plan
+(sections 2, 4 to 10, with D-C3a-10 to D-C3a-14 and section 6.2), this
+file's earlier rounds, the code review rounds of
+[slice-c1-review.md](slice-c1-review.md) and
+[slice-c2-review.md](slice-c2-review.md), and both change docs
+(roym-extensions: EX-7, EX-8, the C3a2 Deviations; roym-multilingual:
+ML-28 and its Deviations).
+
+CI: `gh pr checks 376` is green on `7e15c16a` (six test shards, Playwright
+E2E, "Lints, licenses & checks", "CI Pipeline", CLA). I did not run the
+full suite or `mise run verify`. I ran `mise run build:roym` (it built),
+then the six crates of the status row, the Hub unit tests and the
+duplication report (see "Status counts"). I changed no code.
+
+**Summary: 5 findings (R7 to R11): 0 blocker, 0 major, 5 minor.**
+
+### What was checked and found correct
+
+- **The record (D-C3a-10).** `StepPayload` has the planned fields with
+  `deny_unknown_fields`, one `_sd` digest (`check_sd_shape(.., 1, ..)`),
+  and `validate` checks what `FulfilmentReceiptPayload::validate` checks,
+  plus the extension's shape and the `<id>/<name>` step type of at most 64
+  bytes. `verify_step` refuses a wrong type or version, a subject that is
+  not the agreement, an expiry and an issuer that is not a party.
+  `MAX_STEP_DATA_BYTES` (8 KiB) and `MAX_STEPS_PER_AGREEMENT` (64) are the
+  planned values. `STEP_SET` hides `data` only. `("step", 1)` is in
+  `RECORD_TYPES`, in `CARD_TYPES` and in the Hub's `registry.ts`, and the
+  backlog row on `RECORD_TYPES` says so.
+- **One rule set (`check_step`).** `step.add`, the filing, the import and
+  `step.list`'s `checked` all call `step::check_step`: size first, then
+  `NotChecked` for an extension that is not a workflow extension here, then
+  the declared type (`step-type-unknown`), `by` (`not-your-step`) and the
+  field list (`details-invalid`). A later version of a known extension is
+  `NotChecked`, with a test.
+- **`step.add` (D-C3a-11).** Order: principal; agreement row (`Ok(None)`
+  and `Err` apart, as 7.11 asks); `require_open_agreement`; commitment
+  exists, names an extension, is not final; the stored-row look-up; the
+  rule set; the count; sign; store the disclosure; `create` the row; send.
+  The look-up before the data and count checks, the resend of a card that
+  was never sent and the `envelope` in `step.list` are in the extensions
+  doc's Deviations. `parties.rs` holds the shared rules, and
+  `check_fulfilment_preconditions` calls it with the same codes and the
+  same order as on `main` (`agreement-incomplete`, `agreement-terminal`,
+  `not-fulfilment-commitment`, `not-a-party`), so no fulfilment answer
+  changes. The row key holds the role from `SettlementRole::as_str`, which
+  matches the serde word. Commitment ids are `c1`, `c2`, … (checked by
+  `DealTerms::validate`), and the role is always the last part, so two
+  different steps cannot make one key.
+- **Filing (D-C3a-12).** `verify_step`, then `reveal_hidden_strict` with
+  `STEP_SET`, then the agreement: a missing row or an incomplete pair is
+  deferred with `defer_or_refuse`; the parties and the conversation match;
+  the commitment exists and names the step's extension; the issuer's role
+  in that commitment equals the payload's `role`; then the rule set; then
+  the stored-row check (a repeat, or "a second step of this type by this
+  role"), the count and the disclosure before the row. A step of an
+  unknown extension is filed and listed with `checked: false`. The card's
+  plain `data` comes from `disclosures::plain_view`.
+- **Backup (D-C3a-13).** `SECTION_STEPS` is exported and imported. Every
+  row is checked: the agreement is in the bundle and formed, the commitment
+  is in it, the envelope verifies and its record id is the row's, the
+  record matches the row (agreement, commitment, type, role), the parties
+  and conversation match the agreement, the issuer is the party the role
+  names, the key is the key the record makes, the disclosure is in the
+  bundle, reveals strictly and passes the rule set, and no agreement holds
+  more than 64 rows. Both `match` statements by card kind have a `step`
+  arm; `rebuild_card_data`'s arm marks a card not verified when its
+  disclosure is missing. The plan's section 2.2 point 10 is answered with
+  `a_decline_card_is_verified_after_export_and_import` and the decline arm
+  plus the decline history entry (Deviations).
+- **Access control.** The four `step.*` methods sit behind
+  `admit::require_internal` with every other `transaction` method, the
+  router names `step.` as `MethodAuth::Owner`, and the parity scenarios
+  144 and 167 check that each one is refused over the wire on both builds.
+- **Both builds.** Scenario 246 runs add, repeat, list, verify, export and
+  import and two refusals on the native and the WASM build and compares
+  them. It ran (not skipped) after `mise run build:roym`.
+- **Hub (D-C3a-14).** `step.ts` uses `textContent` and `recordValue` only,
+  names a known step through `codeWord` with the derived id, and draws an
+  unknown extension or an undeclared type as data (`lang=""`) with the "not
+  checked" line. `stepType` matches on id and version, so a newer version
+  is drawn as unknown. `render.ts`, `samples.json` and the gallery test
+  ("nine known types") have the new type. The role line in place of "you"
+  or the name is a recorded deviation.
+- **roymctl and demo.** `roymctl roym step add|list` checks that `--data`
+  is a JSON object and calls the methods; `cli_args.rs` covers both help
+  texts. Story `60-roym-step` follows Q10 (a): two shell parts that derive
+  nothing, the helper shared with story 50 in `hub-helpers.ts`, and both
+  Hubs show "Work started". The differences (the slot id from
+  `availability.list`, the enquiry first, a listing with no extension) are
+  in the Deviations. `demo:` in the extensions doc names the story.
+- **Docs and rules.** TERMINOLOGY.md, the architecture, the integrated
+  spec and the developer guide name the ninth card type and the `step.*`
+  methods; no living doc still says "eight card types". The backlog moves
+  "Nobody can mark work as started" to "Recently resolved", adds the Hub
+  row (target C6), the step limits row and the step field labels row, and
+  narrows the ML-28 row to widget labels. Every test that EX-7, EX-8 and
+  ML-28 name exists. No planning id, review id, `TODO` or size note in any
+  `.rs`, `.ts`, `.json`, `.ftl` or `.sh` line of the diff; no new
+  dependency; no `mod.rs`; no new `too_many_lines` suppression. The
+  component sizes are in task.md (`transaction` +5.10%, limit +15%).
+- **Status counts.** `cargo nextest run` on `roym-core`,
+  `roym-transaction`, `roym-web`, `roymctl`, `roym-catalog` and
+  `roym-directory`: 1,108 tests run, 1,108 passed, 1 skipped (the `#[ignore]`d ceiling measurement), as status.md says; scenario 246 ran. Hub unit tests with `TZ=UTC`: 50 files,
+  613 passed, as status.md says. The substrate tests and the Playwright
+  counts are not checked here; CI ran them.
+
+### New findings
+
+- [x] **R7 — minor.** *Where:*
+  `crates/roym_transaction/src/app/step_ops.rs:187` to `:190`, `:226` to
+  `:231`, `:342` to `:363`; `crates/roym_transaction/src/app/sync/steps.rs:174`
+  to `:201`.
+  *Problem:* A new row is created with state `NotSent` before the card is
+  sent, and `answer_existing` sends the card again for every row in state
+  `NotSent`. So a second `step.add` that comes while the first call is
+  still sending cannot tell "never sent" from "being sent now", and sends
+  the same card a second time. The same happens to the loser of the
+  `create` race (`claim_step_row` returns the winner, still `NotSent`). The
+  loser has also signed a record and stored its disclosure first, so a
+  disclosure row with no step stays behind. `store_step` in the filing has
+  the same left-over disclosure when two filings race, although its doc
+  comment says a second record "leaves nothing behind".
+  *Failure case:* the person runs `roymctl roym step add` twice at the same
+  moment (or a later Hub button is pressed twice). Both calls send the card:
+  the giver's own thread shows two "Work started" cards (the own card is
+  not marked as a repeat), the other node files the second one as a repeat,
+  and the `disclosures` collection holds a disclosure for a record that no
+  row names.
+  *Fix:* Mark the row as "send started" before the send, and resend in
+  `answer_existing` only a row whose send finished and failed. For example,
+  create the row with `SendState::Pending`, let `send_step` write the
+  result, and resend only `NotSent`; in the `create`-lost branch, answer
+  `already-recorded` without a send. Delete the loser's stored disclosure
+  (or store the disclosure after the `create`, as long as the row is never
+  readable without it). Fix the doc comment of `store_step`. Test: two
+  `add_at` calls where the first one's `conversation.send` stub runs the
+  second call send one card. If the owner accepts the double send, record
+  it in the Deviations and fix only the comment and the left-over
+  disclosure.
+  *Status:* Fixed (f229d8bd). Row is created with `SendState::Pending` so a concurrent call sees it is already being sent; loser of create race deletes its disclosure and returns `AlreadyRecorded`; `store_step` deletes orphaned disclosure on losing race. Proved failure: reverting creation state to `NotSent` fails `concurrent_add_sends_only_one_card_and_leaves_no_orphan_disclosures`.
+
+- [x] **R8 — minor.** *Where:*
+  `crates/roym_transaction/src/app/backup/steps.rs:43` to `:49`, `:72`;
+  `crates/roym_transaction/src/app/step_ops.rs:326`.
+  *Problem:* The import compares the row's agreement, commitment, type,
+  role and issuer with the signed record, but not the row's own
+  `conversation` and `half.issued_at_secs`. `p.conversation` is checked
+  against the agreement, `row.conversation` is not. Yet `send_step` sends a
+  resent card to `row.conversation`, and `step.list` orders by
+  `half.issued_at_secs`. This is the rule "the import checks every ledger
+  row" (agreements doc, C1 R13 and C2 R31) that D-C3a-13 cites.
+  *Failure case:* a bundle row in state `not-sent` with `conversation` set
+  to another conversation of the owner imports. The next `step.add` repeat
+  sends the step card into that other conversation. The other peer refuses
+  it ("card names another conversation"), but this node has posted a card
+  about one deal into another person's thread.
+  *Fix:* In `check_payload`, refuse a row whose `conversation` is not the
+  record's `conversation`, and whose `half.issued_at_secs` is not the
+  envelope's. Tests: one import row with each field changed is refused.
+  *Status:* Fixed (7d4e70a9). In `check_payload`, check `p.conversation == row.conversation` and `issued_at_secs == Some(row.half.issued_at_secs)`. Proved failure: removing checks causes `an_import_row_whose_conversation_differs_from_its_record_is_refused` and `an_import_row_whose_issued_time_differs_from_its_envelope_is_refused` to fail.
+
+- [x] **R9 — minor.** *Where:* `crates/roym_core/src/step.rs:215` to `:253`;
+  `crates/roym_core/src/fulfilment.rs:121` to `:164`;
+  `crates/roym_core/src/payment.rs:274` to `:320`.
+  *Problem:* `verify_step` is a third copy of the same function:
+  `cargo dupes report` puts the three verifiers in one group. Only the
+  record type, the version, the noun in two messages and the payload type
+  differ. AGENTS.md ("Look for an existing helper before writing a new
+  one") and plan section 7.11 ("Copies of one shape") ask for one helper.
+  *Failure case:* a later rule for every party-signed deal record (for
+  example a check of `supersedes`) is added to two of the three verifiers
+  and missed in the third.
+  *Fix:* Add one generic function beside `RecordVerdict`, for example
+  `verify_party_record::<P>(envelope, now, record_type, version, noun)`,
+  where `P` gives `validate`, `agreement`, `quote_author_did` and
+  `counterparty_did` through a small trait. Make the three verifiers call
+  it. Their messages and tests stay as they are. Then lower
+  `MAX_EXACT_DUPLICATE_PERCENT` if the gate says so.
+  *Status:* Fixed (41ea9565). Added `PartyRecordPayload` trait and `verify_party_record` in `verdict.rs`; `verify_step`, `verify_fulfilment_receipt`, and `verify_payment_acknowledgement` delegate to it. Duplication dropped to 6.83%. Proved failure: breaking issuer check in `verdict.rs` causes `step::the_counterparty_signs_a_step_for_the_giver_and_it_is_refused` to fail.
+
+- [x] **R10 — minor.** *Where:*
+  `crates/roym_transaction/src/app/step_ops.rs:195` to `:205`;
+  `crates/roym_transaction/src/app/sync/steps.rs:50`;
+  `crates/roym_transaction/src/app/tests/step.rs`,
+  `tests/step_filing.rs:182`; `crates/substrate/tests/roym_step_e2e.rs:191`
+  to `:194`; plan sections 7.2 and 7.4.
+  *Problem:* Four paths have no test that would fail if they broke. (a)
+  `step.add` refuses a commitment whose extension this node does not know
+  (`extension-unknown`): no test calls `step.add` on an
+  `extension_deal("future", …)` deal. (b) The plan's case "a card for an
+  agreement not yet held is deferred, then filed after the receipt": the
+  test removes only one half of a held row (`agreement not complete`), so
+  the `Ok(None)` branch ("names an agreement this node does not hold") is
+  never run. (c) Plan 7.4 says `step.verify` runs on the other node "with
+  the stored disclosure". The two-node test and scenario 246 call it with
+  no `disclosures`, so neither shows that the other node's disclosure
+  reveals `data` (only `hidden: ["data"]` is checked). (d) The
+  `too-many-steps` refusal of `step.add` itself (only the filing's is
+  tested).
+  *Failure case:* deleting the `StepCheck::NotChecked` arm of `step.add`
+  (so a receiver signs a step of an extension its node cannot check), or
+  turning `Refusal::later` into `Refusal::now` for a missing agreement row
+  (so an early card is refused for good, not deferred), fails no test.
+  *Fix:* (a) A test that the receiver of an unknown-extension commitment
+  gets `extension-unknown` from `step.add`. (b) The same deferral test with
+  no agreement row, then the row written. (c) In `roym_step_e2e`, pass the
+  card's disclosures (from `transaction.thread` or from the sender) to
+  `step.verify` and check `shown.data`. (d) File 64 rows with the
+  `either` demo manifest or with filed unknown-extension rows, then check
+  that `step.add` answers `too-many-steps`; or say in the plan's section
+  7.2 why it is not tested.
+  *Status:* Fixed (858d7477). Added all four tests: (a) `the_receiver_of_an_unknown_extension_commitment_is_refused` in `step.rs`; (b) `a_card_for_an_agreement_not_yet_held_waits_and_is_filed_after` in `step_filing.rs`; (c) verified step with sender disclosures in `roym_step_e2e.rs` and asserted `shown.data == json!({})`; (d) `adding_a_step_beyond_the_limit_is_refused` in `step.rs`. Proved failure: (a) skipping `NotChecked` arm fails `the_receiver_of_an_unknown_extension_commitment_is_refused`; (b) changing `Refusal::later` to `now` fails `a_card_for_an_agreement_not_yet_held_waits_and_is_filed_after`; (c) asserting non-empty shown data fails `assertion left == right failed (left: {}, right: {"not": "empty"})`; (d) skipping limit check fails `adding_a_step_beyond_the_limit_is_refused`.
+
+- [x] **R11 — minor.** *Where:* `docs/developer-guide.md:1855`, `:1863`,
+  `:1864`; `crates/roym_transaction/src/app/step_ops.rs:195` to `:199`;
+  `docs/planning/changes/roym-extensions/change.md` (C3a2 Deviations).
+  *Problem:* (a) The guide says "A receiving node checks the card as it
+  checks `step.add`". It does not: the filing does not refuse a step of an
+  ended agreement or of a final commitment (`step.add` does), and it files
+  a step of an unknown extension that `step.add` refuses. (b) The refusal
+  table says `extension-unknown` is sent by `quote.set`, `listing.set` and
+  `agreement.accept`, and `details-invalid` is "a field of
+  `details.data`". `step.add` sends both (`extension-unknown` for an
+  unknown extension, `details-invalid` for step data that is not an object
+  or fails the step's fields). (c) Plan D-C3a-11 rule 4 gives
+  `step-type-unknown` when the registry has no such step type for the
+  extension. For an unknown extension the code answers `extension-unknown`
+  instead. That is a wire difference, and it is not in the Deviations.
+  *Failure case:* a client that follows the guide expects a receiving node
+  to refuse a late step after the agreement closed, or treats
+  `extension-unknown` from `step.add` as an unknown code.
+  *Fix:* (a) Say what the filing checks (parties, conversation, issuer and
+  role, the commitment's extension, the rule set for a known extension,
+  size and count), and that it files a step of an unknown extension and
+  does not look at the agreement's or commitment's state. (b) Add `step.add`
+  to both table rows. (c) Add one Deviation line: "`step.add` refuses a
+  commitment whose extension this node does not know with
+  `extension-unknown`, not `step-type-unknown`."
+  *Status:* Fixed (58af2be0). Updated `docs/developer-guide.md` line 1855 to describe filing checks and closed state indifference; updated refusal table lines 1863 and 1864 to include `step.add`. Added `step.add` unknown extension deviation in `docs/planning/changes/roym-extensions/change.md`.
+
+Not findings, for the close-out: the plan's exit criteria "Owner reviewed
+the Hindi message" (`ext-scheduling-step-started`) and "`mise run verify`
+passes with no `--skip`" are still open; status.md says CI runs it.
+
+## Close-out check of code review round 1 (C3a2) — Claude Opus 5.5 (Claude Code), 2026-11-21
+
+Checked the fixes of R7 to R11 on `13da1acd`, in the main checkout. `git
+pull` said "Already up to date". I read `git diff b4ba7fe5..HEAD` (the fix
+commits `41ea9565` to `13da1acd`) against each finding and its proposed
+fix. I changed no code. I did not run the full suite or `mise run verify`.
+
+CI: `gh pr checks 376` on `13da1acd` was still running when I checked
+("Lints, licenses & checks" and CLA passed, so clippy, fmt, the file
+length, duplication and change-doc checks pass; the six test shards and
+Playwright E2E pending). The last finished run, on `7e15c16a`, passed.
+
+Targeted run, after `mise run build:roym`: `cargo nextest run -p
+syneroym-roym-core -p syneroym-roym-transaction -p syneroym-roym-web`:
+883 run, 883 passed, 1 skipped (the `#[ignore]`d ceiling measurement in
+`directory_find.rs`). The five new unit tests of R8 and R10 and the new R7
+test ran and passed, and so did scenario 246 on both builds. `cargo
+nextest run -p syneroym-substrate --test roym_step_e2e`: 1 passed.
+
+- **R7 — verified fixed, with one new gap (R12) and one test gap (R13).**
+  `add_in` now creates the row with `SendState::Pending`
+  (`step_ops.rs:224`), and `answer_existing` resends only `NotSent`
+  (`:356`). A repeat that comes during the send now answers
+  `already-recorded`. A failed send still writes `NotSent` (`send_step`
+  writes the state when it changed), so the planned resend still works.
+  The `create`-lost branch answers `already-recorded` without a send and
+  deletes its own disclosure (`:226` to `:237`). `store_step` deletes the
+  loser's disclosure (`sync/steps.rs:201`), so its doc comment "leaves
+  nothing behind" is now true. The new test
+  `concurrent_add_sends_only_one_card_and_leaves_no_orphan_disclosures`
+  runs the second `add_at` inside the first call's `conversation.send`
+  stub. It fails if the row is created as `NotSent`, as the status says.
+- **R8 — verified fixed.** `check_payload` now refuses a row whose
+  `conversation` is not the record's, or whose `half.issued_at_secs` is not
+  the envelope's (`backup/steps.rs:48` to `:49`). The two new import tests
+  change one field each and expect "does not match its row".
+- **R9 — verified fixed.** `verdict::verify_party_record` holds the one
+  copy, and `PartyRecordPayload` gives the four fields. The three
+  verifiers call it. Every refusal text is the same as before: "not a
+  {record_type} record …" gives the same words, because the record type
+  constants are `fulfilment-receipt`, `payment-acknowledgement` and
+  `step`; the expiry and issuer nouns are passed in unchanged. The trait's
+  `validate` calls the inherent `validate`, which Rust picks first, so it
+  does not call itself. `TestHost` now wraps its state in an `Arc` so a
+  stub can hold a clone of the host; this is test code only.
+- **R10 — verified fixed.** (a) `the_receiver_of_an_unknown_extension_commitment_is_refused`
+  expects `extension-unknown` from `step.add`. (b)
+  `a_card_for_an_agreement_not_yet_held_waits_and_is_filed_after` deletes
+  the agreement row, so the `Ok(None)` branch runs, and files the card
+  after the row is back. (c) `roym_step_e2e` reads the card's disclosures
+  from the sender's `conversation.history`, and `step.verify` on the other
+  node shows `data` with no hidden field; without disclosures `data` stays
+  hidden. Scenario 246 still verifies without disclosures, but the fix
+  asked only for the two-node test. (d) `adding_a_step_beyond_the_limit_is_refused`
+  writes 64 rows and expects `too-many-steps`.
+- **R11 — verified fixed.** (a) The guide now lists what the filing
+  checks, and says it does not look at a closed agreement or commitment. I
+  checked each item against `check_against_agreement` and `check_step` in
+  `sync/steps.rs`. (b) Both table rows name `step.add`. (c) The
+  Deviations have the `extension-unknown` line.
+
+### New findings
+
+- [x] **R12 — minor.** *Where:*
+  `crates/roym_transaction/src/app/step_ops.rs:224`, `:356`;
+  `docs/developer-guide.md:1850`;
+  `docs/planning/changes/roym-extensions/change.md:239`.
+  *Problem:* The R7 fix uses `Pending` to mean "the send has started".
+  `Pending` is also the state the conversation service gives for a
+  queued message. If the node stops after `claim_step_row` and before
+  `send_step` writes the result, the row stays `Pending` and the card was
+  never sent. Every later `step.add` answers `already-recorded`, and
+  nothing sends the card. Before the fix, this case was `NotSent`, and the
+  repeat sent the card. `step.list` does not show the send state, so the
+  person cannot see it. The guide ("If the first card was never sent, the
+  repeat sends it") and the Deviation line now say more than the code
+  does. `fulfilment.add` has the same window (it never resends), so this
+  is not worse than the other records.
+  *Failure case:* the node is stopped while `conversation.send` for a
+  step runs. After the restart, `roymctl roym step add` with the same
+  input answers `already-recorded`. The other party never gets the "Work
+  started" card.
+  *Fix:* Keep the code. Change the guide and the Deviation line to "If
+  the first send failed, the repeat sends the card again", and add a
+  backlog row: "A step card is not resent when the node stops during its
+  send" (reason: the conversation service has no idempotency key, so a
+  resend cannot tell "never sent" from "sent"; target `TBD`).
+  *Status:* Fixed (72a6ab6a). As proposed. The guide and the Deviation line now say "If the first send failed, the repeat sends the card again", the Deviation line adds the stopped-node case, and section 12 of the backlog has the row "A step card is not resent when the node stops during its send". One addition: the comment on `answer_existing` said "never sent" and now says "first send failed". No code change.
+
+- [x] **R13 — minor.** *Where:*
+  `crates/roym_transaction/src/app/tests/step.rs:239`;
+  `crates/roym_transaction/src/app/step_ops.rs:226` to `:237`;
+  `crates/roym_transaction/src/app/sync/steps.rs:199` to `:202`.
+  *Problem:* The new test is named
+  `concurrent_add_sends_only_one_card_and_leaves_no_orphan_disclosures`,
+  but it checks no disclosure. It also runs only the "repeat during the
+  send" path: the second call finds the row in `load_step_row` and returns
+  before it signs, so it never stores a disclosure. The `create`-lost
+  branch of `add_in` (answer without a send, delete the loser's
+  disclosure) and the `create`-lost branch of `store_step` (delete the
+  loser's disclosure) have no test. The existing test
+  `a_second_record_for_the_same_key_is_refused_and_stores_no_disclosure`
+  covers only the early return before the disclosure is stored. This is
+  the plan's section 7 point "Tests that prove less than their names".
+  *Failure case:* deleting either `disclosures::delete` line, or calling
+  `send_step` again in the `create`-lost branch of `add_in`, fails no
+  test.
+  *Fix:* Rename the test to what it proves (for example
+  `a_repeat_during_the_send_sends_no_second_card`). Add one test per
+  `create`-lost branch. For `add_in`, write the winner row from the
+  `TestHost` signer hook (`set_record_signer`), which runs after the load
+  and before the `create`. `store_step` has no host call between the two,
+  so test the branch after the load directly (for example by moving the
+  `claim_step_row` match into a small function that a test in
+  `sync/steps.rs` can call), or say in the plan's section 7.2 why it is
+  not tested. Check that the answer is `already-recorded` (or the
+  refusal), that no second card is sent, and that `disclosures::load` of
+  the loser's record id is `None`.
+  *Status:* Fixed (3cea3be8). (a) The test is now `a_repeat_during_the_send_sends_no_second_card`. (b) New `losing_the_race_to_store_the_row_sends_no_card_and_drops_the_disclosure` in `tests/step.rs`: the signer hook writes the winner row after the load and before the `create`; the test checks `already-recorded`, no `conversation.send`, and no stored disclosure for the loser's record id. To let the hook keep signing, the fixture's signer body is now the function `sign_record` in `tests.rs`. (c) `store_step`'s claim match is now `claim_received_row` (with `Stored` made `pub(crate)`), and the new `losing_the_race_to_store_a_received_row_drops_its_disclosure` in `tests/step_filing.rs` calls it with a winner row already stored. Proved failure: with the `disclosures::delete` in `add_in` removed, the add test fails; with `send_step` called in its `create`-lost branch, it fails (state is not `already-recorded`); with the `disclosures::delete` in `claim_received_row` removed, the received-row test fails. All three restored.
+
+Counts: 2 new findings (R12, R13: 0 blocker, 0 major, 2 minor). R7 to R11
+are fixed. **2 open.** Still open outside the findings: the owner's review
+of the Hindi message `ext-scheduling-step-started`, and `mise run verify`
+with no `--skip` (status.md says CI runs it).
+
+## Check of the R12 and R13 fixes — Claude Opus 5.5 (Claude Code), 2026-11-21
+
+Checked the fixes of R12 and R13 on `adfa7cb2`, in the main checkout. I
+read `git diff 48362a95..HEAD` (the fix commits `3cea3be8` to `adfa7cb2`)
+against each finding and its proposed fix. I changed no code. I did not
+run the full suite or `mise run verify`. The fix commit `adfa7cb2` had
+also changed the counts line of the section above to "0 open"; I set it
+back to "2 open", because that section records what was true when it was
+written. This section records the new state.
+
+CI: `gh pr checks 376` on `adfa7cb2` was still running when I checked
+("Lints, licenses & checks" and CLA passed; the six test shards and
+Playwright E2E pending). The run on `13da1acd` was cancelled by the next
+push, so the last finished CI run is on `7e15c16a`, which passed.
+
+Targeted run: `cargo nextest run -p syneroym-roym-transaction`: 151 run,
+151 passed, 0 skipped. These include the three tests below. I did not
+rebuild the WASM components, so this run does not cover the parity
+scenarios: the only production change, `claim_received_row`, moves
+existing code into its own function. The CI test shards cover parity.
+
+- **R12 — verified fixed.** The code is unchanged, as the fix proposed.
+  The developer guide (`:1850`) and the Deviation line now say "If the
+  first send failed, the repeat sends the card again". The Deviation
+  also names the stopped-node case and the backlog row. The backlog row
+  "A step card is not resent when the node stops during its send" gives
+  the reason (no idempotency key in the conversation service), notes
+  `fulfilment.add`, and has target `TBD`. The doc comment of
+  `answer_existing` now says "first send failed".
+- **R13 — verified fixed.** (a) The test is now named
+  `a_repeat_during_the_send_sends_no_second_card`, which is what it
+  checks. (b) `losing_the_race_to_store_the_row_sends_no_card_and_drops_the_disclosure`
+  writes the winner row from the signer hook, so the row appears after
+  `load_step_row` and before `claim_step_row`. It checks
+  `already-recorded`, the winner's record id, no `conversation.send`, and
+  no disclosure for the loser's record. Removing the `disclosures::delete`
+  line, or sending in the `create`-lost branch, fails it. The signer body
+  moved into `tests.rs::sign_record`, so the hook signs as the fixture
+  does; test code only. (c) `store_step` now calls
+  `claim_received_row`, and
+  `losing_the_race_to_store_a_received_row_drops_its_disclosure` calls it
+  with a different winner already stored and checks the refusal and the
+  deleted disclosure.
+
+No new findings. **0 open.** Still open outside the findings: CI on the
+head, the owner's review of the Hindi message `ext-scheduling-step-started`,
+and `mise run verify` with no `--skip` (or the owner accepts CI instead,
+as for C3a1).

@@ -57,7 +57,7 @@ fn every_catalog_method_has_typed_input_and_output() {
 #[test]
 fn every_transaction_method_has_typed_input_and_output() {
     let table = transaction_api::method_table();
-    assert_eq!(table.len(), 40);
+    assert_eq!(table.len(), 44);
     assert_service_table(
         services::TRANSACTION,
         &table,

@@ -107,6 +107,18 @@ pub enum SettlementRole {
     Receiver,
 }
 
+impl SettlementRole {
+    /// The role's name on the wire, the same text serde writes. A record
+    /// key built from a role uses this, so it cannot drift from the wire.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Giver => "giver",
+            Self::Receiver => "receiver",
+        }
+    }
+}
+
 /// Reference to a Roym extension and version.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExtensionRef {

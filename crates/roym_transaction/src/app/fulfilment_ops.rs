@@ -17,14 +17,14 @@ use syneroym_roym_core::{
     method::{self, DisclosedVerdict, DisclosedVerifyInput, Reply},
     progress::AgreementEvent,
     record::{Envelope, RECORD_FULFILMENT_RECEIPT},
-    transaction::{DealRole, PairState, ReceiptHalf, pair_state},
+    transaction::{DealRole, ReceiptHalf},
 };
 
 use super::{
     AGREEMENTS, AgreementRow, FULFILMENTS, FenceOutcome, FulfilmentsRow, HalfRecordedOutput,
     LEDGER, OutgoingCard, SendState, disclosures, get_row,
     ledger::{LedgerKind, LedgerRow},
-    progress_ops, put_row, resolve_principal_and_owner, send_card_and_file,
+    parties, progress_ops, put_row, resolve_principal_and_owner, send_card_and_file,
 };
 
 pub(crate) fn fulfilment_id(agreement: &str, commitment_id: &str) -> String {
@@ -342,15 +342,7 @@ fn check_fulfilment_preconditions(
     commitment_id: &str,
     owner: &str,
 ) -> Result<(DealRole, SettlementRole), Response> {
-    let pair = pair_state(agr.counterparty.as_ref(), agr.quote_author.as_ref());
-    if pair != PairState::Complete {
-        return Err(Response::invalid_params("agreement-incomplete"));
-    }
-    if let Some(state) = agr.state
-        && state.is_terminal()
-    {
-        return Err(Response::invalid_params("agreement-terminal"));
-    }
+    parties::require_open_agreement(agr)?;
 
     let c = agr
         .terms
@@ -362,18 +354,8 @@ fn check_fulfilment_preconditions(
         return Err(Response::invalid_params("not-fulfilment-commitment"));
     }
 
-    let deal_role = if owner == agr.quote_author_did {
-        DealRole::QuoteAuthor
-    } else if owner == agr.counterparty_did {
-        DealRole::Counterparty
-    } else {
-        return Err(Response::invalid_params("not-a-party"));
-    };
-
-    let settlement_role =
-        if deal_role == c.giver { SettlementRole::Giver } else { SettlementRole::Receiver };
-
-    Ok((deal_role, settlement_role))
+    let deal_role = parties::agreement_party(agr, owner)?;
+    Ok((deal_role, parties::settlement_role(deal_role, c.giver)))
 }
 
 async fn sign_fulfilment_receipt<H: AppHost>(

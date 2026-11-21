@@ -2,6 +2,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { renderAgreementReceipt } from "../cards/templates/agreement_receipt";
 import { renderFulfilmentReceipt } from "../cards/templates/fulfilment_receipt";
 import { renderQuote } from "../cards/templates/quote";
+import { renderStep } from "../cards/templates/step";
 import { renderRequest } from "../cards/templates/enquiry";
 import { RpcError } from "../rpc";
 import { renderBackup } from "../screens/backup";
@@ -552,6 +553,28 @@ describe("the cards, in Hindi", () => {
       ],
     });
     expect(english(el)).toEqual([]);
+  });
+
+  it("draws a step card with its name in Hindi, and an unknown extension's step as it came", () => {
+    const known = renderStep({
+      commitment_id: "Zq-c1",
+      role: "giver",
+      extension: { id: "scheduling", version: 1 },
+      step_type: "scheduling/started",
+      data: {},
+    });
+    expect(known.querySelector("h3")?.textContent).toMatch(/[ऀ-ॿ]/);
+    expect(english(known)).toEqual([]);
+
+    const unknown = renderStep({
+      commitment_id: "Zq-c1",
+      role: "receiver",
+      extension: { id: "future", version: 1 },
+      step_type: "future/ZqKind",
+      data: { ZqKey: "Zq-value" },
+    });
+    expect(unknown.querySelector(".field-view-not-checked")?.textContent).toMatch(/[ऀ-ॿ]/);
+    expect(english(unknown)).toEqual([]);
   });
 
   it("draws the quote card with a slot's reference codes and an unknown extension's data", () => {

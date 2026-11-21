@@ -1,0 +1,6 @@
+{
+  "message_id": "string",
+  "record_id": "string",
+  "role": "quote-author",
+  "state": "pending"
+}

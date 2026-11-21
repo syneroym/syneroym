@@ -2,6 +2,8 @@
 
 use std::{
     collections::{HashMap, VecDeque},
+    fmt,
+    ops::Deref,
     sync::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
@@ -39,8 +41,21 @@ type SignerFn =
 type CallHandler = Arc<dyn Fn(String) -> Result<String, ProxyError> + Send + Sync>;
 
 /// In-memory `AppHost` test implementation with storage and fault injection.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct TestHost {
+    pub(crate) inner: Arc<TestHostInner>,
+}
+
+impl Deref for TestHost {
+    type Target = TestHostInner;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+#[derive(Default)]
+pub struct TestHostInner {
     pub(crate) storage: Mutex<HashMap<String, HashMap<String, Vec<u8>>>>,
     pub(crate) signing_id: Mutex<Option<SigningIdentity>>,
     pub(crate) caller_origin: Mutex<Option<CallerOrigin>>,
@@ -62,9 +77,9 @@ pub struct TestHost {
     pub(crate) salt_counter: AtomicU64,
 }
 
-impl std::fmt::Debug for TestHost {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TestHost")
+impl fmt::Debug for TestHostInner {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TestHostInner")
             .field("storage", &self.storage)
             .field("signing_id", &self.signing_id)
             .field("caller_origin", &self.caller_origin)
@@ -72,6 +87,12 @@ impl std::fmt::Debug for TestHost {
             .field("last_call", &self.last_call)
             .field("now_secs", &self.now_secs)
             .finish()
+    }
+}
+
+impl fmt::Debug for TestHost {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.inner.fmt(f)
     }
 }
 

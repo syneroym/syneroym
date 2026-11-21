@@ -9,7 +9,7 @@ use crate::{
     deal::sd::SignedTerms,
     disclosure::{
         COMMITMENT_SET, DisclosureIndex, FULFILMENT_SET, HiddenSet, PAYMENT_ACK_SET,
-        PAYMENT_REQUEST_SET, TERMS_SET, check_all_used, reveal_object,
+        PAYMENT_REQUEST_SET, STEP_SET, TERMS_SET, check_all_used, reveal_object,
     },
     envelope::{Request, Response, RpcError},
     fulfilment::{FulfilmentHidden, FulfilmentReceiptPayload},
@@ -19,6 +19,7 @@ use crate::{
     },
     presentation::validate::validate_partial_terms_fields,
     services::Service,
+    step::{StepPayload, check_data_size},
     verdict::RecordVerdict,
 };
 
@@ -217,6 +218,22 @@ pub fn reveal_disclosed_fulfilment(
             }
         }
         Err(_) => return (None, all_hidden, Some("field-invalid".to_string())),
+    }
+    (Some(val), hidden, None)
+}
+
+pub fn reveal_disclosed_step(
+    p: &StepPayload,
+    disclosures: &[String],
+) -> (Option<Value>, Vec<String>, Option<String>) {
+    let all_hidden: Vec<String> = STEP_SET.hidden.iter().map(|&s| s.to_string()).collect();
+    let (val, hidden) = match reveal_settlement(&STEP_SET, &p.sd, disclosures) {
+        Ok(r) => r,
+        Err(code) => return (None, all_hidden, Some(code)),
+    };
+    // `data` is only there when its disclosure was given.
+    if val.get("data").is_some_and(|data| check_data_size(data).is_err()) {
+        return (None, all_hidden, Some("field-invalid".to_string()));
     }
     (Some(val), hidden, None)
 }

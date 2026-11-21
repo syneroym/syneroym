@@ -5,7 +5,7 @@ use serde_json::Value;
 use syneroym_signed_record::{ENVELOPE_VERSION, Envelope};
 use thiserror::Error;
 
-/// The eight card types of the first release, and the version each one is
+/// The card types of the first release, and the version each one is
 /// rendered at today. Fixed: a card of an unlisted type, or a listed type
 /// at an unlisted version, renders as the neutral unknown block.
 pub const CARD_TYPES: &[(&str, u32)] = &[
@@ -17,6 +17,7 @@ pub const CARD_TYPES: &[(&str, u32)] = &[
     ("payment-acknowledgement", 1),
     ("fulfilment-receipt", 1),
     ("deal-decline", 1),
+    ("step", 1),
 ];
 
 pub fn is_known_card(card_type: &str, version: u32) -> bool {

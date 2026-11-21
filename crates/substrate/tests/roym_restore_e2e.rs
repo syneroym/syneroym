@@ -338,6 +338,18 @@ async fn advance_transaction(node_x: &Node, node_y: &Node, tx: &ActiveTransactio
         .await;
     assert_ne!(y_ack_corrected["record_id"], y_ack1_id);
 
+    let y_step = node_y
+        .rpc_ok(
+            "step.add",
+            json!({
+                "agreement": tx.quote_record_id,
+                "commitment_id": "c1",
+                "step_type": "scheduling/started",
+            }),
+        )
+        .await;
+    assert!(wait_delivered(node_y, y_step["message_id"].as_str().unwrap()).await, "step delivered");
+
     let y_fulfil = node_y
         .rpc_ok(
             "fulfilment.sign",
@@ -354,6 +366,7 @@ struct BeforeSnapshot {
     agreement: Value,
     payment: Value,
     fulfilment: Value,
+    steps: Value,
     request_history: Value,
     quote_history: Value,
     thread: Value,
@@ -371,6 +384,8 @@ async fn capture_before_snapshot(node_y: &Node, tx: &ActiveTransaction) -> Befor
         .rpc_ok("fulfilment.get", json!({ "agreement": tx.quote_record_id, "commitment_id": "c1" }))
         .await;
     assert_eq!(fulfilment["track"], "claimed");
+    let steps = node_y.rpc_ok("step.list", json!({ "agreement": tx.quote_record_id })).await;
+    assert_eq!(steps["steps"].as_array().map(Vec::len), Some(1), "the step is recorded");
     let request_history =
         node_y.rpc_ok("enquiry.history", json!({ "enquiry_id": tx.req_id })).await;
     let quote_history = node_y.rpc_ok("quote.history", json!({ "quote_id": tx.quote_id })).await;
@@ -381,6 +396,7 @@ async fn capture_before_snapshot(node_y: &Node, tx: &ActiveTransaction) -> Befor
         agreement,
         payment,
         fulfilment,
+        steps,
         request_history,
         quote_history,
         thread,
@@ -409,6 +425,10 @@ async fn assert_durability_parity(node_y2: &Node, before: &BeforeSnapshot, tx: &
         .await;
     assert_eq!(fulfilment_after["track"], before.fulfilment["track"]);
     assert_eq!(fulfilment_after["quote_author"], before.fulfilment["quote_author"]);
+
+    let steps_after = node_y2.rpc_ok("step.list", json!({ "agreement": tx.quote_record_id })).await;
+    assert_eq!(steps_after, before.steps, "the step is back, with its data");
+    assert_eq!(steps_after["steps"][0]["verified"], true);
 
     let request_history_after =
         node_y2.rpc_ok("enquiry.history", json!({ "enquiry_id": tx.req_id })).await;

@@ -114,6 +114,20 @@ pub const FULFILMENT_SET: HiddenSet = HiddenSet {
     ],
 };
 
+pub const STEP_SET: HiddenSet = HiddenSet {
+    hidden: &["data"],
+    visible: &[
+        "agreement",
+        "conversation",
+        "commitment_id",
+        "quote_author_did",
+        "counterparty_did",
+        "role",
+        "extension",
+        "step_type",
+    ],
+};
+
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum SdError {
     #[error("sd shape invalid: {0}")]

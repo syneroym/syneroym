@@ -8,6 +8,7 @@ import { DealDeclineData, renderDealDecline } from "./templates/deal_decline";
 import { PaymentAcknowledgementData, renderPaymentAcknowledgement } from "./templates/payment_acknowledgement";
 import { PaymentRequestData, renderPaymentRequest } from "./templates/payment_request";
 import { QuoteData, renderQuote } from "./templates/quote";
+import { StepData, renderStep } from "./templates/step";
 
 export interface CardObject {
   type: string;
@@ -46,6 +47,8 @@ export function renderCard(card: CardObject): HTMLElement {
       return renderFulfilmentReceipt(card.data as FulfilmentReceiptData | undefined);
     case "deal-decline":
       return renderDealDecline(card.data as DealDeclineData | undefined);
+    case "step":
+      return renderStep(card.data as StepData | undefined);
     default:
       return renderUnknown(card.type, card.version);
   }

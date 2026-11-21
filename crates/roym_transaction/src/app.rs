@@ -10,11 +10,13 @@ mod extension_rules;
 pub mod fulfilment_ops;
 pub mod hold;
 pub mod ledger;
+pub mod parties;
 pub mod payment_ops;
 pub mod present_ops;
 pub mod progress;
 pub mod progress_ops;
 pub mod quote_ops;
+pub mod step_ops;
 pub mod sync;
 pub mod thread;
 
@@ -65,6 +67,7 @@ pub(crate) const LEDGER: &str = "ledger";
 pub(crate) const AGREEMENT_PROGRESS: &str = "agreement_progress";
 pub(crate) const PAYMENTS: &str = "payments";
 pub(crate) const FULFILMENTS: &str = "fulfilments";
+pub(crate) const STEPS: &str = "steps";
 pub(crate) const DISCLOSURES: &str = "disclosures";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -386,6 +389,12 @@ pub(crate) async fn ensure_collections<H: AppHost>(host: &H) -> Result<(), Strin
         &[idx("conversation", IndexType::String), idx("agreement", IndexType::String)],
     )
     .await?;
+    ensure_coll(
+        host,
+        STEPS,
+        &[idx("conversation", IndexType::String), idx("agreement", IndexType::String)],
+    )
+    .await?;
     Ok(())
 }
 
@@ -445,6 +454,17 @@ pub(crate) async fn put_bytes<H: AppHost>(
     )
     .await
     .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+pub(crate) async fn delete_row<H: AppHost>(
+    host: &H,
+    collection: &str,
+    id: &str,
+) -> Result<(), String> {
+    AppDataLayer::delete(host, collection.to_string(), id.to_string())
+        .await
+        .map_err(|e| e.to_string())
 }
 
 pub(crate) async fn get_bytes<H: AppHost>(

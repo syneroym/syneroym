@@ -1,0 +1,20 @@
+{
+  "steps": [
+    {
+      "checked": "boolean",
+      "commitment_id": "string",
+      "data": {},
+      "envelope": "string",
+      "extension": {
+        "id": "string",
+        "version": "number"
+      },
+      "issued_at_secs": "number",
+      "issuer": "string",
+      "record_id": "string",
+      "role": "giver",
+      "step_type": "string",
+      "verified": "boolean"
+    }
+  ]
+}

@@ -11,6 +11,9 @@ pub mod recover;
 pub mod refuse;
 pub mod restore;
 pub mod settle;
+pub mod step;
+pub mod step_backup;
+pub mod step_filing;
 pub mod time;
 
 use std::sync::Arc;
@@ -18,7 +21,7 @@ use std::sync::Arc;
 use serde_json::json;
 use syneroym_app_host::types::{
     proxy::ProxyError,
-    signing::{Principal, SigningError, SigningIdentity},
+    signing::{Principal, RecordDraft, SigningError, SigningIdentity},
 };
 use syneroym_identity::{Identity, substrate};
 use syneroym_roym_core::{
@@ -48,6 +51,40 @@ impl std::fmt::Debug for TestFixture {
             .field("service_did", &self.service_did)
             .finish()
     }
+}
+
+/// What the fixture's record signer does. A test that replaces the signer
+/// calls it to keep signing the same way.
+pub fn sign_record(
+    service_key: &Identity,
+    master_did: &str,
+    service_did: &str,
+    draft: RecordDraft,
+    principal: Principal,
+    now_secs: u64,
+) -> Result<String, SigningError> {
+    let (issuer, delegation) = match principal {
+        Principal::Service => (service_did.to_string(), None),
+        Principal::Delegated(delegation_json) => (master_did.to_string(), Some(delegation_json)),
+    };
+
+    let payload_val = serde_json::from_str(&draft.payload)
+        .map_err(|e| SigningError::InvalidRecord(e.to_string()))?;
+    let core_draft = CoreRecordDraft {
+        version: draft.version,
+        record_type: draft.record_type,
+        subject: draft.subject,
+        payload: payload_val,
+        expires_at_secs: draft.expires_at_secs,
+        supersedes: draft.supersedes,
+    };
+
+    let (mut env, bytes) = Envelope::unsigned(core_draft, issuer, delegation, now_secs)
+        .map_err(|e| SigningError::InvalidRecord(e.to_string()))?;
+    let sig = service_key.sign(&bytes).to_bytes();
+    env.attach_signature(z32::encode(&sig))
+        .map_err(|e| SigningError::InvalidRecord(e.to_string()))?;
+    env.to_json().map_err(|e| SigningError::InvalidRecord(e.to_string()))
 }
 
 pub fn fixture() -> TestFixture {
@@ -96,30 +133,7 @@ pub fn fixture_with_master(master: Arc<Identity>) -> TestFixture {
     let master_did_clone = master_did.clone();
     let service_did_clone = service_did.clone();
     host.set_record_signer(move |draft, principal, now_secs| {
-        let (issuer, delegation) = match principal {
-            Principal::Service => (service_did_clone.clone(), None),
-            Principal::Delegated(delegation_json) => {
-                (master_did_clone.clone(), Some(delegation_json))
-            }
-        };
-
-        let payload_val = serde_json::from_str(&draft.payload)
-            .map_err(|e| SigningError::InvalidRecord(e.to_string()))?;
-        let core_draft = CoreRecordDraft {
-            version: draft.version,
-            record_type: draft.record_type,
-            subject: draft.subject,
-            payload: payload_val,
-            expires_at_secs: draft.expires_at_secs,
-            supersedes: draft.supersedes,
-        };
-
-        let (mut env, bytes) = Envelope::unsigned(core_draft, issuer, delegation, now_secs)
-            .map_err(|e| SigningError::InvalidRecord(e.to_string()))?;
-        let sig = key_clone.sign(&bytes).to_bytes();
-        env.attach_signature(z32::encode(&sig))
-            .map_err(|e| SigningError::InvalidRecord(e.to_string()))?;
-        env.to_json().map_err(|e| SigningError::InvalidRecord(e.to_string()))
+        sign_record(&key_clone, &master_did_clone, &service_did_clone, draft, principal, now_secs)
     });
 
     // Default stub for catalog.availability.get

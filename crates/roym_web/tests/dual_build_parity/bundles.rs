@@ -98,6 +98,10 @@ async fn scenario_167_every_new_verb_refused_over_wire_parity() {
         "payment.verify",
         "fulfilment.sign",
         "fulfilment.get",
+        "step.add",
+        "step.list",
+        "step.verify",
+        "step.ping",
         "deal.decline",
         "deal.ping",
     ] {

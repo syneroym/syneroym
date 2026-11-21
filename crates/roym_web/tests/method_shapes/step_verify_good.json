@@ -1,0 +1,29 @@
+{
+  "expired": "boolean",
+  "hidden": [
+    "string"
+  ],
+  "issued_at_secs": "number",
+  "issuer": "string",
+  "payload": {
+    "_sd": [
+      "string"
+    ],
+    "agreement": "string",
+    "commitment_id": "string",
+    "conversation": "string",
+    "counterparty_did": "string",
+    "extension": {
+      "id": "string",
+      "version": "number"
+    },
+    "quote_author_did": "string",
+    "role": "giver",
+    "step_type": "string"
+  },
+  "record_id": "string",
+  "revocation_status": "unknown",
+  "shown": {},
+  "signer_did": "string",
+  "verified": "boolean"
+}

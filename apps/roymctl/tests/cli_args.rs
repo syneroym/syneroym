@@ -523,6 +523,27 @@ fn roym_transaction_subcommands_help() -> Result<(), Box<dyn Error>> {
         .stdout(contains("--agreement"))
         .stdout(contains("--commitment"));
 
+    let mut cmd = Command::cargo_bin("roymctl")?;
+    cmd.arg("roym")
+        .arg("step")
+        .arg("add")
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(contains("--agreement"))
+        .stdout(contains("--commitment"))
+        .stdout(contains("--type"))
+        .stdout(contains("--data"));
+
+    let mut cmd = Command::cargo_bin("roymctl")?;
+    cmd.arg("roym")
+        .arg("step")
+        .arg("list")
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(contains("--agreement"));
+
     Ok(())
 }
 

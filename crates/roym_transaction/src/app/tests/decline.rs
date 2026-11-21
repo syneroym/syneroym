@@ -3,13 +3,18 @@
 
 pub mod filing;
 
+use std::sync::Arc;
+
 use serde_json::json;
 use syneroym_identity::{Identity, substrate};
 use syneroym_roym_core::{
+    backup::ImportInput,
     card::{self, CARD_CONTENT_TYPE},
     deal::{Commitment, CommitmentKind, DealTerms, Details, ExtensionRef, LocalText, ResourceKind},
     lang::LangTag,
     listing::derive_slot_id,
+    method::NoParams,
+    paging,
     progress::AgreementState,
     record::{Envelope, RECORD_DEAL_DECLINE, RECORD_ENQUIRY, RECORD_QUOTE, RecordDraft},
     testing::sd::{PlainQuote, conceal_quote},
@@ -22,11 +27,11 @@ use syneroym_roym_core::{
 
 use crate::app::{
     AGREEMENTS, AgreementRow, CARDS, CardRow, ENQUIRIES, ENQUIRY_HISTORY, LEDGER, QUOTE_HISTORY,
-    QUOTES, RecordPointerRow,
+    QUOTES, RecordPointerRow, backup,
     decline_ops::{self, DealDeclineInput},
     disclosures, get_row, put_bytes, put_row,
     sync::{self, SyncInput},
-    tests::{TestFixture, fixture},
+    tests::{TestFixture, fixture, fixture_with_master},
 };
 
 fn sample_commitment(id: &str, listing_id: &str, start_secs: u64, end_secs: u64) -> Commitment {
@@ -549,4 +554,55 @@ async fn counterparty_can_decline_quote_v2_after_v1_refused() {
     .await
     .unwrap();
     assert!(out.declined);
+}
+
+#[tokio::test]
+async fn a_decline_card_is_verified_after_export_and_import() {
+    let f = fixture();
+    let now = f.host.now();
+    let author = Identity::generate().expect("author");
+    let author_did = substrate::derive_did_key(&author.public_key());
+
+    let (q_json, q_rec_id, quote, _terms, disc) = make_quote_envelope(&author, &f.master_did, now);
+    put_bytes(&f.host, QUOTE_HISTORY, &q_rec_id, q_json.as_bytes()).await.unwrap();
+    disclosures::store(&f.host, &q_rec_id, RECORD_QUOTE, &disc, now).await.unwrap();
+    let ptr = RecordPointerRow {
+        envelope: q_json,
+        record_id: q_rec_id.clone(),
+        id: quote.quote_id.clone(),
+        conversation: "conv_1".to_string(),
+        sequence: 1,
+        issuer: author_did,
+        mine: false,
+        updated_at_secs: now,
+        version_count: 1,
+        issued_at_secs: now,
+        request_record_id: None,
+        counterparty_did: Some(f.master_did.clone()),
+        declined_at_secs: None,
+        decline_note: None,
+    };
+    put_row(&f.host, QUOTES, &quote.quote_id, &ptr).await.unwrap();
+
+    let out = decline_ops::decline_at(
+        &f.host,
+        DealDeclineInput { declines: q_rec_id, note: None, lang: None },
+        now,
+    )
+    .await
+    .unwrap();
+    let cards: Vec<CardRow> = paging::query_all(&f.host, CARDS, None).await.unwrap();
+    let own = cards
+        .iter()
+        .find(|c| c.record_id.as_deref() == Some(out.record_id.as_str()))
+        .expect("the decline sent its own card");
+    assert_eq!(own.card_type, "deal-decline");
+
+    let bundle = backup::export(&f.host, NoParams {}).await.unwrap();
+    let target = fixture_with_master(Arc::clone(&f.master));
+    backup::import(&target.host, ImportInput { bundle }).await.unwrap();
+
+    let restored: CardRow =
+        get_row(&target.host, CARDS, &own.message_id).await.unwrap().expect("card restored");
+    assert!(restored.verified, "the decline card must verify after an import: {restored:?}");
 }

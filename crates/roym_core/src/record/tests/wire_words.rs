@@ -23,7 +23,9 @@ use crate::{
         RelationshipTerms, ServiceDetail, ServiceLocation, ServiceRecordTerms,
     },
     progress::{AgreementProgressPayload, AgreementState, CancelReason, CommitmentProgress},
-    testing::sd::{self, PlainFulfilment, PlainPaymentAck, PlainPaymentRequest, PlainQuote},
+    testing::sd::{
+        self, PlainFulfilment, PlainPaymentAck, PlainPaymentRequest, PlainQuote, PlainStep,
+    },
     transaction::{
         AgreementReceiptPayload, DEFAULT_DATA_USE_NOTICE, DealRole, EnquiryPayload, QuoteLocation,
         TimeWindow,
@@ -435,6 +437,26 @@ fn an_agreement_and_its_receipts_say_no_old_word() {
         let (fulfilment, disclosures) = sd::conceal_fulfilment(plain, 3);
         assert_no_old_words("fulfilment-receipt", &fulfilment);
         assert_no_old_words_in_disclosures("fulfilment", &disclosures);
+    }
+}
+
+#[test]
+fn the_step_record_says_no_old_word() {
+    for s_role in every_settlement_role() {
+        let plain = PlainStep {
+            agreement: "rec_agreement".to_string(),
+            conversation: "conv_1".to_string(),
+            commitment_id: "c1".to_string(),
+            counterparty_did: COUNTERPARTY.to_string(),
+            quote_author_did: QUOTE_AUTHOR.to_string(),
+            role: s_role,
+            extension: ExtensionRef { id: "scheduling".to_string(), version: 1 },
+            step_type: "scheduling/started".to_string(),
+            data: serde_json::json!({ "note": "left at the door" }),
+        };
+        let (step, disclosures) = sd::conceal_step(plain, 3);
+        assert_no_old_words("step", &step);
+        assert_no_old_words_in_disclosures("step", &disclosures);
     }
 }
 

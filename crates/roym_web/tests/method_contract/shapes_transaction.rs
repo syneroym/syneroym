@@ -138,6 +138,25 @@ async fn deal_enquiry_and_quote_shapes(h: &Harness, conv: &str) -> (String, Stri
     (req_rec_id, quote_id, quote_rec_id)
 }
 
+async fn step_shapes(h: &Harness, agreement: &str) {
+    assert_shape("step_ping", &rpc(h, "step.ping", json!({})).await);
+
+    let input =
+        json!({ "agreement": agreement, "commitment_id": "c1", "step_type": "scheduling/started" });
+    assert_shape("step_add_new", &rpc(h, "step.add", input.clone()).await);
+    assert_shape("step_add_already_recorded", &rpc(h, "step.add", input).await);
+
+    let listed = rpc(h, "step.list", json!({ "agreement": agreement })).await;
+    assert_shape("step_list_with_rows", &listed);
+
+    let envelope = listed["steps"][0]["envelope"].as_str().unwrap();
+    assert_shape("step_verify_good", &rpc(h, "step.verify", json!({ "envelope": envelope })).await);
+    assert_shape(
+        "step_verify_bad",
+        &rpc(h, "step.verify", json!({ "envelope": "tampered" })).await,
+    );
+}
+
 async fn deal_agreement_shapes(h: &Harness, conv: &str) {
     let q_slot_rec_id =
         setup_author_slot_quote_accepted_by_peer(h, conv, "deal-slot-listing").await;
@@ -145,6 +164,8 @@ async fn deal_agreement_shapes(h: &Harness, conv: &str) {
     let agr_accept_author =
         rpc_err(h, "agreement.accept", json!({ "quote_record_id": q_slot_rec_id })).await;
     assert_shape("agreement_accept_writer_countersigns", &agr_accept_author);
+
+    step_shapes(h, &q_slot_rec_id).await;
 
     let cp_q_rec_id = setup_synced_counterparty_quote(h, conv, 3, "m-quote-cp").await;
 

@@ -13,6 +13,7 @@ import { renderPaymentAcknowledgement } from "./payment_acknowledgement.js";
 import { renderPaymentRequest } from "./payment_request.js";
 import { renderQuote } from "./quote.js";
 import { renderEnquiry } from "./enquiry.js";
+import { renderStep } from "./step.js";
 
 /// The `datetime` of every `<time>` element under `selector`.
 function datetimes(el: HTMLElement, selector: string): (string | null)[] {
@@ -524,6 +525,73 @@ describe("Card templates", () => {
       expect(elKnown.textContent).toContain("UPI");
       const elUnknown = renderPaymentAcknowledgement({ method: "barter-tokens" });
       expect(elUnknown.textContent).toContain("barter-tokens");
+    });
+  });
+
+  describe("renderStep", () => {
+    const started = {
+      agreement: "rec_agreement",
+      commitment_id: "c1",
+      role: "giver" as const,
+      extension: { id: "scheduling", version: 1 },
+      step_type: "scheduling/started",
+      data: {},
+    };
+
+    it("names a known step from the catalog and shows who recorded it", () => {
+      const el = renderStep(started);
+      expect(el.classList.contains("card-step")).toBe(true);
+      expect(el.querySelector("h3")?.textContent).toBe("Work started");
+      expect(el.querySelector(".step-role")?.textContent).toBe("Giver");
+      expect(el.querySelector(".step-commitment")?.textContent).toBe("c1");
+      expect(el.querySelector(".field-view")).toBeNull();
+      expect(el.textContent).not.toContain("Not checked");
+    });
+
+    it("says Receiver for the receiver's step", () => {
+      const el = renderStep({ ...started, role: "receiver" });
+      expect(el.querySelector(".step-role")?.textContent).toBe("Receiver");
+    });
+
+    it("draws a step of an extension this build does not know as it came", () => {
+      const el = renderStep({
+        ...started,
+        extension: { id: "future", version: 2 },
+        step_type: "future/inspected",
+        data: { note: "all fine", count: 3 },
+      });
+      expect(el.querySelector("h3")?.textContent).toBe("future/inspected");
+      expect(el.querySelector("h3 [lang]")?.getAttribute("lang")).toBe("");
+      const lines = Array.from(el.querySelectorAll(".field-view-data")).map((l) => l.textContent);
+      expect(lines).toEqual(["note: all fine", "count: 3"]);
+      expect(el.querySelector(".field-view-not-checked")?.textContent).toBe(
+        "Not checked on this device",
+      );
+    });
+
+    it("draws a step type that a known extension does not declare as it came", () => {
+      const el = renderStep({ ...started, step_type: "scheduling/finished" });
+      expect(el.querySelector("h3")?.textContent).toBe("scheduling/finished");
+      expect(el.querySelector(".field-view-not-checked")).not.toBeNull();
+    });
+
+    it("renders a malicious payload as plain text", () => {
+      const xss = "<img src=x onerror=alert(1)>";
+      const el = renderStep({
+        commitment_id: xss,
+        role: "giver",
+        extension: { id: "future", version: 1 },
+        step_type: `future/${xss}`,
+        data: { [xss]: xss },
+      });
+      expect(el.querySelectorAll("img").length).toBe(0);
+      expect(el.textContent).toContain(xss);
+    });
+
+    it("draws nothing for a card with no data", () => {
+      const el = renderStep(undefined);
+      expect(el.classList.contains("card-step")).toBe(true);
+      expect(el.querySelector(".field-view")).toBeNull();
     });
   });
 
