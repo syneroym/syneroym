@@ -1,0 +1,58 @@
+[package]
+name = "syneroym-roym-scheduling"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+syneroym-app-host.workspace = true
+syneroym-roym-core.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wit-bindgen.workspace = true
+syneroym-wit-interfaces = { path = "../wit_interfaces", default-features = false, features = [
+    "app-config",
+    "blob-store",
+    "conversation",
+    "data-layer",
+    "events",
+    "http",
+    "invocation",
+    "messaging",
+    "proxy",
+    "signing",
+    "translation",
+    "vault",
+] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+syneroym-rpc.workspace = true
+async-trait.workspace = true
+
+[dev-dependencies]
+syneroym-roym-core = { workspace = true, features = ["test-host"] }
+syneroym-identity.workspace = true
+tokio = { workspace = true, features = ["macros", "rt"] }
+z32.workspace = true
+
+[package.metadata.component.target.dependencies]
+"syneroym:data-layer" = { path = "wit/deps/data-layer" }
+"syneroym:blob-store" = { path = "wit/deps/blob-store" }
+"syneroym:messaging" = { path = "wit/deps/messaging" }
+"syneroym:conversation" = { path = "wit/deps/conversation" }
+"syneroym:proxy" = { path = "wit/deps/proxy" }
+"syneroym:app-config" = { path = "wit/deps/app-config" }
+"syneroym:vault" = { path = "wit/deps/vault" }
+"syneroym:http" = { path = "wit/deps/http" }
+"syneroym:signing" = { path = "wit/deps/signing" }
+"syneroym:invocation" = { path = "wit/deps/invocation" }
+"syneroym:events" = { path = "wit/deps/events" }
+"syneroym:translation" = { path = "wit/deps/translation" }

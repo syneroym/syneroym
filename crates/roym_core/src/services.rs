@@ -18,6 +18,8 @@ pub const CATALOG: Service =
     Service { name: "catalog", interface: "syneroym-roym:catalog/api@0.1.0" };
 pub const TRANSACTION: Service =
     Service { name: "transaction", interface: "syneroym-roym:transaction/api@0.1.0" };
+pub const SCHEDULING: Service =
+    Service { name: "scheduling", interface: "syneroym-roym:scheduling/api@0.1.0" };
 pub const DIRECTORY: Service =
     Service { name: "directory", interface: "syneroym-roym:directory/api@0.1.0" };
 

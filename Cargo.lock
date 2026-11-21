@@ -8427,6 +8427,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "syneroym-roym-scheduling"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "serde",
+ "serde_json",
+ "syneroym-app-host",
+ "syneroym-identity",
+ "syneroym-roym-core",
+ "syneroym-rpc",
+ "syneroym-wit-interfaces",
+ "tokio",
+ "wit-bindgen",
+ "z32",
+]
+
+[[package]]
 name = "syneroym-roym-transaction"
 version = "0.1.0"
 dependencies = [
