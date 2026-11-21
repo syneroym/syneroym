@@ -1805,7 +1805,7 @@ C3b1:
   `"scheduling"`; it reaches the service through the manifest (Q2).
 - [x] `roym_booking_e2e` (the last-seat race) passes through the
   scheduling service.
-- [ ] Stories 40, 50 and 60 and the Hub cases pass unchanged. (The Hub unit cases pass; the Playwright stories run in CI.)
+- [x] Stories 40, 50 and 60 and the Hub cases pass unchanged. (The Hub unit cases pass locally; Playwright passed in CI on 2f814435.)
 - [x] Parity and method-contract pass after `mise run build:roym`, with
   seven services.
 - [x] The service-list test of D-C3b-15 passes, and it passed on six
@@ -1817,9 +1817,9 @@ C3b1:
 - [x] Deviations, backlog rows and living docs done.
 - [x] A restore of the two bundles in either order ends with every agreed
   seat taken, after the documented repeat (D-C3b-16).
-- [ ] Owner reviewed `backup-bundle-scheduling` and
+- [x] Owner reviewed `backup-bundle-scheduling` and
   `backup-reservations-failed` in Hindi (and the changed `backup-bundle-catalog`).
-- [ ] `mise run verify` passes with no `--skip`.
+- [x] `mise run verify` passes with no `--skip`. (The owner accepted CI in place of a local run, as for C3a1 and C3a2.)
 
 C3b2:
 
