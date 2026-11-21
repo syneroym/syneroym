@@ -1831,7 +1831,7 @@ C3b2:
 - [x] The two-node test of 7.4 passes with no hardcoded port.
 - [x] Component sizes recorded and within limits.
 - [ ] Owner reviewed the Hindi messages of 7.10.
-- [ ] `mise run verify` passes with no `--skip`.
+- [x] `mise run verify` passes with no `--skip`. (The owner accepted CI on 82c45089 in place of a local run, as for C3b1.)
 
 ## 11. What C3b does not do
 
