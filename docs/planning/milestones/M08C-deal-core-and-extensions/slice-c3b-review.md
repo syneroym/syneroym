@@ -126,7 +126,7 @@ change those answers. My view, for the record:
 
 ### Findings
 
-- [ ] **P1 — major.** *Where:* D-C3b-5, the `reserve` pseudo-code
+- [x] **P1 — major.** *Where:* D-C3b-5, the `reserve` pseudo-code
   (`create([seat:<slot_id>:<n>:<top+1>, rsv:<r>])` and its two `Some(...)`
   arms).
   *Problem:* The plan lists the rows in the order seat first, `rsv:` second.
@@ -162,9 +162,9 @@ change those answers. My view, for the record:
   first caller's `create` between the second caller's read and its own
   `create`; if `TestHost` has no such hook, test the claim function with a
   stale `seats` list). Also state the row order in the Rows table.
-  *Status:* Open.
+  *Status:* Fixed (eacbaa91). As proposed: `rsv:` first in the `create` list (stated in the Rows table), `current(key)` read again after any `Some(id)`, and `two_reserves_of_one_key_return_one_reservation` in 7.2.
 
-- [ ] **P2 — major.** *Where:* D-C3b-2 (the table and the `git grep` check
+- [x] **P2 — major.** *Where:* D-C3b-2 (the table and the `git grep` check
   below it), D-C3b-15 (the table of files), C3b1 steps 4 and 6.
   *Problem:* The plan's check misses places that list the services one by
   one. The `git grep` pattern
@@ -209,9 +209,9 @@ change those answers. My view, for the record:
   the three e2e lists (`EXPORT_SERVICES`, `IMPORT_ORDER`, `DATA_SERVICES`).
   (3) List the parity harness's four places by line in D-C3b-2. (4) Fix
   the line numbers named in this finding.
-  *Status:* Open.
+  *Status:* Fixed (eacbaa91). As proposed: the search finds string forms and every hit is read; D-C3b-2 lists `node-boot.ts`, `service_visibility`, the three e2e lists, the five parity-harness places, `test_proxies.rs`' dispatch and `expected_schema_version` (`fixtures.rs:131`, which this finding did not name: `transaction` 7, `catalog` 5); D-C3b-15 has rows for them. The signing-only lists are named as not changed. Line numbers fixed.
 
-- [ ] **P3 — major.** *Where:* section 4 ("Behaviour changes", the
+- [x] **P3 — major.** *Where:* section 4 ("Behaviour changes", the
   "scheduling backup is restored on its own" bullet), D-C3b-9, section 8
   (the new backlog row), the `roymctl` export order.
   *Problem:* Today the seat rows and the agreements are in one bundle, and
@@ -247,9 +247,9 @@ change those answers. My view, for the record:
   which is visible and safe, and not a double booking), and name the
   workaround (raise the capacity). I prefer (a); (b) is acceptable if the
   owner wants the slice smaller.
-  *Status:* Open.
+  *Status:* Fixed (eacbaa91), with a narrower fix than (a). New D-C3b-16: `transaction.import` reserves again (and confirms, when countersigned) every own seat of a restored agreement that is not ended, and lists refusals in its output; export order `transaction` then `scheduling`, import order `scheduling` then `transaction`; a wrong Hub order is reported, with the fix (import `transaction` again). `scheduling.import` refuses an `rsv:` row that exists with other content. Rejected part: releasing reservations that no agreement names (the `reservation.list` hook). That case is safe (one seat fewer, no double booking), needs one more hook, and a second `transaction` import would bring the agreement back after its seat was freed. It is a backlog row; the false "until released" sentence is gone.
 
-- [ ] **P4 — minor.** *Where:* D-C3b-5 ("`confirm` never takes a seat"),
+- [x] **P4 — minor.** *Where:* D-C3b-5 ("`confirm` never takes a seat"),
   D-C3b-11 ("A late countersigned half after the counterparty's
   release"), section 7.3, section 9 (roym-agreements Deviations).
   *Problem:* (1) The agreements doc says a counterparty "that released its
@@ -276,9 +276,9 @@ change those answers. My view, for the record:
   `a_late_half_after_the_expiry_release_gives_a_commitment_failure`, on the
   real scheduling semantics if possible (a second small fake that models
   "released, so refuse"), and the matching `agreement.get` call order.
-  *Status:* Open.
+  *Status:* Fixed (eacbaa91). As proposed: the roym-agreements Deviations line in section 9 (and `:620` corrected at close-out), the deviation stated in D-C3b-11, and `a_late_half_after_the_expiry_release_gives_a_commitment_failure` in 7.3 with a fake that refuses `confirm` for a released key.
 
-- [ ] **P5 — minor.** *Where:* D-C3b-11 (`make_failure`), section 7.3.
+- [x] **P5 — minor.** *Where:* D-C3b-11 (`make_failure`), section 7.3.
   *Problem:* `make_failure` signs a record with the person key. Signing can
   fail with `NotEnrolled`, `Expired` or `Stale`
   (`resolve_principal_and_owner`, `app.rs:288` to `:312`). The pseudo-code
@@ -294,9 +294,9 @@ change those answers. My view, for the record:
   in the sync output as a named error (the way `send_error` is), and the
   next sync tries again. Add
   `a_failure_that_cannot_be_signed_is_retried_and_reported` to 7.3.
-  *Status:* Open.
+  *Status:* Fixed (eacbaa91). A signing error writes no row, and the next sync tries again. One correction: `SyncOutput` has no `send_error` field today (`sync.rs:46` to `:54`), so C3b2 adds `unsent_failures: u32` for unsigned and unsent failures. Test `a_failure_that_cannot_be_signed_is_retried_and_reported`.
 
-- [ ] **P6 — minor.** *Where:* D-C3b-6 (`ExtensionHooks` and the
+- [x] **P6 — minor.** *Where:* D-C3b-6 (`ExtensionHooks` and the
   `ReserveOutcome::Refused { reason }` mapping), D-C3b-7.
   *Problem:* The reason comes from the extension's `data.code` and goes,
   unchecked, into the signed `not-formed` snapshot's `state_reason` and the
@@ -311,9 +311,9 @@ change those answers. My view, for the record:
   *Fix:* `ExtensionHooks` accepts a code only if it is kebab-case ASCII of
   at most 64 bytes; otherwise it returns `Err` (a bug, not a refusal), and
   a unit test covers both sides.
-  *Status:* Open.
+  *Status:* Fixed (eacbaa91). As proposed, with the code form `[a-z0-9-]{1,64}`; test `an_extension_reason_that_is_not_a_code_is_an_error`.
 
-- [ ] **P7 — minor.** *Where:* D-C3b-6 and D-C3b-7 (`prepare_terms`),
+- [x] **P7 — minor.** *Where:* D-C3b-6 and D-C3b-7 (`prepare_terms`),
   section 7.3.
   *Problem:* `prepare_terms` has two callers: `quote.set`
   (`quote_ops.rs:190`) and `quote.measure` (`measure_at`, `:254`). The plan
@@ -325,9 +325,9 @@ change those answers. My view, for the record:
   gives a different error from `set`.
   *Fix:* name both callers, and add
   `quote_measure_refuses_the_same_codes_as_quote_set`.
-  *Status:* Open.
+  *Status:* Fixed (eacbaa91). As proposed: both callers named in D-C3b-6 and D-C3b-7; test `quote_measure_refuses_the_same_codes_as_quote_set`.
 
-- [ ] **P8 — minor.** *Where:* D-C3b-5 (the rows table, "The `seats` query
+- [x] **P8 — minor.** *Where:* D-C3b-5 (the rows table, "The `seats` query
   uses an index on `slot_id`"), section 7.8.
   *Problem:* The seat rows have no `kind` field, and the `rsv:` rows also
   carry `slot_id`. The pseudo-code queries "`kind = "seat"` and
@@ -342,9 +342,9 @@ change those answers. My view, for the record:
   read is bounded by the number of bookings the slot ever had, and name
   what is done if that grows (for example, probing the next round by `get`
   starting from a stored top round).
-  *Status:* Open.
+  *Status:* Fixed (eacbaa91). As proposed: `kind` on every row, `kind` and `slot_id` indexed, the bound and the later change stated in D-C3b-5; test `a_seat_query_counts_only_seat_rows`.
 
-- [ ] **P9 — minor.** *Where:* D-C3b-4 (`ReserveInput`), D-C3b-5 (`reserve`:
+- [x] **P9 — minor.** *Where:* D-C3b-4 (`ReserveInput`), D-C3b-5 (`reserve`:
   "window must equal (slot.start_secs, slot.end_secs)").
   *Problem:* `window` is `Option<TimeWindow>`. The plan does not say what
   `None` means. The check is also new: today's `reserve` does not compare
@@ -354,9 +354,9 @@ change those answers. My view, for the record:
   (`slot-unavailable`) with a confusing cause.
   *Fix:* either drop the check, or make `window` required in
   `ReserveInput` and keep the check with its own code. Say which.
-  *Status:* Open.
+  *Status:* Fixed (eacbaa91). The check is dropped, and `ReserveInput` has no `window` (the slot id already names its window).
 
-- [ ] **P10 — minor.** *Where:* section 2.2 point 3 (the counterparty's
+- [x] **P10 — minor.** *Where:* section 2.2 point 3 (the counterparty's
   release at quote expiry), D-C3b-7.
   *Problem:* The counterparty's release runs in `agreement.get`
   (`agreement_ops.rs:508` to `:521`) and in `tick_conversation_at`, on
@@ -373,9 +373,9 @@ change those answers. My view, for the record:
   marker in `ledger` after the first successful release and skip later
   calls (a lost marker costs one extra idempotent call). Add a test that a
   second `agreement.get` makes no hook call.
-  *Status:* Open.
+  *Status:* Fixed (eacbaa91). As proposed: a `released:<agreement>` marker in `ledger` (`LedgerKind::Released`, checked on import); test `the_expiry_release_runs_once_per_agreement`.
 
-- [ ] **P11 — minor.** *Where:* "How this is shown to an end user" (C3b2),
+- [x] **P11 — minor.** *Where:* "How this is shown to an end user" (C3b2),
   section 7.3 (`the_writer_marks_the_commitment_failed_and_cancels_the_others`).
   *Problem:* After `apply_failure`, the check
   `n.state == Agreed && all commitments final` moves the agreement to
@@ -391,9 +391,9 @@ change those answers. My view, for the record:
   *Fix:* state it in the end-user section, and assert
   `state == closed` in the test. Say what the Hub shows (it already draws
   `closed`).
-  *Status:* Open.
+  *Status:* Fixed (eacbaa91). The end-user section says the agreement shows "Closed" when no part was paid or delivered, and the test asserts `closed`.
 
-- [ ] **P12 — minor.** *Where:* section 9 (living docs), D-C3b-2.
+- [x] **P12 — minor.** *Where:* section 9 (living docs), D-C3b-2.
   *Problem:* The living-docs list misses
   `docs/system-architecture.md:559` ("The six Roym services use this to be
   local-only"). It also misses the comment at
@@ -402,4 +402,14 @@ change those answers. My view, for the record:
   parity list at `helpers.rs:893`; the list is at `:890` to `:897`
   (D-C3b-15 has it right).
   *Fix:* add the two places to section 9 and fix the line number.
-  *Status:* Open.
+  *Status:* Fixed (eacbaa91). `system-architecture.md:559` is in section 9; the `backup.ts:5` comment is in D-C3b-2; the parity list line is fixed.
+
+### Round 1 close-out — Claude Opus 5.5 (Claude Code), 2026-11-21
+
+The plan author folded round 1 into the plan in `eacbaa91`. All 12 items
+are closed: 11 fixed as proposed (P5 with one fact corrected), and P3
+fixed with a narrower option than the reviewer's (a). The rejected part
+of P3 and its reason are in P3's status and in the plan's D-C3b-16. The
+plan's answers to the owner questions did not change.
+
+**Open after round 1: 0.**
