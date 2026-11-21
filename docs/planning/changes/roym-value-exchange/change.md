@@ -735,6 +735,11 @@ Milestone 8 is split into sub-milestones, in dependency order. Each has a folder
 Written when the M08C C1 slice was planned (2026-11-15). The agreements
 change doc refines each row below through its `AG-*` rows.
 
+- **VX-10 is met through the scheduling extension's hook (M08C C3b1).** The
+  giver's node reserves its own slot through `reservation.reserve` of the
+  scheduling extension, also when the giver is not the quote author. There
+  is no text change. Proved by `roym_booking_e2e` and the accept tests in
+  `roym_transaction` (`tests/accept.rs`).
 - **VX-2:** M08C builds the resource kinds `service-in-slot`,
   `goods-or-service` and `currency` on either side. EEPs on either side
   come in M08E and M08H.

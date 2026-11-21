@@ -305,13 +305,13 @@ test.describe('Roym Hub', () => {
     await expect(page.locator('.safety-screen')).toContainText(`Blocked: ${spammerDid}`);
   });
 
-  test('8. backup tab: shows the five service bundles separately and says so', async ({ page }) => {
+  test('8. backup tab: shows the six service bundles separately and says so', async ({ page }) => {
     await page.goto(HUB_URL);
     await page.waitForLoadState('networkidle');
     await loginWithDelegatedKey(page);
 
     await page.getByRole('button', { name: 'Backup' }).click();
-    await expect(page.locator('.backup-screen .bundle-row')).toHaveCount(5);
+    await expect(page.locator('.backup-screen .bundle-row')).toHaveCount(6);
     await expect(page.locator('.backup-separate-note')).toContainText(
       'Each bundle below is signed by you when it is exported',
     );

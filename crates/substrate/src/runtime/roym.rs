@@ -557,7 +557,9 @@ async fn wire_roym_topology(
         )
         .await?;
 
-    // `transaction` declares `conversation` and `scheduling` dependencies.
+    // `transaction` declares `conversation` and `scheduling` dependencies. It
+    // needs a binding to the hook service of each extension manifest, and a
+    // test in `roym_core` (`services/tests.rs`) checks that.
     let conv_entry_json = serde_json::to_string(&singleton_entry(services::CONVERSATION.name))?;
     endpoint_registry
         .save_binding(

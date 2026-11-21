@@ -189,23 +189,46 @@ impl Reservations for ExtensionHooks {
     }
 }
 
+/// Why `reserve_each` stopped before the last commitment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Stop {
+    /// The extension refused, with its reason code.
+    Refused(String),
+    /// A fault: the call could not be answered. The caller tries again later.
+    Fault(String),
+}
+
+/// What `reserve_each` did: the commitments it holds, and why it stopped early
+/// if it did. The caller decides what to release, also after a fault.
+#[derive(Debug, Default)]
+pub(crate) struct Reserved {
+    pub(crate) held: Vec<Commitment>,
+    pub(crate) stopped: Option<Stop>,
+}
+
 /// Reserves every commitment in `commitments`, in order. It stops at the
-/// first refusal. The held commitments and the reason are answered, and the
-/// caller decides what to release.
+/// first refusal or fault.
 pub(crate) async fn reserve_each<'a, H: AppHost, R: Reservations>(
     host: &H,
     hooks: &R,
     agreement: &str,
     commitments: impl IntoIterator<Item = &'a Commitment>,
-) -> Result<(Vec<Commitment>, Option<String>), String> {
-    let mut held = Vec::new();
+) -> Reserved {
+    let mut out = Reserved::default();
     for c in commitments {
-        match hooks.reserve(host, agreement, c).await? {
-            ReserveOutcome::Held => held.push(c.clone()),
-            ReserveOutcome::Refused { reason } => return Ok((held, Some(reason))),
+        match hooks.reserve(host, agreement, c).await {
+            Ok(ReserveOutcome::Held) => out.held.push(c.clone()),
+            Ok(ReserveOutcome::Refused { reason }) => {
+                out.stopped = Some(Stop::Refused(reason));
+                break;
+            }
+            Err(fault) => {
+                out.stopped = Some(Stop::Fault(fault));
+                break;
+            }
         }
     }
-    Ok((held, None))
+    out
 }
 
 /// Confirms every commitment in `held`. A refusal answers its reason.

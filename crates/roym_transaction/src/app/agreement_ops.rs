@@ -262,25 +262,20 @@ async fn reserve_counterparty_slots<H: AppHost>(
     terms: &DealTerms,
 ) -> Result<(), Response> {
     let hooks = ExtensionHooks;
-    let reserved = match hooks::reserve_each(
+    let reserved = hooks::reserve_each(
         host,
         &hooks,
         quote_record_id,
         hooks::reserved_by(terms, DealRole::Counterparty),
     )
-    .await
-    {
-        Ok(reserved) => reserved,
-        Err(e) => return Err(Response::internal_error(e)),
-    };
-    let (held, refusal) = reserved;
-    match refusal {
-        None => Ok(()),
-        Some(reason) => {
-            hooks::release_each(host, &hooks, quote_record_id, &held).await;
-            Err(Response::invalid_params("reserve-failed")
-                .with_data(serde_json::json!({ "reason": reason })))
-        }
+    .await;
+    let Some(stop) = reserved.stopped else { return Ok(()) };
+    // Nothing is signed, so nothing may stay held, after a fault too.
+    hooks::release_each(host, &hooks, quote_record_id, &reserved.held).await;
+    match stop {
+        hooks::Stop::Refused(reason) => Err(Response::invalid_params("reserve-failed")
+            .with_data(serde_json::json!({ "reason": reason }))),
+        hooks::Stop::Fault(fault) => Err(Response::internal_error(fault)),
     }
 }
 

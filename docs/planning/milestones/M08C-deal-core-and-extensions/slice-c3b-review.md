@@ -501,7 +501,7 @@ working tree is clean). I changed no code.
 
 ### New findings
 
-- [ ] **R1 — blocker.** *Where:* `crates/substrate/src/runtime/tests.rs:110`;
+- [x] **R1 — blocker.** *Where:* `crates/substrate/src/runtime/tests.rs:110`;
   `crates/substrate/tests/e2e/tests/roym-hub.spec.ts:308`, `:314`.
   *Problem:* CI is red on `1a149df7`. Two tests count the Roym services
   and were not updated:
@@ -519,9 +519,9 @@ working tree is clean). I changed no code.
   *Fix:* set 8 in `runtime/tests.rs` and 6 in `roym-hub.spec.ts` (rename
   the test to "six service bundles"). Run Test 4/6's failing test and the
   Hub spec locally, then let CI run again.
-  *Status:* Open.
+  *Status:* Fixed. `runtime/tests.rs` expects 8 `NativeHostFactory::new` sites, and the Hub spec test 8 is "shows the six service bundles" with 6 rows. Checked locally: the runtime test passes, and `npx playwright test tests/roym-hub.spec.ts -g "backup tab"` passes (1 passed). CI runs again on the push.
 
-- [ ] **R2 — major.** *Where:* `crates/roym_scheduling/src/app/backup/check.rs:85`
+- [x] **R2 — major.** *Where:* `crates/roym_scheduling/src/app/backup/check.rs:85`
   to `:101` (`reservation_rows`), `crates/roym_scheduling/src/app/backup.rs:83`
   to `:92`.
   *Problem:* `scheduling.import` writes all `rsv:` rows, then all `seat:`
@@ -553,9 +553,9 @@ working tree is clean). I changed no code.
   `tests/backup.rs` with `crash_on_write_skip` that stops the import
   after the first chunk and checks that the full slot still answers
   `slot-taken`.
-  *Status:* Open.
+  *Status:* Fixed. The import now writes `seat:` rows, then `rsv:` rows, then pointers, then decisions and releases, and the comment names the safe direction. New test `a_stopped_import_never_shows_a_held_seat_as_free` (capacity 60, the second chunk fails with `crash_on_write_skip`): the full slot still answers `slot-taken`, and the same bundle imports again and repairs the rest. It fails with the old order (checked by swapping the two loops).
 
-- [ ] **R3 — minor.** *Where:* `crates/roym_transaction/src/app/agreement_ops.rs:259`
+- [x] **R3 — minor.** *Where:* `crates/roym_transaction/src/app/agreement_ops.rs:259`
   to `:285`, `crates/roym_transaction/src/app/hooks.rs:195` to `:209`.
   *Problem:* On `main`, `reserve_counterparty_slots` released the seats it
   had already held when a later reserve returned an error. Now
@@ -572,9 +572,9 @@ working tree is clean). I changed no code.
   a fault (for example a struct with `held`, `refusal` and `fault`), and
   release them in `accept` for a refusal and for a fault, as `main` did.
   Add a test with the fake's `fail_nth` on the second `reservation.reserve`.
-  *Status:* Open.
+  *Status:* Fixed. `reserve_each` now answers `Reserved { held, stopped }` with `Stop::Refused` or `Stop::Fault`. `agreement.accept` releases what it held for a refusal and for a fault, as `main` did. The writer's path keeps its old behaviour (a fault is an `Err`). New test `a_fault_on_the_second_reserve_releases_the_first` (fake `fail_call` on the second reserve).
 
-- [ ] **R4 — minor.** *Where:* `crates/roym_scheduling/src/app/backup/check.rs:169`
+- [x] **R4 — minor.** *Where:* `crates/roym_scheduling/src/app/backup/check.rs:169`
   to `:188` (`refuse_changed_rows`).
   *Problem:* D-C3b-5 says `decided:` and `free:` rows are created once and
   never overwritten. The import refuses a changed `rsv:` or `seat:` row,
@@ -587,9 +587,9 @@ working tree is clean). I changed no code.
   *Fix:* check every row except `key:` (the one row that is overwritten
   by design) in `refuse_changed_rows`, and add one refused case for a
   changed `decided:` row to `tests/backup.rs`.
-  *Status:* Open.
+  *Status:* Fixed. `refuse_changed_rows` checks every row except `key:`. New test `a_decision_that_exists_with_other_content_is_refused` (a stored `confirmed` against a bundle `lapsed`).
 
-- [ ] **R5 — minor.** *Where:* `crates/roym_core/app/roym.toml:78` to `:81`.
+- [x] **R5 — minor.** *Where:* `crates/roym_core/app/roym.toml:78` to `:81`.
   *Problem:* The comment on `transaction`'s `depends_on` says a quote
   that names a slot "reads that slot from the scheduling service -- at
   quote time to bind it, and at acceptance time to read its capacity".
@@ -603,9 +603,9 @@ working tree is clean). I changed no code.
   *Fix:* say that `transaction` calls the reserve hooks of each extension
   service that a manifest names (today `scheduling`), so every such
   service must be in this list.
-  *Status:* Open.
+  *Status:* Fixed. The comment on `transaction`'s `depends_on` now says that `transaction` calls the reserve hooks of the service that a manifest names, so every such service (today `scheduling`) must be in the list.
 
-- [ ] **R6 — minor.** *Where:* `crates/roym_core/src/extension/load.rs:92`
+- [x] **R6 — minor.** *Where:* `crates/roym_core/src/extension/load.rs:92`
   (`check_hook_service`); `crates/roym_core/app/roym.toml:81`;
   `crates/substrate/src/runtime/roym.rs` (`wire_roym_topology`).
   *Problem:* The loader accepts any service of `services::ALL` but `web`
@@ -622,9 +622,9 @@ working tree is clean). I changed no code.
   the D-C3b-15 test also reads the `save_binding` calls for
   `TRANSACTION` in `runtime/roym.rs`, or by a comment there that points
   to the manifest test.
-  *Status:* Open.
+  *Status:* Fixed. New test `every_hook_service_is_a_dependency_of_transaction` in `services/tests.rs`: the hook service of every manifest is in `transaction`'s `depends_on` in `roym.toml`, and has a binding in the `transaction` block of `wire_roym_topology`. A comment there points to the test.
 
-- [ ] **R7 — minor.** *Where:* `docs/planning/changes/roym-value-exchange/change.md:733`
+- [x] **R7 — minor.** *Where:* `docs/planning/changes/roym-value-exchange/change.md:733`
   (`## Deviations`).
   *Problem:* The plan's section 9 asks for a C3b1 line in this doc: VX-10
   is met through the scheduling extension's hook, with no text change.
@@ -635,9 +635,9 @@ working tree is clean). I changed no code.
   last column): the giver's node reserves through `reservation.reserve`
   of the scheduling extension, also when it is not the quote author;
   proved by `roym_booking_e2e` and `tests/accept.rs`.
-  *Status:* Open.
+  *Status:* Fixed. One line under `## Deviations` of the value-exchange change doc: VX-10 is met through the scheduling extension's hook, with no text change, proved by `roym_booking_e2e` and `tests/accept.rs`.
 
-- [ ] **R8 — minor.** *Where:* `docs/planning/milestones/M08C-deal-core-and-extensions/status.md:18`
+- [x] **R8 — minor.** *Where:* `docs/planning/milestones/M08C-deal-core-and-extensions/status.md:18`
   (the C3b1 row, risk measure 2).
   *Problem:* The row says "The service-list test (14 tests,
   `services/tests.rs`) passed on today's six services in c49eb567". At
@@ -646,9 +646,9 @@ working tree is clean). I changed no code.
   *Failure case:* the evidence does not match the code, so a reader
   cannot trust the other counts of the row.
   *Fix:* say 13 tests at `c49eb567`, and 15 now.
-  *Status:* Open.
+  *Status:* Fixed. The status row says 13 tests at c49eb567 and 15 now.
 
-- [ ] **R9 — minor.** *Where:* `crates/roym_transaction/src/app/backup/reservations.rs:63`
+- [x] **R9 — minor.** *Where:* `crates/roym_transaction/src/app/backup/reservations.rs:63`
   to `:96`; `crates/roym_transaction/src/app/tests/hooks_fake.rs:80`.
   *Problem:* `open_commitments` walks `reserved_by` and collects ids, and
   `reserve_again` walks `reserved_by` again and keeps the commitments
@@ -660,6 +660,6 @@ working tree is clean). I changed no code.
   be, and the comment is false.
   *Fix:* let `open_commitments` return `Vec<&Commitment>` and loop over
   it; drop "and `availability.get`" from the comment.
-  *Status:* Open.
+  *Status:* Fixed. `open_commitments` returns `Vec<&Commitment>` and `reserve_again` loops over it. The fake's comment no longer mentions `availability.get`.
 
-**Open after code review round 1: 9** (1 blocker, 1 major, 7 minor).
+**Open after code review round 1: 0.** Fixed: 9 (R1 to R9), on the branch after `1a149df7`. Re-checked by the implementer: clippy with `-D warnings`, nextest on `roym-core`, `roym-scheduling`, `roym-transaction` and `roym-catalog` (659 passed, 0 skipped), the Hub Playwright backup case, and the `roym-web` and substrate two-node runs (results in the close-out below). The reviewer checks the fixes.

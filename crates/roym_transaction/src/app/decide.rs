@@ -421,13 +421,18 @@ pub(crate) async fn reserve_author_holds<H: AppHost, R: Reservations>(
     row: &AgreementRow,
     reservations: &R,
 ) -> Result<(Vec<Commitment>, Option<String>), String> {
-    hooks::reserve_each(
+    let reserved = hooks::reserve_each(
         host,
         reservations,
         &row.quote_record_id,
         hooks::reserved_by(&row.terms, DealRole::QuoteAuthor),
     )
-    .await
+    .await;
+    match reserved.stopped {
+        None => Ok((reserved.held, None)),
+        Some(hooks::Stop::Refused(reason)) => Ok((reserved.held, Some(reason))),
+        Some(hooks::Stop::Fault(fault)) => Err(fault),
+    }
 }
 
 pub(crate) async fn finalize_agreed_deal<H: AppHost>(

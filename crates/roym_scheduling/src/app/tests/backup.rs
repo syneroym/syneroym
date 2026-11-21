@@ -294,3 +294,49 @@ async fn nothing_is_written_when_a_row_is_refused() {
     assert!(backup::import(&target, ImportInput { bundle: bad }).await.is_err());
     assert!(row_ids(&target, "").await.is_empty());
 }
+
+#[tokio::test]
+async fn a_decision_that_exists_with_other_content_is_refused() {
+    let master = master();
+    let host = signed_host(&master);
+    let bundle = two_bookings(&host).await;
+    let mut records = reservation_records(&bundle);
+    for record in &mut records {
+        if record["id"].as_str().unwrap().starts_with("decided:") {
+            record["payload"]["state"] = json!("lapsed");
+        }
+    }
+    let said = refusal_of(&host, with_reservations(&bundle, records)).await;
+    assert!(said.contains("reservation-differs"), "{said}");
+}
+
+#[tokio::test]
+async fn a_stopped_import_never_shows_a_held_seat_as_free() {
+    let master = master();
+    let origin = signed_host(&master);
+    let slot_id = slot(&origin, 60).await;
+    for n in 0..60 {
+        let agreement = format!("agr-{n}");
+        reservation::reserve_at(&origin, reserve_input(&agreement, "c1", &slot_id), NOW)
+            .await
+            .unwrap();
+    }
+    let bundle = backup::export(&origin, NoParams {}).await.unwrap();
+
+    // The second chunk of 100 rows fails: all 60 seats and 40 reservations are
+    // written.
+    let target = signed_host(&master);
+    target.crash_on_write_skip("reservations", "rsv:", 40);
+    let stopped = backup::import(&target, ImportInput { bundle: bundle.clone() }).await;
+    assert!(stopped.is_err());
+    assert!(target.was_crashed_write_hit());
+    target.restart();
+
+    let full =
+        reservation::reserve_at(&target, reserve_input("agr-new", "c1", &slot_id), NOW).await;
+    assert_eq!(code_of(&full.unwrap_err()), "slot-taken", "every seat is still held");
+
+    // The same bundle imports again and repairs the rest.
+    backup::import(&target, ImportInput { bundle }).await.unwrap();
+    assert_eq!(row_ids(&target, "rsv:").await.len(), 60);
+}

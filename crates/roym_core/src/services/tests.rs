@@ -221,3 +221,37 @@ fn by_name_finds_each_service_and_nothing_else() {
     assert_eq!(super::by_name("nope"), None);
     assert_eq!(super::by_name(""), None);
 }
+
+/// `transaction` calls the reserve hooks of the service that an extension
+/// manifest names, as a sibling. That works only for a service in its
+/// `depends_on` and in the substrate's native bindings of `transaction`.
+#[test]
+fn every_hook_service_is_a_dependency_of_transaction() {
+    let manifest: toml::Value = toml::from_str(&read("app/roym.toml")).unwrap();
+    let depends_on: Vec<&str> = manifest["services"]["transaction"]["depends_on"]
+        .as_array()
+        .expect("transaction depends_on")
+        .iter()
+        .filter_map(toml::Value::as_str)
+        .collect();
+    let bindings = read("../substrate/src/runtime/roym.rs");
+    let transaction_bindings = bindings
+        .split("// `transaction` declares")
+        .nth(1)
+        .expect("the transaction bindings in the substrate");
+    for extension in crate::extension::registry().manifests() {
+        let Some(service) = extension.hook_service() else { continue };
+        assert!(
+            depends_on.contains(&service.name),
+            "app/roym.toml: transaction must depend on '{}', the hook service of extension '{}'",
+            service.name,
+            extension.id
+        );
+        let binding = format!("services::{}.name", service.name.to_uppercase());
+        assert!(
+            transaction_bindings.contains(&binding),
+            "crates/substrate/src/runtime/roym.rs: transaction needs a binding to '{}'",
+            service.name
+        );
+    }
+}

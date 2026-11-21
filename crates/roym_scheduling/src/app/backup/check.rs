@@ -82,19 +82,22 @@ fn parse_rows(records: &[Value]) -> Result<Parsed, Response> {
     Ok(parsed)
 }
 
-/// Reservation rows, in the order they are written: reservations with their
-/// seats first, so a stopped import never leaves a seat with no reservation.
+/// Reservation rows, in the order they are written: seats first, then
+/// reservations, then pointers, then decisions and releases. A stopped import
+/// can leave a seat with no reservation, and that only keeps the seat taken.
+/// The other way round, a reservation with no seat row would show its seat as
+/// free and let a second booking take it.
 pub(super) fn reservation_rows(records: &[Value]) -> Result<Vec<(String, Value)>, Response> {
     let parsed = parse_rows(records)?;
     check_reservations(&parsed)?;
     check_decisions(&parsed)?;
     check_keys(&parsed)?;
     let mut out = Vec::with_capacity(records.len());
-    for (r, (_, payload)) in &parsed.rsvs {
-        out.push((rsv_id(r), payload.clone()));
-    }
     for (id, (_, payload)) in &parsed.seats {
         out.push((id.clone(), payload.clone()));
+    }
+    for (r, (_, payload)) in &parsed.rsvs {
+        out.push((rsv_id(r), payload.clone()));
     }
     out.extend(parsed.keys.into_iter().map(|(id, _, payload)| (id, payload)));
     out.extend(parsed.after);
@@ -163,15 +166,16 @@ fn check_keys(parsed: &Parsed) -> Result<(), Response> {
     Ok(())
 }
 
-/// Import merges rows into the store. A reservation or seat row that exists
-/// with other content is refused, so a bundle cannot move a held seat to
-/// another reservation.
+/// Import merges rows into the store. Every row but a `key:` pointer is
+/// created once and never changed, so a row that exists with other content is
+/// refused: a bundle cannot move a held seat to another reservation, or turn a
+/// confirmed reservation into a lapsed one.
 pub(super) async fn refuse_changed_rows<H: AppHost>(
     host: &H,
     rows: &[(String, Value)],
 ) -> Result<(), Response> {
     for (id, payload) in rows {
-        if !id.starts_with("rsv:") && !id.starts_with("seat:") {
+        if id.starts_with("key:") {
             continue;
         }
         let stored = AppDataLayer::get(host, RESERVATIONS.to_string(), id.clone())

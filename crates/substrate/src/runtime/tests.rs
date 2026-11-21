@@ -107,8 +107,8 @@ fn every_production_factory_in_runtime_is_fully_wired() {
     }
 
     assert_eq!(
-        factory_new_count, 7,
-        "expected exactly 7 NativeHostFactory::new sites in runtime, found {factory_new_count}"
+        factory_new_count, 8,
+        "expected exactly 8 NativeHostFactory::new sites in runtime, found {factory_new_count}"
     );
     assert_eq!(
         with_call_all_count, factory_new_count,

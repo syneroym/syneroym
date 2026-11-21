@@ -77,7 +77,7 @@ fn text<'a>(params: &'a Value, key: &str) -> &'a str {
 }
 
 impl FakeScheduling {
-    /// Registers the four hooks, and `availability.get`, on `host`.
+    /// Registers the four hooks on `host`.
     pub(crate) fn install(host: &TestHost) -> Self {
         let fake = Self::default();
         for method in [

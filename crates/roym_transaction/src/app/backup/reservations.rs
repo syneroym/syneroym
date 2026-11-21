@@ -11,7 +11,7 @@
 use serde::Serialize;
 use syneroym_app_host::AppHost;
 use syneroym_roym_core::{
-    deal::{DealTerms, transition::CommitmentState},
+    deal::{Commitment, transition::CommitmentState},
     transaction::DealRole,
 };
 
@@ -58,21 +58,16 @@ fn holds_reservations(row: &AgreementRow, role: DealRole, now: u64) -> bool {
     }
 }
 
-/// The commitment ids this node gives, needs reserved, and that are still
-/// open: no settlement half, and not past `promised`.
-fn open_commitments<'a>(
-    row: &'a AgreementRow,
-    terms: &'a DealTerms,
-    role: DealRole,
-) -> Vec<&'a str> {
-    hooks::reserved_by(terms, role)
+/// The commitments this node gives, needs reserved, and that are still open:
+/// no settlement half, and not past `promised`.
+fn open_commitments(row: &AgreementRow, role: DealRole) -> Vec<&Commitment> {
+    hooks::reserved_by(&row.terms, role)
         .filter(|c| {
             row.commitments
                 .iter()
                 .find(|p| p.commitment_id == c.commitment_id)
                 .is_none_or(|p| p.state == CommitmentState::Promised && p.halves.is_empty())
         })
-        .map(|c| c.commitment_id.as_str())
         .collect()
 }
 
@@ -90,10 +85,7 @@ pub(crate) async fn reserve_again<H: AppHost>(
         if !holds_reservations(row, role, now) {
             continue;
         }
-        let open = open_commitments(row, &row.terms, role);
-        for c in hooks::reserved_by(&row.terms, role)
-            .filter(|c| open.contains(&c.commitment_id.as_str()))
-        {
+        for c in open_commitments(row, role) {
             let failed = |reason: String| ReservationFailure {
                 agreement: row.quote_record_id.clone(),
                 commitment_id: c.commitment_id.clone(),

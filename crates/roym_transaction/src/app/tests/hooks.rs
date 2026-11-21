@@ -308,3 +308,29 @@ async fn a_transport_error_on_reserve_is_an_error_and_not_a_refusal() {
     assert_eq!(err.error.as_ref().unwrap().code, -32603);
     assert!(f.scheduling.failure_hit());
 }
+
+#[tokio::test]
+async fn a_fault_on_the_second_reserve_releases_the_first() {
+    let f = fixture();
+    let (c1, slot1) = slot_commitment("c1", "listing_123", 1_000_000, 1_003_600);
+    let (c2, _) = slot_commitment("c2", "listing_123", 2_000_000, 2_003_600);
+    f.scheduling.fail_call("reservation.reserve", 1);
+    let now = f.host.now();
+    let author = Identity::generate().expect("generate author");
+    let (quote, record_id, envelope) =
+        build_and_sign_quote(&author, &f.master_did, vec![c1, c2], now + 3600, now);
+    let verdict = verify_quote(&envelope, now);
+    store_received_quote(&f.host, &envelope, &verdict, &quote.signed, now, &f.master_did)
+        .await
+        .expect("store quote");
+    disclosures::store(&f.host, &record_id, RECORD_QUOTE, &quote.disclosures, now)
+        .await
+        .expect("store disclosures");
+
+    let err = agreement_ops::accept_at(&f.host, accept_input(&record_id), now)
+        .await
+        .expect_err("a transport error");
+    assert_eq!(err.error.as_ref().unwrap().code, -32603);
+    assert!(f.scheduling.is_released(&record_id, "c1"), "the first seat is not left held");
+    assert_eq!(f.scheduling.held_seats(&slot1), 0);
+}
