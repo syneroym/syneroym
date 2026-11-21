@@ -2,6 +2,7 @@
 
 mod backup;
 mod confirm;
+mod lapse;
 mod prepare;
 mod release;
 mod reserve;

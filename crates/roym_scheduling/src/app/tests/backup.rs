@@ -15,7 +15,7 @@ use syneroym_roym_core::{
 };
 
 use super::{NOW, code_of, key, reserve_input, row_ids, slot};
-use crate::app::{SCHEMA_VERSION, backup, reservation};
+use crate::app::{SCHEMA_VERSION, backup, reservation, reservation::RESERVATION_TTL_SECS};
 
 /// A host that holds a signing certificate of `master`, so it can sign a
 /// bundle as the person.
@@ -339,4 +339,27 @@ async fn a_stopped_import_never_shows_a_held_seat_as_free() {
     // The same bundle imports again and repairs the rest.
     backup::import(&target, ImportInput { bundle }).await.unwrap();
     assert_eq!(row_ids(&target, "rsv:").await.len(), 60);
+}
+
+#[tokio::test]
+async fn a_lapsed_reservation_stays_lost_and_its_taker_keeps_the_seat_after_a_restore() {
+    let master = master();
+    let origin = signed_host(&master);
+    let slot_id = slot(&origin, 1).await;
+    let due = NOW + RESERVATION_TTL_SECS;
+    reservation::reserve_at(&origin, reserve_input("agr-a", "c1", &slot_id), NOW).await.unwrap();
+    reservation::reserve_at(&origin, reserve_input("agr-b", "c1", &slot_id), due + 1)
+        .await
+        .unwrap();
+    let bundle = backup::export(&origin, NoParams {}).await.unwrap();
+    let target = signed_host(&master);
+    backup::import(&target, ImportInput { bundle: bundle.clone() }).await.unwrap();
+    assert_eq!(row_ids(&target, "decided:").await, row_ids(&origin, "decided:").await);
+    assert_eq!(row_ids(&target, "free:").await, row_ids(&origin, "free:").await);
+    let lost = reservation::confirm_at(&target, key("agr-a", "c1"), due + 2).await;
+    assert_eq!(code_of(&lost.unwrap_err()), "reservation-lost");
+    let taker = reservation::confirm_at(&target, key("agr-b", "c1"), due + 2).await.unwrap();
+    assert_eq!(taker.state, ReservationState::Confirmed);
+    // A repeat import of the same bundle changes nothing.
+    backup::import(&target, ImportInput { bundle }).await.unwrap();
 }
