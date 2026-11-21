@@ -413,3 +413,253 @@ of P3 and its reason are in P3's status and in the plan's D-C3b-16. The
 plan's answers to the owner questions did not change.
 
 **Open after round 1: 0.**
+
+## Code review round 1 — Claude Opus 5.5 (Claude Code), 2026-11-21
+
+Reviewed part C3b1, PR [#378](https://github.com/syneroym/syneroym/pull/378)
+(draft), branch `feat/m08c-c3b-scheduling` at `1a149df7`, with
+`git diff origin/main...HEAD` (139 files). This is the main checkout
+(`git rev-parse --git-dir` is `.git`). `git pull` said "Already up to
+date". The code was written by Claude Sonnet 5.5, so this round meets the
+cross-tool rule. There is no earlier code review round of C3b, so there
+are no Fixed or Rejected items to check again.
+
+Read: AGENTS.md, session-strategy.md ("The review file"), the plan (all
+1,847 lines), this file's plan review round, the code review rounds of
+[slice-c3a-review.md](slice-c3a-review.md) (for the format and the kinds
+of findings before), and the three change docs (roym-extensions,
+roym-agreements, roym-value-exchange), with their C3b1 Deviations.
+
+CI (`gh pr checks 378`, read twice during the review): "Lints, licenses &
+checks", CLA and test shards 1, 2, 3 and 5 pass. **Test 4/6 and
+Playwright E2E fail** (R1). Shard 6 was still running. I did not run the
+full suite or `mise run verify`. I ran `cargo nextest run -p
+syneroym-roym-scheduling` (43 passed, 0 skipped, the count of the status
+row), and one temporary test to prove R2, which I removed afterwards (the
+working tree is clean). I changed no code.
+
+**Summary: 9 findings (R1 to R9): 1 blocker, 1 major, 7 minor.**
+
+### What was checked and found correct
+
+- **The reservation model (D-C3b-5).** One `reservations` collection.
+  `rsv:` and `seat:` are created by one `create`, `rsv:` first
+  (`claim_rows`, tested by
+  `the_claim_lists_the_reservation_row_before_its_seat_row`). After any
+  `Some(id)`, `claim` reads `current(key)` again and never decides by the
+  id. A seat is held by round, and no seat row is deleted. `release`
+  writes a `free:` fence, `confirm` writes a `decided:` fence and never
+  creates a seat row; a confirm after a release is refused
+  `reservation-lost`. `current` follows a lost `key:` pointer forward. I
+  traced a confirm racing a release: it ends confirmed and freed, which
+  is the same state as "release after confirm", so it is safe.
+  `MAX_ATTEMPTS` (not in the plan) only bounds the `Claim::Again` loop.
+  `availability.rs` moved with only its import line changed.
+- **The hook client (D-C3b-6, D-C3b-7).** `needs_reservation` and
+  `reserved_by` go through the registry; `hook_service` comes from the
+  manifest. `refusal_reason` accepts only `[a-z0-9-]{1,64}` and turns any
+  other answer into `Err`. Every one of the nine seat sites of section
+  2.2 point 3 now calls the hooks. The writer's step 3 and step 4 keep
+  their order; a confirm *refusal* still ends `not-formed`, and a confirm
+  *fault* is now an `Err` that is tried again (the plan's rule). The
+  `released:<agreement>` marker is written only when every release
+  worked, and the import accepts it only for a held agreement.
+- **Exit criteria greps.** `ServiceInSlot|slot_id|availability\.|MAX_SLOT_CAPACITY`
+  over `roym_transaction/src` and `roym_catalog/src`, tests left out,
+  finds only `backup/sections.rs:376`. `transaction` names neither
+  `SCHEDULING` nor `"scheduling"`, and has no call to `CATALOG`.
+- **Wiring (D-C3b-2).** `services.rs`, `router.rs` (`availability.` and
+  `scheduling.` to `SCHEDULING`, no `reservation.` row), `roym.toml`
+  (private, health check, `transaction` → `conversation`, `scheduling`;
+  `web` gets `scheduling`), the native factory, the owner loop and the
+  topology bindings in `substrate/src/runtime/roym.rs`, both signing and
+  backup orders. The service-list test reads 15 places; with the owner's
+  signing decision it also checks the three signing lists.
+- **Access control.** Every `scheduling` method goes through
+  `admit::require_internal`; `reservation.*` has no route, and
+  `WIRE_REFUSED_VERBS` has a `scheduling` verb, so scenarios 67 and 68
+  cover the new service on both builds.
+- **Both builds.** Parity scenarios 247 to 250 run the hooks, the export
+  and the import on WASM and native and compare them.
+- **Backup (D-C3b-9, D-C3b-16).** Every rule of D-C3b-9 has a check in
+  `backup/check.rs`, and `seat:` rows are also refused when they changed
+  (a recorded deviation). `transaction.import` reserves again after its
+  rows are written, and lists failures in `reservations_failed` instead
+  of failing. `SCHEMA_VERSION` is 7 for `transaction` and 5 for
+  `catalog`, each with its sentence.
+- **Change docs.** The C3b1 Deviations are in the doc that owns each
+  design: manifest keys, `confirm`, EX-5, EX-21, no expiry, no delete,
+  signing, unrouted hooks, no log line and step order in roym-extensions;
+  AG-14/AG-15, the restore, the late half and `released:` in
+  roym-agreements. Their numbers and meaning match the plan's.
+- **Living docs and backlog.** AGENTS.md, the architecture doc, the
+  developer guide, the requirements, the integrated spec, TERMINOLOGY
+  and demo.md say seven services and describe the hooks without
+  over-claims. The four new backlog rows exist.
+- **Sizes and rules.** New files are under 800 lines; `hold.rs` is gone;
+  no planning ids in comments; the lints gate is green.
+
+### New findings
+
+- [ ] **R1 — blocker.** *Where:* `crates/substrate/src/runtime/tests.rs:110`;
+  `crates/substrate/tests/e2e/tests/roym-hub.spec.ts:308`, `:314`.
+  *Problem:* CI is red on `1a149df7`. Two tests count the Roym services
+  and were not updated:
+  `every_production_factory_in_runtime_is_fully_wired` expects 7
+  `NativeHostFactory::new` sites and finds 8 (Test 4/6: "expected exactly
+  7 NativeHostFactory::new sites in runtime, found 8"). Hub test 8,
+  "shows the five service bundles", expects 5 `.bundle-row` elements and
+  the screen now has 6 (Playwright E2E: 1 failed after 2 retries, 74
+  passed). Neither place is in D-C3b-2's table or in the service-list
+  test, because they hold a count and not a list of names. The status
+  row says the Playwright stories and the full verify were left to CI.
+  *Failure case:* the PR cannot pass `mise run verify`, so the exit
+  criteria "Stories … and the Hub cases pass" and "`mise run verify`
+  passes" fail.
+  *Fix:* set 8 in `runtime/tests.rs` and 6 in `roym-hub.spec.ts` (rename
+  the test to "six service bundles"). Run Test 4/6's failing test and the
+  Hub spec locally, then let CI run again.
+  *Status:* Open.
+
+- [ ] **R2 — major.** *Where:* `crates/roym_scheduling/src/app/backup/check.rs:85`
+  to `:101` (`reservation_rows`), `crates/roym_scheduling/src/app/backup.rs:83`
+  to `:92`.
+  *Problem:* `scheduling.import` writes all `rsv:` rows, then all `seat:`
+  rows, then the pointers and the `decided:`/`free:` rows, in
+  `batch_mutate` chunks of 100. Each chunk is written alone. If the
+  import stops between chunks (a crash, or a storage error on a later
+  chunk), some `rsv:` rows exist without their `seat:` rows. Such a
+  reservation is live for its key (`current` finds it, no `free:` row),
+  but no seat row shows it, so `read_seats` sees its seat as free. The
+  comment says the order is chosen "so a stopped import never leaves a
+  seat with no reservation", but a seat with no reservation is the safe
+  case (the seat stays taken); a reservation with no seat is the unsafe
+  one.
+  *Failure case:* proved with a temporary test (removed). A slot of
+  capacity 60 with 60 reservations is exported. The import into a fresh
+  host is stopped on the 41st `seat:` row (`crash_on_write_skip("reservations",
+  "seat:", 40)`): 60 `rsv:` rows and 40 `seat:` rows are stored. Then a
+  new key's `reserve` answers `Held` on the full slot, and the repeat of
+  `agr-59` (whose seat row is missing) also answers `Held`: a double
+  booking. A second import of the same bundle then cannot repair it:
+  `refuse_changed_rows` finds the new booking's `seat:` row where the
+  bundle has another one, and refuses the whole import
+  `reservation-differs`. `transaction.import` run in between also
+  answers `Held` for such a commitment (D-C3b-16's restore trusts it).
+  *Fix:* write the `seat:` rows before the `rsv:` rows (then `key:`,
+  then `decided:`/`free:`; a `key:` row must still come after its `rsv:`
+  row, because `current` treats a pointer to a missing `rsv:` row as
+  corrupt). Correct the comment to name the safe direction. Add a test in
+  `tests/backup.rs` with `crash_on_write_skip` that stops the import
+  after the first chunk and checks that the full slot still answers
+  `slot-taken`.
+  *Status:* Open.
+
+- [ ] **R3 — minor.** *Where:* `crates/roym_transaction/src/app/agreement_ops.rs:259`
+  to `:285`, `crates/roym_transaction/src/app/hooks.rs:195` to `:209`.
+  *Problem:* On `main`, `reserve_counterparty_slots` released the seats it
+  had already held when a later reserve returned an error. Now
+  `reserve_each` returns `Err` through `?` and drops the list of held
+  commitments, and `accept` answers `internal_error` with no release.
+  This behaviour change is not in the plan or in a Deviations section.
+  *Failure case:* a quote has two slot commitments that the counterparty
+  gives. The first reserve is held, the second gets a transport error.
+  `agreement.accept` fails and signs nothing, but the first seat stays
+  held. In C3b1 only the release at the quote's expiry frees it, and
+  only once someone calls `agreement.get` or the sync tick after the
+  expiry.
+  *Fix:* let `reserve_each` give back the held commitments together with
+  a fault (for example a struct with `held`, `refusal` and `fault`), and
+  release them in `accept` for a refusal and for a fault, as `main` did.
+  Add a test with the fake's `fail_nth` on the second `reservation.reserve`.
+  *Status:* Open.
+
+- [ ] **R4 — minor.** *Where:* `crates/roym_scheduling/src/app/backup/check.rs:169`
+  to `:188` (`refuse_changed_rows`).
+  *Problem:* D-C3b-5 says `decided:` and `free:` rows are created once and
+  never overwritten. The import refuses a changed `rsv:` or `seat:` row,
+  but writes `decided:` and `free:` rows with `put`, so a bundle can
+  replace a stored one. `Decision::Lapsed` already parses in C3b1.
+  *Failure case:* the store has `decided:<r> {confirmed}`; a bundle with
+  `decided:<r> {lapsed}` replaces it. A later `confirm` then answers
+  `reservation-lost` for a confirmed seat. In C3b2 that refusal makes the
+  counterparty sign a `commitment-failure`.
+  *Fix:* check every row except `key:` (the one row that is overwritten
+  by design) in `refuse_changed_rows`, and add one refused case for a
+  changed `decided:` row to `tests/backup.rs`.
+  *Status:* Open.
+
+- [ ] **R5 — minor.** *Where:* `crates/roym_core/app/roym.toml:78` to `:81`.
+  *Problem:* The comment on `transaction`'s `depends_on` says a quote
+  that names a slot "reads that slot from the scheduling service -- at
+  quote time to bind it, and at acceptance time to read its capacity".
+  `transaction` reads no slot and no capacity any more. It calls the
+  reserve hooks of the service that a commitment's extension manifest
+  names, and the edge exists because the scheduling manifest names
+  `scheduling`. D-C3b-2 asked for a comment that says this.
+  *Failure case:* a reader thinks `transaction` still holds slot code,
+  which EX-17 removed; the next extension author does not learn that its
+  hook service must be added to this edge.
+  *Fix:* say that `transaction` calls the reserve hooks of each extension
+  service that a manifest names (today `scheduling`), so every such
+  service must be in this list.
+  *Status:* Open.
+
+- [ ] **R6 — minor.** *Where:* `crates/roym_core/src/extension/load.rs:92`
+  (`check_hook_service`); `crates/roym_core/app/roym.toml:81`;
+  `crates/substrate/src/runtime/roym.rs` (`wire_roym_topology`).
+  *Problem:* The loader accepts any service of `services::ALL` but `web`
+  as a hook service. The hook call is a sibling call from `transaction`,
+  which works only for a service in `transaction`'s `depends_on` and its
+  native binding. Nothing checks that the two agree.
+  *Failure case:* a later manifest names `"service": "catalog"`. It
+  loads, and every hook call fails with a transport error: `accept`
+  answers `internal_error`, and the writer's decision is retried for
+  ever. No test fails.
+  *Fix:* a test in `roym_core` (next to the `roym.toml` tests in
+  `router.rs`) that the `hook_service` of every manifest in the registry
+  is in `transaction`'s `depends_on`. The native binding is covered when
+  the D-C3b-15 test also reads the `save_binding` calls for
+  `TRANSACTION` in `runtime/roym.rs`, or by a comment there that points
+  to the manifest test.
+  *Status:* Open.
+
+- [ ] **R7 — minor.** *Where:* `docs/planning/changes/roym-value-exchange/change.md:733`
+  (`## Deviations`).
+  *Problem:* The plan's section 9 asks for a C3b1 line in this doc: VX-10
+  is met through the scheduling extension's hook, with no text change.
+  The branch changes only the extensions and agreements docs.
+  *Failure case:* the value-exchange doc does not say where VX-10 was
+  met, so its close-out has to find it again.
+  *Fix:* one line under `## Deviations` (or a note in the VX-10 row's
+  last column): the giver's node reserves through `reservation.reserve`
+  of the scheduling extension, also when it is not the quote author;
+  proved by `roym_booking_e2e` and `tests/accept.rs`.
+  *Status:* Open.
+
+- [ ] **R8 — minor.** *Where:* `docs/planning/milestones/M08C-deal-core-and-extensions/status.md:18`
+  (the C3b1 row, risk measure 2).
+  *Problem:* The row says "The service-list test (14 tests,
+  `services/tests.rs`) passed on today's six services in c49eb567". At
+  `c49eb567` the file has 13 `#[test]` functions; at `1a149df7` it has
+  15.
+  *Failure case:* the evidence does not match the code, so a reader
+  cannot trust the other counts of the row.
+  *Fix:* say 13 tests at `c49eb567`, and 15 now.
+  *Status:* Open.
+
+- [ ] **R9 — minor.** *Where:* `crates/roym_transaction/src/app/backup/reservations.rs:63`
+  to `:96`; `crates/roym_transaction/src/app/tests/hooks_fake.rs:80`.
+  *Problem:* `open_commitments` walks `reserved_by` and collects ids, and
+  `reserve_again` walks `reserved_by` again and keeps the commitments
+  whose id is in that list (`Vec::contains` in a loop). One walk that
+  returns `&Commitment` does the same. The fake's doc comment says
+  `install` registers "the four hooks, and `availability.get`", but it
+  registers only the four hooks.
+  *Failure case:* none at run time; the code is longer than it needs to
+  be, and the comment is false.
+  *Fix:* let `open_commitments` return `Vec<&Commitment>` and loop over
+  it; drop "and `availability.get`" from the comment.
+  *Status:* Open.
+
+**Open after code review round 1: 9** (1 blocker, 1 major, 7 minor).
