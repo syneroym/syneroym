@@ -20,16 +20,15 @@ use syneroym_roym_core::{
 
 use super::fixture;
 use crate::app::{
-    AGREEMENTS, AgreementRow, CARDS, CardRow, LEDGER,
+    AGREEMENTS, AgreementRow, CARDS, CardRow,
     agreement_ops::{self, AgreementAcceptInput, QuoteRecordInput},
     disclosures::{self, HeldQuote},
     get_row,
-    hold::{HoldLedgerRow, SeatLedgerRow, hold_id, seat_id},
     quote_ops::store_received_quote,
     sync::{self, SyncInput, receipts::file_progress_card},
 };
 
-fn slot_commitment(
+pub(super) fn slot_commitment(
     id: &str,
     listing_id: &str,
     start_secs: u64,
@@ -89,7 +88,7 @@ pub(super) fn author_service_commitment(id: &str) -> Commitment {
     }
 }
 
-fn build_and_sign_quote(
+pub(super) fn build_and_sign_quote(
     author: &Identity,
     counterparty_did: &str,
     commitments: Vec<Commitment>,
@@ -286,12 +285,8 @@ async fn repeated_accept_returns_the_same_half() {
     assert_eq!(out1.record_id, out2.record_id);
     assert_eq!(out1.pair, out2.pair);
 
-    let hold = get_row::<HoldLedgerRow, _>(&f.host, LEDGER, &hold_id(&record_id, "c1"))
-        .await
-        .expect("query ledger")
-        .expect("hold row exists");
-    assert_eq!(hold.seat, 1);
-    assert_eq!(hold.slot_id, slot_id);
+    assert!(f.scheduling.is_held(&record_id, "c1"));
+    assert_eq!(f.scheduling.held_seats(&slot_id), 1, "a repeat accept holds one seat");
 }
 
 #[tokio::test]
@@ -320,19 +315,9 @@ async fn counterparty_holds_its_own_seat_before_signing() {
     };
     agreement_ops::accept_at(&f.host, input, now).await.expect("accept holds seat and signs");
 
-    let hold = get_row::<HoldLedgerRow, _>(&f.host, LEDGER, &hold_id(&record_id, "c1"))
-        .await
-        .expect("query hold")
-        .expect("hold row must be recorded in ledger");
-    assert_eq!(hold.seat, 1);
-    assert_eq!(hold.slot_id, slot_id);
-
-    let seat = get_row::<SeatLedgerRow, _>(&f.host, LEDGER, &seat_id(&slot_id, 1))
-        .await
-        .expect("query seat")
-        .expect("seat row must be recorded in ledger");
-    assert_eq!(seat.agreement, record_id);
-    assert_eq!(seat.commitment_id, "c1");
+    assert!(f.scheduling.is_held(&record_id, "c1"), "the extension holds the seat");
+    assert_eq!(f.scheduling.held_seats(&slot_id), 1);
+    assert_eq!(f.scheduling.calls("reservation.reserve"), 1);
 }
 
 #[tokio::test]
@@ -342,15 +327,7 @@ async fn taken_seat_answers_reserve_failed_and_signs_nothing() {
     let author = Identity::generate().expect("generate author");
     let (c1, slot_id) = slot_commitment("c1", "listing_123", 1_000_000, 1_003_600);
 
-    let existing_seat = SeatLedgerRow {
-        kind: "seat".to_string(),
-        slot_id: slot_id.clone(),
-        seat: 1,
-        agreement: "agr_earlier_winner".to_string(),
-        commitment_id: "c1".to_string(),
-        created_at_secs: now - 100,
-    };
-    f.host.set_storage_row(LEDGER, &seat_id(&slot_id, 1), &existing_seat);
+    f.scheduling.take_seat(&slot_id, "agr_earlier_winner");
 
     let (quote, record_id, envelope_json) =
         build_and_sign_quote(&author, &f.master_did, vec![c1], now + 3600, now);
@@ -372,12 +349,10 @@ async fn taken_seat_answers_reserve_failed_and_signs_nothing() {
     let err = agreement_ops::accept_at(&f.host, input, now)
         .await
         .expect_err("taken seat must reject accept");
-    assert_eq!(err.error.as_ref().unwrap().message, "reserve-failed");
-
-    let hold = get_row::<HoldLedgerRow, _>(&f.host, LEDGER, &hold_id(&record_id, "c1"))
-        .await
-        .expect("query hold");
-    assert!(hold.is_none(), "no hold row should remain for failed reservation");
+    let error = err.error.as_ref().unwrap();
+    assert_eq!(error.message, "reserve-failed");
+    assert_eq!(error.data.as_ref().unwrap()["reason"], "slot-taken");
+    assert!(!f.scheduling.is_held(&record_id, "c1"), "nothing is held for a refused reserve");
 
     let agr = get_row::<AgreementRow, _>(&f.host, "agreements", &record_id)
         .await
@@ -412,12 +387,7 @@ async fn counterparty_releases_holds_on_not_formed_and_expiry() {
         viewed_via_mt: None,
     };
     agreement_ops::accept_at(&f.host, input1, now).await.expect("accept 1");
-    assert!(
-        get_row::<HoldLedgerRow, _>(&f.host, LEDGER, &hold_id(&rec_id1, "c1"))
-            .await
-            .unwrap()
-            .is_some()
-    );
+    assert!(f.scheduling.is_held(&rec_id1, "c1"));
 
     let (card_row, snap_env) = make_progress_card(
         &author,
@@ -434,14 +404,8 @@ async fn counterparty_releases_holds_on_not_formed_and_expiry() {
     assert!(res.filed, "file_progress_card failed: {res:?}");
     assert!(!res.refused, "file_progress_card was refused: {res:?}");
 
-    let hold1 = get_row::<HoldLedgerRow, _>(&f.host, LEDGER, &hold_id(&rec_id1, "c1"))
-        .await
-        .expect("query hold 1");
-    assert!(hold1.is_none(), "not-formed snapshot must release the hold");
-    let seat1 = get_row::<SeatLedgerRow, _>(&f.host, LEDGER, &seat_id(&slot_id1, 1))
-        .await
-        .expect("query seat 1");
-    assert!(seat1.is_none(), "not-formed snapshot must release the seat");
+    assert!(f.scheduling.is_released(&rec_id1, "c1"), "not-formed snapshot must release the hold");
+    assert_eq!(f.scheduling.held_seats(&slot_id1), 0, "not-formed snapshot must free the seat");
 
     // Part 2: Hold released on quote expiry
     let author2 = Identity::generate().expect("generate author 2");
@@ -467,14 +431,8 @@ async fn counterparty_releases_holds_on_not_formed_and_expiry() {
     let get_input = QuoteRecordInput { quote_record_id: rec_id2.clone() };
     agreement_ops::get_at(&f.host, get_input, now + 350).await.expect("get after expiry");
 
-    let hold2 = get_row::<HoldLedgerRow, _>(&f.host, LEDGER, &hold_id(&rec_id2, "c1"))
-        .await
-        .expect("query hold 2");
-    assert!(hold2.is_none(), "expired quote must release counterparty hold");
-    let seat2 = get_row::<SeatLedgerRow, _>(&f.host, LEDGER, &seat_id(&slot_id2, 1))
-        .await
-        .expect("query seat 2");
-    assert!(seat2.is_none(), "expired quote must release seat");
+    assert!(f.scheduling.is_released(&rec_id2, "c1"), "expired quote must release the hold");
+    assert_eq!(f.scheduling.held_seats(&slot_id2), 0, "expired quote must free the seat");
 }
 
 #[tokio::test]

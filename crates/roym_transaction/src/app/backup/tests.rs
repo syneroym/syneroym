@@ -26,7 +26,6 @@ use crate::app::{
     decide::{CountersignRow, DecisionRow, DecisionState, RefusedRow},
     decline_ops::DeclineRow,
     disclosures::DisclosureRow,
-    hold::{HoldLedgerRow, SeatLedgerRow},
     ledger::{LedgerKind, LedgerRow},
     tests::fixture,
 };
@@ -111,45 +110,61 @@ fn sample_quote_context(quote_rec_id: &str) -> QuotesByRecordId {
     quotes
 }
 
+fn released_row(agreement: &str) -> serde_json::Value {
+    json!({
+        "kind": "released",
+        "agreement": agreement,
+        "created_at_secs": 100,
+    })
+}
+
 #[test]
-fn hold_row_refused_on_unheld_agreement_or_unknown_commitment() {
+fn released_row_is_accepted_for_a_held_agreement() {
+    let quotes = sample_quote_context("quote_held");
+    let (rows, _) = validate_ledger(
+        vec![json!({ "id": "released:quote_held", "payload": released_row("quote_held") })],
+        &quotes,
+        &HashMap::new(),
+        &HashMap::new(),
+        100,
+    )
+    .expect("a released marker of a held agreement imports");
+    assert_eq!(rows.len(), 1);
+}
+
+#[test]
+fn released_row_refused_on_unheld_agreement_or_a_row_that_does_not_match_its_id() {
     let quotes = sample_quote_context("quote_held");
 
-    let bad_agr_row = HoldLedgerRow {
-        kind: "hold".to_string(),
-        slot_id: "slot_1".to_string(),
-        seat: 1,
-        agreement: "unheld_quote".to_string(),
-        commitment_id: "c1".to_string(),
-        created_at_secs: 100,
-    };
-    let res = validate_ledger(
-        vec![json!({ "id": "hold:unheld_quote:c1", "payload": bad_agr_row })],
+    let unheld = validate_ledger(
+        vec![json!({ "id": "released:unheld_quote", "payload": released_row("unheld_quote") })],
         &quotes,
         &HashMap::new(),
         &HashMap::new(),
         100,
     );
-    assert!(res.is_err());
-    assert!(res.unwrap_err().error.unwrap().message.contains("names unheld agreement"));
+    assert!(unheld.unwrap_err().error.unwrap().message.contains("names unheld agreement"));
 
-    let bad_cid_row = HoldLedgerRow {
-        kind: "hold".to_string(),
-        slot_id: "slot_1".to_string(),
-        seat: 1,
-        agreement: "quote_held".to_string(),
-        commitment_id: "c_unknown".to_string(),
-        created_at_secs: 100,
-    };
-    let res2 = validate_ledger(
-        vec![json!({ "id": "hold:quote_held:c_unknown", "payload": bad_cid_row })],
+    let mismatch = validate_ledger(
+        vec![json!({ "id": "released:quote_held", "payload": released_row("another") })],
         &quotes,
         &HashMap::new(),
         &HashMap::new(),
         100,
     );
-    assert!(res2.is_err());
-    assert!(res2.unwrap_err().error.unwrap().message.contains("unknown commitment id"));
+    assert!(mismatch.unwrap_err().error.unwrap().message.contains("does not match its id"));
+
+    let wrong_kind = validate_ledger(
+        vec![json!({
+            "id": "released:quote_held",
+            "payload": { "kind": "fence", "agreement": "quote_held", "created_at_secs": 100 },
+        })],
+        &quotes,
+        &HashMap::new(),
+        &HashMap::new(),
+        100,
+    );
+    assert!(wrong_kind.unwrap_err().error.unwrap().message.contains("does not match its id"));
 }
 
 #[test]
@@ -229,8 +244,6 @@ fn payreq_row_refused_on_non_currency_commitment() {
         state: None,
         quote_id: None,
         commitment_id: Some("c1".to_string()),
-        slot_id: None,
-        seat: None,
         reason: None,
         half: None,
         created_at_secs: 100,
@@ -258,8 +271,6 @@ fn fulfil_row_refused_on_currency_commitment() {
         state: None,
         quote_id: None,
         commitment_id: Some("c2".to_string()),
-        slot_id: None,
-        seat: None,
         reason: None,
         half: None,
         created_at_secs: 100,
@@ -282,26 +293,18 @@ fn fulfil_row_refused_on_currency_commitment() {
 }
 
 #[test]
-fn seat_row_refused_without_matching_active_hold() {
+fn hold_and_seat_rows_of_an_older_version_are_an_unknown_ledger_kind() {
     let quotes = sample_quote_context("quote_held");
-
-    let orphan_seat = SeatLedgerRow {
-        kind: "seat".to_string(),
-        slot_id: "slot_1".to_string(),
-        seat: 1,
-        agreement: "quote_held".to_string(),
-        commitment_id: "c1".to_string(),
-        created_at_secs: 100,
-    };
-    let res = validate_ledger(
-        vec![json!({ "id": "seat:slot_1:1", "payload": orphan_seat })],
-        &quotes,
-        &HashMap::new(),
-        &HashMap::new(),
-        100,
-    );
-    assert!(res.is_err());
-    assert!(res.unwrap_err().error.unwrap().message.contains("seat has no matching active hold"));
+    for id in ["hold:quote_held:c1", "seat:slot_1:1"] {
+        let res = validate_ledger(
+            vec![json!({ "id": id, "payload": { "kind": "hold", "agreement": "quote_held" } })],
+            &quotes,
+            &HashMap::new(),
+            &HashMap::new(),
+            100,
+        );
+        assert!(res.unwrap_err().error.unwrap().message.contains("unknown ledger kind"), "{id}");
+    }
 }
 
 #[test]

@@ -6,10 +6,13 @@ pub mod decide;
 pub mod decline;
 pub mod disclosure;
 pub mod extension;
+pub mod hooks;
+pub mod hooks_fake;
 pub mod present;
 pub mod recover;
 pub mod refuse;
 pub mod restore;
+pub mod restore_reservations;
 pub mod settle;
 pub mod step;
 pub mod step_backup;
@@ -18,11 +21,7 @@ pub mod time;
 
 use std::sync::Arc;
 
-use serde_json::json;
-use syneroym_app_host::types::{
-    proxy::ProxyError,
-    signing::{Principal, RecordDraft, SigningError, SigningIdentity},
-};
+use syneroym_app_host::types::signing::{Principal, RecordDraft, SigningError, SigningIdentity};
 use syneroym_identity::{Identity, substrate};
 use syneroym_roym_core::{
     clock,
@@ -36,6 +35,7 @@ use syneroym_roym_core::{
 
 pub struct TestFixture {
     pub host: TestHost,
+    pub(crate) scheduling: hooks_fake::FakeScheduling,
     pub master: Arc<Identity>,
     pub master_did: String,
     pub service_key: Arc<Identity>,
@@ -136,24 +136,9 @@ pub fn fixture_with_master(master: Arc<Identity>) -> TestFixture {
         sign_record(&key_clone, &master_did_clone, &service_did_clone, draft, principal, now_secs)
     });
 
-    // Default stub for catalog.availability.get
-    host.on_call("catalog", "availability.get", |params| {
-        let val: serde_json::Value =
-            serde_json::from_str(&params).map_err(|e| ProxyError::Transport(e.to_string()))?;
-        let slot_id = val.get("slot_id").and_then(|v| v.as_str()).unwrap_or("");
-        Ok(json!({
-            "slot_id": slot_id,
-            "listing_id": "listing_123",
-            "start_secs": 1_000_000,
-            "end_secs": 1_003_600,
-            "capacity": 1,
-            "created_at_secs": 900_000,
-            "updated_at_secs": 900_000
-        })
-        .to_string())
-    });
+    let scheduling = hooks_fake::FakeScheduling::install(&host);
 
-    TestFixture { host, master, master_did, service_key, service_did, cert_json }
+    TestFixture { host, scheduling, master, master_did, service_key, service_did, cert_json }
 }
 
 #[test]

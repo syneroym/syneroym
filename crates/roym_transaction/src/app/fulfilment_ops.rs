@@ -424,8 +424,6 @@ pub(crate) async fn claim_fulfilment_fence<H: AppHost>(
         state: None,
         quote_id: None,
         commitment_id: Some(commitment_id.to_string()),
-        slot_id: None,
-        seat: None,
         reason: None,
         half: Some(half.clone()),
         created_at_secs: now,

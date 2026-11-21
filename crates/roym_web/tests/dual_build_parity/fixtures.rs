@@ -130,10 +130,10 @@ pub(crate) fn full_listing_params(slug: &str, title: &str) -> Value {
 /// others report 1.
 pub(crate) fn expected_schema_version(service: &str) -> u32 {
     match service {
-        "transaction" => 6,
+        "transaction" => 7,
         "directory" => 6,
         "conversation" => 4,
-        "catalog" => 4,
+        "catalog" => 5,
         "profile" => 2,
         _ => 1,
     }
@@ -393,18 +393,19 @@ pub(crate) fn env(method: &str, params: Value) -> Value {
     json!({ "method": method, "params": params })
 }
 
-/// One representative verb each of the six services owns. `require_internal`
+/// One representative verb each of the seven services owns. `require_internal`
 /// is the first statement of every `invoke`, so the verb only has to be a
 /// string the service would otherwise route -- the refusal happens before
 /// dispatch. Deleting `require_internal` from any one service's `invoke`
 /// fails here rather than staying green (scenario 71 only proves
 /// `api.status` is *not* refused).
-pub(crate) const WIRE_REFUSED_VERBS: [(services::Service, &str); 6] = [
+pub(crate) const WIRE_REFUSED_VERBS: [(services::Service, &str); 7] = [
     (services::WEB, "session.whoami"),
     (services::CONVERSATION, "conversation.history"),
     (services::PROFILE, "profile.get"),
     (services::CATALOG, "listing.get"),
     (services::TRANSACTION, "enquiry.ping"),
+    (services::SCHEDULING, "scheduling.ping"),
     (services::DIRECTORY, "directory.ping"),
 ];
 

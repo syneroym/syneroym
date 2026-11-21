@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use syneroym_app_host::{AppDataLayer, AppHost, types::data_layer::RecordWriteValue};
 use syneroym_roym_core::{
     clock,
-    deal::{DealTerms, ResourceKind, transition::track_end},
+    deal::{DealTerms, transition::track_end},
     envelope::Response,
     method::Reply,
     paging,
@@ -23,7 +23,7 @@ use super::{
     agreement_ops::AgreementView,
     decide::{SnapshotRow, snapshot_id},
     get_row,
-    hold::{Reservations, SeatLedger},
+    hooks::{self, ExtensionHooks},
     progress, put_row, send_card_and_file,
 };
 
@@ -102,11 +102,8 @@ async fn finalize_snapshot<H: AppHost>(
 ) -> Reply<AgreementRow> {
     let next_snap_key = snapshot_id(agreement, snap_row.seq);
     if snap_row.snapshot.state == AgreementState::Cancelled {
-        for c in &row.terms.commitments {
-            if c.giver == DealRole::QuoteAuthor && c.resource_kind == ResourceKind::ServiceInSlot {
-                let _ = SeatLedger.release(host, agreement, &c.commitment_id).await;
-            }
-        }
+        hooks::release_own(host, &ExtensionHooks, agreement, &row.terms, DealRole::QuoteAuthor)
+            .await;
     }
 
     let card = OutgoingCard {
@@ -343,15 +340,7 @@ pub(crate) async fn tick_conversation_at<H: AppHost>(
             && row.quote_author.is_none()
             && now >= row.terms.quote_expires_at_secs
         {
-            let reservations = SeatLedger;
-            for c in &row.terms.commitments {
-                if c.giver == DealRole::Counterparty
-                    && c.resource_kind == ResourceKind::ServiceInSlot
-                {
-                    let _ =
-                        reservations.release(host, &row.quote_record_id, &c.commitment_id).await;
-                }
-            }
+            hooks::release_after_quote_expiry(host, &ExtensionHooks, row, now).await;
         }
     }
     Ok(())

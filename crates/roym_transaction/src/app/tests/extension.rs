@@ -7,12 +7,16 @@ use syneroym_identity::{Identity, substrate};
 use syneroym_roym_core::{
     card::{self, CARD_CONTENT_TYPE},
     clock,
-    deal::{Commitment, Details, ExtensionRef, SettlementRole, transition::CommitmentState},
+    deal::{
+        Commitment, Details, ExtensionRef, ResourceKind, SettlementRole,
+        transition::CommitmentState,
+    },
     fulfilment::FULFILMENT_RECEIPT_VERSION,
+    listing::derive_slot_id,
     progress::AgreementState,
     record::{RECORD_FULFILMENT_RECEIPT, RECORD_QUOTE},
     testing::sd::{PlainFulfilment, conceal_fulfilment},
-    transaction::{DealRole, QUOTE_VERSION},
+    transaction::{DealRole, QUOTE_VERSION, TimeWindow},
 };
 
 use super::{
@@ -178,19 +182,18 @@ async fn accept_refuses_when_this_node_gives_an_unknown_extension() {
     assert!(row.is_none_or(|r| r.counterparty.is_none()), "nothing was signed");
 }
 
-#[tokio::test]
-async fn one_shot_commitment_settles_like_today() {
+/// A deal whose `c1` is `goods`, given by the node under test and paid for in
+/// `c2`: the payment is acknowledged, the giver fulfils and the receiver
+/// confirms. Answers the states the agreement ends in.
+async fn settled_states(goods: Commitment) -> (CommitmentState, AgreementState) {
     let fix = fixture();
     let counterparty = Identity::generate().expect("generate counterparty");
     let cp_did = substrate::derive_did_key(&counterparty.public_key());
     let agreed_at = clock::now_secs();
-    let goods =
-        with_extension(make_service_commitment("c1"), "one-shot", one_shot_details(json!({})));
     let payment = make_currency_commitment("c2", &fix.master_did);
     let (agreement, terms) =
         setup_agreed_deal(&fix, &counterparty, vec![goods, payment], agreed_at).await;
-    terms.validate().expect("the one-shot deal is valid");
-
+    terms.validate().expect("the deal is valid");
     payment_ops::acknowledge(
         &fix.host,
         PaymentAckInput {
@@ -262,6 +265,36 @@ async fn one_shot_commitment_settles_like_today() {
         .await
         .expect("progress");
     let snapshot = &progress.snapshots[0].snapshot;
-    assert_eq!(snapshot.commitments[0].state, CommitmentState::Fulfilled);
-    assert_eq!(snapshot.state, AgreementState::Closed);
+    (snapshot.commitments[0].state, snapshot.state)
+}
+
+#[tokio::test]
+async fn one_shot_commitment_settles_like_today() {
+    let goods =
+        with_extension(make_service_commitment("c1"), "one-shot", one_shot_details(json!({})));
+    let (commitment, agreement) = settled_states(goods).await;
+    assert_eq!(commitment, CommitmentState::Fulfilled);
+    assert_eq!(agreement, AgreementState::Closed);
+}
+
+#[tokio::test]
+async fn scheduling_and_one_shot_pass_the_same_states() {
+    let one_shot =
+        with_extension(make_service_commitment("c1"), "one-shot", one_shot_details(json!({})));
+    let mut slot = make_service_commitment("c1");
+    let (start, end) = (clock::now_secs() + 1000, clock::now_secs() + 4600);
+    let slot_id = derive_slot_id("listing_1", start, end).expect("slot id");
+    slot.resource_kind = ResourceKind::ServiceInSlot;
+    slot.window = Some(TimeWindow { earliest_secs: start, latest_secs: end });
+    let slot = with_extension(
+        slot,
+        "scheduling",
+        Details {
+            extension: "scheduling".to_string(),
+            schema: "scheduling/slot@1".to_string(),
+            data: json!({ "listing_id": "listing_1", "slot_id": slot_id }),
+            extra: vec![],
+        },
+    );
+    assert_eq!(settled_states(slot).await, settled_states(one_shot).await);
 }

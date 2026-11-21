@@ -8,9 +8,9 @@ use syneroym_roym_core::transaction::ReceiptHalf;
 pub(crate) enum LedgerKind {
     Decision,
     Countersign,
-    Hold,
-    Seat,
     Fence,
+    /// The counterparty released its reservations after the quote expired.
+    Released,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -23,10 +23,6 @@ pub(crate) struct LedgerRow {
     pub(crate) quote_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) commitment_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) slot_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) seat: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

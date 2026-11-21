@@ -27,9 +27,7 @@ use crate::app::{
         decision_id, refused_id, snapshot_id,
     },
     disclosures::{self, HeldQuote},
-    get_row,
-    hold::{HoldLedgerRow, hold_id},
-    put_bytes, put_row,
+    get_row, put_bytes, put_row,
     quote_ops::store_received_quote,
     sync::{self, SyncInput, receipts::file_progress_card},
     tests::{TestFixture, fixture},
@@ -387,11 +385,7 @@ async fn counterparty_releases_holds_on_refusal_snapshot() {
     .await
     .expect("accept");
 
-    // Verify hold exists
-    let h_key = hold_id(&q_rec_id, "c1");
-    let hold_before: Option<HoldLedgerRow> =
-        get_row(&fix.host, LEDGER, &h_key).await.expect("get hold");
-    assert!(hold_before.is_some(), "hold must be active after accept");
+    assert!(fix.scheduling.is_held(&q_rec_id, "c1"), "hold must be active after accept");
 
     // Author sends not-formed refusal snapshot with reason quote-superseded
     let snap_json = make_signed_refusal_snapshot(
@@ -442,9 +436,10 @@ async fn counterparty_releases_holds_on_refusal_snapshot() {
     assert!(res.filed);
 
     // Verify hold is released
-    let hold_after: Option<HoldLedgerRow> =
-        get_row(&fix.host, LEDGER, &h_key).await.expect("get hold after");
-    assert!(hold_after.is_none(), "not-formed refusal must release the hold");
+    assert!(
+        fix.scheduling.is_released(&q_rec_id, "c1"),
+        "not-formed refusal must release the hold"
+    );
 
     let agr: AgreementRow =
         get_row(&fix.host, AGREEMENTS, &q_rec_id).await.expect("get agr").expect("agr exists");

@@ -1,6 +1,7 @@
 //! Transaction data backup: export and import.
 
 pub(crate) mod disclosures;
+pub(crate) mod reservations;
 pub(crate) mod sections;
 pub(crate) mod steps;
 #[cfg(test)]
@@ -35,6 +36,11 @@ use super::{
 #[derive(Debug, Serialize)]
 pub struct TransactionImportOutput {
     pub imported: bool,
+    /// Reservations of restored agreements that this node took again.
+    pub reservations_restored: u32,
+    /// Reservations it could not take again. The scheduling bundle must be
+    /// imported first, and this one again.
+    pub reservations_failed: Vec<reservations::ReservationFailure>,
 }
 
 /// Exports transaction data: requests, quotes, agreements, cards, and history.
@@ -170,7 +176,12 @@ pub(crate) async fn import<H: AppHost>(
     )
     .await?;
 
-    Ok(TransactionImportOutput { imported: true })
+    let restored = reservations::reserve_again(host, &verified_agreements, &owner, now).await;
+    Ok(TransactionImportOutput {
+        imported: true,
+        reservations_restored: restored.restored,
+        reservations_failed: restored.failed,
+    })
 }
 
 fn validate_bundle_header(bundle: &Bundle, owner: &str, now: u64) -> Result<(), Response> {

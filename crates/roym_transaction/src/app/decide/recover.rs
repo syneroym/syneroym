@@ -3,7 +3,6 @@
 use syneroym_app_host::AppHost;
 use syneroym_roym_core::{
     card::{self, CARD_CONTENT_TYPE},
-    deal::ResourceKind,
     method::{
         call_sibling,
         conversation::{ChangesInput, ChangesOutput},
@@ -22,7 +21,7 @@ use super::{
 };
 use crate::app::{
     disclosures::{self, LoadQuoteError},
-    hold::{Reservations, SeatLedger},
+    hooks::{self, ExtensionHooks, Reservations},
 };
 
 pub(crate) async fn release_all_author_holds<H: AppHost, R: Reservations>(
@@ -30,11 +29,8 @@ pub(crate) async fn release_all_author_holds<H: AppHost, R: Reservations>(
     row: &AgreementRow,
     reservations: &R,
 ) {
-    for c in &row.terms.commitments {
-        if c.giver == DealRole::QuoteAuthor && c.resource_kind == ResourceKind::ServiceInSlot {
-            let _ = reservations.release(host, &row.quote_record_id, &c.commitment_id).await;
-        }
-    }
+    hooks::release_own(host, reservations, &row.quote_record_id, &row.terms, DealRole::QuoteAuthor)
+        .await;
 }
 
 pub(crate) async fn repeat_not_formed<H: AppHost, R: Reservations>(
@@ -176,15 +172,15 @@ pub(crate) async fn finish_deciding_row_with_reservations<H: AppHost, R: Reserva
         _ => {}
     }
 
-    let (reserved, failed) = reserve_author_holds(host, &row, &reservations, now).await?;
+    let (reserved, failed) = reserve_author_holds(host, &row, &reservations).await?;
     if let Some(reason) = failed {
-        return handle_not_formed(host, &mut row, &reservations, &reserved, reason, now).await;
+        return handle_not_formed(host, &mut row, &reservations, &reserved, &reason, now).await;
     }
 
-    for cid in &reserved {
-        if let Err(reason) = reservations.confirm(host, &row.quote_record_id, cid).await {
-            return handle_not_formed(host, &mut row, &reservations, &reserved, &reason, now).await;
-        }
+    if let Some(reason) =
+        hooks::confirm_each(host, &reservations, &row.quote_record_id, &reserved).await?
+    {
+        return handle_not_formed(host, &mut row, &reservations, &reserved, &reason, now).await;
     }
 
     finalize_agreed_deal(host, &mut row, &held.signed.terms, &held.disclosures, now).await
@@ -195,7 +191,7 @@ pub(crate) async fn finish_deciding_row<H: AppHost>(
     quote_id: &str,
     now: u64,
 ) -> Result<bool, String> {
-    finish_deciding_row_with_reservations(host, quote_id, SeatLedger, now).await
+    finish_deciding_row_with_reservations(host, quote_id, ExtensionHooks, now).await
 }
 
 pub(crate) async fn recover_deciding_rows<H: AppHost>(host: &H, now: u64) -> Result<(), String> {

@@ -30,9 +30,7 @@ use crate::app::{
         snapshot_id,
     },
     disclosures::HeldQuote,
-    get_row,
-    hold::{HoldLedgerRow, Reservations, SeatLedger, SeatLedgerRow, hold_id, seat_id},
-    progress_ops, put_row,
+    get_row, progress_ops, put_row,
 };
 
 fn author_service_commitment(id: &str) -> Commitment {
@@ -296,11 +294,7 @@ async fn losing_the_last_seat_ends_not_formed() {
         make_counterparty_receipt(&cp, &f.master_did, &quote_rec_id, &quote.signed.terms, now);
 
     // Take the seat beforehand so capacity 1 is exhausted
-    SeatLedger
-        .reserve(&f.host, "other_agreement", "c1", &slot_id, now)
-        .await
-        .expect("reserve initial seat");
-    SeatLedger.confirm(&f.host, "other_agreement", "c1").await.expect("confirm initial seat");
+    f.scheduling.take_seat(&slot_id, "other_agreement");
 
     let mut row = unformed_agreement_row(
         &quote_rec_id,
@@ -396,29 +390,6 @@ async fn send_error_stops_decision_row_and_retries_on_next_sync() {
         DecisionState::Deciding,
         "lasting refusal must leave decision row deciding"
     );
-}
-
-#[tokio::test]
-async fn release_both_seat_and_hold_in_one_batch() {
-    let f = fixture();
-    let now = f.host.now();
-
-    SeatLedger.reserve(&f.host, "agr_batch", "c1", "slot_batch", now).await.expect("reserve");
-
-    let h_key = hold_id("agr_batch", "c1");
-    let s_key = seat_id("slot_batch", 1);
-
-    let h: Option<HoldLedgerRow> = get_row(&f.host, LEDGER, &h_key).await.expect("get hold");
-    let s: Option<SeatLedgerRow> = get_row(&f.host, LEDGER, &s_key).await.expect("get seat");
-    assert!(h.is_some());
-    assert!(s.is_some());
-
-    SeatLedger.release(&f.host, "agr_batch", "c1").await.expect("release");
-
-    let h_after: Option<HoldLedgerRow> = get_row(&f.host, LEDGER, &h_key).await.expect("get hold");
-    let s_after: Option<SeatLedgerRow> = get_row(&f.host, LEDGER, &s_key).await.expect("get seat");
-    assert!(h_after.is_none(), "hold row must be released");
-    assert!(s_after.is_none(), "seat row must be released");
 }
 
 #[tokio::test]

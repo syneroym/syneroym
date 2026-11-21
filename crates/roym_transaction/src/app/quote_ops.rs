@@ -8,7 +8,6 @@ use std::cmp::Reverse;
 
 pub use input::{CommitmentInput, DealTermsInput};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use syneroym_app_host::{
     AppHost, AppSigning,
     types::signing::{Principal, RecordDraft},
@@ -17,28 +16,24 @@ use syneroym_roym_core::{
     card::{MAILBOX_CARD_BODY_BYTES, card_body_upper_bound},
     clock,
     deal::{
-        DealTerms, ResourceKind,
+        DealTerms,
         sd::{ConcealedTerms, reveal_terms_strict},
     },
     disclosure::{MAX_DETAILS_DISCLOSURE_BYTES, MAX_RECORD_DISCLOSURE_BYTES, Salt},
     envelope::Response,
-    method::{
-        self, DisclosedVerdict, DisclosedVerifyInput, Reply, SiblingError, call_sibling,
-        scheduling::{SlotKeyInput, SlotRow},
-    },
+    method::{self, DisclosedVerdict, DisclosedVerifyInput, Reply},
     paging,
     record::{Envelope, RECORD_QUOTE},
-    services,
     transaction::{
         self, Answers, DealRole, EnquiryPayload, MAX_QUOTE_LIFETIME_SECS, MIN_QUOTE_LIFETIME_SECS,
-        QUOTE_VERSION, QuotePayload, RecordVerdict, TimeWindow,
+        QUOTE_VERSION, QuotePayload, RecordVerdict,
     },
 };
 
 use super::{
     ENQUIRY_HISTORY, ListInput, OutgoingCard, QUOTE_HISTORY, QUOTES, RecordPointerRow, SendState,
     conversation_mine_filter, count_mine, decline_ops, disclosures, ensure_collections,
-    extension_rules, get_bytes, get_row, is_deal_ended, put_bytes, put_row,
+    extension_rules, get_bytes, get_row, hooks, is_deal_ended, put_bytes, put_row,
     resolve_principal_and_owner, send_card_and_file,
 };
 
@@ -147,9 +142,10 @@ pub(crate) async fn prepare_terms<H: AppHost>(
     expires_at_secs: u64,
 ) -> Result<DealTerms, Response> {
     let mut terms_input = input.clone();
+    let listing_id = terms_input.listing_id.clone();
     for c in &mut terms_input.commitments {
-        if c.giver == DealRole::QuoteAuthor && c.resource_kind == ResourceKind::ServiceInSlot {
-            validate_and_apply_slot(host, c, terms_input.listing_id.as_deref()).await?;
+        if c.giver == DealRole::QuoteAuthor && hooks::has_prepare_hook(c.extension.as_ref()) {
+            c.window = Some(hooks::prepare(host, c, listing_id.as_deref()).await?);
         }
     }
     Ok(terms_input.into_deal_terms(expires_at_secs))
@@ -414,58 +410,6 @@ async fn resolve_quote_sequence<H: AppHost>(
         };
         Ok((count + 1, None, 1))
     }
-}
-
-async fn validate_and_apply_slot<H: AppHost>(
-    host: &H,
-    c: &mut CommitmentInput,
-    terms_listing_id: Option<&str>,
-) -> Result<(), Response> {
-    let details = c
-        .details
-        .as_ref()
-        .ok_or_else(|| Response::invalid_params("service-in-slot commitment requires details"))?;
-    let slot_id = details
-        .data
-        .get("slot_id")
-        .and_then(Value::as_str)
-        .ok_or_else(|| Response::invalid_params("details.data requires slot_id"))?;
-    let detail_listing = details.data.get("listing_id").and_then(Value::as_str);
-    let listing_id = match (terms_listing_id, detail_listing) {
-        (Some(tl), Some(dl)) if tl != dl => {
-            return Err(Response::invalid_params("slot-not-in-listing"));
-        }
-        (Some(tl), _) => tl,
-        (None, Some(dl)) => dl,
-        (None, None) => return Err(Response::invalid_params("slot requires listing_id")),
-    };
-
-    let slot = match call_sibling::<_, SlotKeyInput, Option<SlotRow>>(
-        host,
-        services::CATALOG,
-        "availability.get",
-        &SlotKeyInput { slot_id: slot_id.to_string() },
-    )
-    .await
-    {
-        Ok(Some(s)) => s,
-        Ok(None) | Err(SiblingError::Refused(_) | SiblingError::BadReply(_)) => {
-            return Err(Response::invalid_params("no-such-slot"));
-        }
-        Err(SiblingError::Transport(e)) => return Err(Response::internal_error(e)),
-    };
-    if slot.listing_id != listing_id {
-        return Err(Response::invalid_params("slot-not-in-listing"));
-    }
-    let start_secs = slot.start_secs;
-    let end_secs = slot.end_secs;
-    if let Some(ref sched) = c.window
-        && (sched.earliest_secs != start_secs || sched.latest_secs != end_secs)
-    {
-        return Err(Response::invalid_params("schedule-differs-from-slot"));
-    }
-    c.window = Some(TimeWindow { earliest_secs: start_secs, latest_secs: end_secs });
-    Ok(())
 }
 
 /// A freshly signed quote envelope, plus the identifiers callers need to
