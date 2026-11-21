@@ -3,6 +3,8 @@
 pub mod accept;
 pub mod cancel;
 pub mod commitment_failure;
+pub mod commitment_failure_backup;
+pub mod commitment_failure_writer;
 pub mod decide;
 pub mod decline;
 pub mod disclosure;

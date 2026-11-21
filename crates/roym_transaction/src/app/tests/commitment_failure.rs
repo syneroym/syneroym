@@ -274,3 +274,110 @@ async fn sync_runs_the_confirm_pass_and_reports_unsent_failures() {
     assert!(failure_row(&deal).await.is_some());
     assert!(kept.lock().unwrap().is_empty());
 }
+
+mod snapshot {
+    use syneroym_identity::{Identity, substrate};
+    use syneroym_roym_core::{
+        deal::{DealTerms, transition::CommitmentState},
+        progress::{
+            self, AGREEMENT_PROGRESS_VERSION, AgreementProgressPayload, AgreementState,
+            RECORD_AGREEMENT_PROGRESS,
+        },
+        record::{Envelope, RECORD_QUOTE, RecordDraft},
+        transaction::verify_quote,
+    };
+
+    use super::super::{
+        accept::{build_and_sign_quote, slot_commitment},
+        fixture,
+        settle::incoming_card_row,
+    };
+    use crate::app::{
+        agreement_ops::{self, AgreementAcceptInput},
+        disclosures,
+        quote_ops::store_received_quote,
+        sync::receipts::file_progress_card,
+    };
+
+    fn signed(author: &Identity, payload: &AgreementProgressPayload, now: u64) -> String {
+        let did = substrate::derive_did_key(&author.public_key());
+        let draft = RecordDraft {
+            version: AGREEMENT_PROGRESS_VERSION,
+            record_type: RECORD_AGREEMENT_PROGRESS.to_string(),
+            subject: payload.agreement.clone(),
+            payload: serde_json::to_value(payload).expect("serialize payload"),
+            expires_at_secs: None,
+            supersedes: None,
+        };
+        let (mut env, bytes) = Envelope::unsigned(draft, did, None, now).expect("draft progress");
+        env.attach_signature(z32::encode(&author.sign(&bytes).to_bytes())).unwrap();
+        env.to_json().unwrap()
+    }
+
+    async fn file(
+        f: &super::super::TestFixture,
+        author: &Identity,
+        payload: &AgreementProgressPayload,
+        msg: &str,
+        now: u64,
+    ) {
+        let did = substrate::derive_did_key(&author.public_key());
+        let row = incoming_card_row(msg, "conv_1", RECORD_AGREEMENT_PROGRESS, 1, &did, now);
+        let res = file_progress_card(
+            &f.host,
+            row,
+            &signed(author, payload, now),
+            &[],
+            "conv_1",
+            now,
+            &f.master_did,
+        )
+        .await
+        .expect("file progress card");
+        assert!(res.filed && !res.refused, "{res:?}");
+    }
+
+    #[tokio::test]
+    async fn the_counterparty_releases_its_failed_commitment_when_it_files_the_snapshot() {
+        let f = fixture();
+        let now = f.host.now();
+        let author = Identity::generate().expect("generate author");
+        let author_did = substrate::derive_did_key(&author.public_key());
+        let (c1, _) = slot_commitment("c1", "listing_123", 1_000_000, 1_003_600);
+        let (quote, rec_id, env) =
+            build_and_sign_quote(&author, &f.master_did, vec![c1], now + 3600, now);
+        let verdict = verify_quote(&env, now);
+        store_received_quote(&f.host, &env, &verdict, &quote.signed, now, &f.master_did)
+            .await
+            .expect("store quote");
+        disclosures::store(&f.host, &rec_id, RECORD_QUOTE, &quote.disclosures, now)
+            .await
+            .expect("store disclosures");
+        let accept = AgreementAcceptInput {
+            quote_record_id: rec_id.clone(),
+            viewed_lang: None,
+            viewed_via_mt: None,
+        };
+        agreement_ops::accept_at(&f.host, accept, now).await.expect("accept");
+        assert!(f.scheduling.is_held(&rec_id, "c1"));
+
+        let terms: &DealTerms = &quote.terms;
+        let mut snap = progress::open(
+            rec_id.clone(),
+            "conv_1".to_string(),
+            f.master_did.clone(),
+            author_did,
+            terms,
+            None,
+        );
+        file(&f, &author, &snap, "msg_p1", now + 10).await;
+        assert!(f.scheduling.is_held(&rec_id, "c1"), "an agreed snapshot releases nothing");
+
+        snap.seq = 2;
+        snap.commitments[0].state = CommitmentState::Failed;
+        snap.commitments[0].reason = Some("reservation-lost".to_string());
+        snap.state = AgreementState::Closed;
+        file(&f, &author, &snap, "msg_p2", now + 20).await;
+        assert!(f.scheduling.is_released(&rec_id, "c1"), "the failed commitment is released");
+    }
+}

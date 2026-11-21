@@ -23,7 +23,7 @@ use super::{
     agreement_ops::AgreementView,
     decide::{SnapshotRow, snapshot_id},
     get_row,
-    hooks::{self, ExtensionHooks},
+    hooks::{self, Ended, ExtensionHooks},
     progress, put_row, send_card_and_file,
 };
 
@@ -101,10 +101,6 @@ async fn finalize_snapshot<H: AppHost>(
     now: u64,
 ) -> Reply<AgreementRow> {
     let next_snap_key = snapshot_id(agreement, snap_row.seq);
-    if snap_row.snapshot.state == AgreementState::Cancelled {
-        hooks::release_own(host, &ExtensionHooks, agreement, &row.terms, DealRole::QuoteAuthor)
-            .await;
-    }
 
     let card = OutgoingCard {
         card_type: RECORD_AGREEMENT_PROGRESS,
@@ -129,6 +125,10 @@ async fn finalize_snapshot<H: AppHost>(
     if let Err(e) = put_row(host, AGREEMENTS, agreement, row).await {
         return Err(Response::internal_error(e));
     }
+
+    let ended =
+        Ended { state: snap_row.snapshot.state, commitments: &snap_row.snapshot.commitments };
+    hooks::release_ended(host, &ExtensionHooks, row, DealRole::QuoteAuthor, ended, now).await;
 
     let _ = host
         .record_event(
@@ -342,6 +342,7 @@ pub(crate) async fn tick_conversation_at<H: AppHost>(
         {
             hooks::release_after_quote_expiry(host, &ExtensionHooks, row, now).await;
         }
+        hooks::release_ended_of_row(host, &ExtensionHooks, row, &owner, now).await;
     }
     Ok(())
 }

@@ -2,6 +2,7 @@
 
 pub(crate) mod confirm;
 pub(crate) mod decline;
+pub(crate) mod failure;
 pub(crate) mod receipts;
 pub(crate) mod settle_receipts;
 pub(crate) mod steps;
@@ -373,6 +374,21 @@ async fn dispatch_known_card<H: AppHost>(
             )
             .await
         }
+        _ => dispatch_later_card(host, row, card, conversation, now, owner).await,
+    }
+}
+
+/// The cards that follow an agreement: steps, declines and commitment
+/// failures.
+async fn dispatch_later_card<H: AppHost>(
+    host: &H,
+    row: CardRow,
+    card: &card::Card,
+    conversation: &str,
+    now: u64,
+    owner: &str,
+) -> Result<FileCardResult, String> {
+    match card.card_type.as_str() {
         "step" => {
             steps::file_step_card(host, row, &card.envelope, &card.disclosures, conversation, now)
                 .await
@@ -385,6 +401,18 @@ async fn dispatch_known_card<H: AppHost>(
                 &card.disclosures,
                 conversation,
                 now,
+            )
+            .await
+        }
+        "commitment-failure" => {
+            failure::file_commitment_failure_card(
+                host,
+                row,
+                &card.envelope,
+                &card.disclosures,
+                conversation,
+                now,
+                owner,
             )
             .await
         }
