@@ -6,7 +6,7 @@ use std::{
     pin::pin,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     task::{Context, Poll, Waker},
 };
@@ -29,10 +29,11 @@ use super::{
     TestFixture, fixture,
     refuse::helpers::slot_commitment,
     settle::{make_currency_commitment, make_service_commitment, setup_agreed_deal},
+    sign_record,
 };
 use crate::app::{
     AGREEMENTS, AgreementRow, CARDS, CardRow, STEPS, SendState, disclosures, get_row, put_row,
-    step_ops::{self, StepAddInput},
+    step_ops::{self, StepAddInput, StepRow},
 };
 
 pub(super) struct StepDeal {
@@ -131,6 +132,24 @@ pub(super) fn started(agreement: &str) -> StepAddInput {
         commitment_id: "c1".to_string(),
         step_type: "scheduling/started".to_string(),
         data: json!({}),
+    }
+}
+
+/// A stored step row of the deal's `c1`, as the giver of `c1` writes it.
+pub(super) fn step_row(deal: &StepDeal, record_id: &str, state: SendState) -> StepRow {
+    StepRow {
+        agreement: deal.agreement.clone(),
+        commitment_id: "c1".to_string(),
+        conversation: "conv_1".to_string(),
+        step_type: "scheduling/started".to_string(),
+        role: SettlementRole::Giver,
+        half: ReceiptHalf {
+            record_id: record_id.to_string(),
+            envelope: String::new(),
+            issuer: deal.fix.master_did.clone(),
+            issued_at_secs: deal.agreed_at + 12,
+        },
+        state,
     }
 }
 
@@ -236,7 +255,7 @@ fn block_on<F: Future>(fut: F) -> F::Output {
 }
 
 #[tokio::test]
-async fn concurrent_add_sends_only_one_card_and_leaves_no_orphan_disclosures() {
+async fn a_repeat_during_the_send_sends_no_second_card() {
     let deal = slot_deal(DealRole::QuoteAuthor).await;
     let host = deal.fix.host.clone();
     let agr = deal.agreement.clone();
@@ -268,6 +287,44 @@ async fn concurrent_add_sends_only_one_card_and_leaves_no_orphan_disclosures() {
     assert_eq!(second.record_id, first.record_id);
     assert_eq!(second.state, SendState::AlreadyRecorded);
     assert_eq!(second.message_id, None);
+}
+
+#[tokio::test]
+async fn losing_the_race_to_store_the_row_sends_no_card_and_drops_the_disclosure() {
+    let deal = slot_deal(DealRole::QuoteAuthor).await;
+    let key = step_ops::step_id(&deal.agreement, "c1", "scheduling/started", SettlementRole::Giver);
+    let winner = step_row(&deal, "rec_winner", SendState::Pending);
+    let loser_id = Arc::new(Mutex::new(None));
+
+    // The other call writes its row after this one has loaded and signed.
+    let host = deal.fix.host.clone();
+    let signed_id = Arc::clone(&loser_id);
+    let service_key = Arc::clone(&deal.fix.service_key);
+    let (master_did, service_did) = (deal.fix.master_did.clone(), deal.fix.service_did.clone());
+    deal.fix.host.set_record_signer(move |draft, principal, now| {
+        host.set_storage_row(STEPS, &key, &winner);
+        let signed = sign_record(&service_key, &master_did, &service_did, draft, principal, now)?;
+        let env = Envelope::from_json(&signed).expect("signed envelope");
+        *signed_id.lock().unwrap() = Some(env.record_id().expect("record id"));
+        Ok(signed)
+    });
+    let sends = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&sends);
+    deal.fix.host.on_call("conversation", "send", move |_| {
+        counted.fetch_add(1, Ordering::SeqCst);
+        Err(ProxyError::Transport("no send expected".to_string()))
+    });
+
+    let out = step_ops::add_at(&deal.fix.host, started(&deal.agreement), deal.agreed_at + 10)
+        .await
+        .expect("the lost race is not an error");
+    assert_eq!(out.state, SendState::AlreadyRecorded);
+    assert_eq!(out.record_id, "rec_winner");
+    assert_eq!(out.message_id, None);
+    assert_eq!(sends.load(Ordering::SeqCst), 0, "the loser sends no card");
+    let loser = loser_id.lock().unwrap().take().expect("this call signed a record");
+    assert_ne!(loser, "rec_winner");
+    assert!(disclosures::load(&deal.fix.host, &loser).await.unwrap().is_none());
 }
 
 #[tokio::test]

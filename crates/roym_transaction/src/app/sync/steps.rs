@@ -165,7 +165,7 @@ pub(crate) async fn file_step_card_in<H: AppHost>(
     })
 }
 
-enum Stored {
+pub(crate) enum Stored {
     New,
     Repeat,
     Refused(&'static str),
@@ -194,7 +194,17 @@ async fn store_step<H: AppHost>(
         return Ok(Stored::Refused("too-many-steps"));
     }
     disclosures::store(host, &stored.half.record_id, RECORD_STEP, disclosures, now).await?;
-    match step_ops::claim_step_row(host, &key, &stored).await? {
+    claim_received_row(host, &key, &stored).await
+}
+
+/// Writes the row of a received step, whose disclosure is already stored. If
+/// a different record won the key in the meantime, the disclosure is deleted.
+pub(crate) async fn claim_received_row<H: AppHost>(
+    host: &H,
+    key: &str,
+    stored: &StepRow,
+) -> Result<Stored, String> {
+    match step_ops::claim_step_row(host, key, stored).await? {
         None => Ok(Stored::New),
         Some(winner) if winner.half.record_id == stored.half.record_id => Ok(Stored::Repeat),
         Some(_) => {

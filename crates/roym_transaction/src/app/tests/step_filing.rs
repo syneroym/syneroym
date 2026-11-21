@@ -13,14 +13,15 @@ use syneroym_roym_core::{
 use super::{
     TestFixture,
     settle::incoming_card_row,
-    step::{StepDeal, extension_deal, slot_deal},
+    step::{StepDeal, extension_deal, slot_deal, step_row},
 };
 use crate::app::{
-    AGREEMENTS, AgreementRow, CARDS, CardRow, STEPS, delete_row, disclosures, get_row, put_row,
+    AGREEMENTS, AgreementRow, CARDS, CardRow, STEPS, SendState, delete_row, disclosures, get_row,
+    put_row,
     step_ops::{self, StepAddInput, StepListInput, StepRow, step_id},
     sync::{
         FileCardResult,
-        steps::{file_step_card, file_step_card_in},
+        steps::{Stored, claim_received_row, file_step_card, file_step_card_in},
     },
 };
 
@@ -119,6 +120,24 @@ async fn a_second_record_for_the_same_key_is_refused_and_stores_no_disclosure() 
         Some("a second step of this type by this role")
     );
     assert!(disclosures::load(&deal.fix.host, &rec2).await.unwrap().is_none());
+    assert_eq!(listed(&deal).await.len(), 1);
+}
+
+#[tokio::test]
+async fn losing_the_race_to_store_a_received_row_drops_its_disclosure() {
+    let deal = slot_deal(DealRole::Counterparty).await;
+    let key = step_id(&deal.agreement, "c1", "scheduling/started", SettlementRole::Giver);
+    let (_, disc, rec) =
+        deal.counterparty_step("scheduling/started", SettlementRole::Giver, json!({}), 2);
+    disclosures::store(&deal.fix.host, &rec, RECORD_STEP, &disc, deal.agreed_at).await.unwrap();
+    // A different record took the key after this one stored its disclosure.
+    let winner = step_row(&deal, "rec_winner", SendState::Delivered);
+    put_row(&deal.fix.host, STEPS, &key, &winner).await.unwrap();
+
+    let loser = step_row(&deal, &rec, SendState::Delivered);
+    let stored = claim_received_row(&deal.fix.host, &key, &loser).await.unwrap();
+    assert!(matches!(stored, Stored::Refused(_)));
+    assert!(disclosures::load(&deal.fix.host, &rec).await.unwrap().is_none());
     assert_eq!(listed(&deal).await.len(), 1);
 }
 
