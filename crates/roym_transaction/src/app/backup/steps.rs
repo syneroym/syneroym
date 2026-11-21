@@ -37,6 +37,7 @@ fn check_payload(
     row: &StepRow,
     p: &StepPayload,
     issuer: Option<&str>,
+    issued_at_secs: Option<u64>,
     agr: &AgreementRow,
     commitment: &Commitment,
 ) -> Result<(), Response> {
@@ -44,6 +45,8 @@ fn check_payload(
         || p.commitment_id != row.commitment_id
         || p.step_type != row.step_type
         || p.role != row.role
+        || p.conversation != row.conversation
+        || issued_at_secs != Some(row.half.issued_at_secs)
     {
         return Err(refuse(id, "the record does not match its row"));
     }
@@ -131,7 +134,15 @@ pub(crate) fn validate_steps(
         if verdict.record_id.as_deref() != Some(row.half.record_id.as_str()) {
             return Err(refuse(id, "the record id does not match its envelope"));
         }
-        check_payload(id, &row, p, verdict.issuer.as_deref(), agr, commitment)?;
+        check_payload(
+            id,
+            &row,
+            p,
+            verdict.issuer.as_deref(),
+            verdict.issued_at_secs,
+            agr,
+            commitment,
+        )?;
         check_disclosure(id, &row, p, disclosures)?;
 
         let count = per_agreement.entry(row.agreement.clone()).or_default();

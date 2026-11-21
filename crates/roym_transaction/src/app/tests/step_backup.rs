@@ -167,6 +167,34 @@ async fn an_import_row_whose_role_differs_from_its_record_is_refused() {
 }
 
 #[tokio::test]
+async fn an_import_row_whose_conversation_differs_from_its_record_is_refused() {
+    let deal = slot_deal(DealRole::QuoteAuthor).await;
+    step_ops::add_at(&deal.fix.host, started(&deal.agreement), deal.agreed_at + 10)
+        .await
+        .expect("add");
+    let bundle = edited(&deal, exported(&deal).await, |s| {
+        step_rows(s)[0]["payload"]["conversation"] = json!("conv_other");
+    })
+    .await;
+    let err = import_error(&deal, bundle).await;
+    assert!(message(&err).contains("does not match its row"), "{}", message(&err));
+}
+
+#[tokio::test]
+async fn an_import_row_whose_issued_time_differs_from_its_envelope_is_refused() {
+    let deal = slot_deal(DealRole::QuoteAuthor).await;
+    step_ops::add_at(&deal.fix.host, started(&deal.agreement), deal.agreed_at + 10)
+        .await
+        .expect("add");
+    let bundle = edited(&deal, exported(&deal).await, |s| {
+        step_rows(s)[0]["payload"]["half"]["issued_at_secs"] = json!(deal.agreed_at + 999);
+    })
+    .await;
+    let err = import_error(&deal, bundle).await;
+    assert!(message(&err).contains("does not match its row"), "{}", message(&err));
+}
+
+#[tokio::test]
 async fn an_import_row_under_the_wrong_key_is_refused() {
     let deal = slot_deal(DealRole::QuoteAuthor).await;
     step_ops::add_at(&deal.fix.host, started(&deal.agreement), deal.agreed_at + 10)
