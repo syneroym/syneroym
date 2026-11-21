@@ -16,7 +16,7 @@ use super::{
     step::{StepDeal, extension_deal, slot_deal},
 };
 use crate::app::{
-    AGREEMENTS, AgreementRow, CARDS, CardRow, STEPS, disclosures, get_row, put_row,
+    AGREEMENTS, AgreementRow, CARDS, CardRow, STEPS, delete_row, disclosures, get_row, put_row,
     step_ops::{self, StepAddInput, StepListInput, StepRow, step_id},
     sync::{
         FileCardResult,
@@ -186,6 +186,25 @@ async fn a_card_for_an_agreement_not_formed_here_waits_and_is_filed_after() {
     let mut partial = full.clone();
     partial.quote_author = None;
     put_row(&deal.fix.host, AGREEMENTS, &deal.agreement, &partial).await.unwrap();
+
+    let (env, disc, _) =
+        deal.counterparty_step("scheduling/started", SettlementRole::Giver, json!({}), 1);
+    let waiting = file(&deal, "msg_s1", &env, &disc).await;
+    assert!(waiting.deferred && !waiting.filed);
+    assert!(listed_without_check(&deal).await.is_empty());
+
+    put_row(&deal.fix.host, AGREEMENTS, &deal.agreement, &full).await.unwrap();
+    let after = file(&deal, "msg_s1", &env, &disc).await;
+    assert!(after.filed && !after.refused);
+    assert_eq!(listed(&deal).await.len(), 1);
+}
+
+#[tokio::test]
+async fn a_card_for_an_agreement_not_yet_held_waits_and_is_filed_after() {
+    let deal = slot_deal(DealRole::Counterparty).await;
+    let full: AgreementRow =
+        get_row(&deal.fix.host, AGREEMENTS, &deal.agreement).await.unwrap().unwrap();
+    delete_row(&deal.fix.host, AGREEMENTS, &deal.agreement).await.unwrap();
 
     let (env, disc, _) =
         deal.counterparty_step("scheduling/started", SettlementRole::Giver, json!({}), 1);

@@ -456,6 +456,17 @@ pub(crate) async fn put_bytes<H: AppHost>(
     .map_err(|e| e.to_string())
 }
 
+#[cfg(test)]
+pub(crate) async fn delete_row<H: AppHost>(
+    host: &H,
+    collection: &str,
+    id: &str,
+) -> Result<(), String> {
+    AppDataLayer::delete(host, collection.to_string(), id.to_string())
+        .await
+        .map_err(|e| e.to_string())
+}
+
 pub(crate) async fn get_bytes<H: AppHost>(
     host: &H,
     collection: &str,

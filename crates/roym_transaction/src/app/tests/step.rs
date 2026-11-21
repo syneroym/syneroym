@@ -20,9 +20,9 @@ use syneroym_roym_core::{
     envelope::Response,
     method::DisclosedVerifyInput,
     record::{Envelope, RECORD_STEP, RecordDraft},
-    step::{MAX_STEP_DATA_BYTES, STEP_VERSION},
+    step::{MAX_STEP_DATA_BYTES, MAX_STEPS_PER_AGREEMENT, STEP_VERSION},
     testing::sd::{PlainStep, conceal_step},
-    transaction::DealRole,
+    transaction::{DealRole, ReceiptHalf},
 };
 
 use super::{
@@ -405,4 +405,45 @@ async fn verify_shows_the_data_with_its_disclosure() {
     assert_eq!(hidden.disclosure_refused, None);
     assert!(hidden.shown.is_some_and(|v| v.get("data").is_none()));
     assert_eq!(hidden.hidden, vec!["data".to_string()]);
+}
+
+#[tokio::test]
+async fn the_receiver_of_an_unknown_extension_commitment_is_refused() {
+    let deal = extension_deal("future", DealRole::Counterparty).await;
+    let mut input = started(&deal.agreement);
+    input.step_type = "future/received".to_string();
+    let err = step_ops::add_at(&deal.fix.host, input, deal.agreed_at + 10).await.unwrap_err();
+    assert_eq!(code_of(&err), json!({ "code": "extension-unknown" }));
+}
+
+#[tokio::test]
+async fn adding_a_step_beyond_the_limit_is_refused() {
+    let deal = slot_deal(DealRole::QuoteAuthor).await;
+    for n in 0..MAX_STEPS_PER_AGREEMENT {
+        let dummy = step_ops::StepRow {
+            agreement: deal.agreement.clone(),
+            commitment_id: "c1".to_string(),
+            conversation: "conv_1".to_string(),
+            step_type: format!("future/s{n}"),
+            role: SettlementRole::Giver,
+            half: ReceiptHalf {
+                record_id: format!("rec_{n}"),
+                envelope: "{}".to_string(),
+                issuer: deal.cp_did.clone(),
+                issued_at_secs: deal.agreed_at,
+            },
+            state: SendState::Delivered,
+        };
+        let key = step_ops::step_id(
+            &deal.agreement,
+            "c1",
+            &format!("future/s{n}"),
+            SettlementRole::Giver,
+        );
+        put_row(&deal.fix.host, STEPS, &key, &dummy).await.unwrap();
+    }
+    let err = step_ops::add_at(&deal.fix.host, started(&deal.agreement), deal.agreed_at + 10)
+        .await
+        .unwrap_err();
+    assert_eq!(code_of(&err), json!({ "code": "too-many-steps" }));
 }

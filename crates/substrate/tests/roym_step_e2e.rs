@@ -188,11 +188,32 @@ async fn the_giver_records_a_step_and_the_other_node_lists_it() {
     assert_eq!(cards[0]["verified"], true);
     assert_eq!(cards[0]["data"]["data"], json!({}));
 
-    // Either node can verify the signed record.
+    // The sender's conversation message carries the disclosures.
+    let y_hist = b.node_y.rpc_ok("conversation.history", json!({ "conversation": b.y_conv })).await;
+    let step_msg = y_hist["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["id"] == added["message_id"].as_str().unwrap())
+        .expect("step card message on sender");
+    let card_body: Value = serde_json::from_str(step_msg["body"].as_str().unwrap()).unwrap();
+    let disclosures = card_body["disclosures"].clone();
+
+    // Either node can verify the signed record; with disclosures, data is revealed.
     let envelope = step["envelope"].as_str().unwrap();
-    let verdict = b.node_x.rpc_ok("step.verify", json!({ "envelope": envelope })).await;
+    let verdict = b
+        .node_x
+        .rpc_ok("step.verify", json!({ "envelope": envelope, "disclosures": disclosures }))
+        .await;
     assert_eq!(verdict["verified"], true);
     assert_eq!(verdict["issuer"], b.owner_y_did);
+    assert_eq!(verdict["shown"]["data"], json!({}));
+    assert!(verdict["hidden"].as_array().is_some_and(|h| h.is_empty()));
+
+    // Without disclosures, data stays hidden.
+    let hidden = b.node_x.rpc_ok("step.verify", json!({ "envelope": envelope })).await;
+    assert_eq!(hidden["verified"], true);
+    assert_eq!(hidden["hidden"], json!(["data"]));
 
     // The giver's own node lists the same record. A repeat makes no second one.
     let on_y = steps(&b.node_y, &b.agreement).await;
