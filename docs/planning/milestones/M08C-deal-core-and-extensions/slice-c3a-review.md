@@ -1261,7 +1261,7 @@ nextest run -p syneroym-substrate --test roym_step_e2e`: 1 passed.
 
 ### New findings
 
-- [ ] **R12 — minor.** *Where:*
+- [x] **R12 — minor.** *Where:*
   `crates/roym_transaction/src/app/step_ops.rs:224`, `:356`;
   `docs/developer-guide.md:1850`;
   `docs/planning/changes/roym-extensions/change.md:239`.
@@ -1285,9 +1285,9 @@ nextest run -p syneroym-substrate --test roym_step_e2e`: 1 passed.
   backlog row: "A step card is not resent when the node stops during its
   send" (reason: the conversation service has no idempotency key, so a
   resend cannot tell "never sent" from "sent"; target `TBD`).
-  *Status:* Open.
+  *Status:* Fixed (72a6ab6a). As proposed. The guide and the Deviation line now say "If the first send failed, the repeat sends the card again", the Deviation line adds the stopped-node case, and section 12 of the backlog has the row "A step card is not resent when the node stops during its send". One addition: the comment on `answer_existing` said "never sent" and now says "first send failed". No code change.
 
-- [ ] **R13 — minor.** *Where:*
+- [x] **R13 — minor.** *Where:*
   `crates/roym_transaction/src/app/tests/step.rs:239`;
   `crates/roym_transaction/src/app/step_ops.rs:226` to `:237`;
   `crates/roym_transaction/src/app/sync/steps.rs:199` to `:202`.
@@ -1316,9 +1316,9 @@ nextest run -p syneroym-substrate --test roym_step_e2e`: 1 passed.
   not tested. Check that the answer is `already-recorded` (or the
   refusal), that no second card is sent, and that `disclosures::load` of
   the loser's record id is `None`.
-  *Status:* Open.
+  *Status:* Fixed (3cea3be8). (a) The test is now `a_repeat_during_the_send_sends_no_second_card`. (b) New `losing_the_race_to_store_the_row_sends_no_card_and_drops_the_disclosure` in `tests/step.rs`: the signer hook writes the winner row after the load and before the `create`; the test checks `already-recorded`, no `conversation.send`, and no stored disclosure for the loser's record id. To let the hook keep signing, the fixture's signer body is now the function `sign_record` in `tests.rs`. (c) `store_step`'s claim match is now `claim_received_row` (with `Stored` made `pub(crate)`), and the new `losing_the_race_to_store_a_received_row_drops_its_disclosure` in `tests/step_filing.rs` calls it with a winner row already stored. Proved failure: with the `disclosures::delete` in `add_in` removed, the add test fails; with `send_step` called in its `create`-lost branch, it fails (state is not `already-recorded`); with the `disclosures::delete` in `claim_received_row` removed, the received-row test fails. All three restored.
 
 Counts: 2 new findings (R12, R13: 0 blocker, 0 major, 2 minor). R7 to R11
-are fixed. **2 open.** Still open outside the findings: the owner's review
+are fixed. R12 and R13 are fixed (code fix round 1 follow-up). **0 open.** Still open outside the findings: the owner's review
 of the Hindi message `ext-scheduling-step-started`, and `mise run verify`
 with no `--skip` (status.md says CI runs it).
