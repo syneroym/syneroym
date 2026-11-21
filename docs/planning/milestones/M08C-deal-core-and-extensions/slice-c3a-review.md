@@ -1062,7 +1062,7 @@ duplication report (see "Status counts"). I changed no code.
 
 ### New findings
 
-- [ ] **R7 — minor.** *Where:*
+- [x] **R7 — minor.** *Where:*
   `crates/roym_transaction/src/app/step_ops.rs:187` to `:190`, `:226` to
   `:231`, `:342` to `:363`; `crates/roym_transaction/src/app/sync/steps.rs:174`
   to `:201`.
@@ -1093,9 +1093,9 @@ duplication report (see "Status counts"). I changed no code.
   second call send one card. If the owner accepts the double send, record
   it in the Deviations and fix only the comment and the left-over
   disclosure.
-  *Status:* Open.
+  *Status:* Fixed (f229d8bd). Row is created with `SendState::Pending` so a concurrent call sees it is already being sent; loser of create race deletes its disclosure and returns `AlreadyRecorded`; `store_step` deletes orphaned disclosure on losing race. Proved failure: reverting creation state to `NotSent` fails `concurrent_add_sends_only_one_card_and_leaves_no_orphan_disclosures`.
 
-- [ ] **R8 — minor.** *Where:*
+- [x] **R8 — minor.** *Where:*
   `crates/roym_transaction/src/app/backup/steps.rs:43` to `:49`, `:72`;
   `crates/roym_transaction/src/app/step_ops.rs:326`.
   *Problem:* The import compares the row's agreement, commitment, type,
@@ -1113,9 +1113,9 @@ duplication report (see "Status counts"). I changed no code.
   *Fix:* In `check_payload`, refuse a row whose `conversation` is not the
   record's `conversation`, and whose `half.issued_at_secs` is not the
   envelope's. Tests: one import row with each field changed is refused.
-  *Status:* Open.
+  *Status:* Fixed (7d4e70a9). In `check_payload`, check `p.conversation == row.conversation` and `issued_at_secs == Some(row.half.issued_at_secs)`. Proved failure: removing checks causes `an_import_row_whose_conversation_differs_from_its_record_is_refused` and `an_import_row_whose_issued_time_differs_from_its_envelope_is_refused` to fail.
 
-- [ ] **R9 — minor.** *Where:* `crates/roym_core/src/step.rs:215` to `:253`;
+- [x] **R9 — minor.** *Where:* `crates/roym_core/src/step.rs:215` to `:253`;
   `crates/roym_core/src/fulfilment.rs:121` to `:164`;
   `crates/roym_core/src/payment.rs:274` to `:320`.
   *Problem:* `verify_step` is a third copy of the same function:
@@ -1132,9 +1132,9 @@ duplication report (see "Status counts"). I changed no code.
   `counterparty_did` through a small trait. Make the three verifiers call
   it. Their messages and tests stay as they are. Then lower
   `MAX_EXACT_DUPLICATE_PERCENT` if the gate says so.
-  *Status:* Open.
+  *Status:* Fixed (41ea9565). Added `PartyRecordPayload` trait and `verify_party_record` in `verdict.rs`; `verify_step`, `verify_fulfilment_receipt`, and `verify_payment_acknowledgement` delegate to it. Duplication dropped to 6.83%. Proved failure: breaking issuer check in `verdict.rs` causes `step::the_counterparty_signs_a_step_for_the_giver_and_it_is_refused` to fail.
 
-- [ ] **R10 — minor.** *Where:*
+- [x] **R10 — minor.** *Where:*
   `crates/roym_transaction/src/app/step_ops.rs:195` to `:205`;
   `crates/roym_transaction/src/app/sync/steps.rs:50`;
   `crates/roym_transaction/src/app/tests/step.rs`,
@@ -1165,9 +1165,9 @@ duplication report (see "Status counts"). I changed no code.
   `either` demo manifest or with filed unknown-extension rows, then check
   that `step.add` answers `too-many-steps`; or say in the plan's section
   7.2 why it is not tested.
-  *Status:* Open.
+  *Status:* Fixed (858d7477). Added all four tests: (a) `the_receiver_of_an_unknown_extension_commitment_is_refused` in `step.rs`; (b) `a_card_for_an_agreement_not_yet_held_waits_and_is_filed_after` in `step_filing.rs`; (c) verified step with sender disclosures in `roym_step_e2e.rs` and asserted `shown.data == json!({})`; (d) `adding_a_step_beyond_the_limit_is_refused` in `step.rs`. Proved failure: (a) skipping `NotChecked` arm fails `the_receiver_of_an_unknown_extension_commitment_is_refused`; (b) changing `Refusal::later` to `now` fails `a_card_for_an_agreement_not_yet_held_waits_and_is_filed_after`; (c) asserting non-empty shown data fails `assertion left == right failed (left: {}, right: {"not": "empty"})`; (d) skipping limit check fails `adding_a_step_beyond_the_limit_is_refused`.
 
-- [ ] **R11 — minor.** *Where:* `docs/developer-guide.md:1855`, `:1863`,
+- [x] **R11 — minor.** *Where:* `docs/developer-guide.md:1855`, `:1863`,
   `:1864`; `crates/roym_transaction/src/app/step_ops.rs:195` to `:199`;
   `docs/planning/changes/roym-extensions/change.md` (C3a2 Deviations).
   *Problem:* (a) The guide says "A receiving node checks the card as it
@@ -1192,7 +1192,7 @@ duplication report (see "Status counts"). I changed no code.
   to both table rows. (c) Add one Deviation line: "`step.add` refuses a
   commitment whose extension this node does not know with
   `extension-unknown`, not `step-type-unknown`."
-  *Status:* Open.
+  *Status:* Fixed (58af2be0). Updated `docs/developer-guide.md` line 1855 to describe filing checks and closed state indifference; updated refusal table lines 1863 and 1864 to include `step.add`. Added `step.add` unknown extension deviation in `docs/planning/changes/roym-extensions/change.md`.
 
 Not findings, for the close-out: the plan's exit criteria "Owner reviewed
 the Hindi message" (`ext-scheduling-step-started`) and "`mise run verify`
