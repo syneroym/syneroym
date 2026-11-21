@@ -986,3 +986,38 @@ removed them (the working tree is clean). I changed no code.
   *Status:* Fixed (bee1ebf5). Agreed. `now_secs` is gone; the test uses `clock::now_secs()`.
 
 **Open after code review round 2: 0.** Fixed: 9 (R10 to R18), on the branch after `920671a7`. The reviewer checks the fixes.
+
+## Close-out check of code review round 2 — Claude Opus 5.5 (Claude Code), 2026-11-21
+
+Checked every item of code review round 2 against the fix commit
+`bee1ebf5` (`fix(roym): resolve C3b2 code review round 2`) and the docs
+commit `82c45089`, with `git diff 72588df6..HEAD`. Main checkout, branch
+`feat/m08c-c3b2-reservation-expiry`, `git pull`: "Already up to date". I
+changed no code.
+
+CI: `gh pr checks 379` passes every job on `82c45089`: all six test
+shards, Playwright E2E, "Lints, licenses & checks", CI Pipeline and CLA.
+I ran `cargo nextest run -p syneroym-roym-core -p syneroym-roym-scheduling
+-p syneroym-roym-transaction -p syneroym-roym-catalog`: 724 passed, 0
+skipped. This is the count in the status row.
+
+| Item | Check | Result |
+| --- | --- | --- |
+| R10 | `claim` makes two passes over the same `seats`. The first takes only a seat with no occupant or a freed one (`is_free`). The second calls `seat_is_free`, which may lapse. A lost `create` in the first pass is tried again in the second and loses again, so that is safe. The seat attempt moved to `try_seat` with the same order of checks (`create`, then the re-read of the key, then `Again`). `a_free_seat_is_taken_before_an_expired_reservation_is_lapsed` is the case of my temporary test, and it now passes the other way. `an_expired_reservation_is_lapsed_when_no_seat_is_free` keeps the lapse. The Deviation is in roym-extensions. | Fixed |
+| R11 | The `failure:` row is created before the transition. The transition runs again unless the agreement row shows the commitment `failed`. A refused transition of a new card deletes the row it made, and a repeat card keeps its row. `a_stop_before_the_snapshot_does_not_lose_the_failure` crashes on the snapshot write, then files the same card again: it is filed, not refused, the agreement is `closed`, and the row exists. `a_refused_transition_leaves_no_failure_row` covers the delete. | Fixed |
+| R12 | `confirm_or_retake`: when the confirm answers `reservation-unknown`, the node reserves, then confirms again. Only a refused reserve or confirm goes on to `make_failure`. A fault stays a fault. There are three tests: a reserve taken again and confirmed, a refused reserve that signs one failure, and another code that signs with no new reserve. The Deviation and the backlog row are corrected. | Fixed |
+| R13 | `confirm_own_reservations` returns `u32`. A failed agreement query counts as 0, and a storage error drops only that commitment (`unwrap_or(0)`). `sync_at` no longer has the `?`, so the tick and the recovery always run. `a_storage_error_in_the_confirm_pass_does_not_fail_the_sync` uses `fail_write` on `confirmed:`. | Fixed |
+| R14 | The extensions Deviation, the new agreements line and the backlog row now say the same thing: a release after a refused accept is not repeated, because no agreement row exists for it. The reservation is never confirmed, so it lapses (EX-20). | Fixed |
+| R15 | The test is renamed `the_writer_marks_a_failed_slot_and_the_giver_releases_it`, and its header and the AG-16 Deviation say that the writer's release is the service test. | Fixed |
+| R16 | The agreements Deviations have an AG-36 line that closes the C1 note, and the `release_ended` line has moved there. | Fixed |
+| R17 | `late_half::a_late_half_after_the_expiry_release_gives_a_commitment_failure` runs `accept_at`, then `get_at` after the expiry (it checks the hook release and the `released:` row). It then delivers the writer's half, signed at `now + 50` and delivered after the expiry, and runs `sync_at`: the half is filed, one failure is sent, and the seat stays released. | Fixed |
+| R18 | `now_secs` is gone, and the test imports `clock` and calls `clock::now_secs()`. | Fixed |
+
+No new problems in the fix commits. I found no reordered checks and no new error codes, and no comments were lost. The changed files stay under their size limits (`reservation.rs` 437, `confirm.rs` 227, `failure.rs` 183), and lints pass in CI.
+
+**Open after the close-out check: 0.**
+
+The slice is not closed yet. Three C3b2 exit criteria are still open:
+the owner's review of the seven Hindi messages, `mise run verify` with
+no `--skip` (or the owner accepting CI in its place, as for C3b1), and
+the merge of PR #379, which is still a draft.
