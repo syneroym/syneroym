@@ -1,0 +1,11 @@
+{
+  "certificate": {
+    "expires_at_secs": "number",
+    "master_did": "string",
+    "near_expiry": "boolean",
+    "state": "installed"
+  },
+  "owner_did": "string",
+  "pubkey_hex": "string",
+  "signing_did": "string"
+}

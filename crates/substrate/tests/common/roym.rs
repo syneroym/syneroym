@@ -36,7 +36,7 @@ use tokio::time;
 use super::session;
 
 pub const SIGNING_SERVICES: &[&str] =
-    &["profile", "catalog", "conversation", "transaction", "directory"];
+    &["profile", "catalog", "conversation", "transaction", "scheduling", "directory"];
 pub const SESSION_COOKIE_NAME: &str = "syneroym_session";
 
 pub fn far_future_not_after() -> u64 {
@@ -81,7 +81,7 @@ pub fn roym_artifacts_present() -> bool {
 pub fn service_visibility(name: &str) -> Visibility {
     match name {
         "web" => Visibility::Internal,
-        "profile" => Visibility::Private,
+        "profile" | "scheduling" => Visibility::Private,
         _ => Visibility::Public,
     }
 }

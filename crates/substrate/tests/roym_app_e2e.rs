@@ -7,7 +7,7 @@
 )]
 //! Substrate-level deployment integration test for the Roym SynApp.
 //!
-//! Deploys the six Roym services on a live substrate instance with a gateway
+//! Deploys the seven Roym services on a live substrate instance with a gateway
 //! and registry, and tests:
 //! 1. Static UI serving (`GET /`) from the asset bundle with CSP meta header.
 //! 2. `POST /rpc` `session.whoami` returns the person DID and `auth:
@@ -146,7 +146,7 @@ fn deploy_targets(
 }
 
 /// Everything both `roym_app_e2e.rs` tests need: a live substrate with the
-/// six Roym services deployed through a real (unmanaged) `apply_plan`,
+/// seven Roym services deployed through a real (unmanaged) `apply_plan`,
 /// exactly the way `roymctl app deploy` would deploy them.
 struct RoymDeployment {
     ctx: SubstrateTestContext,

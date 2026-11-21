@@ -23,6 +23,7 @@ pub const SECTION_CONVERSATIONS: &str = "conversations";
 pub const SECTION_MESSAGES: &str = "messages";
 pub const SECTION_LISTINGS: &str = "listings";
 pub const SECTION_AVAILABILITY: &str = "availability";
+pub const SECTION_RESERVATIONS: &str = "reservations";
 pub const SECTION_SYNORG: &str = "synorg";
 pub const SECTION_MEMBERS: &str = "members";
 pub const SECTION_PUBLICATIONS: &str = "publications";

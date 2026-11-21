@@ -203,9 +203,9 @@ The manifest reserves `kind = "insight"`, with a `reads` list (for example `even
 - [x] Commitment `details` in the deal core, and schema checks.
 - [x] `step` record and card, the generic step view in the Hub.
 - [ ] Widget definition (inline up to the size limit), `widget` and `widget-answer` records and cards, the generic renderer, the poll renderer.
-- [ ] Reserve, confirm and release hooks, with expiry, idempotency and owner-side cleanup.
+- [ ] Reserve, confirm and release hooks, with expiry, idempotency and owner-side cleanup. The hooks, idempotency and release are built; the 15-minute expiry is not.
 - [ ] Extension services: event subscription, deal grants.
-- [ ] Move scheduling out of `catalog` and `transaction`.
+- [x] Move scheduling out of `catalog` and `transaction`.
 - [x] Add one-shot.
 - [x] The `insight` kind in the manifest only.
 
@@ -244,6 +244,24 @@ The manifest reserves `kind = "insight"`, with a `reads` list (for example `even
 - **The backup schema version of `transaction` is unchanged.** The new `steps` section is optional, and a bundle with no `steps` section imports as before. A development node that is older than this change ignores the section.
 - **The demo story differs a little from the plan.** `quote --slot` needs the slot id, so the browser part reads it, with the window, from `availability.list` and the script derives nothing. The quote answers an enquiry, so Bob sends Alice one first. Alice's listing names no extension: only the slot matters for the quote. Story 50 and story 60 share `conversationWith` and `fetchAgreement` in `hub-helpers.ts`.
 - **Hindi review.** One message is new in C3a2 for the owner to review: `ext-scheduling-step-started`. It already shipped with C3a1.
+
+**Rules and differences in C3b1 (2026-11-21, [slice plan](../../milestones/M08C-deal-core-and-extensions/slice-c3b-implementation-plan.md)).**
+
+- **The manifest names the service that answers its hooks (owner decision, question Q2).** A new key `service` is required when `hooks` is not empty and not allowed otherwise. It must name a service of `roym.toml` other than `web`. `transaction` finds the hook service from the manifest, so the deal core names no extension. The sketch under "Extension manifest" has no such key.
+- **A fourth hook, `prepare` (owner decision, question Q3).** It is optional and only with the other three. `quote.set` and `quote.measure` call it for each commitment the author gives, so the slot checks (`no-such-slot`, `slot-not-in-listing`, `schedule-differs-from-slot`) and the window fill move out of `transaction`.
+- **The slot methods keep their names (owner decision, question Q7).** `availability.set`, `.get`, `.list` and `.remove` have the same inputs and outputs. Only the service that answers them changes, from `catalog` to `scheduling`.
+- **`confirm` never takes a seat (owner decision).** EX-22 says a confirm after the expiry succeeds if the resource is still free. A confirm finds the reservation that exists and confirms it, or is refused `reservation-lost`. After a release it is refused, also when the seat is free. This is narrower than EX-22. A reservation of this build never expires, so only the release case can happen now.
+- **EX-5: each giver reserves on its own node.** The text says the agreement writer calls `reserve` on each extension "on the resource owner's node". Each giver's own `transaction` calls the hook of its own `scheduling`. A node never calls another node's extension service.
+- **EX-21: a release also frees a confirmed reservation.** The agreements change says so ("Release after confirm"). A release of an unknown or released key succeeds with `released: false`.
+- **The reservation never expires in this build.** `expires_at_secs` is empty and nothing lapses a reservation, as a seat hold never expired. The expiry (EX-20) and the lapse rules come in the next part of the slice.
+- **No seat row is ever deleted or overwritten.** The data layer has a fence (`create`) and no compare-and-delete. A release that deletes two rows could free the seat of a newer booking if two releases of one reservation ran at the same time. So a seat is a row per round, a release adds a `free:` row, and the next booking takes the seat in the next round.
+- **`scheduling` is enrolled for signing like the other five (owner decision, 2026-11-21).** The plan said `scheduling` signs nothing. But its `scheduling.export` signs the bundle as the person, with the service's own delegation certificate, like every other bundle. Without a certificate it could only answer `signing-not-enrolled`. So it has `signing-status` and `install-signing-certificate`, and it is in `roymctl`'s, the Hub's and the test harness's lists of services that sign.
+- **The hooks have no route from `web`.** `assert_service_table` asks that every method of a service routes to it. A new `assert_service_table_with_unrouted` lets a service name the methods that only a sibling calls, and checks that they route nowhere. `scheduling` uses it for the four `reservation.*` methods.
+- **A release error is not logged.** The plan asked for a log line. No Roym service has a way to log. The counterparty's release at the quote's expiry writes a `released:<agreement>` marker only when every release worked, so a failed one is tried again. The other release sites drop the error, as before. The release of an extension is idempotent, so a later repeat of the step is safe.
+- **The `scheduling` import also refuses a changed `seat:` row.** The plan refuses an `rsv:` row that exists with other content (`reservation-differs`). A `seat:` row is checked the same way, because a bundle that changed a seat row would move a held seat to another reservation.
+- **The step order of the plan was changed in two places.** `catalog` lost its slot code and `transaction` was bound to `scheduling` in the same step that added the service, because the router change (`availability.` now routes to `scheduling`) left the booking tests failing between the two steps. `transaction`'s edge to `catalog` is replaced by an edge to `scheduling` there.
+- **The restore e2e test checks the live reservation in the `scheduling` bundle.** A second booking of the last seat after a restore needs a new conversation with the restored node. The test reads the exported `reservations` section and checks that each agreed agreement has a reservation that no `free:` row ends, in both import orders.
+- **A changed Hindi message.** `backup-bundle-catalog` no longer says "and availability", because the catalog bundle holds listings only. English "Listings", Hindi "लिस्टिंग". The owner reviews it with the two new messages `backup-bundle-scheduling` and `backup-reservations-failed`.
 
 ## Close-out
 

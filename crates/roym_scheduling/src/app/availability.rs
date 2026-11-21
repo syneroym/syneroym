@@ -6,7 +6,7 @@ use syneroym_roym_core::{
     listing,
     method::{
         Reply,
-        catalog::{SlotKeyInput, SlotRow},
+        scheduling::{SlotKeyInput, SlotRow},
     },
     paging,
 };

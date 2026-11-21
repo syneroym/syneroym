@@ -69,7 +69,7 @@ fn roym_http_routes() -> Vec<HttpRoute> {
     ]
 }
 
-/// Initialises all six Roym services, wires HTTP and topology, and optionally
+/// Initialises all seven Roym services, wires HTTP and topology, and optionally
 /// loads the Hub UI bundle. Sequencing function — each phase is extracted
 /// into a named helper below.
 #[cfg(feature = "roym")]
@@ -88,10 +88,18 @@ pub(super) async fn init_roym(
     let factory_conv = init_roym_conversation(shared, endpoint_registry).await?;
     let factory_cat = init_roym_catalog(shared, endpoint_registry).await?;
     let factory_tx = init_roym_transaction(shared, endpoint_registry).await?;
+    let factory_sched = init_roym_scheduling(shared, endpoint_registry).await?;
     let factory_dir = init_roym_directory(shared, endpoint_registry).await?;
 
-    let factories =
-        vec![factory_web, factory_profile, factory_conv, factory_cat, factory_tx, factory_dir];
+    let factories = vec![
+        factory_web,
+        factory_profile,
+        factory_conv,
+        factory_cat,
+        factory_tx,
+        factory_sched,
+        factory_dir,
+    ];
 
     // 2. App context and dependency bindings.
     let web_id = roym_dispatch_id(services::WEB.name);
@@ -113,6 +121,7 @@ pub(super) async fn init_roym(
             services::CONVERSATION.name,
             services::CATALOG.name,
             services::TRANSACTION.name,
+            services::SCHEDULING.name,
             services::DIRECTORY.name,
         ] {
             endpoint_registry.set_owner(roym_dispatch_id(name), owner_did.clone()).await?;
@@ -126,8 +135,8 @@ pub(super) async fn init_roym(
 
 /// Builds the Roym `web` service factory, native instance, and wires its
 /// inbound HTTP/WebSocket adapter surfaces into `native_http`, `http_routes`,
-/// and `endpoint_registry`. `web` alone among the six Roym services exposes an
-/// HTTP surface.
+/// and `endpoint_registry`. `web` alone among the seven Roym services exposes
+/// an HTTP surface.
 #[cfg(feature = "roym")]
 async fn init_roym_web(
     shared: &SharedNodeHandles,
@@ -385,6 +394,49 @@ async fn init_roym_transaction(
 }
 
 #[cfg(feature = "roym")]
+async fn init_roym_scheduling(
+    shared: &SharedNodeHandles,
+    endpoint_registry: &EndpointRegistry,
+) -> anyhow::Result<Arc<NativeHostFactory>> {
+    use syneroym_core::local_registry::SubstrateEndpoint;
+    use syneroym_roym_core::services;
+    use syneroym_rpc::NativeService;
+
+    let factory = NativeHostFactory::new(
+        roym_dispatch_id(services::SCHEDULING.name),
+        shared.key_store().clone(),
+        shared.storage_provider().clone(),
+        shared.blob_provider().clone(),
+        shared.messaging_broker().clone(),
+        endpoint_registry.clone(),
+        shared.logical_resolver().clone(),
+        shared.conversation().clone(),
+        shared.websocket_senders().clone(),
+        false,
+    )
+    .with_call_all(shared.call_all().clone())
+    .with_event_bus(shared.event_bus().clone());
+    let f = factory.clone();
+    let scheduling = Arc::new(syneroym_roym_scheduling::native::NativeScheduling::new(
+        roym_dispatch_id(services::SCHEDULING.name),
+        move |caller| f.host_for(caller),
+    ));
+    shared
+        .native_dispatch()
+        .insert(roym_dispatch_id(services::SCHEDULING.name), scheduling as Arc<dyn NativeService>);
+    endpoint_registry
+        .register(
+            roym_dispatch_id(services::SCHEDULING.name),
+            services::SCHEDULING.interface.to_string(),
+            SubstrateEndpoint::NativeHostChannel {
+                service_id: roym_dispatch_id(services::SCHEDULING.name),
+            },
+        )
+        .await?;
+    Ok(factory)
+}
+
+#[cfg(feature = "roym")]
 async fn init_roym_directory(
     shared: &SharedNodeHandles,
     endpoint_registry: &EndpointRegistry,
@@ -505,7 +557,9 @@ async fn wire_roym_topology(
         )
         .await?;
 
-    // `transaction` declares `conversation` and `catalog` dependencies.
+    // `transaction` declares `conversation` and `scheduling` dependencies. It
+    // needs a binding to the hook service of each extension manifest, and a
+    // test in `roym_core` (`services/tests.rs`) checks that.
     let conv_entry_json = serde_json::to_string(&singleton_entry(services::CONVERSATION.name))?;
     endpoint_registry
         .save_binding(
@@ -515,12 +569,13 @@ async fn wire_roym_topology(
             &conv_entry_json,
         )
         .await?;
+    let scheduling_entry_json = serde_json::to_string(&singleton_entry(services::SCHEDULING.name))?;
     endpoint_registry
         .save_binding(
             &roym_dispatch_id(services::TRANSACTION.name),
             ROYM_APP_INSTANCE,
-            services::CATALOG.name,
-            &catalog_entry_json,
+            services::SCHEDULING.name,
+            &scheduling_entry_json,
         )
         .await?;
 

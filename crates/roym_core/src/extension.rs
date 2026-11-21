@@ -12,6 +12,7 @@ use serde::Deserialize;
 use crate::{
     deal::{ExtensionRef, MAX_EXTENSION_ID_LEN, ResourceKind},
     listing,
+    services::{self, Service},
 };
 
 pub mod check;
@@ -60,6 +61,9 @@ pub enum ManifestKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Hook {
+    /// Checks and completes a commitment's `details` and `window` when its
+    /// quote is signed.
+    Prepare,
     Reserve,
     Confirm,
     Release,
@@ -102,9 +106,14 @@ pub struct Manifest {
     /// The commitment kinds that may name this extension.
     #[serde(default)]
     pub resource_kinds: Vec<ResourceKind>,
-    /// All of `reserve`, `confirm` and `release`, or none.
+    /// All of `reserve`, `confirm` and `release`, or none. `prepare` is
+    /// optional and only with them.
     #[serde(default)]
     pub hooks: Vec<Hook>,
+    /// The Roym service that answers the hooks, by name. Required when there
+    /// are hooks, and absent otherwise.
+    #[serde(default)]
+    pub service: Option<String>,
     #[serde(default)]
     pub details: Vec<Schema>,
     #[serde(default)]
@@ -121,6 +130,16 @@ impl Manifest {
 
     pub fn has_reserve_hook(&self) -> bool {
         self.hooks.contains(&Hook::Reserve)
+    }
+
+    pub fn has_prepare_hook(&self) -> bool {
+        self.hooks.contains(&Hook::Prepare)
+    }
+
+    /// The service that answers this extension's hooks. `None` when the
+    /// extension has no hooks.
+    pub fn hook_service(&self) -> Option<Service> {
+        self.service.as_deref().and_then(services::by_name)
     }
 }
 

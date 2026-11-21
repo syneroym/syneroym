@@ -1624,8 +1624,9 @@ alternatives for the same case.
 
 #### The Roym Hub
 
-Deploying the Roym product (`crates/roym_core/app/roym.toml`, six services:
-`web`, `profile`, `conversation`, `catalog`, `transaction`, `directory`)
+Deploying the Roym product (`crates/roym_core/app/roym.toml`, seven services:
+`web`, `profile`, `conversation`, `catalog`, `transaction`, `scheduling`,
+`directory`)
 reaches the Hub UI through the gateway hostname scheme above, in either
 form:
 
@@ -1658,7 +1659,7 @@ ui_bundle_path = "/path/to/bundle.tar.gz"
 ```
 
 `roles.roym` also needs the `roym` Cargo feature enabled at build time
-(`crates/substrate/Cargo.toml`); it links the six services in natively
+(`crates/substrate/Cargo.toml`); it links the seven services in natively
 rather than deploying them as separate WASM components. Never enable it
 alongside a WASM deploy of the same app on the same node — the router warns
 if it sees both.
@@ -1667,8 +1668,8 @@ if it sees both.
 
 Before a person can sign a `profile` or a `listing` record, each Roym
 service that signs must hold a `record-signing` delegation certificate.
-One command enrols all three that sign — `profile`, `catalog`, and
-`conversation` — minting one certificate per service against that
+One command enrols every service that signs — `profile`, `catalog`,
+`conversation`, `transaction`, `scheduling`, and `directory` — minting one certificate per service against that
 service's own signing key, under the deployer's master key on the host:
 
 ```bash
@@ -1830,7 +1831,8 @@ A manifest has these keys. Any other key stops the manifest from loading.
 - `id`: `[a-z0-9-]`, 1 to 32 characters. `version`: a number, at least 1.
 - `kind`: `workflow` or `insight`. An `insight` has only `reads` (a list of codes) and no other key below. No insight ships. A commitment or a listing cannot name one.
 - `resource_kinds`: the commitment kinds that may name this extension, for example `service-in-slot` or `goods-or-service`.
-- `hooks`: `reserve`, `confirm` and `release`, all three or none. A `service-in-slot` extension needs all three.
+- `hooks`: `reserve`, `confirm` and `release`, all three or none. A `service-in-slot` extension needs all three. `prepare` is optional, and only with them.
+- `service`: the name of the Roym service that answers the hooks, for example `scheduling`. It is required when there are hooks, and not allowed otherwise. It must name a service of `roym.toml` other than `web`.
 - `details`: a list of schemas. Each has a `schema` name `<id>/<name>@<version>`, a list of `fields`, and optional `checks`. `slot-matches-window` is the one built-in check: it ties `slot_id` to the commitment's window.
 - `steps`: a list of step types. Each has a `type` name `<id>/<name>`, who may record it (`by`: `giver`, `receiver` or `either`), and its `fields`.
 
@@ -1844,6 +1846,17 @@ A field has a `name` (`[a-z0-9_]`, up to 32 characters), a `type`, and `required
 - In every part, `_` becomes `-`. The schema version is not part of an id. A new schema version that changes what a field means needs a new field name.
 
 Add every derived id to the `## Extensions` section of `en.ftl` and `hi.ftl`. A Hub test checks that both files have exactly these ids.
+
+**Reserve hooks.** An extension that holds a resource, such as a seat in a slot, has a service that answers four local methods. `transaction` calls them as a sibling, on the node of the party that gives the resource. It finds the service from the manifest, so the deal core names no extension. No route sends these methods from the Hub, and no other node can call them.
+
+- `reservation.prepare` takes the commitment's `details`, its `window` and the quote's `listing_id`. `quote.set` and `quote.measure` call it for each commitment the author gives. It answers the window to sign, or a refusal.
+- `reservation.reserve` takes `{agreement, commitment_id, details}`. It holds the resource, or refuses. The call is idempotent by (agreement, commitment): a repeat finds the same reservation.
+- `reservation.confirm` takes `{agreement, commitment_id}`. It makes the reservation firm. It never takes a resource: after a release it is refused.
+- `reservation.release` takes `{agreement, commitment_id}`. It frees the resource. A key that is unknown or already released answers `released: false`, and that is not an error.
+
+A refusal is `invalid_params` with a reason in `data.code`. The deal core accepts only a code of the form `[a-z0-9-]` up to 64 bytes, because it signs the code into a snapshot. Any other answer is an error and not a refusal, and the call is tried again later.
+
+The `scheduling` service keeps a seat as rows in its `reservations` collection. A seat is taken by one unique insert (`rsv:` row first, then its `seat:` row) so of two calls that race only one wins. No seat row is deleted or overwritten. A release adds a `free:` row, and the next booking takes the seat in the next round. A restore keeps the agreements and the seats in step: import the `scheduling` bundle, then the `transaction` bundle. The `transaction` import takes the seat of each restored agreement again, and lists the ones it could not (`reservations_failed`). In that case, import the `scheduling` bundle and then the `transaction` bundle again.
 
 **Steps.** A step record is one signed work step of an extension, for one commitment of a formed agreement. The manifest declares the step types. A step does not change any deal state. Its `data` is hidden like a commitment's `details`: the record holds one `_sd` digest, and the card carries the disclosure. `data` is a JSON object of at most 8 KiB. For a known extension it must also fit the step's `fields`.
 
@@ -1865,6 +1878,11 @@ An agreement holds at most 64 step rows, of both parties together. A receiving n
 | `details-mismatch` | `details` and the extension do not match, or the schema is not one of the manifest's. |
 | `extension-shape` | The id, the schema name or `details.extra` has a wrong shape or is too large. `listing.set` sends it for a bad extension id or version. |
 | `slot-details` | `slot_id` does not match the commitment's window. |
+| `no-such-slot` | `quote.set` or `quote.measure` names a slot that this node does not hold. |
+| `slot-not-in-listing` | The slot belongs to another listing than the quote's. |
+| `schedule-differs-from-slot` | The commitment's window is not the slot's window. |
+| `slot-unavailable` | The slot is gone, or it has no seats. It is the reason of a `reserve-failed` answer or a `not-formed` agreement. |
+| `slot-taken` | Every seat of the slot is held. It is the reason of a `reserve-failed` answer or a `not-formed` agreement. |
 | `step-type-unknown` | `step.add` names a step type that the commitment's extension does not declare. |
 | `not-your-step` | The manifest does not let this party of the commitment record that step type. |
 | `step-data-too-large` | A step's `data` is more than 8 KiB. |

@@ -2,7 +2,6 @@
 
 use syneroym_app_host::AppHost;
 use syneroym_roym_core::{
-    deal::ResourceKind,
     progress::{self, AgreementState, MAX_DEFER_SECS},
     record::Envelope,
     transaction::DealRole,
@@ -14,7 +13,7 @@ use super::{
         decide::{SnapshotRow, snapshot_id},
         disclosures::{self, HeldQuote, LoadQuoteError},
         get_row,
-        hold::{Reservations, SeatLedger},
+        hooks::{self, ExtensionHooks},
         put_card, put_row,
     },
     FileCardResult, refuse_card,
@@ -287,11 +286,8 @@ async fn apply_newer_snapshot<H: AppHost>(
     put_row(host, AGREEMENTS, &p.agreement, &agr).await?;
 
     if p.state == AgreementState::NotFormed || p.state == AgreementState::Cancelled {
-        for c in &agr.terms.commitments {
-            if c.giver == DealRole::Counterparty && c.resource_kind == ResourceKind::ServiceInSlot {
-                let _ = SeatLedger.release(host, &p.agreement, &c.commitment_id).await;
-            }
-        }
+        hooks::release_own(host, &ExtensionHooks, &p.agreement, &agr.terms, DealRole::Counterparty)
+            .await;
     }
 
     let _ = host

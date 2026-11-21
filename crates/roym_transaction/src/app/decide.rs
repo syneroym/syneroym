@@ -2,7 +2,7 @@
 
 use syneroym_app_host::{AppDataLayer, AppHost, AppSigning, types::data_layer::RecordWriteValue};
 use syneroym_roym_core::{
-    deal::{ResourceKind, SignedTerms},
+    deal::{Commitment, SignedTerms},
     progress::{
         self as core_progress, AGREEMENT_PROGRESS_VERSION, AgreementState, CommitmentProgress,
         RECORD_AGREEMENT_PROGRESS,
@@ -19,7 +19,7 @@ use super::{
     RecordPointerRow,
     disclosures::HeldQuote,
     get_row,
-    hold::{Reservations, ReserveOutcome, SeatLedger},
+    hooks::{self, ExtensionHooks, Reservations},
     progress, put_row, send_card_and_file,
 };
 
@@ -35,7 +35,7 @@ pub(crate) async fn run<H: AppHost>(
     quote: &HeldQuote,
     now: u64,
 ) -> Result<bool, String> {
-    run_with_reservations(host, row, quote, SeatLedger, now).await
+    run_with_reservations(host, row, quote, ExtensionHooks, now).await
 }
 
 pub(crate) async fn run_with_reservations<H: AppHost, R: Reservations>(
@@ -114,16 +114,16 @@ pub(crate) async fn run_with_reservations<H: AppHost, R: Reservations>(
     }
 
     // 3. Reserve holds through Reservations
-    let (reserved, failed) = reserve_author_holds(host, row, &reservations, now).await?;
+    let (reserved, failed) = reserve_author_holds(host, row, &reservations).await?;
     if let Some(reason) = failed {
-        return handle_not_formed(host, row, &reservations, &reserved, reason, now).await;
+        return handle_not_formed(host, row, &reservations, &reserved, &reason, now).await;
     }
 
     // 4. Confirm holds
-    for cid in &reserved {
-        if let Err(reason) = reservations.confirm(host, &row.quote_record_id, cid).await {
-            return handle_not_formed(host, row, &reservations, &reserved, &reason, now).await;
-        }
+    if let Some(reason) =
+        hooks::confirm_each(host, &reservations, &row.quote_record_id, &reserved).await?
+    {
+        return handle_not_formed(host, row, &reservations, &reserved, &reason, now).await;
     }
 
     // 5-7. Store countersign, snapshots, send cards, and complete agreed state
@@ -420,35 +420,19 @@ pub(crate) async fn reserve_author_holds<H: AppHost, R: Reservations>(
     host: &H,
     row: &AgreementRow,
     reservations: &R,
-    now: u64,
-) -> Result<(Vec<String>, Option<&'static str>), String> {
-    let mut reserved = Vec::new();
-    for c in &row.terms.commitments {
-        if c.giver == DealRole::QuoteAuthor && c.resource_kind == ResourceKind::ServiceInSlot {
-            let slot_id = c
-                .details
-                .as_ref()
-                .and_then(|d| d.data.get("slot_id"))
-                .and_then(serde_json::Value::as_str)
-                .ok_or_else(|| "missing slot_id".to_string())?;
-
-            match reservations
-                .reserve(host, &row.quote_record_id, &c.commitment_id, slot_id, now)
-                .await?
-            {
-                ReserveOutcome::Held { .. } | ReserveOutcome::AlreadyHeld { .. } => {
-                    reserved.push(c.commitment_id.clone());
-                }
-                ReserveOutcome::SlotUnavailable => {
-                    return Ok((reserved, Some("slot-unavailable")));
-                }
-                ReserveOutcome::SlotTaken => {
-                    return Ok((reserved, Some("slot-taken")));
-                }
-            }
-        }
+) -> Result<(Vec<Commitment>, Option<String>), String> {
+    let reserved = hooks::reserve_each(
+        host,
+        reservations,
+        &row.quote_record_id,
+        hooks::reserved_by(&row.terms, DealRole::QuoteAuthor),
+    )
+    .await;
+    match reserved.stopped {
+        None => Ok((reserved.held, None)),
+        Some(hooks::Stop::Refused(reason)) => Ok((reserved.held, Some(reason))),
+        Some(hooks::Stop::Fault(fault)) => Err(fault),
     }
-    Ok((reserved, None))
 }
 
 pub(crate) async fn finalize_agreed_deal<H: AppHost>(
@@ -580,15 +564,15 @@ pub(crate) async fn repeat_fresh<H: AppHost, R: Reservations>(
     if now >= row.terms.quote_expires_at_secs {
         return Ok(false);
     }
-    let (reserved, failed) = reserve_author_holds(host, row, reservations, now).await?;
+    let (reserved, failed) = reserve_author_holds(host, row, reservations).await?;
     if let Some(reason) = failed {
-        return handle_not_formed(host, row, reservations, &reserved, reason, now).await;
+        return handle_not_formed(host, row, reservations, &reserved, &reason, now).await;
     }
 
-    for cid in &reserved {
-        if let Err(reason) = reservations.confirm(host, &row.quote_record_id, cid).await {
-            return handle_not_formed(host, row, reservations, &reserved, &reason, now).await;
-        }
+    if let Some(reason) =
+        hooks::confirm_each(host, reservations, &row.quote_record_id, &reserved).await?
+    {
+        return handle_not_formed(host, row, reservations, &reserved, &reason, now).await;
     }
 
     finalize_agreed_deal(host, row, signed_terms, disclosures, now).await
@@ -629,7 +613,7 @@ pub(crate) async fn handle_not_formed<H: AppHost, R: Reservations>(
     host: &H,
     row: &mut AgreementRow,
     reservations: &R,
-    reserved_to_release: &[String],
+    reserved_to_release: &[Commitment],
     reason: &str,
     now: u64,
 ) -> Result<bool, String> {
@@ -655,9 +639,7 @@ pub(crate) async fn handle_not_formed<H: AppHost, R: Reservations>(
     };
     put_row(host, AGREEMENT_PROGRESS, &snap_key, &snap_row).await?;
 
-    for cid in reserved_to_release {
-        let _ = reservations.release(host, &row.quote_record_id, cid).await;
-    }
+    hooks::release_each(host, reservations, &row.quote_record_id, reserved_to_release).await;
 
     if !ensure_snapshot_sent(host, &row.conversation, &mut snap_row, now).await? {
         return Ok(false);

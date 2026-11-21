@@ -28,6 +28,7 @@ pub mod check;
 pub mod conversation;
 pub mod directory;
 pub mod profile;
+pub mod scheduling;
 #[cfg(test)]
 mod tests;
 

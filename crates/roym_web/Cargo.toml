@@ -55,6 +55,7 @@ syneroym-roym-conversation = { path = "../roym_conversation" }
 syneroym-roym-profile = { path = "../roym_profile" }
 syneroym-roym-catalog = { path = "../roym_catalog" }
 syneroym-roym-transaction = { path = "../roym_transaction" }
+syneroym-roym-scheduling = { path = "../roym_scheduling" }
 syneroym-roym-directory = { path = "../roym_directory" }
 syneroym-signed-record.workspace = true
 z32.workspace = true

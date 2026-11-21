@@ -159,6 +159,7 @@ fn check_roym_deps() -> Result<()> {
         "syneroym-roym-profile",
         "syneroym-roym-catalog",
         "syneroym-roym-transaction",
+        "syneroym-roym-scheduling",
         "syneroym-roym-directory",
     ];
 

@@ -23,9 +23,16 @@ use common::roym::{
     RoymNode as Node, fast_conversation_role, roym_artifacts_present, wait_delivered,
 };
 
+/// The transaction bundle is exported before the scheduling bundle: a booking
+/// made between the two exports then has its seat in the archive and no
+/// agreement, which only leaves one seat taken. The other order would archive
+/// an agreement whose seat is missing.
 const EXPORT_SERVICES: &[&str] =
-    &["profile", "catalog", "conversation", "transaction", "directory"];
-const IMPORT_ORDER: &[&str] = &["profile", "catalog", "conversation", "transaction", "directory"];
+    &["profile", "catalog", "conversation", "transaction", "scheduling", "directory"];
+/// Scheduling is imported before transaction, so the transaction import
+/// finds each agreed seat already held.
+const IMPORT_ORDER: &[&str] =
+    &["profile", "catalog", "conversation", "scheduling", "transaction", "directory"];
 
 async fn export_bundles(node: &Node) -> serde_json::Map<String, Value> {
     let mut bundles = serde_json::Map::new();
@@ -43,6 +50,38 @@ async fn import_bundles(node: &Node, bundles: &serde_json::Map<String, Value>) {
             assert!(res.get("error").is_none(), "{svc} import: {res:?}");
         }
     }
+}
+
+/// Whether the node holds a live reservation for `agreement`: a reservation
+/// row in the scheduling bundle that no `free:` row ends.
+async fn seat_is_taken(node: &Node, agreement: &str) -> bool {
+    let bundle = node.rpc_ok("scheduling.export", json!({})).await;
+    let rows = bundle["sections"]["reservations"].as_array().expect("reservations section");
+    rows.iter().any(|row| {
+        let id = row["id"].as_str().unwrap_or_default();
+        let Some(reservation) = id.strip_prefix("rsv:") else { return false };
+        row["payload"]["agreement"] == agreement
+            && !rows.iter().any(|other| other["id"] == format!("free:{reservation}"))
+    })
+}
+
+/// Imports the bundles with the transaction bundle before the scheduling
+/// bundle, the order that a person who clicks through the Hub may choose.
+/// The transaction import then cannot take the seats again.
+async fn import_transaction_before_scheduling(
+    node: &Node,
+    bundles: &serde_json::Map<String, Value>,
+) -> Value {
+    let mut transaction_reply = Value::Null;
+    for svc in ["profile", "catalog", "conversation", "transaction", "scheduling", "directory"] {
+        if let Some(bundle) = bundles.get(svc) {
+            let reply = node.rpc_ok(&format!("{svc}.import"), json!({ "bundle": bundle })).await;
+            if svc == "transaction" {
+                transaction_reply = reply;
+            }
+        }
+    }
+    transaction_reply
 }
 
 /// Builds the encrypted archive exactly as `roymctl roym backup create`
@@ -643,6 +682,9 @@ async fn a_quote_author_transaction_survives_an_encrypted_backup_and_restore() {
         .await;
     assert_eq!(sched_restored["state"], "agreed");
     assert_eq!(sched_restored["seq"], 1);
+    for tx in [&tx_active, &tx_sched] {
+        assert!(seat_is_taken(&node_y2, &tx.quote_record_id).await, "the booked seat is restored");
+    }
 
     let second_export = assert_post_restore_operations(
         &node_y2,
@@ -692,6 +734,27 @@ async fn verify_node_y3_import(
     .await;
     node_y3.full_bring_up().await;
     let restore_bundles_y3 = open_archive_bundles(&archive_y2, &recovery_key_y2).unwrap();
+
+    // The wrong order first: the transaction import cannot take the seats
+    // again, because the slots are not there yet, and it says so. The seats
+    // are taken after the documented repeat.
+    let first = import_transaction_before_scheduling(&node_y3, &restore_bundles_y3).await;
+    assert_eq!(first["imported"], true, "the import itself succeeds: {first}");
+    let failed = first["reservations_failed"].as_array().expect("a failed list");
+    // The first agreement has settlement halves, so it is not reserved again;
+    // its seat comes back with the scheduling bundle. The second is still open.
+    assert_eq!(failed.len(), 1, "the open agreement's seat is listed: {first}");
+    assert_eq!(failed[0]["agreement"], tx_sched.quote_record_id);
+    assert_eq!(failed[0]["reason"], "slot-unavailable", "{first}");
+    // The scheduling bundle was imported right after, so a second transaction
+    // import finds every seat.
+    let again = node_y3
+        .rpc_ok("transaction.import", json!({ "bundle": restore_bundles_y3["transaction"] }))
+        .await;
+    assert_eq!(again["reservations_failed"], json!([]), "after the repeat: {again}");
+    for tx in [tx_active, tx_sched] {
+        assert!(seat_is_taken(&node_y3, &tx.quote_record_id).await, "the seat is taken again");
+    }
     import_bundles(&node_y3, &restore_bundles_y3).await;
 
     let y3_active = node_y3

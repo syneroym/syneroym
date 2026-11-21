@@ -8,7 +8,7 @@ pub mod disclosures;
 pub mod enquiry_ops;
 mod extension_rules;
 pub mod fulfilment_ops;
-pub mod hold;
+pub mod hooks;
 pub mod ledger;
 pub mod parties;
 pub mod payment_ops;
@@ -53,8 +53,9 @@ use syneroym_roym_core::{
 use crate::api;
 
 // Schema version 6 switches deal and settlement records to selective
-// disclosure.
-pub const SCHEMA_VERSION: u32 = 6;
+// disclosure. Version 7 moves seat holds to the scheduling service, so a
+// bundle that holds `hold:` or `seat:` rows is refused.
+pub const SCHEMA_VERSION: u32 = 7;
 
 pub(crate) const ENQUIRIES: &str = "enquiries";
 pub(crate) const ENQUIRY_HISTORY: &str = "enquiry_history";

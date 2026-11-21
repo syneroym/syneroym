@@ -53,6 +53,8 @@ mod group_lifecycle;
 mod payment;
 #[path = "dual_build_parity/profile.rs"]
 mod profile;
+#[path = "dual_build_parity/scheduling.rs"]
+mod scheduling;
 #[path = "dual_build_parity/search_scripts.rs"]
 mod search_scripts;
 #[path = "dual_build_parity/step.rs"]

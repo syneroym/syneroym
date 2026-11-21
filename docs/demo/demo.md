@@ -138,7 +138,7 @@ cd "$REPO"
 mise install
 cargo build --release --bin roymctl --bin syneroym-substrate
 mise run build:test-components      # all WASM test components, incl. the web app
-mise run build:roym                 # Roym UI bundle + six Roym WASM services
+mise run build:roym                 # Roym UI bundle + seven Roym WASM services
 ```
 
 Pre-build the two test programs that stories F11 and F12 run live (so nothing compiles on stage):
@@ -1144,8 +1144,8 @@ kill -USR1 $(pgrep syneroym-substrate)     # on the machine that holds the cert
 
 ## 4. Roym
 
-**Message:** Roym is a product built on Syneroym. It is six services that work
-together: profile, conversation, catalog, transaction, directory and a web Hub. One
+**Message:** Roym is a product built on Syneroym. It is seven services that work
+together: profile, conversation, catalog, transaction, scheduling, directory and a web Hub. One
 person can offer a service, another can find it, talk, get a quote and agree.
 
 Two installations: **alice** on S1 and **bob** on S2. They talk to each other through
@@ -1166,7 +1166,7 @@ for n in 1 2; do
 done
 ```
 
-**Expect:** six services deployed on each node. (Run the file paths from `$REPO`:
+**Expect:** seven services deployed on each node. (Run the file paths from `$REPO`:
 the manifest paths are relative to the repository root.)
 
 Give each Hub a gateway name, then read the host names:

@@ -2,7 +2,7 @@ import { errText, text } from "../dom";
 import { t } from "../i18n/i18n";
 import { call } from "../rpc";
 
-/// The five app-data bundles Roym can export today. Each service owns its
+/// The six app-data bundles Roym can export today. Each service owns its
 /// own bundle; a single signed bundle that composes them comes later.
 const BUNDLES: Array<{ label: () => string; exportMethod: string; importMethod: string; file: string }> = [
   {
@@ -24,6 +24,12 @@ const BUNDLES: Array<{ label: () => string; exportMethod: string; importMethod: 
     file: "roym-catalog-bundle.json",
   },
   {
+    label: () => t("backup-bundle-scheduling"),
+    exportMethod: "scheduling.export",
+    importMethod: "scheduling.import",
+    file: "roym-scheduling-bundle.json",
+  },
+  {
     label: () => t("backup-bundle-transaction"),
     exportMethod: "transaction.export",
     importMethod: "transaction.import",
@@ -42,6 +48,8 @@ const BUNDLES: Array<{ label: () => string; exportMethod: string; importMethod: 
 interface ImportReply {
   imported_records?: unknown;
   imported?: unknown;
+  /// Booked slots that the transaction import could not take again.
+  reservations_failed?: unknown;
 }
 
 /// The number of records an import reply reports, or `undefined` when it
@@ -113,8 +121,9 @@ function bundleRow(b: (typeof BUNDLES)[number]): HTMLElement {
       status.textContent = t("backup-importing");
       const res = await call<ImportReply | null>(b.importMethod, { bundle: parsed });
       const count = importedCount(res);
-      status.textContent =
-        count === undefined ? t("backup-imported-unknown") : t("backup-imported", { count });
+      const line = count === undefined ? t("backup-imported-unknown") : t("backup-imported", { count });
+      const failed = Array.isArray(res?.reservations_failed) ? res.reservations_failed.length : 0;
+      status.textContent = failed > 0 ? `${line} ${t("backup-reservations-failed")}` : line;
     } catch (err) {
       status.textContent = t("backup-import-failed", { detail: errText(err) });
     }

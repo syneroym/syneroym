@@ -40,6 +40,7 @@ use syneroym_roym_conversation::native::NativeConversation;
 use syneroym_roym_core::{backup::Bundle, services};
 use syneroym_roym_directory::native::NativeDirectory;
 use syneroym_roym_profile::native::NativeProfile;
+use syneroym_roym_scheduling::native::NativeScheduling;
 use syneroym_roym_transaction::native::NativeTransaction;
 use syneroym_roym_web::native::NativeWeb;
 use syneroym_rpc::{
@@ -354,6 +355,7 @@ pub(crate) struct NativeDriver {
     pub(crate) conversation: Arc<NativeConversation<NativeAppHost>>,
     pub(crate) catalog: Arc<NativeCatalog<NativeAppHost>>,
     pub(crate) transaction: Arc<NativeTransaction<NativeAppHost>>,
+    pub(crate) scheduling: Arc<NativeScheduling<NativeAppHost>>,
     pub(crate) directory: Arc<NativeDirectory<NativeAppHost>>,
 }
 
@@ -379,6 +381,7 @@ impl Driver for NativeDriver {
             "conversation" => self.conversation.clone(),
             "catalog" => self.catalog.clone(),
             "transaction" => self.transaction.clone(),
+            "scheduling" => self.scheduling.clone(),
             "directory" => self.directory.clone(),
             _ => panic!("unknown service {service_name}"),
         };
@@ -644,6 +647,7 @@ impl Harness {
             "conversation" => self.native.conversation.clone(),
             "catalog" => self.native.catalog.clone(),
             "transaction" => self.native.transaction.clone(),
+            "scheduling" => self.native.scheduling.clone(),
             "directory" => self.native.directory.clone(),
             other => panic!("unknown service {other}"),
         };
@@ -894,6 +898,7 @@ pub(crate) async fn harness_with_unbound(skip: Option<&'static str>) -> Harness 
         ("conversation", test_constants::roym_conversation_wasm_path()),
         ("catalog", test_constants::roym_catalog_wasm_path()),
         ("transaction", test_constants::roym_transaction_wasm_path()),
+        ("scheduling", test_constants::roym_scheduling_wasm_path()),
         ("directory", test_constants::roym_directory_wasm_path()),
     ];
 
@@ -1091,6 +1096,7 @@ pub(crate) async fn harness_with_unbound(skip: Option<&'static str>) -> Harness 
     let f_conversation = make_factory("conversation");
     let f_catalog = make_factory("catalog");
     let f_transaction = make_factory("transaction");
+    let f_scheduling = make_factory("scheduling");
     let f_directory = make_factory("directory");
     let f_directory2 = make_factory("directory2");
 
@@ -1117,6 +1123,12 @@ pub(crate) async fn harness_with_unbound(skip: Option<&'static str>) -> Harness 
     let native_catalog = Arc::new(NativeCatalog::new(did_for_service("catalog"), move |caller| {
         f_cat_cl.host_for(caller)
     }));
+
+    let f_sched_cl = f_scheduling.clone();
+    let native_scheduling =
+        Arc::new(NativeScheduling::new(did_for_service("scheduling"), move |caller| {
+            f_sched_cl.host_for(caller)
+        }));
 
     let f_tx_cl = f_transaction.clone();
     let native_transaction =
@@ -1163,54 +1175,27 @@ pub(crate) async fn harness_with_unbound(skip: Option<&'static str>) -> Harness 
     // service over the wire; the parity harness is the only caller, and it
     // is what makes the wire-origin refusal a two-build comparison.
     let wire_native: Vec<(&'static str, Arc<dyn NativeService>)> = {
-        let (fw, fp, fc, fca, ft, fd) = (
-            f_web.clone(),
-            f_profile.clone(),
-            f_conversation.clone(),
-            f_catalog.clone(),
-            f_transaction.clone(),
-            f_directory.clone(),
+        macro_rules! wire {
+            ($name:literal, $native:ident, $factory:expr) => {{
+                let f = $factory.clone();
+                let native = $native::new(did_for_service($name), move |c| f.host_for_wire(c));
+                ($name, Arc::new(native) as Arc<dyn NativeService>)
+            }};
+        }
+        let (fw, fw_http) = (f_web.clone(), f_web.clone());
+        let web = NativeWeb::new(
+            did_for_service("web"),
+            move |c| fw.host_for_wire(c),
+            move |c| fw_http.host_for_wire(c),
         );
-        let fw_http = f_web.clone();
         vec![
-            (
-                "web",
-                Arc::new(NativeWeb::new(
-                    did_for_service("web"),
-                    move |c| fw.host_for_wire(c),
-                    move |c| fw_http.host_for_wire(c),
-                )) as Arc<dyn NativeService>,
-            ),
-            (
-                "profile",
-                Arc::new(NativeProfile::new(did_for_service("profile"), move |c| {
-                    fp.host_for_wire(c)
-                })),
-            ),
-            (
-                "conversation",
-                Arc::new(NativeConversation::new(did_for_service("conversation"), move |c| {
-                    fc.host_for_wire(c)
-                })),
-            ),
-            (
-                "catalog",
-                Arc::new(NativeCatalog::new(did_for_service("catalog"), move |c| {
-                    fca.host_for_wire(c)
-                })),
-            ),
-            (
-                "transaction",
-                Arc::new(NativeTransaction::new(did_for_service("transaction"), move |c| {
-                    ft.host_for_wire(c)
-                })),
-            ),
-            (
-                "directory",
-                Arc::new(NativeDirectory::new(did_for_service("directory"), move |c| {
-                    fd.host_for_wire(c)
-                })),
-            ),
+            ("web", Arc::new(web) as Arc<dyn NativeService>),
+            wire!("profile", NativeProfile, f_profile),
+            wire!("conversation", NativeConversation, f_conversation),
+            wire!("catalog", NativeCatalog, f_catalog),
+            wire!("transaction", NativeTransaction, f_transaction),
+            wire!("scheduling", NativeScheduling, f_scheduling),
+            wire!("directory", NativeDirectory, f_directory),
         ]
     };
 
@@ -1220,6 +1205,7 @@ pub(crate) async fn harness_with_unbound(skip: Option<&'static str>) -> Harness 
         conversation: native_conversation_svc.clone(),
         catalog: native_catalog.clone(),
         transaction: native_transaction.clone(),
+        scheduling: native_scheduling.clone(),
         directory: native_directory.clone(),
         directory_wire: native_directory_wire.clone(),
         directory2_wire: native_directory2_wire.clone(),
@@ -1232,6 +1218,7 @@ pub(crate) async fn harness_with_unbound(skip: Option<&'static str>) -> Harness 
         f_conversation.clone(),
         f_catalog.clone(),
         f_transaction.clone(),
+        f_scheduling.clone(),
         f_directory.clone(),
         f_directory2.clone(),
     ];
@@ -1262,6 +1249,7 @@ pub(crate) async fn harness_with_unbound(skip: Option<&'static str>) -> Harness 
             conversation: native_conversation_svc.clone(),
             catalog: native_catalog.clone(),
             transaction: native_transaction.clone(),
+            scheduling: native_scheduling.clone(),
             directory: native_directory.clone(),
         },
         wasm_http: WasmHttpDriver { engine: wasm_engine.clone() },

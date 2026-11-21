@@ -25,7 +25,7 @@ async fn scenario_68_every_service_invoke_locally_is_not_wire_refused_parity() {
 
 // Scenario 69 (`same_verbs_locally_are_admitted`) was folded into
 // scenario 68, which now drives `local_invoke` for a verb of every one of
-// the six services and asserts not-`-32013`.
+// the seven services and asserts not-`-32013`.
 
 #[tokio::test]
 async fn scenario_70_local_call_with_delegated_caller_admitted_on_both_builds() {

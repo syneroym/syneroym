@@ -23,8 +23,7 @@ use super::{
         PaymentsRow, STEPS,
         decide::{CountersignRow, DecisionRow, DecisionState, RefusedRow, SnapshotRow},
         decline_ops::DeclineRow,
-        hold::{HoldLedgerRow, SeatLedgerRow},
-        ledger::LedgerRow,
+        ledger::{LedgerKind, LedgerRow},
         put_row,
         step_ops::StepRow,
     },
@@ -43,8 +42,6 @@ type ValidatedProgress = (Vec<(String, SnapshotRow)>, Vec<HistoryEntry>);
 pub(crate) enum ValidatedLedgerRow {
     Decision(DecisionRow),
     Countersign(CountersignRow),
-    Hold(HoldLedgerRow),
-    Seat(SeatLedgerRow),
     Fence(LedgerRow),
     Decline(DeclineRow),
     Refused(RefusedRow),
@@ -486,37 +483,35 @@ fn validate_refused_entry(
     Ok(ValidatedLedgerRow::Refused(row))
 }
 
-fn validate_non_seat_entry(
+fn validate_released_entry(
+    id: &str,
+    agreement: &str,
+    payload: Value,
+    quotes_by_record_id: &QuotesByRecordId,
+) -> Result<ValidatedLedgerRow, Response> {
+    let row: LedgerRow = serde_json::from_value(payload).map_err(|e| {
+        Response::invalid_params(format!("ledger '{id}': invalid released row: {e}"))
+    })?;
+    if row.kind != LedgerKind::Released || row.agreement != agreement {
+        return Err(Response::invalid_params(format!("ledger '{id}': row does not match its id")));
+    }
+    if !quotes_by_record_id.contains_key(agreement) {
+        return Err(Response::invalid_params(format!(
+            "ledger '{id}': names unheld agreement '{agreement}'"
+        )));
+    }
+    Ok(ValidatedLedgerRow::Fence(row))
+}
+
+fn validate_ledger_entry(
     id: &str,
     payload: Value,
     quotes_by_record_id: &QuotesByRecordId,
     agreements_map: &HashMap<String, AgreementRow>,
     enquiries_by_record_id: &HashMap<String, String>,
     now: u64,
-    active_holds: &mut std::collections::HashSet<(String, u32, String)>,
 ) -> Result<Option<ValidatedLedgerRow>, Response> {
-    if id.starts_with("hold:") {
-        let row: HoldLedgerRow = serde_json::from_value(payload).map_err(|e| {
-            Response::invalid_params(format!("ledger '{id}': invalid hold row: {e}"))
-        })?;
-        if row.agreement.is_empty() || row.commitment_id.is_empty() {
-            return Err(Response::invalid_params(format!("ledger '{id}': empty fields")));
-        }
-        let quote = quotes_by_record_id.get(&row.agreement).ok_or_else(|| {
-            Response::invalid_params(format!(
-                "ledger '{id}': names unheld agreement '{}'",
-                row.agreement
-            ))
-        })?;
-        if !quote.payload.terms.commitments.iter().any(|c| c.commitment_id == row.commitment_id) {
-            return Err(Response::invalid_params(format!(
-                "ledger '{id}': unknown commitment id '{}'",
-                row.commitment_id
-            )));
-        }
-        active_holds.insert((row.slot_id.clone(), row.seat, row.agreement.clone()));
-        Ok(Some(ValidatedLedgerRow::Hold(row)))
-    } else if id.starts_with("decision:") {
+    if id.starts_with("decision:") {
         let row: DecisionRow = serde_json::from_value(payload).map_err(|e| {
             Response::invalid_params(format!("ledger '{id}': invalid decision row: {e}"))
         })?;
@@ -558,8 +553,8 @@ fn validate_non_seat_entry(
         validate_refused_entry(id, payload, quotes_by_record_id, agreements_map).map(Some)
     } else if id.starts_with("payreq:") || id.starts_with("ack:") || id.starts_with("fulfil:") {
         validate_fence_entry(id, payload, quotes_by_record_id, now).map(Some)
-    } else if id.starts_with("seat:") {
-        Ok(None)
+    } else if let Some(agreement) = id.strip_prefix("released:") {
+        validate_released_entry(id, agreement, payload, quotes_by_record_id).map(Some)
     } else {
         Err(Response::invalid_params(format!("ledger '{id}': unknown ledger kind")))
     }
@@ -574,19 +569,17 @@ pub(crate) fn validate_ledger(
 ) -> Result<ValidatedLedger, Response> {
     let mut validated_ledger = Vec::new();
     let mut history = Vec::new();
-    let mut active_holds = std::collections::HashSet::new();
 
     for r in &ledger_rows {
         let id = r.get("id").and_then(Value::as_str).unwrap_or("");
         let payload = r.get("payload").cloned().unwrap_or(Value::Null);
-        if let Some(row) = validate_non_seat_entry(
+        if let Some(row) = validate_ledger_entry(
             id,
             payload,
             quotes_by_record_id,
             agreements_map,
             enquiries_by_record_id,
             now,
-            &mut active_holds,
         )? {
             if let ValidatedLedgerRow::Decline(decline) = &row {
                 history.push((
@@ -596,22 +589,6 @@ pub(crate) fn validate_ledger(
                 ));
             }
             validated_ledger.push((id.to_string(), row));
-        }
-    }
-
-    for r in &ledger_rows {
-        let id = r.get("id").and_then(Value::as_str).unwrap_or("");
-        if id.starts_with("seat:") {
-            let payload = r.get("payload").cloned().unwrap_or(Value::Null);
-            let row: SeatLedgerRow = serde_json::from_value(payload).map_err(|e| {
-                Response::invalid_params(format!("ledger '{id}': invalid seat row: {e}"))
-            })?;
-            if !active_holds.contains(&(row.slot_id.clone(), row.seat, row.agreement.clone())) {
-                return Err(Response::invalid_params(format!(
-                    "ledger '{id}': seat has no matching active hold"
-                )));
-            }
-            validated_ledger.push((id.to_string(), ValidatedLedgerRow::Seat(row)));
         }
     }
 

@@ -17,12 +17,11 @@ use z32;
 
 use super::fixture;
 use crate::app::{
-    AGREEMENT_PROGRESS, AGREEMENTS, AgreementRow, LEDGER,
+    AGREEMENT_PROGRESS, AGREEMENTS, AgreementRow,
     decide::{SnapshotRow, snapshot_id},
     disclosures, ensure_collections,
     fulfilment_ops::{self, FulfilmentSignInput},
-    get_row,
-    hold::{HoldLedgerRow, Reservations, SeatLedger, SeatLedgerRow, hold_id, seat_id},
+    hooks::{ExtensionHooks, Reservations},
     progress,
     progress_ops::{self, AgreementCancelInput},
     put_row,
@@ -290,23 +289,14 @@ async fn cancel_releases_writer_seat_holds() {
     let agreed_at = clock::now_secs();
 
     let (comm, slot_id) = make_slot_commitment("c1", "lst_music", agreed_at + 100, agreed_at + 200);
-    let (agreement, _terms) = setup_agreed_deal(&fix, &counterparty, vec![comm], agreed_at).await;
+    let (agreement, terms) = setup_agreed_deal(&fix, &counterparty, vec![comm], agreed_at).await;
+    let commitment = &terms.commitments[0];
 
     // Reserve seat & confirm hold for the writer
-    SeatLedger
-        .reserve(&fix.host, &agreement, "c1", &slot_id, agreed_at)
-        .await
-        .expect("reserve seat");
-    SeatLedger.confirm(&fix.host, &agreement, "c1").await.expect("confirm seat");
-
-    let h_key = hold_id(&agreement, "c1");
-    let s_key = seat_id(&slot_id, 1);
-
-    // Verify hold and seat rows exist
-    let h_before: Option<HoldLedgerRow> = get_row(&fix.host, LEDGER, &h_key).await.unwrap();
-    let s_before: Option<SeatLedgerRow> = get_row(&fix.host, LEDGER, &s_key).await.unwrap();
-    assert!(h_before.is_some());
-    assert!(s_before.is_some());
+    ExtensionHooks.reserve(&fix.host, &agreement, commitment).await.expect("reserve seat");
+    ExtensionHooks.confirm(&fix.host, &agreement, commitment).await.expect("confirm seat");
+    assert!(fix.scheduling.is_confirmed(&agreement, "c1"));
+    assert_eq!(fix.scheduling.held_seats(&slot_id), 1);
 
     // Cancel agreement while commitments are still open
     let updated = progress_ops::cancel_at(
@@ -320,8 +310,6 @@ async fn cancel_releases_writer_seat_holds() {
     assert_eq!(updated.state, Some(AgreementState::Cancelled));
 
     // Holds and seats must be released
-    let h_after: Option<HoldLedgerRow> = get_row(&fix.host, LEDGER, &h_key).await.unwrap();
-    let s_after: Option<SeatLedgerRow> = get_row(&fix.host, LEDGER, &s_key).await.unwrap();
-    assert!(h_after.is_none(), "hold must be released on cancel");
-    assert!(s_after.is_none(), "seat must be released on cancel");
+    assert!(fix.scheduling.is_released(&agreement, "c1"), "hold must be released on cancel");
+    assert_eq!(fix.scheduling.held_seats(&slot_id), 0, "seat must be freed on cancel");
 }

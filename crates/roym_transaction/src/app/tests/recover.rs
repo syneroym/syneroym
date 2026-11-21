@@ -1,7 +1,6 @@
 //! Service tests for writer decision recovery and crash points.
 
 use serde_json::{Value, json};
-use syneroym_app_host::AppHost;
 use syneroym_identity::{Identity, substrate};
 use syneroym_roym_core::{
     card::{self, CARD_CONTENT_TYPE},
@@ -25,9 +24,7 @@ use crate::app::{
         decision_id, refused_id, snapshot_id,
     },
     disclosures::{self, HeldQuote},
-    get_row,
-    hold::{HoldLedgerRow, Reservations, ReserveOutcome, SeatLedger, hold_id, seat_id},
-    put_bytes, put_card, put_row,
+    get_row, put_bytes, put_card, put_row,
     sync::{self, SyncInput},
     tests::{TestFixture, fixture},
 };
@@ -239,39 +236,6 @@ async fn file_card_and_move_cursor(f: &TestFixture, conv: &str, msg_id: &str, no
         .expect("put sync state");
 }
 
-struct RefusingConfirmReservations;
-
-impl Reservations for RefusingConfirmReservations {
-    async fn reserve<H: AppHost>(
-        &self,
-        host: &H,
-        agreement: &str,
-        commitment_id: &str,
-        slot_id: &str,
-        now: u64,
-    ) -> Result<ReserveOutcome, String> {
-        SeatLedger.reserve(host, agreement, commitment_id, slot_id, now).await
-    }
-
-    async fn confirm<H: AppHost>(
-        &self,
-        _host: &H,
-        _agreement: &str,
-        _commitment_id: &str,
-    ) -> Result<(), String> {
-        Err("slot-expired".to_string())
-    }
-
-    async fn release<H: AppHost>(
-        &self,
-        host: &H,
-        agreement: &str,
-        commitment_id: &str,
-    ) -> Result<(), String> {
-        SeatLedger.release(host, agreement, commitment_id).await
-    }
-}
-
 #[tokio::test]
 async fn crash_after_the_fence_is_finished_on_the_next_sync() {
     let f = fixture();
@@ -350,8 +314,8 @@ async fn crash_after_the_fence_is_finished_on_the_next_sync() {
         }
     });
 
-    // Failing write after fence: on the first reserve write to ledger (seat:)
-    f.host.fail_write("ledger", "seat:");
+    // The first reserve call fails, after the fence is written.
+    f.scheduling.fail_call("reservation.reserve", 0);
 
     // First sync delivers the acceptance receipt half.
     // decide::run fails on seat: write (after writing the fence), but sync catches
@@ -361,7 +325,7 @@ async fn crash_after_the_fence_is_finished_on_the_next_sync() {
         .await
         .expect("sync files card despite decide write failure");
 
-    assert!(f.host.was_failed_write_hit(), "failing write must have fired during sync");
+    assert!(f.scheduling.failure_hit(), "the failing hook call must have fired during sync");
 
     // Check card is stored and sync cursor moved despite decide::run write failure
     let card: Option<CardRow> = get_row(&f.host, CARDS, "msg_accept_1").await.unwrap();
@@ -389,15 +353,13 @@ async fn crash_after_each_reserve_is_finished_on_the_next_sync() {
     put_row(&f.host, AGREEMENTS, &q_rec_id, &row).await.unwrap();
     file_card_and_move_cursor(&f, "conv_1", "msg_accept_2", now).await;
 
-    // Crash on writing second hold
-    f.host.crash_on_write("ledger", format!("hold:{}:c2", q_rec_id));
+    // The second reserve call fails.
+    f.scheduling.fail_call("reservation.reserve", 1);
 
     let err = decide::run(&f.host, &mut row, &quote, now)
         .await
         .expect_err("fault must fire on second reserve");
-    assert!(err.contains("injected crash"));
-
-    f.host.restart();
+    assert!(err.contains("injected hook failure"));
 
     sync::sync_at(
         &f.host,
@@ -535,13 +497,11 @@ async fn crash_after_fence_with_clock_moved_past_expiry_ends_not_formed() {
     put_row(&f.host, AGREEMENTS, &q_rec_id, &row).await.unwrap();
     file_card_and_move_cursor(&f, "conv_1", "msg_accept_6", now).await;
 
-    f.host.crash_on_write("ledger", "seat:");
+    f.scheduling.fail_call("reservation.reserve", 0);
 
     let err =
         decide::run(&f.host, &mut row, &quote, now).await.expect_err("fault must fire on reserve");
-    assert!(err.contains("injected crash"));
-
-    f.host.restart();
+    assert!(err.contains("injected hook failure"));
     // Clock moved past expiry
     f.host.set_now(now + 350);
 
@@ -610,9 +570,9 @@ async fn refused_confirm_stub_ends_not_formed() {
     let (quote, q_rec_id, mut row, now) = setup_test_deal(&f, vec![comm], now + 3600).await;
     put_row(&f.host, AGREEMENTS, &q_rec_id, &row).await.unwrap();
 
-    let res =
-        decide::run_with_reservations(&f.host, &mut row, &quote, RefusingConfirmReservations, now)
-            .await;
+    f.scheduling.refuse_confirms("slot-expired");
+
+    let res = decide::run(&f.host, &mut row, &quote, now).await;
     assert_eq!(res, Ok(false));
 
     let dec_key = decision_id(&quote.signed.quote_id);
@@ -620,10 +580,10 @@ async fn refused_confirm_stub_ends_not_formed() {
     assert_eq!(dec.state, DecisionState::NotFormed);
     assert_eq!(dec.reason.as_deref(), Some("slot-expired"));
 
-    // Holds are released
-    let h_key = hold_id(&q_rec_id, "c1");
-    let hold: Option<HoldLedgerRow> = get_row(&f.host, LEDGER, &h_key).await.unwrap();
-    assert!(hold.is_none(), "holds must be released after confirm refusal");
+    assert!(
+        f.scheduling.is_released(&q_rec_id, "c1"),
+        "holds must be released after confirm refusal"
+    );
 }
 
 #[tokio::test]
@@ -633,14 +593,12 @@ async fn refused_confirm_with_crash_after_not_formed_snapshot_stays_not_formed_o
     let (comm, slot_id) = slot_commitment("c1", "listing_1", now + 1000, now + 4600);
     let (quote, q_rec_id, mut row, now) = setup_test_deal(&f, vec![comm], now + 3600).await;
     put_row(&f.host, AGREEMENTS, &q_rec_id, &row).await.unwrap();
+    f.scheduling.refuse_confirms("slot-expired");
 
     // Crash right after not-formed snapshot stored: on agreement row write
     f.host.crash_on_write("agreements", &q_rec_id);
 
-    let err =
-        decide::run_with_reservations(&f.host, &mut row, &quote, RefusingConfirmReservations, now)
-            .await
-            .expect_err("fault must fire");
+    let err = decide::run(&f.host, &mut row, &quote, now).await.expect_err("fault must fire");
     assert!(err.contains("injected crash"));
 
     // Snapshot 1 is stored as not-formed
@@ -651,10 +609,8 @@ async fn refused_confirm_with_crash_after_not_formed_snapshot_stays_not_formed_o
 
     f.host.restart();
 
-    // Another party holds and releases the slot; slot is free again
-    let s_key = seat_id(&slot_id, 1);
-    let seat: Option<serde_json::Value> = get_row(&f.host, LEDGER, &s_key).await.unwrap();
-    assert!(seat.is_none(), "seat was released");
+    // The seat was released, so the slot is free again.
+    assert_eq!(f.scheduling.held_seats(&slot_id), 0, "seat was released");
 
     // Repeat half delivery runs with real reservations (slot is free)
     let res = decide::run(&f.host, &mut row, &quote, now).await;

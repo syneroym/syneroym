@@ -128,14 +128,14 @@ export default async function globalSetup() {
     `--assets "${assetsArchive}" --asset-visibility public ` +
     `--custom-config "${path.join(MINIAPP_WASM_DIR, 'routes.json')}"`);
 
-  // --- Roym Hub: deploy the six-service SynApp and mint a delegated key ---
+  // --- Roym Hub: deploy the seven-service SynApp and mint a delegated key ---
 
-  // Deploy all six services through the real manifest so depends_on,
+  // Deploy all seven services through the real manifest so depends_on,
   // bindings, and topology_visibility are exercised in the browser path.
   // --mint-masters writes one member master per service to
   // <dir>/identities/member-roym#<service>-0.key; the manifest's
   // source/assets paths are workspace-root-relative, hence cwd: WORKSPACE_DIR.
-  console.log('Deploying the Roym app (six services)...');
+  console.log('Deploying the Roym app (seven services)...');
   node.owner(
     `app deploy roym crates/roym_core/app/roym.toml ` +
     `--mint-masters --registry-url ${registryUrl} ` +

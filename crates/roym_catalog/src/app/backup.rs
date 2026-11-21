@@ -7,7 +7,7 @@ use syneroym_app_host::{
     types::data_layer::{Mutation, RecordWriteValue},
 };
 use syneroym_roym_core::{
-    backup::{self, Bundle, ImportInput, SECTION_AVAILABILITY, SECTION_LISTINGS},
+    backup::{self, Bundle, ImportInput, SECTION_LISTINGS},
     clock,
     envelope::Response,
     listing,
@@ -16,9 +16,7 @@ use syneroym_roym_core::{
     signing,
 };
 
-use super::{
-    AVAILABILITY, LISTINGS, SCHEMA_VERSION, ensure_availability, ensure_coll, ensure_listings,
-};
+use super::{LISTINGS, SCHEMA_VERSION, ensure_coll, ensure_listings};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CatalogImportOutput {
@@ -34,15 +32,7 @@ pub(crate) async fn export<H: AppHost>(host: &H, _: NoParams) -> Reply<Bundle> {
     if let Err(e) = ensure_listings(host).await {
         return Err(Response::internal_error(e));
     }
-    if let Err(e) = ensure_availability(host).await {
-        return Err(Response::internal_error(e));
-    }
-    let sections = match backup::collect_sections(
-        host,
-        &[(SECTION_LISTINGS, LISTINGS), (SECTION_AVAILABILITY, AVAILABILITY)],
-    )
-    .await
-    {
+    let sections = match backup::collect_sections(host, &[(SECTION_LISTINGS, LISTINGS)]).await {
         Ok(s) => s,
         Err(e) => return Err(Response::internal_error(e)),
     };
@@ -72,7 +62,6 @@ pub(crate) async fn import<H: AppHost>(host: &H, input: ImportInput) -> Reply<Ca
     for (name, records) in &bundle.sections {
         let collection = match name.as_str() {
             SECTION_LISTINGS => LISTINGS,
-            SECTION_AVAILABILITY => AVAILABILITY,
             other => return Err(Response::invalid_params(format!("unknown section '{other}'"))),
         };
         let mut muts = Vec::new();

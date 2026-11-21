@@ -1,0 +1,82 @@
+{
+  "manifest": {
+    "bundle_version": "number",
+    "sections": {
+      "availability": {
+        "digest": "string",
+        "record_count": "number",
+        "schema_version": "number"
+      },
+      "reservations": {
+        "digest": "string",
+        "record_count": "number",
+        "schema_version": "number"
+      }
+    },
+    "subject_did": "string"
+  },
+  "manifest_signature": "string",
+  "sections": {
+    "availability": [
+      {
+        "id": "string",
+        "payload": {
+          "capacity": "number",
+          "end_secs": "number",
+          "listing_id": "string",
+          "slot_id": "string",
+          "start_secs": "number"
+        }
+      }
+    ],
+    "reservations": [
+      {
+        "id": "string",
+        "payload": {
+          "agreement": "string",
+          "commitment_id": "string",
+          "created_at_secs": "number",
+          "expires_at_secs": "null",
+          "generation": "number",
+          "kind": "rsv",
+          "round": "number",
+          "seat": "number",
+          "slot_id": "string"
+        }
+      },
+      {
+        "id": "string",
+        "payload": {
+          "at_secs": "number",
+          "kind": "decided",
+          "state": "confirmed"
+        }
+      },
+      {
+        "id": "string",
+        "payload": {
+          "at_secs": "number",
+          "kind": "free",
+          "why": "string"
+        }
+      },
+      {
+        "id": "string",
+        "payload": {
+          "generation": "number",
+          "kind": "key"
+        }
+      },
+      {
+        "id": "string",
+        "payload": {
+          "kind": "seat",
+          "reservation": "string",
+          "round": "number",
+          "seat": "number",
+          "slot_id": "string"
+        }
+      }
+    ]
+  }
+}

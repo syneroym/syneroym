@@ -3,14 +3,13 @@
 use std::cmp::Reverse;
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use syneroym_app_host::{
     AppHost, AppSigning,
     types::signing::{Principal, RecordDraft},
 };
 use syneroym_roym_core::{
     clock,
-    deal::{Commitment, DealTerms, ResourceKind, SignedTerms, transition::track_end},
+    deal::{DealTerms, SignedTerms, transition::track_end},
     envelope::Response,
     lang::LangTag,
     method::{self, DisclosedVerdict, DisclosedVerifyInput, ParamError, Reply},
@@ -27,7 +26,7 @@ use syneroym_roym_core::{
 use super::{
     AGREEMENTS, AgreementRow, OutgoingCard, QUOTES, RecordPointerRow, SendState,
     default_list_limit_u64, disclosures, ensure_collections, extension_rules, get_row,
-    hold::{Reservations, ReserveOutcome, SeatLedger},
+    hooks::{self, ExtensionHooks},
     is_deal_ended, progress_ops, put_row, resolve_principal_and_owner, send_card_and_file,
 };
 
@@ -176,7 +175,7 @@ pub(crate) async fn accept_at<H: AppHost>(
 
     extension_rules::require_known_extensions_given_by(&row.terms, role)?;
 
-    reserve_counterparty_slots(host, &input.quote_record_id, &row.terms.commitments, now).await?;
+    reserve_counterparty_slots(host, &input.quote_record_id, &row.terms).await?;
 
     let half = sign_agreement_receipt(
         host,
@@ -260,46 +259,24 @@ async fn check_quote_acceptance_eligibility<H: AppHost>(
 async fn reserve_counterparty_slots<H: AppHost>(
     host: &H,
     quote_record_id: &str,
-    commitments: &[Commitment],
-    now: u64,
+    terms: &DealTerms,
 ) -> Result<(), Response> {
-    let reservations = SeatLedger;
-    let mut reserved = Vec::new();
-    for c in commitments {
-        if c.giver == DealRole::Counterparty && c.resource_kind == ResourceKind::ServiceInSlot {
-            let slot_id = c
-                .details
-                .as_ref()
-                .and_then(|d| d.data.get("slot_id"))
-                .and_then(Value::as_str)
-                .ok_or_else(|| Response::invalid_params("missing slot_id"))?;
-            match reservations.reserve(host, quote_record_id, &c.commitment_id, slot_id, now).await
-            {
-                Ok(ReserveOutcome::Held { .. } | ReserveOutcome::AlreadyHeld { .. }) => {
-                    reserved.push(c.commitment_id.clone());
-                }
-                Ok(outcome @ (ReserveOutcome::SlotUnavailable | ReserveOutcome::SlotTaken)) => {
-                    for cid in &reserved {
-                        let _ = reservations.release(host, quote_record_id, cid).await;
-                    }
-                    let reason = if outcome == ReserveOutcome::SlotUnavailable {
-                        "slot-unavailable"
-                    } else {
-                        "slot-taken"
-                    };
-                    return Err(Response::invalid_params("reserve-failed")
-                        .with_data(serde_json::json!({ "reason": reason })));
-                }
-                Err(e) => {
-                    for cid in &reserved {
-                        let _ = reservations.release(host, quote_record_id, cid).await;
-                    }
-                    return Err(Response::internal_error(e));
-                }
-            }
-        }
+    let hooks = ExtensionHooks;
+    let reserved = hooks::reserve_each(
+        host,
+        &hooks,
+        quote_record_id,
+        hooks::reserved_by(terms, DealRole::Counterparty),
+    )
+    .await;
+    let Some(stop) = reserved.stopped else { return Ok(()) };
+    // Nothing is signed, so nothing may stay held, after a fault too.
+    hooks::release_each(host, &hooks, quote_record_id, &reserved.held).await;
+    match stop {
+        hooks::Stop::Refused(reason) => Err(Response::invalid_params("reserve-failed")
+            .with_data(serde_json::json!({ "reason": reason }))),
+        hooks::Stop::Fault(fault) => Err(Response::internal_error(fault)),
     }
-    Ok(())
 }
 
 fn viewed_error(field: &str, message: impl Into<String>) -> Response {
@@ -509,15 +486,7 @@ pub(crate) async fn get_at<H: AppHost>(
             && agr.quote_author.is_none()
             && now >= agr.terms.quote_expires_at_secs
         {
-            let reservations = SeatLedger;
-            for c in &agr.terms.commitments {
-                if c.giver == DealRole::Counterparty
-                    && c.resource_kind == ResourceKind::ServiceInSlot
-                {
-                    let _ =
-                        reservations.release(host, &agr.quote_record_id, &c.commitment_id).await;
-                }
-            }
+            hooks::release_after_quote_expiry(host, &ExtensionHooks, agr, now).await;
         }
     }
 
