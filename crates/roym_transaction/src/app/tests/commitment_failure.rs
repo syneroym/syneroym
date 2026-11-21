@@ -8,11 +8,15 @@ use syneroym_app_host::types::proxy::ProxyError;
 use syneroym_roym_core::{
     commitment_failure::{FailureReason, verify_commitment_failure},
     deal::{Commitment, transition::CommitmentState},
+    progress::AgreementState,
     signing::{CERTIFICATE_ID, CERTIFICATES, StoredCertificate},
     transaction::DealRole,
 };
 
-use super::step::{StepDeal, slot_deal};
+use super::{
+    commitment_failure_writer::agreement,
+    step::{StepDeal, slot_deal},
+};
 use crate::app::{
     AGREEMENTS, AgreementRow, LEDGER, get_row,
     hooks::{ExtensionHooks, Reservations},
@@ -33,10 +37,6 @@ async fn counterparty_deal() -> StepDeal {
     let held = ExtensionHooks.reserve(&deal.fix.host, &deal.agreement, &slot(&row)).await;
     held.expect("the node reserves its own seat");
     deal
-}
-
-async fn agreement(deal: &StepDeal) -> AgreementRow {
-    get_row(&deal.fix.host, AGREEMENTS, &deal.agreement).await.unwrap().expect("agreement row")
 }
 
 fn slot(row: &AgreementRow) -> Commitment {
@@ -75,7 +75,7 @@ fn sent_failures(deal: &StepDeal) -> Vec<Value> {
 }
 
 #[tokio::test]
-async fn a_confirm_that_works_is_recorded_and_not_asked_again() {
+async fn a_confirmed_commitment_is_not_confirmed_again() {
     let deal = counterparty_deal().await;
     assert_eq!(pass(&deal, deal.agreed_at + 5).await, 0);
     assert!(deal.fix.scheduling.is_confirmed(&deal.agreement, "c1"));
@@ -236,7 +236,7 @@ async fn nothing_is_confirmed_before_the_writer_countersigned() {
 async fn nothing_is_confirmed_once_the_agreement_has_ended() {
     let deal = counterparty_deal().await;
     edit_agreement(&deal, |row| {
-        row.state = Some(syneroym_roym_core::progress::AgreementState::Closed);
+        row.state = Some(AgreementState::Closed);
     })
     .await;
     assert_eq!(pass(&deal, deal.agreed_at + 5).await, 0);
@@ -288,6 +288,7 @@ mod snapshot {
     };
 
     use super::super::{
+        TestFixture,
         accept::{build_and_sign_quote, slot_commitment},
         fixture,
         settle::incoming_card_row,
@@ -315,7 +316,7 @@ mod snapshot {
     }
 
     async fn file(
-        f: &super::super::TestFixture,
+        f: &TestFixture,
         author: &Identity,
         payload: &AgreementProgressPayload,
         msg: &str,

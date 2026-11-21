@@ -1,4 +1,8 @@
-use syneroym_roym_core::method::scheduling::{ReservationState, code};
+use syneroym_app_host::AppDataLayer;
+use syneroym_roym_core::{
+    method::scheduling::{ReservationState, code},
+    testing::TestHost,
+};
 
 use super::{NOW, code_of, host, key, reserve_input, row_ids, slot};
 use crate::app::{
@@ -11,9 +15,7 @@ use crate::app::{
 
 const DUE: u64 = NOW + RESERVATION_TTL_SECS;
 
-async fn decision_of(host: &syneroym_roym_core::testing::TestHost, id: &str) -> Option<Decision> {
-    use syneroym_app_host::AppDataLayer;
-
+async fn decision_of(host: &TestHost, id: &str) -> Option<Decision> {
     let row = AppDataLayer::get(host, RESERVATIONS.to_string(), id.to_string()).await.unwrap()?;
     match serde_json::from_slice(&row.payload).unwrap() {
         Row::Decided(d) => Some(d.state),

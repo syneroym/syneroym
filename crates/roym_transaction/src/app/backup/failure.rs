@@ -1,6 +1,8 @@
 //! Backup checks for the ledger rows of reservation upkeep: the `confirmed:`
 //! and `failure:` rows, and the per-commitment form of the `released:` row.
 
+use std::fmt;
+
 use serde_json::Value;
 use syneroym_roym_core::{
     commitment_failure::verify_commitment_failure, envelope::Response, transaction::DealRole,
@@ -12,7 +14,7 @@ use super::{
     sections::ValidatedLedgerRow,
 };
 
-fn invalid(id: &str, what: impl std::fmt::Display) -> Response {
+fn invalid(id: &str, what: impl fmt::Display) -> Response {
     Response::invalid_params(format!("ledger '{id}': {what}"))
 }
 

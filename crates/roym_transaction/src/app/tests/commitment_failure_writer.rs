@@ -110,7 +110,7 @@ pub(super) async fn card(fix: &TestFixture, msg: &str) -> CardRow {
     get_row(&fix.host, CARDS, msg).await.unwrap().expect("the card row")
 }
 
-async fn agreement(deal: &StepDeal) -> AgreementRow {
+pub(super) async fn agreement(deal: &StepDeal) -> AgreementRow {
     get_row(&deal.fix.host, AGREEMENTS, &deal.agreement).await.unwrap().expect("agreement row")
 }
 

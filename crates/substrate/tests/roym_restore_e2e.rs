@@ -19,8 +19,9 @@ use syneroym_roym_core::transaction::DEFAULT_DATA_USE_NOTICE;
 
 mod common;
 
-use common::roym::{
-    RoymNode as Node, fast_conversation_role, roym_artifacts_present, wait_delivered,
+use common::{
+    roym::{RoymNode as Node, fast_conversation_role, roym_artifacts_present, wait_delivered},
+    roym_flow::seat_is_taken,
 };
 
 /// The transaction bundle is exported before the scheduling bundle: a booking
@@ -50,19 +51,6 @@ async fn import_bundles(node: &Node, bundles: &serde_json::Map<String, Value>) {
             assert!(res.get("error").is_none(), "{svc} import: {res:?}");
         }
     }
-}
-
-/// Whether the node holds a live reservation for `agreement`: a reservation
-/// row in the scheduling bundle that no `free:` row ends.
-async fn seat_is_taken(node: &Node, agreement: &str) -> bool {
-    let bundle = node.rpc_ok("scheduling.export", json!({})).await;
-    let rows = bundle["sections"]["reservations"].as_array().expect("reservations section");
-    rows.iter().any(|row| {
-        let id = row["id"].as_str().unwrap_or_default();
-        let Some(reservation) = id.strip_prefix("rsv:") else { return false };
-        row["payload"]["agreement"] == agreement
-            && !rows.iter().any(|other| other["id"] == format!("free:{reservation}"))
-    })
 }
 
 /// Imports the bundles with the transaction bundle before the scheduling
