@@ -147,10 +147,14 @@ progress-state-ended-unconfirmed = खत्म, पुष्टि नहीं
 
 commitment-state-promised = वादा किया
 commitment-state-payment-requested = भुगतान का अनुरोध किया
+commitment-state-claimed = दावा किया गया
 commitment-state-fulfilled = पूरा हुआ
 commitment-state-acknowledged = स्वीकार किया
 commitment-state-ended-unconfirmed = समाप्त, अपुष्ट
-commitment-state-other-failed = अन्य विफल
+commitment-state-failed = विफल
+commitment-state-cancelled = रद्द
+commitment-reason-reservation-lost = स्लॉट किसी और को दे दिया गया
+commitment-reason-other-commitment-failed = डील का दूसरा हिस्सा विफल हो गया
 
 commitment-you-give = आप देते हैं: { $description }
 commitment-other-gives = { $name } देते हैं: { $description }
@@ -530,6 +534,8 @@ messages-decline-note = उन्हें दिखेगा कि आपन�
 messages-decline-note-placeholder = वैकल्पिक नोट
 messages-decline-confirm = अस्वीकार की पुष्टि करें
 messages-decline-failed = अस्वीकार नहीं हो सका: { $detail }
+commitment-failure-title = डील का यह हिस्सा आगे नहीं बढ़ सकता
+commitment-failure-reservation-lost = स्लॉट किसी और को दे दिया गया।
 decline-title = अस्वीकृत
 quote-superseded = नए कोटेशन द्वारा प्रतिस्थापित
 quote-expired = समझौता बनने से पहले कोटेशन समाप्त हो गया

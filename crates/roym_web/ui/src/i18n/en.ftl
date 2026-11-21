@@ -154,10 +154,14 @@ progress-state-ended-unconfirmed = Ended, unconfirmed
 
 commitment-state-promised = Promised
 commitment-state-payment-requested = Payment requested
+commitment-state-claimed = Claimed
 commitment-state-fulfilled = Fulfilled
 commitment-state-acknowledged = Acknowledged
 commitment-state-ended-unconfirmed = Ended, unconfirmed
-commitment-state-other-failed = Other failed
+commitment-state-failed = Failed
+commitment-state-cancelled = Cancelled
+commitment-reason-reservation-lost = The slot was given to someone else
+commitment-reason-other-commitment-failed = Another part of the deal failed
 
 commitment-you-give = You give: { $description }
 commitment-other-gives = { $name } gives: { $description }
@@ -543,6 +547,8 @@ messages-decline-note = They will see that you declined. To ask for changes, sen
 messages-decline-note-placeholder = Optional note
 messages-decline-confirm = Confirm Decline
 messages-decline-failed = Decline failed: { $detail }
+commitment-failure-title = This part of the deal cannot go ahead
+commitment-failure-reservation-lost = The slot was given to someone else.
 decline-title = Declined
 quote-superseded = Superseded by a newer quote
 quote-expired = The quote expired before agreement formed
