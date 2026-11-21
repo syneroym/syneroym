@@ -11,6 +11,7 @@ pub mod area;
 pub mod backup;
 pub mod card;
 pub mod clock;
+pub mod commitment_failure;
 pub mod conversation;
 pub mod deal;
 pub mod directory;

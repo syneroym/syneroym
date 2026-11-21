@@ -12,6 +12,7 @@ use syneroym_signed_record::decode_disclosure;
 
 use crate::{
     area::Area,
+    commitment_failure::{CommitmentFailurePayload, FailureReason},
     deal::{
         Answers, Commitment, CommitmentKind, DealTerms, ExtensionRef, LocalText, ResourceKind,
         SettlementRole, TextTranslation, transition::CommitmentState,
@@ -438,6 +439,17 @@ fn an_agreement_and_its_receipts_say_no_old_word() {
         assert_no_old_words("fulfilment-receipt", &fulfilment);
         assert_no_old_words_in_disclosures("fulfilment", &disclosures);
     }
+}
+
+#[test]
+fn the_commitment_failure_record_says_no_old_word() {
+    let failure = CommitmentFailurePayload {
+        agreement: "rec_agreement".to_string(),
+        conversation: "conv_1".to_string(),
+        commitment_id: "c1".to_string(),
+        reason: every!(FailureReason, [FailureReason::ReservationLost])[0],
+    };
+    assert_no_old_words("commitment-failure", &failure);
 }
 
 #[test]
