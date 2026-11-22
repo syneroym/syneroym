@@ -699,3 +699,325 @@ codes, no lost comments; the files stay under their size limits, and
 lints pass.
 
 **Open after the close-out check: 0.**
+
+## Code review round 2 — Claude Opus 5.5 (Claude Code), 2026-11-21
+
+Reviewed part C3b2, PR [#379](https://github.com/syneroym/syneroym/pull/379)
+(draft), branch `feat/m08c-c3b2-reservation-expiry` at `920671a7`, with
+`git diff origin/main...HEAD` (57 files). This is the main checkout
+(`git rev-parse --git-dir` is `.git`). `git pull` said "Already up to
+date". This is the first code review of C3b2. Round 1 (R1 to R9, C3b1) is
+closed and was not checked again. The review prompt names Gemini 3.8 Flash
+as the author, but every commit of the branch and the status row name
+Claude Sonnet 5.5; the cross-tool rule holds either way.
+
+Read: AGENTS.md, session-strategy.md ("The review file"), the plan (the
+C3b2 parts: Q4, Q5, Q6, section 2.2, sections 3 and 4, D-C3b-5, -7, -10
+to -14, sections 6.2, 7, 8, 9 and 10), this file, the code review rounds
+of the C1, C2 and C3a review files, and the three change docs
+(roym-extensions, roym-agreements, roym-value-exchange) with their C3b2
+Deviations.
+
+CI (`gh pr checks 379`): every job passes on `920671a7` (the six test
+shards, Playwright E2E, "Lints, licenses & checks", CLA). I did not run
+the full suite or `mise run verify`. I ran `cargo nextest run -p
+syneroym-roym-core -p syneroym-roym-scheduling -p syneroym-roym-transaction
+-p syneroym-roym-catalog`: 717 passed, 0 skipped, the count of the status
+row. I wrote two temporary tests to prove R10 and R11, ran them, and
+removed them (the working tree is clean). I changed no code.
+
+**Summary: 9 findings (R10 to R18): 0 blocker, 1 major, 8 minor.**
+
+### What was checked and found correct
+
+- **The lapse is one fence (focus 1).** `lapse` creates `decided:`
+  (`lapsed`) and `free:` (`lapsed`) in one `create`. A confirm that comes
+  first owns `decided:`, so the lapse writes nothing and the seat stays
+  taken. A release that comes first owns `free:`, so the lapse writes
+  nothing and `is_free` answers true. Of two takers, one `create` of the
+  next round works (`two_takers_of_one_lapsed_seat_give_it_to_one`).
+  `confirm_at` re-reads `decided:` after a lost `create` and refuses a
+  `lapsed` one with `reservation-lost`. `confirm` creates only a `decided:`
+  row and never a `seat:` or `rsv:` row
+  (`confirm_never_creates_a_seat_row_after_a_lapse`, and the C3b1 test).
+  The boundary is tested at 899 seconds (`slot-taken`), 900 and 901
+  seconds (taken): `expires_at_secs` is "the time from which another
+  booking may take the seat". A missing `rsv:` row (a stopped import) and
+  an expiry of `None` keep their seat.
+- **One signed failure per refused confirm (focus 2).** `make_failure`
+  signs first; a signing error returns 1 with no row. The row is created
+  with `create` before the send, and a lost race reuses the stored row.
+  `send_failure` sends the stored envelope and sets `message_id` only when
+  the send works; the next sync sends the same record. A hook fault is not
+  a refusal. `unsent_failures` reaches `SyncOutput` and the method shape.
+  The tests for each case exist and prove it
+  (`a_send_error_resends_the_stored_failure`,
+  `a_failure_that_cannot_be_signed_is_retried_and_reported`,
+  `sync_runs_the_confirm_pass_and_reports_unsent_failures`).
+- **The five rules of D-C3b-12 (focus 3).** Rule 1: disclosures refused
+  before verification, `verify_commitment_failure` checks type, version,
+  subject = `agreement` and no expiry. Rule 2: only the writer, only
+  `agreed`. Rule 3: the commitment exists, its giver is
+  `DealRole::Counterparty`, and the verified `issuer` (the person, not the
+  signing key) equals the agreement's `counterparty_did`. Rule 4:
+  `needs_reservation`. Rule 5: no half in the writer's latest snapshot, and
+  the transition table refuses a commitment that moved on. The snapshot
+  has `failed` with `reservation-lost`, `cancelled` with
+  `other-commitment-failed` for the open ones, and `closed` when all are
+  final (`the_writer_marks_the_commitment_failed_and_cancels_the_others`,
+  parity scenario 251). A repeat card finds the `failure:` row and makes
+  no second snapshot; another record for the same commitment is refused.
+- **`release_ended` (focus 4).** It skips every commitment whose snapshot
+  entry has a half, for `all` too (`a_commitment_with_a_half_is_never_released`).
+  It replaces the two state checks in `finalize_snapshot` and
+  `apply_newer_snapshot`, and the sync tick retries it through
+  `release_ended_of_row` until the `released:<agreement>:<commitment>`
+  row exists. The writer's not-formed path and the recovery release are
+  covered by that retry, because the writer's row is stored `not-formed`.
+  The refused accept is not (R14).
+- **Imports (focus 5).** `transaction.import` checks `confirmed:`,
+  `failure:` (record verifies, row matches, issuer is the giver of that
+  commitment of a quote in the bundle) and both `released:` forms against a
+  held agreement and commitment; `commitment-failure` is in the re-verify
+  match. `rebuild_card_data` needs no arm: the card has no disclosures,
+  and the `deal-decline` card works the same way. The `scheduling` import
+  is unchanged and keeps its write order and its refusal of changed rows;
+  `a_lapsed_reservation_stays_lost_and_its_taker_keeps_the_seat_after_a_restore`
+  imports a bundle with lapse rows twice.
+- **Lists and counts (focus 6).** `("commitment-failure", 1)` is in
+  `RECORD_TYPES`, `CARD_TYPES` and the Hub registry; `wire_words.rs` has a
+  sample; `samples.json` and the gallery test list ten types; the living
+  docs say ten card types and fifteen record types (I counted fifteen in
+  `RECORD_TYPES`). The Hub's progress card now reads `reason` (the field
+  the Rust `CommitmentProgress` writes; it read `state_reason` before).
+- **The two-node test (focus 7).** `roym_reservation_e2e.rs` boots both
+  nodes through `RoymNode::boot` and the shared `SubstrateNode` builder
+  (dynamic ports); its one large literal is a time, not a port. It proves
+  Y's reserve and confirm, the writer's snapshot and close, one failure
+  card, Y's release and a second booking of the freed seat. Its name and
+  one doc sentence claim more (R15).
+- **C3b1 close-out (focus 8).** `68cd68b4`: the C3b1 row says Merged as
+  `a46cc98d` (PR #378), and all C3b1 boxes of section 10 are ticked with
+  their reasons.
+- **Docs (focus 9).** "One way out of an end state" is corrected in the
+  agreements doc. The EX-20, EX-22, lazy-lapse, constant-expiry and
+  import-order Deviations are in roym-extensions; AG-16, `conversation`,
+  the one reason, the late half and `unsent_failures` are in
+  roym-agreements. Two gaps (R14, R16).
+- **Sizes and Hindi (focus 10).** task.md section 1: `transaction`
+  +50,376 bytes (+2.20%, limit +15%), `scheduling` +2,451 (limit +40 KB),
+  the other five unchanged. The status row lists the seven new Hindi
+  messages and the removed one for the owner.
+- **Rules.** New production files are under 800 lines (`sync.rs` 760,
+  `backup.rs` 785, `hooks.rs` 456); match arms stay short
+  (`dispatch_later_card`); no planning ids in new comments; the new
+  backlog rows of section 8 exist; the `RECORD_TYPES` row is updated.
+
+### New findings
+
+- [x] **R10 — major.** *Where:* `crates/roym_scheduling/src/app/reservation.rs:276`
+  to `:283` (`claim`); the plan's D-C3b-5 pseudo-code has the same order.
+  *Problem:* `claim` walks the seats from 1 and calls `seat_is_free` on
+  each occupant, and `seat_is_free` lapses an expired unconfirmed occupant
+  at once. So a reserve lapses the reservation on seat 1 even when seat 2
+  (or a freed seat later in the list) is free. Q4 and EX-22 say an expired
+  reservation "counts as free when another reserve needs the seat"; this
+  reserve did not need it.
+  *Failure case:* proved with a temporary test (removed). Slot of capacity
+  2. A reserves at `NOW`. B reserves at `NOW + 901`: B is `Held` on seat 1,
+  A has `decided:` `lapsed`, and seat 2 was never used. A's confirm at
+  `NOW + 902` is refused `reservation-lost`. In a real deal A is the
+  counterparty of a group lesson whose writer countersigned after 15
+  minutes: Y's node signs a `commitment-failure`, the writer closes the
+  deal, and both people read "The slot was given to someone else" while a
+  seat was free.
+  *Fix:* in `claim`, take a seat that is free without a lapse first (no
+  occupant, or a `free:` row), and lapse an expired occupant only when no
+  such seat is left (a second pass over the same `seats`). Add a test in
+  `tests/lapse.rs`: capacity 2, A at `NOW`, B at `DUE + 1`; B holds seat
+  2, no `decided:` row exists, and A's confirm succeeds. Record the change
+  to the D-C3b-5 pseudo-code under the extensions doc's C3b2 Deviations.
+  *Status:* Fixed (bee1ebf5). Agreed. `claim` now makes two passes: the first takes only a seat that is free already (never used, or ended by a `free:` row), and the second lapses an expired, unconfirmed occupant. The seat attempt moved to `try_seat`. New tests in `tests/lapse.rs`: `a_free_seat_is_taken_before_an_expired_reservation_is_lapsed` (capacity 2: B holds seat 2, no `decided:` row, A's confirm works) and `an_expired_reservation_is_lapsed_when_no_seat_is_free`. The change to the pseudo-code is in the extensions doc's C3b2 Deviations.
+
+- [x] **R11 — minor.** *Where:* `crates/roym_transaction/src/app/sync/failure.rs:101`
+  to `:104`, `:42`.
+  *Problem:* The writer runs the transition (`apply_failure`) and stores
+  the `failure:` row after it. If the store fails or the node stops in
+  between, the card row is not written and the sync does not advance, so
+  the next sync files the same card again. It finds no `failure:` row and
+  runs the five rules again, but the agreement is now `closed` (or the
+  transition is a repeat), so rule 2 refuses it.
+  *Failure case:* proved with a temporary test (removed):
+  `crash_on_write(LEDGER, "failure:")`, file the card (it fails after the
+  snapshot), restart, file it again: the snapshot shows `c1` `failed` and
+  the agreement `closed`, but the card is stored refused with "the
+  agreement is not agreed" and no `failure:` row exists. The Hub shows the
+  failure as a refused card, and the writer's backup has no record of it.
+  *Fix:* create the `failure:` row first (a `create`), then run the
+  transition. On a repeat whose `record_id` matches, run the transition
+  again when the latest snapshot does not yet show the commitment
+  `failed` (it answers `Ok(None)` when it does). Add the crash test above.
+  *Status:* Fixed (bee1ebf5). Agreed. The `failure:` row is created before the transition. A card whose row exists with the same record runs the transition again unless the latest snapshot already shows the commitment `failed`. A card whose transition is refused deletes the row it created, so a refused card leaves no row. New tests `a_stop_before_the_snapshot_does_not_lose_the_failure` (`crash_on_write` of the snapshot, then the same card is filed and not refused) and `a_refused_transition_leaves_no_failure_row`.
+
+- [x] **R12 — minor.** *Where:* `crates/roym_transaction/src/app/sync/confirm.rs:100`
+  to `:102`; extensions doc and agreements doc C3b2 Deviations ("Every
+  refused confirm is signed as `reservation-lost`").
+  *Problem:* Every refusal of `confirm` signs a failure, also
+  `reservation-unknown`. That code means the scheduling store has no
+  reservation for the key, which also happens during a restore in the
+  order "transaction first". D-C3b-16 promises that a restore in either
+  order ends with every agreed seat taken after the documented repeat.
+  A signed failure cannot be undone.
+  *Failure case:* Y (counterparty) accepts and reserves; Y's node is
+  backed up before the writer's half arrives; Y restores the
+  `transaction` bundle first (its reserve-again fails `slot-unavailable`,
+  listed in `reservations_failed`). The writer's half then arrives, and the
+  Hub's next sync confirms: `reservation-unknown`. Y signs a
+  `commitment-failure` and the deal closes, before Y can import the
+  `scheduling` bundle and repeat the import as the docs say.
+  *Fix:* for `reservation-unknown`, do what the import does: call
+  `reserve` again, then `confirm`, and sign a failure only when that
+  reserve or confirm is refused. Keep `reservation-lost` as today. Add a
+  test with the fake that has no reservation for the key, and correct the
+  Deviation line.
+  *Status:* Fixed (bee1ebf5). Agreed. A `reservation-unknown` answer to `confirm` now makes the node reserve again and confirm, as the import does; only a refused new reserve or confirm is signed as `reservation-lost`. Any other refusal is signed as before. New tests `a_missing_reservation_is_taken_again_and_confirmed`, `a_missing_reservation_that_cannot_be_taken_again_is_a_lost_reservation` and `any_other_refusal_of_a_confirm_is_a_lost_reservation`. The old test that signed a failure for `reservation-unknown` is replaced. The Deviation and the backlog row are corrected.
+
+- [x] **R13 — minor.** *Where:* `crates/roym_transaction/src/app/sync.rs:131`
+  to `:136`.
+  *Problem:* The confirm pass returns its storage errors with `?`, after
+  the watermark is stored and before the tick and
+  `recover_deciding_rows`, whose errors are ignored. On `main`, nothing
+  between the watermark and the end of `sync_at` could fail the call. This
+  new error path is not in the plan.
+  *Failure case:* a failing `put_row` of a `confirmed:` marker, or a
+  failing ledger read, makes `transaction.sync` answer `internal_error`.
+  The cards were filed, but the caller gets no counts, and the writer's
+  decision recovery and the tick do not run in that sync. While the error
+  lasts, every sync of that conversation skips them.
+  *Fix:* run the tick and the recovery first, or treat a confirm-pass
+  error like a tick error: count the commitment as not done (it is tried
+  again next sync) and still answer the stats. Add a test with
+  `fail_write(LEDGER, "confirmed:")` that the sync answers its stats.
+  *Status:* Fixed (bee1ebf5). Agreed. `confirm_own_reservations` no longer returns an error: a storage error stops only the commitment it happened on (the next sync does it again), and a failing agreement query counts as nothing to do. The tick and the recovery run as before. New test `a_storage_error_in_the_confirm_pass_does_not_fail_the_sync` (`fail_write` of `confirmed:`).
+
+- [x] **R14 — minor.** *Where:* `docs/planning/changes/roym-extensions/change.md:271`;
+  `docs/planning/deferred-backlog.md:680`;
+  `crates/roym_transaction/src/app/agreement_ops.rs:274`.
+  *Problem:* The Deviation and the backlog row say a failed release at a
+  refused accept "is repeated by the quote's expiry release and by that
+  same sync pass". Both work on stored agreement rows. A refused accept
+  stores no row: `load_or_init_agreement_row` builds it in memory, and the
+  only `put_row` is after the half is signed (`:198`). So nothing repeats
+  that release.
+  *Failure case:* the first reserve of an accept is held, the second is
+  refused, and the release of the first fails. No later call releases it.
+  The seat is freed only by a lapse, when another booking needs it after
+  15 minutes (the reservation is not confirmed). The docs tell a reader a
+  retry exists that does not.
+  *Fix:* say in both places that a reservation left by a refused accept is
+  never confirmed, so it lapses when another booking needs its seat
+  (EX-20); no retry exists for it.
+  *Status:* Fixed (bee1ebf5). Agreed, the claim was wrong. A refused accept stores no row, so nothing repeats its release. The Deviation and the backlog row now say that such a reservation is never confirmed and lapses when another booking needs its seat (EX-20), and that no retry exists for it. I did not add a retry: the plan's cases of a lost release are the ended agreements, and this one is bounded by the expiry.
+
+- [x] **R15 — minor.** *Where:* `crates/substrate/tests/roym_reservation_e2e.rs:260`;
+  `docs/planning/changes/roym-agreements/change.md:1467`.
+  *Problem:* The test is named `…_both_nodes_release`, and the AG-16
+  Deviation says "the release on both nodes are real". In the test only Y
+  holds a reservation: c2 is X's payment, with no reserve hook. X releases
+  nothing, and the test checks only Y's release. (The plan's 7.4 name has
+  the same words.)
+  *Failure case:* a reader believes the writer's release of its own ended
+  commitment is proved across two nodes. It is proved only in the service
+  test `each_giver_releases_the_reservations_of_ended_commitments`.
+  *Fix:* rename the test (for example
+  `the_writer_marks_a_failed_slot_and_the_giver_releases_it`) and say in
+  the Deviation that the giver's release is real across two nodes and the
+  writer's release is a service test.
+  *Status:* Fixed (bee1ebf5). Agreed. The test is renamed `the_writer_marks_a_failed_slot_and_the_giver_releases_it`, its header says what is real, and the AG-16 Deviation says that the giver's release is real across two nodes and the writer's release is the service test `each_giver_releases_the_reservations_of_ended_commitments`.
+
+- [x] **R16 — minor.** *Where:* `docs/planning/changes/roym-agreements/change.md:1244`
+  to `:1246` and the C3b2 notes at `:1465`; `docs/planning/changes/roym-extensions/change.md:272`.
+  *Problem:* Section 9 of the plan asks the agreements Deviations to record
+  AG-36's snapshot and release part, which closes the C1 note "The
+  snapshot and the release come in C3b". The C3b2 notes do not say it, so
+  the C1 note still reads as open. The note on the shape of
+  `release_ended` (it reads the agreement row, not only a snapshot) is in
+  the extensions doc, but `release_ended` is the per-commitment release of
+  AG-36 (D-C3b-12), which the agreements doc owns.
+  *Failure case:* the change doc's close-out cannot tell from the
+  Deviations that AG-36 is fully met, and looks for the `release_ended`
+  rule in the wrong doc.
+  *Fix:* add one C3b2 line to the agreements Deviations: AG-36's snapshot
+  (cascade in the same snapshot, `closed` when all are final) and the
+  release by each giver are built, closing the C1 note, proved by
+  `tests/commitment_failure_writer.rs` and `roym_reservation_e2e`. Move the
+  `release_ended` line there.
+  *Status:* Fixed (bee1ebf5). Agreed. The agreements Deviations have a new AG-36 line (the cascade in one snapshot and the release by each giver, closing the C1 note), and the `release_ended` line moved there from the extensions doc, which now points to it.
+
+- [x] **R17 — minor.** *Where:* `crates/roym_transaction/src/app/tests/commitment_failure.rs:198`
+  to `:211`.
+  *Problem:* The plan's 7.3 case (review P4) is: the counterparty accepts,
+  its clock passes the quote's expiry, `agreement.get` releases the seat,
+  then the writer's half (signed before the expiry) is filed, the deal
+  moves to `agreed`, and the confirm is refused. The test starts from a row
+  that already holds the writer's half, releases with a direct hook call,
+  and runs only the confirm pass. It does not run `agreement.get`'s
+  release (and its `released:<agreement>` marker), and it does not file a
+  late half.
+  *Failure case:* a change that refuses a late half after the expiry
+  release, or that lets the `released:` marker stop the confirm pass,
+  would not fail this test. The test proves the last step only.
+  *Fix:* build the row with no writer half, call `agreement.get_at` after
+  the expiry (check the hook release and the marker), then file the
+  writer's countersigned half with `issued_at_secs` before the expiry
+  (as `counterparty_files_author_countersigned_half_delivered_after_expiry` in `tests/accept.rs` does), then run the pass and check one failure.
+  *Status:* Fixed (bee1ebf5). Agreed. The test `a_late_half_after_the_expiry_release_gives_a_commitment_failure` now runs the whole case: accept, `agreement.get` after the expiry (hook release and the `released:` row checked), the writer's half signed before the expiry and delivered after it, `sync_at` (half filed, one failure signed and sent, the seat still released). The two helpers of `tests/accept.rs` are `pub(super)` for it.
+
+- [x] **R18 — minor.** *Where:* `crates/substrate/tests/roym_reservation_e2e.rs:237`
+  to `:239`.
+  *Problem:* `now_secs` writes
+  `std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)`,
+  an inline path with several `::`, which the import rule of AGENTS.md
+  forbids. The file already depends on `syneroym_roym_core`, which has
+  `clock::now_secs`.
+  *Failure case:* none at run time; the import cleanup pass missed it.
+  *Fix:* import `syneroym_roym_core::clock` and call `clock::now_secs()`;
+  drop the local function.
+  *Status:* Fixed (bee1ebf5). Agreed. `now_secs` is gone; the test uses `clock::now_secs()`.
+
+**Open after code review round 2: 0.** Fixed: 9 (R10 to R18), on the branch after `920671a7`. The reviewer checks the fixes.
+
+## Close-out check of code review round 2 — Claude Opus 5.5 (Claude Code), 2026-11-21
+
+Checked every item of code review round 2 against the fix commit
+`bee1ebf5` (`fix(roym): resolve C3b2 code review round 2`) and the docs
+commit `82c45089`, with `git diff 72588df6..HEAD`. Main checkout, branch
+`feat/m08c-c3b2-reservation-expiry`, `git pull`: "Already up to date". I
+changed no code.
+
+CI: `gh pr checks 379` passes every job on `82c45089`: all six test
+shards, Playwright E2E, "Lints, licenses & checks", CI Pipeline and CLA.
+I ran `cargo nextest run -p syneroym-roym-core -p syneroym-roym-scheduling
+-p syneroym-roym-transaction -p syneroym-roym-catalog`: 724 passed, 0
+skipped. This is the count in the status row.
+
+| Item | Check | Result |
+| --- | --- | --- |
+| R10 | `claim` makes two passes over the same `seats`. The first takes only a seat with no occupant or a freed one (`is_free`). The second calls `seat_is_free`, which may lapse. A lost `create` in the first pass is tried again in the second and loses again, so that is safe. The seat attempt moved to `try_seat` with the same order of checks (`create`, then the re-read of the key, then `Again`). `a_free_seat_is_taken_before_an_expired_reservation_is_lapsed` is the case of my temporary test, and it now passes the other way. `an_expired_reservation_is_lapsed_when_no_seat_is_free` keeps the lapse. The Deviation is in roym-extensions. | Fixed |
+| R11 | The `failure:` row is created before the transition. The transition runs again unless the agreement row shows the commitment `failed`. A refused transition of a new card deletes the row it made, and a repeat card keeps its row. `a_stop_before_the_snapshot_does_not_lose_the_failure` crashes on the snapshot write, then files the same card again: it is filed, not refused, the agreement is `closed`, and the row exists. `a_refused_transition_leaves_no_failure_row` covers the delete. | Fixed |
+| R12 | `confirm_or_retake`: when the confirm answers `reservation-unknown`, the node reserves, then confirms again. Only a refused reserve or confirm goes on to `make_failure`. A fault stays a fault. There are three tests: a reserve taken again and confirmed, a refused reserve that signs one failure, and another code that signs with no new reserve. The Deviation and the backlog row are corrected. | Fixed |
+| R13 | `confirm_own_reservations` returns `u32`. A failed agreement query counts as 0, and a storage error drops only that commitment (`unwrap_or(0)`). `sync_at` no longer has the `?`, so the tick and the recovery always run. `a_storage_error_in_the_confirm_pass_does_not_fail_the_sync` uses `fail_write` on `confirmed:`. | Fixed |
+| R14 | The extensions Deviation, the new agreements line and the backlog row now say the same thing: a release after a refused accept is not repeated, because no agreement row exists for it. The reservation is never confirmed, so it lapses (EX-20). | Fixed |
+| R15 | The test is renamed `the_writer_marks_a_failed_slot_and_the_giver_releases_it`, and its header and the AG-16 Deviation say that the writer's release is the service test. | Fixed |
+| R16 | The agreements Deviations have an AG-36 line that closes the C1 note, and the `release_ended` line has moved there. | Fixed |
+| R17 | `late_half::a_late_half_after_the_expiry_release_gives_a_commitment_failure` runs `accept_at`, then `get_at` after the expiry (it checks the hook release and the `released:` row). It then delivers the writer's half, signed at `now + 50` and delivered after the expiry, and runs `sync_at`: the half is filed, one failure is sent, and the seat stays released. | Fixed |
+| R18 | `now_secs` is gone, and the test imports `clock` and calls `clock::now_secs()`. | Fixed |
+
+No new problems in the fix commits. I found no reordered checks and no new error codes, and no comments were lost. The changed files stay under their size limits (`reservation.rs` 437, `confirm.rs` 227, `failure.rs` 183), and lints pass in CI.
+
+**Open after the close-out check: 0.**
+
+The slice is not closed yet. Three C3b2 exit criteria are still open:
+the owner's review of the seven Hindi messages, `mise run verify` with
+no `--skip` (or the owner accepting CI in its place, as for C3b1), and
+the merge of PR #379, which is still a draft.

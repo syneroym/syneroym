@@ -4,7 +4,9 @@
 //! pair. Every state change is a unique insert, so of two calls that race,
 //! only one writes, and no row is ever deleted. The rows are in [`rows`].
 //!
-//! A reservation of this build never expires: only `release` ends it.
+//! An unconfirmed reservation lapses after [`RESERVATION_TTL_SECS`], but only
+//! when another booking needs its seat: nothing runs on a timer, and no row
+//! is deleted. A reservation ends by `release`, or by that lapse.
 
 use std::{collections::BTreeMap, fmt};
 
@@ -31,6 +33,13 @@ use self::rows::{
 use super::{RESERVATIONS, availability, ensure_availability, ensure_reservations, refuse};
 
 pub(crate) mod rows;
+
+/// How long a reservation holds its seat before another booking may take it
+/// over. The writer of an agreement confirms its own reservations at once. A
+/// counterparty's reservation waits only for the writer's countersigned half
+/// to arrive, so a short fixed time is enough. It does not follow the quote's
+/// expiry.
+pub(crate) const RESERVATION_TTL_SECS: u64 = 900;
 
 /// How often `reserve` starts again after it meets a reservation of its own
 /// key that was taken and freed while it was working. One more try is enough
@@ -116,6 +125,41 @@ async fn current<H: AppHost>(host: &H, key: &ReservationKey) -> Result<Current, 
 
 async fn is_free<H: AppHost>(host: &H, reservation: &str) -> Result<bool, Response> {
     Ok(get_row(host, &free_id(reservation)).await?.is_some())
+}
+
+/// Ends a reservation that was not confirmed by its expiry. Both rows are one
+/// `create`, so a confirm or a release that comes first leaves it unchanged,
+/// and one of two callers that lapse it at the same time writes the rows.
+/// Answers whether the seat is free now. A reservation with no `rsv:` row
+/// (a stopped import) and one with no expiry keep their seat.
+async fn lapse<H: AppHost>(host: &H, r: &str, now: u64) -> Result<bool, Response> {
+    let rsv = match get_row(host, &rsv_id(r)).await? {
+        Some(Row::Rsv(rsv)) => rsv,
+        Some(_) => return Err(corrupt(&rsv_id(r))),
+        None => return Ok(false),
+    };
+    if rsv.expires_at_secs.is_none_or(|at| now < at) {
+        return Ok(false);
+    }
+    let rows = vec![
+        (decided_id(r), Row::Decided(Decided { state: Decision::Lapsed, at_secs: now })),
+        (free_id(r), Row::Free(Free { why: FreeWhy::Lapsed, at_secs: now })),
+    ];
+    if create_rows(host, rows).await?.is_none() {
+        return Ok(true);
+    }
+    // A decision or a release exists. A release has freed the seat, and a
+    // confirm keeps it.
+    is_free(host, r).await
+}
+
+/// Whether the seat of this occupant can be taken now: it was freed, or it
+/// was not confirmed in time and this call ends it.
+async fn seat_is_free<H: AppHost>(host: &H, r: &str, now: u64) -> Result<bool, Response> {
+    if is_free(host, r).await? {
+        return Ok(true);
+    }
+    lapse(host, r, now).await
 }
 
 /// The reservation of a key that is still holding its seat.
@@ -210,7 +254,7 @@ pub(crate) fn claim_rows(
         seat,
         round,
         created_at_secs: now,
-        expires_at_secs: None,
+        expires_at_secs: Some(now.saturating_add(RESERVATION_TTL_SECS)),
     };
     let held = Seat { reservation: r.to_string(), slot_id: slot_id.to_string(), seat, round };
     let rows =
@@ -218,7 +262,17 @@ pub(crate) fn claim_rows(
     (rows, rsv)
 }
 
-/// Tries each seat in turn. Of two calls for one seat, only one `create`
+/// What one try at one seat came to.
+enum Attempt {
+    Done(Claim),
+    /// Another key took this seat, or the seat was not free: try the next.
+    Next,
+}
+
+/// Tries each seat in turn, twice. The first pass takes only a seat that is
+/// free already (never used, or freed). Only when none is left does the second
+/// pass end an expired, unconfirmed reservation, so a booking never lapses
+/// one while a seat is free. Of two calls for one seat, only one `create`
 /// works. `rsv:` is first in the list, so a second call with the same key
 /// gets the `rsv:` id back and not the seat id.
 pub(crate) async fn claim<H: AppHost>(
@@ -229,37 +283,57 @@ pub(crate) async fn claim<H: AppHost>(
     now: u64,
 ) -> Result<Claim, Response> {
     let r = reservation_id(&key.agreement, &key.commitment_id, generation)?;
-    for n in 1..=slot.capacity.min(MAX_SLOT_CAPACITY) {
-        let occupant = slot.seats.top.get(&n);
-        if let Some(held) = occupant
-            && !is_free(host, &held.reservation).await?
-        {
-            continue;
-        }
-        let round = occupant.map_or(0, |s| s.round) + 1;
-        let (rows, rsv) = claim_rows(key, &r, generation, slot.slot_id, (n, round), now);
-        if create_rows(host, rows).await?.is_none() {
-            put_row(
-                host,
-                key_id(&key.agreement, &key.commitment_id),
-                &Row::Key(Key { generation }),
-            )
-            .await?;
-            return Ok(Claim::Held(view(host, &r, &rsv).await?));
-        }
-        // Never decide by the id alone: read the key again.
-        let now_current = current(host, key).await?;
-        let found_generation = now_current.generation;
-        if let Some((other, other_rsv)) = live(host, now_current).await? {
-            let pointer = Key { generation: found_generation };
-            put_row(host, key_id(&key.agreement, &key.commitment_id), &Row::Key(pointer)).await?;
-            return Ok(Claim::Held(view(host, &other, &other_rsv).await?));
-        }
-        if found_generation >= generation {
-            return Ok(Claim::Again);
+    for may_lapse in [false, true] {
+        for n in 1..=slot.capacity.min(MAX_SLOT_CAPACITY) {
+            let occupant = slot.seats.top.get(&n);
+            if let Some(held) = occupant {
+                let free = if may_lapse {
+                    seat_is_free(host, &held.reservation, now).await?
+                } else {
+                    is_free(host, &held.reservation).await?
+                };
+                if !free {
+                    continue;
+                }
+            }
+            let round = occupant.map_or(0, |s| s.round) + 1;
+            if let Attempt::Done(done) =
+                try_seat(host, key, &r, generation, slot.slot_id, (n, round), now).await?
+            {
+                return Ok(done);
+            }
         }
     }
     Ok(Claim::Full)
+}
+
+async fn try_seat<H: AppHost>(
+    host: &H,
+    key: &ReservationKey,
+    r: &str,
+    generation: u64,
+    slot_id: &str,
+    seat_round: (u32, u32),
+    now: u64,
+) -> Result<Attempt, Response> {
+    let (rows, rsv) = claim_rows(key, r, generation, slot_id, seat_round, now);
+    if create_rows(host, rows).await?.is_none() {
+        let pointer = Row::Key(Key { generation });
+        put_row(host, key_id(&key.agreement, &key.commitment_id), &pointer).await?;
+        return Ok(Attempt::Done(Claim::Held(view(host, r, &rsv).await?)));
+    }
+    // Never decide by the id alone: read the key again.
+    let now_current = current(host, key).await?;
+    let found_generation = now_current.generation;
+    if let Some((other, other_rsv)) = live(host, now_current).await? {
+        let pointer = Key { generation: found_generation };
+        put_row(host, key_id(&key.agreement, &key.commitment_id), &Row::Key(pointer)).await?;
+        return Ok(Attempt::Done(Claim::Held(view(host, &other, &other_rsv).await?)));
+    }
+    if found_generation >= generation {
+        return Ok(Attempt::Done(Claim::Again));
+    }
+    Ok(Attempt::Next)
 }
 
 async fn load_slot<H: AppHost>(host: &H, slot_id: &str) -> Result<Option<SlotRow>, Response> {

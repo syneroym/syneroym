@@ -23,11 +23,11 @@ use super::{
         PaymentsRow, STEPS,
         decide::{CountersignRow, DecisionRow, DecisionState, RefusedRow, SnapshotRow},
         decline_ops::DeclineRow,
-        ledger::{LedgerKind, LedgerRow},
+        ledger::{FailureRow, LedgerRow},
         put_row,
         step_ops::StepRow,
     },
-    ImportedQuote, QuotesByRecordId,
+    ImportedQuote, QuotesByRecordId, failure,
     steps::{self, ValidatedSteps},
 };
 
@@ -45,6 +45,7 @@ pub(crate) enum ValidatedLedgerRow {
     Fence(LedgerRow),
     Decline(DeclineRow),
     Refused(RefusedRow),
+    Failure(FailureRow),
 }
 
 pub(crate) struct ValidatedVerticalSections {
@@ -483,26 +484,6 @@ fn validate_refused_entry(
     Ok(ValidatedLedgerRow::Refused(row))
 }
 
-fn validate_released_entry(
-    id: &str,
-    agreement: &str,
-    payload: Value,
-    quotes_by_record_id: &QuotesByRecordId,
-) -> Result<ValidatedLedgerRow, Response> {
-    let row: LedgerRow = serde_json::from_value(payload).map_err(|e| {
-        Response::invalid_params(format!("ledger '{id}': invalid released row: {e}"))
-    })?;
-    if row.kind != LedgerKind::Released || row.agreement != agreement {
-        return Err(Response::invalid_params(format!("ledger '{id}': row does not match its id")));
-    }
-    if !quotes_by_record_id.contains_key(agreement) {
-        return Err(Response::invalid_params(format!(
-            "ledger '{id}': names unheld agreement '{agreement}'"
-        )));
-    }
-    Ok(ValidatedLedgerRow::Fence(row))
-}
-
 fn validate_ledger_entry(
     id: &str,
     payload: Value,
@@ -553,8 +534,12 @@ fn validate_ledger_entry(
         validate_refused_entry(id, payload, quotes_by_record_id, agreements_map).map(Some)
     } else if id.starts_with("payreq:") || id.starts_with("ack:") || id.starts_with("fulfil:") {
         validate_fence_entry(id, payload, quotes_by_record_id, now).map(Some)
-    } else if let Some(agreement) = id.strip_prefix("released:") {
-        validate_released_entry(id, agreement, payload, quotes_by_record_id).map(Some)
+    } else if let Some(rest) = id.strip_prefix("released:") {
+        failure::validate_released_entry(id, rest, payload, quotes_by_record_id).map(Some)
+    } else if let Some(rest) = id.strip_prefix("confirmed:") {
+        failure::validate_confirmed_entry(id, rest, payload, quotes_by_record_id).map(Some)
+    } else if let Some(rest) = id.strip_prefix("failure:") {
+        failure::validate_failure_entry(id, rest, payload, quotes_by_record_id, now).map(Some)
     } else {
         Err(Response::invalid_params(format!("ledger '{id}': unknown ledger kind")))
     }
@@ -586,6 +571,13 @@ pub(crate) fn validate_ledger(
                     decline.record_id.clone(),
                     "deal-decline".to_string(),
                     decline.envelope.clone(),
+                ));
+            }
+            if let ValidatedLedgerRow::Failure(failure) = &row {
+                history.push((
+                    failure.record_id.clone(),
+                    "commitment-failure".to_string(),
+                    failure.envelope.clone(),
                 ));
             }
             validated_ledger.push((id.to_string(), row));

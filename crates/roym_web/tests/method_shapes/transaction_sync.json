@@ -5,5 +5,6 @@
   "last_seq": "number",
   "refused": "number",
   "scanned": "number",
-  "unknown": "number"
+  "unknown": "number",
+  "unsent_failures": "number"
 }

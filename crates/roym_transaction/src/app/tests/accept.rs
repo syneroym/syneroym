@@ -495,7 +495,7 @@ async fn file_repeated_card_stores_repeat_true() {
     assert!(second_stored.repeat, "second filed card must have repeat: true");
 }
 
-fn make_author_countersigned_half_card(
+pub(super) fn make_author_countersigned_half_card(
     author: &Identity,
     author_did: &str,
     counterparty_did: &str,
@@ -529,7 +529,7 @@ fn make_author_countersigned_half_card(
         .expect("card body")
 }
 
-fn mock_author_half_delivered_at(
+pub(super) fn mock_author_half_delivered_at(
     host: &TestHost,
     author_did: String,
     delivery_time: u64,

@@ -7,7 +7,7 @@
 
 use syneroym_app_host::AppHost;
 use syneroym_roym_core::{
-    deal::{Commitment, DealTerms, ExtensionRef},
+    deal::{Commitment, DealTerms, ExtensionRef, transition::CommitmentState},
     envelope::{Response, RpcError},
     extension::{self, Manifest},
     method::{
@@ -17,6 +17,7 @@ use syneroym_roym_core::{
             ReserveInput,
         },
     },
+    progress::{AgreementState, CommitmentProgress},
     services::Service,
     transaction::{DealRole, TimeWindow},
 };
@@ -355,4 +356,101 @@ pub(crate) async fn release_after_quote_expiry<H: AppHost, R: Reservations>(
     };
     // A marker that is not stored only means the next call releases again.
     let _ = put_row(host, LEDGER, &id, &marker).await;
+}
+
+/// The ledger row that says this node released its reservation of one
+/// commitment that the agreement's snapshot shows ended.
+pub(crate) fn released_commitment_id(agreement: &str, commitment_id: &str) -> String {
+    format!("released:{agreement}:{commitment_id}")
+}
+
+/// What a snapshot shows about the commitments that may need a release.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Ended<'a> {
+    pub(crate) state: AgreementState,
+    pub(crate) commitments: &'a [CommitmentProgress],
+}
+
+/// Releases the reservations of `role` whose commitments the snapshot shows
+/// ended: `failed` or `cancelled`, or every one when the agreement is
+/// `not-formed` or `cancelled`. A commitment with a settlement half is
+/// skipped, so a resource that was claimed is never freed.
+///
+/// A release that worked is recorded in the ledger, so a later call makes no
+/// hook call for it. A release that failed leaves no row, so the next sync
+/// tries it again: nothing else would. Answers whether every one is released.
+pub(crate) async fn release_ended<H: AppHost, R: Reservations>(
+    host: &H,
+    hooks: &R,
+    agreement: &AgreementRow,
+    role: DealRole,
+    ended: Ended<'_>,
+    now: u64,
+) -> bool {
+    let all = matches!(ended.state, AgreementState::NotFormed | AgreementState::Cancelled);
+    let mut done = true;
+    for c in reserved_by(&agreement.terms, role) {
+        let progress = ended.commitments.iter().find(|p| p.commitment_id == c.commitment_id);
+        if progress.is_some_and(|p| !p.halves.is_empty()) {
+            continue;
+        }
+        let over = all
+            || progress.is_some_and(|p| {
+                matches!(p.state, CommitmentState::Failed | CommitmentState::Cancelled)
+            });
+        if over {
+            done &= release_marked(host, hooks, agreement, c, now).await;
+        }
+    }
+    done
+}
+
+async fn release_marked<H: AppHost, R: Reservations>(
+    host: &H,
+    hooks: &R,
+    agreement: &AgreementRow,
+    c: &Commitment,
+    now: u64,
+) -> bool {
+    let id = released_commitment_id(&agreement.quote_record_id, &c.commitment_id);
+    if matches!(get_row::<LedgerRow, _>(host, LEDGER, &id).await, Ok(Some(_))) {
+        return true;
+    }
+    if hooks.release(host, &agreement.quote_record_id, c).await.is_err() {
+        return false;
+    }
+    let marker = LedgerRow {
+        kind: LedgerKind::Released,
+        agreement: agreement.quote_record_id.clone(),
+        state: None,
+        quote_id: None,
+        commitment_id: Some(c.commitment_id.clone()),
+        reason: None,
+        half: None,
+        created_at_secs: now,
+    };
+    // A marker that is not stored only means the next sync releases again.
+    put_row(host, LEDGER, &id, &marker).await.is_ok()
+}
+
+/// The retry of [`release_ended`] for an agreement row that this node holds:
+/// it reads the snapshot that the row already shows.
+pub(crate) async fn release_ended_of_row<H: AppHost, R: Reservations>(
+    host: &H,
+    hooks: &R,
+    row: &AgreementRow,
+    owner: &str,
+    now: u64,
+) {
+    let role = if owner == row.quote_author_did {
+        DealRole::QuoteAuthor
+    } else if owner == row.counterparty_did {
+        DealRole::Counterparty
+    } else {
+        return;
+    };
+    if let Some(state) = row.state {
+        let ended = Ended { state, commitments: &row.commitments };
+        release_ended(host, hooks, row, role, ended, now).await;
+    }
 }

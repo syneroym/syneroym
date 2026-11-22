@@ -1,6 +1,6 @@
 {
   "agreement": "string",
   "commitment_id": "string",
-  "expires_at_secs": "null",
+  "expires_at_secs": "number",
   "state": "held"
 }

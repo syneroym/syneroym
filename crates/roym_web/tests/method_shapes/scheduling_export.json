@@ -36,7 +36,7 @@
           "agreement": "string",
           "commitment_id": "string",
           "created_at_secs": "number",
-          "expires_at_secs": "null",
+          "expires_at_secs": "number",
           "generation": "number",
           "kind": "rsv",
           "round": "number",

@@ -8,4 +8,5 @@ export const CARD_TYPES: [string, number][] = [
   ["fulfilment-receipt", 1],
   ["deal-decline", 1],
   ["step", 1],
+  ["commitment-failure", 1],
 ];

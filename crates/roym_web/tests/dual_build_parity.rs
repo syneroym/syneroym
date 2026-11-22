@@ -27,6 +27,8 @@ mod bundles;
 mod card_sync;
 #[path = "dual_build_parity/catalog.rs"]
 mod catalog;
+#[path = "dual_build_parity/commitment_failure.rs"]
+mod commitment_failure;
 #[path = "dual_build_parity/conversation.rs"]
 mod conversation;
 #[path = "dual_build_parity/deal.rs"]
