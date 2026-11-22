@@ -1830,7 +1830,7 @@ C3b2:
   `let _ =` drops a release error without a log line. (No Roym service can log, so a release that fails at a snapshot is tried again by the next sync; see the extensions change, Deviations.)
 - [x] The two-node test of 7.4 passes with no hardcoded port.
 - [x] Component sizes recorded and within limits.
-- [ ] Owner reviewed the Hindi messages of 7.10.
+- [x] Owner reviewed the Hindi messages of 7.10.
 - [x] `mise run verify` passes with no `--skip`. (The owner accepted CI on 82c45089 in place of a local run, as for C3b1.)
 
 ## 11. What C3b does not do
