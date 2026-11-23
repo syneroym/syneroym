@@ -642,6 +642,8 @@ The blob store is content-addressed. The key of a blob is the SHA-256 hash of it
 
 **Durable outbox.** A guest can queue a call to another service. The substrate saves the call in an SQLite outbox that belongs to the calling service. The outbox is a file next to the encrypted database of that service. A worker on the node retries the call with backoff. A call that can never succeed goes to a dead-letter table (ADR-0023). The receiver can fence a call that carries an idempotency key. The call then runs once, even if it is delivered more than once. The receiver refuses a call that has a key but no verified caller.
 
+**Node-local wake.** A service manifest can declare a `[services.<name>.wake]` block naming an interface, method, and trigger events or interval. The substrate's wake worker evaluates declared wakes once per second. Matching bus events or interval expiry invoke the declared guest method (ADR-0031).
+
 **Removing a service.** Undeploy stops the service. It removes the component file, the endpoints, the messaging subscriptions, the asset blobs, the certificate file and the deploy records of the service. No code deletes the service database (`state.db`), its `dek_store` row or its `async.db` outbox. These stay on disk.
 
 **Write rules.** The data layer does not decide who wins a race. It only puts the writes in order. It gives a service two ways to write. `put` replaces the whole payload of a record, so the last write wins. `create` writes rows only if none of their ids exists yet. It is the one write that is not last-write-wins, so a service uses it as a fence when two concurrent calls must not both succeed.
@@ -719,14 +721,14 @@ In the `open` and `login` modes the gateway passes the session cookie unchanged.
 
 ### Failure and Shutdown
 
-`RuntimeServices` runs all components at the same time in one `tokio::select!`. The components are the connection router, the community registry, the coordinator and the client gateway. They also include the health and metrics servers, the supervisor loop and the supervisor queue worker. The last ones are the proxy outbox worker, the conversation outbox worker, and the loop that warns about instance certificates near expiry. When any one of them finishes, with success or with an error, the whole substrate shuts down. A component that is not configured never finishes. The health and metrics servers log a bind error and then wait forever, so a failed bind does not stop the substrate.
+`RuntimeServices` runs all components at the same time in one `tokio::select!`. The components are the connection router, the community registry, the coordinator and the client gateway. They also include the health and metrics servers, the supervisor loop and the supervisor queue worker. The last ones are the proxy outbox worker, the conversation outbox worker, the wake worker, and the loop that warns about instance certificates near expiry. When any one of them finishes, with success or with an error, the whole substrate shuts down. A component that is not configured never finishes. The health and metrics servers log a bind error and then wait forever, so a failed bind does not stop the substrate.
 
 The shutdown signal is Ctrl-C. The code installs no handler for SIGTERM.
 
 Shutdown runs in this order:
 
 1. The supervisor stops, and shutdown waits for its loop to end.
-2. The queue worker, the proxy outbox worker and the conversation outbox worker are canceled, and their handles are dropped on purpose. Shutdown does not wait for them, because a delivery to an offline peer could block it forever. An item that was in flight comes back after the visibility timeout of its queue (ADR-0023).
+2. The queue worker, the proxy outbox worker, the conversation outbox worker and the wake worker are canceled, and their handles are dropped on purpose. Shutdown does not wait for them, because a delivery to an offline peer could block it forever. An item that was in flight comes back after the visibility timeout of its queue (ADR-0023).
 3. The client gateway, the coordinator and the community registry shut down.
 4. Observability data is flushed, and the connection router shuts down.
 
@@ -1204,7 +1206,7 @@ The Hub calls its own node only. It never calls the quote author's node.
 
 #### Cards
 
-A card is a signed record sent as a message with content type `application/vnd.roym.card+json`. A card carries the signed envelope and, for quotes and settlement records, the RFC 9901 disclosures of its hidden fields. The receiving node verifies the envelope and the disclosures, and stores the plain form in the card row. The Hub calls `transaction.sync` when a person opens a conversation. `transaction.sync` reads the conversation and files the cards in it.
+A card is a signed record sent as a message with content type `application/vnd.roym.card+json`. A card carries the signed envelope and, for quotes and settlement records, the RFC 9901 disclosures of its hidden fields. The receiving node verifies the envelope and the disclosures, and stores the plain form in the card row. Cards are filed by the node's background wake driver (`transaction.drive`, ADR-0031) or when the Hub calls `transaction.sync` on opening a conversation.
 
 | Card | Signed by | Meaning |
 |---|---|---|
@@ -1226,7 +1228,7 @@ A card sent to an offline peer via the conversation layer must fit within the se
 
 Roym has no single order record. A deal is the record chain above, and the agreement that follows it. The quote author's node is the only writer of the agreement progress. Every other node reads the signed snapshots of that writer. Each snapshot has a number `seq` that counts up from 1. A snapshot is written with the create fence of the data layer, so two writers of the same `seq` cannot both win. The writer retries a lost write up to three times.
 
-The agreement opens on the quote author's node once the counterparty has accepted. When the counterparty's `agreement-receipt` card is filed there and the quote has not expired, the node does three things on its own. It claims a seat or a decision. It countersigns the agreement. It publishes the first snapshot. This happens when `transaction.sync` runs on the quote author's node, for example when the quote author opens the conversation in the Hub. The quote author can also accept by hand with `agreement.accept`. A quote that names a slot is agreed by the acceptance of the counterparty. The quote author cannot accept such a quote before the counterparty.
+The agreement opens on the quote author's node once the counterparty has accepted. When the counterparty's `agreement-receipt` card is filed there and the quote has not expired, the node does three things on its own. It claims a seat or a decision. It countersigns the agreement. It publishes the first snapshot. This happens automatically when the background wake driver runs on the quote author's node (ADR-0031), or when `transaction.sync` runs, for example when the quote author opens the conversation in the Hub. The quote author can also accept by hand with `agreement.accept`. A quote that names a slot is agreed by the acceptance of the counterparty. The quote author cannot accept such a quote before the counterparty.
 
 ```mermaid
 stateDiagram-v2

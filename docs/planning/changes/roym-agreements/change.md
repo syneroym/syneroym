@@ -1489,6 +1489,9 @@ The owner answered that plan's questions Q1 to Q8 on 2026-11-23; the rows below 
 - **`deal.as-listed-status` (D-C3c-13).** New local-only method for the owner's Hub to inspect waiting enquiries and instant cap status.
 - **"Open" for instant limits counts in-flight quotes (P12).** In addition to open formed agreements, `in_flight_instant(listing)` counts answered quotes whose quote has no `decision:` fence yet and has not ended (not expired, not declined, not `not-formed`; P19), bounding instant agreements to `instant_cap` and one per counterparty. The remaining race between two syncs at the exact same instant passing the cap by at most one is accepted (Q6).
 - **Slot offerings show "Ask" alone on the Hub (Q4).** Records and services support slots, but cross-node slot query is deferred (M08D).
+- **C3c1 driver stop rule time measurement.** 8 conversations on a node with 200 agreements: 69.8 ms (limit < 2.0 s).
+- **WIT typed `wake-spec` and SDK mapper (C3c1).** Added `wake-spec` record and optional `wake` field to `service-config` in `control-plane.wit`, with mapping in `crates/sdk/src/mapper.rs` (`map_wake`), bridging `app_orchestration::WakeSpec` and `commit.rs` deploy facts.
+- **Substrate-side deploy validation of wake (C3c1).** Substrate validates `WakeSpec::validate` against the service's declared interfaces during deploy validation, ensuring invalid wake targets are rejected even for remote submissions.
 
 ## Close-out
 
