@@ -667,9 +667,13 @@ P20). 5 items are open.
 The owner answers to Q1 to Q8 are recorded in the plan. Q6's answer
 depends on P12 (fixed) and P19. Q8's answer depends on P16, so on P20.
 
+Fix note (2026-11-23): P18 to P22 are fixed in `6123bf9a`. P20 also
+settles the rest of P16. In the same commit the owner changed Q1 to two
+PRs: C3c1 (the driver), then C3c2 (agree as listed, both sides).
+
 ### Findings
 
-- [ ] **P18 — major.** *Where:* D-C3c-1 `drive_at` (`Err(other) -> keep
+- [x] **P18 — major.** *Where:* D-C3c-1 `drive_at` (`Err(other) -> keep
   it`, "oldest `since` first"), D-C3c-2 (`has_pending`), C3c1 step 3.
   *Problem:* A row in `DRIVE_PENDING` that fails every time is never
   removed, and it keeps its old `since`. Two things follow. First, it is
@@ -695,9 +699,9 @@ depends on P12 (fixed) and P19. Q8's answer depends on P16, so on P20.
   MAX_DRIVE_CONVERSATIONS`); otherwise it waits for `every_secs`. Tests:
   `a_failing_conversation_does_not_starve_the_others` and
   `a_failing_row_does_not_make_the_wake_run_every_second`.
-  *Status:* Open
+  *Status:* Fixed (6123bf9a)
 
-- [ ] **P19 — minor.** *Where:* D-C3c-12, "Open for the limits and
+- [x] **P19 — minor.** *Where:* D-C3c-12, "Open for the limits and
   in-flight quotes".
   *Problem:* `in_flight_instant` counts an `answered` row while its quote
   has no `decision:` fence and has not expired. A quote that the
@@ -712,9 +716,9 @@ depends on P12 (fixed) and P19. Q8's answer depends on P16, so on P20.
   *Fix:* Count an `answered` row when there is no `decision:` fence and
   `is_deal_ended(quote_id, expiry, now)` is false. Test
   `a_declined_instant_quote_frees_its_place`.
-  *Status:* Open
+  *Status:* Fixed (6123bf9a)
 
-- [ ] **P20 — minor.** *Where:* D-C3c-12 (`issue_quote`, plan lines
+- [x] **P20 — minor.** *Where:* D-C3c-12 (`issue_quote`, plan lines
   1220-1229), C3c2 step 4, Q8.
   *Problem:* The P16 fix does not settle the types. It also adds a
   behaviour change. (1) The plan still says `issue_quote` is "the body of
@@ -740,9 +744,9 @@ depends on P12 (fixed) and P19. Q8's answer depends on P16, so on P20.
   the extension, details and listing id), calls `hooks::prepare`, and
   compares the window. On a refusal it declines with the hook's code. Keep
   the existing `quote.set` test for a removed slot as the guard.
-  *Status:* Open
+  *Status:* Fixed (6123bf9a)
 
-- [ ] **P21 — minor.** *Where:* D-C3c-1 ("Timed work", `sync_direct`),
+- [x] **P21 — minor.** *Where:* D-C3c-1 ("Timed work", `sync_direct`),
   C3c1 step 4.
   *Problem:* The plan runs `recover_deciding_rows` once at the start of
   `drive_at`. But `sync_at` also runs it at the end of every sync
@@ -755,9 +759,9 @@ depends on P12 (fixed) and P19. Q8's answer depends on P16, so on P20.
   *Fix:* Say it: the inner function that `sync_direct` uses does not call
   `recover_deciding_rows`, and `sync_at` calls it after the inner function,
   so `transaction.sync` keeps today's behaviour.
-  *Status:* Open
+  *Status:* Fixed (6123bf9a)
 
-- [ ] **P22 — minor.** *Where:* C3c1 step 3 ("read every caller of
+- [x] **P22 — minor.** *Where:* C3c1 step 3 ("read every caller of
   `set_deploy_facts`").
   *Problem:* Changing `DeployFacts` from a tuple to a struct also breaks
   every reader of `deploy_facts()`. They use tuple patterns or `.1`/`.3`:
@@ -769,4 +773,4 @@ depends on P12 (fixed) and P19. Q8's answer depends on P16, so on P20.
   sites in four files.
   *Fix:* Add `git grep -n 'deploy_facts('` to the step and list these
   files.
-  *Status:* Open
+  *Status:* Fixed (6123bf9a)
