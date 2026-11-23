@@ -607,3 +607,166 @@ The owner has not answered Q1 to Q8. My view:
   *Failure case:* A developer opens the wrong line.
   *Fix:* Correct both links.
   *Status:* Fixed (073d0519)
+
+## Plan review round 3 — Claude Opus 5.5, 2026-11-23
+
+This round checks the fixes of rounds 1 and 2. They are in `073d0519`
+(the plan and the roym-agreements change doc) and closed in `e58aa418`.
+Branch `feat/m08c-c3c-agree-as-listed` at `e58aa418`, main checkout (not
+a worktree), `git pull` up to date. The plan author is also Claude Opus
+5.5, so the reader should weigh this round as a check of the fixes, not an
+independent review.
+
+**Summary of round 3: 5 new findings: 0 blocker, 1 major, 4 minor.**
+P1 to P17 are fixed except P16, which is only partly fixed (the rest is
+P20). 5 items are open.
+
+### Fixes checked against the code
+
+- **P1.** The worker checks `registry.lookup(&service_id, &spec.interface)`
+  before it calls. This is the same test as `run-scheduled`
+  ([lifecycle.rs:634](../../../../crates/control_plane/src/service/orchestration/lifecycle.rs#L634)).
+  The linked build registers the Roym services in the same endpoint
+  registry (`runtime/roym.rs:179`), so a linked wake is not skipped. Fixed.
+- **P2, P10.** `DeployFacts` becomes a named struct with `wake_json`, the
+  `ALTER TABLE` migration, both mocks, and `clear_deploy_hash_after_binding_push`
+  copies the wake. The test `a_binding_push_keeps_the_wake` is listed.
+  Fixed. P22 adds the readers of `deploy_facts()` that the step does not name.
+- **P3.** Every struct literal of `EnquiryPayload`, `DealDeclinePayload` and
+  `AgreementProgressPayload` is in `roym_core` or `roym_transaction`
+  (`git grep`), and C3c2 step 1 now updates both crates. Fixed.
+- **P4.** `sync/` already exists as a folder (`sync/confirm.rs` and
+  others), so `sync/cards.rs` follows the module layout rule. Fixed.
+- **P5.** `EventBus::app_instance_of` is at
+  [event_bus.rs:124](../../../../crates/core/src/event_bus.rs#L124). Fixed.
+- **P6.** An RAII guard resets `running`, with a test. Fixed.
+- **P7.** In-memory sort; the three collections go in `ensure_collections`
+  ([app.rs:335](../../../../crates/roym_transaction/src/app.rs#L335)). Fixed.
+- **P8.** The citation is now `messages.ts:461`, the required-description
+  check. Fixed.
+- **P9.** Empty `payment.payee` gives `PriceNotFixed`, with a test. Fixed.
+- **P11.** The `catalog` binding in `wire_roym_topology`, a test that
+  compares every `depends_on` with the native bindings, and a native
+  `listing.get` test. Fixed.
+- **P12.** `in_flight_instant` is added to both limits, with the two tests
+  and the Deviation. The `decision:` fence is written on the owner's node
+  too (`decide::run` from `sync.rs:734`), so a formed agreement is not
+  counted twice. Fixed. P19 is a smaller gap in the predicate.
+- **P13.** `SyncOutput.more` and compare-and-delete. `sync_at` reads after
+  a stored `last_seq` (`sync.rs:84`), so a second sync does continue the
+  window. Fixed. P18 is a new problem that the re-run adds.
+- **P14.** Recovery once per `drive`, the re-run on `pending > 0`, and the
+  measurement with 200 agreements. P21 is a gap in the first part; P18
+  is a problem with the second.
+- **P15.** `shared.event_bus()` exists (`runtime/handles.rs:187`); the
+  `Option` proxy, the `JoinHandle` and `on_events` with no app are all
+  stated. Fixed.
+- **P16.** Partly fixed. See P20.
+- **P17.** Both citations are right now. Fixed.
+
+The owner answers to Q1 to Q8 are recorded in the plan. Q6's answer
+depends on P12 (fixed) and P19. Q8's answer depends on P16, so on P20.
+
+### Findings
+
+- [ ] **P18 — major.** *Where:* D-C3c-1 `drive_at` (`Err(other) -> keep
+  it`, "oldest `since` first"), D-C3c-2 (`has_pending`), C3c1 step 3.
+  *Problem:* A row in `DRIVE_PENDING` that fails every time is never
+  removed, and it keeps its old `since`. Two things follow. First, it is
+  always among the oldest, so it is always taken first. Second,
+  `DriveOutput.pending` is then always above 0, so the worker calls
+  `drive` again on every 1-second tick, not every 30 seconds. The same
+  happens when `more` stays true but `last_seq` does not move: `sync_at`
+  sets `last_seq` back to before the first declined or deferred message
+  ([sync.rs:105-122](../../../../crates/roym_transaction/src/app/sync.rs#L105)),
+  so a window that starts with such a message is read again in full each
+  time.
+  *Failure case:* A conversation is deleted, so `conversation.changes`
+  refuses it on every sync. The node now runs `drive` once per second,
+  for ever, and each call can take up to 2 seconds (the stop rule), so the
+  `transaction` guest is busy almost all the time. With 8 such rows, no
+  other conversation is ever synced by the wake, and timed work for those
+  conversations never runs.
+  *Fix:* On `Err(other)`, put the row again with `since = now` and a
+  counter `failures`. Drop the row after a small number of failures (for
+  example 5), with a `tracing` warning; a new message event puts it again.
+  Re-put on `more` only when `last_seq` grew. The worker re-runs at once
+  only when the call took a full batch (`synced ==
+  MAX_DRIVE_CONVERSATIONS`); otherwise it waits for `every_secs`. Tests:
+  `a_failing_conversation_does_not_starve_the_others` and
+  `a_failing_row_does_not_make_the_wake_run_every_second`.
+  *Status:* Open
+
+- [ ] **P19 — minor.** *Where:* D-C3c-12, "Open for the limits and
+  in-flight quotes".
+  *Problem:* `in_flight_instant` counts an `answered` row while its quote
+  has no `decision:` fence and has not expired. A quote that the
+  counterparty declined has no `decision:` fence (a decline writes
+  `decline:<quote>`). So it holds a place for up to 7 days. A helper that
+  already answers "has this quote ended?" exists: `is_deal_ended`
+  ([app.rs:662](../../../../crates/roym_transaction/src/app.rs#L662)). It
+  covers expiry, decline, `not-formed` and a terminal agreement.
+  *Failure case:* Y taps, gets an instant quote, declines it, then taps
+  again. The second tap waits for the owner with `CounterpartyHoldsOne`,
+  and the declined quote also uses one place of the cap for 7 days.
+  *Fix:* Count an `answered` row when there is no `decision:` fence and
+  `is_deal_ended(quote_id, expiry, now)` is false. Test
+  `a_declined_instant_quote_frees_its_place`.
+  *Status:* Open
+
+- [ ] **P20 — minor.** *Where:* D-C3c-12 (`issue_quote`, plan lines
+  1220-1229), C3c2 step 4, Q8.
+  *Problem:* The P16 fix does not settle the types. It also adds a
+  behaviour change. (1) The plan still says `issue_quote` is "the body of
+  `set_at` from `prepare_terms` on". `prepare_terms` takes a
+  `DealTermsInput`, but `terms_from_listing` returns a `DealTerms`. (2) It
+  also says `issue_quote` calls `hooks::prepare` for author commitments.
+  `hooks::prepare` takes a `&CommitmentInput`
+  ([hooks.rs:280](../../../../crates/roym_transaction/src/app/hooks.rs#L280)),
+  but `DealTerms.commitments` is `Vec<Commitment>`
+  ([deal.rs:184](../../../../crates/roym_core/src/deal.rs#L184)). (3) It
+  says the enquiry is declined inside `issue_quote`. But `set_at` uses
+  `issue_quote` too.
+  *Failure case:* The code does not compile as written. If the builder
+  makes it compile the obvious way, `quote.set` runs the prepare hook
+  twice. A normal `quote.set` for a removed slot then declines the person's
+  enquiry, where today it returns the hook's error to the owner. No test
+  covers that change.
+  *Fix:* `issue_quote` starts after `prepare_terms`, at
+  `validate_and_conceal_terms` (`quote_ops.rs:187`), and takes `DealTerms`.
+  `set_at` stays as it is today. Only `answer_as_listed` calls the hook:
+  it builds a `CommitmentInput` from each author commitment that has a
+  prepare hook (one small `From<&Commitment>`, or a `prepare` that takes
+  the extension, details and listing id), calls `hooks::prepare`, and
+  compares the window. On a refusal it declines with the hook's code. Keep
+  the existing `quote.set` test for a removed slot as the guard.
+  *Status:* Open
+
+- [ ] **P21 — minor.** *Where:* D-C3c-1 ("Timed work", `sync_direct`),
+  C3c1 step 4.
+  *Problem:* The plan runs `recover_deciding_rows` once at the start of
+  `drive_at`. But `sync_at` also runs it at the end of every sync
+  ([sync.rs:135](../../../../crates/roym_transaction/src/app/sync.rs#L135)),
+  and `sync_direct` is `sync_at` with a typed refusal. The plan does not
+  say that `sync_direct` leaves recovery out.
+  *Failure case:* One `drive` still runs the node-wide recovery 9 times,
+  not once. The listed test `drive_runs_recovery_once_per_call` fails, and
+  the fix is chosen during the build.
+  *Fix:* Say it: the inner function that `sync_direct` uses does not call
+  `recover_deciding_rows`, and `sync_at` calls it after the inner function,
+  so `transaction.sync` keeps today's behaviour.
+  *Status:* Open
+
+- [ ] **P22 — minor.** *Where:* C3c1 step 3 ("read every caller of
+  `set_deploy_facts`").
+  *Problem:* Changing `DeployFacts` from a tuple to a struct also breaks
+  every reader of `deploy_facts()`. They use tuple patterns or `.1`/`.3`:
+  `orchestration.rs:315`, `deploy/admission.rs:198`, `lifecycle.rs:541`,
+  `status.rs:34`, `:202`, `:335`, and `tests/deploy.rs:1032`, `:1060`,
+  `:1067`. The step names only the writers.
+  *Failure case:* The compiler finds them, so nothing breaks at run time.
+  But the step's size estimate and its file list are short by about nine
+  sites in four files.
+  *Fix:* Add `git grep -n 'deploy_facts('` to the step and list these
+  files.
+  *Status:* Open
