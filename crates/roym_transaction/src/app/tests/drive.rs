@@ -11,7 +11,8 @@ use syneroym_roym_core::{
 
 use super::fixture;
 use crate::app::{
-    AGREEMENTS, AgreementRow, DRIVE_PENDING, DRIVE_STATE,
+    AGREEMENTS, AgreementRow, DRIVE_PENDING, DRIVE_STATE, LEDGER,
+    decide::{DecisionRow, DecisionState, decision_id},
     drive::{
         DRIVE_RESCAN_PAGE, DriveInput, DriveState, MAX_DRIVE_CONVERSATIONS, PendingRow, drive,
         drive_at,
@@ -31,6 +32,23 @@ fn mock_empty_changes(host: &syneroym_roym_core::testing::TestHost) {
         })
         .to_string())
     });
+    host.on_call("conversation", "conversation.list", |_| {
+        Ok(json!({
+            "result": {
+                "conversations": []
+            }
+        })
+        .to_string())
+    });
+}
+
+async fn seed_drive_cursor(host: &syneroym_roym_core::testing::TestHost) {
+    let state = DriveState {
+        event_cursor: Some("0000000000000000-0".to_string()),
+        rescan_offset: None,
+        timed_cursor: 0,
+    };
+    put_row(host, DRIVE_STATE, "drive", &state).await.unwrap();
 }
 
 fn dummy_agreement_row(conv: &str, state: Option<AgreementState>, now: u64) -> AgreementRow {
@@ -70,6 +88,7 @@ fn dummy_agreement_row(conv: &str, state: Option<AgreementState>, now: u64) -> A
 async fn drive_syncs_each_conversation_named_by_a_message_event() {
     let f = fixture();
     mock_empty_changes(&f.host);
+    seed_drive_cursor(&f.host).await;
 
     f.host.push_event("conversation.message", "conv_1");
     f.host.push_event("conversation.message", "conv_2");
@@ -89,6 +108,7 @@ async fn drive_syncs_each_conversation_named_by_a_message_event() {
 async fn drive_syncs_at_most_eight_conversations_and_keeps_the_rest() {
     let f = fixture();
     mock_empty_changes(&f.host);
+    seed_drive_cursor(&f.host).await;
 
     for i in 1..=10 {
         f.host.push_event("conversation.message", format!("conv_{i}"));
@@ -108,6 +128,7 @@ async fn drive_syncs_at_most_eight_conversations_and_keeps_the_rest() {
 #[tokio::test]
 async fn drive_skips_a_group_conversation_without_an_error() {
     let f = fixture();
+    seed_drive_cursor(&f.host).await;
     f.host.on_call("conversation", "conversation.changes", |_| {
         Ok(json!({
             "result": {
@@ -179,6 +200,7 @@ async fn drive_after_reload_walks_every_conversation_in_pages() {
 async fn drive_ignores_events_of_transaction_itself() {
     let f = fixture();
     mock_empty_changes(&f.host);
+    seed_drive_cursor(&f.host).await;
 
     f.host.push_event("transaction.card", "conv_tx_1");
     f.host.push_event("transaction.progress", "conv_tx_2");
@@ -196,6 +218,7 @@ async fn drive_ignores_events_of_transaction_itself() {
 async fn drive_gives_timed_work_a_sync_with_no_new_message() {
     let f = fixture();
     mock_empty_changes(&f.host);
+    seed_drive_cursor(&f.host).await;
 
     let row = dummy_agreement_row("conv_timed", Some(AgreementState::Agreed), f.host.now());
     put_row(&f.host, AGREEMENTS, "agr_1", &row).await.unwrap();
@@ -208,6 +231,7 @@ async fn drive_gives_timed_work_a_sync_with_no_new_message() {
 #[tokio::test]
 async fn drive_keeps_conversation_pending_when_more_messages_in_window() {
     let f = fixture();
+    seed_drive_cursor(&f.host).await;
     let mut msgs = Vec::new();
     for i in 1..=(SYNC_WINDOW as u64) {
         msgs.push(json!({
@@ -252,6 +276,7 @@ async fn drive_keeps_conversation_pending_when_more_messages_in_window() {
 #[tokio::test]
 async fn drive_compare_and_delete_preserves_concurrent_event_mark() {
     let f = fixture();
+    seed_drive_cursor(&f.host).await;
     let now = f.host.now();
 
     put_row(&f.host, DRIVE_PENDING, "conv_race", &PendingRow { since: now, failures: 0 })
@@ -287,18 +312,69 @@ async fn drive_compare_and_delete_preserves_concurrent_event_mark() {
 async fn drive_runs_recovery_once_per_call() {
     let f = fixture();
     mock_empty_changes(&f.host);
+    seed_drive_cursor(&f.host).await;
+
+    // Seed an expired deciding agreement
+    let mut agr = dummy_agreement_row("conv_dec", None, f.host.now() - 7200);
+    agr.quote_record_id = "rec_q_dec".to_string();
+    agr.quote_id = "q_dec".to_string();
+    agr.terms.quote_expires_at_secs = f.host.now() - 3600;
+    put_row(&f.host, AGREEMENTS, "rec_q_dec", &agr).await.unwrap();
+
+    let dec = DecisionRow {
+        kind: "decision".to_string(),
+        state: DecisionState::Deciding,
+        agreement: "rec_q_dec".to_string(),
+        quote_id: "q_dec".to_string(),
+        reason: None,
+        created_at_secs: f.host.now() - 3600,
+    };
+    put_row(&f.host, LEDGER, &decision_id("q_dec"), &dec).await.unwrap();
 
     f.host.push_event("conversation.message", "conv_1");
     f.host.push_event("conversation.message", "conv_2");
 
     let out = drive(&f.host, DriveInput {}).await.expect("drive");
     assert_eq!(out.synced, 2);
+
+    // Verify recovery ran once: deciding row transitioned to NotFormed
+    let dec_after: DecisionRow =
+        get_row(&f.host, LEDGER, &decision_id("q_dec")).await.unwrap().unwrap();
+    assert_eq!(dec_after.state, DecisionState::NotFormed);
+
+    // Verify exactly one recovery query for deciding rows occurred
+    let recovery_queries = f
+        .host
+        .queries()
+        .iter()
+        .filter(|(col, opts)| {
+            col == LEDGER && opts.filter.as_deref().unwrap_or("").contains("decision")
+        })
+        .count();
+    assert_eq!(recovery_queries, 1);
 }
 
 #[tokio::test]
 async fn sync_still_runs_recovery_once() {
     let f = fixture();
     mock_empty_changes(&f.host);
+
+    // Seed an expired deciding agreement
+    let mut agr = dummy_agreement_row("conv_dec", None, f.host.now() - 7200);
+    agr.quote_record_id = "rec_q_dec".to_string();
+    agr.quote_id = "q_dec".to_string();
+    agr.terms.quote_expires_at_secs = f.host.now() - 3600;
+    put_row(&f.host, AGREEMENTS, "rec_q_dec", &agr).await.unwrap();
+
+    let dec = DecisionRow {
+        kind: "decision".to_string(),
+        state: DecisionState::Deciding,
+        agreement: "rec_q_dec".to_string(),
+        quote_id: "q_dec".to_string(),
+        reason: None,
+        created_at_secs: f.host.now() - 3600,
+    };
+    put_row(&f.host, LEDGER, &decision_id("q_dec"), &dec).await.unwrap();
 
     let res = sync_at(
         &f.host,
@@ -308,11 +384,27 @@ async fn sync_still_runs_recovery_once() {
     .await
     .expect("sync_at");
     assert_eq!(res.scanned, 0);
+
+    // Verify recovery ran once: deciding row transitioned to NotFormed
+    let dec_after: DecisionRow =
+        get_row(&f.host, LEDGER, &decision_id("q_dec")).await.unwrap().unwrap();
+    assert_eq!(dec_after.state, DecisionState::NotFormed);
+
+    let recovery_queries = f
+        .host
+        .queries()
+        .iter()
+        .filter(|(col, opts)| {
+            col == LEDGER && opts.filter.as_deref().unwrap_or("").contains("decision")
+        })
+        .count();
+    assert_eq!(recovery_queries, 1);
 }
 
 #[tokio::test]
 async fn a_failing_conversation_does_not_starve_the_others() {
     let f = fixture();
+    seed_drive_cursor(&f.host).await;
     f.host.on_call("conversation", "conversation.changes", |params| {
         let p: Value = serde_json::from_str(&params).unwrap_or(Value::Null);
         let conv = p.get("conversation").and_then(Value::as_str).unwrap_or("");
@@ -352,6 +444,7 @@ async fn a_failing_conversation_does_not_starve_the_others() {
 #[tokio::test]
 async fn a_failing_row_is_dropped_after_five_failures_with_a_warning() {
     let f = fixture();
+    seed_drive_cursor(&f.host).await;
     f.host.on_call("conversation", "conversation.changes", |_| {
         Err(ProxyError::Transport("fail".to_string()))
     });
@@ -373,6 +466,7 @@ async fn a_failing_row_is_dropped_after_five_failures_with_a_warning() {
 #[tokio::test]
 async fn a_failing_row_does_not_set_again() {
     let f = fixture();
+    seed_drive_cursor(&f.host).await;
     f.host.on_call("conversation", "conversation.changes", |_| {
         Err(ProxyError::Transport("fail".to_string()))
     });
@@ -392,6 +486,24 @@ async fn a_failing_row_does_not_set_again() {
     assert_eq!(out.synced, 0);
     assert_eq!(out.pending, 10);
     assert!(!out.again);
+}
+
+#[tokio::test]
+async fn drive_initial_poll_without_cursor_captures_head_and_starts_rescan() {
+    let f = fixture();
+    mock_empty_changes(&f.host);
+
+    f.host.push_event("conversation.message", "conv_early");
+
+    let out = drive(&f.host, DriveInput {}).await.expect("drive");
+    assert_eq!(out.synced, 0);
+    assert_eq!(out.pending, 0);
+    assert!(!out.rescanning);
+
+    let state: Option<DriveState> = get_row(&f.host, DRIVE_STATE, "drive").await.unwrap();
+    let state = state.expect("drive state saved");
+    assert_eq!(state.event_cursor, Some("0000000000000000-1".to_string()));
+    assert_eq!(state.rescan_offset, None);
 }
 
 #[tokio::test]

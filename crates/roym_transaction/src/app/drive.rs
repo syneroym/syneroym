@@ -108,6 +108,19 @@ async fn poll_events<H: AppHost>(
     now: u64,
     warnings: &mut Vec<String>,
 ) -> Result<(), Response> {
+    if state.event_cursor.is_none() {
+        match host.read_events(None, DRIVE_EVENT_READ).await {
+            Ok(ReadResult::Events((_, head))) | Ok(ReadResult::Reload(head)) => {
+                state.event_cursor = Some(head);
+                state.rescan_offset = Some(0);
+            }
+            Err(e) => {
+                warnings.push(format!("events read error: {e:?}"));
+            }
+        }
+        return Ok(());
+    }
+
     match host.read_events(state.event_cursor.clone(), DRIVE_EVENT_READ).await {
         Ok(ReadResult::Events((list, next))) => {
             for e in list {

@@ -129,17 +129,21 @@ impl AppEvents for TestHost {
             return res;
         }
         let evts = self.events.lock().unwrap();
-        let start_idx = match after.as_deref() {
-            Some(c) => evts.iter().position(|e| e.cursor == c).map(|p| p + 1).unwrap_or(0),
-            None => 0,
-        };
-        let slice: Vec<syneroym_app_host::types::events::Event> =
-            evts.iter().skip(start_idx).take(limit as usize).cloned().collect();
-        let next_cursor = slice
+        let head_cursor = evts
             .last()
             .map(|e| e.cursor.clone())
-            .or(after)
-            .unwrap_or_else(|| "0000000000000000-1".to_string());
+            .unwrap_or_else(|| "0000000000000000-0".to_string());
+
+        let Some(after_cursor) = after.as_deref() else {
+            return Ok(ReadResult::Events((Vec::new(), head_cursor)));
+        };
+
+        let start_idx =
+            evts.iter().position(|e| e.cursor == after_cursor).map(|p| p + 1).unwrap_or(0);
+        let slice: Vec<syneroym_app_host::types::events::Event> =
+            evts.iter().skip(start_idx).take(limit as usize).cloned().collect();
+        let next_cursor =
+            slice.last().map(|e| e.cursor.clone()).unwrap_or_else(|| after_cursor.to_string());
         Ok(ReadResult::Events((slice, next_cursor)))
     }
 }
