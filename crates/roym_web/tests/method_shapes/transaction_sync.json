@@ -3,6 +3,7 @@
   "deferred": "number",
   "filed": "number",
   "last_seq": "number",
+  "more": "boolean",
   "refused": "number",
   "scanned": "number",
   "unknown": "number",

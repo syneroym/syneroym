@@ -85,6 +85,13 @@ depends_on = ["conversation", "scheduling"]
 interface = "syneroym-roym:transaction/api@0.1.0"
 method = "status"
 
+[services.transaction.wake]
+interface = "syneroym-roym:transaction/api@0.1.0"
+method = "transaction.drive"
+on_events = ["conversation.message"]
+every_secs = 30
+timeout_ms = 10000
+
 [services.scheduling]
 service_type = "wasm"
 source = "target/wasm32-wasip2/release/syneroym_roym_scheduling.wasm"

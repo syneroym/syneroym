@@ -5,6 +5,7 @@ pub mod backup;
 pub mod decide;
 pub mod decline_ops;
 pub mod disclosures;
+pub mod drive;
 pub mod enquiry_ops;
 mod extension_rules;
 pub mod fulfilment_ops;
@@ -70,6 +71,9 @@ pub(crate) const PAYMENTS: &str = "payments";
 pub(crate) const FULFILMENTS: &str = "fulfilments";
 pub(crate) const STEPS: &str = "steps";
 pub(crate) const DISCLOSURES: &str = "disclosures";
+pub(crate) const DRIVE_STATE: &str = "drive_state";
+pub(crate) const DRIVE_PENDING: &str = "drive_pending";
+pub(crate) const AS_LISTED: &str = "as_listed";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -396,6 +400,9 @@ pub(crate) async fn ensure_collections<H: AppHost>(host: &H) -> Result<(), Strin
         &[idx("conversation", IndexType::String), idx("agreement", IndexType::String)],
     )
     .await?;
+    ensure_coll(host, DRIVE_STATE, &[]).await?;
+    ensure_coll(host, DRIVE_PENDING, &[]).await?;
+    ensure_coll(host, AS_LISTED, &[]).await?;
     Ok(())
 }
 
@@ -457,7 +464,6 @@ pub(crate) async fn put_bytes<H: AppHost>(
     .map_err(|e| e.to_string())
 }
 
-#[cfg(test)]
 pub(crate) async fn delete_row<H: AppHost>(
     host: &H,
     collection: &str,

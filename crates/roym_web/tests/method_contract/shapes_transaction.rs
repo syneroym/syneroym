@@ -416,6 +416,9 @@ async fn sync_backup_shapes() {
     let sync = rpc(&h, "transaction.sync", json!({ "conversation": conv, "full": true })).await;
     assert_shape("transaction_sync", &sync);
 
+    let drive = rpc(&h, "transaction.drive", json!({})).await;
+    assert_shape("transaction_drive", &drive);
+
     let thread = rpc(&h, "transaction.thread", json!({ "conversation": conv })).await;
     assert_shape("transaction_thread", &thread);
 

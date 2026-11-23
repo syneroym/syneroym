@@ -102,19 +102,45 @@ impl AppWebSocket for TestHost {
 impl AppEvents for TestHost {
     async fn record_event(
         &self,
-        _kind: String,
-        _subject: String,
-        _item: Option<String>,
+        kind: String,
+        subject: String,
+        item: Option<String>,
     ) -> Result<String, EventsError> {
-        Ok("0000000000000000-1".to_string())
+        let mut evts = self.events.lock().unwrap();
+        let idx = evts.len() + 1;
+        let cursor = format!("0000000000000000-{idx}");
+        evts.push(syneroym_app_host::types::events::Event {
+            cursor: cursor.clone(),
+            kind,
+            service: "test".to_string(),
+            subject,
+            item,
+            at_ms: self.now() as i64 * 1000,
+        });
+        Ok(cursor)
     }
 
     async fn read_events(
         &self,
-        _after: Option<String>,
-        _limit: u32,
+        after: Option<String>,
+        limit: u32,
     ) -> Result<ReadResult, EventsError> {
-        Ok(ReadResult::Events((Vec::new(), "0000000000000000-1".to_string())))
+        if let Some(res) = self.read_events_override.lock().unwrap().take() {
+            return res;
+        }
+        let evts = self.events.lock().unwrap();
+        let start_idx = match after.as_deref() {
+            Some(c) => evts.iter().position(|e| e.cursor == c).map(|p| p + 1).unwrap_or(0),
+            None => 0,
+        };
+        let slice: Vec<syneroym_app_host::types::events::Event> =
+            evts.iter().skip(start_idx).take(limit as usize).cloned().collect();
+        let next_cursor = slice
+            .last()
+            .map(|e| e.cursor.clone())
+            .or(after)
+            .unwrap_or_else(|| "0000000000000000-1".to_string());
+        Ok(ReadResult::Events((slice, next_cursor)))
     }
 }
 
