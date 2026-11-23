@@ -24,6 +24,19 @@ async fn restart_refuses_a_tcp_service_naming_why() {
     assert!(err.contains("tcp") && err.contains("outside this substrate"), "{err}");
 }
 
+#[tokio::test]
+async fn restart_rejects_nativehost_service() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let service = service_for_inline_tests(temp_dir.path()).await;
+    let owner = node_wide_caller("did:key:zAlice");
+
+    let facts = DeployFacts::new("nativehost");
+    service.registry.set_deploy_facts("nativehost-svc".to_string(), facts).await.unwrap();
+
+    let err = service.restart("nativehost-svc".to_string(), 0, &owner).await.unwrap_err();
+    assert!(err.contains("is a native-host service and has no restart path"), "{err}");
+}
+
 /// `restart` is a lifecycle action and must be generation-gated
 /// exactly like `deploy`/`write-bindings` -- a superseded supervisor
 /// must not be able to restart a service it no longer manages.

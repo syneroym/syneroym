@@ -29,7 +29,7 @@ const ROYM_APP_INSTANCE: &str = "roym";
 /// no ed25519 private key exists for `did:key:roym-*`, and native services
 /// are registered only in the local registry (`EndpointRegistry::register`),
 /// never published to the external community registry.
-fn roym_dispatch_id(name: &str) -> String {
+pub(super) fn roym_dispatch_id(name: &str) -> String {
     format!("did:key:roym-{name}")
 }
 
@@ -585,7 +585,7 @@ async fn wire_roym_topology(
 }
 
 #[cfg(feature = "roym")]
-const ROYM_MANIFEST_TOML: &str = include_str!("../../../roym_core/app/roym.toml");
+pub(super) const ROYM_MANIFEST_TOML: &str = include_str!("../../../roym_core/app/roym.toml");
 
 #[cfg(feature = "roym")]
 pub(super) async fn register_roym_wakes(
@@ -601,7 +601,7 @@ pub(super) async fn register_roym_wakes(
             let wake_json = serde_json::to_string(&wake).map_err(|e| {
                 anyhow::anyhow!("failed to serialize wake spec for {svc_name}: {e}")
             })?;
-            let facts = DeployFacts::new("native").with_wake_json(wake_json);
+            let facts = DeployFacts::new("nativehost").with_wake_json(wake_json);
             endpoint_registry.set_deploy_facts(roym_dispatch_id(svc_name.as_ref()), facts).await?;
         }
     }

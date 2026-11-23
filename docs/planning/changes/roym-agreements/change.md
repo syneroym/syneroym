@@ -1492,6 +1492,7 @@ The owner answered that plan's questions Q1 to Q8 on 2026-11-23; the rows below 
 - **C3c1 driver stop rule time measurement.** 8 conversations on a node with 200 agreements: 69.8 ms (limit < 2.0 s).
 - **WIT typed `wake-spec` and SDK mapper (C3c1).** Added `wake-spec` record and optional `wake` field to `service-config` in `control-plane.wit`, with mapping in `crates/sdk/src/mapper.rs` (`map_wake`), bridging `app_orchestration::WakeSpec` and `commit.rs` deploy facts.
 - **Substrate-side deploy validation of wake (C3c1).** Substrate validates `WakeSpec::validate` against the service's declared interfaces during deploy validation, ensuring invalid wake targets are rejected even for remote submissions.
+- **Linked Roym wake deploy facts service type (C3c1, R6).** Linked Roym service wake registration in the native build uses service type `nativehost`, matching substrate orchestrator expectations and ensuring `restart` rejects it cleanly with "native-host service has no restart path" rather than unrecognized service type errors.
 
 ## Close-out
 

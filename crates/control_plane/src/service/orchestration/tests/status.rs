@@ -28,6 +28,32 @@ async fn status_reports_unknown_for_a_service_with_no_recorded_type() {
 }
 
 #[tokio::test]
+async fn status_reports_nativehost_service_phase() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let service = service_for_inline_tests(temp_dir.path()).await;
+    let owner = status_capable_caller("owner");
+
+    service
+        .registry
+        .register(
+            "nativehost-svc".to_string(),
+            "main".to_string(),
+            SubstrateEndpoint::NativeHostChannel { service_id: "nativehost-svc".to_string() },
+        )
+        .await
+        .unwrap();
+
+    let facts = DeployFacts::new("nativehost");
+    service.registry.set_deploy_facts("nativehost-svc".to_string(), facts).await.unwrap();
+
+    let status = service.status(vec!["nativehost-svc".to_string()], &owner).await.unwrap();
+    assert_eq!(status.services.len(), 1);
+    assert!(
+        matches!(status.services[0].phase, InstancePhase::Unknown(ref r) if r.contains("native-host services have no deploy-time liveness signal"))
+    );
+}
+
+#[tokio::test]
 async fn status_reports_not_found_for_an_id_this_substrate_has_no_endpoints_for() {
     let temp_dir = tempfile::tempdir().unwrap();
     let service = service_for_inline_tests(temp_dir.path()).await;

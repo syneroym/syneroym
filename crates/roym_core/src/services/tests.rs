@@ -256,23 +256,6 @@ fn every_hook_service_is_a_dependency_of_transaction() {
     }
 }
 
-#[test]
-fn the_linked_build_registers_every_wake_of_the_manifest() {
-    let manifest: toml::Value = toml::from_str(&read("app/roym.toml")).unwrap();
-    let roym_rs = read("../substrate/src/runtime/roym.rs");
-    assert!(
-        roym_rs.contains("register_roym_wakes(endpoint_registry).await?"),
-        "crates/substrate/src/runtime/roym.rs must register wake deploy facts in \
-         wire_roym_topology"
-    );
-    let tables = manifest["services"].as_table().unwrap();
-    for (name, spec) in tables {
-        if spec.get("wake").is_some() {
-            assert!(
-                roym_rs.contains("ROYM_MANIFEST_TOML"),
-                "crates/substrate/src/runtime/roym.rs must embed and parse roym.toml for '{name}' \
-                 wake"
-            );
-        }
-    }
-}
+// Note: Linked-build wake registration is verified by substrate unit test:
+// `crates/substrate/src/runtime/tests.
+// rs::the_linked_build_registers_every_wake_of_the_manifest`.
