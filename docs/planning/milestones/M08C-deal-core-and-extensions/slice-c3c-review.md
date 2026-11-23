@@ -934,11 +934,12 @@ syneroym-roym-transaction`: 226 tests in the crate.
   `docs/ideas/did-nid-match-process.md` and `99ff3dd0` bumps `url`. Both are
   the owner's commits; I did not review them.
 
-**Counts: 0 blocker, 2 major, 11 minor. 13 open.**
+**Counts: 0 blocker, 0 major, 0 minor. 0 open.** All 13 findings are fixed and verified.
 
-### R1 — The worker never reads the wake reply: `again` and `warnings` are lost (major)
+### Findings
 
-*Where:* [wake.rs:226](../../../../crates/substrate/src/runtime/wake.rs#L226)
+- [x] **R1 — major.** *The worker never reads the wake reply: `again` and `warnings` are lost.*
+  *Where:* [wake.rs:226](../../../../crates/substrate/src/runtime/wake.rs#L226)
 to `:246` (`spawn_wake_call`); [wake/tests.rs:29](../../../../crates/substrate/src/runtime/wake/tests.rs#L29)
 (`MockProxy`).
 
@@ -981,11 +982,10 @@ the envelope string a Roym guest returns, and keep one case with a plain
 object. Add a worker test where the reply is a string envelope with `again:
 true`, one with `warnings`, and one with `error`.
 
-*Status:* Open.
+*Status:* Fixed (20f925c3). `wake_reply` in `wake.rs` now inspects `Value`: if string, it parses JSON and unpacks `result` (or treats `error` as a failure with guest error logging); if object, it reads directly. `again` and `warnings` are read from the result payload. `MockProxy` in `wake/tests.rs` now returns string envelopes by default. Added tests for object `again`, string envelope with `warnings`, and string envelope with `error`. Proof: before unpacking envelopes, `wake_reply_contract_again_sets_has_pending` failed (`left: 2, right: 3`); after unpacking, passed (3).
 
-### R2 — The linked-build wake is not proved: both registration tests pass with no wake (major)
-
-*Where:* [runtime/tests.rs:125](../../../../crates/substrate/src/runtime/tests.rs#L125);
+- [x] **R2 — major.** *The linked-build wake is not proved: both registration tests pass with no wake.*
+  *Where:* [runtime/tests.rs:125](../../../../crates/substrate/src/runtime/tests.rs#L125);
 [services/tests.rs:260](../../../../crates/roym_core/src/services/tests.rs#L260).
 
 *Problem:* D-C3c-3 asks for a test that "parses the manifest and checks that
@@ -1017,11 +1017,10 @@ test, or keep it only as a pointer. If a linked-build boot is affordable in
 `transaction` and assert the reply is a `DriveOutput` (this also covers R1
 for the native path).
 
-*Status:* Open.
+*Status:* Fixed (3d4fad35). `the_linked_build_registers_every_wake_of_the_manifest` in `crates/substrate/src/runtime/tests.rs` parses `ROYM_MANIFEST_TOML`, maps services declaring wakes via `roym_dispatch_id`, and asserts the expected set is non-empty and matches `wake_targets()` with equal `WakeSpec`s. Replaced brittle substring test in `roym_core/src/services/tests.rs` with a pointer comment. Proof: commenting out `register_roym_wakes` in `runtime/roym.rs` caused the substrate test to fail (`left: {}, right: {"did:key:roym-transaction": WakeSpec { ... }}`).
 
-### R3 — The two recovery tests prove nothing (minor)
-
-*Where:* [tests/drive.rs:286](../../../../crates/roym_transaction/src/app/tests/drive.rs#L286)
+- [x] **R3 — minor.** *The two recovery tests prove nothing.*
+  *Where:* [tests/drive.rs:286](../../../../crates/roym_transaction/src/app/tests/drive.rs#L286)
 to `:311`.
 
 *Problem:* `drive_runs_recovery_once_per_call` asserts only `synced == 2`.
@@ -1040,11 +1039,10 @@ resend (or count the `AGREEMENTS` queries in `TestHost`). Assert: one
 `sync_at` recovers it (so `transaction.sync` keeps today's behaviour), and
 one `drive_at` over several conversations runs recovery exactly once.
 
-*Status:* Open.
+*Status:* Fixed (2611c71c). Made recovery observable: `drive_runs_recovery_once_per_call` and `sync_still_runs_recovery_once` seed an expired `deciding` row before calling `drive_at` / `sync_at`, asserting `state == NotFormed` and `recovery_queries == 1`. Proof: commenting out `recover_deciding_rows` in `drive.rs` caused `drive_runs_recovery_once_per_call` to fail (`left: 3, right: 2`); commenting out in `sync.rs` caused `sync_still_runs_recovery_once` to fail (`left: Deciding, right: NotFormed`).
 
-### R4 — The worker's event test passes on the interval call, and most planned worker tests are missing (minor)
-
-*Where:* [wake/tests.rs:198](../../../../crates/substrate/src/runtime/wake/tests.rs#L198)
+- [x] **R4 — minor.** *The worker's event test passes on the interval call, and most planned worker tests are missing.*
+  *Where:* [wake/tests.rs:198](../../../../crates/substrate/src/runtime/wake/tests.rs#L198)
 to `:245`.
 
 *Problem:* In `wake_worker_triggers_on_event`, `every_secs` is 60 but
@@ -1074,11 +1072,10 @@ then record an event and assert a second call. Add the listed tests. Use a
 proxy that panics for the guard test, and a valid `every_secs` (use a fake
 clock or set `last_run_at` in the state instead of `every_secs = 0`).
 
-*Status:* Open.
+*Status:* Fixed (b9c87d66). `wake_worker_triggers_on_event` yields to let the first interval call finish, then records an event with current timestamp and asserts a second call occurs. Added all planned worker tests: `a_burst_of_events_gives_one_call`, `an_event_of_another_kind_gives_no_call`, `the_interval_calls_with_no_event`, `a_slow_call_is_never_overlapped`, `a_reload_of_the_event_window_gives_a_call`, `an_undeployed_service_is_not_called_again`, `a_reply_without_again_waits_for_the_interval`, and `a_panic_in_invoke_resets_running_guard`. Valid `every_secs` (30 or 60) used across tests. Proof: commenting out event matching trigger in `wake.rs` caused `wake_worker_triggers_on_event` to fail (`left: 1, right: 2`).
 
-### R5 — A missing local endpoint logs a warning every second and loses the trigger (minor)
-
-*Where:* [wake.rs:134](../../../../crates/substrate/src/runtime/wake.rs#L134)
+- [x] **R5 — minor.** *A missing local endpoint logs a warning every second and loses the trigger.*
+  *Where:* [wake.rs:134](../../../../crates/substrate/src/runtime/wake.rs#L134)
 to `:152`.
 
 *Problem:* On a lookup miss the worker returns before it sets `last_run_at`.
@@ -1098,11 +1095,10 @@ bug of R2, does the same.
 the trigger: put `has_pending` back to true on a miss, or read events only
 after the lookup passes. Add a test for both.
 
-*Status:* Open.
+*Status:* Fixed (b9c87d66). Added `warned_missing_endpoint` flag to `TargetState` to log a warning once while an endpoint is missing and reset once found. `tick_target` checks the local endpoint before reading event bus or clearing `has_pending`, preserving triggers across missing endpoint periods. Added tests `a_missing_local_endpoint_preserves_has_pending_trigger` and `a_missing_local_endpoint_skips_dispatch_and_preserves_event_trigger`.
 
-### R6 — The linked build writes deploy facts with an unknown service type (minor)
-
-*Where:* [roym.rs:604](../../../../crates/substrate/src/runtime/roym.rs#L604).
+- [x] **R6 — minor.** *The linked build writes deploy facts with an unknown service type.*
+  *Where:* [roym.rs:604](../../../../crates/substrate/src/runtime/roym.rs#L604).
 
 *Problem:* `register_roym_wakes` stores `DeployFacts::new("native")` for
 `did:key:roym-transaction`. Before this change a linked Roym service had no
@@ -1126,11 +1122,10 @@ leave deploy facts to deploys. If deploy facts stay, use `"nativehost"`,
 record the side effects in the Deviations, and add a test that `restart`
 and `status` of the linked service answer as before.
 
-*Status:* Open.
+*Status:* Fixed (3d4fad35). `register_roym_wakes` in `crates/substrate/src/runtime/roym.rs` now records facts with `"nativehost"`. Added unit tests in `crates/control_plane` proving `restart` and `status` handle linked nativehost services without failing. Recorded deviation in `docs/planning/changes/roym-agreements/change.md`.
 
-### R7 — A drive with no stored cursor never rescans, and the test host hides it (minor)
-
-*Where:* [drive.rs:111](../../../../crates/roym_transaction/src/app/drive.rs#L111);
+- [x] **R7 — minor.** *A drive with no stored cursor never rescans, and the test host hides it.*
+  *Where:* [drive.rs:111](../../../../crates/roym_transaction/src/app/drive.rs#L111);
 [testing/stubs.rs:124](../../../../crates/roym_core/src/testing/stubs.rs#L124)
 to `:143`.
 
@@ -1155,11 +1150,10 @@ head and set `rescan_offset = Some(0)`. Make `TestHost::read_events(None)`
 return no events and the head cursor, as the real bus does, and fix the
 tests that relied on the old stub.
 
-*Status:* Open.
+*Status:* Fixed (2611c71c). In `crates/roym_transaction/src/app/drive.rs`, `poll_events` treats `event_cursor: None` like `Reload` (takes head cursor and initializes `rescan_offset = Some(0)`). In `crates/roym_core/src/testing/stubs.rs`, `TestHost::read_events(None)` now returns empty events and the head cursor, matching the real event bus. Added test `drive_initial_poll_without_cursor_captures_head_and_starts_rescan`.
 
-### R8 — The restart test does not prove the reload path (minor)
-
-*Where:* [roym_driver_e2e.rs:195](../../../../crates/substrate/tests/roym_driver_e2e.rs#L195),
+- [x] **R8 — minor.** *The restart test does not prove the reload path.*
+  *Where:* [roym_driver_e2e.rs:195](../../../../crates/substrate/tests/roym_driver_e2e.rs#L195),
 `:254` to `:256`.
 
 *Problem:* `stopped_quote_author_restarts_and_countersigns_via_reload_path`
@@ -1178,11 +1172,10 @@ to `drive_after_reload_walks_every_conversation_in_pages`. Or make the card
 arrive before the drive's first event read after restart, if the harness
 can do that.
 
-*Status:* Open.
+*Status:* Fixed (e43c5e85). Renamed test in `crates/substrate/tests/roym_driver_e2e.rs` to `stopped_quote_author_restarts_and_countersigns` and updated the comment to accurately state what is verified.
 
-### R9 — Two "why" comments were dropped from the deploy-facts docs (minor)
-
-*Where:* [storage.rs:113](../../../../crates/core/src/storage.rs#L113) to
+- [x] **R9 — minor.** *Two "why" comments were dropped from the deploy-facts docs.*
+  *Where:* [storage.rs:113](../../../../crates/core/src/storage.rs#L113) to
 `:116`.
 
 *Problem:* `save_deploy_facts`' doc on `main` said that a redeploy that
@@ -1198,11 +1191,10 @@ ends; nothing at the trait says why that is wrong.
 *Fix:* Put both sentences back on `save_deploy_facts` (they still hold for
 the struct form).
 
-*Status:* Open.
+*Status:* Fixed (e43c5e85). Restored the two "why" sentences in `crates/core/src/storage.rs` on `save_deploy_facts` doc comment regarding clearing by construction and partial deploy deduplication prevention.
 
-### R10 — The developer guide's wake example is invalid, and `transaction.drive` is not documented (minor)
-
-*Where:* [developer-guide.md:1441](../../../../docs/developer-guide.md#L1441)
+- [x] **R10 — minor.** *The developer guide's wake example is invalid, and `transaction.drive` is not documented.*
+  *Where:* [developer-guide.md:1441](../../../../docs/developer-guide.md#L1441)
 to `:1448`; section 6.7.
 
 *Problem:* The example has `interface = "api"` (validation refuses an
@@ -1221,11 +1213,10 @@ output, nor the new `more` field of `transaction.sync`.
 `transaction.drive` (`{}` → `{synced, pending, rescanning, again,
 warnings?}`) and `more` to section 6.7.
 
-*Status:* Open.
+*Status:* Fixed (e43c5e85). Updated wake manifest example in `docs/developer-guide.md` with valid interface and event kind, documented wake limits and reply contract (including string envelope format), and added `transaction.drive` and `more` to section 6.7.
 
-### R11 — Two backlog notes of plan section 8 are missing (minor)
-
-*Where:* [deferred-backlog.md:416](../../deferred-backlog.md) ("A schedule
+- [x] **R11 — minor.** *Two backlog notes of plan section 8 are missing.*
+  *Where:* [deferred-backlog.md:416](../../deferred-backlog.md) ("A schedule
 deployed by `roymctl app deploy` never runs") and `:548` ("Services can
 only pull events").
 
@@ -1238,11 +1229,10 @@ with `app deploy` has no timer at all.
 
 *Fix:* Add one sentence to each row, as the plan says.
 
-*Status:* Open.
+*Status:* Fixed (e43c5e85). Added clarifying notes to `docs/planning/deferred-backlog.md` rows at lines 416 and 548 (pointing to ADR-0031 node-local wake and noting wake triggers event pull).
 
-### R12 — status.md test counts cannot be checked (minor)
-
-*Where:* [status.md:20](status.md) (the C3c1 row).
+- [x] **R12 — minor.** *status.md test counts cannot be checked.*
+  *Where:* [status.md:20](status.md) (the C3c1 row).
 
 *Problem:* "`roym-transaction` 43 passed" names no filter; the crate has 226
 tests and its `drive` filter has 14. The same holds for "`sdk` 54" and
@@ -1257,11 +1247,10 @@ nothing.
 full-crate counts. Add the CI run result for the reviewed head when it
 finishes.
 
-*Status:* Open.
+*Status:* Fixed (in the close-out commit). `status.md` C3c1 row updated with exact test commands, filter paths, pass counts, and reference to CI.
 
-### R13 — Inline qualified paths and a copied parity helper (minor)
-
-*Where:* [deploy/manifest.rs:165](../../../../crates/control_plane/src/service/orchestration/deploy/manifest.rs#L165)
+- [x] **R13 — minor.** *Inline qualified paths and a copied parity helper.*
+  *Where:* [deploy/manifest.rs:165](../../../../crates/control_plane/src/service/orchestration/deploy/manifest.rs#L165)
 to `:186`; [wake.rs:97](../../../../crates/substrate/src/runtime/wake.rs#L97);
 [tests/drive.rs:23](../../../../crates/roym_transaction/src/app/tests/drive.rs#L23);
 [testing.rs:78](../../../../crates/roym_core/src/testing.rs#L78), `:214`,
@@ -1284,4 +1273,4 @@ asks to reuse an existing helper.
 *Fix:* Import the types. Move one `peer_signed_request_with_identity(peer,
 conv, seq, issued_at)` into `fixtures.rs` and call it from both files.
 
-*Status:* Open.
+*Status:* Fixed (b056b0a7). Deduplicated `peer_signed_request_with_identity` into `crates/roym_web/tests/dual_build_parity/fixtures.rs` and reused in `as_listed.rs` and `booking.rs`. Cleaned up inline qualified paths across `manifest.rs`, `wake.rs`, `tests/drive.rs`, `testing.rs`, `testing/stubs.rs`, `as_listed.rs`, and `booking.rs`.
