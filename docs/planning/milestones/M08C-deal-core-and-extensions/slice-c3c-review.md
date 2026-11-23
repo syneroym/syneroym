@@ -833,3 +833,455 @@ plan is consistent after the merge of the old C3c2 and C3c3:
 - Q7 (demo) is restated: C3c1 `- none`, C3c2 extends story 50.
 - The C3c2 production size is about 1,950 lines. This is the size that the
   old option (b) gave, so the numbers agree.
+
+## Code review round 1 — Claude Opus 5.5 (Claude Code), 2026-11-23
+
+This round reviews **part C3c1 only** (the driver): plan section 6.1 and
+D-C3c-1 to D-C3c-4, PR #381, branch `feat/m08c-c3c-agree-as-listed`, at
+`e8a57a68`. Main checkout, not a worktree, `git pull` up to date. Diff:
+`git diff origin/main...HEAD` (merge base `8fafab15`). The code was written
+by Gemini 3.8 Flash. C3c2 is not built yet; its findings will continue the
+R numbers.
+
+**CI.** `gh pr checks 381` on `e8a57a68` at review time: "Lints, licenses &
+checks" and the CLA check pass; the six test shards and Playwright E2E are
+still pending. So CI is not yet proof that the full suite passes.
+
+**Tests I ran** (targeted only): `cargo nextest run -p
+syneroym-roym-transaction drive`: 14 passed. `cargo nextest run -p
+syneroym-substrate --lib wake`: 8 passed. `cargo nextest list -p
+syneroym-roym-transaction`: 226 tests in the crate.
+
+### Checked and found correct
+
+- **(1) A wake never leaves the node.** `WakeWorker::tick_target` calls
+  `registry.lookup(service_id, interface)` before every call and skips on a
+  miss ([wake.rs:145](../../../../crates/substrate/src/runtime/wake.rs#L145)).
+  This is the same test as `run_scheduled_impl`
+  ([lifecycle.rs:628](../../../../crates/control_plane/src/service/orchestration/lifecycle.rs#L628)),
+  which is exactly `invoke_inner`'s local-or-remote test. The unit test
+  `wake_worker_skips_when_endpoint_not_registered` shows no proxy call on a
+  miss. The lookup and the call are a few microseconds apart (the same gap
+  `run-scheduled` has); I accept that. But see R5 for what a miss does.
+- **(2) One call at a time.** `running` is set before the spawn and is read
+  at the top of each tick. `RunningGuard` is built as the first statement of
+  the spawned task, so a panic or a timeout inside `proxy.invoke` resets it.
+  `invoke_local` applies `spec.timeout_ms` to both the WASM and the native
+  path ([router.rs:224](../../../../crates/router/src/proxy/router.rs#L224)),
+  so a hung call cannot wedge the worker. Events stay on the bus while a
+  call runs (the early return is before `check_events`), so nothing is
+  queued and nothing is lost.
+- **(3) `again` in the guest.** `drive_at` sets `again` only when `synced ==
+  8` and rows are left; failed rows do not count as synced, so rows that
+  fail can never make `again` true. A failing row is put again with `since =
+  now` and `failures + 1`, and is deleted with a warning at 5. Timed-work
+  candidates get `since = now`, so stored pending rows always sort before
+  them. `more` is `scanned == SYNC_WINDOW && new_last_seq >
+  sync_state.last_seq`, as P18 asks. **But the worker never reads `again`:
+  see R1.**
+- **(4) `DeployFacts`.** It is a named struct in `storage.rs`; every reader
+  in the plan's list of 13 sites (and `orchestration.rs:316`,
+  `cert.rs:122`) now uses field names; `data_db` adds the `wake_json`
+  column in the same `ALTER TABLE` loop as `manifest_hash` and
+  `visibility`. `clear_deploy_hash_after_binding_push` now copies the whole
+  struct and clears only `manifest_hash`, and `a_binding_push_keeps_the_wake`
+  proves it through `write_bindings`.
+- **(5) Recovery.** `sync_direct` no longer calls `recover_deciding_rows`;
+  `sync_at` calls it after a successful `sync_direct`, as before (an error or
+  a group conversation still returns early, before recovery, as on `main`).
+  `drive_at` calls it once, at the start. `transaction.sync`'s error codes
+  are unchanged: `fetch_sync_messages` already answered `internal_error` for
+  every sibling error, and the group case still answers `invalid_params`
+  with `CARDS_NOT_IN_GROUPS_MESSAGE`. **But the two tests that should prove
+  this prove nothing: R3.**
+- **(6) Both builds.** `transaction.drive` is in the method table, admitted
+  by the default `require_internal`, the contract count is 45 with a shape
+  file, and parity scenario 252 runs it in both builds. The linked build
+  parses the embedded `roym.toml` with `SynAppManifest::from_toml` and
+  registers the wake for `did:key:roym-transaction` (one source). CI runs
+  nextest with `--all-features`, so the `roym`-gated test runs there. **But
+  that test is vacuous: R2.**
+- **(7) ADR-0031** matches the code on scope, the local endpoint check, the
+  1-second tick, one call at a time, no queue, no retry, the coordinator-mode
+  skip and the "logged once" warning for a service with no app context. It
+  does not match on the reply contract (R1) and on "works identically in
+  both builds" (R2).
+- **(8) Stop rule.** Measured in parity
+  (`scenario_stop_rule_measurement_200_agreements_8_conversations`, both
+  builds, 200 agreements, 8 conversations with one enquiry card each):
+  69.8 ms, recorded in status.md and in the roym-agreements Deviations.
+  `MAX_DRIVE_CONVERSATIONS` stays 8.
+- `WakeSpec` and its validation match D-C3c-1 rule by rule, with one test
+  per rule; `ServiceConfig` keeps its deploy hash with no wake. The wire
+  change (the `wake-spec` record and `service-config.wake` in
+  `control-plane.wit`, the SDK mapper) is recorded in the roym-agreements
+  Deviations, and the substrate validates the wake again at deploy.
+- Security: a wake can name only an interface of its own service; the call
+  is `CallerContext::service_system` of that service, so it gets nothing a
+  deployer of that service does not already have.
+- The seven substrate sync-count sites (D-C3c-4) no longer read `filed` or
+  `countersigned`; each still asserts the card or agreement that follows.
+  `roym_driver_e2e.rs` calls `transaction.sync` on neither node.
+- Sizes: every changed production file is under 800 lines (`sync.rs` 641
+  after the `sync/cards.rs` move). No planning ids in code, `.wit`,
+  `.toml` or `.json`. The oversized-test-file baselines went down only, and
+  the 9 removed `#[test]`s of `models/tests.rs` moved to
+  `models/tests/schedule.rs`.
+- The deferred-backlog row "A card is filed only when a client calls
+  `transaction.sync`" moved to "Recently resolved", and the new row "Many
+  woken services on one node are not pooled" sits beside ADR-0023's row.
+- Not C3c1 code, but in the PR: `e2cafe91` adds
+  `docs/ideas/did-nid-match-process.md` and `99ff3dd0` bumps `url`. Both are
+  the owner's commits; I did not review them.
+
+**Counts: 0 blocker, 2 major, 11 minor. 13 open.**
+
+### R1 — The worker never reads the wake reply: `again` and `warnings` are lost (major)
+
+*Where:* [wake.rs:226](../../../../crates/substrate/src/runtime/wake.rs#L226)
+to `:246` (`spawn_wake_call`); [wake/tests.rs:29](../../../../crates/substrate/src/runtime/wake/tests.rs#L29)
+(`MockProxy`).
+
+*Problem:* The worker does `val.get("again")` and `val.get("warnings")` on
+the value `proxy.invoke` returns. For a Roym service that value is not the
+`DriveOutput` object. The guest export is `invoke: func(request: string) ->
+result<string, string>`
+([world.wit:4](../../../../crates/roym_transaction/wit/world.wit#L4)), and
+`invoke_local` turns `Ok(string)` into `Value::String` with the envelope
+text inside (`execute_wasm_json` → `wasm_results_to_json`,
+[conversions.rs:462](../../../../crates/sandbox_wasm/src/conversions.rs#L462)).
+So `val` is `Value::String("{\"result\":{\"synced\":8,…,\"again\":true}}")`,
+and `.get(...)` on a string is always `None`. Guests read the same reply
+with `read_reply`, which parses the string first
+([method.rs:408](../../../../crates/roym_core/src/method.rs#L408)). The plan
+review note for P18 (round 4) said `invoke` returns the callee's `result`
+value; that is true for the JSON-RPC layer, but the Roym `result` is a
+string. The unit test cannot see this: `MockProxy` returns a JSON object
+(`json!({"again": true, …})`), which no Roym service returns.
+
+The same cause hides guest errors: a `drive` that answers
+`{"error": …}` is `Ok(Value::String(…))` at the proxy, so "wake call failed"
+is never logged for it.
+
+*Failure case:* X restarts with 100 direct conversations. The first drive
+gets `reload`, rescans 16 per call, syncs 8 per call and returns `again:
+true`. The worker ignores it, so the next call waits for a new message or
+for `every_secs` (30 s): about 6 minutes to drain instead of about 13
+seconds. A conversation that fails 5 times is dropped, and the "gave up on
+<conv>" warning, the only report of it, is never logged. ADR-0031 §6 is not
+true for any Roym service.
+
+*Fix:* Read the reply through one small function, for example
+`fn wake_reply(val: Value) -> Result<Value, String>`: when `val` is a
+string, parse it as JSON; when it then holds `error`, return it as an error
+(log it as "wake call failed"); when it holds `result`, use that; otherwise
+use the value as it is (a non-Roym service that returns an object). Then
+read `again` and `warnings` from the result. Change `MockProxy` to return
+the envelope string a Roym guest returns, and keep one case with a plain
+object. Add a worker test where the reply is a string envelope with `again:
+true`, one with `warnings`, and one with `error`.
+
+*Status:* Open.
+
+### R2 — The linked-build wake is not proved: both registration tests pass with no wake (major)
+
+*Where:* [runtime/tests.rs:125](../../../../crates/substrate/src/runtime/tests.rs#L125);
+[services/tests.rs:260](../../../../crates/roym_core/src/services/tests.rs#L260).
+
+*Problem:* D-C3c-3 asks for a test that "parses the manifest and checks that
+every service that declares a wake is registered". There are two tests with
+that name, and neither checks it:
+
+- The substrate test loops over `registry.wake_targets()` and checks each
+  entry. If `register_roym_wakes` registers nothing, or registers under a
+  wrong id, the loop has nothing to check and the test passes.
+- The `roym_core` test only checks that the text of `runtime/roym.rs`
+  contains `register_roym_wakes(endpoint_registry).await?` and
+  `ROYM_MANIFEST_TOML`. Renaming a variable breaks it; registering the wrong
+  service does not.
+
+No test calls the wake in the linked build. Every substrate test of the
+driver deploys the WASM build.
+
+*Failure case:* someone changes `roym_dispatch_id` or the service name used
+in `register_roym_wakes`. The linked (product) build then registers the wake
+for an id with no endpoint, the worker skips it every second (R5), and no
+deal moves without a Hub. Both tests still pass.
+
+*Fix:* In the substrate test, build the expected set from the manifest
+(each service with a `wake`, mapped through `roym_dispatch_id`), and assert
+`wake_targets()` equals it, with each parsed `WakeSpec` equal to the
+manifest's. Assert the set is not empty. Then drop the `roym_core` text
+test, or keep it only as a pointer. If a linked-build boot is affordable in
+`runtime/tests.rs`, also run one `WakeWorker::tick` against the linked
+`transaction` and assert the reply is a `DriveOutput` (this also covers R1
+for the native path).
+
+*Status:* Open.
+
+### R3 — The two recovery tests prove nothing (minor)
+
+*Where:* [tests/drive.rs:286](../../../../crates/roym_transaction/src/app/tests/drive.rs#L286)
+to `:311`.
+
+*Problem:* `drive_runs_recovery_once_per_call` asserts only `synced == 2`.
+`sync_still_runs_recovery_once` asserts only `scanned == 0`. Neither looks
+at recovery. Both pass if `drive_at` runs `recover_deciding_rows` once per
+conversation (the P14 cost) and if `sync_at` drops the call (the P21
+regression). Focus point 5 depends on these two tests.
+
+*Failure case:* a later change moves the recovery call back into
+`sync_direct`. A drive of 8 conversations then reads every agreement 9
+times. Both tests stay green.
+
+*Fix:* Make recovery observable. For example, seed one `deciding` row old
+enough for `recover_deciding_rows` to act on, with a stub that counts the
+resend (or count the `AGREEMENTS` queries in `TestHost`). Assert: one
+`sync_at` recovers it (so `transaction.sync` keeps today's behaviour), and
+one `drive_at` over several conversations runs recovery exactly once.
+
+*Status:* Open.
+
+### R4 — The worker's event test passes on the interval call, and most planned worker tests are missing (minor)
+
+*Where:* [wake/tests.rs:198](../../../../crates/substrate/src/runtime/wake/tests.rs#L198)
+to `:245`.
+
+*Problem:* In `wake_worker_triggers_on_event`, `every_secs` is 60 but
+`last_run_at` starts at 0, so the first tick is already due and starts a
+call. The test runtime has one thread and `tick` never yields, so on the
+second tick that call has not run yet: `running` is true and the tick
+returns at once, before it reads the event. The one invocation the test
+counts is the first-tick interval call. The test passes with the event
+code removed.
+
+The plan's list (section 7.2) has these worker tests, which do not exist:
+`a_burst_of_events_gives_one_call`, `an_event_of_another_kind_gives_no_call`,
+`the_interval_calls_with_no_event`, `a_slow_call_is_never_overlapped`,
+`a_reload_of_the_event_window_gives_a_call`,
+`an_undeployed_service_is_not_called_again`,
+`a_reply_without_again_waits_for_the_interval`,
+`warnings_in_the_reply_are_logged`. `a_panic_in_invoke_resets_running_guard`
+tests the guard alone, not a proxy that panics inside the worker. Two tests
+use `every_secs = 0`, which validation refuses.
+
+*Failure case:* `check_events` stops matching kinds (for example it compares
+against the subject). Every worker test still passes; only the slow
+two-node test would show it.
+
+*Fix:* Let the first call finish (yield, then check `running` is false),
+then record an event and assert a second call. Add the listed tests. Use a
+proxy that panics for the guard test, and a valid `every_secs` (use a fake
+clock or set `last_run_at` in the state instead of `every_secs = 0`).
+
+*Status:* Open.
+
+### R5 — A missing local endpoint logs a warning every second and loses the trigger (minor)
+
+*Where:* [wake.rs:134](../../../../crates/substrate/src/runtime/wake.rs#L134)
+to `:152`.
+
+*Problem:* On a lookup miss the worker returns before it sets `last_run_at`.
+So `due` stays true, and the next tick warns again: one `warn!` per second
+for as long as the endpoint is missing. Also, by then the tick has already
+taken `has_pending` (`swap(false)`) and moved the bus cursor past the
+matching event, so the trigger is lost; the next call waits for a new event
+or the interval.
+
+*Failure case:* a WASM service whose component fails to load keeps its
+deploy facts but has no endpoint: the log gets 86,400 identical warnings a
+day. A node that boots before its endpoints are restored, or the linked id
+bug of R2, does the same.
+
+*Fix:* Warn once per target state while the endpoint is missing (as
+`warned_no_app_context` does), and reset the flag when a call starts. Keep
+the trigger: put `has_pending` back to true on a miss, or read events only
+after the lookup passes. Add a test for both.
+
+*Status:* Open.
+
+### R6 — The linked build writes deploy facts with an unknown service type (minor)
+
+*Where:* [roym.rs:604](../../../../crates/substrate/src/runtime/roym.rs#L604).
+
+*Problem:* `register_roym_wakes` stores `DeployFacts::new("native")` for
+`did:key:roym-transaction`. Before this change a linked Roym service had no
+deploy facts. Now it has facts with `service_type = "native"`, which
+`parse_service_type` does not know (it knows `"nativehost"`,
+[types.rs:224](../../../../crates/control_plane/src/service/orchestration/types.rs#L224)).
+The facts are also read by other code: `restart` now answers "has a recorded
+service type ('native') this substrate does not recognize; redeploy to
+correct it" (a redeploy is impossible for a linked service);
+`renew_cert_impl` no longer refuses with "not deployed here"; `status`
+passes the type to `instance_phase`. None of this is in the plan or the
+Deviations. The plan's own sketch has a separate source ("the registry rows,
+and the linked Roym wake").
+
+*Failure case:* an operator runs `roymctl` restart on the linked
+`transaction`, gets the "redeploy to correct it" text and cannot follow it.
+
+*Fix:* Give the worker the linked wake through a second `WakeTargets`
+source (a fixed list built from the embedded manifest at `init_roym`), and
+leave deploy facts to deploys. If deploy facts stay, use `"nativehost"`,
+record the side effects in the Deviations, and add a test that `restart`
+and `status` of the linked service answer as before.
+
+*Status:* Open.
+
+### R7 — A drive with no stored cursor never rescans, and the test host hides it (minor)
+
+*Where:* [drive.rs:111](../../../../crates/roym_transaction/src/app/drive.rs#L111);
+[testing/stubs.rs:124](../../../../crates/roym_core/src/testing/stubs.rs#L124)
+to `:143`.
+
+*Problem:* The real bus answers a read with no cursor with no events and the
+head cursor, not `reload`
+([event_bus.rs:205](../../../../crates/core/src/event_bus.rs#L205)). So the
+first `drive` with an empty `DRIVE_STATE` starts at the head and does not
+rescan. The plan says "after a restore, the first `reload` starts a full
+pass" (D-C3c-2, "`drive` is not in the backup"); that is not what happens.
+The test host differs from the real bus here: with no cursor it returns
+every event from the start, so `drive_syncs_each_conversation_named_by_a_message_event`
+and others pass on behaviour no real host has. (Parity scenario 252 works
+around it with a first drive "to capture the baseline event cursor".)
+
+*Failure case:* a backup is restored on a new node. `DRIVE_STATE` is empty,
+the first drive takes the head cursor, and a restored conversation with an
+unfiled card is not synced until a new message arrives (unless it also holds
+an unfinished agreement).
+
+*Fix:* In `poll_events`, treat `event_cursor: None` like `reload`: take the
+head and set `rescan_offset = Some(0)`. Make `TestHost::read_events(None)`
+return no events and the head cursor, as the real bus does, and fix the
+tests that relied on the old stub.
+
+*Status:* Open.
+
+### R8 — The restart test does not prove the reload path (minor)
+
+*Where:* [roym_driver_e2e.rs:195](../../../../crates/substrate/tests/roym_driver_e2e.rs#L195),
+`:254` to `:256`.
+
+*Problem:* `stopped_quote_author_restarts_and_countersigns_via_reload_path`
+stops X, lets Y accept, and starts X again. The acceptance reaches X only
+after X is up, so X's conversation records a `conversation.message` event,
+and the event path alone moves the deal. The test passes with the reload
+rescan removed. Its name and its comment ("on restart its wake sees Reload,
+rescans conversations, and countersigns") claim more.
+
+*Failure case:* the `reload` branch of `poll_events` breaks; this test stays
+green.
+
+*Fix:* Rename the test and fix the comment to say what it shows (a stopped
+writer countersigns after restart with no call), and leave the reload proof
+to `drive_after_reload_walks_every_conversation_in_pages`. Or make the card
+arrive before the drive's first event read after restart, if the harness
+can do that.
+
+*Status:* Open.
+
+### R9 — Two "why" comments were dropped from the deploy-facts docs (minor)
+
+*Where:* [storage.rs:113](../../../../crates/core/src/storage.rs#L113) to
+`:116`.
+
+*Problem:* `save_deploy_facts`' doc on `main` said that a redeploy that
+drops the check writes `None`, "clearing it by construction", and that
+"`manifest_hash` is written only on full deploy success, so a half-failed
+deploy is never deduplicated on the next attempt". The new doc keeps only
+"(upsert)". These were the reasons, not the wording, and AGENTS.md asks to
+keep them.
+
+*Failure case:* a later change writes `manifest_hash` before the deploy
+ends; nothing at the trait says why that is wrong.
+
+*Fix:* Put both sentences back on `save_deploy_facts` (they still hold for
+the struct form).
+
+*Status:* Open.
+
+### R10 — The developer guide's wake example is invalid, and `transaction.drive` is not documented (minor)
+
+*Where:* [developer-guide.md:1441](../../../../docs/developer-guide.md#L1441)
+to `:1448`; section 6.7.
+
+*Problem:* The example has `interface = "api"` (validation refuses an
+interface the service does not declare) and `on_events =
+["events.conversation.received"]` (no such event kind; the host records
+`conversation.message`). It does not match `roym.toml` or ADR-0031. It also
+does not give the limits (5 to 86,400 s, at most 8 kinds, `timeout_ms` 1 to
+30,000) or the reply contract. Plan section 9 asks for `transaction.drive`
+in the `transaction` method docs; the guide does not name its input or
+output, nor the new `more` field of `transaction.sync`.
+
+*Failure case:* a developer copies the example; the deploy is refused.
+
+*Fix:* Copy the `roym.toml` block, add the limits and the reply contract
+(`again`, `warnings`, and the string-envelope point of R1), and add
+`transaction.drive` (`{}` → `{synced, pending, rescanning, again,
+warnings?}`) and `more` to section 6.7.
+
+*Status:* Open.
+
+### R11 — Two backlog notes of plan section 8 are missing (minor)
+
+*Where:* [deferred-backlog.md:416](../../deferred-backlog.md) ("A schedule
+deployed by `roymctl app deploy` never runs") and `:548` ("Services can
+only pull events").
+
+*Problem:* Plan section 8 says each of these rows gets a note: the wake is
+not a schedule (point at ADR-0031), and the wake triggers a pull but there
+is still no push export. Neither note was added.
+
+*Failure case:* a reader of the schedule row thinks a Roym service deployed
+with `app deploy` has no timer at all.
+
+*Fix:* Add one sentence to each row, as the plan says.
+
+*Status:* Open.
+
+### R12 — status.md test counts cannot be checked (minor)
+
+*Where:* [status.md:20](status.md) (the C3c1 row).
+
+*Problem:* "`roym-transaction` 43 passed" names no filter; the crate has 226
+tests and its `drive` filter has 14. The same holds for "`sdk` 54" and
+"`control-plane` 31". "`dual_build_parity/transaction` 28 passed" names the
+wrong file: the new scenarios are in `dual_build_parity/as_listed.rs`. The
+row has no CI result.
+
+*Failure case:* a reviewer cannot repeat the numbers, so they prove
+nothing.
+
+*Fix:* Give each count with its exact command (crate and filter), or the
+full-crate counts. Add the CI run result for the reviewed head when it
+finishes.
+
+*Status:* Open.
+
+### R13 — Inline qualified paths and a copied parity helper (minor)
+
+*Where:* [deploy/manifest.rs:165](../../../../crates/control_plane/src/service/orchestration/deploy/manifest.rs#L165)
+to `:186`; [wake.rs:97](../../../../crates/substrate/src/runtime/wake.rs#L97);
+[tests/drive.rs:23](../../../../crates/roym_transaction/src/app/tests/drive.rs#L23);
+[testing.rs:78](../../../../crates/roym_core/src/testing.rs#L78), `:214`,
+[testing/stubs.rs:112](../../../../crates/roym_core/src/testing/stubs.rs#L112),
+`:136`; [as_listed.rs:9](../../../../crates/roym_web/tests/dual_build_parity/as_listed.rs#L9),
+`:25`, `:33`, `:146`, `:159`.
+
+*Problem:* AGENTS.md's import pass asks for types through `use`, with no
+inline paths of several `::`. The diff adds `syneroym_app_orchestration::InterfaceName::new`
+(four times), `syneroym_app_orchestration::WakeSpec`,
+`tokio::time::MissedTickBehavior::Skip`, `syneroym_roym_core::testing::TestHost`,
+`syneroym_app_host::types::events::Event` / `EventsError` / `ReadResult`,
+`syneroym_roym_core::record::RecordDraft`, `std::time::Instant::now()`. And
+`peer_signed_request_with_identity` in `as_listed.rs` is a copy of the
+helper of the same name in `booking.rs` with one more parameter; AGENTS.md
+asks to reuse an existing helper.
+
+*Failure case:* none at run time; the rules are not met.
+
+*Fix:* Import the types. Move one `peer_signed_request_with_identity(peer,
+conv, seq, issued_at)` into `fixtures.rs` and call it from both files.
+
+*Status:* Open.
