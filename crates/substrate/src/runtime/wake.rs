@@ -71,6 +71,7 @@ struct TargetState {
     running: Arc<AtomicBool>,
     has_pending: Arc<AtomicBool>,
     warned_no_app_context: bool,
+    warned_missing_endpoint: bool,
 }
 
 /// Background worker that wakes local services on events and intervals.
@@ -107,11 +108,14 @@ impl WakeWorker {
     }
 
     async fn tick(&mut self) {
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+        self.tick_at(now).await;
+    }
+
+    pub(super) async fn tick_at(&mut self, now: u64) {
         let targets = self.targets.wake_targets();
         let target_ids: HashSet<String> = targets.iter().map(|(id, _)| id.clone()).collect();
         self.states.retain(|id, _| target_ids.contains(id));
-
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
 
         for (service_id, spec) in targets {
             self.tick_target(&service_id, &spec, now);
@@ -125,11 +129,27 @@ impl WakeWorker {
             running: Arc::new(AtomicBool::new(false)),
             has_pending: Arc::new(AtomicBool::new(false)),
             warned_no_app_context: false,
+            warned_missing_endpoint: false,
         });
 
         if state.running.load(Ordering::SeqCst) {
             return;
         }
+
+        // Strictly node-local; never resolve via remote/community registry.
+        if self.registry.lookup(service_id, spec.interface.as_str()).is_none() {
+            if !state.warned_missing_endpoint {
+                warn!(
+                    service_id = %service_id,
+                    interface = %spec.interface,
+                    "wake target has no local endpoint registered; skipping"
+                );
+                state.warned_missing_endpoint = true;
+            }
+            return;
+        }
+
+        state.warned_missing_endpoint = false;
 
         let mut triggered = state.has_pending.swap(false, Ordering::SeqCst);
         if !spec.on_events.is_empty() && check_events(&self.bus, service_id, spec, state) {
@@ -138,16 +158,6 @@ impl WakeWorker {
 
         let due = now.saturating_sub(state.last_run_at) >= u64::from(spec.every_secs);
         if !triggered && !due {
-            return;
-        }
-
-        // Strictly node-local; never resolve via remote/community registry.
-        if self.registry.lookup(service_id, spec.interface.as_str()).is_none() {
-            warn!(
-                service_id = %service_id,
-                interface = %spec.interface,
-                "wake target has no local endpoint registered; skipping"
-            );
             return;
         }
 

@@ -5,7 +5,7 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use async_trait::async_trait;
@@ -20,10 +20,13 @@ use syneroym_rpc::{ProxyError, ProxyRequest, ServiceProxy};
 
 use super::*;
 
+mod contract;
+mod events;
+
 #[derive(Debug, Default)]
-struct MockProxy {
-    invocations: Mutex<Vec<ProxyRequest>>,
-    reply: Mutex<Option<Result<Value, String>>>,
+pub(super) struct MockProxy {
+    pub(super) invocations: Mutex<Vec<ProxyRequest>>,
+    pub(super) reply: Mutex<Option<Result<Value, String>>>,
 }
 
 #[async_trait]
@@ -43,7 +46,7 @@ impl ServiceProxy for MockProxy {
     }
 }
 
-struct StaticWakeTargets(Vec<(String, WakeSpec)>);
+pub(super) struct StaticWakeTargets(pub(super) Vec<(String, WakeSpec)>);
 
 impl WakeTargets for StaticWakeTargets {
     fn wake_targets(&self) -> Vec<(String, WakeSpec)> {
@@ -51,7 +54,11 @@ impl WakeTargets for StaticWakeTargets {
     }
 }
 
-fn sample_spec() -> WakeSpec {
+pub(super) fn now_ms() -> i64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as i64
+}
+
+pub(super) fn sample_spec() -> WakeSpec {
     WakeSpec {
         interface: InterfaceName::new("test/api@0.1.0"),
         method: "drive".to_string(),
@@ -114,7 +121,7 @@ async fn wake_worker_dispatches_when_due_and_registered() {
     let proxy = Arc::new(MockProxy::default());
 
     let mut spec = sample_spec();
-    spec.every_secs = 0; // immediately due
+    spec.every_secs = 30; // due on first tick because last_run_at is 0
 
     registry
         .register(
@@ -148,7 +155,7 @@ async fn wake_worker_skips_when_endpoint_not_registered() {
     let proxy = Arc::new(MockProxy::default());
 
     let mut spec = sample_spec();
-    spec.every_secs = 0;
+    spec.every_secs = 30;
 
     // DO NOT register the endpoint
 
@@ -171,7 +178,7 @@ async fn wake_worker_skips_when_already_running() {
     let proxy = Arc::new(MockProxy::default());
 
     let mut spec = sample_spec();
-    spec.every_secs = 0;
+    spec.every_secs = 30;
 
     registry
         .register(
@@ -201,14 +208,14 @@ async fn wake_worker_skips_when_already_running() {
 }
 
 #[tokio::test]
-async fn wake_worker_triggers_on_event() {
+async fn the_interval_calls_with_no_event() {
     let storage = Arc::new(MockStorage::new());
     let registry = EndpointRegistry::new(storage).await.unwrap();
     let bus = EventBus::new(registry.clone());
     let proxy = Arc::new(MockProxy::default());
 
     let mut spec = sample_spec();
-    spec.every_secs = 60; // Not due by time
+    spec.every_secs = 30;
 
     registry
         .register(
@@ -218,172 +225,95 @@ async fn wake_worker_triggers_on_event() {
         )
         .await
         .unwrap();
-    registry
-        .set_app_context("target-svc".to_string(), "app-1".to_string(), "transaction".to_string())
-        .await
-        .unwrap();
-    registry
-        .set_app_context(
-            "conversation-svc".to_string(),
-            "app-1".to_string(),
-            "conversation".to_string(),
-        )
-        .await
-        .unwrap();
 
     let targets = Arc::new(StaticWakeTargets(vec![("target-svc".to_string(), spec)]));
-    let mut worker = WakeWorker::new(targets, bus.clone(), proxy.clone(), registry);
+    let mut worker = WakeWorker::new(targets, bus, proxy.clone(), registry);
 
-    // Initial tick to register target state
-    worker.tick().await;
-
-    // Emit event
-    bus.record("conversation-svc", "conversation.message", "conv-1", None, 1000).unwrap();
-
-    // Next tick should trigger on event
-    worker.tick().await;
-
-    tokio::time::sleep(Duration::from_millis(50)).await;
-
-    let invocations = proxy.invocations.lock().unwrap();
-    assert_eq!(invocations.len(), 1);
-}
-
-#[tokio::test]
-async fn wake_reply_contract_again_sets_has_pending() {
-    let storage = Arc::new(MockStorage::new());
-    let registry = EndpointRegistry::new(storage).await.unwrap();
-    let bus = EventBus::new(registry.clone());
-    let proxy = Arc::new(MockProxy::default());
-    *proxy.reply.lock().unwrap() = Some(Ok(Value::String(
-        r#"{"result":{"again":true,"warnings":["test warning 1"]}}"#.to_string(),
-    )));
-
-    let mut spec = sample_spec();
-    spec.every_secs = 60;
-
-    registry
-        .register(
-            "target-svc".to_string(),
-            spec.interface.to_string(),
-            SubstrateEndpoint::WasmChannel { service_id: "target-svc".to_string() },
-        )
-        .await
-        .unwrap();
-    registry
-        .set_app_context("target-svc".to_string(), "app-1".to_string(), "transaction".to_string())
-        .await
-        .unwrap();
-    registry
-        .set_app_context(
-            "conversation-svc".to_string(),
-            "app-1".to_string(),
-            "conversation".to_string(),
-        )
-        .await
-        .unwrap();
-
-    let targets = Arc::new(StaticWakeTargets(vec![("target-svc".to_string(), spec)]));
-    let mut worker = WakeWorker::new(targets, bus.clone(), proxy.clone(), registry);
-
-    // Initial tick runs due to boot interval (last_run_at is 0)
-    worker.tick().await;
+    let t0 = 100_000;
+    worker.tick_at(t0).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert_eq!(proxy.invocations.lock().unwrap().len(), 1);
 
-    // Trigger second call via event
-    bus.record("conversation-svc", "conversation.message", "conv-1", None, 1000).unwrap();
-    worker.tick().await;
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    assert_eq!(proxy.invocations.lock().unwrap().len(), 2);
-
-    // Has_pending was set to true by the reply (again: true)
-    // On next tick with NO new events and NOT due, it triggers again (3rd call)
-    worker.tick().await;
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    assert_eq!(proxy.invocations.lock().unwrap().len(), 3);
-}
-
-#[tokio::test]
-async fn wake_reply_contract_plain_object_again_sets_has_pending() {
-    let storage = Arc::new(MockStorage::new());
-    let registry = EndpointRegistry::new(storage).await.unwrap();
-    let bus = EventBus::new(registry.clone());
-    let proxy = Arc::new(MockProxy::default());
-    *proxy.reply.lock().unwrap() = Some(Ok(json!({"again": true, "warnings": ["plain warning"]})));
-
-    let mut spec = sample_spec();
-    spec.every_secs = 60;
-
-    registry
-        .register(
-            "target-svc".to_string(),
-            spec.interface.to_string(),
-            SubstrateEndpoint::WasmChannel { service_id: "target-svc".to_string() },
-        )
-        .await
-        .unwrap();
-
-    let targets = Arc::new(StaticWakeTargets(vec![("target-svc".to_string(), spec)]));
-    let mut worker = WakeWorker::new(targets, bus.clone(), proxy.clone(), registry);
-
-    worker.tick().await;
+    // Tick before interval is due
+    worker.tick_at(t0 + 10).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert_eq!(proxy.invocations.lock().unwrap().len(), 1);
 
-    // On next tick without events or interval due, again: true triggers call 2
-    worker.tick().await;
+    // Tick once interval is reached
+    worker.tick_at(t0 + 30).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert_eq!(proxy.invocations.lock().unwrap().len(), 2);
 }
 
-#[tokio::test]
-async fn wake_reply_string_envelope_with_warnings() {
-    let storage = Arc::new(MockStorage::new());
-    let registry = EndpointRegistry::new(storage).await.unwrap();
-    let bus = EventBus::new(registry.clone());
-    let proxy = Arc::new(MockProxy::default());
-    *proxy.reply.lock().unwrap() = Some(Ok(Value::String(
-        r#"{"result":{"synced":0,"warnings":["warning A","warning B"]}}"#.to_string(),
-    )));
+#[derive(Debug)]
+struct PanickingProxy;
 
-    let mut spec = sample_spec();
-    spec.every_secs = 60;
-
-    registry
-        .register(
-            "target-svc".to_string(),
-            spec.interface.to_string(),
-            SubstrateEndpoint::WasmChannel { service_id: "target-svc".to_string() },
-        )
-        .await
-        .unwrap();
-
-    let targets = Arc::new(StaticWakeTargets(vec![("target-svc".to_string(), spec)]));
-    let mut worker = WakeWorker::new(targets, bus.clone(), proxy.clone(), registry);
-
-    worker.tick().await;
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    assert_eq!(proxy.invocations.lock().unwrap().len(), 1);
-
-    // No `again: true`, so next tick does not invoke
-    worker.tick().await;
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    assert_eq!(proxy.invocations.lock().unwrap().len(), 1);
+#[async_trait]
+impl ServiceProxy for PanickingProxy {
+    async fn invoke(&self, _request: ProxyRequest) -> Result<Value, ProxyError> {
+        panic!("simulated proxy panic inside worker");
+    }
 }
 
 #[tokio::test]
-async fn wake_reply_string_envelope_with_error() {
+async fn a_panic_in_invoke_resets_running_guard() {
     let storage = Arc::new(MockStorage::new());
     let registry = EndpointRegistry::new(storage).await.unwrap();
     let bus = EventBus::new(registry.clone());
-    let proxy = Arc::new(MockProxy::default());
-    *proxy.reply.lock().unwrap() = Some(Ok(Value::String(
-        r#"{"error":{"code":-32603,"message":"internal error in guest"}}"#.to_string(),
-    )));
+    let proxy = Arc::new(PanickingProxy);
+
+    let spec = sample_spec();
+
+    registry
+        .register(
+            "target-svc".to_string(),
+            spec.interface.to_string(),
+            SubstrateEndpoint::WasmChannel { service_id: "target-svc".to_string() },
+        )
+        .await
+        .unwrap();
+
+    let targets = Arc::new(StaticWakeTargets(vec![("target-svc".to_string(), spec.clone())]));
+    let mut worker = WakeWorker::new(targets, bus, proxy, registry);
+
+    // First tick triggers call which panics in invoke
+    worker.tick().await;
+
+    // Wait for the spawned task to panic and drop its guard
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Running flag must be reset to false
+    let state = worker.states.get("target-svc").unwrap();
+    assert!(!state.running.load(Ordering::SeqCst));
+}
+
+#[derive(Debug)]
+struct SlowProxy {
+    invocations: Mutex<Vec<ProxyRequest>>,
+    gate: tokio::sync::Notify,
+}
+
+#[async_trait]
+impl ServiceProxy for SlowProxy {
+    async fn invoke(&self, request: ProxyRequest) -> Result<Value, ProxyError> {
+        self.invocations.lock().unwrap().push(request);
+        self.gate.notified().await;
+        Ok(Value::String(r#"{"result":{}}"#.to_string()))
+    }
+}
+
+#[tokio::test]
+async fn a_slow_call_is_never_overlapped() {
+    let storage = Arc::new(MockStorage::new());
+    let registry = EndpointRegistry::new(storage).await.unwrap();
+    let bus = EventBus::new(registry.clone());
+    let proxy = Arc::new(SlowProxy {
+        invocations: Mutex::new(Vec::new()),
+        gate: tokio::sync::Notify::new(),
+    });
 
     let mut spec = sample_spec();
-    spec.every_secs = 60;
+    spec.every_secs = 30;
 
     registry
         .register(
@@ -395,14 +325,75 @@ async fn wake_reply_string_envelope_with_error() {
         .unwrap();
 
     let targets = Arc::new(StaticWakeTargets(vec![("target-svc".to_string(), spec)]));
-    let mut worker = WakeWorker::new(targets, bus.clone(), proxy.clone(), registry);
+    let mut worker = WakeWorker::new(targets, bus, proxy.clone(), registry);
 
-    worker.tick().await;
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    let t0 = 100_000;
+    worker.tick_at(t0).await;
+
+    // Wait until invoke is entered
+    tokio::time::sleep(Duration::from_millis(20)).await;
     assert_eq!(proxy.invocations.lock().unwrap().len(), 1);
 
-    // Error in reply does not set `again: true`, so next tick does not invoke
-    worker.tick().await;
+    // Tick again at t0 + 40 while the call is still blocked in invoke
+    worker.tick_at(t0 + 40).await;
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    // Never overlapped: second call was skipped because running was true
+    assert_eq!(proxy.invocations.lock().unwrap().len(), 1);
+
+    // Unblock the slow call
+    proxy.gate.notify_one();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Running is reset to false
+    let state = worker.states.get("target-svc").unwrap();
+    assert!(!state.running.load(Ordering::SeqCst));
+}
+
+struct MutableWakeTargets(Mutex<Vec<(String, WakeSpec)>>);
+
+impl WakeTargets for MutableWakeTargets {
+    fn wake_targets(&self) -> Vec<(String, WakeSpec)> {
+        self.0.lock().unwrap().clone()
+    }
+}
+
+#[tokio::test]
+async fn an_undeployed_service_is_not_called_again() {
+    let storage = Arc::new(MockStorage::new());
+    let registry = EndpointRegistry::new(storage).await.unwrap();
+    let bus = EventBus::new(registry.clone());
+    let proxy = Arc::new(MockProxy::default());
+
+    let mut spec = sample_spec();
+    spec.every_secs = 30;
+
+    registry
+        .register(
+            "target-svc".to_string(),
+            spec.interface.to_string(),
+            SubstrateEndpoint::WasmChannel { service_id: "target-svc".to_string() },
+        )
+        .await
+        .unwrap();
+
+    let targets = Arc::new(MutableWakeTargets(Mutex::new(vec![("target-svc".to_string(), spec)])));
+    let mut worker = WakeWorker::new(targets.clone(), bus, proxy.clone(), registry);
+
+    let t0 = 100_000;
+    worker.tick_at(t0).await;
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert_eq!(proxy.invocations.lock().unwrap().len(), 1);
+    assert!(worker.states.contains_key("target-svc"));
+
+    // Undeploy service
+    *targets.0.lock().unwrap() = Vec::new();
+
+    // Next tick at interval due
+    worker.tick_at(t0 + 35).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // No new invocation, and state was cleaned up
+    assert_eq!(proxy.invocations.lock().unwrap().len(), 1);
+    assert!(!worker.states.contains_key("target-svc"));
 }
