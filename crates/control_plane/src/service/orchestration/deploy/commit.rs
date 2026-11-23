@@ -172,12 +172,19 @@ impl ControlPlaneService {
             .map(serde_json::to_string)
             .transpose()
             .map_err(|e| format!("Failed to serialize health check: {e}"))?;
+        let wake_json = manifest
+            .config
+            .wake
+            .as_ref()
+            .map(|w| serde_json::to_string(&self::manifest::model_wake_spec(w)))
+            .transpose()
+            .map_err(|e| format!("Failed to serialize wake: {e}"))?;
         let facts = DeployFacts {
             service_type: service_type_str(service_type).to_string(),
             health_check_json,
             manifest_hash: Some(incoming_hash.to_string()),
             visibility: Some(validated.visibility.as_str().to_string()),
-            wake_json: None,
+            wake_json,
         };
         if let Err(e) = self.registry.set_deploy_facts(service_id.to_string(), facts).await {
             self.undeploy_and_rollback_late_failure(

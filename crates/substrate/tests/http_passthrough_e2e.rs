@@ -41,18 +41,7 @@ const STREAM_PROTOCOL: &str = "file-transfer";
 
 fn tcp_deploy_manifest(http_routes: serde_json::Value) -> DeployManifest {
     DeployManifest::unpublished(
-        ServiceConfig {
-            env: vec![],
-            args: vec![],
-            custom_config: Some(http_routes.to_string()),
-            quota: None,
-            schema: None,
-            rotation_policy: None,
-            fdae_policy: None,
-            health_check: None,
-            assets: None,
-            visibility: None,
-        },
+        ServiceConfig { custom_config: Some(http_routes.to_string()), ..Default::default() },
         ServiceType::Tcp(syneroym_sdk::TcpManifest { endpoints: vec![] }),
     )
 }
@@ -63,18 +52,7 @@ fn wasm_deploy_manifest(
     http_routes: serde_json::Value,
 ) -> DeployManifest {
     DeployManifest::unpublished(
-        ServiceConfig {
-            env: vec![],
-            args: vec![],
-            custom_config: Some(http_routes.to_string()),
-            quota: None,
-            schema: None,
-            rotation_policy: None,
-            fdae_policy: None,
-            health_check: None,
-            assets: None,
-            visibility: None,
-        },
+        ServiceConfig { custom_config: Some(http_routes.to_string()), ..Default::default() },
         ServiceType::Wasm(WasmManifest {
             source: ArtifactSource::Binary(wasm_bytes),
             hash: None,

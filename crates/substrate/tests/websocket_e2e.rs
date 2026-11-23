@@ -33,6 +33,7 @@ fn guest_wasm_manifest(wasm_bytes: Vec<u8>, http_routes: serde_json::Value) -> D
             rotation_policy: None,
             fdae_policy: None,
             health_check: None,
+            wake: None,
             assets: None,
             visibility: None,
         },

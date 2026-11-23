@@ -75,18 +75,7 @@ static SUBSTRATE_TEST_LOCK: Mutex<()> = Mutex::const_new(());
 
 fn guest_wasm_manifest(wasm_bytes: Vec<u8>, http_routes: Value) -> DeployManifest {
     DeployManifest::unpublished(
-        ServiceConfig {
-            env: vec![],
-            args: vec![],
-            custom_config: Some(http_routes.to_string()),
-            quota: None,
-            schema: None,
-            rotation_policy: None,
-            fdae_policy: None,
-            health_check: None,
-            assets: None,
-            visibility: None,
-        },
+        ServiceConfig { custom_config: Some(http_routes.to_string()), ..Default::default() },
         ServiceType::Wasm(WasmManifest {
             source: ArtifactSource::Binary(wasm_bytes),
             hash: None,

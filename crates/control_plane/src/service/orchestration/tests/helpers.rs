@@ -236,18 +236,7 @@ pub(super) async fn saga_gate_test_service(
 
 pub(super) fn saga_gate_manifest(wat: &str, interfaces: Vec<String>) -> DeployManifest {
     DeployManifest::unpublished(
-        ServiceConfig {
-            env: vec![],
-            args: vec![],
-            custom_config: None,
-            quota: None,
-            schema: None,
-            rotation_policy: None,
-            fdae_policy: None,
-            health_check: None,
-            assets: None,
-            visibility: None,
-        },
+        ServiceConfig::default(),
         WitServiceType::Wasm(WasmManifest {
             source: ArtifactSource::Binary(wat.as_bytes().to_vec()),
             hash: None,
@@ -348,18 +337,7 @@ pub(super) fn guest_route_custom_config() -> String {
 
 pub(super) fn owner_test_manifest() -> DeployManifest {
     DeployManifest::unpublished(
-        ServiceConfig {
-            env: vec![],
-            args: vec![],
-            custom_config: None,
-            quota: None,
-            schema: None,
-            rotation_policy: None,
-            fdae_policy: None,
-            health_check: None,
-            assets: None,
-            visibility: None,
-        },
+        ServiceConfig::default(),
         WitServiceType::Tcp(TcpManifest {
             endpoints: vec![NetworkEndpoint {
                 interface_name: "default".to_string(),
@@ -647,16 +625,10 @@ pub(super) fn inline_manifest(
 ) -> DeployManifest {
     DeployManifest::unpublished(
         ServiceConfig {
-            env: vec![],
-            args: vec![],
             custom_config: custom_config.map(str::to_string),
-            quota: None,
             schema,
-            rotation_policy: None,
             fdae_policy,
-            health_check: None,
-            assets: None,
-            visibility: None,
+            ..Default::default()
         },
         WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
     )
@@ -664,18 +636,7 @@ pub(super) fn inline_manifest(
 
 pub(super) fn tcp_manifest_with(port: u16, health_check: Option<WitHealthCheck>) -> DeployManifest {
     DeployManifest::unpublished(
-        ServiceConfig {
-            env: vec![],
-            args: vec![],
-            custom_config: None,
-            quota: None,
-            schema: None,
-            rotation_policy: None,
-            fdae_policy: None,
-            health_check,
-            assets: None,
-            visibility: None,
-        },
+        ServiceConfig { health_check, ..Default::default() },
         WitServiceType::Tcp(TcpManifest {
             endpoints: vec![NetworkEndpoint {
                 interface_name: "main".to_string(),
@@ -688,18 +649,7 @@ pub(super) fn tcp_manifest_with(port: u16, health_check: Option<WitHealthCheck>)
 
 pub(super) fn container_manifest_with(health_check: Option<WitHealthCheck>) -> DeployManifest {
     DeployManifest::unpublished(
-        ServiceConfig {
-            env: vec![],
-            args: vec![],
-            custom_config: None,
-            quota: None,
-            schema: None,
-            rotation_policy: None,
-            fdae_policy: None,
-            health_check,
-            assets: None,
-            visibility: None,
-        },
+        ServiceConfig { health_check, ..Default::default() },
         WitServiceType::Container(ContainerManifest {
             source: ArtifactSource::Url("docker.io/library/nginx:1.27".to_string()),
             hash: None,
@@ -712,18 +662,7 @@ pub(super) fn container_manifest_with(health_check: Option<WitHealthCheck>) -> D
 
 pub(super) fn wasm_manifest_with(health_check: Option<WitHealthCheck>) -> DeployManifest {
     DeployManifest::unpublished(
-        ServiceConfig {
-            env: vec![],
-            args: vec![],
-            custom_config: None,
-            quota: None,
-            schema: None,
-            rotation_policy: None,
-            fdae_policy: None,
-            health_check,
-            assets: None,
-            visibility: None,
-        },
+        ServiceConfig { health_check, ..Default::default() },
         WitServiceType::Wasm(WasmManifest {
             source: ArtifactSource::Binary(vec![]),
             hash: None,

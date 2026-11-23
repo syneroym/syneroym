@@ -193,6 +193,7 @@ fn manifest(
             rotation_policy: None,
             fdae_policy: None,
             health_check: None,
+            wake: None,
             assets: None,
             visibility: Some(visibility),
         },

@@ -77,18 +77,7 @@ async fn test_deploy_plan_path_traversal() {
             service_id: "did:key:test".to_string(),
             logical_ref: "test/main".to_string(),
             manifest: DeployManifest::unpublished(
-                ServiceConfig {
-                    env: vec![],
-                    args: vec![],
-                    custom_config: None,
-                    quota: None,
-                    schema: None,
-                    rotation_policy: None,
-                    fdae_policy: None,
-                    health_check: None,
-                    assets: None,
-                    visibility: None,
-                },
+                ServiceConfig::default(),
                 WitServiceType::Wasm(WasmManifest {
                     source: ArtifactSource::Url("../../../../../etc/passwd".to_string()),
                     hash: None,
@@ -160,18 +149,7 @@ async fn test_deploy_plan_absolute_path() {
             service_id: "did:key:test".to_string(),
             logical_ref: "test/main".to_string(),
             manifest: DeployManifest::unpublished(
-                ServiceConfig {
-                    env: vec![],
-                    args: vec![],
-                    custom_config: None,
-                    quota: None,
-                    schema: None,
-                    rotation_policy: None,
-                    fdae_policy: None,
-                    health_check: None,
-                    assets: None,
-                    visibility: None,
-                },
+                ServiceConfig::default(),
                 WitServiceType::Wasm(WasmManifest {
                     source: ArtifactSource::Url("/etc/passwd".to_string()),
                     hash: None,
@@ -249,16 +227,9 @@ async fn test_deploy_config_schema_rejection() {
 
     let manifest = DeployManifest::unpublished(
         ServiceConfig {
-            env: vec![],
-            args: vec![],
             custom_config: Some(r#"{"port": "8080"}"#.to_string()), // string instead of int
-            quota: None,
             schema: Some(DocumentSource::Path(schema_filename.clone())),
-            rotation_policy: None,
-            fdae_policy: None,
-            health_check: None,
-            assets: None,
-            visibility: None,
+            ..Default::default()
         },
         WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
     );
@@ -336,16 +307,9 @@ async fn test_deploy_schema_symlink_escape_rejected() {
 
     let manifest = DeployManifest::unpublished(
         ServiceConfig {
-            env: vec![],
-            args: vec![],
             custom_config: Some(r#"{"port": 8080}"#.to_string()),
-            quota: None,
             schema: Some(DocumentSource::Path(symlink_name.clone())),
-            rotation_policy: None,
-            fdae_policy: None,
-            health_check: None,
-            assets: None,
-            visibility: None,
+            ..Default::default()
         },
         WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
     );
@@ -416,16 +380,8 @@ async fn test_deploy_config_generation_rollback() {
     // Deliberately malformed WasmManifest source to cause a deployment failure
     let manifest = DeployManifest::unpublished(
         ServiceConfig {
-            env: vec![],
-            args: vec![],
             custom_config: Some(r#"{"key": "value"}"#.to_string()),
-            quota: None,
-            schema: None,
-            rotation_policy: None,
-            fdae_policy: None,
-            health_check: None,
-            assets: None,
-            visibility: None,
+            ..Default::default()
         },
         WitServiceType::Wasm(WasmManifest {
             source: ArtifactSource::Url("/does_not_exist.wasm".to_string()),
@@ -540,18 +496,7 @@ async fn an_identical_redeploy_of_a_stopped_service_still_reinstalls_it() {
     let owner = node_wide_caller("owner");
 
     let manifest = DeployManifest::unpublished(
-        ServiceConfig {
-            env: vec![],
-            args: vec![],
-            custom_config: None,
-            quota: None,
-            schema: None,
-            rotation_policy: None,
-            fdae_policy: None,
-            health_check: None,
-            assets: None,
-            visibility: None,
-        },
+        ServiceConfig::default(),
         WitServiceType::Wasm(WasmManifest {
             source: ArtifactSource::Binary(wasm_bytes),
             hash: None,
@@ -762,18 +707,7 @@ async fn a_half_failed_deploy_does_not_record_a_manifest_hash() {
     let owner = node_wide_caller("owner");
 
     let manifest = DeployManifest::unpublished(
-        ServiceConfig {
-            env: vec![],
-            args: vec![],
-            custom_config: None,
-            quota: None,
-            schema: None,
-            rotation_policy: None,
-            fdae_policy: None,
-            health_check: None,
-            assets: None,
-            visibility: None,
-        },
+        ServiceConfig::default(),
         WitServiceType::Wasm(WasmManifest {
             source: ArtifactSource::Url("/does_not_exist.wasm".to_string()),
             hash: None,
@@ -801,18 +735,7 @@ async fn a_deploy_that_fails_after_the_gate_still_recorded_its_writer() {
     let owner = node_wide_caller("owner");
 
     let manifest = DeployManifest::unpublished(
-        ServiceConfig {
-            env: vec![],
-            args: vec![],
-            custom_config: None,
-            quota: None,
-            schema: None,
-            rotation_policy: None,
-            fdae_policy: None,
-            health_check: None,
-            assets: None,
-            visibility: None,
-        },
+        ServiceConfig::default(),
         WitServiceType::Wasm(WasmManifest {
             source: ArtifactSource::Url("/does_not_exist.wasm".to_string()),
             hash: None,
@@ -849,18 +772,7 @@ async fn restart_reloads_a_wasm_component_from_disk() {
     let owner = node_wide_caller("owner");
 
     let manifest = DeployManifest::unpublished(
-        ServiceConfig {
-            env: vec![],
-            args: vec![],
-            custom_config: None,
-            quota: None,
-            schema: None,
-            rotation_policy: None,
-            fdae_policy: None,
-            health_check: None,
-            assets: None,
-            visibility: None,
-        },
+        ServiceConfig::default(),
         WitServiceType::Wasm(WasmManifest {
             source: ArtifactSource::Binary(wasm_bytes),
             hash: None,

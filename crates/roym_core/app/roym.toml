@@ -87,7 +87,8 @@ method = "status"
 
 [services.transaction.wake]
 interface = "syneroym-roym:transaction/api@0.1.0"
-method = "transaction.drive"
+method = "invoke"
+params = '[ "{\"method\":\"transaction.drive\",\"params\":{}}" ]'
 on_events = ["conversation.message"]
 every_secs = 30
 timeout_ms = 10000

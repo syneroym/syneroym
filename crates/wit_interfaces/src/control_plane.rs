@@ -41,3 +41,25 @@ impl DeployManifest {
         }
     }
 }
+
+#[expect(
+    clippy::derivable_impls,
+    reason = "generated WIT type cannot have derive(Default) added directly to its struct declaration"
+)]
+impl Default for ServiceConfig {
+    fn default() -> Self {
+        Self {
+            env: Vec::new(),
+            args: Vec::new(),
+            custom_config: None,
+            quota: None,
+            schema: None,
+            rotation_policy: None,
+            fdae_policy: None,
+            health_check: None,
+            wake: None,
+            assets: None,
+            visibility: None,
+        }
+    }
+}

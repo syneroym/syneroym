@@ -53,7 +53,8 @@ use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::or
     DependencyBinding, DeployManifest, DeployedService, DeploymentPlan, DocumentSource,
     HealthCheck as WitHealthCheck, InstanceIdentity, InstancePhase, MailboxCredentials, NodeFacts,
     ProbeStatus, ServiceStatus, ServiceType as WitServiceType, SubstrateStatus, TcpManifest,
-    TopologyMode as WitTopologyMode, Visibility as WitVisibility, WasmManifest,
+    TopologyMode as WitTopologyMode, Visibility as WitVisibility, WakeSpec as WitWakeSpec,
+    WasmManifest,
 };
 use tokio::task;
 use tracing::info;

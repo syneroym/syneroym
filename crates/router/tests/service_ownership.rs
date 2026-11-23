@@ -275,6 +275,7 @@ fn tcp_manifest(port: u16) -> DeployManifest {
             rotation_policy: None,
             fdae_policy: None,
             health_check: None,
+            wake: None,
             assets: None,
             visibility: None,
         },

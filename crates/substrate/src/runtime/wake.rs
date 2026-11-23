@@ -121,7 +121,7 @@ impl WakeWorker {
     fn tick_target(&mut self, service_id: &str, spec: &WakeSpec, now: u64) {
         let state = self.states.entry(service_id.to_string()).or_insert_with(|| TargetState {
             bus_cursor: None,
-            last_run_at: now,
+            last_run_at: 0,
             running: Arc::new(AtomicBool::new(false)),
             has_pending: Arc::new(AtomicBool::new(false)),
             warned_no_app_context: false,

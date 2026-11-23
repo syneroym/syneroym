@@ -89,6 +89,7 @@ async fn restart_by_a_node_wide_deploy_grantee_ignores_the_service_owner() {
             rotation_policy: None,
             fdae_policy: None,
             health_check: None,
+            wake: None,
             assets: None,
             visibility: None,
         },

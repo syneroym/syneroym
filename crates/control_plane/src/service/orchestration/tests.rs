@@ -15,3 +15,4 @@ mod probes;
 mod proxy_queue;
 mod rollback;
 mod status;
+mod wake;

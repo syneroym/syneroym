@@ -162,6 +162,33 @@ pub(super) async fn resolve_fdae_policy_for_deploy(
     Ok(Some((doc, Arc::new(policy))))
 }
 
+pub(super) fn model_wake_spec(w: &WitWakeSpec) -> syneroym_app_orchestration::WakeSpec {
+    syneroym_app_orchestration::WakeSpec {
+        interface: syneroym_app_orchestration::InterfaceName::new(&w.interface_name),
+        method: w.method.clone(),
+        params: w.params.clone(),
+        on_events: w.on_events.clone(),
+        every_secs: w.every_secs,
+        timeout_ms: w.timeout_ms,
+    }
+}
+
+fn manifest_interfaces(
+    manifest: &DeployManifest,
+) -> Vec<syneroym_app_orchestration::InterfaceName> {
+    match &manifest.service_type {
+        WitServiceType::Wasm(wasm) => {
+            wasm.interfaces.iter().map(syneroym_app_orchestration::InterfaceName::new).collect()
+        }
+        WitServiceType::Tcp(tcp) => tcp
+            .endpoints
+            .iter()
+            .map(|e| syneroym_app_orchestration::InterfaceName::new(&e.interface_name))
+            .collect(),
+        WitServiceType::Container(_) => Vec::new(),
+    }
+}
+
 /// Builds `manifest`'s flattened config/http_routes, then validates its
 /// health-check and `Wasm`-only declarations and resolves its FDAE policy --
 /// the manifest-driven checks that must all pass before any config
@@ -180,6 +207,12 @@ pub(super) async fn validate_and_build_deploy_config(
     // already computed by the caller, for the idempotency dedup check).
     if let Some(check) = &manifest.config.health_check {
         validate_health_check_matches_service_type(check, service_type)?;
+    }
+
+    if let Some(wake) = &manifest.config.wake {
+        let wake_model = model_wake_spec(wake);
+        let declared_interfaces = manifest_interfaces(manifest);
+        wake_model.validate(&declared_interfaces)?;
     }
 
     validate_wasm_only_features(service_id, manifest, &http_routes, service_type)?;

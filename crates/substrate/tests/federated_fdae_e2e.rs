@@ -87,6 +87,7 @@ fn deploy_manifest(policy_json: Option<String>) -> DeployManifest {
             rotation_policy: None,
             fdae_policy: policy_json.map(DocumentSource::Inline),
             health_check: None,
+            wake: None,
             assets: None,
             visibility: None,
         },

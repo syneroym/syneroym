@@ -18,6 +18,17 @@ use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::or
 use super::{super::*, helpers::*};
 use crate::dummy_sandbox::{AppSandboxEngine, ContainerEngine};
 
+fn asset_bundle_config(archive: Vec<u8>) -> ServiceConfig {
+    ServiceConfig {
+        assets: Some(WitAssetBundle {
+            archive: ArtifactSource::Binary(archive),
+            hash: None,
+            visibility: Some(WitVisibility::Public),
+        }),
+        ..Default::default()
+    }
+}
+
 /// A service deployed with no `http_routes` key gets no
 /// entry in the shared registry at all (not an empty-`Vec` entry) --
 /// keeps the registry from growing with a no-op entry per ordinary
@@ -73,18 +84,7 @@ async fn test_no_http_routes_entry_when_custom_config_has_none() {
 
     let service_id = "no-http-routes-svc".to_string();
     let manifest = DeployManifest::unpublished(
-        ServiceConfig {
-            env: vec![],
-            args: vec![],
-            custom_config: None,
-            quota: None,
-            schema: None,
-            rotation_policy: None,
-            fdae_policy: None,
-            health_check: None,
-            assets: None,
-            visibility: None,
-        },
+        ServiceConfig::default(),
         WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
     );
     service.deploy(service_id.clone(), manifest, &node_wide_caller("test-caller")).await.unwrap();
@@ -148,22 +148,7 @@ async fn test_asset_bundle_populated_on_deploy_and_cleared_on_undeploy() {
     let service_id = "asset-svc".to_string();
     let archive = make_asset_archive(&[("index.html", b"<html>hi</html>")]);
     let manifest = DeployManifest {
-        config: ServiceConfig {
-            env: vec![],
-            args: vec![],
-            custom_config: None,
-            quota: None,
-            schema: None,
-            rotation_policy: None,
-            fdae_policy: None,
-            health_check: None,
-            assets: Some(WitAssetBundle {
-                archive: ArtifactSource::Binary(archive),
-                hash: None,
-                visibility: Some(WitVisibility::Public),
-            }),
-            visibility: None,
-        },
+        config: asset_bundle_config(archive),
         // An asset bundle is only servable for a `Wasm` service (a
         // `Tcp`/`Container` endpoint is raw passthrough and never
         // reaches the asset-serving HTTP path) -- `minimal_wasm_component`
@@ -259,22 +244,7 @@ async fn test_asset_bundle_redeploy_keeps_shared_blobs_and_drops_removed_ones() 
 
     let bundle = |archive: Vec<u8>| {
         DeployManifest::unpublished(
-            ServiceConfig {
-                env: vec![],
-                args: vec![],
-                custom_config: None,
-                quota: None,
-                schema: None,
-                rotation_policy: None,
-                fdae_policy: None,
-                health_check: None,
-                assets: Some(WitAssetBundle {
-                    archive: ArtifactSource::Binary(archive),
-                    hash: None,
-                    visibility: Some(WitVisibility::Public),
-                }),
-                visibility: None,
-            },
+            asset_bundle_config(archive),
             WitServiceType::Wasm(WasmManifest {
                 source: ArtifactSource::Binary(minimal_wasm_component()),
                 hash: None,
@@ -385,22 +355,7 @@ async fn test_asset_bundle_rollback_on_a_real_deploy_failure_keeps_the_old_gener
 
     let manifest = |archive: Vec<u8>, interface_name: &str| {
         DeployManifest::unpublished(
-            ServiceConfig {
-                env: vec![],
-                args: vec![],
-                custom_config: None,
-                quota: None,
-                schema: None,
-                rotation_policy: None,
-                fdae_policy: None,
-                health_check: None,
-                assets: Some(WitAssetBundle {
-                    archive: ArtifactSource::Binary(archive),
-                    hash: None,
-                    visibility: Some(WitVisibility::Public),
-                }),
-                visibility: None,
-            },
+            asset_bundle_config(archive),
             WitServiceType::Wasm(WasmManifest {
                 source: ArtifactSource::Binary(minimal_wasm_component()),
                 hash: None,
@@ -531,22 +486,7 @@ async fn test_asset_bundle_is_rejected_for_a_tcp_service() {
     let service_id = "tcp-with-assets-svc".to_string();
     let archive = make_asset_archive(&[("index.html", b"unreachable")]);
     let manifest = DeployManifest::unpublished(
-        ServiceConfig {
-            env: vec![],
-            args: vec![],
-            custom_config: None,
-            quota: None,
-            schema: None,
-            rotation_policy: None,
-            fdae_policy: None,
-            health_check: None,
-            assets: Some(WitAssetBundle {
-                archive: ArtifactSource::Binary(archive),
-                hash: None,
-                visibility: Some(WitVisibility::Public),
-            }),
-            visibility: None,
-        },
+        asset_bundle_config(archive),
         WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
     );
     let caller = node_wide_caller("test-caller");
@@ -619,22 +559,7 @@ async fn test_asset_bundle_is_rejected_for_a_container_service() {
     let service_id = "container-with-assets-svc".to_string();
     let archive = make_asset_archive(&[("index.html", b"unreachable")]);
     let manifest = DeployManifest::unpublished(
-        ServiceConfig {
-            env: vec![],
-            args: vec![],
-            custom_config: None,
-            quota: None,
-            schema: None,
-            rotation_policy: None,
-            fdae_policy: None,
-            health_check: None,
-            assets: Some(WitAssetBundle {
-                archive: ArtifactSource::Binary(archive),
-                hash: None,
-                visibility: Some(WitVisibility::Public),
-            }),
-            visibility: None,
-        },
+        asset_bundle_config(archive),
         WitServiceType::Container(ContainerManifest {
             source: ArtifactSource::Url("docker.io/library/nginx:1.27".to_string()),
             hash: None,
@@ -708,18 +633,7 @@ async fn test_guest_route_is_rejected_for_a_tcp_service() {
 
     let service_id = "tcp-with-guest-route-svc".to_string();
     let manifest = DeployManifest::unpublished(
-        ServiceConfig {
-            env: vec![],
-            args: vec![],
-            custom_config: Some(guest_route_custom_config()),
-            quota: None,
-            schema: None,
-            rotation_policy: None,
-            fdae_policy: None,
-            health_check: None,
-            assets: None,
-            visibility: None,
-        },
+        ServiceConfig { custom_config: Some(guest_route_custom_config()), ..Default::default() },
         WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
     );
     let caller = node_wide_caller("test-caller");
@@ -789,18 +703,7 @@ async fn test_guest_route_is_rejected_for_a_container_service() {
 
     let service_id = "container-with-guest-route-svc".to_string();
     let manifest = DeployManifest::unpublished(
-        ServiceConfig {
-            env: vec![],
-            args: vec![],
-            custom_config: Some(guest_route_custom_config()),
-            quota: None,
-            schema: None,
-            rotation_policy: None,
-            fdae_policy: None,
-            health_check: None,
-            assets: None,
-            visibility: None,
-        },
+        ServiceConfig { custom_config: Some(guest_route_custom_config()), ..Default::default() },
         WitServiceType::Container(ContainerManifest {
             source: ArtifactSource::Url("docker.io/library/nginx:1.27".to_string()),
             hash: None,
@@ -877,20 +780,8 @@ async fn test_guest_route_without_the_export_fails_deploy_and_rolls_back() {
     let archive = make_asset_archive(&[("index.html", b"hi")]);
     let manifest = DeployManifest::unpublished(
         ServiceConfig {
-            env: vec![],
-            args: vec![],
             custom_config: Some(guest_route_custom_config()),
-            quota: None,
-            schema: None,
-            rotation_policy: None,
-            fdae_policy: None,
-            health_check: None,
-            assets: Some(WitAssetBundle {
-                archive: ArtifactSource::Binary(archive),
-                hash: None,
-                visibility: Some(WitVisibility::Public),
-            }),
-            visibility: None,
+            ..asset_bundle_config(archive)
         },
         WitServiceType::Wasm(WasmManifest {
             source: ArtifactSource::Binary(WASM_WITHOUT_AUTHORIZE_ROWS_EXPORT.as_bytes().to_vec()),
@@ -977,18 +868,7 @@ async fn test_websocket_route_without_the_export_fails_deploy_and_rolls_back() {
     .to_string();
 
     let manifest = DeployManifest::unpublished(
-        ServiceConfig {
-            env: vec![],
-            args: vec![],
-            custom_config: Some(custom_config),
-            quota: None,
-            schema: None,
-            rotation_policy: None,
-            fdae_policy: None,
-            health_check: None,
-            assets: None,
-            visibility: None,
-        },
+        ServiceConfig { custom_config: Some(custom_config), ..Default::default() },
         WitServiceType::Wasm(WasmManifest {
             source: ArtifactSource::Binary(WASM_WITHOUT_AUTHORIZE_ROWS_EXPORT.as_bytes().to_vec()),
             hash: None,

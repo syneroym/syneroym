@@ -43,6 +43,7 @@ fn miniapp_manifest_with_assets(
             rotation_policy: None,
             fdae_policy: None,
             health_check: None,
+            wake: None,
             assets: Some(AssetBundle {
                 archive: ArtifactSource::Binary(archive),
                 hash: None,
