@@ -774,3 +774,62 @@ PRs: C3c1 (the driver), then C3c2 (agree as listed, both sides).
   *Fix:* Add `git grep -n 'deploy_facts('` to the step and list these
   files.
   *Status:* Fixed (6123bf9a)
+
+## Plan review round 4 — Claude Opus 5.5, 2026-11-23
+
+This round checks the round 3 fixes in `6123bf9a` (closed in `3706044d`).
+Branch `feat/m08c-c3c-agree-as-listed`, main checkout (not a worktree),
+`git pull` up to date. The same model wrote the plan, so this is a check of
+the fixes, not an independent review.
+
+**Summary of round 4: 0 new findings. 0 open. The plan review is closed.**
+
+### Fixes checked against the code
+
+- **P18.** A failing row goes to the end of the queue with `failures + 1`,
+  and is dropped after 5 with a warning. `more` is true only when
+  `last_seq` grew. `again` is true only after a full batch with rows left.
+  The worker reads `again` and `warnings` from the reply. This works
+  because `ServiceProxy::invoke` returns the callee's JSON-RPC `result`
+  value, not the envelope
+  ([proxy.rs:346](../../../../crates/rpc/src/proxy.rs#L346)). The plan
+  lists four service tests and three worker tests for it. Fixed.
+- **P19.** `in_flight_instant` uses `is_deal_ended`
+  ([app.rs:663](../../../../crates/roym_transaction/src/app.rs#L663)), and
+  the test `a_declined_instant_quote_frees_its_place` is listed. The
+  roym-agreements Deviation was updated too. Fixed.
+- **P20 (and the rest of P16).** `issue_quote` starts at
+  `validate_and_conceal_terms`
+  ([quote_ops.rs:187](../../../../crates/roym_transaction/src/app/quote_ops.rs#L187)),
+  and `set_at` keeps `prepare_terms`, so `quote.set` is unchanged. The hook
+  runs only in `answer_as_listed` (`check_author_slots`), after the
+  early return for an existing `answer:` row and before the fence.
+  `hooks::prepare` reads only `extension`, `details` and `window`
+  ([hooks.rs:280](../../../../crates/roym_transaction/src/app/hooks.rs#L280)),
+  so the `prepare_window` split needs no type conversion. A refusal comes
+  back as `invalid_params` with the sibling's `data`, and an unreachable
+  sibling as `internal_error`. This matches the plan's `Refused` and
+  `Unavailable`. Fixed.
+- **P21.** The recovery call moves from the inner function to `sync_at`.
+  The tests `drive_runs_recovery_once_per_call` and
+  `sync_still_runs_recovery_once` are listed. Fixed.
+- **P22.** Step 3 lists 13 reader sites in six files. I checked each line,
+  including `data_db/src/registry_store/tests.rs:44`, `:92` and `:99`.
+  Fixed.
+
+### The change to two PRs (Q1)
+
+The owner changed Q1 to two PRs in the same commit. I checked that the
+plan is consistent after the merge of the old C3c2 and C3c3:
+
+- No `C3c3` is left in the plan, `status.md`, `task.md` or the three
+  change docs, except in the Q1 option text that records the old choice.
+- Section 3 (criteria), section 5 (what changes), section 6.2 (steps 1 to
+  5 are the owner's side, steps 6 to 8 the counterparty's side), section 7
+  (tests and the cross-references to section 7.4), section 7.9 (sizes),
+  section 7.10 (Hindi), section 8 (backlog), section 9 (living docs) and
+  section 10 (exit criteria) all name C3c1 or C3c2 only.
+- "How this is shown to an end user" covers both sides under C3c2.
+- Q7 (demo) is restated: C3c1 `- none`, C3c2 extends story 50.
+- The C3c2 production size is about 1,950 lines. This is the size that the
+  old option (b) gave, so the numbers agree.
