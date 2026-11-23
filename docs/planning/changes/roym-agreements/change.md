@@ -1476,6 +1476,20 @@ with the question.
 - **Release of an ended commitment is retried.** The plan asks that every release site calls `release_ended` or the hook client. A release error is not logged, because no Roym service can log. So a release at a snapshot (`failed`, `cancelled`, `not-formed`) writes a `released:<agreement>:<commitment>` row when it works, and the next `transaction.sync` of both nodes releases again whatever the snapshot shows ended and has no such row. The earlier note, "the other release sites drop the error", no longer holds for these sites. An import accepts these rows, the `confirmed:` rows and the `failure:` rows only when they name a held agreement and commitment, and a `failure:` row only when its record verifies and its issuer is the giver of that commitment.
 - **`transaction.sync` answers `unsent_failures`.** It is an added field. The confirm pass never fails the sync: a storage error stops only the commitment it happened on, and the next sync tries it again.
 
+**Written when the M08C C3c slice was planned (2026-11-23, [slice-c3c-implementation-plan.md](../../milestones/M08C-deal-core-and-extensions/slice-c3c-implementation-plan.md)).**
+The owner answered that plan's questions Q1 to Q8 on 2026-11-23; the rows below record them and the deviations found during planning and review.
+
+- **The driver is the wake (Q2, Q3).** A node-local wake declared in the manifest and run by the hosting substrate on events and interval, documented in ADR-0031.
+- **`as_listed.slot` with its window, not `slot_id` alone (D-C3c-5).** The counterparty must build `c1.window` from the slot's earliest/latest times, and the person must see the time before tapping.
+- **`terms_from_listing` takes the verified `ListingPayload` (D-C3c-6).** There is no `ListingEnvelope` type.
+- **`NotComplete::Invalid` mapping error variant (D-C3c-6).** Returns `DealError` code if a mapping bug causes `DealTerms::validate` to fail.
+- **Decline with hook code for removed slot (Q8).** When the prepare hook refuses on the owner's node (`no-such-slot` or `slot-not-in-listing`), the owner's node declines the enquiry with that code (P16).
+- **Decline note visible with no salt (D-C3c-9).** `deal-decline` fields are visible, and `code` is an optional visible field.
+- **`formed_as` in progress snapshot (D-C3c-10).** Visible `formed_as: quote | as-listed-instant | as-listed-confirmed` in every `AgreementProgressPayload`.
+- **`deal.as-listed-status` (D-C3c-13).** New local-only method for the owner's Hub to inspect waiting enquiries and instant cap status.
+- **"Open" for instant limits counts in-flight quotes (P12).** In addition to open formed agreements, `in_flight_instant(listing)` counts answered quotes whose quote has no `decision:` fence yet and is not expired, bounding instant agreements to `instant_cap` and one per counterparty. The remaining race between two syncs at the exact same instant passing the cap by at most one is accepted (Q6).
+- **Slot offerings show "Ask" alone on the Hub (Q4).** Records and services support slots, but cross-node slot query is deferred (M08D).
+
 ## Close-out
 
 Before merge, update the living docs (requirements, architecture, integrated spec, developer guide, terminology) so they describe the result. Then set `status: done` and fill in `living-docs-touched` and `demo`. Record anything you postponed in [deferred-backlog.md](../../deferred-backlog.md).

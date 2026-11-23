@@ -232,7 +232,11 @@ How a developer can see it work:
 Each question has options and a recommendation. The plan is written for
 the recommended answer.
 
+**Owner answers, 2026-11-23.** Q1, Q2, Q3, Q4, Q7, Q8: agree with (a). Q8 holds only once P16 is settled. Q5: (a), but only with P11 fixed. Q6: do not accept (a) as written; count in-flight quotes (P12), then (a) is fine.
+
 #### Q1. Split C3c into C3c1 (driver), C3c2 (owner's side) and C3c3 (counterparty's side)?
+
+Owner answer: (a), 2026-11-23. Three PRs, in that order: C3c1 (driver), C3c2 (owner's side), C3c3 (counterparty's side).
 
 - **(a) Three PRs, in that order.** Recommended: each part has its own
   reviewer question (section 1, "Why C3c is split"), each leaves a working
@@ -244,6 +248,8 @@ the recommended answer.
 - (c) One PR. About 2,600 lines of production code and as many of tests.
 
 #### Q2. The driver: how does a node run `transaction.sync` with no Hub?
+
+Owner answer: (a), 2026-11-23. A node-local wake, declared in the manifest, run by the substrate.
 
 Facts (section 2.2, point 1): no Roym method is ever called on a timer or
 on an event. The supervisor's schedules (ADR-0023 §6) are the only timer
@@ -289,6 +295,8 @@ a timer, and every guest call is bounded by a 5-second epoch
 
 #### Q3. An ADR for the wake?
 
+Owner answer: (a), 2026-11-23. Yes: ADR-0031 "Node-local wake of a service", written in C3c1 step 1.
+
 The wake is a new way for the host to call a guest. ADR-0023 §6 says the
 supervisor is the scheduler. A wake is not a cluster schedule: it is
 node-local work that each member of a service does for its own data, so
@@ -303,6 +311,8 @@ node-local work that each member of a service does for its own data, so
   The plan is archived later, so the reason would be lost.
 
 #### Q4. Slot offerings: can the person pick a slot before the tap?
+
+Owner answer: (a), 2026-11-23. Build the slot path in records and backend services; Hub shows "Ask" alone on slot offerings for now.
 
 A slot offering needs `as_listed.slot_id`, so the person must pick a
 slot. But slots live in the owner's `scheduling` service, and every
@@ -335,6 +345,8 @@ Hub on the counterparty's node can show the owner's free slots.
 
 #### Q5. `transaction` needs the current offering version on the owner's node
 
+Owner answer: (a), 2026-11-23, with P11 fixed. Add catalog back to transaction's depends_on, and wire the binding in runtime/roym.rs for the linked build.
+
 The owner's node answers "only from the current active version" (`:311`).
 The current version is in `catalog` (`listing.get` returns the current
 envelope, record id and status,
@@ -347,26 +359,38 @@ C3b1 removed `transaction`'s edge to `catalog`, when slots moved out
   depends only on `profile`
   ([roym.toml:67](../../../../crates/roym_core/app/roym.toml#L67)).
   Recommended: one sibling call, and `catalog` stays the only holder of
-  listings.
+  listings. P11 fix: also wire `save_binding` in `wire_roym_topology`
+  (`runtime/roym.rs`) for `transaction` -> `catalog` so the linked build
+  can make the call.
 - (b) The counterparty's enquiry carries the envelope, and the owner's node
   trusts it if its `record_id` is the newest it can find in its own
   `listing_history`. That still needs a read of `catalog`'s data.
 
 #### Q6. The instant cap may be passed by one under a race
 
-The cap is checked when the owner's node answers. Two answers can run at
-the same time on one node (the wake and a Hub sync), and each can see
-`cap - 1` open agreements.
+Owner answer: do not accept (a) as written; count in-flight quotes (P12), then (a) is fine, 2026-11-23.
 
-- **(a) Accept it, and say so.** The wake never runs twice at once for one
-  service (D-C3c-1), so only a Hub sync can race it, and the cap is passed
-  by at most one. A backlog row records it. Recommended: the cap is an
-  abuse limit, not a stock count; a slot's seats have their own fence.
+The cap is checked when the owner's node answers. In addition to open
+formed agreements, `answer_as_listed` counts in-flight quotes
+(`in_flight_instant`, P12): quotes answered under `AsListedInstant` with no
+decision fence yet and not expired. The limits check `open agreements +
+in_flight quotes`. Two answers can still run at the same time (the wake and
+a Hub sync), and each can see `cap - 1` open + in-flight quotes.
+
+- **(a) Accept it with in-flight quotes counted, and say so.** The wake
+  never runs twice at once for one service (D-C3c-1), so only a Hub sync
+  can race it. With in-flight quotes counted (P12), multiple rapid taps are
+  properly bounded, and the remaining race between two syncs at the exact
+  same instant passes the cap by at most one. A backlog row records it.
+  Recommended: the cap is an abuse limit, not a stock count; a slot's seats
+  have their own fence.
 - (b) A fence per cap place (`instant:<listing>:<n>`), released when an
   agreement stops counting. About 120 more lines, and "stops counting"
   happens on a timer (7 days), which would need its own release pass.
 
 #### Q7. Demo
+
+Owner answer: (a), 2026-11-23. C3c1: - none; C3c2: - none; C3c3: extend story 50 with a deal agreed as listed.
 
 The rule: a change a viewer can see gets a story.
 
@@ -385,16 +409,18 @@ The rule: a change a viewer can see gets a story.
 
 #### Q8. A slot that is removed before the owner answers
 
+Owner answer: (a), 2026-11-23, with P16 settled. The owner's node declines the enquiry with the hook's error code when the prepare hook refuses on the owner's node.
+
 `terms_from_listing` builds the slot terms from `as_listed.slot`, and
-`quote.set` asks the scheduling extension's `prepare` hook to check the
-slot ([quote_ops.rs:139](../../../../crates/roym_transaction/src/app/quote_ops.rs#L139)).
-If the owner removed the slot after the tap, `prepare` refuses with
-`no-such-slot` or `slot-not-in-listing`. The reason-code table has no row
-for this.
+`issue_quote` (P16) calls the scheduling extension's `prepare` hook to
+verify the slot. If the owner removed the slot after the tap, `prepare`
+refuses with `no-such-slot` or `slot-not-in-listing`.
 
 - **(a) The owner's node declines the enquiry, with the hook's code as the
   decline `code`.** Recommended: the person learns at once that the slot is
-  gone, in their own language; the codes already exist.
+  gone, in their own language; the codes already exist. Settled in P16:
+  `issue_quote` runs `hooks::prepare` on the owner's node for author
+  commitments before signing, declining the enquiry if it returns an error.
 - (b) The enquiry waits for the owner, who answers with a normal quote or
   declines by hand. The person waits for a slot that no longer exists.
 
@@ -490,8 +516,10 @@ for this.
     (D-C3c-4).
 11. **Files near the 800-line cap** in `transaction`: `sync.rs` 759,
     `backup.rs` 785, `decide.rs` 724, `app.rs` 710, `backup/sections.rs`
-    703, `quote_ops.rs` 695. Each gets at most a few lines; the new code is
-    in new files (section 7.8).
+    703, `quote_ops.rs` 695. Proactively extract `file_enquiry_card` and
+    `file_quote_card` from `sync.rs` into `sync/cards.rs` (~140 lines) to keep
+    it safely below the 800-line cap (P4). New code goes in new sibling files
+    (section 7.8).
 12. **No `roymctl` command makes a listing**, and the enquiry command
     takes no envelope
     ([transaction.rs:72](../../../../apps/roymctl/src/commands/roym/transaction.rs#L72)).
@@ -502,7 +530,7 @@ for this.
 | Change doc | Criterion | Part | Where it is proved (section 7) |
 | --- | --- | --- | --- |
 | roym-agreements | AG-50 | C3c1: every node runs `transaction.sync` for a changed conversation with no session and no Hub, within a bound; no `conversation` → `transaction` call | two-node `roym_driver_e2e`; service `tests/drive.rs` (the bound per call); substrate unit tests of the wake worker |
-| roym-agreements | AG-45 | C3c2: `listing.set`'s refusals; "open"; the cap; one per counterparty; the signing fallback; a full slot ends `not-formed` with `slot-taken`; the owner's Hub (form, limit line, cancel). C3c3: the counterparty's waiting line | unit `listing/as_listed` tests; service `tests/as_listed_owner.rs`; Hub unit tests; Playwright (C3c3) |
+| roym-agreements | AG-45 | C3c2: `listing.set`'s refusals; "open" (open agreements + in-flight quotes, P12); the cap; one per counterparty; the signing fallback; a full slot ends `not-formed` with `slot-taken`; the owner's Hub (form, limit line, cancel). C3c3: the counterparty's waiting line | unit `listing/as_listed` tests; service `tests/as_listed_owner.rs`; Hub unit tests; Playwright (C3c3) |
 | roym-agreements | AG-49 | C3c2: the owner's node declines `consent-expired` and `offering-withdrawn`, answers from the current version. C3c3: the counterparty's three checks immediately before signing; a refused first contact shows as refused | service `tests/as_listed_owner.rs`, `tests/as_listed_accept.rs`; Playwright (C3c3) |
 | roym-agreements | AG-51 | C3c2: every snapshot carries `formed_as`, the same in every snapshot | service `tests/as_listed_owner.rs`; unit `progress` and presentation tests |
 | roym-agreements | AG-44 | C3c2: `terms_from_listing` (one row per refusal and per mapping row), `enquiry.set`'s `as_listed`, `quote.from-listing`. C3c3: the automatic acceptance, build and compare generated from the structs, the tap screen, `viewed_via_mt` | unit `as_listed` tests; service `tests/as_listed_accept.rs`; two-node `roym_as_listed_e2e`; Playwright story 50 and `roym-hub.spec.ts` |
@@ -668,9 +696,9 @@ Where it goes:
 | `crates/app_orchestration/src/models/service.rs:152` (`ServiceConfig`) | `#[serde(default, skip_serializing_if = "Option::is_none")] pub wake: Option<WakeSpec>`, next to `health_check`. In `ServiceConfig`, not on the planned service as `schedule` is ([service.rs:463](../../../../crates/app_orchestration/src/models/service.rs#L463)): the substrate uses it, so a change must reach the substrate (the reason `schedule` stays out does not hold here) |
 | `crates/app_orchestration/src/models/manifest.rs:129` | the manifest's validation calls `WakeSpec::validate`, as it does for `schedule` |
 | `crates/control_plane/src/service/orchestration/deploy/commit.rs:168` | `wake_json` beside `health_check_json`, passed to `set_deploy_facts` |
-| `crates/core/src/local_registry.rs:470` (`set_deploy_facts`) | one more column `wake_json`; a redeploy that drops the wake writes `NULL`; a new `wake_targets()` that lists `(service_id, WakeSpec)` |
-| `crates/substrate/src/runtime/wake.rs` (new) | the wake worker (D-C3c-2) |
-| `crates/substrate/src/runtime/services.rs:236` | spawn the worker beside the conversation worker, with its cancel token |
+| `crates/core/src/local_registry.rs:470` (`set_deploy_facts`), `crates/core/src/storage.rs`, `crates/data_db/src/registry_store.rs` | In `storage.rs`, replace `DeployFacts` tuple with struct `DeployFacts { pub service_type: String, pub health_check_json: Option<String>, pub manifest_hash: Option<String>, pub visibility: Option<String>, pub wake_json: Option<String> }` (P10); update `RegistryStorage` trait and in-memory store; in `data_db`, add `ALTER TABLE service_deploy_facts ADD COLUMN wake_json TEXT` migration and update `save_deploy_facts` (P2); update storage mocks in `failing_storage.rs` and `service_ownership.rs`; in `clear_deploy_hash_after_binding_push` (`lifecycle.rs:193`), copy `wake_json` so binding pushes preserve the wake (P10); cache `wake_json` in `LocalRegistry.service_deploy_facts`; new `wake_targets()` lists `(service_id, WakeSpec)` |
+| `crates/substrate/src/runtime/wake.rs` (new) | the wake worker (D-C3c-2); plumbing passes `shared.event_bus()` and endpoint registry to `RuntimeServices`; skips worker when proxy is `None` (P15) |
+| `crates/substrate/src/runtime/services.rs:236` | spawn the worker beside the conversation worker, store its `JoinHandle`, race in `run_until_shutdown`, with cancel token (P15) |
 | `crates/substrate/src/runtime/roym.rs` | the linked build registers `transaction`'s wake from `roym.toml` (D-C3c-3) |
 | `crates/roym_core/app/roym.toml:84` | `[services.transaction.wake]` as above |
 
@@ -679,6 +707,9 @@ every member of a service is woken on its own node; one call at a time
 per service; never queued; never retried (the next wake is the retry); a
 call is an ordinary guest call, bounded by the epoch and `timeout_ms`; it
 is not a long task (ADR-0023 §7) and not a schedule (ADR-0023 §6). It
+records that a wake is strictly local (never routed outbound via community
+registry, P1), that proxy `None` mode skips worker spawn, and that `on_events`
+for a service with no app context is ignored and logged once (P15). It
 records the rejected options of Q2.
 
 **D-C3c-2. The wake worker** (`crates/substrate/src/runtime/wake.rs`).
@@ -688,6 +719,7 @@ pub(crate) struct WakeWorker {
     targets: Arc<dyn WakeTargets>,   // the registry rows, and the linked Roym wake
     bus: Arc<EventBus>,
     proxy: Arc<ProxyRouter>,
+    registry: Arc<LocalEndpointRegistry>,
 }
 
 impl WakeWorker {
@@ -699,9 +731,12 @@ Each loop, once per second:
 
 ```text
 for each target (service_id, spec):
-    state = per-target {bus_cursor, last_run_at, running}
+    state = per-target {bus_cursor, last_run_at, running, has_pending}
     if running: skip                         // one call at a time
     triggered = false
+    if state.has_pending:                    // P14: work left from previous call
+        triggered = true
+        state.has_pending = false
     if spec.on_events not empty:
         read the app's events after state.bus_cursor (host side, no guest)
         triggered = any event.kind in spec.on_events
@@ -709,28 +744,50 @@ for each target (service_id, spec):
         state.bus_cursor = the new cursor
     due = now - state.last_run_at >= spec.every_secs
     if triggered or due:
+        // P1: strictly node-local; never resolve via remote/community registry
+        if registry.lookup(&service_id, &spec.interface).is_none():
+            tracing::warn!(service_id, interface = %spec.interface, "wake target has no local endpoint registered; skipping");
+            continue
         state.running = true; state.last_run_at = now
-        spawn: proxy.invoke(ProxyRequest {
-                   target_service: service_id,
-                   interface: spec.interface, method: spec.method,
-                   params: spec.params or "[]",
-                   caller: CallerContext::service_system(service_id),
-                   origin: CallOrigin::Native { service_id },
-                   protocol: JsonRpcV1, idempotent: false,
-                   idempotency_key: None,
-                   timeout: Some(spec.timeout_ms) })
-               then state.running = false
-               on error: tracing::warn!(service_id, error) and nothing else
+        // P6: scopeguard / RAII guard resets state.running = false on completion or panic
+        spawn with running_guard:
+            res = proxy.invoke(ProxyRequest {
+                      target_service: service_id,
+                      interface: spec.interface, method: spec.method,
+                      params: spec.params or "[]",
+                      caller: CallerContext::service_system(service_id),
+                      origin: CallOrigin::Native { service_id },
+                      protocol: JsonRpcV1, idempotent: false,
+                      idempotency_key: None,
+                      timeout: Some(spec.timeout_ms) })
+            match res:
+                Ok(val) => {
+                    // P14: if DriveOutput indicates more pending work, wake on next loop
+                    if val.get("pending").and_then(|p| p.as_u64()).unwrap_or(0) > 0 {
+                        state.has_pending = true;
+                    }
+                }
+                Err(err) => tracing::warn!(service_id, error = %err, "wake call failed")
 ```
 
 - The call is the same as `run-scheduled`'s
   ([lifecycle.rs:644](../../../../crates/control_plane/src/service/orchestration/lifecycle.rs#L644)).
   The callee sees `CallerOrigin::Internal`, so `require_internal` admits
   it.
+- The worker verifies `registry.lookup(&service_id, &spec.interface).is_some()`
+  before invoking (P1). A miss in the endpoint registry is never treated as
+  remote for a node-local wake (matching `lifecycle.rs:625`).
 - The worker reads the event bus on the host side. It finds the app
-  instance of a service from the bus's own map (`record` maps a service
-  id to its app instance, [event_bus.rs:151](../../../../crates/core/src/event_bus.rs#L151)).
-  Add a small read-only accessor there if none exists; do not copy the map.
+  instance of a service using `EventBus::app_instance_of`
+  ([event_bus.rs:124](../../../../crates/core/src/event_bus.rs#L124)), which
+  already exists on `EventBus` (P5). If a standalone service with no app
+  context declares `on_events`, it is ignored and logged once with
+  `tracing::warn!` because events are app-scoped (P15).
+- `state.running` is guarded by an RAII guard / `JoinHandle` tracking so that
+  a task panic or cancellation resets `running` to `false` and does not wedge
+  the worker (P6).
+- If `DriveOutput.pending > 0`, the worker marks `has_pending` so it wakes
+  again on the next 1-second loop tick rather than waiting 30 seconds (P14).
 - A burst of messages gives one call per second at most: the 1-second
   loop is the debounce.
 - The tick of the loop is 1 second. `every_secs` is at least 5, so a
@@ -739,7 +796,8 @@ for each target (service_id, spec):
   effect within a second. A target whose service is gone is dropped with
   its state.
 - The worker logs with `tracing`, as the other substrate workers do. It
-  never fails the substrate.
+  never fails the substrate. If the node runs in coordinator mode where
+  `connection_router.proxy()` is `None`, worker spawning is skipped (P15).
 - A config switch is not added. Tests run with the wake on, as a real node
   does (D-C3c-4).
 
@@ -780,11 +838,16 @@ pub const DRIVE_EVENT_READ: u32 = 500;
 pub const DRIVE_RESCAN_PAGE: u64 = 16;
 ```
 
+In `SyncOutput` ([sync.rs](../../../../crates/roym_transaction/src/app/sync.rs)),
+add `pub more: bool` (true when `scanned == SYNC_WINDOW`), so `drive` knows
+when a conversation has further unread messages in the window (P13).
+
 ```text
 drive_at(host, now):
+    recover_deciding_rows(host, now)  // P14: node-wide recovery runs ONCE per drive, not per conversation
     state = DRIVE_STATE["drive"]  // {event_cursor: Option<String>,
                                   //  rescan_offset: Option<u64>}
-                                  // (a new collection, local, not backed up)
+                                  // (a new collection, local, not backed up; registered in ensure_collections, P7)
     match AppEvents::read(host, state.event_cursor, DRIVE_EVENT_READ):
         events(list, next):  for e in list where e.kind == "conversation.message":
                                  put DRIVE_PENDING[e.subject] = {since: now}
@@ -797,37 +860,46 @@ drive_at(host, now):
         put DRIVE_PENDING for each id in page
         state.rescan_offset = if page.len() < DRIVE_RESCAN_PAGE { None } else { off + page.len() }
     add the conversations that hold timed work (below) to the candidates
-    take at most MAX_DRIVE_CONVERSATIONS from DRIVE_PENDING, oldest `since` first
-    for each: match sync_direct(host, conv, now):
-                  Ok(_) | Err(NotDirect) -> delete DRIVE_PENDING[conv]
+    // P7: sort in memory, oldest `since` first (the data layer query has no sort order)
+    sort candidates in memory by `since` ascending
+    take at most MAX_DRIVE_CONVERSATIONS from candidates
+    for each (conv, cand_since): match sync_direct(host, conv, now):
+                  Ok(out) if out.more -> keep DRIVE_PENDING[conv] = {since: now} // P13: more in window
+                  Ok(_) | Err(NotDirect) ->
+                      // P13: compare-and-delete: delete only if `since == cand_since`, preserving concurrent event marks
+                      delete DRIVE_PENDING[conv] if since == cand_since
                   Err(other)              -> keep it; the next call tries again
-    store state; return counts
+    store state; return counts (including pending count for worker, P14)
 ```
 
 - **Timed work** is work that needs a sync with no new message: a quote
-  that expires (`tick`), a `deciding` row (recovery), a release retry, and
-  in C3c2 and C3c3 an as-listed enquiry whose consent time passes. The
-  interval wake (30 s) gives these a trigger. `recover_deciding_rows`
-  already runs for every agreement on each sync
-  ([sync.rs:135](../../../../crates/roym_transaction/src/app/sync.rs#L135)).
-  For the per-conversation work, `drive` adds to the candidates every
-  conversation that holds an agreement that is not final or an open
-  as-listed row (C3c2, C3c3), at most `MAX_DRIVE_CONVERSATIONS` per call
-  in total, in a round-robin order kept in `DRIVE_STATE`. Read the
-  agreement rows with the existing paging helper; do not add an index.
+  that expires (`tick`), a release retry, and in C3c2 and C3c3 an as-listed
+  enquiry whose consent time passes. The interval wake (30 s) gives these a
+  trigger. `recover_deciding_rows` runs once at the start of `drive_at`
+  (P14), avoiding 8 duplicate node-wide scans. For per-conversation work,
+  `drive` adds to candidates every conversation holding an unfinalized
+  agreement or open as-listed row, up to `MAX_DRIVE_CONVERSATIONS` in
+  round-robin order in `DRIVE_STATE`.
+- **Collections in `ensure_collections`** (P7). `DRIVE_STATE`,
+  `DRIVE_PENDING`, and `as_listed` are registered in `ensure_collections`
+  ([app.rs:335](../../../../crates/roym_transaction/src/app.rs#L335)).
 - **`sync_direct`** is `sync_at` with a typed refusal for a group
   conversation. Today `sync_at` answers `invalid_params` with a text
   ([sync.rs:86](../../../../crates/roym_transaction/src/app/sync.rs#L86)).
   Split it: `sync_at` keeps its reply; the inner function returns
   `SyncError::NotDirect`, and `drive` matches on that, never on the text
   (C1 R3).
+- **Proactive card extraction** (P4). `sync.rs` is at 759 lines. To prevent
+  breaching the 800-line limit across C3c1, C3c2, and C3c3, proactively
+  extract `file_enquiry_card` and `file_quote_card` into sibling file
+  `crates/roym_transaction/src/app/sync/cards.rs` (~140 lines saved).
 - **The bound.** One `drive` call syncs at most 8 conversations and reads
   one page of events and at most one page of conversations. Each sync reads
   one window of messages (`SYNC_WINDOW`). **Stop rule:** in C3c1 step 4,
-  measure one `drive` call that syncs 8 conversations with one card each,
-  in the WASM build (parity harness), and record the time. If it is over 2
-  seconds, lower `MAX_DRIVE_CONVERSATIONS` until it is under, and say so in
-  the Deviations.
+  measure one `drive` call that syncs 8 conversations with one card each, on
+  a node with 200 agreements (P14), in the WASM build (parity harness), and
+  record the time. If it is over 2 seconds, lower `MAX_DRIVE_CONVERSATIONS`
+  until it is under, and say so in the Deviations.
 - **Events of `transaction` itself** (`transaction.card`,
   `transaction.progress`) are not in `on_events`, so a drive does not wake
   itself.
@@ -911,14 +983,15 @@ pub fn as_listed_ready(listing: &ListingPayload) -> Result<(), NotComplete>;
 - **Refusals, in this order** (the first one wins, so the code is
   stable): `ListingNotActive` (`status` is not `active`);
   `PriceNotFixed` (`payment` absent, or `model` not `fixed`, or no
-  `amount_minor`); `TaxNotIncluded` (`tax_included` false);
-  `AtReceiver` (`location.where_` is `at-receiver`); `NoDealTerms`
-  (`deal_terms` absent); `SlotRequired` (the extension has a reserve hook
-  and `slot` is absent); `SlotNotOffered` (`slot` set and the extension
-  has no reserve hook, or there is no extension); `QuoteTooLarge` (below).
-  `as_listed_ready` runs the first five. The `scheduling` name is never
-  written here: "has a reserve hook" is a registry question
-  (`Registry::workflow`, used since C3b1).
+  `amount_minor`, or `payment.payee.trim()` is empty, P9); `TaxNotIncluded`
+  (`tax_included` false); `AtReceiver` (`location.where_` is `at-receiver`);
+  `NoDealTerms` (`deal_terms` absent); `SlotRequired` (the extension has a
+  reserve hook and `slot` is absent); `SlotNotOffered` (`slot` set and the
+  extension has no reserve hook, or there is no extension); `QuoteTooLarge`
+  (below). `as_listed_ready` runs the first five (including the non-empty
+  payee check, P9). The `scheduling` name is never written here: "has a
+  reserve hook" is a registry question (`Registry::workflow`, used since
+  C3b1).
 - **Last, it validates.** It runs `DealTerms::validate`
   ([deal.rs:333](../../../../crates/roym_core/src/deal.rs#L333)) and the
   size check through `DealTerms::disclosure_size`
@@ -954,8 +1027,8 @@ becomes `Option<LocalText>` (`#[serde(default, skip_serializing_if =
 with `git grep -n 'description' -- crates/roym_transaction/src crates/roym_web/ui/src/cards/templates/enquiry.ts crates/roym_web/ui/src/screens apps/roymctl/src crates/roym_web/tests`
 and read each hit. Known ones: the enquiry card template
 ([enquiry.ts](../../../../crates/roym_web/ui/src/cards/templates/enquiry.ts)),
-the quote form's prefill from the enquiry
-([messages.ts:783](../../../../crates/roym_web/ui/src/screens/messages.ts#L783)),
+the enquiry form's required-description check
+([messages.ts:461](../../../../crates/roym_web/ui/src/screens/messages.ts#L461)),
 the enquiry view in `enquiry_ops.rs`, and the parity fixtures. With no
 description, the enquiry card shows the offering's title from the stored
 row on the counterparty's node, and "Agree as listed: <listing id>" on the
@@ -1007,7 +1080,7 @@ pub deal_terms: Option<ListingDealTerms>,
     `anyone` when the owner picks `instant`.
   - `instant_cap` in 1..=500 (`instant-cap-range`).
   - `deal_terms` texts: each `LocalText` is checked with `MAX_TERMS_TEXT_LEN`
-    ([deal.rs:21](../../../../crates/roym_core/src/deal.rs#L21)); each
+    ([deal.rs:30](../../../../crates/roym_core/src/deal.rs#L30)); each
     `lang` equals the listing's `lang`; each set of translation languages
     equals the set of the listing's `translations`
     (`deal-terms-languages`). This is AG-39's rule, so a quote built from
@@ -1062,10 +1135,17 @@ pub enum FormedAs { Quote, AsListedInstant, AsListedConfirmed }
   is).
 - A `not-formed` snapshot also carries it: the field says how the writer
   answered, also when no agreement formed.
+- **Workspace-wide compilation in Step 1 (P3):** struct literal instantiations
+  and fixtures of `AgreementProgressPayload` (with `formed_as: FormedAs::Quote`),
+  `EnquiryPayload` (`as_listed: None`, `description: Some(...)`), and
+  `DealDeclinePayload` (`code: None`) across `roym_transaction` (production
+  calls like `progress::open` in `decide.rs:620` and tests) and `roym_core` are
+  updated in C3c2 Step 1 so `cargo check --workspace` compiles cleanly before
+  Step 2.
 
 **D-C3c-11. `can_agree_as_listed` on a directory hit.**
 `build_verified_row`
-([verify.rs:116](../../../../crates/roym_federated_query/src/verify.rs#L116))
+([verify.rs:118](../../../../crates/roym_federated_query/src/verify.rs#L118))
 has the verified payload. It sets `Row.can_agree_as_listed =
 as_listed_ready(&payload).is_ok()`; `build_hits`
 ([merge.rs:211](../../../../crates/roym_federated_query/src/merge.rs#L211))
@@ -1111,18 +1191,19 @@ answer_as_listed(host, enquiry, trigger, now) -> Answer:
         // the version it stored).
         Err(reason) -> return Waiting(reason)    // the owner answers by hand
     if trigger == Driver:
-        if payload.acceptance == confirm-first:      return Waiting(ConfirmFirst)
-        if open_instant(listing) >= instant_cap:     return Waiting(CapReached{cap})
-        if open_instant_with(listing, counterparty): return Waiting(CounterpartyHoldsOne)
-        if person_principal(host, now) is Err(e):    return Waiting(SigningNotReady(e))
+        if payload.acceptance == confirm-first:                                  return Waiting(ConfirmFirst)
+        // P12: count open agreements + in-flight quotes against instant limits
+        if open_instant(listing) + in_flight_instant(listing) >= instant_cap:     return Waiting(CapReached{cap})
+        if open_instant_with(listing, counterparty) + in_flight_instant_with(listing, counterparty) > 0: return Waiting(CounterpartyHoldsOne)
+        if person_principal(host, now) is Err(e):                                return Waiting(SigningNotReady(e))
         formed_as = AsListedInstant
     else:
         formed_as = AsListedConfirmed
     quote_id = derive_quote_id(conversation, owner, next_sequence)
     create answer:<enquiry_record_id> = {state: "answering", quote_id, formed_as, at_secs}
         exists -> return its stored outcome            // another sync won
+    // P16: issue_quote runs hooks::prepare for author commitments
     out = issue_quote(host, enquiry_record_id, quote_id, terms, formed_as, now)
-        // the quote.set path from step 3 on, with the quote id fixed
         prepare hook refuses (Q8) -> decline(code = hook code); put row "declined"
     put answer:<enquiry_record_id> = {state: "answered", quote_id, record_id}
     return Quoted(out)
@@ -1140,18 +1221,28 @@ answer_as_listed(host, enquiry, trigger, now) -> Answer:
   ([quote_ops.rs:186](../../../../crates/roym_transaction/src/app/quote_ops.rs#L186)
   to `:231`), moved into a function that takes the quote id and sequence.
   `set_at` calls it after `resolve_quote_sequence`. So there is one signing
-  path for every quote. `issue_quote` also writes
-  `formed_as` into the quote's `RecordPointerRow` (D-C3c-10). The new
-  function goes in `quote_ops/issue.rs` (new), because `quote_ops.rs` is at
+  path for every quote. In `issue_quote`, for each author commitment with an
+  extension prepare hook, `hooks::prepare` is called on the owner's node
+  (P16). If `hooks::prepare` refuses with an error (e.g. `no-such-slot` or
+  `slot-not-in-listing`), the enquiry is declined with that hook code (Q8).
+  `issue_quote` also checks that the returned window matches the terms window,
+  and writes `formed_as` into the quote's `RecordPointerRow` (D-C3c-10). The
+  new function goes in `quote_ops/issue.rs` (new), because `quote_ops.rs` is at
   695 lines.
-- **"Open" for the limits** (`:313`): an agreement on this node with
-  `formed_as == AsListedInstant`, `terms.listing_id == listing`, that is
-  not final, has no settlement half in any commitment's `halves`, and whose
-  `agreed_at_secs` is less than 7 days ago. `open_instant` scans the
-  `agreements` collection with the existing paging helper; the count is
-  small (the cap is at most 500). A unit test of the pure predicate
-  `is_open_instant(row, listing, now)` has one case per condition (AG-45's
-  unit row).
+- **"Open" for the limits and in-flight quotes** (`:313`, P12): an agreement
+  on this node with `formed_as == AsListedInstant`, `terms.listing_id == listing`,
+  that is not final, has no settlement half in any commitment's `halves`, and
+  whose `agreed_at_secs` is less than 7 days ago. In addition,
+  `in_flight_instant(listing)` counts `answer:` rows on this node with
+  `formed_as == AsListedInstant` and state `answered`, whose quote has no
+  `decision:` fence yet and whose expiry is in the future (`quote_expires_at_secs > now`).
+  The two instant limits check `open_instant + in_flight_instant`. A quote
+  that is never accepted holds a place until it expires (up to 7 days),
+  preventing rapid taps from bypassing the cap before acceptance.
+  `open_instant` scans the `agreements` collection with the existing paging
+  helper; the count is small (the cap is at most 500). A unit test of the pure
+  predicate `is_open_instant(row, listing, now)` has one case per condition
+  (AG-45's unit row).
 - **A `Waiting` outcome writes nothing.** The owner's Hub computes the
   reason again with `deal.as-listed-status`.
 - **The decline** uses D-C3c-9, and writes the `answer:` row with state
@@ -1174,6 +1265,7 @@ pub struct AsListedStatusOutput {
     pub acceptance: Acceptance,          // from the current version
     pub instant_cap: u16,
     pub open_instant: Vec<String>,       // agreement ids, oldest first
+    pub in_flight_instant: u32,          // P12: quotes issued, waiting for accept/expire
     pub signing_ready: bool,
     pub waiting: Vec<WaitingEnquiry>,    // {enquiry_record_id, conversation, reason}
 }
@@ -1364,7 +1456,10 @@ Each step builds, and its tests pass, before the next starts.
 #### Step 1 — Commit this plan, and the ADR
 
 Write `docs/decisions/0031-node-local-wake.md` (Q3), from D-C3c-1 and Q2.
-The owner accepts it before step 2.
+The ADR records that the wake is strictly node-local (never routed via the
+remote/community registry, P1), that coordinator mode skips worker spawn,
+and that `on_events` for a standalone service with no app context is ignored
+and logged once (P15). The owner accepts it before step 2.
 
 #### Step 2 — `WakeSpec` and the manifest (`app_orchestration`, pure)
 
@@ -1375,19 +1470,42 @@ deploy hash of every existing service stays the same).
 
 #### Step 3 — The deploy fact and the worker (`control_plane`, `core`, `substrate`)
 
-`set_deploy_facts` with `wake_json`, `wake_targets()`, `wake.rs`, the spawn,
-the linked-build registration (D-C3c-3). Tests (section 7.4): the worker
-calls a test service once for a burst of events, once per interval, never
-twice at once, and stops calling after an undeploy. Before this step, read
-every caller of `set_deploy_facts` (`git grep -n set_deploy_facts`).
+In `crates/core/src/storage.rs`, replace the `DeployFacts` tuple with struct
+`DeployFacts { pub service_type: String, pub health_check_json: Option<String>, pub manifest_hash: Option<String>, pub visibility: Option<String>, pub wake_json: Option<String> }`
+and update the `RegistryStorage` trait and in-memory store (P10). In
+`crates/data_db/src/registry_store.rs`, update `save_deploy_facts` and add
+the column migration `ALTER TABLE service_deploy_facts ADD COLUMN wake_json TEXT`
+(P2). Update mock storage in `failing_storage.rs` and `service_ownership.rs` (P2).
+In `crates/control_plane/src/service/orchestration/lifecycle.rs:193`
+(`clear_deploy_hash_after_binding_push`), copy `wake_json` (P10). Cache `wake_json`
+in `LocalRegistry.service_deploy_facts`.
+
+Implement `wake.rs` with `WakeWorker`: pass `shared.event_bus()` and endpoint
+registry to `RuntimeServices`; skip worker when proxy is `None` (P15);
+verify local endpoint exists before dispatching (`registry.lookup().is_some()`,
+P1); guard `state.running` with RAII/scopeguard so task panic or cancellation
+resets `running = false` (P6); check `DriveOutput.pending` to wake again on
+the next 1-second loop tick while `pending > 0` (P14); spawn worker with
+cancel token, store `JoinHandle`, and race in `run_until_shutdown` (P15).
+Add linked-build registration (D-C3c-3). Add test `a_binding_push_keeps_the_wake`
+(P10). Before this step, read every caller of `set_deploy_facts` (`git grep -n set_deploy_facts`).
 
 #### Step 4 — `transaction.drive` and the manifest line (`transaction`, `roym.toml`)
 
+Proactively extract `file_enquiry_card` and `file_quote_card` from `sync.rs`
+into sibling file `crates/roym_transaction/src/app/sync/cards.rs` (~140 lines
+saved) to keep `sync.rs` safely below 800 lines (P4). Register `DRIVE_STATE`,
+`DRIVE_PENDING`, and `as_listed` in `ensure_collections` (`app.rs:335`) (P7).
+In `drive_at`, run `recover_deciding_rows` once per drive call (P14), sort
+candidate pending rows in memory by `since` (P7), add `more: bool` to
+`SyncOutput` and keep conversation pending when `more` is true (P13), and
+use compare-and-delete on `since` when deleting pending rows (P13).
+
 `drive.rs`, the `api.rs` row, the method-contract count (44 → 45,
 [contract.rs:83](../../../../crates/roym_web/tests/method_contract/contract.rs#L83)),
-its shape file, `[services.transaction.wake]`. Service tests
-(`tests/drive.rs`). A parity scenario (252). The time measurement of the
-stop rule.
+its shape file, `[services.transaction.wake]`. Service tests (`tests/drive.rs`).
+A parity scenario (252). The time measurement of the stop rule: measure 8
+conversations on a node with 200 agreements (P14).
 
 #### Step 5 — Tests that read sync counts, and the two-node test
 
@@ -1407,9 +1525,16 @@ backlog (section 8), Deviations, status.md.
 `as_listed_ready`, `NotComplete`), `money::plain_amount`, the listing
 fields and their validation (`listing/as_listed.rs`), `EnquiryPayload`'s
 `as_listed` and optional `description`, `DealDeclinePayload.code`,
-`FormedAs` and `AgreementProgressPayload.formed_as`. Every caller of the
-changed types compiles: fix the `roym_core` tests and the fixtures. Unit
-tests of section 7.1.
+`FormedAs` and `AgreementProgressPayload.formed_as`. In `terms_from_listing`
+and `as_listed_ready`, verify `!payment.payee.trim().is_empty()`, returning
+`NotComplete::PriceNotFixed` if empty (P9).
+
+Struct literal instantiations and fixtures of `AgreementProgressPayload`
+(with `formed_as: FormedAs::Quote`), `EnquiryPayload` (`as_listed: None`,
+`description: Some(...)`), and `DealDeclinePayload` (`code: None`) across
+`roym_transaction` (production calls like `progress::open` in `decide.rs:620`
+and tests) and `roym_core` are updated here so `cargo check --workspace`
+compiles cleanly at Step 1 (P3). Unit tests of section 7.1.
 
 #### Step 2 — `catalog` and `directory`
 
@@ -1426,12 +1551,24 @@ in `roym_federated_query` and the Hub type. Measure `directory` and
 
 #### Step 4 — `transaction`: the answer
 
-`roym.toml` `depends_on` (Q5), and its router or manifest tests; `issue_quote`
-moved out of `set_at`; `as_listed_ops` (`answer_as_listed`,
-`quote.from-listing`, `deal.as-listed-status`); the call in
-`file_enquiry_card` and in `drive`; the `answer:` ledger kind and its import
-check. Method-contract count 45 → 47 and shapes. Service tests
-`tests/as_listed_owner.rs`. Parity scenarios.
+`roym.toml` `depends_on` (Q5): in `wire_roym_topology` in
+`crates/substrate/src/runtime/roym.rs`, add the `catalog` binding for
+`transaction` so the linked native build can call `listing.get` (P11). Add
+a test verifying that every manifest `depends_on` has a matching `save_binding`
+in `roym.rs`, and a substrate native test calling `listing.get` from
+`transaction` (P11).
+
+`issue_quote` moved out of `set_at` into `quote_ops/issue.rs`; `issue_quote`
+calls `hooks::prepare` on author commitments, declining the enquiry with the
+hook's error code if refused (P16, Q8), and verifies returned window equals
+terms window. In `as_listed_ops` (`answer_as_listed`, `quote.from-listing`,
+`deal.as-listed-status`), count in-flight quotes (`in_flight_instant`, P12)
+in addition to open agreements against instant limits. Add tests
+`many_taps_before_any_acceptance_make_only_cap_quotes` and
+`one_counterparty_tapping_twice_gets_one_instant_quote` (P12). Wire
+`answer_as_listed` in `sync/cards.rs` (`file_enquiry_card`) and in `drive`;
+add the `answer:` ledger kind and its import check. Method-contract count
+45 → 47 and shapes. Service tests `tests/as_listed_owner.rs`. Parity scenarios.
 
 #### Step 5 — `roymctl` and the owner's Hub
 
@@ -1447,10 +1584,10 @@ backlog, Deviations, status.md.
 
 #### Step 1 — The automatic acceptance (`transaction`)
 
-D-C3c-17: `auto_accept`, the call in `file_quote_card` and in `drive`, the
-`autoaccept:` ledger kind and its import check, the `as_listed` row states.
-Service tests `tests/as_listed_accept.rs`, including the struct test.
-Parity scenario.
+D-C3c-17: `auto_accept`, wired in `sync/cards.rs` (`file_quote_card`) and in
+`drive` (P4), the `autoaccept:` ledger kind and its import check, the
+`as_listed` row states. Service tests `tests/as_listed_accept.rs`, including
+the struct test. Parity scenario.
 
 #### Step 2 — The Hub
 
@@ -1492,6 +1629,7 @@ check it exists: `git grep -n 'fn <name>'` (C3a R3, R4).
 - `the_amount_text_uses_a_dot_and_the_currency_exponent` — INR, JPY
   (exponent 0), a three-digit currency, a value below one unit.
 - `expiry_is_now_plus_quote_valid_secs`.
+- `a_listing_with_empty_payee_refuses_price_not_fixed` (P9).
 
 `listing/as_listed` tests: one per new `listing.set` refusal
 (`instant-not-allowed` with each reason, `instant-cap-range`,
@@ -1522,7 +1660,10 @@ code keeps today's bytes.
   - `a_slow_call_is_never_overlapped`;
   - `a_reload_of_the_event_window_gives_a_call`;
   - `an_undeployed_service_is_not_called_again`;
-  - `the_linked_build_registers_every_wake_of_the_manifest` (D-C3c-3).
+  - `the_linked_build_registers_every_wake_of_the_manifest` (D-C3c-3);
+  - `a_panic_in_invoke_resets_running_guard` (P6);
+  - `a_missing_local_endpoint_skips_dispatch_with_no_outbound_call` (P1);
+  - `a_binding_push_keeps_the_wake` (P10).
 
 ### 7.3 Service tests (`crates/roym_transaction/src/app/tests/`)
 
@@ -1535,7 +1676,10 @@ code keeps today's bytes.
 - `drive_after_reload_walks_every_conversation_in_pages`;
 - `drive_ignores_events_of_transaction_itself`;
 - `drive_gives_timed_work_a_sync_with_no_new_message` (a quote that
-  expires, a `deciding` row).
+  expires, a `deciding` row);
+- `drive_keeps_conversation_pending_when_more_messages_in_window` (P13);
+- `drive_compare_and_delete_preserves_concurrent_event_mark` (P13);
+- `drive_runs_recovery_once_per_call` (P14).
 
 The test host's `conversation.changes` and `conversation.list` stubs and an
 events stub: check `roym_core::testing` (`TestHost`,
@@ -1554,11 +1698,13 @@ events stub: check `roym_core::testing` (`TestHost`,
   `an_agreement_with_a_filed_half_no_longer_counts` and
   `an_agreement_older_than_seven_days_no_longer_counts`;
 - `a_second_open_instant_agreement_with_one_counterparty_waits`;
+- `many_taps_before_any_acceptance_make_only_cap_quotes` (P12);
+- `one_counterparty_tapping_twice_gets_one_instant_quote` (P12);
 - `a_failing_certificate_makes_the_offering_wait` (one case each for
   `NotEnrolled`, `Expired`, `Stale`);
 - `a_full_slot_ends_not_formed_with_slot_taken` (two counterparties, one
   seat; no fallback to confirm first);
-- `a_removed_slot_is_declined_with_the_hooks_code` (Q8);
+- `a_removed_slot_is_declined_with_the_hooks_code` (Q8, P16: prepare hook runs before quote issuance);
 - `two_answers_of_one_tap_make_one_quote` (two calls in a row, and a
   crash after the fence with the injected-error host of C1b);
 - `formed_as_is_the_same_in_the_first_and_a_later_snapshot` (one agreement
@@ -1589,6 +1735,8 @@ events stub: check `roym_core::testing` (`TestHost`,
   `transaction.sync` on neither node (it polls `agreement.get` only, which
   does not sync). A second case stops X before Y accepts, starts it again,
   and checks it countersigns with no call (the `reload` path).
+- Native linked-build dependency test (C3c2, P11): in `crates/substrate`, call
+  `listing.get` from `transaction` to verify `wire_roym_topology` binding.
 - `roym_as_listed_e2e.rs`:
   - C3c2: an instant one-shot offering; Y sends an as-listed enquiry
     (`rpc` with the envelope from `directory.run-envelope`); X's node
@@ -1637,13 +1785,15 @@ automatic acceptance), 256 (`enquiry.set` refuses `as-listed-not-complete`).
 
 ### 7.8 Size and time risks
 
-- **Files near the cap.** `sync.rs` (759) gets two calls (+6);
-  `backup.rs` (785) gets two lines; `decide.rs` (724) gets the `formed_as`
-  read in two places (+6); `app.rs` (710) gets two fields (+6);
-  `backup/sections.rs` (703) gets two match arms (+6); `quote_ops.rs` (695)
-  loses the body of `issue_quote` (−45). New code goes in `drive.rs`,
-  `as_listed_ops.rs` and its folder, `quote_ops/issue.rs`,
-  `backup/as_listed.rs`, `roym_core/src/as_listed.rs`,
+- **Files near the cap.** `sync.rs` is at 759 lines; proactively extract
+  `file_enquiry_card` and `file_quote_card` into sibling file `sync/cards.rs`
+  (~140 lines saved), keeping `sync.rs` safely below the 800-line cap across
+  C3c1, C3c2, and C3c3 (P4). `backup.rs` (785) gets two lines; `decide.rs`
+  (724) gets the `formed_as` read in two places (+6); `app.rs` (710) gets two
+  fields (+6); `backup/sections.rs` (703) gets two match arms (+6);
+  `quote_ops.rs` (695) loses the body of `issue_quote` (−45). New code goes
+  in `drive.rs`, `sync/cards.rs`, `as_listed_ops.rs` and its folder,
+  `quote_ops/issue.rs`, `backup/as_listed.rs`, `roym_core/src/as_listed.rs`,
   `roym_core/src/listing/as_listed.rs`, `substrate/src/runtime/wake.rs`.
   Check `wc -l` before and after each step.
 - **The wake's time per call** (stop rule in D-C3c-1).
@@ -1768,10 +1918,11 @@ Each PR fixes the statements it makes false. C8 does the full pass.
     `terms_from_listing` takes the verified payload (point 3); the
     `Invalid` variant (D-C3c-6); the slot codes as decline codes (Q8); the
     Hub offers the tap only for offerings with no reserve hook (Q4); the
-    cap may be passed by one (Q6); `formed_as` also in a `not-formed`
-    snapshot (D-C3c-10); `deal.as-listed-status` (a method the table does
-    not list); the stale line citations `messages.ts:424` and `decide.rs:695`
-    (point 1, point 2).
+    definition of "open" for instant limits counts in-flight quotes (P12);
+    the cap may be passed by at most one under two concurrent syncs (Q6);
+    `formed_as` also in a `not-formed` snapshot (D-C3c-10);
+    `deal.as-listed-status` (a method the table does not list); the stale line
+    citations `messages.ts:424` and `decide.rs:695` (point 1, point 2).
   - roym-value-exchange `## Deviations`: VX-54 met, with the slot gap of
     Q4.
   - roym-extensions `## Deviations`: EX-18's agree-as-listed half built
