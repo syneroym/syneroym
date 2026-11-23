@@ -237,6 +237,7 @@ fn resolve_manifest(manifest_path: &Path) -> anyhow::Result<SynAppManifest> {
                     rotation_policy: Default::default(),
                     fdae: None,
                     health_check: None,
+                    wake: None,
                     assets: None,
                     visibility: Default::default(),
                 },

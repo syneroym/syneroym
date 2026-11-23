@@ -6,7 +6,7 @@ use syneroym_identity::substrate;
 use super::identifiers::{
     AppBlueprintId, AppInstanceId, InterfaceName, LogicalServiceName, PlacementSelector, ServiceId,
 };
-pub use crate::{resolver::ShardingStrategy, schedule::ScheduleSpec};
+pub use crate::{resolver::ShardingStrategy, schedule::ScheduleSpec, wake::WakeSpec};
 
 /// Supported service execution types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -173,6 +173,10 @@ pub struct ServiceConfig {
     /// Author-declared readiness probe. Absent = liveness only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub health_check: Option<HealthCheck>,
+    /// A node-local call the hosting substrate makes on events and on a timer.
+    /// See ADR-0031.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wake: Option<WakeSpec>,
     /// Static assets served directly from blob storage.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub assets: Option<AssetBundle>,

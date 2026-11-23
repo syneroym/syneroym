@@ -96,6 +96,7 @@ fn scheduled_manifest() -> SynAppManifest {
                 // mints no record for it, and the tick has nothing to
                 // resolve (ADR-0018 §4).
                 visibility: Visibility::Internal,
+                wake: None,
             },
             depends_on: vec![],
             placement: Some(PlacementSelector::Substrate(SubstrateAlias::new(MANAGED_ALIAS))),

@@ -26,6 +26,7 @@ fn base_config() -> ServiceConfig {
         rotation_policy: Default::default(),
         fdae: None,
         health_check: None,
+        wake: None,
         assets: None,
         visibility: ModelVisibility::Private,
     }

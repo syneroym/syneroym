@@ -17,7 +17,9 @@ use syneroym_rpc::AuthLevel;
 
 use super::super::*;
 
+mod scheduled_actor;
 mod started_actor;
+pub(super) use scheduled_actor::ScheduledActor;
 pub(super) use started_actor::AssertsStartedBeforeCallActor;
 
 pub(super) fn test_broker() -> Arc<MqttBroker> {
@@ -454,6 +456,7 @@ pub(super) fn dummy_config() -> ServiceConfig {
         rotation_policy: Default::default(),
         fdae: None,
         health_check: None,
+        wake: None,
         assets: None,
         visibility: Default::default(),
     }
@@ -962,65 +965,6 @@ pub(super) fn minute(offset_secs: i64) -> u64 {
     use chrono::{TimeZone, Utc};
     let base = Utc.with_ymd_and_hms(2026, 1, 1, 0, 5, 0).unwrap().timestamp();
     u64::try_from(base + offset_secs).unwrap()
-}
-
-/// A fake `SubstrateActor` exercising only `run_scheduled`, for
-/// `run_due_schedules`'s own tests. `error`/`delay` are behind a
-/// `Mutex` so a test can flip the outcome between two calls in the
-/// same actor, the same shape `DurableTestActor` uses.
-#[derive(Debug, Default)]
-pub(super) struct ScheduledActor {
-    pub(super) error: Mutex<Option<String>>,
-    pub(super) delay: Option<Duration>,
-}
-
-#[async_trait::async_trait]
-impl SubstrateActor for ScheduledActor {
-    async fn apply_plan(&self, _plan: syneroym_sdk::DeploymentPlan) -> Result<(), String> {
-        unimplemented!("not exercised by schedule tests")
-    }
-    async fn write_bindings(
-        &self,
-        _write: BindingWrite,
-    ) -> Result<Vec<BindingWriteOutcome>, String> {
-        unimplemented!("not exercised by schedule tests")
-    }
-    async fn restart(&self, _service_id: String, _generation: u64) -> Result<(), String> {
-        unimplemented!("not exercised by schedule tests")
-    }
-    async fn renew_cert(
-        &self,
-        _service_id: String,
-        _generation: u64,
-        _instance_certificate: String,
-    ) -> Result<(), String> {
-        unimplemented!("not exercised by schedule tests")
-    }
-    async fn instance_identity(
-        &self,
-        _service_id: &str,
-    ) -> Result<syneroym_sdk::InstanceIdentity, String> {
-        unimplemented!("not exercised by schedule tests")
-    }
-    async fn held_generation(&self, _app_instance_id: &str) -> Result<Option<u64>, String> {
-        unimplemented!("not exercised by schedule tests")
-    }
-    async fn run_scheduled(
-        &self,
-        _service_id: String,
-        _generation: u64,
-        _interface: String,
-        _method: String,
-        _params_json: Option<String>,
-    ) -> Result<(), String> {
-        if let Some(delay) = self.delay {
-            tokio::time::sleep(delay).await;
-        }
-        if let Some(e) = self.error.lock().unwrap().clone() {
-            return Err(e);
-        }
-        Ok(())
-    }
 }
 
 pub(super) fn run_decision(

@@ -111,6 +111,7 @@ fn tcp_service(
             health_check: None,
             assets: None,
             visibility,
+            wake: None,
         },
         depends_on,
         placement: Some(PlacementSelector::Substrate(SubstrateAlias::new(alias))),
