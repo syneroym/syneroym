@@ -112,7 +112,11 @@ pub trait EndpointStorage: Send + Sync {
     async fn load_all_deploy_facts(&self) -> Result<Vec<(String, DeployFacts)>>;
     /// Record what a deploy said `service_id` is, its declared health
     /// check if any, the canonical content hash of what was actually
-    /// installed, its declared visibility, and its wake spec if any (upsert).
+    /// installed, its declared visibility, and its wake spec if any (upsert --
+    /// a redeploy that drops the check writes `None`, clearing it by
+    /// construction; `manifest_hash` is written only on full deploy
+    /// success, so a half-failed deploy is never deduplicated on the next
+    /// attempt).
     async fn save_deploy_facts(&self, service_id: &str, facts: &DeployFacts) -> Result<()>;
     /// Forget `service_id`'s deploy facts. Idempotent.
     async fn remove_deploy_facts(&self, service_id: &str) -> Result<()>;

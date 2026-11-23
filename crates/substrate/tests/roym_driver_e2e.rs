@@ -192,7 +192,7 @@ async fn two_nodes_reach_agreement_through_driver_without_manual_sync() {
 }
 
 #[tokio::test]
-async fn stopped_quote_author_restarts_and_countersigns_via_reload_path() {
+async fn stopped_quote_author_restarts_and_countersigns() {
     let _guard = common::serial_guard().await;
     let _ = ring::default_provider().install_default();
     if !roym_artifacts_present() {
@@ -251,8 +251,7 @@ async fn stopped_quote_author_restarts_and_countersigns_via_reload_path() {
         node_y.rpc_ok("agreement.accept", json!({ "quote_record_id": quote_record_id })).await;
     let accept_msg = accept["message_id"].as_str().unwrap().to_string();
 
-    // Start X again; on restart its wake sees Reload, rescans conversations, and
-    // countersigns
+    // Start X again; on restart its wake countersigns with no caller invocation
     node_x.resume(None).await;
     node_x.wait_for_proxy().await;
     assert!(wait_delivered(&node_y, &accept_msg).await, "accept delivered to X");
