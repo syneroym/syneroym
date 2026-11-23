@@ -6,7 +6,7 @@ crates/app_supervisor/src/service/tests/resident_loop.rs 961
 crates/app_supervisor/src/service/tests/schedules.rs 802
 crates/app_supervisor/src/service/tests/verbs.rs 988
 crates/control_plane/src/service/orchestration/tests/app_instance.rs 1368
-crates/control_plane/src/service/orchestration/tests/assets.rs 899
+crates/control_plane/src/service/orchestration/tests/assets.rs 890
 crates/control_plane/src/service/orchestration/tests/deploy.rs 1152
 crates/control_plane/src/service/orchestration/tests/helpers.rs 801
 crates/control_plane/src/service/orchestration/tests/rollback.rs 803
@@ -22,8 +22,7 @@ crates/roym_web/tests/dual_build_parity/profile.rs 1112
 crates/roym_web/tests/dual_build_parity/transaction.rs 821
 crates/sandbox_wasm/src/engine/tests.rs 821
 crates/sandbox_wasm/tests/abac_integration.rs 809
-crates/substrate/tests/gateway_session_e2e.rs 1411
-crates/substrate/tests/guest_http_e2e.rs 949
-crates/substrate/tests/http_passthrough_e2e.rs 801
+crates/substrate/tests/gateway_session_e2e.rs 1408
+crates/substrate/tests/guest_http_e2e.rs 946
 crates/ucan/src/token/tests.rs 1087
 

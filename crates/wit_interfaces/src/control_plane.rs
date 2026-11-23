@@ -44,7 +44,8 @@ impl DeployManifest {
 
 #[expect(
     clippy::derivable_impls,
-    reason = "generated WIT type cannot have derive(Default) added directly to its struct declaration"
+    reason = "generated WIT type cannot have derive(Default) added directly to its struct \
+              declaration"
 )]
 impl Default for ServiceConfig {
     fn default() -> Self {

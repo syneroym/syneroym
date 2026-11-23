@@ -165,27 +165,8 @@ impl ControlPlaneService {
         // type is always present, and a redeploy that drops the probe
         // writes a row with a `NULL` `health_check_json`, clearing it by
         // construction.
-        let health_check_json = manifest
-            .config
-            .health_check
-            .as_ref()
-            .map(serde_json::to_string)
-            .transpose()
-            .map_err(|e| format!("Failed to serialize health check: {e}"))?;
-        let wake_json = manifest
-            .config
-            .wake
-            .as_ref()
-            .map(|w| serde_json::to_string(&self::manifest::model_wake_spec(w)))
-            .transpose()
-            .map_err(|e| format!("Failed to serialize wake: {e}"))?;
-        let facts = DeployFacts {
-            service_type: service_type_str(service_type).to_string(),
-            health_check_json,
-            manifest_hash: Some(incoming_hash.to_string()),
-            visibility: Some(validated.visibility.as_str().to_string()),
-            wake_json,
-        };
+        let facts =
+            serialize_deploy_facts(service_type, manifest, incoming_hash, validated.visibility)?;
         if let Err(e) = self.registry.set_deploy_facts(service_id.to_string(), facts).await {
             self.undeploy_and_rollback_late_failure(
                 service_id,
@@ -209,7 +190,38 @@ impl ControlPlaneService {
         );
         Ok(())
     }
+}
 
+fn serialize_deploy_facts(
+    service_type: AppServiceType,
+    manifest: &DeployManifest,
+    incoming_hash: &str,
+    visibility: AppVisibility,
+) -> Result<DeployFacts, String> {
+    let health_check_json = manifest
+        .config
+        .health_check
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()
+        .map_err(|e| format!("Failed to serialize health check: {e}"))?;
+    let wake_json = manifest
+        .config
+        .wake
+        .as_ref()
+        .map(|w| serde_json::to_string(&manifest::model_wake_spec(w)))
+        .transpose()
+        .map_err(|e| format!("Failed to serialize wake: {e}"))?;
+    Ok(DeployFacts {
+        service_type: service_type_str(service_type).to_string(),
+        health_check_json,
+        manifest_hash: Some(incoming_hash.to_string()),
+        visibility: Some(visibility.as_str().to_string()),
+        wake_json,
+    })
+}
+
+impl ControlPlaneService {
     /// Author-time `strict:` warning pass: the service's own database is
     /// the collection inventory (a manifest declares no collection list;
     /// that comes from the guest's `init()` or native calls), so this is
