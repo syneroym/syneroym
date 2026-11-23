@@ -1487,7 +1487,7 @@ The owner answered that plan's questions Q1 to Q8 on 2026-11-23; the rows below 
 - **Decline note visible with no salt (D-C3c-9).** `deal-decline` fields are visible, and `code` is an optional visible field.
 - **`formed_as` in progress snapshot (D-C3c-10).** Visible `formed_as: quote | as-listed-instant | as-listed-confirmed` in every `AgreementProgressPayload`.
 - **`deal.as-listed-status` (D-C3c-13).** New local-only method for the owner's Hub to inspect waiting enquiries and instant cap status.
-- **"Open" for instant limits counts in-flight quotes (P12).** In addition to open formed agreements, `in_flight_instant(listing)` counts answered quotes whose quote has no `decision:` fence yet and is not expired, bounding instant agreements to `instant_cap` and one per counterparty. The remaining race between two syncs at the exact same instant passing the cap by at most one is accepted (Q6).
+- **"Open" for instant limits counts in-flight quotes (P12).** In addition to open formed agreements, `in_flight_instant(listing)` counts answered quotes whose quote has no `decision:` fence yet and has not ended (not expired, not declined, not `not-formed`; P19), bounding instant agreements to `instant_cap` and one per counterparty. The remaining race between two syncs at the exact same instant passing the cap by at most one is accepted (Q6).
 - **Slot offerings show "Ask" alone on the Hub (Q4).** Records and services support slots, but cross-node slot query is deferred (M08D).
 
 ## Close-out

@@ -4,15 +4,16 @@
 owner, who answers the questions in section 2.1. You do not have the
 planning conversation. This plan is meant to stand alone.*
 
-**Status: plan written, 2026-11-23, by Claude Opus 5.5. Not reviewed yet.
-The owner has not answered the questions in section 2.1. The plan is
-written for the recommended answer of each.**
+**Status: plan written, 2026-11-23, by Claude Opus 5.5, and reviewed in
+three rounds ([slice-c3c-review.md](slice-c3c-review.md)). The owner
+answered the questions in section 2.1 on 2026-11-23, and changed Q1 to two
+PRs the same day.**
 
 **Size and PRs.** [task.md](task.md) sizes C3c as L. Checked against the
 code, it is larger than any earlier M08C slice, because one part of it is
 platform work that the change docs did not size: nothing on a node can run
 a Roym method on its own today (section 2.2, point 1). This plan splits C3c
-into three parts. Each part is one PR that passes `mise run verify` (Q1):
+into two parts. Each part is one PR that passes `mise run verify` (Q1):
 
 - **C3c1 — The driver (M).** A service may declare a **wake** in its
   manifest. The substrate that hosts the service calls the wake method when
@@ -22,24 +23,26 @@ into three parts. Each part is one PR that passes `mise run verify` (Q1):
   deal moves on both nodes with no Hub open. An ADR records the wake (Q3).
   Branch: `feat/m08c-c3c-agree-as-listed` (this branch; it holds the plan
   commit).
-- **C3c2 — The owner's side (L).** The listing's new fields, the pure
-  function `terms_from_listing`, the enquiry's `as_listed`,
-  `quote.from-listing` with its rules (current version, consent time,
-  instant limits, signing fallback), decline codes, `formed_as` in every
-  progress snapshot, the directory's `can_agree_as_listed`, and the owner's
-  Hub parts (listing form, confirm, the limit line, the cancel action).
-  The counterparty still accepts by hand. Branch:
-  `feat/m08c-c3c2-owner-side`, cut from `main` after C3c1 merges.
-- **C3c3 — The counterparty's side (M).** The automatic acceptance with its
-  checks immediately before signing, the Hub's "Agree as listed" on a
-  directory hit with every term on the screen, the waiting, ended and
-  refused lines, and the demo. Branch: `feat/m08c-c3c3-counterparty-side`,
-  cut from `main` after C3c2 merges.
+- **C3c2 — Agree as listed (L).** Both nodes of the deal, in one PR:
+  - *The owner's side:* the listing's new fields, the pure function
+    `terms_from_listing`, the enquiry's `as_listed`, `quote.from-listing`
+    with its rules (current version, consent time, instant limits, signing
+    fallback), decline codes, `formed_as` in every progress snapshot, the
+    directory's `can_agree_as_listed`, and the owner's Hub parts (listing
+    form, confirm, the limit line, the cancel action).
+  - *The counterparty's side:* the automatic acceptance with its checks
+    immediately before signing, the Hub's "Agree as listed" on a directory
+    hit with every term on the screen, the waiting, ended and refused
+    lines, and the demo.
 
-This follows task.md's own advice for C3c: "Review it in two passes, by
-node: the owner's side … and the counterparty's side". The driver is a
-third pass because it is platform code, and its reviewer asks a different
-question.
+  Branch: `feat/m08c-c3c2-agree-as-listed`, cut from `main` after C3c1
+  merges.
+
+task.md asks for C3c to be reviewed "in two passes, by node: the owner's
+side … and the counterparty's side". C3c2 keeps that advice inside one PR:
+its code review reads the owner's side first (section 6.2, steps 1 to 5),
+then the counterparty's side (steps 6 to 8). The driver is its own PR
+because it is platform code, and its reviewer asks a different question.
 
 **Base.** Every file path and line number below was checked on `main` at
 `8fafab15` (2026-11-23). Links are relative to this folder.
@@ -146,31 +149,32 @@ two fields are new (`as_listed` in the enquiry, `formed_as` in the
 snapshot) and one is new in a decline (`code`). To make the steps run
 when the cards arrive, C3c first adds a driver on each node.
 
-### Why C3c is split (Q1)
+### Why C3c is split in two (Q1)
 
 - **C3c1 is platform work.** It adds a field to the app manifest, a
   deploy fact on the substrate, a substrate worker and one `transaction`
   method. Its reviewer's question is "does every node run `transaction.sync`
   for every changed conversation, soon, safely, with a bound on each call,
   in both the native and the WASM build". It changes no record. Today's
-  deals move sooner; nothing else changes.
-- **C3c2 is the owner's node.** Its reviewer's question is "does the
-  owner's node answer only from the current version, only while the
-  consent holds, only within the instant limits, and make at most one quote
-  per tap". The counterparty still accepts by hand, so a mistake here
-  cannot sign anything on the counterparty's behalf.
-- **C3c3 is the counterparty's node.** Its reviewer's question is "does
-  the node sign only when the terms are exactly the terms the person saw,
-  checked immediately before signing, at most once per tap". It comes last,
-  so that the automatic signature is added on top of a path that already
-  works by hand.
-- The order is safe and the other order is not: an automatic acceptance
-  before the owner's rules exist would sign against quotes that no rule
-  checked.
+  deals move sooner; nothing else changes. Everything in C3c2 depends on
+  it, so it merges first.
+- **C3c2 is the deal, on both nodes.** Its code review has two passes:
+  - The owner's side: "does the owner's node answer only from the current
+    version, only while the consent holds, only within the instant limits,
+    and make at most one quote per tap".
+  - The counterparty's side: "does the node sign only when the terms are
+    exactly the terms the person saw, checked immediately before signing,
+    at most once per tap".
+- **Why the two sides are one PR.** The product is not released, so a
+  state between the two sides that nobody can use is no loss. In one PR,
+  the automatic acceptance never exists without the owner's rules next to
+  it, so the order question of a split goes away. The steps still build
+  the owner's side first: the counterparty's tests need a quote from the
+  owner's node.
 - Sizes (production code; tests are about the same again): C3c1 about
   650 lines (platform about 450, `transaction` about 200); C3c2 about
-  1,300 (core 450, `transaction` 550, `catalog` and `directory` 80, Hub
-  220); C3c3 about 650 (`transaction` 250, Hub 400).
+  1,950 (core 450, `transaction` 800, `catalog` and `directory` 80, Hub
+  620).
 
 ## How this is shown to an end user
 
@@ -182,7 +186,7 @@ C3c1:
 - Before this change, the deal waited until the shop owner opened that chat.
 - Nothing on the screen is new.
 
-C3c2:
+C3c2, the shop owner:
 
 - A shop owner edits an offering in the Hub. A new part "Agree as listed"
   asks: "Agree at once (instant)" or "I confirm each one", the texts for
@@ -195,10 +199,8 @@ C3c2:
   offering is waiting for you: it reached its limit of 20 open instant
   agreements", and a button to cancel the open instant agreements of that
   offering.
-- The person who agrees still taps "Accept" on the quote in this part. The
-  one-tap path is C3c3.
 
-C3c3:
+C3c2, the person who agrees:
 
 - A person finds an offering in the directory, for example "a sack of
   wheat, ₹1,200". The hit has a button "Agree as listed".
@@ -220,9 +222,10 @@ How a developer can see it work:
   `transaction.sync` call by the test.
 - `cargo nextest run -p syneroym-roym-transaction as_listed` (C3c2): the
   owner's rules (consent expired, offering withdrawn, version changed,
-  instant cap, one per counterparty, signing fallback) and `formed_as`.
+  instant cap, one per counterparty, signing fallback), `formed_as`, and
+  the counterparty's checks before it signs.
 - `cargo nextest run -p syneroym-substrate --test roym_as_listed_e2e`
-  (C3c3): an instant offering reaches `agreed` from one `enquiry.set` call
+  (C3c2): an instant offering reaches `agreed` from one `enquiry.set` call
   on the counterparty's node, with no other call on either node.
 
 ## 2. Points for the owner
@@ -232,20 +235,27 @@ How a developer can see it work:
 Each question has options and a recommendation. The plan is written for
 the recommended answer.
 
-**Owner answers, 2026-11-23.** Q1, Q2, Q3, Q4, Q7, Q8: agree with (a). Q8 holds only once P16 is settled. Q5: (a), but only with P11 fixed. Q6: do not accept (a) as written; count in-flight quotes (P12), then (a) is fine.
+**Owner answers, 2026-11-23.** Q1: (b), two PRs (changed from (a) the same day). Q2, Q3, Q4, Q7, Q8: agree with (a). Q7 is restated for two PRs. Q8 holds only once P16 is settled (P20 settles it). Q5: (a), but only with P11 fixed. Q6: do not accept (a) as written; count in-flight quotes (P12), then (a) is fine.
 
-#### Q1. Split C3c into C3c1 (driver), C3c2 (owner's side) and C3c3 (counterparty's side)?
+#### Q1. How many PRs?
 
-Owner answer: (a), 2026-11-23. Three PRs, in that order: C3c1 (driver), C3c2 (owner's side), C3c3 (counterparty's side).
+Owner answer: (b), 2026-11-23. Two PRs: C3c1 (the driver), then C3c2
+(agree as listed, both sides). The owner first chose (a), then changed it
+the same day: the product is not released, so a working system between
+PRs is not needed.
 
-- **(a) Three PRs, in that order.** Recommended: each part has its own
-  reviewer question (section 1, "Why C3c is split"), each leaves a working
-  system, and the automatic signature comes last.
-- (b) Two PRs: the driver, then all of agree as listed. The second PR is
-  about 1,950 lines of production code across `roym_core`, three services
-  and the Hub, and its review mixes the two nodes, which task.md asks to
-  review apart.
+- (a) Three PRs: the driver, the owner's side, the counterparty's side.
+  Each part has its own reviewer question, each leaves a working system,
+  and the automatic signature comes last. Costs one more PR cycle (review
+  rounds, close-out, `mise run verify`).
+- **(b) Two PRs: the driver, then all of agree as listed.** Chosen. The
+  driver is platform code with its own reviewer question, and the rest
+  depends on it. The second PR is about 1,950 lines of production code
+  across `roym_core`, three services and the Hub. Its code review reads
+  the two nodes in two passes (section 1, "Why C3c is split in two").
 - (c) One PR. About 2,600 lines of production code and as many of tests.
+  A diff this large gets a weaker review, and the automatic signature is
+  the part that most needs a careful one.
 
 #### Q2. The driver: how does a node run `transaction.sync` with no Hub?
 
@@ -390,37 +400,38 @@ a Hub sync), and each can see `cap - 1` open + in-flight quotes.
 
 #### Q7. Demo
 
-Owner answer: (a), 2026-11-23. C3c1: - none; C3c2: - none; C3c3: extend story 50 with a deal agreed as listed.
+Owner answer: (a), 2026-11-23, for three PRs: C3c1 `- none`, the
+counterparty's PR extends story 50. With two PRs (Q1) this reads: C3c1
+`- none`; C3c2 extends story 50 with a deal agreed as listed.
 
 The rule: a change a viewer can see gets a story.
 
 - **(a) C3c1: `- none` (a deal that moves with the Hub closed shows no new
-  screen; the two-node test proves it). C3c2: `- none` (the owner's parts
-  are reached only through a tap, which comes in C3c3; Hub tests cover the
-  form). C3c3: extend story 50 with a deal agreed as listed.** In story 50,
-  Bob already publishes a listing and Alice finds it. C3c3 adds: Bob
-  publishes a second listing, "a sack of wheat, ₹1,200", `instant`,
-  `not_limited`, with deal terms; Alice taps "Agree as listed", sees the
-  terms and the consent time, taps, sees "waiting", then "Agreed".
-  Recommended: task.md asks to extend story 50.
-- (b) As (a), and C3c2 extends story 50 with Bob's listing form and a
-  confirm made from a `roymctl` enquiry. It shows the owner's screens one
-  PR earlier, at the cost of a story step that C3c3 replaces.
+  screen; the two-node test proves it). C3c2: extend story 50 with a deal
+  agreed as listed.** In story 50, Bob already publishes a listing and
+  Alice finds it. C3c2 adds: Bob publishes a second listing, "a sack of
+  wheat, ₹1,200", `instant`, `not_limited`, with deal terms; Alice taps
+  "Agree as listed", sees the terms and the consent time, taps, sees
+  "waiting", then "Agreed". Recommended: task.md asks to extend story 50.
+- (b) As (a), and C3c2 also shows Bob's listing form and a confirm-first
+  offering that Bob confirms. Longer story; the confirm path is already
+  covered by Hub tests and Playwright.
 
 #### Q8. A slot that is removed before the owner answers
 
-Owner answer: (a), 2026-11-23, with P16 settled. The owner's node declines the enquiry with the hook's error code when the prepare hook refuses on the owner's node.
+Owner answer: (a), 2026-11-23, with P16 settled (P20 settles it). The owner's node declines the enquiry with the hook's error code when the prepare hook refuses on the owner's node.
 
 `terms_from_listing` builds the slot terms from `as_listed.slot`, and
-`issue_quote` (P16) calls the scheduling extension's `prepare` hook to
-verify the slot. If the owner removed the slot after the tap, `prepare`
+`answer_as_listed` calls the scheduling extension's `prepare` hook to
+verify the slot (`check_author_slots`, D-C3c-12). If the owner removed the slot after the tap, `prepare`
 refuses with `no-such-slot` or `slot-not-in-listing`.
 
 - **(a) The owner's node declines the enquiry, with the hook's code as the
   decline `code`.** Recommended: the person learns at once that the slot is
-  gone, in their own language; the codes already exist. Settled in P16:
-  `issue_quote` runs `hooks::prepare` on the owner's node for author
-  commitments before signing, declining the enquiry if it returns an error.
+  gone, in their own language; the codes already exist. Settled in P16 and
+  P20: `answer_as_listed` runs the prepare hook on the owner's node for
+  author commitments before the `answer:` fence, and declines the
+  enquiry when the hook refuses. `quote.set` is unchanged.
 - (b) The enquiry waits for the owner, who answers with a normal quote or
   declines by hand. The person waits for a slot that no longer exists.
 
@@ -530,12 +541,12 @@ refuses with `no-such-slot` or `slot-not-in-listing`.
 | Change doc | Criterion | Part | Where it is proved (section 7) |
 | --- | --- | --- | --- |
 | roym-agreements | AG-50 | C3c1: every node runs `transaction.sync` for a changed conversation with no session and no Hub, within a bound; no `conversation` → `transaction` call | two-node `roym_driver_e2e`; service `tests/drive.rs` (the bound per call); substrate unit tests of the wake worker |
-| roym-agreements | AG-45 | C3c2: `listing.set`'s refusals; "open" (open agreements + in-flight quotes, P12); the cap; one per counterparty; the signing fallback; a full slot ends `not-formed` with `slot-taken`; the owner's Hub (form, limit line, cancel). C3c3: the counterparty's waiting line | unit `listing/as_listed` tests; service `tests/as_listed_owner.rs`; Hub unit tests; Playwright (C3c3) |
-| roym-agreements | AG-49 | C3c2: the owner's node declines `consent-expired` and `offering-withdrawn`, answers from the current version. C3c3: the counterparty's three checks immediately before signing; a refused first contact shows as refused | service `tests/as_listed_owner.rs`, `tests/as_listed_accept.rs`; Playwright (C3c3) |
+| roym-agreements | AG-45 | C3c2: `listing.set`'s refusals; "open" (open agreements + in-flight quotes, P12); the cap; one per counterparty; the signing fallback; a full slot ends `not-formed` with `slot-taken`; the owner's Hub (form, limit line, cancel); the counterparty's waiting line | unit `listing/as_listed` tests; service `tests/as_listed_owner.rs`; Hub unit tests; Playwright |
+| roym-agreements | AG-49 | C3c2: the owner's node declines `consent-expired` and `offering-withdrawn`, answers from the current version; the counterparty's three checks immediately before signing; a refused first contact shows as refused | service `tests/as_listed_owner.rs`, `tests/as_listed_accept.rs`; Playwright |
 | roym-agreements | AG-51 | C3c2: every snapshot carries `formed_as`, the same in every snapshot | service `tests/as_listed_owner.rs`; unit `progress` and presentation tests |
-| roym-agreements | AG-44 | C3c2: `terms_from_listing` (one row per refusal and per mapping row), `enquiry.set`'s `as_listed`, `quote.from-listing`. C3c3: the automatic acceptance, build and compare generated from the structs, the tap screen, `viewed_via_mt` | unit `as_listed` tests; service `tests/as_listed_accept.rs`; two-node `roym_as_listed_e2e`; Playwright story 50 and `roym-hub.spec.ts` |
-| roym-value-exchange | VX-54 | C3c2 and C3c3, through AG-44, AG-45, AG-49 | as above |
-| roym-extensions | EX-18 | C3c2: a one-shot offering marked `not_limited` can be `instant`; C3c3: it is agreed as listed | service `tests/as_listed_owner.rs`; two-node `roym_as_listed_e2e` |
+| roym-agreements | AG-44 | C3c2: `terms_from_listing` (one row per refusal and per mapping row), `enquiry.set`'s `as_listed`, `quote.from-listing`; the automatic acceptance, build and compare generated from the structs, the tap screen, `viewed_via_mt` | unit `as_listed` tests; service `tests/as_listed_accept.rs`; two-node `roym_as_listed_e2e`; Playwright story 50 and `roym-hub.spec.ts` |
+| roym-value-exchange | VX-54 | C3c2, through AG-44, AG-45, AG-49 | as above |
+| roym-extensions | EX-18 | C3c2: a one-shot offering marked `not_limited` can be `instant`, and it is agreed as listed | service `tests/as_listed_owner.rs`; two-node `roym_as_listed_e2e` |
 
 Not met here: AG-46 to AG-48 and AG-52 (C6). The slot picker on the Hub
 (Q4, a backlog row). The parts that task.md section 5 gives to M08D (the
@@ -559,7 +570,7 @@ mode in the intent record, variants, the offering page).
   `instant_cap` and `deal_terms`** (D-C3c-8). They are signed and travel
   in the listing envelope to directories. A listing that does not set them
   keeps today's signed bytes (each is left out at its default).
-- **C3c3: the counterparty's node sends its acceptance half on its own**,
+- **C3c2: the counterparty's node sends its acceptance half on its own**,
   during `transaction.sync`, when the checks pass. The half is the same
   record as a person's.
 
@@ -586,11 +597,11 @@ mode in the intent record, variants, the offering page).
   - `agreement.get`, `.list` and `.progress` views carry `formed_as`
     (C3c2).
   - `enquiry.get`, `.list` and `transaction.thread` views carry the
-    counterparty's local as-listed state (C3c3).
+    counterparty's local as-listed state (C3c2).
 - **Backup:** `transaction`'s `SCHEMA_VERSION` goes from 7 to 8
   ([app.rs:58](../../../../crates/roym_transaction/src/app.rs#L58)),
   because stored snapshots gain a required field. New: the `as_listed`
-  collection and the ledger kinds `answer:` and `autoaccept:` (C3c2, C3c3).
+  collection and the ledger kinds `answer:` and `autoaccept:` (C3c2).
   `catalog`'s version stays: the new listing fields have defaults, so an
   older bundle still reads.
 - **`transaction.sync`'s counts** can be 0 for a card the wake already
@@ -612,7 +623,7 @@ mode in the intent record, variants, the offering page).
 - **C3c2: the owner's node may decline an enquiry with a signed
   `deal-decline` on its own**, with `consent-expired`, `offering-withdrawn`
   or a slot code (Q8).
-- **C3c3: the counterparty's node may sign an acceptance with no person
+- **C3c2: the counterparty's node may sign an acceptance with no person
   present**, only after the tap and only when the checks pass.
 
 ### Stays the same
@@ -623,7 +634,7 @@ mode in the intent record, variants, the offering page).
   built from a listing is an ordinary quote: `answers.kind = "enquiry"`,
   ordinary disclosures, ordinary card.
 - The normal enquiry, quote and accept path, in the Hub and in `roymctl`.
-  Stories 40, 50 and 60 keep their steps (C3c3 adds steps to story 50).
+  Stories 40, 50 and 60 keep their steps (C3c2 adds steps to story 50).
 - `conversation`, `profile` and `scheduling` code, and every WIT
   interface. The wake calls an existing export (`api.invoke`).
 - The supervisor's schedules (ADR-0023 §6).
@@ -762,10 +773,9 @@ for each target (service_id, spec):
                       timeout: Some(spec.timeout_ms) })
             match res:
                 Ok(val) => {
-                    // P14: if DriveOutput indicates more pending work, wake on next loop
-                    if val.get("pending").and_then(|p| p.as_u64()).unwrap_or(0) > 0 {
-                        state.has_pending = true;
-                    }
+                    // the wake reply contract (ADR-0031), P14, P18
+                    for w in val["warnings"] (strings): tracing::warn!(service_id, "{w}")
+                    if val["again"] == true: state.has_pending = true
                 }
                 Err(err) => tracing::warn!(service_id, error = %err, "wake call failed")
 ```
@@ -786,8 +796,13 @@ for each target (service_id, spec):
 - `state.running` is guarded by an RAII guard / `JoinHandle` tracking so that
   a task panic or cancellation resets `running` to `false` and does not wedge
   the worker (P6).
-- If `DriveOutput.pending > 0`, the worker marks `has_pending` so it wakes
-  again on the next 1-second loop tick rather than waiting 30 seconds (P14).
+- **The wake reply contract** (ADR-0031). A wake method's reply may hold
+  two fields, and the worker reads only these: `again: true` makes it call
+  once more on the next 1-second tick, not after `every_secs` (P14); each
+  string in `warnings` is logged with `tracing::warn!`. A reply without
+  them is fine. `transaction.drive` sets `again` only after a full batch
+  with rows left (P18), so a backlog drains at about 8 conversations per
+  second and an idle node calls once per `every_secs`.
 - A burst of messages gives one call per second at most: the 1-second
   loop is the debounce.
 - The tick of the loop is 1 second. `every_secs` is at least 5, so a
@@ -831,16 +846,38 @@ pub struct DriveOutput {
     pub synced: u32,          // conversations synced by this call
     pub pending: u32,         // conversations left for the next call
     pub rescanning: bool,     // a full pass after `reload` is still running
+    /// The wake reply contract (ADR-0031): call again on the next loop tick.
+    /// True only when this call took a full batch and rows are left (P18).
+    pub again: bool,
+    /// The wake reply contract: the worker logs each one with `tracing`.
+    /// The guest has no logger of its own.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+}
+
+/// One row of `DRIVE_PENDING`, keyed by the conversation id.
+#[derive(Debug, Serialize, Deserialize)]
+struct PendingRow {
+    since: u64,
+    #[serde(default)]
+    failures: u32,
 }
 
 pub const MAX_DRIVE_CONVERSATIONS: usize = 8;
+pub const MAX_DRIVE_FAILURES: u32 = 5;
 pub const DRIVE_EVENT_READ: u32 = 500;
 pub const DRIVE_RESCAN_PAGE: u64 = 16;
 ```
 
-In `SyncOutput` ([sync.rs](../../../../crates/roym_transaction/src/app/sync.rs)),
-add `pub more: bool` (true when `scanned == SYNC_WINDOW`), so `drive` knows
-when a conversation has further unread messages in the window (P13).
+In `SyncOutput` ([sync.rs:49](../../../../crates/roym_transaction/src/app/sync.rs#L49)),
+add `pub more: bool`, so `drive` knows when a conversation has further
+unread messages (P13). It is true only when `scanned == SYNC_WINDOW` **and**
+the stored `last_seq` grew in this sync (P18). `sync_at` sets `last_seq`
+back to just before the first declined or deferred message
+([sync.rs:105](../../../../crates/roym_transaction/src/app/sync.rs#L105)
+to `:122`). So a full window that starts with such a message reads the same
+window again on every sync. Then `more` is false, and the row is not kept
+for a quick re-run.
 
 ```text
 drive_at(host, now):
@@ -850,7 +887,7 @@ drive_at(host, now):
                                   // (a new collection, local, not backed up; registered in ensure_collections, P7)
     match AppEvents::read(host, state.event_cursor, DRIVE_EVENT_READ):
         events(list, next):  for e in list where e.kind == "conversation.message":
-                                 put DRIVE_PENDING[e.subject] = {since: now}
+                                 put DRIVE_PENDING[e.subject] = {since: now, failures: 0}
                              state.event_cursor = next
         reload(head):        state.event_cursor = head
                              state.rescan_offset = Some(0)   // events were lost
@@ -863,17 +900,41 @@ drive_at(host, now):
     // P7: sort in memory, oldest `since` first (the data layer query has no sort order)
     sort candidates in memory by `since` ascending
     take at most MAX_DRIVE_CONVERSATIONS from candidates
-    for each (conv, cand_since): match sync_direct(host, conv, now):
-                  Ok(out) if out.more -> keep DRIVE_PENDING[conv] = {since: now} // P13: more in window
+    for each (conv, cand): match sync_direct(host, conv, now):
+                  Ok(out) if out.more -> put DRIVE_PENDING[conv] = {since: now, failures: 0}
+                                         // P13, P18: more to read, and last_seq grew
                   Ok(_) | Err(NotDirect) ->
-                      // P13: compare-and-delete: delete only if `since == cand_since`, preserving concurrent event marks
-                      delete DRIVE_PENDING[conv] if since == cand_since
-                  Err(other)              -> keep it; the next call tries again
-    store state; return counts (including pending count for worker, P14)
+                      // P13: compare-and-delete: delete only if `since == cand.since`,
+                      // so a mark put by a concurrent call is kept
+                      delete DRIVE_PENDING[conv] if since == cand.since
+                  Err(other) ->          // P18: never retried at the head of the queue
+                      if cand.failures + 1 >= MAX_DRIVE_FAILURES:
+                          delete DRIVE_PENDING[conv] if since == cand.since
+                          warnings.push("gave up on <conv>: <code>")
+                      else:
+                          put DRIVE_PENDING[conv] = {since: now, failures: cand.failures + 1}
+                          // only if since == cand.since; else a newer mark is kept
+    pending = count of DRIVE_PENDING
+    again = synced == MAX_DRIVE_CONVERSATIONS && pending > 0       // P18
+    store state; return {synced, pending, rescanning, again, warnings}
 ```
 
+- **A row that keeps failing** (P18). On an error other than `NotDirect`,
+  the row is put again with `since = now` and one more failure. So it moves
+  to the end of the queue and never blocks the other rows. After
+  `MAX_DRIVE_FAILURES` (5) it is deleted, and `warnings` names it; the
+  worker logs it. A new message event in that conversation puts the row
+  again with `failures: 0`. Example: a conversation that was deleted is
+  refused by `conversation.changes` on every sync; it is tried five times,
+  then dropped.
+- **When the worker calls again at once** (P14, P18). Only when `again` is
+  true: the call took a full batch and rows are left. A call that synced
+  fewer than 8 conversations has no backlog to work through, so the worker
+  waits for the next event or for `every_secs`. So rows that fail, or a
+  window that does not move, never make the wake run every second.
+
 - **Timed work** is work that needs a sync with no new message: a quote
-  that expires (`tick`), a release retry, and in C3c2 and C3c3 an as-listed
+  that expires (`tick`), a release retry, and in C3c2 an as-listed
   enquiry whose consent time passes. The interval wake (30 s) gives these a
   trigger. `recover_deciding_rows` runs once at the start of `drive_at`
   (P14), avoiding 8 duplicate node-wide scans. For per-conversation work,
@@ -889,8 +950,18 @@ drive_at(host, now):
   Split it: `sync_at` keeps its reply; the inner function returns
   `SyncError::NotDirect`, and `drive` matches on that, never on the text
   (C1 R3).
+- **Recovery runs once per `drive`, not once per sync** (P14, P21). Today
+  `sync_at` calls `recover_deciding_rows` at the end of every sync
+  ([sync.rs:135](../../../../crates/roym_transaction/src/app/sync.rs#L135)),
+  and the recovery reads every agreement of the node. So the call moves out
+  of the inner function: `sync_direct` (the inner function) does not call
+  it, and `sync_at` calls it after the inner function returns. So
+  `transaction.sync` keeps today's behaviour, and one `drive` runs the
+  recovery once, at its start. `confirm_own_reservations` and
+  `tick_conversation_at` stay in the inner function: they are per
+  conversation.
 - **Proactive card extraction** (P4). `sync.rs` is at 759 lines. To prevent
-  breaching the 800-line limit across C3c1, C3c2, and C3c3, proactively
+  breaching the 800-line limit across C3c1 and C3c2, proactively
   extract `file_enquiry_card` and `file_quote_card` into sibling file
   `crates/roym_transaction/src/app/sync/cards.rs` (~140 lines saved).
 - **The bound.** One `drive` call syncs at most 8 conversations and reads
@@ -906,7 +977,7 @@ drive_at(host, now):
 - **`drive` is not in the backup.** `DRIVE_STATE` and `DRIVE_PENDING` are
   local caches: after a restore, the first `reload` starts a full pass.
 
-### C3c2 — The owner's side
+### C3c2, the owner's side
 
 **D-C3c-5. `as_listed` in the enquiry** (`crates/roym_core/src/as_listed.rs`,
 new):
@@ -1190,6 +1261,11 @@ answer_as_listed(host, enquiry, trigger, now) -> Answer:
         // version, which the counterparty's check will not accept (it built from
         // the version it stored).
         Err(reason) -> return Waiting(reason)    // the owner answers by hand
+    // P16, P20: the prepare hook runs here, and only here (not in issue_quote)
+    match check_author_slots(host, &terms):
+        Refused(code) -> return decline(code)    // Q8: no-such-slot, slot-not-in-listing
+        Unavailable   -> return Waiting(SlotCheckFailed)   // the next drive tries again
+        Ok            -> continue
     if trigger == Driver:
         if payload.acceptance == confirm-first:                                  return Waiting(ConfirmFirst)
         // P12: count open agreements + in-flight quotes against instant limits
@@ -1202,9 +1278,7 @@ answer_as_listed(host, enquiry, trigger, now) -> Answer:
     quote_id = derive_quote_id(conversation, owner, next_sequence)
     create answer:<enquiry_record_id> = {state: "answering", quote_id, formed_as, at_secs}
         exists -> return its stored outcome            // another sync won
-    // P16: issue_quote runs hooks::prepare for author commitments
     out = issue_quote(host, enquiry_record_id, quote_id, terms, formed_as, now)
-        prepare hook refuses (Q8) -> decline(code = hook code); put row "declined"
     put answer:<enquiry_record_id> = {state: "answered", quote_id, record_id}
     return Quoted(out)
 ```
@@ -1217,28 +1291,64 @@ answer_as_listed(host, enquiry, trigger, now) -> Answer:
   stored quote when `QUOTES[quote_id]` exists, else signs it. The
   writer's own fence `decision:<quote_id>` then allows at most one
   agreement for that id (C1b).
-- **`issue_quote`** is the body of `set_at` from `prepare_terms` on
-  ([quote_ops.rs:186](../../../../crates/roym_transaction/src/app/quote_ops.rs#L186)
-  to `:231`), moved into a function that takes the quote id and sequence.
-  `set_at` calls it after `resolve_quote_sequence`. So there is one signing
-  path for every quote. In `issue_quote`, for each author commitment with an
-  extension prepare hook, `hooks::prepare` is called on the owner's node
-  (P16). If `hooks::prepare` refuses with an error (e.g. `no-such-slot` or
-  `slot-not-in-listing`), the enquiry is declined with that hook code (Q8).
-  `issue_quote` also checks that the returned window matches the terms window,
-  and writes `formed_as` into the quote's `RecordPointerRow` (D-C3c-10). The
-  new function goes in `quote_ops/issue.rs` (new), because `quote_ops.rs` is at
-  695 lines.
+- **`issue_quote` takes finished `DealTerms`** (P20). It is the body of
+  `set_at` from `validate_and_conceal_terms` on
+  ([quote_ops.rs:187](../../../../crates/roym_transaction/src/app/quote_ops.rs#L187)
+  to `:241`), moved into a function that takes the terms, the quote id,
+  the sequence, `supersedes`, the version count and `formed_as`. It does
+  not run the prepare hook. `set_at` keeps everything before that line as
+  it is today, `prepare_terms` included, and then calls `issue_quote`. So
+  there is one signing path for every quote, and `quote.set` runs the hook
+  once, as today: a normal `quote.set` for a removed slot still returns
+  the hook's error to the owner and declines nothing. The existing
+  `quote.set` test for a removed slot is the guard; keep it unchanged.
+  `issue_quote` writes `formed_as` into the quote's `RecordPointerRow`
+  (D-C3c-10; `None` from `set_at`). It goes in `quote_ops/issue.rs` (new),
+  because `quote_ops.rs` is at 695 lines.
+- **`check_author_slots`** (P16, P20; in `as_listed_ops/answer.rs`). Only
+  `answer_as_listed` calls it. `DealTerms.commitments` is
+  `Vec<Commitment>` ([deal.rs:148](../../../../crates/roym_core/src/deal.rs#L148)),
+  and `hooks::prepare` takes a `&CommitmentInput`
+  ([hooks.rs:280](../../../../crates/roym_transaction/src/app/hooks.rs#L280)).
+  The hook reads only three fields of it: `extension`, `details` and
+  `window`. So split `hooks::prepare` in two: `prepare_window(host,
+  extension, details, window, listing_id)` does the work, and `prepare`
+  becomes a two-line wrapper that passes the `CommitmentInput`'s fields.
+  No conversion from `Commitment` to `CommitmentInput` is needed.
+  `check_author_slots` calls `prepare_window` for each commitment with
+  `giver == QuoteAuthor` and `has_prepare_hook(extension)`
+  ([hooks.rs:52](../../../../crates/roym_transaction/src/app/hooks.rs#L52)):
+  - the hook refuses (a `Refused` error, whose `data.code` is
+    `no-such-slot` or `slot-not-in-listing`): `Refused(code)`, and the
+    enquiry is declined with it (Q8). A refusal with any other code is
+    declined with `slot-not-in-listing`, so the decline code stays in the
+    allowed list (D-C3c-9);
+  - the returned window differs from the commitment's window (built from
+    `as_listed.slot`): `Refused("slot-not-in-listing")`;
+  - the hook cannot be reached (an internal error): `Unavailable`. The
+    enquiry waits, nothing is written, and the next `drive` tries again.
+  It runs before the `answer:` fence and before the instant checks: it
+  only reads, and so a removed slot is declined at the next drive in both
+  modes, not only when the owner confirms. A slot removed after this check
+  and before the counterparty accepts ends `not-formed` with `slot-taken`,
+  as any full slot does (AG-14).
 - **"Open" for the limits and in-flight quotes** (`:313`, P12): an agreement
   on this node with `formed_as == AsListedInstant`, `terms.listing_id == listing`,
   that is not final, has no settlement half in any commitment's `halves`, and
   whose `agreed_at_secs` is less than 7 days ago. In addition,
   `in_flight_instant(listing)` counts `answer:` rows on this node with
   `formed_as == AsListedInstant` and state `answered`, whose quote has no
-  `decision:` fence yet and whose expiry is in the future (`quote_expires_at_secs > now`).
-  The two instant limits check `open_instant + in_flight_instant`. A quote
-  that is never accepted holds a place until it expires (up to 7 days),
-  preventing rapid taps from bypassing the cap before acceptance.
+  `decision:` fence yet and has not ended:
+  `is_deal_ended(quote_id, quote_expires_at_secs, now)` is false
+  ([app.rs:663](../../../../crates/roym_transaction/src/app.rs#L663);
+  P19). That helper already covers expiry, a decline (`declined_at_secs`
+  or `decline:<deal>`), a `not-formed` decision and a terminal agreement.
+  So a quote the counterparty declined frees its place at once; a decline
+  writes `decline:<quote>`, not `decision:`, so the fence check alone
+  would miss it. The two instant limits check `open_instant +
+  in_flight_instant`. A quote that is never answered holds a place until it
+  expires (up to 7 days), so rapid taps cannot pass the cap before
+  acceptance.
   `open_instant` scans the `agreements` collection with the existing paging
   helper; the count is small (the cap is at most 500). A unit test of the pure
   predicate `is_open_instant(row, listing, now)` has one case per condition
@@ -1272,14 +1382,15 @@ pub struct AsListedStatusOutput {
 ```
 
 `reason` is one of `confirm-first`, `cap-reached`,
-`counterparty-holds-one`, `signing-not-ready`, or a `NotComplete` code. The
+`counterparty-holds-one`, `signing-not-ready`, `slot-check-failed` (P20),
+or a `NotComplete` code. The
 owner's Hub shows each, and its "cancel unconfirmed instant agreements"
 action calls `agreement.cancel` with `cancel_reason: other` for each id in
 `open_instant` (AG-9 applies: one that moved is refused with
 `commitment-moved`, and the Hub says how many it cancelled).
 
 **D-C3c-14. `enquiry.set` with `as_listed` (counterparty's node, used by
-C3c3 and by tests in C3c2).** `EnquirySetInput`
+the tap and by the owner's-side tests).** `EnquirySetInput`
 ([enquiry_ops.rs:27](../../../../crates/roym_transaction/src/app/enquiry_ops.rs#L27))
 gets `#[serde(default)] pub as_listed: Option<AsListedInput>`:
 
@@ -1312,7 +1423,7 @@ pub struct AsListedInput {
    enquiry id: `{enquiry_record_id, envelope, record_id, slot,
    valid_until_secs, viewed_lang, viewed_via_mt, state: "waiting",
    reason: None, quote_record_id: None}`. The envelope is stored, not the
-   payload: the check of C3c3 verifies it again.
+   payload: the automatic acceptance (D-C3c-17) verifies it again.
 5. Is idempotent as today: a repeat with the same input returns the same
    enquiry.
 
@@ -1356,7 +1467,7 @@ check the params.
 - **The progress card** shows nothing for `formed_as` in C3c (M08G
   decides how a reader uses it); the agreement view carries it.
 
-### C3c3 — The counterparty's side
+### C3c2, the counterparty's side
 
 **D-C3c-17. The automatic acceptance** (`crates/roym_transaction/src/app/as_listed_ops/accept.rs`,
 new).
@@ -1458,8 +1569,9 @@ Each step builds, and its tests pass, before the next starts.
 Write `docs/decisions/0031-node-local-wake.md` (Q3), from D-C3c-1 and Q2.
 The ADR records that the wake is strictly node-local (never routed via the
 remote/community registry, P1), that coordinator mode skips worker spawn,
-and that `on_events` for a standalone service with no app context is ignored
-and logged once (P15). The owner accepts it before step 2.
+that `on_events` for a standalone service with no app context is ignored
+and logged once (P15), and the wake reply contract (`again`, `warnings`,
+P18). The owner accepts it before step 2.
 
 #### Step 2 — `WakeSpec` and the manifest (`app_orchestration`, pure)
 
@@ -1484,11 +1596,27 @@ Implement `wake.rs` with `WakeWorker`: pass `shared.event_bus()` and endpoint
 registry to `RuntimeServices`; skip worker when proxy is `None` (P15);
 verify local endpoint exists before dispatching (`registry.lookup().is_some()`,
 P1); guard `state.running` with RAII/scopeguard so task panic or cancellation
-resets `running = false` (P6); check `DriveOutput.pending` to wake again on
-the next 1-second loop tick while `pending > 0` (P14); spawn worker with
+resets `running = false` (P6); read the reply's `again` to call again on
+the next 1-second loop tick, and log its `warnings` (P14, P18); spawn worker with
 cancel token, store `JoinHandle`, and race in `run_until_shutdown` (P15).
 Add linked-build registration (D-C3c-3). Add test `a_binding_push_keeps_the_wake`
-(P10). Before this step, read every caller of `set_deploy_facts` (`git grep -n set_deploy_facts`).
+(P10).
+
+Before this step, read every writer and every reader of the deploy facts
+(P22): `git grep -n set_deploy_facts` and `git grep -n 'deploy_facts('`.
+The readers use tuple patterns or `.1`/`.3`, so each one changes to a
+field name:
+
+- `control_plane/src/service/orchestration.rs:315`;
+- `orchestration/deploy/admission.rs:198`;
+- `orchestration/lifecycle.rs:194` (the re-stamp) and `:541`;
+- `orchestration/status.rs:34`, `:202` and `:335`;
+- `orchestration/tests/deploy.rs:1032`, `:1060` and `:1067`;
+- `data_db/src/registry_store/tests.rs:44`, `:92` and `:99`
+  (`load_all_deploy_facts`).
+
+`orchestration/cert.rs:122` only checks `is_none()` and does not change.
+That is 13 sites in six files, on top of the writers.
 
 #### Step 4 — `transaction.drive` and the manifest line (`transaction`, `roym.toml`)
 
@@ -1496,10 +1624,14 @@ Proactively extract `file_enquiry_card` and `file_quote_card` from `sync.rs`
 into sibling file `crates/roym_transaction/src/app/sync/cards.rs` (~140 lines
 saved) to keep `sync.rs` safely below 800 lines (P4). Register `DRIVE_STATE`,
 `DRIVE_PENDING`, and `as_listed` in `ensure_collections` (`app.rs:335`) (P7).
-In `drive_at`, run `recover_deciding_rows` once per drive call (P14), sort
-candidate pending rows in memory by `since` (P7), add `more: bool` to
-`SyncOutput` and keep conversation pending when `more` is true (P13), and
-use compare-and-delete on `since` when deleting pending rows (P13).
+Move the `recover_deciding_rows` call out of the inner sync function into
+`sync_at` (P21). In `drive_at`, run `recover_deciding_rows` once per drive
+call (P14), sort candidate pending rows in memory by `since` (P7), add
+`more: bool` to `SyncOutput` (true only when the window was full and
+`last_seq` grew, P18) and keep the conversation pending when it is true
+(P13), use compare-and-delete on `since` when deleting pending rows (P13),
+move a failing row to the end with a failure count and drop it after five
+(P18), and set `again` only after a full batch with rows left (P18).
 
 `drive.rs`, the `api.rs` row, the method-contract count (44 → 45,
 [contract.rs:83](../../../../crates/roym_web/tests/method_contract/contract.rs#L83)),
@@ -1517,7 +1649,10 @@ Playwright suite.
 Component sizes (only `transaction` changes), living docs (section 9),
 backlog (section 8), Deviations, status.md.
 
-### 6.2 C3c2 — The owner's side
+### 6.2 C3c2 — Agree as listed
+
+Steps 1 to 5 are the owner's side; steps 6 to 8 are the counterparty's
+side.
 
 #### Step 1 — Core types (`roym_core`, pure)
 
@@ -1558,10 +1693,11 @@ a test verifying that every manifest `depends_on` has a matching `save_binding`
 in `roym.rs`, and a substrate native test calling `listing.get` from
 `transaction` (P11).
 
-`issue_quote` moved out of `set_at` into `quote_ops/issue.rs`; `issue_quote`
-calls `hooks::prepare` on author commitments, declining the enquiry with the
-hook's error code if refused (P16, Q8), and verifies returned window equals
-terms window. In `as_listed_ops` (`answer_as_listed`, `quote.from-listing`,
+`issue_quote` moved out of `set_at` into `quote_ops/issue.rs`, starting at
+`validate_and_conceal_terms`; `set_at` keeps `prepare_terms` (P20).
+`hooks::prepare` split into `prepare_window` and a thin wrapper (P20).
+`check_author_slots` in `as_listed_ops/answer.rs` runs the hook, compares
+the window and declines with the hook's code (P16, P20, Q8). In `as_listed_ops` (`answer_as_listed`, `quote.from-listing`,
 `deal.as-listed-status`), count in-flight quotes (`in_flight_instant`, P12)
 in addition to open agreements against instant limits. Add tests
 `many_taps_before_any_acceptance_make_only_cap_quotes` and
@@ -1572,37 +1708,28 @@ add the `answer:` ledger kind and its import check. Method-contract count
 
 #### Step 5 — `roymctl` and the owner's Hub
 
-D-C3c-15, D-C3c-16, the Hindi messages of section 7.10. Hub unit tests.
+D-C3c-15, D-C3c-16, the owner's Hindi messages of section 7.10. Hub unit
+tests. The owner's half of `roym_as_listed_e2e.rs` (section 7.4: the
+counterparty accepts by hand). This is the end of the owner's side: the
+code review's first pass covers steps 1 to 5.
 
-#### Step 6 — Two-node, sizes, docs and close-out of C3c2
-
-The owner's half of `roym_as_listed_e2e.rs` (section 7.5: the counterparty
-accepts by hand). `mise run build:roym`, parity, sizes, living docs,
-backlog, Deviations, status.md.
-
-### 6.3 C3c3 — The counterparty's side
-
-#### Step 1 — The automatic acceptance (`transaction`)
+#### Step 6 — The automatic acceptance (`transaction`)
 
 D-C3c-17: `auto_accept`, wired in `sync/cards.rs` (`file_quote_card`) and in
 `drive` (P4), the `autoaccept:` ledger kind and its import check, the
 `as_listed` row states. Service tests `tests/as_listed_accept.rs`, including
 the struct test. Parity scenario.
 
-#### Step 2 — The Hub
+#### Step 7 — The counterparty's Hub
 
-D-C3c-18, the Hindi messages. Hub unit tests.
+D-C3c-18, the counterparty's Hindi messages. Hub unit tests.
 
-#### Step 3 — Two-node and Playwright
+#### Step 8 — Two-node, Playwright, sizes, docs and close-out of C3c
 
-`roym_as_listed_e2e.rs` in full (section 7.5), the `roym-hub.spec.ts` cases
-(section 7.6), story 50 (Q7).
-
-#### Step 4 — Sizes, docs and close-out of C3c3 and of C3c
-
-Sizes, living docs, backlog, Deviations of all three change docs,
-`status: done` is not set (C8 does it), task.md's C3c result line,
-status.md.
+`roym_as_listed_e2e.rs` in full (section 7.4), the `roym-hub.spec.ts` cases
+(section 7.6), story 50 (Q7). `mise run build:roym`, parity, sizes, living
+docs, backlog, Deviations of all three change docs, task.md's C3c result
+line, status.md. `status: done` is not set (C8 does it).
 
 ## 7. Tests
 
@@ -1663,7 +1790,10 @@ code keeps today's bytes.
   - `the_linked_build_registers_every_wake_of_the_manifest` (D-C3c-3);
   - `a_panic_in_invoke_resets_running_guard` (P6);
   - `a_missing_local_endpoint_skips_dispatch_with_no_outbound_call` (P1);
-  - `a_binding_push_keeps_the_wake` (P10).
+  - `a_binding_push_keeps_the_wake` (P10);
+  - `again_in_the_reply_gives_a_call_on_the_next_tick` and
+    `a_reply_without_again_waits_for_the_interval` (P18);
+  - `warnings_in_the_reply_are_logged` (P18).
 
 ### 7.3 Service tests (`crates/roym_transaction/src/app/tests/`)
 
@@ -1679,7 +1809,15 @@ code keeps today's bytes.
   expires, a `deciding` row);
 - `drive_keeps_conversation_pending_when_more_messages_in_window` (P13);
 - `drive_compare_and_delete_preserves_concurrent_event_mark` (P13);
-- `drive_runs_recovery_once_per_call` (P14).
+- `drive_runs_recovery_once_per_call` (P14, P21);
+- `sync_still_runs_recovery_once` (P21: `transaction.sync` keeps today's
+  behaviour);
+- `a_failing_conversation_does_not_starve_the_others` (P18);
+- `a_failing_row_is_dropped_after_five_failures_with_a_warning` (P18);
+- `a_failing_row_does_not_set_again` (P18: the wake does not run every
+  second);
+- `more_is_false_when_last_seq_does_not_move` (P18: a full window that
+  starts with a deferred message).
 
 The test host's `conversation.changes` and `conversation.list` stubs and an
 events stub: check `roym_core::testing` (`TestHost`,
@@ -1700,11 +1838,17 @@ events stub: check `roym_core::testing` (`TestHost`,
 - `a_second_open_instant_agreement_with_one_counterparty_waits`;
 - `many_taps_before_any_acceptance_make_only_cap_quotes` (P12);
 - `one_counterparty_tapping_twice_gets_one_instant_quote` (P12);
+- `a_declined_instant_quote_frees_its_place` (P19: the counterparty
+  declines, taps again, and gets an instant quote);
 - `a_failing_certificate_makes_the_offering_wait` (one case each for
   `NotEnrolled`, `Expired`, `Stale`);
 - `a_full_slot_ends_not_formed_with_slot_taken` (two counterparties, one
   seat; no fallback to confirm first);
-- `a_removed_slot_is_declined_with_the_hooks_code` (Q8, P16: prepare hook runs before quote issuance);
+- `a_removed_slot_is_declined_with_the_hooks_code` (Q8, P16, P20: the
+  prepare hook runs before the `answer:` fence);
+- `an_unreachable_slot_hook_makes_the_enquiry_wait` (P20);
+- `quote_set_runs_the_prepare_hook_once` (P20: the existing `quote.set`
+  path is unchanged);
 - `two_answers_of_one_tap_make_one_quote` (two calls in a row, and a
   crash after the fence with the injected-error host of C1b);
 - `formed_as_is_the_same_in_the_first_and_a_later_snapshot` (one agreement
@@ -1713,7 +1857,7 @@ events stub: check `roym_core::testing` (`TestHost`,
 - `cancel_of_unconfirmed_instant_agreements_frees_their_slots`;
 - `the_import_checks_answer_rows`.
 
-`as_listed_accept.rs` (C3c3, AG-44, AG-49):
+`as_listed_accept.rs` (C3c2, AG-44, AG-49):
 
 - `a_quote_with_the_listed_terms_is_accepted_with_no_person`;
 - `a_quote_that_differs_in_any_field_is_shown` (the struct test: one case
@@ -1738,13 +1882,13 @@ events stub: check `roym_core::testing` (`TestHost`,
 - Native linked-build dependency test (C3c2, P11): in `crates/substrate`, call
   `listing.get` from `transaction` to verify `wire_roym_topology` binding.
 - `roym_as_listed_e2e.rs`:
-  - C3c2: an instant one-shot offering; Y sends an as-listed enquiry
+  - The owner's side (step 5): an instant one-shot offering; Y sends an as-listed enquiry
     (`rpc` with the envelope from `directory.run-envelope`); X's node
     answers with no call on X; Y accepts by hand; the snapshot says
     `as-listed-instant`. A confirm-first offering waits until X calls
     `quote.from-listing`; `as-listed-confirmed`.
-  - C3c3: the same instant offering reaches `agreed` from one
-    `enquiry.set` call on Y, with no other call on either node (AG-44);
+  - The counterparty's side (step 8): the same instant offering reaches
+    `agreed` from one `enquiry.set` call on Y, with no other call on either node (AG-44);
     a quote that differs in one term waits for Y (X answers by hand with a
     different price); Y's acceptance half says `viewed_via_mt: true` when
     the tap said so, and `false` for the original (AG-44's language row).
@@ -1775,7 +1919,7 @@ automatic acceptance), 256 (`enquiry.set` refuses `as-listed-not-complete`).
   while the owner's node is stopped; a refused first contact shows as
   refused (AG-49's E2E row); the owner's "limit reached" line; the cancel
   frees the slots.
-- Story 50 (Q7, C3c3).
+- Story 50 (Q7, C3c2).
 
 ### 7.7 Not tested
 
@@ -1788,7 +1932,7 @@ automatic acceptance), 256 (`enquiry.set` refuses `as-listed-not-complete`).
 - **Files near the cap.** `sync.rs` is at 759 lines; proactively extract
   `file_enquiry_card` and `file_quote_card` into sibling file `sync/cards.rs`
   (~140 lines saved), keeping `sync.rs` safely below the 800-line cap across
-  C3c1, C3c2, and C3c3 (P4). `backup.rs` (785) gets two lines; `decide.rs`
+  C3c1 and C3c2 (P4). `backup.rs` (785) gets two lines; `decide.rs`
   (724) gets the `formed_as` read in two places (+6); `app.rs` (710) gets two
   fields (+6); `backup/sections.rs` (703) gets two match arms (+6);
   `quote_ops.rs` (695) loses the body of `issue_quote` (−45). New code goes
@@ -1807,7 +1951,7 @@ Section 1 of task.md. Before and after, from one `target/` folder:
 
 | Component | Part | Limit |
 | --- | --- | --- |
-| `transaction` | C3c1, C3c2, C3c3 | C3c1 +40 KB (no new record code); C3c2 and C3c3 +15% (new record code) |
+| `transaction` | C3c1, C3c2 | C3c1 +40 KB (no new record code); C3c2 +15% (new record code) |
 | `catalog` | C3c2 | +15% (the listing record changes) |
 | `directory` | C3c2 | +40 KB (stop rule, D-C3c-11) |
 | `web`, `profile`, `conversation`, `scheduling` | all | +40 KB; expected unchanged |
@@ -1817,18 +1961,20 @@ Section 1 of task.md. Before and after, from one `target/` folder:
 New messages, each in `en.ftl` and `hi.ftl`; the owner reviews the Hindi
 before each merge:
 
-- C3c2: the listing form section and its fields (about 12 messages:
+- C3c2, the owner's side: the listing form section and its fields (about 12 messages:
   `listing-as-listed-heading`, `listing-acceptance-instant`,
   `listing-acceptance-confirm`, `listing-not-limited`, `listing-instant-cap`,
   `listing-quote-valid-hours`, `listing-payment-timing-*`,
   `listing-instant-needs-signing`, the three text labels); the owner's lines
   (`as-listed-waiting-confirm`, `as-listed-cap-reached`,
   `as-listed-counterparty-holds-one`, `as-listed-signing-not-ready`,
+  `as-listed-slot-check-failed`,
   `as-listed-confirm-button`, `as-listed-cancel-open`); the decline
   sentences (`decline-code-consent-expired`,
   `decline-code-offering-withdrawn`, `decline-code-no-such-slot`,
   `decline-code-slot-not-in-listing`).
-- C3c3: `directory-agree-as-listed-button`, the tap screen's labels
+- C3c2, the counterparty's side: `directory-agree-as-listed-button`, the
+  tap screen's labels
   (`as-listed-will-be-paid-to`, `as-listed-quote-valid`,
   `as-listed-tap-holds`, …), the counterparty's lines
   (`as-listed-sent-waiting`, `as-listed-ended`, `as-listed-refused-contact`,
@@ -1878,7 +2024,7 @@ The exact ids are fixed when the code is written; the catalog test
 | "Services can only pull events" (`:547`) | Unchanged. The wake triggers a pull; there is still no push export. Add a note that the wake exists. |
 | "Agree as listed refuses some offerings" (`:576`) | Unchanged, and C3c builds the refusals it names. |
 | "A schedule deployed by `roymctl app deploy` never runs" (`:415`) | Unchanged; the wake is not a schedule. A note points at ADR-0031. |
-| New: "A person cannot pick another node's slot before agreeing as listed" (Q4) | C3c3 adds it. The Hub shows "Ask" on a slot offering. Target: M08D (the offering page, D5). |
+| New: "A person cannot pick another node's slot before agreeing as listed" (Q4) | C3c2 adds it. The Hub shows "Ask" on a slot offering. Target: M08D (the offering page, D5). |
 | New: "The instant cap can be passed by one" (Q6) | C3c2 adds it. Target: TBD, when a deployment shows it. |
 | New: "Many woken services on one node are not pooled" | C3c1 adds it, beside ADR-0023's row "Substrate-side concurrency for scheduled runs is unbounded across app instances". Target: TBD. |
 | New: "The reader does not use `formed_as` yet" | C3c2 adds it. Target: M08G. |
@@ -1894,13 +2040,13 @@ Each PR fixes the statements it makes false. C8 does the full pass.
 - `docs/system-architecture.md`: the substrate's background workers (the
   wake worker), the app manifest's fields (`wake`), and the Roym section's
   sentence that deals move when a client syncs (C3c1). Agree as listed in
-  the Roym deal flow (C3c3).
+  the Roym deal flow (C3c2).
 - `docs/developer-guide.md`: the manifest key `wake` with its rules; the
   `transaction` method table (`transaction.drive`, `quote.from-listing`,
   `deal.as-listed-status`, `enquiry.set`'s `as_listed`); the listing's new
   fields; the new ledger kinds and the `as_listed` collection in the backup
   section; the two-node test note that tests no longer need to call
-  `transaction.sync` to move a deal (C3c1 to C3c3).
+  `transaction.sync` to move a deal (C3c1, C3c2).
 - `docs/system-requirements-spec.md`: the agree-as-listed requirement and
   the node-side driver.
 - `docs/roym-integrated-experience-spec.md`: steps C12 and C14, as the
@@ -1908,7 +2054,7 @@ Each PR fixes the statements it makes false. C8 does the full pass.
   fields; the directory hit's "Agree as listed".
 - `docs/TERMINOLOGY.md`: "agree as listed", "instant", "confirm first",
   "wake" (check which exist first).
-- `docs/demo/demo.md`: story 50's new steps (C3c3).
+- `docs/demo/demo.md`: story 50's new steps (C3c2).
 - `docs/planning/traceability-matrix.md`: the rows of section 3.
 - `AGENTS.md` "Architecture": one sentence that the substrate wakes a
   service that declares a `wake` (C3c1).
@@ -1950,18 +2096,11 @@ C3c2:
 - [ ] `directory` measured after D-C3c-11, within +40 KB.
 - [ ] A listing with no new field signs the same bytes as before.
 - [ ] One tap gives at most one quote (`two_answers_of_one_tap_make_one_quote`).
-- [ ] Owner reviewed the Hindi messages of C3c2.
-- [ ] Sizes, Deviations, backlog, living docs; `mise run verify` with no
-  `--skip`.
-
-C3c3:
-
-- [ ] Every C3c3 row of section 3 names a test that exists and passes.
 - [ ] The struct test fails when a field is added to `DealTerms` or
   `Commitment` with no row (checked once by adding a field locally).
 - [ ] `roym_as_listed_e2e`'s instant case reaches `agreed` from one call.
 - [ ] Story 50 passes with the new steps (`mise run demo`).
-- [ ] Owner reviewed the Hindi messages of C3c3.
+- [ ] Owner reviewed the Hindi messages of C3c2.
 - [ ] Sizes, Deviations, backlog, living docs; `mise run verify` with no
   `--skip`.
 
