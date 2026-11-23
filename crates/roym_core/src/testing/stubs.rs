@@ -10,7 +10,7 @@ use syneroym_app_host::{
             ChangePage, ConversationError, ConversationSummary, DeliveryState, ExportChunk,
             GroupInfo, HistoryPage, Message, Transcript,
         },
-        events::{EventsError, ReadResult},
+        events::{Event, EventsError, ReadResult},
         http::FrameKind,
         messaging::MessagingError,
         translation::{Detected, Translated, TranslationError},
@@ -109,7 +109,7 @@ impl AppEvents for TestHost {
         let mut evts = self.events.lock().unwrap();
         let idx = evts.len() + 1;
         let cursor = format!("0000000000000000-{idx}");
-        evts.push(syneroym_app_host::types::events::Event {
+        evts.push(Event {
             cursor: cursor.clone(),
             kind,
             service: "test".to_string(),
@@ -140,8 +140,7 @@ impl AppEvents for TestHost {
 
         let start_idx =
             evts.iter().position(|e| e.cursor == after_cursor).map(|p| p + 1).unwrap_or(0);
-        let slice: Vec<syneroym_app_host::types::events::Event> =
-            evts.iter().skip(start_idx).take(limit as usize).cloned().collect();
+        let slice: Vec<Event> = evts.iter().skip(start_idx).take(limit as usize).cloned().collect();
         let next_cursor =
             slice.last().map(|e| e.cursor.clone()).unwrap_or_else(|| after_cursor.to_string());
         Ok(ReadResult::Events((slice, next_cursor)))

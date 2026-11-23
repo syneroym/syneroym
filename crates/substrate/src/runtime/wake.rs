@@ -19,6 +19,7 @@ use syneroym_core::{
     local_registry::EndpointRegistry,
 };
 use syneroym_rpc::{CallOrigin, CallerContext, ProxyProtocol, ProxyRequest, ServiceProxy};
+use tokio::time::MissedTickBehavior;
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
@@ -95,7 +96,7 @@ impl WakeWorker {
 
     pub(super) async fn run(mut self, cancel: CancellationToken) {
         let mut interval = tokio::time::interval(Duration::from_secs(1));
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
         loop {
             tokio::select! {

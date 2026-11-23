@@ -632,3 +632,35 @@ pub(crate) async fn deliver_peer_card(
     )
     .await;
 }
+
+pub(crate) fn peer_signed_request_with_identity(
+    peer: &Identity,
+    conv: &str,
+    seq: u32,
+    issued_at: u64,
+) -> (String, String, String) {
+    let peer_did = derive_did_key(&peer.public_key());
+    let req_id = transaction::derive_enquiry_id(conv, &peer_did, seq).unwrap();
+    let payload = json!({
+        "enquiry_id": req_id,
+        "conversation": conv,
+        "sequence": seq,
+        "categories": ["gardening"],
+        "description": { "lang": "en", "text": "Prune apple tree" },
+        "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
+    });
+    let draft = RecordDraft {
+        version: transaction::ENQUIRY_VERSION,
+        record_type: transaction::RECORD_ENQUIRY.to_string(),
+        subject: req_id,
+        payload,
+        expires_at_secs: None,
+        supersedes: None,
+    };
+    let (mut env, bytes) = Envelope::unsigned(draft, peer_did.clone(), None, issued_at).unwrap();
+    let sig = z32::encode(&peer.sign(&bytes).to_bytes());
+    env.attach_signature(sig).unwrap();
+    let env_json = env.to_json().unwrap();
+    let record_id = env.record_id().unwrap();
+    (peer_did, record_id, env_json)
+}

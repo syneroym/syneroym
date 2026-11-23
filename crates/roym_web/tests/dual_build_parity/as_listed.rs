@@ -1,44 +1,12 @@
 //! Dual-build parity tests for transaction driving and as-listed agreements.
 
+use std::time::{Duration, Instant};
+
 use serde_json::json;
 use syneroym_identity::{Identity, substrate::derive_did_key};
 use syneroym_roym_core::transaction;
 
 use super::{fixtures::*, helpers::*};
-
-fn peer_signed_request_with_identity(
-    peer: &Identity,
-    conv: &str,
-    seq: u32,
-    issued_at: u64,
-) -> (String, String, String) {
-    let peer_did = derive_did_key(&peer.public_key());
-    let req_id = transaction::derive_enquiry_id(conv, &peer_did, seq).unwrap();
-    let payload = json!({
-        "enquiry_id": req_id,
-        "conversation": conv,
-        "sequence": seq,
-        "categories": ["gardening"],
-        "description": { "lang": "en", "text": "Prune apple tree" },
-        "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
-    });
-    let draft = syneroym_roym_core::record::RecordDraft {
-        version: transaction::ENQUIRY_VERSION,
-        record_type: transaction::RECORD_ENQUIRY.to_string(),
-        subject: req_id,
-        payload,
-        expires_at_secs: None,
-        supersedes: None,
-    };
-    let (mut env, bytes) =
-        syneroym_roym_core::record::Envelope::unsigned(draft, peer_did.clone(), None, issued_at)
-            .unwrap();
-    let sig = z32::encode(&peer.sign(&bytes).to_bytes());
-    env.attach_signature(sig).unwrap();
-    let env_json = env.to_json().unwrap();
-    let record_id = env.record_id().unwrap();
-    (peer_did, record_id, env_json)
-}
 
 #[tokio::test]
 async fn scenario_252_transaction_drive_with_two_changed_conversations() {
@@ -143,7 +111,7 @@ async fn scenario_stop_rule_measurement_200_agreements_8_conversations() {
         .await;
     }
 
-    let t0 = std::time::Instant::now();
+    let t0 = Instant::now();
     let (w, n) = both_rpc(&h, "transaction.drive", json!({})).await;
     let elapsed = t0.elapsed();
 
@@ -155,9 +123,5 @@ async fn scenario_stop_rule_measurement_200_agreements_8_conversations() {
 
     assert_eq!(w["result"]["synced"], 8, "wasm synced: {w}");
     assert_eq!(n["result"]["synced"], 8, "native synced: {n}");
-    assert!(
-        elapsed < std::time::Duration::from_secs(2),
-        "stop rule: must run under 2s, took {:?}",
-        elapsed
-    );
+    assert!(elapsed < Duration::from_secs(2), "stop rule: must run under 2s, took {:?}", elapsed);
 }

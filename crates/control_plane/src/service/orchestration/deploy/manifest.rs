@@ -1,3 +1,5 @@
+use syneroym_app_orchestration::{InterfaceName, WakeSpec};
+
 use super::*;
 
 /// Canonical idempotency hash over the manifest and app-context, excluding
@@ -162,9 +164,9 @@ pub(super) async fn resolve_fdae_policy_for_deploy(
     Ok(Some((doc, Arc::new(policy))))
 }
 
-pub(super) fn model_wake_spec(w: &WitWakeSpec) -> syneroym_app_orchestration::WakeSpec {
-    syneroym_app_orchestration::WakeSpec {
-        interface: syneroym_app_orchestration::InterfaceName::new(&w.interface_name),
+pub(super) fn model_wake_spec(w: &WitWakeSpec) -> WakeSpec {
+    WakeSpec {
+        interface: InterfaceName::new(&w.interface_name),
         method: w.method.clone(),
         params: w.params.clone(),
         on_events: w.on_events.clone(),
@@ -173,18 +175,12 @@ pub(super) fn model_wake_spec(w: &WitWakeSpec) -> syneroym_app_orchestration::Wa
     }
 }
 
-fn manifest_interfaces(
-    manifest: &DeployManifest,
-) -> Vec<syneroym_app_orchestration::InterfaceName> {
+fn manifest_interfaces(manifest: &DeployManifest) -> Vec<InterfaceName> {
     match &manifest.service_type {
-        WitServiceType::Wasm(wasm) => {
-            wasm.interfaces.iter().map(syneroym_app_orchestration::InterfaceName::new).collect()
+        WitServiceType::Wasm(wasm) => wasm.interfaces.iter().map(InterfaceName::new).collect(),
+        WitServiceType::Tcp(tcp) => {
+            tcp.endpoints.iter().map(|e| InterfaceName::new(&e.interface_name)).collect()
         }
-        WitServiceType::Tcp(tcp) => tcp
-            .endpoints
-            .iter()
-            .map(|e| syneroym_app_orchestration::InterfaceName::new(&e.interface_name))
-            .collect(),
         WitServiceType::Container(_) => Vec::new(),
     }
 }

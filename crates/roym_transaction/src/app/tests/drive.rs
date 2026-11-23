@@ -6,6 +6,7 @@ use syneroym_roym_core::{
     deal::{DealTerms, LocalText},
     lang::LangTag,
     progress::AgreementState,
+    testing::TestHost,
     transaction::SYNC_WINDOW,
 };
 
@@ -21,7 +22,7 @@ use crate::app::{
     sync::{SyncInput, sync_at, sync_direct},
 };
 
-fn mock_empty_changes(host: &syneroym_roym_core::testing::TestHost) {
+fn mock_empty_changes(host: &TestHost) {
     host.on_call("conversation", "conversation.changes", |_| {
         Ok(json!({
             "result": {
@@ -42,7 +43,7 @@ fn mock_empty_changes(host: &syneroym_roym_core::testing::TestHost) {
     });
 }
 
-async fn seed_drive_cursor(host: &syneroym_roym_core::testing::TestHost) {
+async fn seed_drive_cursor(host: &TestHost) {
     let state = DriveState {
         event_cursor: Some("0000000000000000-0".to_string()),
         rescan_offset: None,
