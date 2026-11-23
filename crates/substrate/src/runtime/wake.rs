@@ -195,6 +195,22 @@ fn check_events(
     }
 }
 
+fn wake_reply(val: Value) -> Result<Value, String> {
+    let obj = match val {
+        Value::String(s) => serde_json::from_str::<Value>(&s)
+            .map_err(|e| format!("failed to parse reply string as JSON: {e}"))?,
+        other => other,
+    };
+
+    if let Some(err_val) = obj.get("error")
+        && !err_val.is_null()
+    {
+        return Err(err_val.to_string());
+    }
+
+    if let Some(result) = obj.get("result") { Ok(result.clone()) } else { Ok(obj) }
+}
+
 fn spawn_wake_call(
     proxy: Arc<dyn ServiceProxy>,
     service_id: String,
@@ -224,18 +240,27 @@ fn spawn_wake_call(
         };
 
         match proxy.invoke(req).await {
-            Ok(val) => {
-                if let Some(warnings) = val.get("warnings").and_then(Value::as_array) {
-                    for w in warnings {
-                        if let Some(msg) = w.as_str() {
-                            warn!(service_id = %service_id, "{msg}");
+            Ok(raw_val) => match wake_reply(raw_val) {
+                Ok(val) => {
+                    if let Some(warnings) = val.get("warnings").and_then(Value::as_array) {
+                        for w in warnings {
+                            if let Some(msg) = w.as_str() {
+                                warn!(service_id = %service_id, "{msg}");
+                            }
                         }
                     }
+                    if val.get("again").and_then(Value::as_bool).unwrap_or(false) {
+                        has_pending.store(true, Ordering::SeqCst);
+                    }
                 }
-                if val.get("again").and_then(Value::as_bool).unwrap_or(false) {
-                    has_pending.store(true, Ordering::SeqCst);
+                Err(err) => {
+                    warn!(
+                        service_id = %service_id,
+                        error = %err,
+                        "wake call failed"
+                    );
                 }
-            }
+            },
             Err(err) => {
                 warn!(
                     service_id = %service_id,

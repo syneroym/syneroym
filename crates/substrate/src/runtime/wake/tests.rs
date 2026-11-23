@@ -33,7 +33,12 @@ impl ServiceProxy for MockProxy {
         match self.reply.lock().unwrap().clone() {
             Some(Ok(v)) => Ok(v),
             Some(Err(e)) => Err(ProxyError::Transport(e)),
-            None => Ok(json!({})),
+            None => Ok(Value::String(
+                serde_json::to_string(&json!({
+                    "result": {}
+                }))
+                .unwrap(),
+            )),
         }
     }
 }
@@ -250,7 +255,9 @@ async fn wake_reply_contract_again_sets_has_pending() {
     let registry = EndpointRegistry::new(storage).await.unwrap();
     let bus = EventBus::new(registry.clone());
     let proxy = Arc::new(MockProxy::default());
-    *proxy.reply.lock().unwrap() = Some(Ok(json!({"again": true, "warnings": ["test warning 1"]})));
+    *proxy.reply.lock().unwrap() = Some(Ok(Value::String(
+        r#"{"result":{"again":true,"warnings":["test warning 1"]}}"#.to_string(),
+    )));
 
     let mut spec = sample_spec();
     spec.every_secs = 60;
@@ -279,19 +286,123 @@ async fn wake_reply_contract_again_sets_has_pending() {
     let targets = Arc::new(StaticWakeTargets(vec![("target-svc".to_string(), spec)]));
     let mut worker = WakeWorker::new(targets, bus.clone(), proxy.clone(), registry);
 
+    // Initial tick runs due to boot interval (last_run_at is 0)
     worker.tick().await;
-
-    // Trigger first call via event
-    bus.record("conversation-svc", "conversation.message", "conv-1", None, 1000).unwrap();
-    worker.tick().await;
-
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert_eq!(proxy.invocations.lock().unwrap().len(), 1);
 
-    // Has_pending was set to true by the reply
-    // On next tick with NO new events and NOT due, it triggers again
+    // Trigger second call via event
+    bus.record("conversation-svc", "conversation.message", "conv-1", None, 1000).unwrap();
     worker.tick().await;
-
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert_eq!(proxy.invocations.lock().unwrap().len(), 2);
+
+    // Has_pending was set to true by the reply (again: true)
+    // On next tick with NO new events and NOT due, it triggers again (3rd call)
+    worker.tick().await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(proxy.invocations.lock().unwrap().len(), 3);
+}
+
+#[tokio::test]
+async fn wake_reply_contract_plain_object_again_sets_has_pending() {
+    let storage = Arc::new(MockStorage::new());
+    let registry = EndpointRegistry::new(storage).await.unwrap();
+    let bus = EventBus::new(registry.clone());
+    let proxy = Arc::new(MockProxy::default());
+    *proxy.reply.lock().unwrap() = Some(Ok(json!({"again": true, "warnings": ["plain warning"]})));
+
+    let mut spec = sample_spec();
+    spec.every_secs = 60;
+
+    registry
+        .register(
+            "target-svc".to_string(),
+            spec.interface.to_string(),
+            SubstrateEndpoint::WasmChannel { service_id: "target-svc".to_string() },
+        )
+        .await
+        .unwrap();
+
+    let targets = Arc::new(StaticWakeTargets(vec![("target-svc".to_string(), spec)]));
+    let mut worker = WakeWorker::new(targets, bus.clone(), proxy.clone(), registry);
+
+    worker.tick().await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(proxy.invocations.lock().unwrap().len(), 1);
+
+    // On next tick without events or interval due, again: true triggers call 2
+    worker.tick().await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(proxy.invocations.lock().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn wake_reply_string_envelope_with_warnings() {
+    let storage = Arc::new(MockStorage::new());
+    let registry = EndpointRegistry::new(storage).await.unwrap();
+    let bus = EventBus::new(registry.clone());
+    let proxy = Arc::new(MockProxy::default());
+    *proxy.reply.lock().unwrap() = Some(Ok(Value::String(
+        r#"{"result":{"synced":0,"warnings":["warning A","warning B"]}}"#.to_string(),
+    )));
+
+    let mut spec = sample_spec();
+    spec.every_secs = 60;
+
+    registry
+        .register(
+            "target-svc".to_string(),
+            spec.interface.to_string(),
+            SubstrateEndpoint::WasmChannel { service_id: "target-svc".to_string() },
+        )
+        .await
+        .unwrap();
+
+    let targets = Arc::new(StaticWakeTargets(vec![("target-svc".to_string(), spec)]));
+    let mut worker = WakeWorker::new(targets, bus.clone(), proxy.clone(), registry);
+
+    worker.tick().await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(proxy.invocations.lock().unwrap().len(), 1);
+
+    // No `again: true`, so next tick does not invoke
+    worker.tick().await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(proxy.invocations.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn wake_reply_string_envelope_with_error() {
+    let storage = Arc::new(MockStorage::new());
+    let registry = EndpointRegistry::new(storage).await.unwrap();
+    let bus = EventBus::new(registry.clone());
+    let proxy = Arc::new(MockProxy::default());
+    *proxy.reply.lock().unwrap() = Some(Ok(Value::String(
+        r#"{"error":{"code":-32603,"message":"internal error in guest"}}"#.to_string(),
+    )));
+
+    let mut spec = sample_spec();
+    spec.every_secs = 60;
+
+    registry
+        .register(
+            "target-svc".to_string(),
+            spec.interface.to_string(),
+            SubstrateEndpoint::WasmChannel { service_id: "target-svc".to_string() },
+        )
+        .await
+        .unwrap();
+
+    let targets = Arc::new(StaticWakeTargets(vec![("target-svc".to_string(), spec)]));
+    let mut worker = WakeWorker::new(targets, bus.clone(), proxy.clone(), registry);
+
+    worker.tick().await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(proxy.invocations.lock().unwrap().len(), 1);
+
+    // Error in reply does not set `again: true`, so next tick does not invoke
+    worker.tick().await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(proxy.invocations.lock().unwrap().len(), 1);
 }
