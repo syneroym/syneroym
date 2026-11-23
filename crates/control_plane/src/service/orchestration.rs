@@ -34,7 +34,7 @@ use syneroym_core::{
         MAILBOX_INTERFACE, MAX_CHILD_TOKEN_BYTES, MAX_MAILBOX_METHODS,
         is_reserved_mailbox_interface,
     },
-    storage::AppInstanceManagement,
+    storage::{AppInstanceManagement, DeployFacts},
     util,
 };
 use syneroym_fdae::Policy;
@@ -312,8 +312,8 @@ impl OrchestratorInterface for ControlPlaneService {
             // service with no recorded facts (deployed by an older binary)
             // is no longer podman-inspected, matching `status`'s `unknown`,
             // so the two surfaces cannot disagree.
-            if let Some((t, ..)) = self.registry.deploy_facts(&service_id)
-                && parse_service_type(&t) == Some(AppServiceType::Container)
+            if let Some(facts) = self.registry.deploy_facts(&service_id)
+                && parse_service_type(&facts.service_type) == Some(AppServiceType::Container)
             {
                 self.podman_sandbox_engine
                     .readyz(&service_id)

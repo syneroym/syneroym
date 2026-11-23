@@ -33,7 +33,7 @@ use syneroym_core::{
     http_routes::HttpRouteRegistry,
     local_registry::{EndpointRegistry, SubstrateEndpoint},
     mailbox::HostedMailbox,
-    storage::{AppInstanceManagement, EndpointStorage, MockStorage},
+    storage::{AppInstanceManagement, DeployFacts, EndpointStorage, MockStorage},
 };
 use syneroym_data_blob::{BlobProvider, ObjectStoreBlobProvider};
 use syneroym_data_db::SqliteStorageProvider;
@@ -195,28 +195,11 @@ impl EndpointStorage for RemoveOwnerFailingStorage {
     async fn remove_cert(&self, service_id: &str) -> anyhow::Result<()> {
         self.inner.remove_cert(service_id).await
     }
-    async fn load_all_deploy_facts(
-        &self,
-    ) -> anyhow::Result<Vec<(String, String, Option<String>, Option<String>, Option<String>)>> {
+    async fn load_all_deploy_facts(&self) -> anyhow::Result<Vec<(String, DeployFacts)>> {
         self.inner.load_all_deploy_facts().await
     }
-    async fn save_deploy_facts(
-        &self,
-        service_id: &str,
-        service_type: &str,
-        health_check_json: Option<&str>,
-        manifest_hash: Option<&str>,
-        visibility: Option<&str>,
-    ) -> anyhow::Result<()> {
-        self.inner
-            .save_deploy_facts(
-                service_id,
-                service_type,
-                health_check_json,
-                manifest_hash,
-                visibility,
-            )
-            .await
+    async fn save_deploy_facts(&self, service_id: &str, facts: &DeployFacts) -> anyhow::Result<()> {
+        self.inner.save_deploy_facts(service_id, facts).await
     }
     async fn remove_deploy_facts(&self, service_id: &str) -> anyhow::Result<()> {
         self.inner.remove_deploy_facts(service_id).await

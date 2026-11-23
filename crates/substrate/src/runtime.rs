@@ -24,6 +24,7 @@ mod router;
 mod roym;
 mod services;
 mod supervisor;
+mod wake;
 
 #[cfg(test)]
 mod tests;
@@ -151,6 +152,7 @@ pub async fn init(config: SubstrateConfig) -> anyhow::Result<InitializedRuntime>
     services.set_supervisor(setup.supervisor);
     services.set_conversation(setup.conversation);
     services.set_mailbox(setup.mailbox);
+    services.set_event_bus(setup.event_bus);
     #[cfg(feature = "client_gateway")]
     services.set_gateway_auth_did(setup.auth_did);
 

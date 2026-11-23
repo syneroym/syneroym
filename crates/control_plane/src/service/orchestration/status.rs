@@ -31,13 +31,13 @@ impl ControlPlaneService {
                 instance_certificate_expires_at: registry
                     .instance_cert(&service_id)
                     .map(|cert| cert.expires_at_secs),
-                visibility: registry.deploy_facts(&service_id).and_then(|f| f.3).map(|v| {
-                    match v.as_str() {
+                visibility: registry.deploy_facts(&service_id).and_then(|f| f.visibility).map(
+                    |v| match v.as_str() {
                         "public" => WitVisibility::Public,
                         "internal" => WitVisibility::Internal,
                         _ => WitVisibility::Private,
-                    }
-                }),
+                    },
+                ),
             });
             entry.interfaces.push(interface);
         }
@@ -200,7 +200,7 @@ impl ControlPlaneService {
         now: u64,
     ) -> ServiceStatus {
         let facts = self.registry.deploy_facts(service_id);
-        let service_type = facts.as_ref().map(|(t, ..)| t.clone());
+        let service_type = facts.as_ref().map(|f| f.service_type.clone());
         let phase = self.instance_phase(service_id, service_type.as_deref()).await;
 
         // Phase does NOT gate the probe. A `tcp` service is always
@@ -332,7 +332,10 @@ impl ControlPlaneService {
 
     /// Runs the declared probe, if any, against the endpoint it names.
     pub(crate) async fn run_probe(&self, service_id: &str) -> ProbeStatus {
-        let Some((_, Some(check_json), ..)) = self.registry.deploy_facts(service_id) else {
+        let Some(facts) = self.registry.deploy_facts(service_id) else {
+            return ProbeStatus::NotDeclared;
+        };
+        let Some(check_json) = facts.health_check_json else {
             return ProbeStatus::NotDeclared;
         };
         let check: WitHealthCheck = match serde_json::from_str(&check_json) {

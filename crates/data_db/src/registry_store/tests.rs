@@ -29,10 +29,18 @@ async fn deploy_facts_survive_a_real_reopen_of_the_same_database_file() {
         store
             .save_deploy_facts(
                 "svc-1",
-                "tcp",
-                Some(r#"{"tcp-connect":{"interface-name":"main","timeout-ms":2000}}"#),
-                Some("deadbeef"),
-                Some("internal"),
+                &DeployFacts {
+                    service_type: "tcp".to_string(),
+                    health_check_json: Some(
+                        r#"{"tcp-connect":{"interface-name":"main","timeout-ms":2000}}"#.to_string(),
+                    ),
+                    manifest_hash: Some("deadbeef".to_string()),
+                    visibility: Some("internal".to_string()),
+                    wake_json: Some(
+                        r#"{"interface":"test/api@0.1.0","method":"wake","every_secs":30,"timeout_ms":10000}"#
+                            .to_string(),
+                    ),
+                },
             )
             .await
             .unwrap();
@@ -44,10 +52,11 @@ async fn deploy_facts_survive_a_real_reopen_of_the_same_database_file() {
     let facts = reopened.load_all_deploy_facts().await.unwrap();
     assert_eq!(facts.len(), 1);
     assert_eq!(facts[0].0, "svc-1");
-    assert_eq!(facts[0].1, "tcp");
-    assert!(facts[0].2.as_deref().unwrap().contains("tcp-connect"));
-    assert_eq!(facts[0].3.as_deref(), Some("deadbeef"));
-    assert_eq!(facts[0].4.as_deref(), Some("internal"));
+    assert_eq!(facts[0].1.service_type, "tcp");
+    assert!(facts[0].1.health_check_json.as_deref().unwrap().contains("tcp-connect"));
+    assert_eq!(facts[0].1.manifest_hash.as_deref(), Some("deadbeef"));
+    assert_eq!(facts[0].1.visibility.as_deref(), Some("internal"));
+    assert!(facts[0].1.wake_json.as_deref().unwrap().contains("wake"));
 }
 
 /// `service_deploy_facts` predates its `manifest_hash` column -- unlike
@@ -90,15 +99,100 @@ async fn an_existing_database_gains_the_manifest_hash_column_on_open() {
     // untouched row) and write.
     let store = SqliteEndpointStorage::new(&path).await.unwrap();
     let facts = store.load_all_deploy_facts().await.unwrap();
-    assert_eq!(facts, vec![("svc-old".to_string(), "tcp".to_string(), None, None, None)]);
+    assert_eq!(
+        facts,
+        vec![(
+            "svc-old".to_string(),
+            DeployFacts {
+                service_type: "tcp".to_string(),
+                health_check_json: None,
+                manifest_hash: None,
+                visibility: None,
+                wake_json: None,
+            }
+        )]
+    );
 
     store
-        .save_deploy_facts("svc-old", "tcp", None, Some("deadbeef"), Some("public"))
+        .save_deploy_facts(
+            "svc-old",
+            &DeployFacts {
+                service_type: "tcp".to_string(),
+                health_check_json: None,
+                manifest_hash: Some("deadbeef".to_string()),
+                visibility: Some("public".to_string()),
+                wake_json: None,
+            },
+        )
         .await
         .unwrap();
     let facts = store.load_all_deploy_facts().await.unwrap();
-    assert_eq!(facts[0].3.as_deref(), Some("deadbeef"));
-    assert_eq!(facts[0].4.as_deref(), Some("public"));
+    assert_eq!(facts[0].1.manifest_hash.as_deref(), Some("deadbeef"));
+    assert_eq!(facts[0].1.visibility.as_deref(), Some("public"));
+}
+
+/// An existing database with no `wake_json` column gains it on reopen.
+#[tokio::test]
+async fn an_existing_database_gains_the_wake_json_column_on_open() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("test.db");
+
+    {
+        let conn = Connection::open(&path).unwrap();
+        conn.execute(
+            "CREATE TABLE service_deploy_facts (
+                    service_id        TEXT PRIMARY KEY,
+                    service_type      TEXT NOT NULL,
+                    health_check_json TEXT,
+                    created_at        INTEGER NOT NULL,
+                    manifest_hash     TEXT,
+                    visibility        TEXT
+                );",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO service_deploy_facts (service_id, service_type, created_at, \
+             manifest_hash, visibility) VALUES ('svc-v2', 'tcp', 0, 'hash1', 'public')",
+            [],
+        )
+        .unwrap();
+        conn.execute("PRAGMA user_version = 1", []).unwrap();
+    }
+
+    let store = SqliteEndpointStorage::new(&path).await.unwrap();
+    let facts = store.load_all_deploy_facts().await.unwrap();
+    assert_eq!(
+        facts,
+        vec![(
+            "svc-v2".to_string(),
+            DeployFacts {
+                service_type: "tcp".to_string(),
+                health_check_json: None,
+                manifest_hash: Some("hash1".to_string()),
+                visibility: Some("public".to_string()),
+                wake_json: None,
+            }
+        )]
+    );
+
+    store
+        .save_deploy_facts(
+            "svc-v2",
+            &DeployFacts {
+                service_type: "tcp".to_string(),
+                health_check_json: None,
+                manifest_hash: Some("hash2".to_string()),
+                visibility: Some("internal".to_string()),
+                wake_json: Some(r#"{"interface":"test/api@0.1.0","method":"wake","every_secs":30,"timeout_ms":10000}"#.to_string()),
+            },
+        )
+        .await
+        .unwrap();
+    let facts = store.load_all_deploy_facts().await.unwrap();
+    assert_eq!(facts[0].1.manifest_hash.as_deref(), Some("hash2"));
+    assert_eq!(facts[0].1.visibility.as_deref(), Some("internal"));
+    assert!(facts[0].1.wake_json.as_deref().unwrap().contains("wake"));
 }
 
 /// The `app_instance_management`-shaped sibling of the deploy-facts

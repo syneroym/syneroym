@@ -237,7 +237,7 @@ async fn readyz_does_not_podman_inspect_a_tcp_service() {
         .unwrap();
     service
         .registry
-        .set_deploy_facts("tcp-readyz-svc".to_string(), "tcp".to_string(), None, None, None)
+        .set_deploy_facts("tcp-readyz-svc".to_string(), DeployFacts::new("tcp"))
         .await
         .unwrap();
 

@@ -18,7 +18,8 @@ use syneroym_conversation::ConversationService;
 #[cfg(feature = "coordinator")]
 use syneroym_coordinator::EcosystemCoordinator;
 use syneroym_core::{
-    config::SubstrateConfig, host_identity::HostIdentity, local_registry::EndpointRegistry,
+    config::SubstrateConfig, event_bus::EventBus, host_identity::HostIdentity,
+    local_registry::EndpointRegistry,
 };
 use syneroym_observability::{MemoryRecorder, MetricsSnapshot};
 use syneroym_passport::LeaseStore;
@@ -28,7 +29,10 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 use super::{
-    mailbox::MailboxParts, publish::instance_cert_expiry_sweep_loop, supervisor::SupervisorHandle,
+    mailbox::MailboxParts,
+    publish::instance_cert_expiry_sweep_loop,
+    supervisor::SupervisorHandle,
+    wake::{RegistryWakeTargets, WakeWorker},
 };
 
 pub struct RuntimeServices {
@@ -98,6 +102,9 @@ pub struct RuntimeServices {
     /// mailbox's visibility time.
     mailbox_pull_join: Option<JoinHandle<()>>,
     mailbox_pull_cancel: CancellationToken,
+    event_bus: Option<Arc<EventBus>>,
+    wake_worker_join: Option<JoinHandle<()>>,
+    wake_worker_cancel: CancellationToken,
 }
 
 impl Debug for RuntimeServices {
@@ -120,6 +127,7 @@ impl Debug for RuntimeServices {
         debug_struct
             .field("conversation", &self.conversation.as_ref().map(|_| "ConversationService"));
         debug_struct.field("mailbox", &self.mailbox.as_ref().map(|_| "MailboxService"));
+        debug_struct.field("event_bus", &self.event_bus.as_ref().map(|_| "EventBus"));
 
         debug_struct.finish()
     }
@@ -164,6 +172,9 @@ impl RuntimeServices {
             mailbox: None,
             mailbox_join: None,
             mailbox_cancel: CancellationToken::new(),
+            event_bus: None,
+            wake_worker_join: None,
+            wake_worker_cancel: CancellationToken::new(),
         })
     }
 
@@ -198,6 +209,12 @@ impl RuntimeServices {
         self.mailbox = mailbox;
     }
 
+    /// Injects the node-wide event bus, constructed by
+    /// `setup_connection_router`.
+    pub(super) fn set_event_bus(&mut self, event_bus: Arc<EventBus>) {
+        self.event_bus = Some(event_bus);
+    }
+
     /// Passes the auth service DID to the client gateway so it can route
     /// `/_syneroym/session/*` requests to the auth service. Matches the
     /// pattern of `set_supervisor`/`set_conversation` — the gateway is
@@ -223,9 +240,20 @@ impl RuntimeServices {
         &mut self,
         config: &SubstrateConfig,
         connection_router: &ConnectionRouter,
+        endpoint_registry: &EndpointRegistry,
     ) {
         self.supervisor_join = spawn_supervisor_role(&self.supervisor);
         self.queue_worker_join = spawn_queue_worker_role(&self.supervisor);
+        self.wake_worker_join = match (&self.event_bus, connection_router.proxy()) {
+            (Some(event_bus), Some(proxy)) => {
+                let targets = Arc::new(RegistryWakeTargets::new(endpoint_registry.clone()));
+                let worker =
+                    WakeWorker::new(targets, event_bus.clone(), proxy, endpoint_registry.clone());
+                let cancel = self.wake_worker_cancel.clone();
+                Some(tokio::spawn(async move { worker.run(cancel).await }))
+            }
+            _ => None,
+        };
         self.proxy_outbox_join = connection_router.proxy().map(|proxy| {
             let tick = Duration::from_secs(
                 config.roles.app_sandbox.as_ref().map_or(5, |role| role.queue_tick_secs).max(1),
@@ -272,7 +300,7 @@ impl RuntimeServices {
         // and so it is a real `tokio::spawn`ed task by the time the
         // `select!` below races its `JoinHandle`, not the
         // pinned-and-dropped-on-exit future this used to be.
-        self.spawn_background_workers(config, connection_router);
+        self.spawn_background_workers(config, connection_router, endpoint_registry);
 
         #[cfg(feature = "community_registry")]
         let mut registry_fut = pin::pin!(async {
@@ -337,6 +365,8 @@ impl RuntimeServices {
             pin::pin!(join_unit_or_pending(self.mailbox_join.as_mut(), "mailbox worker"));
         let mut mailbox_pull_fut =
             pin::pin!(join_unit_or_pending(self.mailbox_pull_join.as_mut(), "mailbox receiver"));
+        let mut wake_worker_fut =
+            pin::pin!(join_unit_or_pending(self.wake_worker_join.as_mut(), "wake worker"));
         let mut shutdown_signal = pin::pin!(shutdown_signal);
 
         info!(profile = %config.profile, "starting substrate components");
@@ -353,6 +383,7 @@ impl RuntimeServices {
             res = &mut conversation_outbox_fut => log_component_exit("conversation outbox worker", res),
             res = &mut mailbox_fut => log_component_exit("mailbox worker", res),
             res = &mut mailbox_pull_fut => log_component_exit("mailbox receiver", res),
+            res = &mut wake_worker_fut => log_component_exit("wake worker", res),
             () = &mut expiry_sweep_fut => {},
             () = &mut shutdown_signal => warn!("received shutdown signal"),
         }
@@ -394,6 +425,9 @@ impl RuntimeServices {
         // queue exists for.
         self.conversation_worker_cancel.cancel();
         drop(self.conversation_worker_join.take());
+
+        self.wake_worker_cancel.cancel();
+        drop(self.wake_worker_join.take());
 
         // Aborted, not detached: an old puller must not keep pulling with
         // this node's certificates after it stops. Unacked messages come back

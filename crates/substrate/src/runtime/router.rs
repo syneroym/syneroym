@@ -61,6 +61,7 @@ pub(super) struct RouterSetup {
     pub(super) conversation: Arc<ConversationService>,
     pub(super) auth_did: Option<String>,
     pub(super) mailbox: Option<MailboxParts>,
+    pub(super) event_bus: Arc<EventBus>,
 }
 
 /// The host identity, loaded before any component starts.
@@ -253,6 +254,7 @@ async fn setup_router(
         conversation: shared.conversation().clone(),
         auth_did,
         mailbox,
+        event_bus: shared.event_bus().clone(),
     })
 }
 

@@ -579,6 +579,32 @@ async fn wire_roym_topology(
         )
         .await?;
 
+    register_roym_wakes(endpoint_registry).await?;
+
+    Ok(())
+}
+
+#[cfg(feature = "roym")]
+const ROYM_MANIFEST_TOML: &str = include_str!("../../../roym_core/app/roym.toml");
+
+#[cfg(feature = "roym")]
+pub(super) async fn register_roym_wakes(
+    endpoint_registry: &EndpointRegistry,
+) -> anyhow::Result<()> {
+    use syneroym_app_orchestration::SynAppManifest;
+    use syneroym_core::storage::DeployFacts;
+
+    let manifest = SynAppManifest::from_toml(ROYM_MANIFEST_TOML)
+        .map_err(|e| anyhow::anyhow!("failed to parse embedded roym.toml: {e}"))?;
+    for (svc_name, spec) in manifest.services {
+        if let Some(wake) = spec.config.wake {
+            let wake_json = serde_json::to_string(&wake).map_err(|e| {
+                anyhow::anyhow!("failed to serialize wake spec for {svc_name}: {e}")
+            })?;
+            let facts = DeployFacts::new("native").with_wake_json(wake_json);
+            endpoint_registry.set_deploy_facts(roym_dispatch_id(svc_name.as_ref()), facts).await?;
+        }
+    }
     Ok(())
 }
 

@@ -117,10 +117,7 @@ async fn run_probe_reports_an_unreadable_stored_health_check() {
         .registry
         .set_deploy_facts(
             "bad-check-svc".to_string(),
-            "tcp".to_string(),
-            Some("not valid json".to_string()),
-            None,
-            None,
+            DeployFacts::new("tcp").with_health_check_json(Some("not valid json".to_string())),
         )
         .await
         .unwrap();
@@ -153,16 +150,13 @@ async fn run_probe_reports_no_endpoint_for_the_declared_interface() {
         .registry
         .set_deploy_facts(
             "no-endpoint-svc".to_string(),
-            "tcp".to_string(),
-            Some(
+            DeployFacts::new("tcp").with_health_check_json(Some(
                 serde_json::to_string(&WitHealthCheck::TcpConnect(WitTcpProbe {
                     interface_name: "main".to_string(),
                     timeout_ms: 1000,
                 }))
                 .unwrap(),
-            ),
-            None,
-            None,
+            )),
         )
         .await
         .unwrap();
@@ -198,20 +192,13 @@ async fn run_probe_reports_a_non_tcp_endpoint_under_tcp_connect() {
         .registry
         .set_deploy_facts(
             "non-tcp-endpoint-svc".to_string(),
-            // "nativehost" so `instance_phase` reports `Unknown` (the
-            // probe runs) without this test also having to fake a real
-            // running instance -- "wasm" would report `NotRunning` and
-            // skip the probe entirely, before ever reaching `run_probe`.
-            "nativehost".to_string(),
-            Some(
+            DeployFacts::new("nativehost").with_health_check_json(Some(
                 serde_json::to_string(&WitHealthCheck::TcpConnect(WitTcpProbe {
                     interface_name: "main".to_string(),
                     timeout_ms: 1000,
                 }))
                 .unwrap(),
-            ),
-            None,
-            None,
+            )),
         )
         .await
         .unwrap();
@@ -244,10 +231,7 @@ async fn run_probe_reports_a_non_tcp_endpoint_under_http_get() {
         .registry
         .set_deploy_facts(
             "non-tcp-http-svc".to_string(),
-            // See the identical note in the tcp-connect version of this
-            // test just above.
-            "nativehost".to_string(),
-            Some(
+            DeployFacts::new("nativehost").with_health_check_json(Some(
                 serde_json::to_string(&WitHealthCheck::HttpGet(WitHttpProbe {
                     interface_name: "main".to_string(),
                     path: "/healthz".to_string(),
@@ -255,9 +239,7 @@ async fn run_probe_reports_a_non_tcp_endpoint_under_http_get() {
                     timeout_ms: 1000,
                 }))
                 .unwrap(),
-            ),
-            None,
-            None,
+            )),
         )
         .await
         .unwrap();
@@ -294,17 +276,14 @@ async fn a_probe_is_not_run_for_an_instance_that_is_not_running() {
         .registry
         .set_deploy_facts(
             "not-running-svc".to_string(),
-            "wasm".to_string(),
-            Some(
+            DeployFacts::new("wasm").with_health_check_json(Some(
                 serde_json::to_string(&WitHealthCheck::Rpc(WitRpcProbe {
                     interface_name: "main".to_string(),
                     method: "ping".to_string(),
                     timeout_ms: 1000,
                 }))
                 .unwrap(),
-            ),
-            None,
-            None,
+            )),
         )
         .await
         .unwrap();
@@ -544,16 +523,13 @@ async fn a_probe_result_is_cached_within_the_minimum_interval() {
         .registry
         .set_deploy_facts(
             "cached-probe-svc".to_string(),
-            "tcp".to_string(),
-            Some(
+            DeployFacts::new("tcp").with_health_check_json(Some(
                 serde_json::to_string(&WitHealthCheck::TcpConnect(WitTcpProbe {
                     interface_name: "main".to_string(),
                     timeout_ms: 2000,
                 }))
                 .unwrap(),
-            ),
-            None,
-            None,
+            )),
         )
         .await
         .unwrap();

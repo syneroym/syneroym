@@ -1029,12 +1029,12 @@ async fn a_deploy_records_its_service_type_and_health_check_and_undeploy_removes
     );
     service.deploy("facts-svc".to_string(), manifest, &node_wide_caller("owner")).await.unwrap();
 
-    let (service_type, check_json, ..) = service.registry.deploy_facts("facts-svc").unwrap();
-    assert_eq!(service_type, "tcp");
+    let facts = service.registry.deploy_facts("facts-svc").unwrap();
+    assert_eq!(facts.service_type, "tcp");
     // Stored as the wire variant's own JSON, not the app model's
     // kebab-case one -- `run_probe` deserializes back into the same
     // wire type it reads here, so the two must agree on shape.
-    let stored: WitHealthCheck = serde_json::from_str(&check_json.unwrap()).unwrap();
+    let stored: WitHealthCheck = serde_json::from_str(&facts.health_check_json.unwrap()).unwrap();
     assert!(matches!(stored, WitHealthCheck::TcpConnect(_)), "{stored:?}");
 
     service.undeploy("facts-svc".to_string(), 0, &node_wide_caller("owner")).await.unwrap();
@@ -1057,16 +1057,16 @@ async fn a_redeploy_without_a_health_check_clears_the_stored_one() {
         .deploy("redeploy-svc".to_string(), with_check, &node_wide_caller("owner"))
         .await
         .unwrap();
-    assert!(service.registry.deploy_facts("redeploy-svc").unwrap().1.is_some());
+    assert!(service.registry.deploy_facts("redeploy-svc").unwrap().health_check_json.is_some());
 
     let without_check = tcp_manifest_with(9, None);
     service
         .deploy("redeploy-svc".to_string(), without_check, &node_wide_caller("owner"))
         .await
         .unwrap();
-    let (service_type, check_json, ..) = service.registry.deploy_facts("redeploy-svc").unwrap();
-    assert_eq!(service_type, "tcp");
-    assert!(check_json.is_none());
+    let facts = service.registry.deploy_facts("redeploy-svc").unwrap();
+    assert_eq!(facts.service_type, "tcp");
+    assert!(facts.health_check_json.is_none());
 }
 
 #[tokio::test]
@@ -1088,7 +1088,7 @@ async fn a_container_and_a_tcp_service_are_distinguished_by_the_recorded_type() 
         .unwrap();
     service
         .registry
-        .set_deploy_facts("container-svc".to_string(), "container".to_string(), None, None, None)
+        .set_deploy_facts("container-svc".to_string(), DeployFacts::new("container"))
         .await
         .unwrap();
     service
@@ -1102,7 +1102,7 @@ async fn a_container_and_a_tcp_service_are_distinguished_by_the_recorded_type() 
         .unwrap();
     service
         .registry
-        .set_deploy_facts("tcp-svc".to_string(), "tcp".to_string(), None, None, None)
+        .set_deploy_facts("tcp-svc".to_string(), DeployFacts::new("tcp"))
         .await
         .unwrap();
 

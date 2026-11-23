@@ -119,3 +119,16 @@ fn every_production_factory_in_runtime_is_fully_wired() {
         "every NativeHostFactory::new site in runtime must be followed by .with_event_bus"
     );
 }
+
+#[cfg(feature = "roym")]
+#[tokio::test]
+async fn the_linked_build_registers_every_wake_of_the_manifest() {
+    let store = Arc::new(MockStorage::new());
+    let registry = EndpointRegistry::new(store).await.unwrap();
+    super::roym::register_roym_wakes(&registry).await.unwrap();
+    let actual = registry.wake_targets();
+    for (service_id, wake_json) in actual {
+        assert!(service_id.starts_with("did:key:roym-"));
+        let _: syneroym_app_orchestration::WakeSpec = serde_json::from_str(&wake_json).unwrap();
+    }
+}
