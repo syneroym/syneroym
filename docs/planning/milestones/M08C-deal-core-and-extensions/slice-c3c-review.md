@@ -119,7 +119,7 @@ The owner has not answered Q1 to Q8 yet. My view on each:
 
 ### Findings
 
-- [ ] **P1 — major.** *Where:* D-C3c-2 (The wake worker), `crates/substrate/src/runtime/wake.rs`.
+- [x] **P1 — major.** *Where:* D-C3c-2 (The wake worker), `crates/substrate/src/runtime/wake.rs`.
   *Problem:* In D-C3c-2, `WakeWorker` spawns a call to `proxy.invoke(ProxyRequest { ... })`.
   In `crates/router/src/proxy/router.rs` (`dispatch_call`), if
   `self.registry.lookup(&req.target_service, &req.interface)` returns `None`,
@@ -141,9 +141,9 @@ The owner has not answered Q1 to Q8 yet. My view on each:
   *Fix:* In `WakeWorker`, check that the service has a local endpoint via
   `self.registry.lookup(&service_id, &spec.interface).is_some()` before dispatching,
   or invoke through a local-only proxy method, matching the invariant in `lifecycle.rs:625`.
-  *Status:* Open
+  *Status:* Fixed (073d0519)
 
-- [ ] **P2 — major.** *Where:* Section 5 (table under D-C3c-1), Step 3 of C3c1 (section 6.1).
+- [x] **P2 — major.** *Where:* Section 5 (table under D-C3c-1), Step 3 of C3c1 (section 6.1).
   *Problem:* The plan specifies adding `wake_json` to `set_deploy_facts` on
   `crates/core/src/local_registry.rs:470`. However, `set_deploy_facts` delegates
   to `RegistryStorage::save_deploy_facts`.
@@ -162,9 +162,9 @@ The owner has not answered Q1 to Q8 yet. My view on each:
   *Fix:* Update the D-C3c-1 table and C3c1 Step 3 to include `crates/core/src/storage.rs`,
   `crates/data_db/src/registry_store.rs` (with the schema migration), and the mock
   implementations in `failing_storage.rs` and `service_ownership.rs`.
-  *Status:* Open
+  *Status:* Fixed (073d0519)
 
-- [ ] **P3 — major.** *Where:* Section 6.2 (C3c2 Step 1 vs Step 3), D-C3c-10.
+- [x] **P3 — major.** *Where:* Section 6.2 (C3c2 Step 1 vs Step 3), D-C3c-10.
   *Problem:* In D-C3c-10, `AgreementProgressPayload` gains `pub formed_as: FormedAs`
   as a required field with no default.
   Section 6.2 Step 1 modifies `roym_core` types and states:
@@ -185,9 +185,9 @@ The owner has not answered Q1 to Q8 yet. My view on each:
   `AgreementProgressPayload` across `roym_transaction` tests must be updated
   (e.g., passing `formed_as: FormedAs::Quote`) so the entire workspace compiles
   at Step 1, before the runtime snapshot logic is wired in Step 3.
-  *Status:* Open
+  *Status:* Fixed (073d0519)
 
-- [ ] **P4 — minor.** *Where:* Section 7.8 (Size and time risks), C3c1 Step 4, C3c2 Step 4, C3c3 Step 1.
+- [x] **P4 — minor.** *Where:* Section 7.8 (Size and time risks), C3c1 Step 4, C3c2 Step 4, C3c3 Step 1.
   *Problem:* `crates/roym_transaction/src/app/sync.rs` is at **759 lines** (41
   lines below the hard 800-line cap).
   Section 7.8 estimates "`sync.rs` (759) gets two calls (+6)".
@@ -202,9 +202,9 @@ The owner has not answered Q1 to Q8 yet. My view on each:
   sibling files under `crates/roym_transaction/src/app/sync/` (e.g., `sync/cards.rs`
   or `sync/enquiry_card.rs` and `sync/quote_card.rs`), matching siblings like
   `sync/confirm.rs` and `sync/receipts.rs`. This frees ~140 lines in `sync.rs`.
-  *Status:* Open
+  *Status:* Fixed (073d0519)
 
-- [ ] **P5 — minor.** *Where:* D-C3c-2, line 733.
+- [x] **P5 — minor.** *Where:* D-C3c-2, line 733.
   *Problem:* The plan states:
   "`record` maps a service id to its app instance, `event_bus.rs:151`. Add a small
   read-only accessor there if none exists; do not copy the map."
@@ -217,9 +217,9 @@ The owner has not answered Q1 to Q8 yet. My view on each:
   *Failure case:* Minor confusion during implementation looking for where to add
   the accessor.
   *Fix:* Note that `app_instance_of` already exists on `EventBus`.
-  *Status:* Open
+  *Status:* Fixed (073d0519)
 
-- [ ] **P6 — minor.** *Where:* D-C3c-2 (The wake worker).
+- [x] **P6 — minor.** *Where:* D-C3c-2 (The wake worker).
   *Problem:* In D-C3c-2, the worker loop runs:
   ```text
   state.running = true; state.last_run_at = now
@@ -233,9 +233,9 @@ The owner has not answered Q1 to Q8 yet. My view on each:
   that service on that node.
   *Fix:* Guard `state.running` with an RAII guard or `scopeguard` / `defer` pattern
   so `running` is reset to `false` even on panic or task termination.
-  *Status:* Open
+  *Status:* Fixed (073d0519)
 
-- [ ] **P7 — minor.** *Where:* D-C3c-1 (`transaction.drive`), lines 787-800.
+- [x] **P7 — minor.** *Where:* D-C3c-1 (`transaction.drive`), lines 787-800.
   *Problem:* `drive_at` states:
   "take at most MAX_DRIVE_CONVERSATIONS from DRIVE_PENDING, oldest `since` first".
   In the Roym data layer, listing or filtering rows sorted by a field requires an
@@ -245,9 +245,9 @@ The owner has not answered Q1 to Q8 yet. My view on each:
   an unindexed query error.
   *Fix:* Explicitly state in D-C3c-1 and C3c1 Step 4 that `DRIVE_PENDING` is
   registered in `ensure_collections` with a numeric index on `since`.
-  *Status:* Open
+  *Status:* Fixed (073d0519)
 
-- [ ] **P8 — minor.** *Where:* Section 2.2 point 8, and D-C3c-7.
+- [x] **P8 — minor.** *Where:* Section 2.2 point 8, and D-C3c-7.
   *Problem:* The plan cites `messages.ts:783` as "the quote form's prefill from the enquiry".
   `messages.ts:783` is `openQuoteForm`, which constructs a quote form without
   prefilling from enquiry description. The enquiry form that currently enforces
@@ -255,9 +255,9 @@ The owner has not answered Q1 to Q8 yet. My view on each:
   *Failure case:* Developer checking line 783 will find quote form code rather than
   the enquiry description code.
   *Fix:* Update the citation from `messages.ts:783` to `messages.ts:428-475`.
-  *Status:* Open
+  *Status:* Fixed (073d0519)
 
-- [ ] **P9 — minor.** *Where:* D-C3c-6 (`terms_from_listing`).
+- [x] **P9 — minor.** *Where:* D-C3c-6 (`terms_from_listing`).
   *Problem:* `ListingPayload::validate` checks that `payment.payee.len() <= MAX_PAYEE_LEN`,
   but does not forbid an empty string (`payee: ""`). However, `DealTerms::validate`
   strictly requires non-empty `payee` (`if payee.trim().is_empty() { return Err(DealError::PayeeEmpty); }`).
@@ -269,7 +269,7 @@ The owner has not answered Q1 to Q8 yet. My view on each:
   *Fix:* In `terms_from_listing` (and `as_listed_ready`), verify that
   `payment.payee.trim()` is not empty before mapping, returning
   `NotComplete::PriceNotFixed` if it is empty.
-  *Status:* Open
+  *Status:* Fixed (073d0519)
 
 ## Plan review round 2 — Claude Sonnet 5.5, 2026-11-23
 
@@ -414,7 +414,7 @@ The owner has not answered Q1 to Q8. My view:
 
 ### Findings
 
-- [ ] **P10 — major.** *Where:* D-C3c-1, the table row for
+- [x] **P10 — major.** *Where:* D-C3c-1, the table row for
   `local_registry.rs:470`; C3c1 Step 3.
   *Problem:* Round 1's P2 lists the places that store the new column. It
   misses a caller that re-writes the deploy facts. After a binding push,
@@ -443,9 +443,9 @@ The owner has not answered Q1 to Q8. My view:
   re-stamp copies every field except the hash. Add the test
   `a_binding_push_keeps_the_wake`. Name `lifecycle.rs:193` in the step, next
   to the `git grep -n set_deploy_facts` the plan already asks for.
-  *Status:* Open
+  *Status:* Fixed (073d0519)
 
-- [ ] **P11 — major.** *Where:* Q5, section 4 ("`transaction`'s `depends_on`
+- [x] **P11 — major.** *Where:* Q5, section 4 ("`transaction`'s `depends_on`
   becomes ..."), C3c2 Step 4.
   *Problem:* The plan adds `catalog` to `depends_on` in `roym.toml`. That
   edge reaches the WASM build, because `apply_plan` binds the dependencies
@@ -471,9 +471,9 @@ The owner has not answered Q1 to Q8. My view:
   `save_binding` for that service in `roym.rs`. Add one native test in
   `crates/substrate` that calls `listing.get` from `transaction` in the
   linked build.
-  *Status:* Open
+  *Status:* Fixed (073d0519)
 
-- [ ] **P12 — major.** *Where:* Q6; D-C3c-12 ("Open" for the limits, and the
+- [x] **P12 — major.** *Where:* Q6; D-C3c-12 ("Open" for the limits, and the
   `Waiting(CapReached)` and `Waiting(CounterpartyHoldsOne)` checks); section
   3 row AG-45.
   *Problem:* The two instant limits are checked when the owner's node
@@ -505,9 +505,9 @@ The owner has not answered Q1 to Q8. My view:
   `many_taps_before_any_acceptance_make_only_cap_quotes` and
   `one_counterparty_tapping_twice_gets_one_instant_quote`. Record a
   Deviation for the agreements doc's definition of "open".
-  *Status:* Open
+  *Status:* Fixed (073d0519)
 
-- [ ] **P13 — minor.** *Where:* `drive_at` pseudo-code (D-C3c-1,
+- [x] **P13 — minor.** *Where:* `drive_at` pseudo-code (D-C3c-1,
   `drive`), "The bound".
   *Problem:* `drive` deletes a conversation from `DRIVE_PENDING` when
   `sync_direct` returns `Ok`. Two cases lose work:
@@ -527,9 +527,9 @@ The owner has not answered Q1 to Q8. My view:
   SYNC_WINDOW`) and keep the row pending when it is set. (2) Delete a
   pending row only if its `since` is unchanged (compare-and-delete), or keep
   `transaction.drive` out of the Hub's reach. Add a test for each.
-  *Status:* Open
+  *Status:* Fixed (073d0519)
 
-- [ ] **P14 — minor.** *Where:* D-C3c-1, "Timed work" and "The bound"; D-C3c-2.
+- [x] **P14 — minor.** *Where:* D-C3c-1, "Timed work" and "The bound"; D-C3c-2.
   *Problem:* The bound is "8 conversations per call", but the cost of one
   call is not set by that number. Each `sync` also runs
   `recover_deciding_rows` for every agreement of the node and
@@ -548,9 +548,9 @@ The owner has not answered Q1 to Q8. My view:
   `recover_deciding_rows` once per `drive`, not once per conversation, or
   say why not. Extend the stop-rule measurement to 8 conversations on a node
   with 200 agreements.
-  *Status:* Open
+  *Status:* Fixed (073d0519)
 
-- [ ] **P15 — minor.** *Where:* D-C3c-1 table (`services.rs:236`), D-C3c-2.
+- [x] **P15 — minor.** *Where:* D-C3c-1 table (`services.rs:236`), D-C3c-2.
   *Problem:* The plan does not say how the worker gets its three handles.
   `RuntimeServices` holds neither the event bus nor the endpoint registry;
   the event bus is made in `router.rs:472` and lives in `SharedNodeHandles`.
@@ -571,9 +571,9 @@ The owner has not answered Q1 to Q8. My view:
   the worker when the proxy is `None`, and say how the handle is raced.
   State in D-C3c-2 and in the ADR that `on_events` of a service with no app
   context is ignored and logged once.
-  *Status:* Open
+  *Status:* Fixed (073d0519)
 
-- [ ] **P16 — minor.** *Where:* D-C3c-12 (`issue_quote`), D-C3c-6, Q8.
+- [x] **P16 — minor.** *Where:* D-C3c-12 (`issue_quote`), D-C3c-6, Q8.
   *Problem:* `terms_from_listing` returns a finished `DealTerms`. `issue_quote`
   is described as "the body of `set_at` from `prepare_terms` on". But
   `prepare_terms` takes a `DealTermsInput`
@@ -594,9 +594,9 @@ The owner has not answered Q1 to Q8. My view:
   author commitment with a prepare hook, then checks that the returned window
   equals the window the terms already hold (a difference is a decline with
   `slot-not-in-listing`). Say which.
-  *Status:* Open
+  *Status:* Fixed (073d0519)
 
-- [ ] **P17 — minor.** *Where:* D-C3c-8 (`MAX_TERMS_TEXT_LEN`), D-C3c-11
+- [x] **P17 — minor.** *Where:* D-C3c-8 (`MAX_TERMS_TEXT_LEN`), D-C3c-11
   (`build_verified_row`).
   *Problem:* Two citations are stale. `deal.rs:21` is `MAX_COMMITMENTS`;
   `MAX_TERMS_TEXT_LEN` is at
@@ -606,4 +606,4 @@ The owner has not answered Q1 to Q8. My view:
   not `:116`. The other 53 links I checked are right.
   *Failure case:* A developer opens the wrong line.
   *Fix:* Correct both links.
-  *Status:* Open
+  *Status:* Fixed (073d0519)
