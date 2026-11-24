@@ -256,6 +256,6 @@ fn every_hook_service_is_a_dependency_of_transaction() {
     }
 }
 
-// Note: Linked-build wake registration is verified by substrate unit test:
-// `crates/substrate/src/runtime/tests.
-// rs::the_linked_build_registers_every_wake_of_the_manifest`.
+// Linked-build wake registration is verified by the substrate unit test
+// the_linked_build_registers_every_wake_of_the_manifest in
+// crates/substrate/src/runtime/tests.rs.

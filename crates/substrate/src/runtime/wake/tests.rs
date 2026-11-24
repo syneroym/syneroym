@@ -17,6 +17,7 @@ use syneroym_core::{
     storage::{DeployFacts, MockStorage},
 };
 use syneroym_rpc::{ProxyError, ProxyRequest, ServiceProxy};
+use tokio::sync::Notify;
 
 use super::*;
 
@@ -290,7 +291,7 @@ async fn a_panic_in_invoke_resets_running_guard() {
 #[derive(Debug)]
 struct SlowProxy {
     invocations: Mutex<Vec<ProxyRequest>>,
-    gate: tokio::sync::Notify,
+    gate: Notify,
 }
 
 #[async_trait]
@@ -307,10 +308,7 @@ async fn a_slow_call_is_never_overlapped() {
     let storage = Arc::new(MockStorage::new());
     let registry = EndpointRegistry::new(storage).await.unwrap();
     let bus = EventBus::new(registry.clone());
-    let proxy = Arc::new(SlowProxy {
-        invocations: Mutex::new(Vec::new()),
-        gate: tokio::sync::Notify::new(),
-    });
+    let proxy = Arc::new(SlowProxy { invocations: Mutex::new(Vec::new()), gate: Notify::new() });
 
     let mut spec = sample_spec();
     spec.every_secs = 30;

@@ -1,8 +1,10 @@
 #![allow(clippy::cognitive_complexity)]
 
-use std::{fs, path::PathBuf, sync::Arc};
+use std::{collections::HashMap, fs, path::PathBuf, sync::Arc};
 
-use syneroym_app_orchestration::{AppScope, ServiceId, TopologyEpoch, TopologyMode};
+use syneroym_app_orchestration::{
+    AppScope, ServiceId, SynAppManifest, TopologyEpoch, TopologyMode, WakeSpec,
+};
 use syneroym_core::storage::MockStorage;
 use syneroym_identity::{DelegationCertificate, delegation::SCOPE_SERVICE_INSTANCE};
 
@@ -123,23 +125,21 @@ fn every_production_factory_in_runtime_is_fully_wired() {
 #[cfg(feature = "roym")]
 #[tokio::test]
 async fn the_linked_build_registers_every_wake_of_the_manifest() {
-    let manifest =
-        syneroym_app_orchestration::SynAppManifest::from_toml(super::roym::ROYM_MANIFEST_TOML)
-            .expect("parse embedded manifest");
-    let expected: std::collections::HashMap<String, syneroym_app_orchestration::WakeSpec> =
-        manifest
-            .services
-            .into_iter()
-            .filter_map(|(name, spec)| {
-                spec.config.wake.map(|w| (super::roym::roym_dispatch_id(name.as_ref()), w))
-            })
-            .collect();
+    let manifest = SynAppManifest::from_toml(super::roym::ROYM_MANIFEST_TOML)
+        .expect("parse embedded manifest");
+    let expected: HashMap<String, WakeSpec> = manifest
+        .services
+        .into_iter()
+        .filter_map(|(name, spec)| {
+            spec.config.wake.map(|w| (super::roym::roym_dispatch_id(name.as_ref()), w))
+        })
+        .collect();
     assert!(!expected.is_empty(), "expected at least one wake in manifest");
 
     let store = Arc::new(MockStorage::new());
     let registry = EndpointRegistry::new(store).await.unwrap();
     super::roym::register_roym_wakes(&registry).await.unwrap();
-    let actual: std::collections::HashMap<String, syneroym_app_orchestration::WakeSpec> = registry
+    let actual: HashMap<String, WakeSpec> = registry
         .wake_targets()
         .into_iter()
         .map(|(svc, json)| (svc, serde_json::from_str(&json).expect("valid wake json")))
