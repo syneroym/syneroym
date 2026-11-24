@@ -61,6 +61,16 @@ interface orchestrator {
         rpc(rpc-probe),
     }
 
+    /// Node-local wake specification for the deployed service (ADR-0031).
+    record wake-spec {
+        interface-name: string,
+        method: string,
+        params: option<string>,
+        on-events: list<string>,
+        every-secs: u32,
+        timeout-ms: u32,
+    }
+
     /// Endpoint-record visibility (ADR-0018). `public` propagates records to
     /// parent registries; `internal` registers with the local community
     /// registry only; `private` is never registered.
@@ -103,6 +113,8 @@ interface orchestrator {
         fdae-policy: option<document-source>,
         /// Author-declared readiness probe. Absent = liveness only.
         health-check: option<health-check>,
+        /// Node-local wake specification (ADR-0031).
+        wake: option<wake-spec>,
         /// Static assets served directly from blob storage.
         assets: option<asset-bundle>,
         /// Whether this service's endpoint record is published, and how far

@@ -195,7 +195,7 @@ impl ControlPlaneService {
         incoming_hash: &str,
     ) -> bool {
         self.full_deploy_completed.contains_key(service_id)
-            && self.registry.deploy_facts(service_id).and_then(|(_, _, hash, _)| hash).as_deref()
+            && self.registry.deploy_facts(service_id).and_then(|f| f.manifest_hash).as_deref()
                 == Some(incoming_hash)
             && self.registry.owner_of(service_id).as_deref().is_none_or(|o| o == caller.caller_did)
             && !matches!(

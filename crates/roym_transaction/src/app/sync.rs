@@ -1,5 +1,6 @@
 //! Transaction synchronization across conversation history.
 
+pub(crate) mod cards;
 pub(crate) mod confirm;
 pub(crate) mod decline;
 pub(crate) mod failure;
@@ -16,25 +17,22 @@ use syneroym_roym_core::{
     card::{self, CARD_CONTENT_TYPE},
     clock,
     conversation::{Direction, group::CARDS_NOT_IN_GROUPS_MESSAGE},
-    deal::sd::reveal_terms_strict,
     envelope::Response,
     method::{
         Reply, SiblingError, call_sibling,
         conversation::{ChangesInput, ChangesOutput},
     },
-    paging,
-    record::RECORD_QUOTE,
-    services, signing,
+    paging, services, signing,
     transaction::{
         self, AgreementReceiptPayload, MAX_CARDS_PER_CONVERSATION, ReceiptHalf, SYNC_WINDOW,
     },
 };
 
+use self::cards::{file_enquiry_card, file_quote_card};
 use super::{
-    AGREEMENTS, AgreementRow, CARDS, CardRow, ENQUIRY_HISTORY, LEDGER, QUOTE_HISTORY, SYNC_STATE,
-    SyncStateRow, decide, disclosures, enquiry_ops::store_received_enquiry, ensure_collections,
-    get_bytes, get_row, hooks::ExtensionHooks, progress_ops, put_card, put_row,
-    quote_ops::store_received_quote,
+    AGREEMENTS, AgreementRow, CARDS, CardRow, LEDGER, SYNC_STATE, SyncStateRow, decide,
+    disclosures, ensure_collections, get_row, hooks::ExtensionHooks, progress_ops, put_card,
+    put_row,
 };
 
 #[derive(Debug, Deserialize)]
@@ -57,6 +55,9 @@ pub struct SyncOutput {
     /// tries them again.
     pub unsent_failures: u32,
     pub last_seq: u64,
+    /// True only when the window was full (`scanned == SYNC_WINDOW`) and
+    /// `last_seq` grew in this sync.
+    pub more: bool,
 }
 
 #[derive(Debug, Default)]
@@ -68,29 +69,58 @@ pub(crate) struct FileCardResult {
     pub(crate) deferred: bool,
 }
 
+#[derive(Debug)]
+pub(crate) enum SyncError {
+    NotDirect,
+    Internal(String),
+}
+
 pub(crate) async fn sync<H: AppHost>(host: &H, input: SyncInput) -> Reply<SyncOutput> {
     sync_at(host, input, clock::now_secs()).await
 }
 
 pub(crate) async fn sync_at<H: AppHost>(host: &H, input: SyncInput, now: u64) -> Reply<SyncOutput> {
-    ensure_collections(host).await.map_err(Response::internal_error)?;
+    let out = match sync_direct(host, &input.conversation, input.full, now).await {
+        Ok(out) => out,
+        Err(SyncError::NotDirect) => {
+            return Err(Response::invalid_params(CARDS_NOT_IN_GROUPS_MESSAGE));
+        }
+        Err(SyncError::Internal(e)) => return Err(Response::internal_error(e)),
+    };
+    let _ = decide::recover_deciding_rows(host, now).await;
+    Ok(out)
+}
 
-    let sync_state: SyncStateRow = match get_row(host, SYNC_STATE, &input.conversation).await {
+pub(crate) async fn sync_direct<H: AppHost>(
+    host: &H,
+    conversation: &str,
+    full: bool,
+    now: u64,
+) -> Result<SyncOutput, SyncError> {
+    ensure_collections(host).await.map_err(SyncError::Internal)?;
+
+    let sync_state: SyncStateRow = match get_row(host, SYNC_STATE, conversation).await {
         Ok(Some(s)) => s,
         Ok(None) => SyncStateRow { last_seq: 0 },
-        Err(e) => return Err(Response::internal_error(e)),
+        Err(e) => return Err(SyncError::Internal(e)),
     };
 
-    let start = if input.full { 0 } else { sync_state.last_seq };
-    let (messages, last_seq, kind) = fetch_sync_messages(host, &input.conversation, start).await?;
+    let start = if full { 0 } else { sync_state.last_seq };
+    let (messages, last_seq, kind) = match fetch_sync_messages(host, conversation, start).await {
+        Ok(res) => res,
+        Err(e) => {
+            let msg = e.error.as_ref().map(|err| err.message.clone()).unwrap_or_default();
+            return Err(SyncError::Internal(msg));
+        }
+    };
     if kind.as_deref() == Some("group") {
-        return Err(Response::invalid_params(CARDS_NOT_IN_GROUPS_MESSAGE));
+        return Err(SyncError::NotDirect);
     }
 
-    let card_filter = json!({ "conversation": input.conversation }).to_string();
+    let card_filter = json!({ "conversation": conversation }).to_string();
     let mut card_count = match paging::count(host, CARDS, Some(card_filter)).await {
         Ok(c) => c,
-        Err(e) => return Err(Response::internal_error(e)),
+        Err(e) => return Err(SyncError::Internal(e)),
     };
 
     let mut stats = SyncStats::default();
@@ -100,7 +130,7 @@ pub(crate) async fn sync_at<H: AppHost>(host: &H, input: SyncInput, now: u64) ->
     for m in messages {
         stats.scanned += 1;
         let vseq = m.get("visible_seq").and_then(Value::as_u64);
-        match classify_sync_message(host, &m, &input.conversation, now, &owner, card_count).await {
+        match classify_sync_message(host, &m, conversation, now, &owner, card_count).await {
             Ok(SyncOutcome::Skip) => {}
             Ok(SyncOutcome::Declined) => {
                 first_declined = first_declined.or(vseq.map(|s| s.saturating_sub(1)));
@@ -113,7 +143,7 @@ pub(crate) async fn sync_at<H: AppHost>(host: &H, input: SyncInput, now: u64) ->
                 card_count += 1;
                 stats.record_filed(&file_res);
             }
-            Err(e) => return Err(Response::internal_error(e)),
+            Err(e) => return Err(SyncError::Internal(e)),
         }
     }
 
@@ -122,17 +152,16 @@ pub(crate) async fn sync_at<H: AppHost>(host: &H, input: SyncInput, now: u64) ->
         None => sync_state.last_seq.max(last_seq),
     };
     if let Err(e) =
-        put_row(host, SYNC_STATE, &input.conversation, &SyncStateRow { last_seq: new_last_seq })
-            .await
+        put_row(host, SYNC_STATE, conversation, &SyncStateRow { last_seq: new_last_seq }).await
     {
-        return Err(Response::internal_error(e));
+        return Err(SyncError::Internal(e));
     }
 
     let unsent_failures =
-        confirm::confirm_own_reservations(host, &ExtensionHooks, &input.conversation, &owner, now)
-            .await;
-    let _ = progress_ops::tick_conversation_at(host, &input.conversation, now).await;
-    let _ = decide::recover_deciding_rows(host, now).await;
+        confirm::confirm_own_reservations(host, &ExtensionHooks, conversation, &owner, now).await;
+    let _ = progress_ops::tick_conversation_at(host, conversation, now).await;
+
+    let more = stats.scanned == SYNC_WINDOW && new_last_seq > sync_state.last_seq;
 
     Ok(SyncOutput {
         scanned: stats.scanned,
@@ -143,6 +172,7 @@ pub(crate) async fn sync_at<H: AppHost>(host: &H, input: SyncInput, now: u64) ->
         deferred: stats.deferred,
         unsent_failures,
         last_seq: new_last_seq,
+        more,
     })
 }
 
@@ -466,154 +496,6 @@ pub(crate) async fn refuse_card<H: AppHost>(
     Ok(FileCardResult {
         filed: true,
         refused: true,
-        unknown: false,
-        countersigned: false,
-        deferred: false,
-    })
-}
-
-async fn file_enquiry_card<H: AppHost>(
-    host: &H,
-    mut row: CardRow,
-    envelope: &str,
-    disclosures: &[String],
-    conversation: &str,
-    now: u64,
-    owner: &str,
-) -> Result<FileCardResult, String> {
-    if !disclosures.is_empty() {
-        return refuse_card(host, row, "disclosures not permitted on enquiry card").await;
-    }
-    let v = transaction::verify_enquiry(envelope, now);
-    if !v.verified {
-        let reason = v.reason.unwrap_or_else(|| "enquiry does not verify".to_string());
-        return refuse_card(host, row, reason).await;
-    }
-    let payload = match v.payload.as_ref() {
-        Some(p) => p,
-        None => return refuse_card(host, row, "missing payload").await,
-    };
-    if payload.conversation != conversation {
-        return refuse_card(host, row, "card names another conversation").await;
-    }
-    let already_held = match &v.record_id {
-        Some(rid) => get_bytes(host, ENQUIRY_HISTORY, rid).await?.is_some(),
-        None => false,
-    };
-    let version_count = match store_received_enquiry(host, envelope, &v, payload, now, owner).await
-    {
-        Ok(vc) => vc,
-        Err(e) => return refuse_card(host, row, e).await,
-    };
-    row.verified = true;
-    row.repeat = already_held;
-    row.version_count = Some(version_count);
-    row.data = Some(serde_json::to_value(payload).unwrap_or(Value::Null));
-    row.issuer = v.issuer;
-    row.record_id = v.record_id;
-    row.revocation_status = v.revocation_status;
-    put_card(host, &row).await?;
-    Ok(FileCardResult {
-        filed: true,
-        refused: false,
-        unknown: false,
-        countersigned: false,
-        deferred: false,
-    })
-}
-
-async fn file_quote_card<H: AppHost>(
-    host: &H,
-    mut row: CardRow,
-    envelope: &str,
-    disclosures: &[String],
-    conversation: &str,
-    now: u64,
-    owner: &str,
-) -> Result<FileCardResult, String> {
-    let v = transaction::verify_quote(envelope, now);
-    if !v.verified {
-        let reason = v.reason.unwrap_or_else(|| "quote does not verify".to_string());
-        return refuse_card(host, row, reason).await;
-    }
-    let payload = match v.payload.as_ref() {
-        Some(p) => p,
-        None => return refuse_card(host, row, "missing payload").await,
-    };
-    if payload.conversation != conversation {
-        return refuse_card(host, row, "card names another conversation").await;
-    }
-    let rid = v.record_id.as_deref().unwrap_or_default();
-    let already_held = match &v.record_id {
-        Some(rid) => get_bytes(host, QUOTE_HISTORY, rid).await?.is_some(),
-        None => false,
-    };
-
-    let effective_disclosures = if already_held && disclosures.is_empty() {
-        match disclosures::load(host, rid).await? {
-            Some(dr) => dr,
-            None => return refuse_card(host, row, "disclosures missing for held quote").await,
-        }
-    } else {
-        disclosures.to_vec()
-    };
-
-    let plain_terms = match reveal_terms_strict(&payload.terms, &effective_disclosures) {
-        Ok(t) => t,
-        Err(e) => {
-            return refuse_card(host, row, format!("quote disclosures invalid: {}", e.code()))
-                .await;
-        }
-    };
-    if let Err(e) = plain_terms.validate() {
-        return refuse_card(host, row, e.to_string()).await;
-    }
-
-    let enquiry_rec_id = match &payload.answers {
-        transaction::Answers::Enquiry { record_id } => record_id,
-        transaction::Answers::Want { .. } => {
-            return refuse_card(host, row, "answers a want, which is not supported").await;
-        }
-    };
-    let req_bytes = match get_bytes(host, ENQUIRY_HISTORY, enquiry_rec_id).await? {
-        Some(b) => b,
-        None => {
-            return refuse_card(host, row, "answers an enquiry this node does not hold").await;
-        }
-    };
-    let req_str = match String::from_utf8(req_bytes) {
-        Ok(s) => s,
-        Err(_) => {
-            return refuse_card(host, row, "stored enquiry envelope is invalid utf8").await;
-        }
-    };
-    let req_v = transaction::verify_enquiry(&req_str, now);
-    if !req_v.verified || req_v.issuer.as_deref() != Some(payload.counterparty_did.as_str()) {
-        return refuse_card(host, row, "quote counterparty_did does not match enquiry issuer")
-            .await;
-    }
-
-    disclosures::store(host, rid, RECORD_QUOTE, &effective_disclosures, now).await?;
-
-    let version_count = match store_received_quote(host, envelope, &v, payload, now, owner).await {
-        Ok(vc) => vc,
-        Err(e) => return refuse_card(host, row, e).await,
-    };
-    row.verified = true;
-    row.repeat = already_held;
-    row.expired = v.expired;
-    row.version_count = Some(version_count);
-    row.data = Some(disclosures::plain_view(
-        &serde_json::to_value(payload).unwrap_or(Value::Null),
-        &effective_disclosures,
-    ));
-    row.issuer = v.issuer;
-    row.record_id = v.record_id;
-    row.revocation_status = v.revocation_status;
-    put_card(host, &row).await?;
-    Ok(FileCardResult {
-        filed: true,
-        refused: false,
         unknown: false,
         countersigned: false,
         deferred: false,

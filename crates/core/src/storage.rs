@@ -12,10 +12,42 @@ use serde::{Deserialize, Serialize};
 
 use crate::{local_registry::SubstrateEndpoint, mailbox::HostedMailbox};
 
-/// (`service_type`, `health_check_json`, `manifest_hash`, `visibility`) --
-/// what a deploy recorded about a service. `visibility` is `None` only for a
-/// service whose row predates the column (ADR-0018).
-pub type DeployFacts = (String, Option<String>, Option<String>, Option<String>);
+/// What a deploy recorded about a service.
+/// `manifest_hash` supports deploy idempotency; `visibility` was added by
+/// ADR-0018; `wake_json` was added by ADR-0031.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeployFacts {
+    pub service_type: String,
+    pub health_check_json: Option<String>,
+    pub manifest_hash: Option<String>,
+    pub visibility: Option<String>,
+    pub wake_json: Option<String>,
+}
+
+impl DeployFacts {
+    #[must_use]
+    pub fn new(service_type: impl Into<String>) -> Self {
+        Self {
+            service_type: service_type.into(),
+            health_check_json: None,
+            manifest_hash: None,
+            visibility: None,
+            wake_json: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_health_check_json(mut self, check: Option<String>) -> Self {
+        self.health_check_json = check;
+        self
+    }
+
+    #[must_use]
+    pub fn with_wake_json(mut self, wake_json: impl Into<String>) -> Self {
+        self.wake_json = Some(wake_json.into());
+        self
+    }
+}
 
 /// Who manages an app instance on this substrate (ADR-0021 §4). The
 /// generation is a **tiebreaker among already-authorized writers**, not
@@ -76,26 +108,16 @@ pub trait EndpointStorage: Send + Sync {
     /// Forget `service_id`'s instance certificate. Idempotent.
     async fn remove_cert(&self, service_id: &str) -> Result<()>;
 
-    /// Every stored deploy fact, as (`service_id`, `service_type`,
-    /// `health_check_json`, `manifest_hash`, `visibility`). `manifest_hash`
-    /// supports deploy idempotency; `visibility` was added by ADR-0018.
-    async fn load_all_deploy_facts(
-        &self,
-    ) -> Result<Vec<(String, String, Option<String>, Option<String>, Option<String>)>>;
+    /// Every stored deploy fact, as (`service_id`, `DeployFacts`).
+    async fn load_all_deploy_facts(&self) -> Result<Vec<(String, DeployFacts)>>;
     /// Record what a deploy said `service_id` is, its declared health
     /// check if any, the canonical content hash of what was actually
-    /// installed, and its declared visibility (upsert -- a redeploy that drops
-    /// the check writes `None`, clearing it by construction; `manifest_hash`
-    /// is written only on full deploy success, so a half-failed deploy is never
-    /// deduplicated on the next attempt).
-    async fn save_deploy_facts(
-        &self,
-        service_id: &str,
-        service_type: &str,
-        health_check_json: Option<&str>,
-        manifest_hash: Option<&str>,
-        visibility: Option<&str>,
-    ) -> Result<()>;
+    /// installed, its declared visibility, and its wake spec if any (upsert --
+    /// a redeploy that drops the check writes `None`, clearing it by
+    /// construction; `manifest_hash` is written only on full deploy
+    /// success, so a half-failed deploy is never deduplicated on the next
+    /// attempt).
+    async fn save_deploy_facts(&self, service_id: &str, facts: &DeployFacts) -> Result<()>;
     /// Forget `service_id`'s deploy facts. Idempotent.
     async fn remove_deploy_facts(&self, service_id: &str) -> Result<()>;
 
@@ -243,40 +265,11 @@ impl EndpointStorage for MockStorage {
         self.certs.remove(service_id);
         Ok(())
     }
-    async fn load_all_deploy_facts(
-        &self,
-    ) -> Result<Vec<(String, String, Option<String>, Option<String>, Option<String>)>> {
-        Ok(self
-            .deploy_facts
-            .iter()
-            .map(|e| {
-                (
-                    e.key().clone(),
-                    e.value().0.clone(),
-                    e.value().1.clone(),
-                    e.value().2.clone(),
-                    e.value().3.clone(),
-                )
-            })
-            .collect())
+    async fn load_all_deploy_facts(&self) -> Result<Vec<(String, DeployFacts)>> {
+        Ok(self.deploy_facts.iter().map(|e| (e.key().clone(), e.value().clone())).collect())
     }
-    async fn save_deploy_facts(
-        &self,
-        service_id: &str,
-        service_type: &str,
-        health_check_json: Option<&str>,
-        manifest_hash: Option<&str>,
-        visibility: Option<&str>,
-    ) -> Result<()> {
-        self.deploy_facts.insert(
-            service_id.to_string(),
-            (
-                service_type.to_string(),
-                health_check_json.map(str::to_string),
-                manifest_hash.map(str::to_string),
-                visibility.map(str::to_string),
-            ),
-        );
+    async fn save_deploy_facts(&self, service_id: &str, facts: &DeployFacts) -> Result<()> {
+        self.deploy_facts.insert(service_id.to_string(), facts.clone());
         Ok(())
     }
     async fn remove_deploy_facts(&self, service_id: &str) -> Result<()> {

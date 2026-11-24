@@ -14,6 +14,7 @@ use syneroym_app_host::{
     AppInvocation, AppProxy, AppSigning,
     types::{
         data_layer::{DataLayerError, QueryOptions, QueryResult},
+        events::{Event, EventsError, ReadResult},
         invocation::CallerOrigin,
         proxy::{CallOptions, CallRequest, CallTarget, ProxyError},
         signing::{Principal, RecordDraft, SigningError, SigningIdentity},
@@ -75,6 +76,8 @@ pub struct TestHostInner {
     pub(crate) sent_cards: Mutex<Vec<String>>,
     pub(crate) salt_seed: Mutex<u64>,
     pub(crate) salt_counter: AtomicU64,
+    pub(crate) events: Mutex<Vec<Event>>,
+    pub(crate) read_events_override: Mutex<Option<Result<ReadResult, EventsError>>>,
 }
 
 impl fmt::Debug for TestHostInner {
@@ -197,6 +200,23 @@ impl TestHost {
 
     pub fn sent_cards(&self) -> Vec<String> {
         self.sent_cards.lock().unwrap().clone()
+    }
+
+    pub fn push_event(&self, kind: impl Into<String>, subject: impl Into<String>) {
+        let mut evts = self.events.lock().unwrap();
+        let idx = evts.len() + 1;
+        evts.push(Event {
+            cursor: format!("0000000000000000-{idx}"),
+            kind: kind.into(),
+            service: "test".to_string(),
+            subject: subject.into(),
+            item: None,
+            at_ms: self.now() as i64 * 1000,
+        });
+    }
+
+    pub fn set_read_events_override(&self, res: Result<ReadResult, EventsError>) {
+        *self.read_events_override.lock().unwrap() = Some(res);
     }
 
     pub fn set_salt_seed(&self, seed: u64) {

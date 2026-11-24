@@ -190,19 +190,12 @@ impl ControlPlaneService {
     /// repair path" case. Clearing the hash here forces that redeploy
     /// through the full reinstall instead.
     async fn clear_deploy_hash_after_binding_push(&self, service_id: &str) -> Result<(), String> {
-        let Some((service_type, health_check_json, _, visibility)) =
-            self.registry.deploy_facts(service_id)
-        else {
+        let Some(mut facts) = self.registry.deploy_facts(service_id) else {
             return Ok(());
         };
+        facts.manifest_hash = None;
         self.registry
-            .set_deploy_facts(
-                service_id.to_string(),
-                service_type,
-                health_check_json,
-                None,
-                visibility,
-            )
+            .set_deploy_facts(service_id.to_string(), facts)
             .await
             .map_err(|e| e.to_string())
     }
@@ -538,12 +531,13 @@ impl ControlPlaneService {
 
         self.stamp_generation_if_managed(&service_id, generation, caller).await?;
 
-        let Some((recorded_type, ..)) = self.registry.deploy_facts(&service_id) else {
+        let Some(facts) = self.registry.deploy_facts(&service_id) else {
             return Err(format!(
                 "no service type recorded for '{service_id}'; redeploy to record it"
             ));
         };
-        match parse_service_type(&recorded_type) {
+        let recorded_type = &facts.service_type;
+        match parse_service_type(recorded_type) {
             Some(AppServiceType::Wasm) => {
                 self.app_sandbox_engine.reload_wasm(&service_id).await.map_err(|e| e.to_string())
             }

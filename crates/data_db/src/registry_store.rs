@@ -13,7 +13,7 @@ use syneroym_core::{
     config::SubstrateConfig,
     local_registry::SubstrateEndpoint,
     mailbox::HostedMailbox,
-    storage::{AppInstanceManagement, EndpointStorage},
+    storage::{AppInstanceManagement, DeployFacts, EndpointStorage},
 };
 use tokio::task;
 
@@ -52,159 +52,109 @@ impl SqliteEndpointStorage {
         let path = db_path.as_ref().to_owned();
         let conn = task::spawn_blocking(move || -> Result<Connection> {
             let conn = Connection::open(path)?;
-
-            // Schema creation runs unconditionally on every open, not gated
-            // on `PRAGMA user_version`. It did use to gate on `version == 0`,
-            // but every dev and test database created since `service_owners`
-            // was added is already at version 1 -- a table added inside that
-            // gate would never be created on any of them. `CREATE TABLE IF
-            // NOT EXISTS` is already idempotent, so the gate bought nothing
-            // it doesn't already provide, and this makes every future
-            // in-place schema addition correct by default (pre-release: no
-            // compat shims, no version ladders).
-            conn.execute(
-                "CREATE TABLE IF NOT EXISTS local_endpoints (
-                    service_id TEXT NOT NULL,
-                    interface_name TEXT NOT NULL,
-                    endpoint_type TEXT NOT NULL,
-                    endpoint_data TEXT NOT NULL,
-                    PRIMARY KEY (service_id, interface_name)
-                );",
-                [],
-            )?;
-            // Service ownership. Separate table, not a
-            // column on local_endpoints -- ownership is per service, and
-            // local_endpoints is keyed (service_id, interface_name), so a
-            // column would duplicate the owner across every interface and
-            // admit disagreement between rows.
-            conn.execute(
-                "CREATE TABLE IF NOT EXISTS service_owners (
-                    service_id TEXT PRIMARY KEY,
-                    owner_did  TEXT NOT NULL,
-                    created_at INTEGER NOT NULL
-                );",
-                [],
-            )?;
-            // The mailbox a hosted service pulls from, the longest
-            // time-to-live of its queue, and the guest methods it accepts
-            // from the mailbox (a JSON array of strings). One row per
-            // service.
-            conn.execute(
-                "CREATE TABLE IF NOT EXISTS service_mailboxes (
-                    service_id   TEXT PRIMARY KEY,
-                    mailbox      TEXT NOT NULL,
-                    max_ttl_secs INTEGER NOT NULL,
-                    methods      TEXT NOT NULL DEFAULT '[]',
-                    created_at   INTEGER NOT NULL
-                );",
-                [],
-            )?;
-            // Instance certificates (ADR-0020 §1): the DelegationCertificate
-            // binding this substrate's derived instance key to the member
-            // master a service_id names. Same shape as service_owners --
-            // one row per service, upserted on renewal.
-            conn.execute(
-                "CREATE TABLE IF NOT EXISTS service_instance_certs (
-                    service_id  TEXT PRIMARY KEY,
-                    certificate TEXT NOT NULL,
-                    created_at  INTEGER NOT NULL
-                );",
-                [],
-            )?;
-            // Which app instance and logical name a deployed service
-            // belongs to, and its resolved dependency bindings. Same
-            // unconditional-creation reasoning as the tables above.
-            conn.execute(
-                "CREATE TABLE IF NOT EXISTS service_app_context (
-                    service_id      TEXT PRIMARY KEY,
-                    app_instance_id TEXT NOT NULL,
-                    service_name    TEXT NOT NULL,
-                    created_at      INTEGER NOT NULL
-                );",
-                [],
-            )?;
-            // What a deploy said this service *is*, and how to probe it.
-            //
-            // The type is not derivable after the fact: a container and a
-            // TCP service both register `SubstrateEndpoint::TcpHostPort`
-            // (orchestration.rs) and `PodmanSocket` is never registered at
-            // all, so the endpoint variant cannot tell them apart -- which is
-            // why `readyz` had to guess. One row per service, upserted on
-            // redeploy, deleted on undeploy, mirroring service_instance_certs.
-            conn.execute(
-                "CREATE TABLE IF NOT EXISTS service_deploy_facts (
-                    service_id        TEXT PRIMARY KEY,
-                    service_type      TEXT NOT NULL,
-                    health_check_json TEXT,
-                    created_at        INTEGER NOT NULL,
-                    manifest_hash     TEXT,
-                    visibility        TEXT
-                );",
-                [],
-            )?;
-            // `manifest_hash`: the canonical content hash of what was
-            // actually installed, written only on full deploy success --
-            // the dedup key, distinct from the epoch guard and the
-            // generation gate (ADR-0021 §3).
-            //
-            // Unlike every table above, `service_deploy_facts` predates this
-            // column, so `CREATE TABLE IF NOT EXISTS` is a no-op here --
-            // it never adds a column to a table that already exists. This
-            // `ALTER TABLE` is the one idempotent way to get the column onto
-            // a database that opened before it existed; it is not the
-            // version-ladder AGENTS.md rules out, since there is no schema
-            // version to track and nothing else in this method depends on
-            // it. "duplicate column name" is the expected outcome once this
-            // has already run once, on every open after the first.
-            if let Err(err) =
-                conn.execute("ALTER TABLE service_deploy_facts ADD COLUMN manifest_hash TEXT", [])
-                && !err.to_string().contains("duplicate column name")
-            {
-                return Err(err.into());
-            }
-            if let Err(err) =
-                conn.execute("ALTER TABLE service_deploy_facts ADD COLUMN visibility TEXT", [])
-                && !err.to_string().contains("duplicate column name")
-            {
-                return Err(err.into());
-            }
-            conn.execute(
-                "CREATE TABLE IF NOT EXISTS service_bindings (
-                    service_id      TEXT NOT NULL,
-                    app_instance_id TEXT NOT NULL,
-                    dependency_name TEXT NOT NULL,
-                    entry_json      TEXT NOT NULL,
-                    created_at      INTEGER NOT NULL,
-                    PRIMARY KEY (service_id, dependency_name)
-                );",
-                [],
-            )?;
-            // Who manages an app instance on this substrate (ADR-0021 §4).
-            // Replaces the old `app_instance_owners` table outright --
-            // pre-release, so no `ALTER TABLE`/version ladder (see AGENTS.md);
-            // the old table simply stops being created. `owner_did` keeps
-            // the first-write-wins takeover guard; `supervisor_did`/
-            // `generation` are new: `None`/`0` means "unmanaged", which is
-            // what every operator-driven `roymctl app deploy` sends and what
-            // an un-adopted instance accepts.
-            conn.execute(
-                "CREATE TABLE IF NOT EXISTS app_instance_management (
-                    app_instance_id TEXT PRIMARY KEY,
-                    owner_did       TEXT NOT NULL,
-                    supervisor_did  TEXT,
-                    generation      INTEGER NOT NULL DEFAULT 0,
-                    created_at      INTEGER NOT NULL
-                );",
-                [],
-            )?;
-            conn.execute("PRAGMA user_version = 1", [])?;
-
+            init_schema(&conn)?;
             Ok(conn)
         })
         .await??;
 
         Ok(Self { conn: Arc::new(Mutex::new(conn)) })
     }
+}
+
+fn init_schema(conn: &Connection) -> Result<()> {
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS local_endpoints (
+            service_id TEXT NOT NULL,
+            interface_name TEXT NOT NULL,
+            endpoint_type TEXT NOT NULL,
+            endpoint_data TEXT NOT NULL,
+            PRIMARY KEY (service_id, interface_name)
+        );",
+        [],
+    )?;
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS service_owners (
+            service_id TEXT PRIMARY KEY,
+            owner_did  TEXT NOT NULL,
+            created_at INTEGER NOT NULL
+        );",
+        [],
+    )?;
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS service_mailboxes (
+            service_id   TEXT PRIMARY KEY,
+            mailbox      TEXT NOT NULL,
+            max_ttl_secs INTEGER NOT NULL,
+            methods      TEXT NOT NULL DEFAULT '[]',
+            created_at   INTEGER NOT NULL
+        );",
+        [],
+    )?;
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS service_instance_certs (
+            service_id  TEXT PRIMARY KEY,
+            certificate TEXT NOT NULL,
+            created_at  INTEGER NOT NULL
+        );",
+        [],
+    )?;
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS service_app_context (
+            service_id      TEXT PRIMARY KEY,
+            app_instance_id TEXT NOT NULL,
+            service_name    TEXT NOT NULL,
+            created_at      INTEGER NOT NULL
+        );",
+        [],
+    )?;
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS service_deploy_facts (
+            service_id        TEXT PRIMARY KEY,
+            service_type      TEXT NOT NULL,
+            health_check_json TEXT,
+            created_at        INTEGER NOT NULL,
+            manifest_hash     TEXT,
+            visibility        TEXT,
+            wake_json         TEXT
+        );",
+        [],
+    )?;
+    migrate_deploy_facts_columns(conn)?;
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS service_bindings (
+            service_id      TEXT NOT NULL,
+            app_instance_id TEXT NOT NULL,
+            dependency_name TEXT NOT NULL,
+            entry_json      TEXT NOT NULL,
+            created_at      INTEGER NOT NULL,
+            PRIMARY KEY (service_id, dependency_name)
+        );",
+        [],
+    )?;
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS app_instance_management (
+            app_instance_id TEXT PRIMARY KEY,
+            owner_did       TEXT NOT NULL,
+            supervisor_did  TEXT,
+            generation      INTEGER NOT NULL DEFAULT 0,
+            created_at      INTEGER NOT NULL
+        );",
+        [],
+    )?;
+    conn.execute("PRAGMA user_version = 1", [])?;
+    Ok(())
+}
+
+fn migrate_deploy_facts_columns(conn: &Connection) -> Result<()> {
+    for col in ["manifest_hash TEXT", "visibility TEXT", "wake_json TEXT"] {
+        let sql = format!("ALTER TABLE service_deploy_facts ADD COLUMN {col}");
+        if let Err(err) = conn.execute(&sql, [])
+            && !err.to_string().contains("duplicate column name")
+        {
+            return Err(err.into());
+        }
+    }
+    Ok(())
 }
 
 fn lock_db(conn: &Arc<Mutex<Connection>>) -> Result<MutexGuard<'_, Connection>> {
@@ -455,42 +405,36 @@ impl EndpointStorage for SqliteEndpointStorage {
         .await?
     }
 
-    async fn load_all_deploy_facts(
-        &self,
-    ) -> Result<Vec<(String, String, Option<String>, Option<String>, Option<String>)>> {
+    async fn load_all_deploy_facts(&self) -> Result<Vec<(String, DeployFacts)>> {
         let conn_arc = self.conn.clone();
-        task::spawn_blocking(
-            move || -> Result<Vec<(String, String, Option<String>, Option<String>, Option<String>)>> {
-                let conn = lock_db(&conn_arc)?;
-                let mut stmt = conn.prepare(
-                    "SELECT service_id, service_type, health_check_json, manifest_hash, visibility FROM \
-                     service_deploy_facts",
-                )?;
-                let mut facts = Vec::new();
-                let mut rows = stmt.query([])?;
-                while let Some(row) = rows.next()? {
-                    facts.push((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?));
-                }
-                Ok(facts)
-            },
-        )
+        task::spawn_blocking(move || -> Result<Vec<(String, DeployFacts)>> {
+            let conn = lock_db(&conn_arc)?;
+            let mut stmt = conn.prepare(
+                "SELECT service_id, service_type, health_check_json, manifest_hash, visibility, \
+                 wake_json FROM service_deploy_facts",
+            )?;
+            let mut facts = Vec::new();
+            let mut rows = stmt.query([])?;
+            while let Some(row) = rows.next()? {
+                let service_id: String = row.get(0)?;
+                let deploy_facts = DeployFacts {
+                    service_type: row.get(1)?,
+                    health_check_json: row.get(2)?,
+                    manifest_hash: row.get(3)?,
+                    visibility: row.get(4)?,
+                    wake_json: row.get(5)?,
+                };
+                facts.push((service_id, deploy_facts));
+            }
+            Ok(facts)
+        })
         .await?
     }
 
-    async fn save_deploy_facts(
-        &self,
-        service_id: &str,
-        service_type: &str,
-        health_check_json: Option<&str>,
-        manifest_hash: Option<&str>,
-        visibility: Option<&str>,
-    ) -> Result<()> {
+    async fn save_deploy_facts(&self, service_id: &str, facts: &DeployFacts) -> Result<()> {
         let conn_arc = self.conn.clone();
         let sid = service_id.to_string();
-        let stype = service_type.to_string();
-        let check = health_check_json.map(str::to_string);
-        let hash = manifest_hash.map(str::to_string);
-        let vis = visibility.map(str::to_string);
+        let facts = facts.clone();
         let created_at: i64 =
             SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
 
@@ -498,15 +442,24 @@ impl EndpointStorage for SqliteEndpointStorage {
             let conn = lock_db(&conn_arc)?;
             conn.execute(
                 "INSERT INTO service_deploy_facts (service_id, service_type, health_check_json, \
-                 manifest_hash, visibility, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 manifest_hash, visibility, wake_json, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
                  ON CONFLICT(service_id) DO UPDATE SET
                     service_type = excluded.service_type,
                     health_check_json = excluded.health_check_json,
                     manifest_hash = excluded.manifest_hash,
                     visibility = excluded.visibility,
+                    wake_json = excluded.wake_json,
                     created_at = excluded.created_at",
-                params![sid, stype, check, hash, vis, created_at],
+                params![
+                    sid,
+                    facts.service_type,
+                    facts.health_check_json,
+                    facts.manifest_hash,
+                    facts.visibility,
+                    facts.wake_json,
+                    created_at
+                ],
             )?;
             Ok(())
         })

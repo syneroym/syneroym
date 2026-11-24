@@ -66,6 +66,7 @@ fn bare_tcp_manifest(port: u16, instance_certificate: Option<String>) -> DeployM
             rotation_policy: None,
             fdae_policy: None,
             health_check: None,
+            wake: None,
             assets: None,
             visibility: None,
         },

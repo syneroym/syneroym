@@ -80,18 +80,7 @@ const MESSAGING_TEST_DRIVER_INTERFACE: &str =
 
 fn messaging_wasm_manifest(bytes: Vec<u8>) -> DeployManifest {
     DeployManifest::unpublished(
-        ServiceConfig {
-            env: vec![],
-            args: vec![],
-            custom_config: None,
-            quota: None,
-            schema: None,
-            rotation_policy: None,
-            fdae_policy: None,
-            health_check: None,
-            assets: None,
-            visibility: None,
-        },
+        ServiceConfig::default(),
         WitServiceType::Wasm(WasmManifest {
             source: ArtifactSource::Binary(bytes),
             hash: None,
@@ -422,18 +411,7 @@ async fn test_native_dispatch_data_layer_and_blob_store_round_trip() {
 
     let service_id = "native-test-svc".to_string();
     let manifest = DeployManifest::unpublished(
-        ServiceConfig {
-            env: vec![],
-            args: vec![],
-            custom_config: None,
-            quota: None,
-            schema: None,
-            rotation_policy: None,
-            fdae_policy: None,
-            health_check: None,
-            assets: None,
-            visibility: None,
-        },
+        ServiceConfig::default(),
         WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
     );
     let test_caller = node_wide_caller("test-caller");
@@ -688,18 +666,7 @@ async fn test_native_dispatch_create_collection_with_indexes_and_batch_mutate() 
 
     let service_id = "native-mutation-test-svc".to_string();
     let manifest = DeployManifest::unpublished(
-        ServiceConfig {
-            env: vec![],
-            args: vec![],
-            custom_config: None,
-            quota: None,
-            schema: None,
-            rotation_policy: None,
-            fdae_policy: None,
-            health_check: None,
-            assets: None,
-            visibility: None,
-        },
+        ServiceConfig::default(),
         WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
     );
     service.deploy(service_id.clone(), manifest, &node_wide_caller("test-caller")).await.unwrap();
@@ -826,18 +793,7 @@ async fn test_native_dispatch_blob_store_errors_preserve_fidelity() {
 
     let service_id = "native-blob-error-test-svc".to_string();
     let manifest = DeployManifest::unpublished(
-        ServiceConfig {
-            env: vec![],
-            args: vec![],
-            custom_config: None,
-            quota: None,
-            schema: None,
-            rotation_policy: None,
-            fdae_policy: None,
-            health_check: None,
-            assets: None,
-            visibility: None,
-        },
+        ServiceConfig::default(),
         WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
     );
     service.deploy(service_id.clone(), manifest, &node_wide_caller("test-caller")).await.unwrap();
@@ -1186,18 +1142,7 @@ const STREAM_PROTOCOL: &str = "file-transfer";
 
 fn stream_wasm_manifest(bytes: Vec<u8>) -> DeployManifest {
     DeployManifest::unpublished(
-        ServiceConfig {
-            env: vec![],
-            args: vec![],
-            custom_config: None,
-            quota: None,
-            schema: None,
-            rotation_policy: None,
-            fdae_policy: None,
-            health_check: None,
-            assets: None,
-            visibility: None,
-        },
+        ServiceConfig::default(),
         WitServiceType::Wasm(WasmManifest {
             source: ArtifactSource::Binary(bytes),
             hash: None,

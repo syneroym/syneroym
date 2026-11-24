@@ -1434,6 +1434,29 @@ registry that cannot resolve every member: the deploy itself is valid, one
 declared behavior just never happens. Use `roymctl supervisor submit` for
 any manifest that carries a schedule you actually want to fire.
 
+##### Node-local wake
+
+A service that needs to run periodic or event-triggered work against its own local state declares a `[services.<name>.wake]` block in its manifest:
+
+```toml
+[services.transaction.wake]
+interface = "syneroym-roym:transaction/api@0.1.0"
+method = "invoke"
+params = '[ "{\"method\":\"transaction.drive\",\"params\":{}}" ]'
+on_events = ["conversation.message"]
+every_secs = 30
+timeout_ms = 10000
+```
+
+- **Node-local only:** Every deployed member of the service runs its wake on its own local substrate. Wakes are never routed across the network or through the community registry.
+- **Evaluation:** Evaluated once per second by the substrate `WakeWorker` (`crates/substrate/src/runtime/wake.rs`).
+- **Triggers:** A wake fires when any event matching `on_events` arrives on the local event bus since the last run, or when `every_secs` has elapsed since the last run.
+- **Limits:** `every_secs` must be between 5 and 86,400 seconds. `on_events` holds at most 8 event kinds. `timeout_ms` must be between 1 and 30,000 milliseconds.
+- **Reply contract:** The guest returns a JSON object or string envelope (`{"result":...}`). If `result.again` is `true`, the worker schedules another call on the next tick without waiting for the interval or events. Any `result.warnings` string list is logged by the substrate. An error reply (`{"error":...}`) is logged and waits for the interval.
+- **One call at a time:** Sequential per service. A wake is never concurrent with another wake of the same service.
+- **Fire-and-forget:** A wake call is an ordinary guest call, bounded by `timeout_ms`. It is never queued and never dead-letters; the next wake is the retry.
+- See [ADR-0031](decisions/0031-node-local-wake.md).
+
 ##### Compensating a workflow (sagas)
 
 A service that drives a multi-service workflow records each step as it
@@ -2567,7 +2590,7 @@ An event carries no content. It says what changed, and you fetch the content wit
 | `transaction.card` | conversation id | message id of the card | `transaction.thread` |
 | `transaction.agreement` | conversation id | agreement id | `agreement.get` with `{"agreement": "…"}` |
 
-A card from the other person arrives first as a `conversation.message` event. The `transaction.card` event comes after your client calls `transaction.sync` (6.7).
+A card from the other person arrives first as a `conversation.message` event. The `transaction.card` event comes after the node's background wake driver files it (6.7) or after your client calls `transaction.sync`.
 
 Keep the last `id:` you saw. If the stream ends, set `CURSOR` to that value and open the feed again with it in the `Last-Event-ID` header (a browser `EventSource` does this by itself):
 
@@ -2616,12 +2639,14 @@ roym directory.reindex | jq .result     # {"rebuilt": <rows>, "standing": <n>}
 
 A card is a message with the content type `application/vnd.roym.card+json`. Deals between two people are cards: an enquiry, a quote and so on. A conversation holds them together with the normal messages.
 
-To get the cards of a conversation, first ask `transaction` to read the new messages and file the cards it finds. Then read the cards:
+To get the cards of a conversation, first ask `transaction` to read the new messages and file the cards it finds (or let the node's background wake driver file them automatically without client action). Then read the cards:
 
 ```bash roym-client=cards
 roym transaction.sync "{\"conversation\":\"$CONV\"}"
 roym transaction.thread "{\"conversation\":\"$CONV\"}" | jq .result.cards
 ```
+
+`transaction.sync` takes `{conversation, full?}` and returns `{scanned, filed, refused, unknown, countersigned, deferred, unsent_failures, last_seq, more}`. `more` is `true` only when this sync read a full window (500 messages) and `last_seq` grew; more unread messages may remain, and the next sync continues from the stored `last_seq`. `transaction.drive` takes `{}` and returns `{synced, pending, rescanning, again, warnings?}`. It runs in the background via the node-local wake worker (or can be called directly) to synchronize conversations and advance deal lifecycles across the node.
 
 `agreement.accept` takes `{quote_record_id, viewed_lang?, viewed_via_mt?}`. The two optional fields say what the person read, and the node signs them into the acceptance. Without them the node signs the quote's own language and `false`. `viewed_lang` must be a canonical tag. When `viewed_via_mt` is `false`, it must be the quote's `terms.lang` or the tag of one of its author translations. When `viewed_via_mt` is `true`, it can be any language except `terms.lang`. A value that breaks this rule answers `-32602` with `data.field` set to `viewed_lang` or `viewed_via_mt`.
 

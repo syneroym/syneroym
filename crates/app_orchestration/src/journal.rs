@@ -418,6 +418,7 @@ mod tests {
                     rotation_policy: Default::default(),
                     fdae: None,
                     health_check: None,
+                    wake: None,
                     assets: None,
                     visibility: Visibility::Private,
                 },

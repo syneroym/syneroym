@@ -19,34 +19,6 @@ fn future_schedule(offset: u64) -> (u64, u64) {
     (start, start + 3600)
 }
 
-fn peer_signed_request_with_identity(
-    conv: &str,
-    issued_at: u64,
-    id: &Identity,
-) -> (String, String) {
-    let did = derive_did_key(&id.public_key());
-    let req_id = transaction::derive_enquiry_id(conv, &did, 1).unwrap();
-    let payload = json!({
-        "enquiry_id": req_id,
-        "conversation": conv,
-        "sequence": 1,
-        "categories": ["gardening"],
-        "description": { "lang": "en", "text": "Fix fence" },
-        "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
-    });
-    let draft = RecordDraft {
-        version: transaction::ENQUIRY_VERSION,
-        record_type: transaction::RECORD_ENQUIRY.to_string(),
-        subject: req_id,
-        payload,
-        expires_at_secs: None,
-        supersedes: None,
-    };
-    let (mut env, bytes) = Envelope::unsigned(draft, did, None, issued_at).unwrap();
-    env.attach_signature(z32::encode(&id.sign(&bytes).to_bytes())).unwrap();
-    (env.record_id().unwrap(), env.to_json().unwrap())
-}
-
 fn peer_counterparty_receipt_with_identity(
     conv: &str,
     quote_record_id: &str,
@@ -221,7 +193,7 @@ async fn scenario_153_two_counterparty_halves_capacity_1_concurrent_sync_parity(
     enrol_signing(&h, "transaction").await;
 
     let peer2 = peer_identity_2();
-    let peer2_did_str = syneroym_identity::substrate::derive_did_key(&peer2.public_key());
+    let peer2_did_str = derive_did_key(&peer2.public_key());
 
     let conv1 = open_conv(&h, &peer_did()).await;
     let conv2 = open_conv(&h, &peer2_did_str).await;
@@ -230,7 +202,7 @@ async fn scenario_153_two_counterparty_halves_capacity_1_concurrent_sync_parity(
     let (listing_id, slot_id) = setup_listing_with_slot(&h, "fence-repair", start, end, 1).await;
     let (req_rec1, _r1_env) = setup_peer_request(&h, &conv1).await;
 
-    let (req2_id, req2_env) = peer_signed_request_with_identity(&conv2, 1_000_000, &peer2);
+    let (_, req2_id, req2_env) = peer_signed_request_with_identity(&peer2, &conv2, 1, 1_000_000);
     deliver_peer_card(
         &h,
         &format!("m-req2-{req2_id}"),
@@ -489,9 +461,9 @@ async fn scenario_156_booking_start_cancel_and_seat_reuse_parity() {
 
     // Seat is freed; a second counterparty now schedules on that same slot
     let peer3 = peer_identity_2();
-    let peer3_did_str = syneroym_identity::substrate::derive_did_key(&peer3.public_key());
+    let peer3_did_str = derive_did_key(&peer3.public_key());
     let conv3 = open_conv(&h, &peer3_did_str).await;
-    let (req3_id, req3_env) = peer_signed_request_with_identity(&conv3, 1_000_000, &peer3);
+    let (_, req3_id, req3_env) = peer_signed_request_with_identity(&peer3, &conv3, 1, 1_000_000);
     deliver_peer_card(
         &h,
         &format!("m-req3-{req3_id}"),

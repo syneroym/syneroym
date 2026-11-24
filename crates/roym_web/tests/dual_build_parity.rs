@@ -19,6 +19,8 @@ pub(crate) mod trust_harness;
 mod admission;
 #[path = "dual_build_parity/agreement_lang.rs"]
 mod agreement_lang;
+#[path = "dual_build_parity/as_listed.rs"]
+mod as_listed;
 #[path = "dual_build_parity/booking.rs"]
 mod booking;
 #[path = "dual_build_parity/bundles.rs"]

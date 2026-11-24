@@ -20,7 +20,7 @@ use syneroym_wit_interfaces::control_plane::exports::syneroym::control_plane::or
     RotationPolicy as WitRotationPolicy, RpcProbe as WitRpcProbe,
     ServiceConfig as WitServiceConfig, ServiceType as WitServiceType, TcpManifest,
     TcpProbe as WitTcpProbe, TopologyMode as WitTopologyMode, Visibility as WitVisibility,
-    WasmManifest,
+    WakeSpec as WitWakeSpec, WasmManifest,
 };
 
 use crate::deploy::CertifiedMembers;
@@ -161,6 +161,17 @@ fn map_health_check(check: &HealthCheck) -> WitHealthCheck {
     }
 }
 
+fn map_wake(w: &syneroym_app_orchestration::WakeSpec) -> WitWakeSpec {
+    WitWakeSpec {
+        interface_name: w.interface.to_string(),
+        method: w.method.clone(),
+        params: w.params.clone(),
+        on_events: w.on_events.clone(),
+        every_secs: w.every_secs,
+        timeout_ms: w.timeout_ms,
+    }
+}
+
 /// Builds the target-mode lookup a whole plan's `services` need: `mode`
 /// belongs to the *target* of a dependency, not the dependent, and a
 /// dependency may be placed on a different substrate and therefore absent
@@ -198,6 +209,7 @@ fn map_service_config(svc: &PlannedService) -> anyhow::Result<WitServiceConfig> 
             .map(|f| map_document_ref(&f.policy, "fdae policy"))
             .transpose()?,
         health_check: svc.config.health_check.as_ref().map(map_health_check),
+        wake: svc.config.wake.as_ref().map(map_wake),
         assets: svc
             .config
             .assets

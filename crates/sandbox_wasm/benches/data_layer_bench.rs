@@ -181,6 +181,7 @@ fn bench_lifecycle_hooks(c: &mut Criterion) {
             rotation_policy: None,
             fdae_policy: None,
             health_check: None,
+            wake: None,
             assets: None,
             visibility: None,
         },

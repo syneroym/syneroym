@@ -92,6 +92,7 @@ fn service_manifest_with_vis(
                 rotation_policy: Default::default(),
                 fdae: None,
                 health_check: None,
+                wake: None,
                 assets: None,
                 visibility,
             },

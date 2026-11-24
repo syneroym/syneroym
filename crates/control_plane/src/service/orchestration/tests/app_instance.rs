@@ -1350,16 +1350,8 @@ async fn test_deploy_fdae_policy_validates_persists_and_is_loadable() {
 
     let manifest = DeployManifest::unpublished(
         ServiceConfig {
-            env: vec![],
-            args: vec![],
-            custom_config: None,
-            quota: None,
-            schema: None,
-            rotation_policy: None,
             fdae_policy: Some(DocumentSource::Path(policy_filename.clone())),
-            health_check: None,
-            assets: None,
-            visibility: None,
+            ..Default::default()
         },
         WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
     );

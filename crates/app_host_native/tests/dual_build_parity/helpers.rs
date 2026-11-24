@@ -154,18 +154,7 @@ impl<D: Driver> Driver for Mutant<'_, D> {
 
 pub(crate) fn wasm_deploy_manifest(bytes: Vec<u8>) -> DeployManifest {
     DeployManifest::unpublished(
-        ServiceConfig {
-            env: vec![],
-            args: vec![],
-            custom_config: None,
-            quota: None,
-            schema: None,
-            rotation_policy: None,
-            fdae_policy: None,
-            health_check: None,
-            assets: None,
-            visibility: None,
-        },
+        ServiceConfig::default(),
         ServiceType::Wasm(WasmManifest {
             source: ArtifactSource::Binary(bytes),
             hash: None,

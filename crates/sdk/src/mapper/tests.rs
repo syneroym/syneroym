@@ -26,6 +26,7 @@ fn base_config() -> ServiceConfig {
         rotation_policy: Default::default(),
         fdae: None,
         health_check: None,
+        wake: None,
         assets: None,
         visibility: ModelVisibility::Private,
     }
@@ -567,4 +568,26 @@ fn a_child_token_without_a_key_is_not_mapped() {
     let wit_plan = map_all(&plan, &members, true).unwrap();
 
     assert!(wit_plan.services[0].manifest.mailbox.is_none());
+}
+
+#[test]
+fn planned_service_wake_maps_to_wit_service_config() {
+    let mut config = base_config();
+    config.wake = Some(syneroym_app_orchestration::WakeSpec {
+        interface: InterfaceName::new("roym:transaction/drive"),
+        method: "drive".to_string(),
+        params: Some(r#"{"max_batch":10}"#.to_string()),
+        on_events: vec!["roym.sync.requested".to_string()],
+        every_secs: 30,
+        timeout_ms: 5000,
+    });
+
+    let wit_plan = map_all(&plan_with_config(config), &CertifiedMembers::default(), true).unwrap();
+    let wake = wit_plan.services[0].manifest.config.wake.as_ref().expect("wake mapped");
+    assert_eq!(wake.interface_name, "roym:transaction/drive");
+    assert_eq!(wake.method, "drive");
+    assert_eq!(wake.params.as_deref(), Some(r#"{"max_batch":10}"#));
+    assert_eq!(wake.on_events, vec!["roym.sync.requested"]);
+    assert_eq!(wake.every_secs, 30);
+    assert_eq!(wake.timeout_ms, 5000);
 }

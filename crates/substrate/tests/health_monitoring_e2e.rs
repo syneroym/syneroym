@@ -110,6 +110,7 @@ async fn deploy_tcp(
             rotation_policy: None,
             fdae_policy: None,
             health_check,
+            wake: None,
             assets: None,
             visibility: None,
         },

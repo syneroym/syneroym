@@ -45,6 +45,7 @@ fn wasm_asset_manifest(
             rotation_policy: None,
             fdae_policy: None,
             health_check: None,
+            wake: None,
             assets: Some(AssetBundle {
                 archive: ArtifactSource::Binary(archive),
                 hash: None,
@@ -71,6 +72,7 @@ fn wasm_manifest_without_assets(wasm_bytes: Vec<u8>) -> DeployManifest {
             rotation_policy: None,
             fdae_policy: None,
             health_check: None,
+            wake: None,
             assets: None,
             visibility: None,
         },

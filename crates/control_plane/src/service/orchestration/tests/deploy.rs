@@ -77,18 +77,7 @@ async fn test_deploy_plan_path_traversal() {
             service_id: "did:key:test".to_string(),
             logical_ref: "test/main".to_string(),
             manifest: DeployManifest::unpublished(
-                ServiceConfig {
-                    env: vec![],
-                    args: vec![],
-                    custom_config: None,
-                    quota: None,
-                    schema: None,
-                    rotation_policy: None,
-                    fdae_policy: None,
-                    health_check: None,
-                    assets: None,
-                    visibility: None,
-                },
+                ServiceConfig::default(),
                 WitServiceType::Wasm(WasmManifest {
                     source: ArtifactSource::Url("../../../../../etc/passwd".to_string()),
                     hash: None,
@@ -160,18 +149,7 @@ async fn test_deploy_plan_absolute_path() {
             service_id: "did:key:test".to_string(),
             logical_ref: "test/main".to_string(),
             manifest: DeployManifest::unpublished(
-                ServiceConfig {
-                    env: vec![],
-                    args: vec![],
-                    custom_config: None,
-                    quota: None,
-                    schema: None,
-                    rotation_policy: None,
-                    fdae_policy: None,
-                    health_check: None,
-                    assets: None,
-                    visibility: None,
-                },
+                ServiceConfig::default(),
                 WitServiceType::Wasm(WasmManifest {
                     source: ArtifactSource::Url("/etc/passwd".to_string()),
                     hash: None,
@@ -249,16 +227,9 @@ async fn test_deploy_config_schema_rejection() {
 
     let manifest = DeployManifest::unpublished(
         ServiceConfig {
-            env: vec![],
-            args: vec![],
             custom_config: Some(r#"{"port": "8080"}"#.to_string()), // string instead of int
-            quota: None,
             schema: Some(DocumentSource::Path(schema_filename.clone())),
-            rotation_policy: None,
-            fdae_policy: None,
-            health_check: None,
-            assets: None,
-            visibility: None,
+            ..Default::default()
         },
         WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
     );
@@ -336,16 +307,9 @@ async fn test_deploy_schema_symlink_escape_rejected() {
 
     let manifest = DeployManifest::unpublished(
         ServiceConfig {
-            env: vec![],
-            args: vec![],
             custom_config: Some(r#"{"port": 8080}"#.to_string()),
-            quota: None,
             schema: Some(DocumentSource::Path(symlink_name.clone())),
-            rotation_policy: None,
-            fdae_policy: None,
-            health_check: None,
-            assets: None,
-            visibility: None,
+            ..Default::default()
         },
         WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
     );
@@ -416,16 +380,8 @@ async fn test_deploy_config_generation_rollback() {
     // Deliberately malformed WasmManifest source to cause a deployment failure
     let manifest = DeployManifest::unpublished(
         ServiceConfig {
-            env: vec![],
-            args: vec![],
             custom_config: Some(r#"{"key": "value"}"#.to_string()),
-            quota: None,
-            schema: None,
-            rotation_policy: None,
-            fdae_policy: None,
-            health_check: None,
-            assets: None,
-            visibility: None,
+            ..Default::default()
         },
         WitServiceType::Wasm(WasmManifest {
             source: ArtifactSource::Url("/does_not_exist.wasm".to_string()),
@@ -540,18 +496,7 @@ async fn an_identical_redeploy_of_a_stopped_service_still_reinstalls_it() {
     let owner = node_wide_caller("owner");
 
     let manifest = DeployManifest::unpublished(
-        ServiceConfig {
-            env: vec![],
-            args: vec![],
-            custom_config: None,
-            quota: None,
-            schema: None,
-            rotation_policy: None,
-            fdae_policy: None,
-            health_check: None,
-            assets: None,
-            visibility: None,
-        },
+        ServiceConfig::default(),
         WitServiceType::Wasm(WasmManifest {
             source: ArtifactSource::Binary(wasm_bytes),
             hash: None,
@@ -762,18 +707,7 @@ async fn a_half_failed_deploy_does_not_record_a_manifest_hash() {
     let owner = node_wide_caller("owner");
 
     let manifest = DeployManifest::unpublished(
-        ServiceConfig {
-            env: vec![],
-            args: vec![],
-            custom_config: None,
-            quota: None,
-            schema: None,
-            rotation_policy: None,
-            fdae_policy: None,
-            health_check: None,
-            assets: None,
-            visibility: None,
-        },
+        ServiceConfig::default(),
         WitServiceType::Wasm(WasmManifest {
             source: ArtifactSource::Url("/does_not_exist.wasm".to_string()),
             hash: None,
@@ -801,18 +735,7 @@ async fn a_deploy_that_fails_after_the_gate_still_recorded_its_writer() {
     let owner = node_wide_caller("owner");
 
     let manifest = DeployManifest::unpublished(
-        ServiceConfig {
-            env: vec![],
-            args: vec![],
-            custom_config: None,
-            quota: None,
-            schema: None,
-            rotation_policy: None,
-            fdae_policy: None,
-            health_check: None,
-            assets: None,
-            visibility: None,
-        },
+        ServiceConfig::default(),
         WitServiceType::Wasm(WasmManifest {
             source: ArtifactSource::Url("/does_not_exist.wasm".to_string()),
             hash: None,
@@ -849,18 +772,7 @@ async fn restart_reloads_a_wasm_component_from_disk() {
     let owner = node_wide_caller("owner");
 
     let manifest = DeployManifest::unpublished(
-        ServiceConfig {
-            env: vec![],
-            args: vec![],
-            custom_config: None,
-            quota: None,
-            schema: None,
-            rotation_policy: None,
-            fdae_policy: None,
-            health_check: None,
-            assets: None,
-            visibility: None,
-        },
+        ServiceConfig::default(),
         WitServiceType::Wasm(WasmManifest {
             source: ArtifactSource::Binary(wasm_bytes),
             hash: None,
@@ -1029,12 +941,12 @@ async fn a_deploy_records_its_service_type_and_health_check_and_undeploy_removes
     );
     service.deploy("facts-svc".to_string(), manifest, &node_wide_caller("owner")).await.unwrap();
 
-    let (service_type, check_json, ..) = service.registry.deploy_facts("facts-svc").unwrap();
-    assert_eq!(service_type, "tcp");
+    let facts = service.registry.deploy_facts("facts-svc").unwrap();
+    assert_eq!(facts.service_type, "tcp");
     // Stored as the wire variant's own JSON, not the app model's
     // kebab-case one -- `run_probe` deserializes back into the same
     // wire type it reads here, so the two must agree on shape.
-    let stored: WitHealthCheck = serde_json::from_str(&check_json.unwrap()).unwrap();
+    let stored: WitHealthCheck = serde_json::from_str(&facts.health_check_json.unwrap()).unwrap();
     assert!(matches!(stored, WitHealthCheck::TcpConnect(_)), "{stored:?}");
 
     service.undeploy("facts-svc".to_string(), 0, &node_wide_caller("owner")).await.unwrap();
@@ -1057,16 +969,16 @@ async fn a_redeploy_without_a_health_check_clears_the_stored_one() {
         .deploy("redeploy-svc".to_string(), with_check, &node_wide_caller("owner"))
         .await
         .unwrap();
-    assert!(service.registry.deploy_facts("redeploy-svc").unwrap().1.is_some());
+    assert!(service.registry.deploy_facts("redeploy-svc").unwrap().health_check_json.is_some());
 
     let without_check = tcp_manifest_with(9, None);
     service
         .deploy("redeploy-svc".to_string(), without_check, &node_wide_caller("owner"))
         .await
         .unwrap();
-    let (service_type, check_json, ..) = service.registry.deploy_facts("redeploy-svc").unwrap();
-    assert_eq!(service_type, "tcp");
-    assert!(check_json.is_none());
+    let facts = service.registry.deploy_facts("redeploy-svc").unwrap();
+    assert_eq!(facts.service_type, "tcp");
+    assert!(facts.health_check_json.is_none());
 }
 
 #[tokio::test]
@@ -1088,7 +1000,7 @@ async fn a_container_and_a_tcp_service_are_distinguished_by_the_recorded_type() 
         .unwrap();
     service
         .registry
-        .set_deploy_facts("container-svc".to_string(), "container".to_string(), None, None, None)
+        .set_deploy_facts("container-svc".to_string(), DeployFacts::new("container"))
         .await
         .unwrap();
     service
@@ -1102,7 +1014,7 @@ async fn a_container_and_a_tcp_service_are_distinguished_by_the_recorded_type() 
         .unwrap();
     service
         .registry
-        .set_deploy_facts("tcp-svc".to_string(), "tcp".to_string(), None, None, None)
+        .set_deploy_facts("tcp-svc".to_string(), DeployFacts::new("tcp"))
         .await
         .unwrap();
 

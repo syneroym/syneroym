@@ -19,8 +19,9 @@ use syneroym_roym_core::{
 };
 
 use crate::app::{
-    AgreementRef, HalfRecordedOutput, ListInput, agreement_ops, backup, decline_ops, enquiry_ops,
-    fulfilment_ops, payment_ops, present_ops, progress_ops, quote_ops, step_ops, sync, thread,
+    AgreementRef, HalfRecordedOutput, ListInput, agreement_ops, backup, decline_ops, drive,
+    enquiry_ops, fulfilment_ops, payment_ops, present_ops, progress_ops, quote_ops, step_ops, sync,
+    thread,
 };
 
 async fn ping<H: AppHost>(_host: &H, _: NoParams) -> Reply<PingOutput> {
@@ -75,6 +76,7 @@ syneroym_roym_core::service_methods! {
     "step.verify": step_ops::verify [DisclosedVerifyInput => DisclosedVerdict<StepPayload>],
 
     "transaction.sync": sync::sync [sync::SyncInput => sync::SyncOutput],
+    "transaction.drive": drive::drive [drive::DriveInput => drive::DriveOutput],
     "transaction.thread": thread::thread [thread::ThreadInput => thread::ThreadOutput],
     "transaction.export": backup::export [NoParams => Bundle],
     "transaction.import": backup::import [ImportInput => backup::TransactionImportOutput],

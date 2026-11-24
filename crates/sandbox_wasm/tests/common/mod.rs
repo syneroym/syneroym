@@ -18,6 +18,7 @@ pub fn wasm_deploy_manifest(bytes: Vec<u8>, interfaces: Vec<String>) -> DeployMa
             rotation_policy: None,
             fdae_policy: None,
             health_check: None,
+            wake: None,
             assets: None,
             visibility: None,
         },

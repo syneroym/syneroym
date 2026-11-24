@@ -10,7 +10,7 @@ use syneroym_app_host::{
             ChangePage, ConversationError, ConversationSummary, DeliveryState, ExportChunk,
             GroupInfo, HistoryPage, Message, Transcript,
         },
-        events::{EventsError, ReadResult},
+        events::{Event, EventsError, ReadResult},
         http::FrameKind,
         messaging::MessagingError,
         translation::{Detected, Translated, TranslationError},
@@ -102,19 +102,48 @@ impl AppWebSocket for TestHost {
 impl AppEvents for TestHost {
     async fn record_event(
         &self,
-        _kind: String,
-        _subject: String,
-        _item: Option<String>,
+        kind: String,
+        subject: String,
+        item: Option<String>,
     ) -> Result<String, EventsError> {
-        Ok("0000000000000000-1".to_string())
+        let mut evts = self.events.lock().unwrap();
+        let idx = evts.len() + 1;
+        let cursor = format!("0000000000000000-{idx}");
+        evts.push(Event {
+            cursor: cursor.clone(),
+            kind,
+            service: "test".to_string(),
+            subject,
+            item,
+            at_ms: self.now() as i64 * 1000,
+        });
+        Ok(cursor)
     }
 
     async fn read_events(
         &self,
-        _after: Option<String>,
-        _limit: u32,
+        after: Option<String>,
+        limit: u32,
     ) -> Result<ReadResult, EventsError> {
-        Ok(ReadResult::Events((Vec::new(), "0000000000000000-1".to_string())))
+        if let Some(res) = self.read_events_override.lock().unwrap().take() {
+            return res;
+        }
+        let evts = self.events.lock().unwrap();
+        let head_cursor = evts
+            .last()
+            .map(|e| e.cursor.clone())
+            .unwrap_or_else(|| "0000000000000000-0".to_string());
+
+        let Some(after_cursor) = after.as_deref() else {
+            return Ok(ReadResult::Events((Vec::new(), head_cursor)));
+        };
+
+        let start_idx =
+            evts.iter().position(|e| e.cursor == after_cursor).map(|p| p + 1).unwrap_or(0);
+        let slice: Vec<Event> = evts.iter().skip(start_idx).take(limit as usize).cloned().collect();
+        let next_cursor =
+            slice.last().map(|e| e.cursor.clone()).unwrap_or_else(|| after_cursor.to_string());
+        Ok(ReadResult::Events((slice, next_cursor)))
     }
 }
 

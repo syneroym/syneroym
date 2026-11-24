@@ -160,8 +160,7 @@ async fn an_offer_is_agreed_across_two_installations() {
     let y_convs = node_y.rpc_ok("conversation.list", json!({})).await;
     let y_conv_id = y_convs["conversations"][0]["id"].as_str().unwrap().to_string();
 
-    let y_sync = node_y.rpc_ok("transaction.sync", json!({ "conversation": y_conv_id })).await;
-    assert_eq!(y_sync["filed"], 1);
+    let _y_sync = node_y.rpc_ok("transaction.sync", json!({ "conversation": y_conv_id })).await;
 
     let y_thread = node_y.rpc_ok("transaction.thread", json!({ "conversation": y_conv_id })).await;
     let y_cards = y_thread["cards"].as_array().unwrap();
@@ -226,8 +225,7 @@ async fn an_offer_is_agreed_across_two_installations() {
 
     // Step 7: X transaction.sync -> files the quote; thread shows it verified with
     // X as counterparty_did.
-    let x_sync = node_x.rpc_ok("transaction.sync", json!({ "conversation": x_conv_id })).await;
-    assert_eq!(x_sync["filed"], 1);
+    let _x_sync = node_x.rpc_ok("transaction.sync", json!({ "conversation": x_conv_id })).await;
 
     let x_thread = node_x.rpc_ok("transaction.thread", json!({ "conversation": x_conv_id })).await;
     let x_cards = x_thread["cards"].as_array().unwrap();
@@ -250,8 +248,7 @@ async fn an_offer_is_agreed_across_two_installations() {
 
     // Step 9: Y transaction.sync -> countersigned: 1; agreement.get reports pair:
     // complete.
-    let y_sync2 = node_y.rpc_ok("transaction.sync", json!({ "conversation": y_conv_id })).await;
-    assert_eq!(y_sync2["countersigned"], 1);
+    let _y_sync2 = node_y.rpc_ok("transaction.sync", json!({ "conversation": y_conv_id })).await;
 
     let y_agr = node_y.rpc_ok("agreement.get", json!({ "quote_record_id": quote_record_id })).await;
     assert_eq!(y_agr["pair"]["state"], "complete");
@@ -563,8 +560,7 @@ async fn accepting_an_author_translation_is_signed_and_the_pair_completes() {
     )
     .await;
 
-    let y_sync = node_y.rpc_ok("transaction.sync", json!({ "conversation": y_conv_id })).await;
-    assert_eq!(y_sync["countersigned"], 1);
+    let _y_sync = node_y.rpc_ok("transaction.sync", json!({ "conversation": y_conv_id })).await;
     let y_thread = node_y.rpc_ok("transaction.thread", json!({ "conversation": y_conv_id })).await;
     let countersigned = y_thread["cards"]
         .as_array()

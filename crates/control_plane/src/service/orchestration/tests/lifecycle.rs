@@ -24,6 +24,19 @@ async fn restart_refuses_a_tcp_service_naming_why() {
     assert!(err.contains("tcp") && err.contains("outside this substrate"), "{err}");
 }
 
+#[tokio::test]
+async fn restart_rejects_nativehost_service() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let service = service_for_inline_tests(temp_dir.path()).await;
+    let owner = node_wide_caller("did:key:zAlice");
+
+    let facts = DeployFacts::new("nativehost");
+    service.registry.set_deploy_facts("nativehost-svc".to_string(), facts).await.unwrap();
+
+    let err = service.restart("nativehost-svc".to_string(), 0, &owner).await.unwrap_err();
+    assert!(err.contains("is a native-host service and has no restart path"), "{err}");
+}
+
 /// `restart` is a lifecycle action and must be generation-gated
 /// exactly like `deploy`/`write-bindings` -- a superseded supervisor
 /// must not be able to restart a service it no longer manages.
@@ -89,6 +102,7 @@ async fn restart_by_a_node_wide_deploy_grantee_ignores_the_service_owner() {
             rotation_policy: None,
             fdae_policy: None,
             health_check: None,
+            wake: None,
             assets: None,
             visibility: None,
         },
@@ -443,5 +457,52 @@ async fn a_redeploy_with_an_invalid_service_name_preserves_the_previous_bindings
         service.registry.all_bindings().await.unwrap().len(),
         1,
         "the failed redeploy must not have removed the previous binding row"
+    );
+}
+
+#[tokio::test]
+async fn a_binding_push_keeps_the_wake() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let service = service_for_inline_tests(temp_dir.path()).await;
+    let caller = node_wide_caller("owner");
+
+    service
+        .deploy_with_context(
+            "tx-svc".to_string(),
+            inline_manifest(None, None, None),
+            Some(app_context(
+                "app-1",
+                "transaction",
+                vec![dependency_binding("conversation", vec!["did:key:zInitialMember"])],
+            )),
+            &caller,
+        )
+        .await
+        .unwrap();
+
+    let mut facts = service.registry.deploy_facts("tx-svc").unwrap();
+    assert!(facts.manifest_hash.is_some());
+    let wake = r#"{"interface":"syneroym-roym:transaction/api@0.1.0","method":"invoke","every_secs":30,"timeout_ms":10000}"#;
+    facts.wake_json = Some(wake.to_string());
+    service.registry.set_deploy_facts("tx-svc".to_string(), facts).await.unwrap();
+
+    let mut binding = dependency_binding("conversation", vec!["did:key:zConvMember"]);
+    binding.epoch = 1;
+    let write = BindingWrite {
+        service_id: "tx-svc".to_string(),
+        app_instance_id: "app-1".to_string(),
+        generation: 0,
+        bindings: vec![binding],
+    };
+
+    let outcomes = service.write_bindings(write, &caller).await.unwrap();
+    assert_eq!(outcomes.len(), 1);
+
+    let updated_facts = service.registry.deploy_facts("tx-svc").unwrap();
+    assert!(updated_facts.manifest_hash.is_none(), "manifest_hash must be cleared after push");
+    assert_eq!(
+        updated_facts.wake_json.as_deref(),
+        Some(wake),
+        "wake_json must be preserved across binding push"
     );
 }

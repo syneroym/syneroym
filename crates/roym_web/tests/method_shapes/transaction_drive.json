@@ -1,0 +1,6 @@
+{
+  "again": "boolean",
+  "pending": "number",
+  "rescanning": "boolean",
+  "synced": "number"
+}

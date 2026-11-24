@@ -165,16 +165,8 @@ async fn test_undeploy_removes_fdae_policy() {
 
     let manifest = DeployManifest::unpublished(
         ServiceConfig {
-            env: vec![],
-            args: vec![],
-            custom_config: None,
-            quota: None,
-            schema: None,
-            rotation_policy: None,
             fdae_policy: Some(DocumentSource::Path(policy_filename.clone())),
-            health_check: None,
-            assets: None,
-            visibility: None,
+            ..Default::default()
         },
         WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
     );
@@ -254,6 +246,7 @@ async fn test_redeploy_without_fdae_block_clears_previous_policy() {
             rotation_policy: None,
             fdae_policy: Some(DocumentSource::Path(policy_filename.clone())),
             health_check: None,
+            wake: None,
             assets: None,
             visibility: None,
         },
@@ -265,18 +258,7 @@ async fn test_redeploy_without_fdae_block_clears_previous_policy() {
 
     // Re-deploy the same service_id with no `fdae` block at all.
     let without_policy = DeployManifest::unpublished(
-        ServiceConfig {
-            env: vec![],
-            args: vec![],
-            custom_config: None,
-            quota: None,
-            schema: None,
-            rotation_policy: None,
-            fdae_policy: None,
-            health_check: None,
-            assets: None,
-            visibility: None,
-        },
+        ServiceConfig::default(),
         WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
     );
     service.deploy("redeploy_fdae_svc".to_string(), without_policy, &caller).await.unwrap();
@@ -343,16 +325,8 @@ async fn test_deploy_failure_restores_previous_fdae_policy_not_the_new_one() {
     fs::write(&policy_1_filename, r#"{"version": "fdae/v1", "definitions": {}}"#).unwrap();
     let first = DeployManifest::unpublished(
         ServiceConfig {
-            env: vec![],
-            args: vec![],
-            custom_config: None,
-            quota: None,
-            schema: None,
-            rotation_policy: None,
             fdae_policy: Some(DocumentSource::Path(policy_1_filename.clone())),
-            health_check: None,
-            assets: None,
-            visibility: None,
+            ..Default::default()
         },
         WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
     );
@@ -372,16 +346,8 @@ async fn test_deploy_failure_restores_previous_fdae_policy_not_the_new_one() {
         .unwrap();
     let second = DeployManifest::unpublished(
         ServiceConfig {
-            env: vec![],
-            args: vec![],
-            custom_config: None,
-            quota: None,
-            schema: None,
-            rotation_policy: None,
             fdae_policy: Some(DocumentSource::Path(policy_2_filename.clone())),
-            health_check: None,
-            assets: None,
-            visibility: None,
+            ..Default::default()
         },
         WitServiceType::Wasm(WasmManifest {
             source: ArtifactSource::Url("/does_not_exist.wasm".to_string()),
@@ -465,6 +431,7 @@ async fn test_deploy_failure_restores_a_policy_the_new_manifest_dropped() {
             rotation_policy: None,
             fdae_policy: Some(DocumentSource::Path(policy_filename.clone())),
             health_check: None,
+            wake: None,
             assets: None,
             visibility: None,
         },
@@ -486,18 +453,7 @@ async fn test_deploy_failure_restores_a_policy_the_new_manifest_dropped() {
     // deleted -- an already-running previous version must not lose its
     // policy to an unrelated failed re-deploy.
     let second = DeployManifest::unpublished(
-        ServiceConfig {
-            env: vec![],
-            args: vec![],
-            custom_config: None,
-            quota: None,
-            schema: None,
-            rotation_policy: None,
-            fdae_policy: None,
-            health_check: None,
-            assets: None,
-            visibility: None,
-        },
+        ServiceConfig::default(),
         WitServiceType::Wasm(WasmManifest {
             source: ArtifactSource::Url("/does_not_exist.wasm".to_string()),
             hash: None,
@@ -582,16 +538,8 @@ async fn test_deploy_failure_after_successful_wasm_compile_rolls_back_gen_and_po
     fs::write(&policy_1_filename, r#"{"version": "fdae/v1", "definitions": {}}"#).unwrap();
     let first = DeployManifest::unpublished(
         ServiceConfig {
-            env: vec![],
-            args: vec![],
-            custom_config: None,
-            quota: None,
-            schema: None,
-            rotation_policy: None,
             fdae_policy: Some(DocumentSource::Path(policy_1_filename.clone())),
-            health_check: None,
-            assets: None,
-            visibility: None,
+            ..Default::default()
         },
         WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
     );
@@ -623,16 +571,8 @@ async fn test_deploy_failure_after_successful_wasm_compile_rolls_back_gen_and_po
         .unwrap();
     let second = DeployManifest::unpublished(
         ServiceConfig {
-            env: vec![],
-            args: vec![],
-            custom_config: None,
-            quota: None,
-            schema: None,
-            rotation_policy: None,
             fdae_policy: Some(DocumentSource::Path(policy_2_filename.clone())),
-            health_check: None,
-            assets: None,
-            visibility: None,
+            ..Default::default()
         },
         WitServiceType::Wasm(WasmManifest {
             source: ArtifactSource::Binary(wat.as_bytes().to_vec()),
@@ -730,16 +670,8 @@ async fn test_deploy_tcp_endpoint_registration_failure_rolls_back_gen_and_policy
     fs::write(&policy_1_filename, r#"{"version": "fdae/v1", "definitions": {}}"#).unwrap();
     let first = DeployManifest::unpublished(
         ServiceConfig {
-            env: vec![],
-            args: vec![],
-            custom_config: None,
-            quota: None,
-            schema: None,
-            rotation_policy: None,
             fdae_policy: Some(DocumentSource::Path(policy_1_filename.clone())),
-            health_check: None,
-            assets: None,
-            visibility: None,
+            ..Default::default()
         },
         WitServiceType::Tcp(TcpManifest {
             endpoints: vec![NetworkEndpoint {
@@ -765,16 +697,8 @@ async fn test_deploy_tcp_endpoint_registration_failure_rolls_back_gen_and_policy
         .unwrap();
     let second = DeployManifest::unpublished(
         ServiceConfig {
-            env: vec![],
-            args: vec![],
-            custom_config: None,
-            quota: None,
-            schema: None,
-            rotation_policy: None,
             fdae_policy: Some(DocumentSource::Path(policy_2_filename.clone())),
-            health_check: None,
-            assets: None,
-            visibility: None,
+            ..Default::default()
         },
         WitServiceType::Tcp(TcpManifest {
             endpoints: vec![NetworkEndpoint {
@@ -857,16 +781,8 @@ async fn test_deploy_fdae_policy_schema_invalid_rejected_and_not_persisted() {
 
     let manifest = DeployManifest::unpublished(
         ServiceConfig {
-            env: vec![],
-            args: vec![],
-            custom_config: None,
-            quota: None,
-            schema: None,
-            rotation_policy: None,
             fdae_policy: Some(DocumentSource::Path(policy_filename.clone())),
-            health_check: None,
-            assets: None,
-            visibility: None,
+            ..Default::default()
         },
         WitServiceType::Tcp(TcpManifest { endpoints: vec![] }),
     );

@@ -169,10 +169,20 @@ impl SynAppManifest {
         Ok(())
     }
 
+    fn validate_wakes(&self) -> Result<()> {
+        for (name, spec) in &self.services {
+            let Some(wake) = &spec.config.wake else { continue };
+            wake.validate(&spec.config.interfaces)
+                .map_err(|e| anyhow!("Service '{name}' declares an invalid wake: {e}"))?;
+        }
+        Ok(())
+    }
+
     pub fn validate(&self) -> Result<()> {
         self.validate_dependencies()?;
         self.validate_replicas()?;
         self.validate_schedules()?;
+        self.validate_wakes()?;
         Ok(())
     }
 }

@@ -13,6 +13,7 @@ pub mod saga;
 pub mod schedule;
 pub mod substrate_inventory;
 pub mod topology_document;
+pub mod wake;
 
 pub use alerts::{AlertKind, AlertRecord, AlertStore};
 pub use catalog::{LocalFilesystemCatalog, ManifestCatalog};
@@ -46,4 +47,8 @@ pub use substrate_inventory::{
 pub use topology_document::{
     SignedTopologyDocument, TopologyDocument, TopologyFetcher, register_verified,
     topology_fingerprint,
+};
+pub use wake::{
+    DEFAULT_WAKE_TIMEOUT_MS, MAX_WAKE_EVENT_KINDS, MAX_WAKE_EVERY_SECS, MAX_WAKE_TIMEOUT_MS,
+    MIN_WAKE_EVERY_SECS, WakeSpec,
 };

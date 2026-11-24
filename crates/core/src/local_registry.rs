@@ -205,11 +205,8 @@ impl EndpointRegistry {
             }
         }
 
-        for (service_id, service_type, check, manifest_hash, visibility) in
-            self.storage.load_all_deploy_facts().await?
-        {
-            self.service_deploy_facts
-                .insert(service_id, (service_type, check, manifest_hash, visibility));
+        for (service_id, facts) in self.storage.load_all_deploy_facts().await? {
+            self.service_deploy_facts.insert(service_id, facts);
         }
 
         for (service_id, app_instance_id, service_name) in
@@ -465,35 +462,30 @@ impl EndpointRegistry {
     /// Record what a deploy said `service_id` is, its declared health
     /// check if any, the canonical content hash of what was actually
     /// installed, and its declared visibility (`visibility` added by
-    /// ADR-0018) -- upsert; a redeploy that drops the
-    /// check writes `None`, clearing it by construction.
-    pub async fn set_deploy_facts(
-        &self,
-        service_id: String,
-        service_type: String,
-        health_check_json: Option<String>,
-        manifest_hash: Option<String>,
-        visibility: Option<String>,
-    ) -> Result<()> {
-        self.storage
-            .save_deploy_facts(
-                &service_id,
-                &service_type,
-                health_check_json.as_deref(),
-                manifest_hash.as_deref(),
-                visibility.as_deref(),
-            )
-            .await?;
-        self.service_deploy_facts
-            .insert(service_id, (service_type, health_check_json, manifest_hash, visibility));
+    /// ADR-0018) and `wake_json` (added by ADR-0031) -- upsert; a redeploy
+    /// that drops the check writes `None`, clearing it by construction.
+    pub async fn set_deploy_facts(&self, service_id: String, facts: DeployFacts) -> Result<()> {
+        self.storage.save_deploy_facts(&service_id, &facts).await?;
+        self.service_deploy_facts.insert(service_id, facts);
         Ok(())
     }
 
-    /// The recorded `(service_type, health_check_json, manifest_hash)`, or
-    /// `None` for a service deployed by an older binary.
+    /// The recorded deploy facts, or `None` for an undeployed service.
     #[must_use]
     pub fn deploy_facts(&self, service_id: &str) -> Option<DeployFacts> {
         self.service_deploy_facts.get(service_id).map(|e| e.value().clone())
+    }
+
+    /// Every deployed service that recorded a wake spec, as `(service_id,
+    /// wake_json)`.
+    #[must_use]
+    pub fn wake_targets(&self) -> Vec<(String, String)> {
+        self.service_deploy_facts
+            .iter()
+            .filter_map(|e| {
+                e.value().wake_json.as_ref().map(|json| (e.key().clone(), json.clone()))
+            })
+            .collect()
     }
 
     /// Forget `service_id`'s deploy facts. Idempotent.
