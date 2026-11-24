@@ -2,6 +2,7 @@
 //! offering it tapped.
 
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use syneroym_app_host::{AppDataLayer, AppHost, types::data_layer::RecordWriteValue};
 use syneroym_roym_core::{
     as_listed::{self, AsListed, MAX_CONSENT_SECS},
@@ -11,7 +12,7 @@ use syneroym_roym_core::{
 };
 
 use super::super::{
-    ENQUIRIES, LEDGER, QUOTES, RecordPointerRow,
+    AS_LISTED, ENQUIRIES, LEDGER, QUOTES, RecordPointerRow,
     agreement_ops::{self, AgreementAcceptInput},
     decline_ops, disclosures,
     enquiry_ops::as_listed::{AsListedRow, AsListedState},
@@ -54,7 +55,7 @@ pub(crate) async fn auto_accept<H: AppHost>(
     quote_record_id: &str,
     now: u64,
 ) -> Result<AutoAccept, Response> {
-    let Some(row) = get_row::<AsListedRow, _>(host, super::super::AS_LISTED, enquiry_record_id)
+    let Some(row) = get_row::<AsListedRow, _>(host, AS_LISTED, enquiry_record_id)
         .await
         .map_err(Response::internal_error)?
     else {
@@ -86,7 +87,7 @@ pub(crate) async fn auto_accept<H: AppHost>(
     }
 
     let verdict = listing::verify_envelope(&row.envelope, now);
-    let (Some(payload), Some(issuer)) = (verdict.payload, verdict.issuer) else {
+    let (Some(payload), Some(issuer)) = (verdict.payload, quote.verdict.issuer.clone()) else {
         return Ok(shown(host, &row, "not-complete", now).await);
     };
     let consent = AsListed {
@@ -119,13 +120,13 @@ pub(crate) async fn auto_accept<H: AppHost>(
             Ok(AutoAccept::Accepted)
         }
         Err(response) => {
-            let message = response.error.map(|e| e.message).unwrap_or_default();
-            if is_signing_error(&message) {
+            let code = error_code(&response);
+            if is_signing_code(&code) {
                 mark(host, &row, AsListedState::Waiting, Some("signing-not-ready"), None, now)
                     .await?;
                 return Ok(AutoAccept::Waiting);
             }
-            Ok(shown(host, &row, &message, now).await)
+            Ok(shown(host, &row, &code, now).await)
         }
     }
 }
@@ -207,9 +208,7 @@ async fn mark<H: AppHost>(
         row.quote_record_id = Some(quote_record_id.to_string());
     }
     row.created_at_secs = now;
-    put_row(host, super::super::AS_LISTED, &row.enquiry_record_id, &row)
-        .await
-        .map_err(Response::internal_error)
+    put_row(host, AS_LISTED, &row.enquiry_record_id, &row).await.map_err(Response::internal_error)
 }
 
 async fn declined<H: AppHost>(host: &H, enquiry_record_id: &str) -> Result<bool, Response> {
@@ -237,17 +236,30 @@ async fn latest_version<H: AppHost>(
         .is_none_or(|ptr| ptr.record_id == quote_record_id))
 }
 
-fn is_signing_error(message: &str) -> bool {
-    message.starts_with("signing-not-enrolled")
-        || message.starts_with("signing-certificate-expired")
-        || message.starts_with("signing-certificate-stale")
+/// The stable code an `accept_at` refusal carries, never its message. A
+/// refusal with no code keeps one word so the row can still be shown.
+fn error_code(response: &Response) -> String {
+    response
+        .error
+        .as_ref()
+        .and_then(|error| error.data.as_ref())
+        .and_then(|data| data.get("code"))
+        .and_then(|code| code.as_str())
+        .unwrap_or("accept-failed")
+        .to_string()
+}
+
+fn is_signing_code(code: &str) -> bool {
+    matches!(
+        code,
+        "signing-not-enrolled" | "signing-certificate-expired" | "signing-certificate-stale"
+    )
 }
 
 /// Accepts every waiting tap that holds a quote and has no fence yet. A
 /// failure is a warning, so one tap cannot stop the others.
 pub(crate) async fn accept_waiting<H: AppHost>(host: &H, now: u64, warnings: &mut Vec<String>) {
-    let rows: Vec<AsListedRow> = match paging::query_all(host, super::super::AS_LISTED, None).await
-    {
+    let rows: Vec<AsListedRow> = match paging::query_all(host, AS_LISTED, None).await {
         Ok(rows) => rows,
         Err(e) => {
             warnings.push(format!("as-listed acceptance scan failed: {e}"));
@@ -258,27 +270,34 @@ pub(crate) async fn accept_waiting<H: AppHost>(host: &H, now: u64, warnings: &mu
         if row.state != AsListedState::Waiting {
             continue;
         }
-        if get_row::<AutoAcceptRow, _>(host, LEDGER, &auto_accept_id(&row.enquiry_record_id))
-            .await
-            .ok()
-            .flatten()
-            .is_some()
+        let quote_record_id = match get_row::<AutoAcceptRow, _>(
+            host,
+            LEDGER,
+            &auto_accept_id(&row.enquiry_record_id),
+        )
+        .await
         {
-            continue;
-        }
-        let quotes: Vec<RecordPointerRow> = match paging::query_all(host, QUOTES, None).await {
-            Ok(quotes) => quotes,
+            Ok(Some(fence)) => fence.quote_record_id,
+            Ok(None) => {
+                let filter = json!({ "request_record_id": row.enquiry_record_id }).to_string();
+                let quotes: Vec<RecordPointerRow> =
+                    match paging::query_all(host, QUOTES, Some(filter)).await {
+                        Ok(quotes) => quotes,
+                        Err(e) => {
+                            warnings.push(format!("as-listed acceptance quote scan failed: {e}"));
+                            continue;
+                        }
+                    };
+                let Some(quote) = quotes.into_iter().next() else {
+                    continue;
+                };
+                quote.record_id
+            }
             Err(e) => {
-                warnings.push(format!("as-listed acceptance quote scan failed: {e}"));
+                warnings.push(format!("as-listed acceptance fence read failed: {e}"));
                 continue;
             }
         };
-        let Some(quote) = quotes
-            .into_iter()
-            .find(|q| q.request_record_id.as_deref() == Some(row.enquiry_record_id.as_str()))
-        else {
-            continue;
-        };
-        let _ = auto_accept(host, &row.enquiry_record_id, &quote.record_id, now).await;
+        let _ = auto_accept(host, &row.enquiry_record_id, &quote_record_id, now).await;
     }
 }

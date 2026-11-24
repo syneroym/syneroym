@@ -79,12 +79,6 @@ pub(crate) enum AsListedState {
     Shown,
     /// The acceptance half is signed; the deal is agreed.
     Accepted,
-    /// An answer is being signed. The quote id is fixed, so a retry reuses it.
-    Answering,
-    /// A quote answers the tap.
-    Answered,
-    /// The owner's node declined it with a reason code.
-    Declined,
 }
 
 /// Runs every check a tap needs before the enquiry is signed, and builds the
@@ -191,25 +185,38 @@ fn refusal(code: &'static str, message: &str) -> Response {
 }
 
 /// The other party of a direct conversation, from the conversation service.
+const CONVERSATION_PAGE: u64 = 500;
+
 async fn conversation_peer<H: AppHost>(
     host: &H,
     conversation: &str,
 ) -> Result<Option<String>, Response> {
-    let params = json!({ "kind": "direct", "offset": 0, "limit": 500 });
-    match call_sibling::<_, serde_json::Value, ConversationListResult>(
-        host,
-        services::CONVERSATION,
-        "conversation.list",
-        &params,
-    )
-    .await
-    {
-        Ok(res) => {
-            Ok(res.conversations.into_iter().find(|c| c.id == conversation).map(|c| c.peer_address))
+    let mut offset = 0;
+    loop {
+        let params = json!({ "kind": "direct", "offset": offset, "limit": CONVERSATION_PAGE });
+        let res = match call_sibling::<_, serde_json::Value, ConversationListResult>(
+            host,
+            services::CONVERSATION,
+            "conversation.list",
+            &params,
+        )
+        .await
+        {
+            Ok(res) => res,
+            Err(
+                SiblingError::Refused(_) | SiblingError::Transport(_) | SiblingError::BadReply(_),
+            ) => {
+                return Err(Response::internal_error("conversation.list failed"));
+            }
+        };
+        let page_len = res.conversations.len() as u64;
+        if let Some(found) = res.conversations.into_iter().find(|c| c.id == conversation) {
+            return Ok(Some(found.peer_address));
         }
-        Err(SiblingError::Refused(_) | SiblingError::Transport(_) | SiblingError::BadReply(_)) => {
-            Err(Response::internal_error("conversation.list failed"))
+        if page_len < CONVERSATION_PAGE {
+            return Ok(None);
         }
+        offset += CONVERSATION_PAGE;
     }
 }
 
