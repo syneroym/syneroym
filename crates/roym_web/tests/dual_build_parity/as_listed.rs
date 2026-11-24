@@ -2,9 +2,10 @@
 
 use std::time::{Duration, Instant};
 
-use serde_json::json;
+use serde_json::{Value, json};
 use syneroym_identity::{Identity, substrate::derive_did_key};
 use syneroym_roym_core::transaction;
+use syneroym_signed_record::{Envelope, RecordDraft};
 
 use super::{fixtures::*, helpers::*};
 
@@ -251,4 +252,187 @@ async fn scenario_259_deal_as_listed_status_parity() {
     assert_eq!(w["result"]["signing_ready"], true);
     assert_eq!(w["result"]["open_instant"], json!([]));
     assert_eq!(w["result"]["in_flight_instant"], 0);
+}
+
+/// A listing both nodes can agree as listed: no reserve hook, a fixed price,
+/// and the deal texts the tap shows.
+fn as_listed_listing_params(slug: &str, acceptance: &str, peer_did: &str) -> Value {
+    json!({
+        "slug": slug,
+        "lang": "en",
+        "title": "Hedge trimming",
+        "summary": "Neat hedges.",
+        "categories": ["gardening"],
+        "conversation_address": peer_did,
+        "payment": {
+            "currency": "EUR",
+            "model": "fixed",
+            "amount_minor": 3500,
+            "tax_included": true,
+            "methods": ["cash"],
+            "payee": "A. Gardener"
+        },
+        "location": { "where": "at-giver", "address_disclosure": "on-agreement" },
+        "relationship": { "open_to": "anyone" },
+        "acceptance": acceptance,
+        "not_limited": true,
+        "instant_cap": 20,
+        "deal_terms": {
+            "cancellation_terms": { "lang": "en", "text": "Free until 24 hours before" },
+            "refund_terms": { "lang": "en", "text": "Full refund" },
+            "dispute_path": { "lang": "en", "text": "Write to us first" },
+            "quote_valid_secs": 3600
+        }
+    })
+}
+
+/// Signs an as-listed enquiry from `peer` against one listing version.
+fn peer_as_listed_enquiry(
+    peer: &Identity,
+    conv: &str,
+    seq: u32,
+    listing_id: &str,
+    record_id: &str,
+    valid_until_secs: u64,
+    issued_at: u64,
+) -> (String, String) {
+    let peer_did = derive_did_key(&peer.public_key());
+    let req_id = transaction::derive_enquiry_id(conv, &peer_did, seq).unwrap();
+    let payload = json!({
+        "enquiry_id": req_id,
+        "conversation": conv,
+        "sequence": seq,
+        "listing_id": listing_id,
+        "as_listed": { "record_id": record_id, "valid_until_secs": valid_until_secs },
+        "data_use_notice": transaction::DEFAULT_DATA_USE_NOTICE,
+    });
+    let draft = RecordDraft {
+        version: transaction::ENQUIRY_VERSION,
+        record_type: transaction::RECORD_ENQUIRY.to_string(),
+        subject: req_id,
+        payload,
+        expires_at_secs: None,
+        supersedes: None,
+    };
+    let (mut env, bytes) = Envelope::unsigned(draft, peer_did, None, issued_at).unwrap();
+    let sig = z32::encode(&peer.sign(&bytes).to_bytes());
+    env.attach_signature(sig).unwrap();
+    let env_json = env.to_json().unwrap();
+    (env.record_id().unwrap(), env_json)
+}
+
+fn thread_has_quote(thread: &Value) -> bool {
+    thread["result"]["cards"]
+        .as_array()
+        .is_some_and(|cards| cards.iter().any(|c| c["card_type"] == "quote"))
+}
+
+/// Creates the listing on both stacks, delivers one as-listed enquiry to each,
+/// and returns the two enquiry record ids.
+async fn hold_as_listed_tap(
+    h: &Harness,
+    peer: &Identity,
+    conv: &str,
+    listing_id: &str,
+    now: u64,
+) -> (String, String) {
+    let peer_did = derive_did_key(&peer.public_key());
+    let mut records = Vec::new();
+    for (index, wasm) in [true, false].into_iter().enumerate() {
+        let got = one_rpc(h, wasm, "listing.get", json!({ "listing_id": listing_id })).await;
+        let record_id = got["result"]["record_id"].as_str().expect("listing record id");
+        let (enquiry_record, envelope) =
+            peer_as_listed_enquiry(peer, conv, 1, listing_id, record_id, now + 3_600, now);
+        let card = inbound_card_with_disclosures(
+            &format!("m-253-{index}"),
+            conv,
+            &peer_did,
+            1_000 + index as i64,
+            transaction::RECORD_ENQUIRY,
+            transaction::ENQUIRY_VERSION,
+            &envelope,
+            &[],
+        );
+        h.deliver(wasm, card).await;
+        records.push(enquiry_record);
+    }
+    (records[0].clone(), records[1].clone())
+}
+
+#[tokio::test]
+async fn scenario_253_the_driver_answers_an_as_listed_enquiry_parity() {
+    let h = harness().await;
+    enrol_signing(&h, "catalog").await;
+    enrol_signing(&h, "conversation").await;
+    enrol_signing(&h, "transaction").await;
+
+    let peer = Identity::from_bytes(&[41; 32]);
+    let peer_did = derive_did_key(&peer.public_key());
+    let conv = open_conv(&h, &peer_did).await;
+    let now = wall_now();
+    let (set, _) = both_rpc(
+        &h,
+        "listing.set",
+        as_listed_listing_params("as-listed-driver", "instant", &peer_did),
+    )
+    .await;
+    let listing_id = set["result"]["listing_id"].as_str().expect("listing id").to_string();
+    hold_as_listed_tap(&h, &peer, &conv, &listing_id, now).await;
+
+    let w = one_rpc(&h, true, "transaction.drive", json!({})).await;
+    let n = one_rpc(&h, false, "transaction.drive", json!({})).await;
+    assert_eq!(w["result"]["synced"], 1, "{w}");
+    assert_eq!(n["result"]["synced"], 1, "{n}");
+
+    let tw = one_rpc(&h, true, "transaction.thread", json!({ "conversation": conv })).await;
+    let tn = one_rpc(&h, false, "transaction.thread", json!({ "conversation": conv })).await;
+    assert!(thread_has_quote(&tw), "{tw}");
+    assert!(thread_has_quote(&tn), "{tn}");
+
+    let qw = one_rpc(&h, true, "quote.list", json!({})).await;
+    let qn = one_rpc(&h, false, "quote.list", json!({})).await;
+    assert_eq!(qw["result"]["quotes"].as_array().map(Vec::len), Some(1), "{qw}");
+    assert_eq!(qn["result"]["quotes"].as_array().map(Vec::len), Some(1), "{qn}");
+}
+
+#[tokio::test]
+async fn scenario_254_quote_from_listing_answers_a_confirm_first_tap_parity() {
+    let h = harness().await;
+    enrol_signing(&h, "catalog").await;
+    enrol_signing(&h, "conversation").await;
+    enrol_signing(&h, "transaction").await;
+
+    let peer = Identity::from_bytes(&[43; 32]);
+    let peer_did = derive_did_key(&peer.public_key());
+    let conv = open_conv(&h, &peer_did).await;
+    let now = wall_now();
+    let (set, _) = both_rpc(
+        &h,
+        "listing.set",
+        as_listed_listing_params("as-listed-confirm", "confirm-first", &peer_did),
+    )
+    .await;
+    let listing_id = set["result"]["listing_id"].as_str().expect("listing id").to_string();
+    let (wasm_enquiry, native_enquiry) =
+        hold_as_listed_tap(&h, &peer, &conv, &listing_id, now).await;
+
+    one_rpc(&h, true, "transaction.drive", json!({})).await;
+    one_rpc(&h, false, "transaction.drive", json!({})).await;
+    let tw = one_rpc(&h, true, "transaction.thread", json!({ "conversation": conv })).await;
+    let tn = one_rpc(&h, false, "transaction.thread", json!({ "conversation": conv })).await;
+    assert!(!thread_has_quote(&tw), "confirm-first waits: {tw}");
+    assert!(!thread_has_quote(&tn), "confirm-first waits: {tn}");
+
+    let aw =
+        one_rpc(&h, true, "quote.from-listing", json!({ "enquiry_record_id": wasm_enquiry })).await;
+    let an =
+        one_rpc(&h, false, "quote.from-listing", json!({ "enquiry_record_id": native_enquiry }))
+            .await;
+    assert!(aw["result"]["quote_id"].is_string(), "{aw}");
+    assert!(an["result"]["quote_id"].is_string(), "{an}");
+
+    let tw = one_rpc(&h, true, "transaction.thread", json!({ "conversation": conv })).await;
+    let tn = one_rpc(&h, false, "transaction.thread", json!({ "conversation": conv })).await;
+    assert!(thread_has_quote(&tw), "{tw}");
+    assert!(thread_has_quote(&tn), "{tn}");
 }

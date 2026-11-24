@@ -438,10 +438,12 @@ function buildEditor(onSaved: () => Promise<void>): { root: HTMLElement } {
   const payCurrency = input(t("listing-placeholder-currency"), "EUR");
   payCurrency.className = "payment-currency-input";
   const payModel = select(codeOptions(PRICING_MODEL_LABELS, ["per-hour", "fixed", "per-unit", "quote-only"]), "per-hour");
+  payModel.className = "payment-model";
   const payAmount = input(t("listing-placeholder-amount"));
   payAmount.className = "payment-amount-input";
   const payFees = input(t("listing-placeholder-fees"));
   const payTax = checkbox(t("listing-label-tax-included"), false);
+  payTax.box.className = "payment-tax-included";
   const payMethodsWrap = document.createElement("div");
   payMethodsWrap.className = "payment-methods";
   const payMethodBoxes = PAYMENT_METHODS.map((m) => {
@@ -452,6 +454,7 @@ function buildEditor(onSaved: () => Promise<void>): { root: HTMLElement } {
     return cb.box;
   });
   const payPayee = input(t("listing-placeholder-payee"));
+  payPayee.className = "payment-payee-input";
   payment.body.append(
     field(t("listing-label-currency"), payCurrency),
     field(t("listing-label-model"), payModel),
@@ -545,6 +548,15 @@ function buildEditor(onSaved: () => Promise<void>): { root: HTMLElement } {
 
   saveBtn.onclick = async () => {
     result.textContent = "";
+    const asListedFields = asListed.read();
+    // An instant offering must be open to anyone. The as-listed section
+    // cannot reach the relationship controls, so the save turns the block on
+    // with `anyone` when the owner picked instant.
+    if (asListedFields.acceptance === "instant" && !relationship.enabled.checked) {
+      relationship.enabled.checked = true;
+      relationship.details.open = true;
+      relOpen.value = "anyone";
+    }
     const form: ListingForm = {
       slug: slug.value,
       title: title.value,
@@ -620,7 +632,7 @@ function buildEditor(onSaved: () => Promise<void>): { root: HTMLElement } {
           retention_secs: srRetention.value,
         },
       },
-      as_listed: asListed.read(),
+      as_listed: asListedFields,
     };
 
     let params: Record<string, unknown>;

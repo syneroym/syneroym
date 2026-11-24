@@ -122,6 +122,17 @@ export async function ensureOwnSynOrg(
  * conversation address is `conversationAddress`; it defaults to the directory DID, which is
  * enough when no test opens a chat from the listing.
  */
+export interface AsListedListing {
+  acceptance: 'instant' | 'confirm-first';
+  notLimited: boolean;
+  cap: string;
+  quoteHours: string;
+  paymentTiming: 'none' | 'before-work' | 'after-work';
+  cancellation: string;
+  refund: string;
+  dispute: string;
+}
+
 export async function publishListing(
   page: Page,
   title: string,
@@ -130,6 +141,7 @@ export async function publishListing(
   lang = 'en',
   textLang?: string,
   conversationAddress = directoryDid,
+  asListed?: AsListedListing,
 ): Promise<string> {
   await page.getByRole('button', { name: hubMessage(lang, 'tab-listings') }).click();
   // The text language of the listing. Without it the select keeps the Hub's own language.
@@ -139,6 +151,24 @@ export async function publishListing(
   await page.locator('.listing-address-input').fill(conversationAddress);
   await page.locator('.block-payment .block-enabled').check();
   await page.locator('.payment-amount-input').fill('40');
+  if (asListed) {
+    // A fixed price, tax included and a payee are what makes the offering
+    // complete enough to agree as listed.
+    await page.locator('.payment-model').selectOption('fixed');
+    await page.locator('.payment-tax-included').check();
+    await page.locator('.payment-payee-input').fill('Bob');
+    const block = page.locator('.block-as-listed');
+    const instant = block.locator('.as-listed-acceptance option[value="instant"]');
+    await expect(instant).toBeEnabled({ timeout: 15_000 });
+    await block.locator('.as-listed-acceptance').selectOption(asListed.acceptance);
+    await block.locator('.as-listed-not-limited').setChecked(asListed.notLimited);
+    await block.locator('.as-listed-instant-cap').fill(asListed.cap);
+    await block.locator('.as-listed-quote-hours').fill(asListed.quoteHours);
+    await block.locator('.as-listed-payment-timing').selectOption(asListed.paymentTiming);
+    await block.locator('.as-listed-cancellation').fill(asListed.cancellation);
+    await block.locator('.as-listed-refund').fill(asListed.refund);
+    await block.locator('.as-listed-dispute').fill(asListed.dispute);
+  }
   await page.locator('.save-listing').click();
   await expect(page.locator('.listing-save-result')).toContainText('lst_', { timeout: 15_000 });
   // The id is `lst_` and the z-base-32 digest of the issuer and the slug.

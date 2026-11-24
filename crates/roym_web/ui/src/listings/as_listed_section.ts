@@ -25,6 +25,7 @@ export function asListedSection(): {
     ],
     "confirm-first",
   );
+  acceptance.className = "as-listed-acceptance";
   const signingNote = text("p", t("listing-instant-needs-signing"), "listing-instant-note");
   signingNote.hidden = true;
   let signingReady = false;
@@ -46,8 +47,11 @@ export function asListedSection(): {
   };
 
   const notLimited = checkbox(t("listing-not-limited"), false);
+  notLimited.box.className = "as-listed-not-limited";
   const instantCap = input(t("listing-instant-cap"), "20");
+  instantCap.className = "as-listed-instant-cap";
   const quoteValidHours = input(t("listing-quote-valid-hours"), "1");
+  quoteValidHours.className = "as-listed-quote-hours";
   const paymentTiming = select(
     [
       ["none", t("listing-payment-timing-none")],
@@ -56,9 +60,13 @@ export function asListedSection(): {
     ],
     "none",
   );
+  paymentTiming.className = "as-listed-payment-timing";
   const cancellation = input(t("listing-deal-cancellation"));
+  cancellation.className = "as-listed-cancellation";
   const refund = input(t("listing-deal-refund"));
+  refund.className = "as-listed-refund";
   const dispute = input(t("listing-deal-dispute"));
+  dispute.className = "as-listed-dispute";
 
   element.append(
     title,
