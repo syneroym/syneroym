@@ -2340,3 +2340,106 @@ deferred (it needs the owner's yes). New: R33 (minor) and R34 (nit), both
 open. **Open: 2 (R33, R34), plus R22 waiting for the owner.** Nothing
 blocks the merge in my view, if the owner accepts R22's deferral. R33 and
 R34 can be fixed in this PR, or R33 can become a backlog row.
+
+## Code review round 6 — Claude Opus 5.5 (Claude Code), 2026-11-24
+
+This round checks the fixes for round 5 (R33, R34) and the parts of R22
+that the owner asked to build. Branch `feat/m08c-c3c2-agree-as-listed`
+at `063467ec`, main checkout, not a worktree. The new commits are
+`13e33096`, `5dee15a4` and `063467ec`. I did not change code.
+
+**CI.** The run on `00fb7ea6` (the same code as `f0bdfbd2`) passed every
+job, Playwright E2E included. So round 4's fixes are proven by CI. On
+`063467ec`, `gh pr checks 382` shows the lint job and all six test shards
+passed, and **Playwright E2E failed** on the new story 50 case (R35).
+
+**Tests run here** (after `mise run build:roym`):
+
+- `cargo nextest run -p syneroym-roym-core -p syneroym-roym-transaction
+  -p syneroym-roym-federated-query`: 783 passed, 0 skipped. This includes
+  `a_resumed_answer_whose_consent_passed_ends_without_a_card`.
+- `cargo nextest run -p syneroym-roym-web`: 322 passed, 1 skipped. This
+  includes `scenario_253_the_driver_answers_an_as_listed_enquiry_parity`
+  and `scenario_254_quote_from_listing_answers_a_confirm_first_tap_parity`.
+- `mise run demo`, four times. The new story 50 case passed all four
+  times, in 5 to 7 seconds. One run failed in story 60, which this branch
+  did not change: an enquiry did not reach the other node within 60
+  seconds. Two e2e nodes that I did not start were running on this
+  machine during all four runs (`.e2e-data/syneroym.toml`), so that
+  failure may be local.
+
+**Each item:**
+
+- **R22 — Closed.** Story 50 has a new case: Bob publishes an instant
+  offering with its own terms; Alice finds it, opens the panel, sees the
+  three texts and no machine warning, and sends; the deal forms with no
+  other action, and both Hubs show the agreement with two commitments.
+  Parity 253 and 254 exist and pass on both builds. The backlog row now
+  holds only the two-node Rust test, parity 255, the native `listing.get`
+  test and the extra Playwright cases. The owner accepted that cut.
+- **R33 — Fixed.** The consent check now runs before the catalog read. A
+  resumed row whose consent has passed is set to `declined` with code
+  `consent-expired`, and no card is sent. The test checks that no quote
+  and no `decline:` row exist.
+- **R34 — Fixed** for the five lines it named. Six more inline paths are
+  in the same file (R36). I missed them in round 5.
+
+**New findings:** 1 blocker (R35), 1 nit (R36).
+
+### R35 — CI is red: the new story 50 case fails in Playwright E2E (blocker)
+
+*Where:* [50-roym-deal.spec.ts:230](../../../../crates/substrate/tests/e2e/demo/50-roym-deal.spec.ts#L230)
+to `:232`.
+
+*Problem:* in CI on `063467ec`, after Alice sends the tap, no
+`.card-agreement-receipt` with the run tag appears on her screen within
+30 seconds (`element(s) not found`). The earlier steps pass, so the tap
+was sent. I could not find the cause:
+
+- The CI node logs (artifact `e2e-server-logs`) are at `warn` level. They
+  show nothing from `transaction` in that window. The only errors are
+  `error writing a body to connection` on the Iroh streams, and these
+  also appear while other stories pass.
+- The `playwright-report` artifact holds only the multi-hop project's
+  report. The demo run's report and its page snapshot are not in it.
+- Here the case passed four times out of four.
+
+Two things make a slow run fail where a fast run passes:
+
+- The step waits 30 seconds, but the other delivery steps in the demo
+  wait `DELIVERY_WAIT_MS` (60 seconds).
+- The deal needs about four hops between the nodes. Each hop is started
+  by the `conversation.message` event. If one hop misses its event, it
+  waits for the periodic wake (`every_secs = 30`), which is already as
+  long as the whole step.
+
+*Failure case:* CI run 45403016496, job "Playwright E2E": 9 passed, 1
+failed (`Roym deal story: Alice agrees as listed and both Hubs see the
+agreement`, 33.1 s).
+
+*Fix:* use `DELIVERY_WAIT_MS` in that step. Then run the Playwright job
+again. If it fails again, find the cause before you raise any timeout:
+for example, start the demo nodes in CI with
+`RUST_LOG=warn,syneroym_roym_transaction=debug` and read which hop
+stopped. A longer wait alone must not hide a real fault. The "no other
+action" step is exactly what this slice promises.
+
+*Status:* Open.
+
+### R36 — More inline qualified paths in `as_listed_owner.rs` (nit)
+
+*Where:* [as_listed_owner.rs:268](../../../../crates/roym_transaction/src/app/tests/as_listed_owner.rs#L268)
+(`syneroym_roym_core::progress::AgreementState`), and `:624` to `:639`
+(`syneroym_roym_core::method::NoParams`, `backup::SECTION_LEDGER`,
+`backup::Bundle`, `signing::sign_bundle`, `backup::ImportInput`).
+
+*Problem:* the import rule in AGENTS.md covers test code too. R34 named
+only two lines of this file; I missed these.
+
+*Fix:* import the types, and call `sign_bundle` through `signing`.
+
+*Status:* Open.
+
+**Counts after this round:** of R16 to R34, 18 are fixed or closed. New:
+R35 (blocker) and R36 (nit). **Open: 2 (R35, R36).** R35 blocks the merge
+because CI is red.
