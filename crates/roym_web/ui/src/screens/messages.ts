@@ -652,6 +652,66 @@ function mtWarning(card: CardRow, accept: () => Promise<void>): HTMLElement {
   return box;
 }
 
+
+/// The owner's side of an as-listed enquiry: the reason it waits, and a
+/// Confirm button when a person can answer it.
+async function agreeAsListedOffer(
+  wrap: HTMLElement,
+  card: { record_id?: string },
+  listingId: string,
+  refresh: () => Promise<void>,
+): Promise<void> {
+  if (!listingId || !card.record_id) return;
+  let status: {
+    waiting?: Array<{ enquiry_record_id: string; reason: string }>;
+  };
+  try {
+    status = await call("deal.as-listed-status", { listing_id: listingId });
+  } catch {
+    // This node's owner did not issue the offering, so there is nothing to
+    // answer here. The counterparty answers it through its own tap screen.
+    return;
+  }
+  const reason = status.waiting?.find((w) => w.enquiry_record_id === card.record_id)?.reason;
+  if (!reason) return;
+
+  wrap.appendChild(text("p", asListedReasonText(reason), "as-listed-waiting"));
+  if (!["confirm-first", "cap-reached", "counterparty-holds-one"].includes(reason)) return;
+
+  const confirmBtn = text("button", t("as-listed-confirm-button"), "button as-listed-confirm-button") as HTMLButtonElement;
+  const confirmErr = text("p", "", "as-listed-confirm-error");
+  confirmBtn.onclick = async () => {
+    confirmBtn.disabled = true;
+    confirmErr.textContent = "";
+    try {
+      await call("quote.from-listing", { enquiry_record_id: card.record_id });
+      await refresh();
+    } catch (err) {
+      confirmBtn.disabled = false;
+      confirmErr.textContent = t("common-save-failed", { detail: errText(err) });
+    }
+  };
+  wrap.append(confirmBtn, confirmErr);
+}
+
+/// Why the offering waits, as the owner sees it.
+function asListedReasonText(reason: string): string {
+  switch (reason) {
+    case "confirm-first":
+      return t("as-listed-waiting-confirm");
+    case "cap-reached":
+      return t("as-listed-cap-reached");
+    case "counterparty-holds-one":
+      return t("as-listed-counterparty-holds-one");
+    case "signing-not-ready":
+      return t("as-listed-signing-not-ready");
+    case "slot-check-failed":
+      return t("as-listed-slot-check-failed");
+    default:
+      return t("as-listed-not-complete");
+  }
+}
+
 export function renderCardActions(
   wrap: HTMLElement,
   card: CardRow,
@@ -667,6 +727,16 @@ export function renderCardActions(
       const quoteBtn = text("button", t("quote-request-button"), "button quote-request-button") as HTMLButtonElement;
       quoteBtn.onclick = () => openQuoteForm(wrap, card, convId, refresh);
       wrap.appendChild(quoteBtn);
+    }
+  }
+
+  // Agree as listed: an enquiry with a consent, for one of this node's own
+  // offerings. The status call also tells the reason the driver is waiting.
+  if (card.card_type === "enquiry" && card.verified) {
+    const notIssuedByMe = card.direction === "incoming" || (myDid && card.issuer !== myDid);
+    const data = card.data as Record<string, unknown> | undefined;
+    if (notIssuedByMe && data?.as_listed) {
+      void agreeAsListedOffer(wrap, card, String(data.listing_id ?? ""), refresh);
     }
   }
 

@@ -73,14 +73,27 @@ pub enum TransactionCommands {
     Enquiry {
         #[arg(long)]
         conversation: String,
+        /// Required unless `--as-listed` names an offering.
         #[arg(long)]
-        description: String,
+        description: Option<String>,
         #[arg(long)]
         lang: String,
         #[arg(long = "category")]
         categories: Vec<String>,
         #[arg(long)]
         listing: Option<String>,
+        /// A file holding the offering envelope the person agreed to.
+        #[arg(long)]
+        as_listed: Option<PathBuf>,
+        /// The slot the person picked, with `--slot-window`.
+        #[arg(long)]
+        slot: Option<String>,
+        /// `earliest..latest` in unix seconds, with `--slot`.
+        #[arg(long)]
+        slot_window: Option<String>,
+        /// How long the tap's consent holds, in hours.
+        #[arg(long, default_value_t = 1)]
+        valid_hours: u64,
         /// `lat,lon,radius_m` in decimal degrees and metres; converted to
         /// integer micro-degrees at this boundary, never signed as a
         /// decimal.
@@ -98,6 +111,15 @@ pub enum TransactionCommands {
     },
     /// Send a signed quote card answering a request.
     Quote(Box<QuoteArgs>),
+    /// Answer a waiting as-listed enquiry from the current offering.
+    FromListing {
+        #[arg(long)]
+        enquiry: String,
+        #[arg(long, default_value = DEFAULT_GATEWAY_URL)]
+        gateway_url: String,
+        #[arg(long)]
+        host: Option<String>,
+    },
     /// Accept an offered quote, signing an agreement receipt.
     Accept {
         #[arg(long)]
@@ -157,10 +179,14 @@ pub enum TransactionCommands {
 
 struct EnquiryParamsArgs<'a> {
     conversation: &'a str,
-    description: &'a str,
+    description: Option<&'a str>,
     lang: &'a str,
     categories: &'a [String],
     listing: Option<&'a str>,
+    as_listed: Option<&'a Path>,
+    slot: Option<&'a str>,
+    slot_window: Option<&'a str>,
+    valid_hours: u64,
     near: Option<&'a str>,
     window: Option<&'a str>,
     notice: Option<&'a str>,
@@ -175,13 +201,43 @@ fn build_enquiry_params(args: EnquiryParamsArgs<'_>) -> Result<Value> {
 
     let mut params = json!({
         "conversation": args.conversation,
-        "description": {
-            "lang": parsed_lang.as_str(),
-            "text": args.description,
-        },
         "categories": args.categories,
         "data_use_notice": data_use_notice,
     });
+    match (args.description, args.as_listed) {
+        (Some(text), _) => {
+            params["description"] = json!({ "lang": parsed_lang.as_str(), "text": text });
+        }
+        (None, None) => {
+            anyhow::bail!("--description is required unless --as-listed names an offering");
+        }
+        (None, Some(_)) => {}
+    }
+    if let Some(path) = args.as_listed {
+        if args.valid_hours == 0 || args.valid_hours > 168 {
+            anyhow::bail!("--valid-hours must be 1..=168");
+        }
+        let envelope = std::fs::read_to_string(path)
+            .with_context(|| format!("reading the offering envelope {}", path.display()))?;
+        let mut entry = json!({
+            "envelope": envelope.trim(),
+            "valid_for_secs": args.valid_hours * 3_600,
+            "viewed_lang": parsed_lang.as_str(),
+            "viewed_via_mt": false,
+        });
+        match (args.slot, args.slot_window) {
+            (Some(slot_id), Some(window)) => {
+                entry["slot"] = json!({
+                    "slot_id": slot_id,
+                    "window": parse_slot_window(window)?,
+                });
+            }
+            (Some(_), None) => anyhow::bail!("--slot needs --slot-window earliest..latest"),
+            (None, Some(_)) => anyhow::bail!("--slot-window needs --slot"),
+            (None, None) => {}
+        }
+        params["as_listed"] = entry;
+    }
     if let Some(l) = args.listing {
         params["listing_id"] = json!(l);
     }
@@ -198,10 +254,14 @@ fn build_enquiry_params(args: EnquiryParamsArgs<'_>) -> Result<Value> {
 #[allow(clippy::too_many_arguments)]
 async fn handle_enquiry(
     conversation: &str,
-    description: &str,
+    description: Option<&str>,
     lang: &str,
     categories: &[String],
     listing: Option<&str>,
+    as_listed: Option<&Path>,
+    slot: Option<&str>,
+    slot_window: Option<&str>,
+    valid_hours: u64,
     near: Option<&str>,
     window: Option<&str>,
     notice: Option<&str>,
@@ -218,6 +278,10 @@ async fn handle_enquiry(
         lang,
         categories,
         listing,
+        as_listed,
+        slot,
+        slot_window,
+        valid_hours,
         near,
         window,
         notice,
@@ -504,6 +568,10 @@ pub(super) async fn handle_transaction(
             lang,
             categories,
             listing,
+            as_listed,
+            slot,
+            slot_window,
+            valid_hours,
             near,
             window,
             notice,
@@ -512,10 +580,14 @@ pub(super) async fn handle_transaction(
         } => {
             handle_enquiry(
                 conversation,
-                description,
+                description.as_deref(),
                 lang,
                 categories,
                 listing.as_deref(),
+                as_listed.as_deref(),
+                slot.as_deref(),
+                slot_window.as_deref(),
+                *valid_hours,
                 near.as_deref(),
                 window.as_deref(),
                 notice.as_deref(),
@@ -554,6 +626,10 @@ pub(super) async fn handle_transaction(
             let params = json!({ "quote_record_id": quote });
             call_and_print(ctx, gateway_url, host.as_deref(), "agreement.accept", params).await?;
         }
+        TransactionCommands::FromListing { enquiry, gateway_url, host } => {
+            let params = json!({ "enquiry_record_id": enquiry });
+            call_and_print(ctx, gateway_url, host.as_deref(), "quote.from-listing", params).await?;
+        }
         TransactionCommands::Decline { quote, note, gateway_url, host } => {
             handle_decline(quote, note.as_deref(), gateway_url, host.as_deref(), ctx).await?;
         }
@@ -578,6 +654,21 @@ pub(super) async fn handle_transaction(
 }
 
 /// Parses `earliest,latest` unix timestamps at this boundary.
+/// Parses `earliest..latest` unix seconds, the form a slot window uses.
+pub(crate) fn parse_slot_window(input: &str) -> Result<serde_json::Value> {
+    let (earliest, latest) =
+        input.split_once("..").context("expected earliest..latest unix seconds")?;
+    let earliest: u64 = earliest.trim().parse().context("invalid earliest unix seconds")?;
+    let latest: u64 = latest.trim().parse().context("invalid latest unix seconds")?;
+    if earliest > latest {
+        anyhow::bail!("earliest cannot be after latest");
+    }
+    Ok(json!({
+        "earliest_secs": earliest,
+        "latest_secs": latest,
+    }))
+}
+
 pub(crate) fn parse_window(input: &str) -> Result<serde_json::Value> {
     let parts: Vec<&str> = input.split(',').collect();
     let [earliest, latest] = parts.as_slice() else {
@@ -640,10 +731,14 @@ mod tests {
     fn build_enquiry_params_validates_lang() {
         let params = build_enquiry_params(EnquiryParamsArgs {
             conversation: "conv1",
-            description: "desc",
+            description: Some("desc"),
             lang: "HI-latn",
             categories: &[],
             listing: None,
+            as_listed: None,
+            slot: None,
+            slot_window: None,
+            valid_hours: 1,
             near: None,
             window: None,
             notice: None,
@@ -655,10 +750,14 @@ mod tests {
 
         let err = build_enquiry_params(EnquiryParamsArgs {
             conversation: "conv1",
-            description: "desc",
+            description: Some("desc"),
             lang: "hi_IN",
             categories: &[],
             listing: None,
+            as_listed: None,
+            slot: None,
+            slot_window: None,
+            valid_hours: 1,
             near: None,
             window: None,
             notice: None,

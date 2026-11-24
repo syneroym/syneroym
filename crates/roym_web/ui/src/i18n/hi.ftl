@@ -826,3 +826,37 @@ ext-not-checked = इस डिवाइस पर जाँचा नहीं 
 ext-scheduling-slot-listing-id = लिस्टिंग कोड:
 ext-scheduling-slot-slot-id = स्लॉट कोड:
 ext-scheduling-step-started = काम शुरू हुआ
+
+# --- agree as listed, the owner's side ---
+listing-as-listed-heading = सूची के अनुसार सहमति
+listing-acceptance = स्वीकृति
+listing-acceptance-confirm = हर अनुरोध पहले पुष्टि करें
+listing-acceptance-instant = तुरंत सहमति दें
+listing-instant-needs-signing = तुरंत सहमति के लिए इस डिवाइस का हस्ताक्षर प्रमाणपत्र चाहिए।
+listing-not-limited = यह पेशकश कभी खत्म नहीं होती
+listing-instant-cap = एक साथ अधिकतम खुली तुरंत सहमतियाँ
+listing-quote-valid-hours = कोटेशन कितने घंटे मान्य रहे
+listing-payment-timing = भुगतान
+listing-payment-timing-none = तय नहीं
+listing-payment-timing-before = काम से पहले
+listing-payment-timing-after = काम के बाद
+listing-deal-cancellation = रद्द करने की शर्तें
+listing-deal-refund = वापसी की शर्तें
+listing-deal-dispute = विवाद का रास्ता
+listing-error-quote-valid-hours = कोटेशन की वैधता 1 से 168 घंटे के बीच होनी चाहिए।
+as-listed-waiting-confirm = यह पेशकश आपकी पुष्टि का इंतज़ार कर रही है।
+as-listed-cap-reached = यह पेशकश आपके लिए रुकी है: खुली तुरंत सहमतियों की सीमा पूरी हो गई।
+as-listed-counterparty-holds-one = इस व्यक्ति के पास इस पेशकश की एक खुली तुरंत सहमति पहले से है।
+as-listed-signing-not-ready = इस डिवाइस पर हस्ताक्षर तैयार नहीं है, इसलिए यह पेशकश रुकी है।
+as-listed-slot-check-failed = स्लॉट सेवा ने जवाब नहीं दिया, इसलिए यह पेशकश रुकी है।
+as-listed-confirm-button = पुष्टि करें
+decline-code-consent-expired = जवाब से पहले इस पेशकश की सहमति समाप्त हो गई।
+decline-code-offering-withdrawn = पेशकश वापस ले ली गई।
+decline-code-no-such-slot = वह स्लॉट अब नहीं है।
+decline-code-slot-not-in-listing = वह स्लॉट पेशकश में नहीं है।
+as-listed-not-complete = इस पेशकश का सूची के अनुसार जवाब नहीं दिया जा सकता। कोटेशन भेजकर जवाब दें।
+request-agree-as-listed = सूची के अनुसार सहमति: { $id }
+
+# --- agree as listed, the counterparty's side ---
+as-listed-cancel-open = बिना पुष्टि वाली तुरंत सहमतियाँ रद्द करें
+as-listed-cancelled = { $count } रद्द की गईं।

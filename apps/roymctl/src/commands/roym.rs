@@ -37,7 +37,7 @@ pub(crate) use step::parse_step_data;
 pub(crate) use syneroym_sdk::DeployedService;
 pub use transaction::TransactionCommands;
 #[cfg(test)]
-pub(crate) use transaction::{parse_minor_units, parse_window};
+pub(crate) use transaction::{parse_minor_units, parse_slot_window, parse_window};
 pub use trust::CredentialCommands;
 
 #[derive(Subcommand, Debug, Clone)]

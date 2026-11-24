@@ -1,8 +1,10 @@
 import {
   buildSetListingParams,
   slotFromLocalDatetimes,
+  type Acceptance,
   type ListingForm,
   type OpenTo,
+  type PaymentTiming,
   type ServiceLocationKind,
 } from "../listings/editor";
 import {
@@ -182,6 +184,7 @@ function listingRow(row: ListingListRow, reload: () => Promise<void>): HTMLEleme
   };
 
   wrap.append(historyBtn, withdrawBtn, historyHost);
+  wrap.appendChild(asListedStatus(row.listing_id));
   wrap.appendChild(publishToDirectory(row.listing_id));
   wrap.appendChild(availabilityEditor(row.listing_id));
   return wrap;
@@ -191,6 +194,51 @@ function listingRow(row: ListingListRow, reload: () => Promise<void>): HTMLEleme
 /// listing to it. Publishing is always the listing owner's own action -- a
 /// directory never pulls. A refusal (over the limit, or a draft) is shown
 /// with its reason.
+
+interface AsListedStatus {
+  open_instant: string[];
+  waiting: Array<{ enquiry_record_id: string; reason: string }>;
+}
+
+/// The offering's as-listed state: the limit line while a tap waits for a
+/// place, and one action that cancels the unconfirmed instant agreements.
+function asListedStatus(listingId: string): HTMLElement {
+  const wrap = document.createElement("div");
+  wrap.className = "as-listed-status";
+  void (async () => {
+    let status: AsListedStatus;
+    try {
+      status = await call("deal.as-listed-status", { listing_id: listingId });
+    } catch {
+      // The transaction service is not reachable, or this build does not
+      // know the method. Nothing to show.
+      return;
+    }
+    if (status.waiting.some((w) => w.reason === "cap-reached")) {
+      wrap.appendChild(text("p", t("as-listed-cap-reached"), "as-listed-limit-line"));
+    }
+    if (status.open_instant.length === 0) return;
+
+    const cancelBtn = text("button", t("as-listed-cancel-open"), "button as-listed-cancel-open") as HTMLButtonElement;
+    const result = text("p", "", "as-listed-cancel-result");
+    cancelBtn.onclick = async () => {
+      cancelBtn.disabled = true;
+      let cancelled = 0;
+      for (const agreement of status.open_instant) {
+        try {
+          await call("agreement.cancel", { agreement, reason: "other" });
+          cancelled += 1;
+        } catch {
+          // One that already moved is refused; the count says what worked.
+        }
+      }
+      result.textContent = t("as-listed-cancelled", { count: String(cancelled) });
+    };
+    wrap.append(cancelBtn, result);
+  })();
+  return wrap;
+}
+
 function publishToDirectory(listingId: string): HTMLElement {
   const wrap = document.createElement("div");
   wrap.className = "publish-to-directory";
@@ -441,6 +489,64 @@ function buildEditor(onSaved: () => Promise<void>): { root: HTMLElement } {
   const relMember = input(t("listing-placeholder-group-did"));
   relationship.body.append(field(t("listing-label-open-to"), relOpen), field(t("listing-label-group-did"), relMember));
 
+  // --- agree as listed ---
+  const asListed = document.createElement("fieldset");
+  asListed.className = "listing-block block-as-listed";
+  const asListedTitle = document.createElement("legend");
+  asListedTitle.textContent = t("listing-as-listed-heading");
+  const acceptance = select(
+    [
+      ["confirm-first", t("listing-acceptance-confirm")],
+      ["instant", t("listing-acceptance-instant")],
+    ],
+    "confirm-first",
+  );
+  const signingNote = text("p", t("listing-instant-needs-signing"), "listing-instant-note");
+  signingNote.hidden = true;
+  let signingReady = false;
+  void call<{ certificate?: { state?: string } }>("transaction.signing-status")
+    .then((res) => {
+      signingReady = res?.certificate?.state === "installed";
+      const instant = Array.from(acceptance.options).find((o) => o.value === "instant");
+      if (instant) instant.disabled = !signingReady;
+      if (!signingReady && acceptance.value === "instant") {
+        acceptance.value = "confirm-first";
+      }
+    })
+    .catch(() => {
+      const instant = Array.from(acceptance.options).find((o) => o.value === "instant");
+      if (instant) instant.disabled = true;
+    });
+  acceptance.onchange = () => {
+    signingNote.hidden = signingReady || acceptance.value !== "instant";
+  };
+  const notLimited = checkbox(t("listing-not-limited"), false);
+  const instantCap = input(t("listing-instant-cap"), "20");
+  const quoteValidHours = input(t("listing-quote-valid-hours"), "1");
+  const paymentTiming = select(
+    [
+      ["none", t("listing-payment-timing-none")],
+      ["before-work", t("listing-payment-timing-before")],
+      ["after-work", t("listing-payment-timing-after")],
+    ],
+    "none",
+  );
+  const asCancellation = input(t("listing-deal-cancellation"));
+  const asRefund = input(t("listing-deal-refund"));
+  const asDispute = input(t("listing-deal-dispute"));
+  asListed.append(
+    asListedTitle,
+    field(t("listing-acceptance"), acceptance),
+    signingNote,
+    field(t("listing-not-limited"), notLimited.wrap),
+    field(t("listing-instant-cap"), instantCap),
+    field(t("listing-quote-valid-hours"), quoteValidHours),
+    field(t("listing-payment-timing"), paymentTiming),
+    field(t("listing-deal-cancellation"), asCancellation),
+    field(t("listing-deal-refund"), asRefund),
+    field(t("listing-deal-dispute"), asDispute),
+  );
+
   // --- service_record ---
   const serviceRecord = block("service_record", t("listing-block-service-record"));
   const srReceipt = checkbox(t("listing-label-fulfilment-receipt"), false);
@@ -459,6 +565,7 @@ function buildEditor(onSaved: () => Promise<void>): { root: HTMLElement } {
     service.details,
     location.details,
     relationship.details,
+    asListed,
     serviceRecord.details,
   );
 
@@ -542,6 +649,16 @@ function buildEditor(onSaved: () => Promise<void>): { root: HTMLElement } {
           warranty_secs: srWarranty.value,
           retention_secs: srRetention.value,
         },
+      },
+      as_listed: {
+        acceptance: acceptance.value as Acceptance,
+        not_limited: notLimited.box.checked,
+        instant_cap: instantCap.value,
+        quote_valid_hours: quoteValidHours.value,
+        payment_timing: paymentTiming.value as PaymentTiming,
+        cancellation_terms: asCancellation.value,
+        refund_terms: asRefund.value,
+        dispute_path: asDispute.value,
       },
     };
 

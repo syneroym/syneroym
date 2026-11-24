@@ -882,3 +882,24 @@ describe("Card templates with a translation engine", () => {
     });
   });
 });
+
+describe("agree as listed", () => {
+  it("shows the offering on an enquiry that carries a consent and no description", () => {
+    const card = renderEnquiry({
+      listing_id: "list-1",
+      as_listed: { record_id: "rec_listing", valid_until_secs: 1_000 },
+    });
+    expect(card.querySelector(".request-listing")?.textContent).toContain("Agree as listed: list-1");
+    expect(card.querySelector(".request-description")).toBeNull();
+  });
+
+  it("shows the reason sentence a decline code names", () => {
+    const card = renderDealDecline({ deal: "quo_1", code: "offering-withdrawn" });
+    expect(card.querySelector(".decline-code")?.textContent).toBe("The offering was withdrawn.");
+  });
+
+  it("draws nothing for a code this build does not know", () => {
+    const card = renderDealDecline({ deal: "quo_1", code: "made-up" });
+    expect(card.querySelector(".decline-code")).toBeNull();
+  });
+});

@@ -849,3 +849,37 @@ ext-not-checked = Not checked on this device
 ext-scheduling-slot-listing-id = Listing code:
 ext-scheduling-slot-slot-id = Slot code:
 ext-scheduling-step-started = Work started
+
+# --- agree as listed, the owner's side ---
+listing-as-listed-heading = Agree as listed
+listing-acceptance = Acceptance
+listing-acceptance-confirm = Confirm each request first
+listing-acceptance-instant = Agree at once
+listing-instant-needs-signing = Agree at once needs this device's signing certificate.
+listing-not-limited = This offering never runs out
+listing-instant-cap = Open instant agreements at most
+listing-quote-valid-hours = Quote valid for (hours)
+listing-payment-timing = Payment
+listing-payment-timing-none = Not set
+listing-payment-timing-before = Before the work
+listing-payment-timing-after = After the work
+listing-deal-cancellation = Cancellation terms
+listing-deal-refund = Refund terms
+listing-deal-dispute = Dispute path
+listing-error-quote-valid-hours = Quote validity must be 1 to 168 hours.
+as-listed-waiting-confirm = This offering waits for you to confirm each request.
+as-listed-cap-reached = This offering is waiting for you: it reached its limit of open instant agreements.
+as-listed-counterparty-holds-one = This person already has an open instant agreement for this offering.
+as-listed-signing-not-ready = Signing is not ready on this device, so this offering waits.
+as-listed-slot-check-failed = The slot service did not answer, so this offering waits.
+as-listed-confirm-button = Confirm
+decline-code-consent-expired = The consent to this offering ended before an answer.
+decline-code-offering-withdrawn = The offering was withdrawn.
+decline-code-no-such-slot = That slot no longer exists.
+decline-code-slot-not-in-listing = That slot is not in the offering.
+as-listed-not-complete = This offering cannot be answered as listed. Answer with a quote.
+request-agree-as-listed = Agree as listed: { $id }
+
+# --- agree as listed, the counterparty's side ---
+as-listed-cancel-open = Cancel unconfirmed instant agreements
+as-listed-cancelled = Cancelled { $count }.
