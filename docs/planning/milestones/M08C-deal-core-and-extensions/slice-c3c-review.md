@@ -1501,3 +1501,520 @@ pending. So CI is not yet proof for this head.
 **Counts of this round's new findings: 0. Open: 0.** All findings R1 to
 R15 of C3c1 are fixed and verified. The review of C3c1 is closed, subject
 to CI passing on `b5b38a86`.
+
+## Code review round 4 — Claude Opus 5.5 (Claude Code), 2026-11-24
+
+This is the first code review of **part C3c2** (agree as listed on both
+nodes): plan section 6.2 and D-C3c-5 to D-C3c-18. PR #382 (draft), branch
+`feat/m08c-c3c2-agree-as-listed` at `a63ee51d`, main checkout, not a
+worktree, `git pull` up to date. Diff: `git diff origin/main...HEAD`
+(`main` at `b260da71`, 113 files). The code was written by Gemini 3.8
+Flash. The owner's prompt called this round 2 (the second part of the
+slice). This file already has rounds 1 to 3 of C3c1, so I number it 4. I
+did not check C3c1's items again. New findings continue at R16.
+
+**CI.** `gh pr checks 382` on `a63ee51d`: **"Lints, licenses & checks"
+failed** (R16). fmt, clippy with `-D warnings`, `cargo audit`, `cargo deny`
+and `check-roym-deps` passed before it. The six test shards and
+Playwright E2E were still pending. So CI is not proof that the suite
+passes.
+
+**Tests I ran** (targeted only): `cargo nextest run -p syneroym-roym-core
+-p syneroym-roym-transaction`: 735 passed, 0 skipped (status.md says 735).
+`cargo xtask check-file-lengths`: fails as in CI. `check-module-layout`,
+`check-lint-suppressions` (38 of 38), `check-dep-versions`,
+`check-change-docs`, `check-duplication` (6.80%): pass. Two throwaway
+tests, removed again, prove R17 and R18 (outputs quoted there). I did not
+build the roym WASM, so I did not run parity, and I did not measure the
+component sizes again. The disk of this machine filled up at the end of
+the review (116 MB free), so I stopped building.
+
+### Checked and found correct
+
+- **The current version and the consent (owner's side).** `start`
+  ([answer.rs:218](../../../../crates/roym_transaction/src/app/as_listed_ops/answer.rs#L218))
+  reads the offering with `listing.get` from `catalog` each time, declines
+  with `offering-withdrawn` when it is missing or not active, declines with
+  `consent-expired` when `now > valid_until_secs`, and builds the terms
+  from the current version (the consent's `record_id` is replaced by the
+  current one). The `catalog` envelope is verified again. Tests:
+  `a_withdrawn_offering_…`, `a_missing_offering_…`,
+  `an_expired_consent_…`.
+- **One tap, at most one quote, in the normal path.** `claim_answer` is a
+  `create` of `answer:<enquiry>` with the quote id fixed in it, before any
+  signature. A loser signs nothing. An `answering` row whose quote is held
+  is marked `answered` and the card is sent again. But see R18: the
+  driver never comes back to an `answering` row.
+- **The slot check only in the answer.** `check_author_slots` runs only
+  from `evaluate`; `hooks::prepare` is now a thin wrapper over
+  `prepare_window`; `set_at` keeps `prepare_terms` and then calls
+  `issue_quote`. I compared the moved body with `main`: the same
+  validation, error data, signing, pointer and send, in the same order,
+  plus `formed_as` on the pointer. So `quote.set` runs the hook once, as
+  before. The plan's guard test `quote_set_runs_the_prepare_hook_once`
+  does not exist (R22).
+- **`in_flight_instant` uses `is_deal_ended`.** So expiry, a decline
+  (`declined_at_secs` or `decline:<quote>`), a `not-formed` decision and a
+  terminal agreement free a place. But it does not leave out a quote that
+  formed an agreement (R17).
+- **A listing with no new field signs the same bytes.** The four fields
+  are skipped at their defaults (`acceptance`, `not_limited`,
+  `instant_cap = 20`, `deal_terms`).
+  `a_listing_without_the_new_fields_signs_the_same_bytes` and
+  `a_decline_with_no_code_keeps_todays_bytes` compare the JSON of an old
+  payload after a round trip. That shows no new key is written, which is
+  what matters for the signed bytes.
+- **`terms_from_listing`** follows the agreements doc's table, field by
+  field, and the refusal order of D-C3c-6. The two differences
+  (`ExtensionUnknown`, and a `details` block for a known non-scheduling
+  extension) are in the Deviations. Unit tests for each row, each refusal,
+  the order, the largest listing and the amount text exist.
+- **The listing rules** (`instant-not-allowed` with its two reasons,
+  `instant-cap-range`, `deal-terms-languages`, `quote-valid-range`) and
+  `{code, reason}` in `listing.set`'s error data.
+- **`formed_as`**: required in the snapshot, given to `open` at the four
+  call sites, copied from the writer's quote pointer, and
+  `formed-as-changed` refuses a changed value on the counterparty's node.
+- **Backup**: `SCHEMA_VERSION` 7 → 8; the `as_listed` section is exported
+  and imported; the import checks `answer:` rows (held enquiry; an
+  `answered` row names a held quote that answers it, with the same quote
+  id) and `autoaccept:` rows (held enquiry, held quote that answers it).
+  Tests `the_import_checks_answer_rows`, `the_import_checks_autoaccept_rows`,
+  `the_import_checks_as_listed_rows` exist.
+- **The native build binding.** `roym.toml` adds `catalog` to
+  `transaction`'s `depends_on`; `ROYM_BINDINGS` lists the six edges and
+  `every_manifest_dependency_has_a_binding` checks both directions. The
+  removed string check in `services/tests.rs` is covered by this test plus
+  the remaining hook-service check.
+- **Both builds' method table.** `quote.from-listing` and
+  `deal.as-listed-status` are in the table with the default
+  `require_internal`; the contract count is 47.
+- **`same_terms`** compares `DealTerms` with `PartialEq` and replaces
+  only the expiry, which must be after `now` and at most 7 days after
+  issue. The node checks the quote's issue time against the consent, the
+  enquiry's decline, the latest version and the disclosures before it
+  takes the fence and signs.
+- **`directory`**: `can_agree_as_listed` comes from `as_listed_ready` and
+  links no deal code. The implementer measured +37,513 bytes (limit
+  +40 KB); I did not measure again.
+- **Hindi**: 46 new keys, the same set in `en.ftl` and `hi.ftl`. The owner
+  has not reviewed them yet (status.md says so); that is the owner's step,
+  not a finding.
+
+**Counts of this round's new findings: 1 blocker, 7 major, 7 minor.
+Open: 15 (R16 to R30).**
+
+### R16 — CI is red: `backup/sections.rs` is over the file limit (blocker)
+
+*Where:* [backup/sections.rs](../../../../crates/roym_transaction/src/app/backup/sections.rs),
+865 production lines at `a63ee51d` (703 on `main`).
+
+*Problem:* `cargo xtask check-file-lengths` fails: "865 production lines
+(maximum allowed is 800)". The plan (D-C3c-14) puts the `as_listed`
+section in a new `backup/as_listed.rs`. The code put it, and the two new
+ledger validators, into `sections.rs`.
+
+*Failure case:* CI "Lints, licenses & checks" fails on every push, and the
+checks after it (module layout, duplication, change docs) do not run in
+CI. The PR cannot merge.
+
+*Fix:* move `validate_as_listed`, `validate_answer_entry` and
+`validate_auto_accept_entry` into `backup/as_listed.rs`, and call them from
+`sections.rs`. Do not raise any limit.
+
+*Status:* Open.
+
+### R17 — The instant cap counts an accepted instant deal twice (major)
+
+*Where:* [answer.rs:325](../../../../crates/roym_transaction/src/app/as_listed_ops/answer.rs#L325)
+to `:345` (`in_flight_instant`) and `:347` to `:377` (`holds_one`).
+
+*Problem:* D-C3c-12 counts an `answered` row as in flight only while "its
+quote has no `decision:` fence yet and has not ended". The code checks
+only `is_deal_ended`. A quote that formed an agreement has not ended. So
+it is counted once in `in_flight_instant` and once more in `open_instant`.
+For the same reason, an agreement with a filed half, which `open_instant`
+leaves out, still counts in flight until its quote's expiry, and
+`holds_one` stays true for that counterparty.
+
+*Failure case:* proved with a throwaway test: cap 2; tap 1 is answered;
+an agreed instant agreement row for that quote is stored. Output:
+`open=1 in_flight=1`, and a second person's tap waits with
+`cap-reached`. So a cap of N allows about N/2 deals. The planned tests
+that would show it (`many_taps_before_any_acceptance_make_only_cap_quotes`,
+`an_agreement_with_a_filed_half_no_longer_counts`,
+`a_declined_instant_quote_frees_its_place`) do not exist. The existing
+`the_cap_makes_an_instant_offering_wait` stores only an agreement row, so
+it cannot see the double count.
+
+*Fix:* in both scans, skip a row whose quote has a `decision:<quote_id>`
+row (any state), as the plan says; then the agreement is counted only by
+`open_instant`. Use one helper for both scans. Add the three tests above,
+each with a real `answer:` row, and one that a cap of 2 allows two
+accepted deals.
+
+*Status:* Open.
+
+### R18 — A failure after either fence is never tried again (major)
+
+*Where:* owner: [answer.rs:174](../../../../crates/roym_transaction/src/app/as_listed_ops/answer.rs#L174)
+to `:207` and `:603` to `:606`;
+[status.rs:171](../../../../crates/roym_transaction/src/app/as_listed_ops/status.rs#L171).
+Counterparty: [accept.rs:106](../../../../crates/roym_transaction/src/app/as_listed_ops/accept.rs#L106)
+to `:129` and `:261` to `:268`.
+
+*Problem:* Both sides take their fence before they sign, as planned. But
+the drive pass skips any tap that has a fence row:
+
+- Owner: `answer_waiting` skips an enquiry with any `answer:` row. After a
+  crash, or an error from `person_principal` or `issue_quote` after
+  `claim_answer`, the row stays `answering` and is never resumed. The
+  plan says "the next call runs `issue_quote` again with the same id".
+  `deal.as-listed-status` also skips it (`answered` is true for any row),
+  so the owner's Hub shows no line and no "Confirm".
+- Counterparty: `auto_accept` claims `autoaccept:` and then calls
+  `accept_at`. On a signing error the row is set back to `waiting`, but
+  `accept_waiting` skips every tap that has an `autoaccept:` row.
+
+*Failure case:* proved with a throwaway test on the counterparty's side:
+the certificate is removed, `auto_accept` answers `Waiting`, the fence row
+exists; the certificate is put back and `accept_waiting` runs: the tap is
+still `waiting` and there is no agreement. The deal waits until the
+quote expires. The planned
+`a_signing_error_keeps_the_row_waiting_and_the_next_drive_accepts` and the
+crash case of `two_answers_of_one_tap_make_one_quote` (with the
+injected-error host) do not exist; the existing test calls the answer
+twice with no failure.
+
+*Fix:* owner: `answer_waiting` skips only `answered` and `declined` rows,
+and resumes an `answering` row with its stored quote id and `formed_as`,
+with no new evaluation and no decline (a decline now would overwrite the
+fence of a quote that another sync may be signing). Store the sequence in
+the row too, so a resume signs the same sequence that the quote id was
+derived from. `deal.as-listed-status` shows an `answering` row. Counterparty:
+`accept_waiting` does not skip on the fence; when a fence exists, it
+calls `auto_accept` with the fence's quote, which `claim` already accepts
+as `Held`. Add the two tests.
+
+*Status:* Open.
+
+### R19 — The automatic acceptance does not check that the listing owner signed the quote (major)
+
+*Where:* [accept.rs:88](../../../../crates/roym_transaction/src/app/as_listed_ops/accept.rs#L88)
+to `:101`.
+
+*Problem:* D-C3c-17 builds the expected terms with
+`terms_from_listing(listing, quote.issuer, …)`. Inside it,
+`derive_listing_id(owner_did, slug) == listing_id` is what ties the
+quote's signer to the listing's owner. The code passes the listing
+envelope's own issuer, so this check is always true, and nothing else on
+this path compares the quote's issuer with the listing's issuer
+(`file_quote_card` checks only that the quote's counterparty is the
+enquiry's issuer). Plan 7.11 lists "who signed is not checked" as a
+finding kind to avoid.
+
+*Failure case:* a quote signed by another key Z (not the listing owner)
+that copies the listed terms and answers the tap reaches the conversation.
+Y's node finds the terms equal and signs an acceptance half that binds Y
+to Z, with no person at the screen.
+
+*Fix:* pass `quote.verdict.issuer` (show the quote with `not-complete`
+when it is missing). Add a test: the same terms in a quote signed by
+another identity give `Shown`.
+
+*Status:* Open.
+
+### R20 — The tap screen records a viewing that did not happen (major)
+
+*Where:* [as_listed_tap.ts:96](../../../../crates/roym_web/ui/src/screens/as_listed_tap.ts#L96)
+to `:145`.
+
+*Problem:* The screen always shows the original texts
+(`terms.cancellation_terms.text`, and so on), never a translation. But it
+sends `viewed_lang = currentLanguage()` and computes `viewed_via_mt`
+from whether the listing has a translation in that language. The
+automatic acceptance signs these two values into the agreement receipt
+(ML-18). The machine-translation warning is shown after the terms, and
+the person does not confirm it; D-C3c-18 says it comes first and the
+person confirms it.
+
+*Failure case:* a Hindi Hub opens an English listing with a Hindi
+translation: the person reads English, and the signed half says
+`viewed_lang: hi, viewed_via_mt: false`. With no Hindi translation, the
+person reads the English original, and the half says
+`viewed_via_mt: true`, though no machine translation was shown.
+
+*Fix:* show each text in the language the Hub picks (the listing's own
+translation when there is one, else the original or a machine translation
+with the existing `mtWarning`), and send the language actually shown and
+`viewed_via_mt` only when a machine translation was shown. Put the
+warning first, with a confirm that enables "Agree and send". Add a Hub
+unit test for each of the three cases.
+
+*Status:* Open.
+
+### R21 — The struct test does not fail when a field is added (major)
+
+*Where:* [as_listed_accept.rs:316](../../../../crates/roym_transaction/src/app/tests/as_listed_accept.rs#L316)
+(`a_changed_field_anywhere_in_the_terms_fails_the_check`).
+
+*Problem:* The plan (AG-44, D-C3c-17) and the exit criterion ask for a
+test that serialises a `DealTerms` and a `Commitment` with every field
+set, walks the JSON keys, and fails when a key has no row in the test's
+table. The test is a hand-written list of 12 changes. It reads no keys.
+It also leaves out `home_exchange`, `commitment_id`, `giver`,
+`resource_kind`, `kind`, `extension`, `details`, `window`, `location`,
+`payment_methods`, `tax_minor`, `eep` and the translations.
+`a_quote_that_differs_in_any_field_is_shown` changes only the payee.
+
+*Failure case:* a new optional field in `Commitment` that
+`terms_from_listing` does not fill: the test still passes. The exit
+criterion "checked once by adding a field locally" cannot be met.
+
+*Fix:* build the test as the plan says: one value with every field set,
+a fixed table of `(json path, change)`, a check that every key of the
+serialised value has a row, and for each row a check that
+`same_terms` is false.
+
+*Status:* Open.
+
+### R22 — Planned tests and step 8 are not built, and most of it is recorded nowhere (major)
+
+*Where:* the test files under
+[app/tests/](../../../../crates/roym_transaction/src/app/tests/),
+[dual_build_parity/as_listed.rs](../../../../crates/roym_web/tests/dual_build_parity/as_listed.rs),
+`crates/substrate/tests/`, `crates/substrate/tests/e2e/demo/`;
+[change.md:1502](../../../changes/roym-agreements/change.md#L1502).
+
+*Problem:* The slice is marked "Implemented", but these planned items do
+not exist (I checked with `git grep -n 'fn <name>'`):
+
+- Owner (section 7.3): `a_changed_offering_is_answered_from_the_current_version`,
+  `an_agreement_with_a_filed_half_no_longer_counts`,
+  `an_agreement_older_than_seven_days_no_longer_counts`,
+  `many_taps_before_any_acceptance_make_only_cap_quotes`,
+  `one_counterparty_tapping_twice_gets_one_instant_quote`,
+  `a_declined_instant_quote_frees_its_place`,
+  `a_full_slot_ends_not_formed_with_slot_taken`,
+  `a_removed_slot_is_declined_with_the_hooks_code`,
+  `an_unreachable_slot_hook_makes_the_enquiry_wait`,
+  `quote_set_runs_the_prepare_hook_once`,
+  `formed_as_is_the_same_in_the_first_and_a_later_snapshot`,
+  `cancel_of_unconfirmed_instant_agreements_frees_their_slots`, and the unit
+  test of `is_open_instant` (one case per condition).
+- Counterparty: `a_missing_disclosure_shows_the_quote`,
+  `a_withdrawn_enquiry_is_never_accepted`,
+  `a_quote_from_a_changed_offering_is_shown`,
+  `a_signing_error_keeps_the_row_waiting_and_the_next_drive_accepts`,
+  `an_expiry_more_than_seven_days_after_issue_is_shown`.
+- The substrate native test that calls `listing.get` from `transaction`
+  (P11), parity scenario 253 (the driver answer), 254 and 255, the owner's
+  half of `roym_as_listed_e2e.rs` (step 5) and the whole file (step 8),
+  the Playwright cases, story 50, the Hub thread lines, and the form's
+  translation rows.
+
+The backlog and the Deviations name only the two-node file, 254/255, the
+Playwright cases, story 50, the thread lines and the translation rows.
+The missing service tests, scenario 253 and the P11 test are named
+nowhere. The Deviation says 254 and 255 "need two nodes, which the parity
+harness does not have". That is not so for 254: `quote.from-listing` needs
+only the owner's node with a held enquiry, as the service tests already
+build. It also says "the plan's 252 to 256 were taken", but 252 is C3c1's
+own scenario and 256 is used here with the plan's meaning. The two bugs
+of R17 and R18 are exactly the cases these missing tests cover.
+
+*Failure case:* the visible story of the slice (an instant offering
+reaching `agreed` from one tap) is not shown anywhere end to end, and
+the exit criteria of section 10 for C3c2 cannot be ticked.
+
+*Fix:* build them in this PR; the plan puts all of them in C3c2. A cut
+of any of them needs the owner's yes, and then a row in the backlog and
+a correct Deviation. Correct the scenario-number sentence.
+
+*Status:* Open.
+
+### R23 — No living doc is updated, and two change docs miss their Deviations (major)
+
+*Where:* the diff touches only `roym-agreements/change.md`,
+`deferred-backlog.md` and `status.md` under `docs/`.
+
+*Problem:* AGENTS.md's living-docs close-out and plan section 9. Now
+false or incomplete: `developer-guide.md` (the `transaction` method table
+lacks `quote.from-listing`, `deal.as-listed-status` and `enquiry.set`'s
+`as_listed`; the listing's new fields; the `answer:` and `autoaccept:`
+ledger kinds; the `as_listed` backup section and schema version 8);
+`system-architecture.md` (agree as listed in the Roym deal flow);
+`system-requirements-spec.md`; `roym-integrated-experience-spec.md` (steps
+C12 and C14, the listing fields, the hit's action); `TERMINOLOGY.md`;
+`traceability-matrix.md`. The plan also asks for Deviations in
+`roym-value-exchange` (VX-54 with the slot gap of Q4) and
+`roym-extensions` (EX-18's agree-as-listed half). Neither is touched.
+
+*Failure case:* a developer who reads the developer guide does not know
+the two methods or the new ledger kinds that a backup import refuses.
+
+*Fix:* update the listed docs in this PR, without milestone or slice ids,
+and add the two Deviations rows in the doc that owns each.
+
+*Status:* Open.
+
+### R24 — Error kinds are read from message text (minor)
+
+*Where:* [accept.rs:121](../../../../crates/roym_transaction/src/app/as_listed_ops/accept.rs#L121)
+to `:129` and `:240` to `:244`.
+
+*Problem:* `is_signing_error` decides by `message.starts_with(…)`, and any
+other error stores the whole message as the row's `reason`. Plan 7.11:
+"`auto_accept` branches on the error's code, never on its message". The
+Hub cannot map a free message to a sentence.
+
+*Failure case:* a change of wording in `certificate_error` makes a signing
+error a permanent `shown` with an English message as its reason.
+
+*Fix:* put a `data.code` on the certificate errors (as `listing.set` does
+for its codes), branch on it, and store only a code as `reason`.
+
+*Status:* Open.
+
+### R25 — The owner's answer does not check whose listing and whose enquiry (minor)
+
+*Where:* [answer.rs:122](../../../../crates/roym_transaction/src/app/as_listed_ops/answer.rs#L122)
+to `:139`, `:248` to `:257`.
+
+*Problem:* The plan's first line is "require: this node's owner issued
+the listing … and the enquiry's counterparty is not the owner". The code
+does neither check. It relies on `catalog` holding only this node's
+listings, and treats "not in the catalog" as withdrawn.
+
+*Failure case:* any peer sends an as-listed enquiry with a made-up
+`listing_id`; the owner's node signs and sends a `deal-decline` with
+`offering-withdrawn` for an offering it never had. `quote.from-listing` on
+the owner's own sent enquiry follows the same path.
+
+*Fix:* refuse (`NotAsListed`, nothing signed) when the enquiry is this
+node's own (`mine`, or issuer equal to the owner), and check
+`current.owner` against the node's owner from `resolve_principal_and_owner`.
+
+*Status:* Open.
+
+### R26 — Wrong or missing values in what the owner and the person see (minor)
+
+*Where:* [answer.rs:174](../../../../crates/roym_transaction/src/app/as_listed_ops/answer.rs#L174)
+to `:183`; [status.rs:143](../../../../crates/roym_transaction/src/app/as_listed_ops/status.rs#L143);
+`as-listed-cap-reached` and `as-listed-not-complete` in
+[en.ftl](../../../../crates/roym_web/ui/src/i18n/en.ftl).
+
+*Problem:* (1) A sync that loses the `answer:` fence to an `answering` row
+returns `Waiting("confirm-first")`, which is not the reason. (2) The status
+builds its consent with `record_id: current.payload.listing_id`, a listing
+id in a record-id field (no effect today, but wrong). (3)
+`as-listed-cap-reached` has no number; D-C3c-16 says "its limit of N open
+instant agreements". (4) The counterparty's tap screen shows
+`as-listed-not-complete`, "… Answer with a quote.", which speaks to the
+owner. (5) The cancel action has no confirm dialog that lists the
+agreements (D-C3c-16).
+
+*Failure case:* the owner reads "confirm first" for an instant offering;
+a person who taps is told to answer with a quote.
+
+*Fix:* return a separate in-progress outcome; use the current record id;
+pass `$cap` into the message; give the tap screen its own message; add the
+dialog. The owner reviews the Hindi of any changed message.
+
+*Status:* Open.
+
+### R27 — Inline qualified paths (minor)
+
+*Where:* for example [as_listed.rs:99](../../../../crates/roym_core/src/as_listed.rs#L99)
+(`crate::deal::ExtensionRef`),
+[listing/as_listed.rs:175](../../../../crates/roym_core/src/listing/as_listed.rs#L175)
+and `:179` (`std::collections::HashSet`, `crate::as_listed::translation_langs`),
+`super::super::AS_LISTED` three times in `accept.rs`,
+`syneroym_roym_core::record::Envelope` in `answer.rs` (`expiry_of`),
+`syneroym_roym_core::as_listed::as_listed_ready` in
+`roym_federated_query/src/verify.rs`, `crate::app::enquiry_ops::as_listed::AsListedRow`
+in `sync/cards.rs`, and `crate::progress::FormedAs::Quote` and
+`crate::deal::ExtensionRef` in several tests.
+
+*Problem:* AGENTS.md's import rule (types through `use`, no inline paths
+with several `::`).
+
+*Failure case:* none at run time.
+
+*Fix:* import the types and constants; call functions through their
+parent module.
+
+*Status:* Open.
+
+### R28 — Plan placements, unused states, missing shapes and repeated helpers (minor)
+
+*Where:* [listings.ts](../../../../crates/roym_web/ui/src/screens/listings.ts)
+(693 → 810 lines);
+[enquiry_ops/as_listed.rs:83](../../../../crates/roym_transaction/src/app/enquiry_ops/as_listed.rs#L83)
+to `:87`; `crates/roym_web/tests/method_shapes/`; `answer.rs` and
+`status.rs`; the three new test files.
+
+*Problem:* (1) D-C3c-16 puts the form section in a new
+`listings/as_listed_section.ts` because `listings.ts` was 693 lines; it
+went into `listings.ts`, now 810. (2) `AsListedState::Answering`,
+`Answered` and `Declined` are never used. (3) Step 4 asks for shape
+files for the two new methods; there are none. (4)
+`load_current_listing` (`answer.rs`) and `load_current` (`status.rs`) are
+the same function; the two `answer:` scans in `in_flight_instant` and
+`holds_one` are the same loop; `as_listed_owner.rs`,
+`as_listed_accept.rs` and `as_listed_enquiry.rs` each define their own
+`lang`, `text`, `deal_terms`, listing and `sign_listing` helpers.
+
+*Failure case:* none at run time; the next change to one copy misses the
+others.
+
+*Fix:* move the section to its own file; remove the unused states; add
+the two shape files; keep one `load_current_listing` and one scan; put
+the test helpers in one shared test module.
+
+*Status:* Open.
+
+### R29 — Each drive does work that grows with all held records (minor)
+
+*Where:* [answer.rs:582](../../../../crates/roym_transaction/src/app/as_listed_ops/answer.rs#L582)
+to `:611`; [accept.rs:248](../../../../crates/roym_transaction/src/app/as_listed_ops/accept.rs#L248)
+to `:283`;
+[enquiry_ops/as_listed.rs:198](../../../../crates/roym_transaction/src/app/enquiry_ops/as_listed.rs#L198).
+
+*Problem:* `answer_waiting` reads and verifies the signature of every
+held enquiry on every drive, before it looks at the cheap `answer:` row.
+`accept_waiting` reads the whole `quotes` collection once per waiting
+tap. A waiting confirm-first tap makes a `catalog` call and a `prepare`
+hook call on every drive until its consent ends (48 hours by default).
+`conversation_peer` reads only the first 500 direct conversations.
+
+*Failure case:* a node with a few thousand old enquiries verifies them
+all on each wake; a person with more than 500 conversations cannot tap
+(`as-listed-wrong-conversation`).
+
+*Fix:* read the `answer:` row first and skip `mine` and non-as-listed
+rows before verifying (or keep a small index of open taps); query quotes
+with a `request_record_id` filter; page `conversation.list` or ask for the
+one conversation.
+
+*Status:* Open.
+
+### R30 — status.md and the backlog table are wrong (minor)
+
+*Where:* [status.md](status.md), C3c2 row at `a63ee51d`;
+[deferred-backlog.md:681](../../deferred-backlog.md#L681).
+
+*Problem:* The C3c2 row changed "Plan by" from Claude Opus 5.5 to
+"DeepSeek V4.1 Flash" and left "Implemented by" as "—" (the owner says
+Gemini 3.8 Flash wrote the code). In the backlog, an empty line comes
+before the four new rows, so they are not part of the table and render as
+broken text.
+
+*Failure case:* the record of who did each step is wrong; the four
+backlog rows are hard to read.
+
+*Fix:* put back "Claude Opus 5.5" as the plan author and name the
+implementer; remove the empty line. (This round sets the row's Step and
+code-review columns.)
+
+*Status:* Open.
