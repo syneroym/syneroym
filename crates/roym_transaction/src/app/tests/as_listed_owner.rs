@@ -4,12 +4,14 @@ use serde_json::json;
 use syneroym_identity::{Identity, substrate};
 use syneroym_roym_core::{
     as_listed::{self, AsListed},
+    backup::{Bundle, ImportInput, SECTION_LEDGER},
     deal::transition::CommitmentState,
     listing::{self, Acceptance, DEFAULT_INSTANT_CAP, ListingPayload, ListingStatus},
+    method::NoParams,
     paging,
     progress::{AgreementState, CommitmentProgress, FormedAs},
     record::{Envelope, RecordDraft},
-    signing::{CERTIFICATE_ID, CERTIFICATES},
+    signing::{self, CERTIFICATE_ID, CERTIFICATES},
     testing::TestHost,
     transaction::{self, DEFAULT_DATA_USE_NOTICE, ENQUIRY_VERSION, RECORD_ENQUIRY},
 };
@@ -265,7 +267,7 @@ async fn the_cap_makes_an_instant_offering_wait() {
             counterparty_did: "did:key:zSomeoneElse".to_string(),
             quote_author_did: f.master_did.clone(),
             terms,
-            state: Some(syneroym_roym_core::progress::AgreementState::Agreed),
+            state: Some(AgreementState::Agreed),
             state_reason: None,
             cancel_reason: None,
             seq: Some(1),
@@ -620,25 +622,18 @@ async fn the_import_checks_answer_rows() {
         .await
         .expect("answer");
 
-    let bundle =
-        backup::export(&f.host, syneroym_roym_core::method::NoParams {}).await.expect("export");
+    let bundle = backup::export(&f.host, NoParams {}).await.expect("export");
     let mut sections = bundle.sections.clone();
-    let rows = sections.get_mut(syneroym_roym_core::backup::SECTION_LEDGER).expect("ledger");
+    let rows = sections.get_mut(SECTION_LEDGER).expect("ledger");
     let row = rows
         .iter_mut()
         .find(|row| row["id"].as_str().is_some_and(|id| id.starts_with("answer:")))
         .expect("answer row");
     row["payload"]["quote_record_id"] = json!("rec_unknown");
-    let mut tampered = syneroym_roym_core::backup::Bundle::new(
-        f.master_did.clone(),
-        crate::app::SCHEMA_VERSION,
-        sections,
-    )
-    .expect("bundle");
-    syneroym_roym_core::signing::sign_bundle(&f.host, &mut tampered, now).await.expect("sign");
-    let err = backup::import(&f.host, syneroym_roym_core::backup::ImportInput { bundle: tampered })
-        .await
-        .expect_err("refused");
+    let mut tampered =
+        Bundle::new(f.master_did.clone(), crate::app::SCHEMA_VERSION, sections).expect("bundle");
+    signing::sign_bundle(&f.host, &mut tampered, now).await.expect("sign");
+    let err = backup::import(&f.host, ImportInput { bundle: tampered }).await.expect_err("refused");
     let message = err.error.expect("error").message;
     assert!(message.contains("answer:"), "{message}");
 }

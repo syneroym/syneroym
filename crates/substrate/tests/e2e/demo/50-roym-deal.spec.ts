@@ -228,7 +228,7 @@ test('Roym deal story: Alice agrees as listed and both Hubs see the agreement', 
     });
 
     await step(page, "Alice's screen: the deal forms with no other action", async () => {
-      await expect(runReceiptCard(page, runTag).first()).toBeVisible({ timeout: 30_000 });
+      await expect(runReceiptCard(page, runTag).first()).toBeVisible({ timeout: DELIVERY_WAIT_MS });
     });
 
     await step(bobPage, "Bob's screen: open the conversation and see the same agreement", async () => {

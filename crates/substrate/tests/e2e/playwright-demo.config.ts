@@ -16,14 +16,14 @@ export default defineConfig({
   // Two nodes boot and Roym deploys twice, so this is longer than the main suite's.
   globalTimeout: 900_000,
   timeout: 180_000,
-  reporter: [['list']],
+  reporter: [['list'], ['html', { open: 'never' }]],
   globalSetup: require.resolve('./demo-global-setup.ts'),
   globalTeardown: require.resolve('./demo-global-teardown.ts'),
   use: {
     headless: !present,
     video: video ? 'on' : 'off',
     trace: video ? 'on' : 'off',
-    screenshot: 'off',
+    screenshot: video ? 'on' : 'only-on-failure',
   },
 
   projects: [
