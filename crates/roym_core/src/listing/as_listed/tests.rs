@@ -4,7 +4,7 @@ use serde_json::json;
 
 use super::*;
 use crate::{
-    deal::LocalText,
+    deal::{ExtensionRef, LocalText},
     lang::LangTag,
     listing::{
         self, Acceptance, AddressDisclosure, DEFAULT_INSTANT_CAP, ListingDealTerms, ListingError,
@@ -112,8 +112,7 @@ fn instant_is_allowed_on_a_slot_offering_that_is_not_limited() {
     let mut listing = base();
     listing.acceptance = Acceptance::Instant;
     listing.not_limited = false;
-    listing.extension =
-        Some(crate::deal::ExtensionRef { id: "scheduling".to_string(), version: 1 });
+    listing.extension = Some(ExtensionRef { id: "scheduling".to_string(), version: 1 });
     listing.booking = Some(listing::BookingTerms {
         lead_time_secs: 3_600,
         cancellation_window_secs: 86_400,

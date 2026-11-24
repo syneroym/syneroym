@@ -11,6 +11,7 @@ use crate::{
     extension::{SCHEDULING_EXTENSION, SCHEDULING_SLOT_SCHEMA},
     lang::LangTag,
     listing,
+    progress::FormedAs,
     testing::sd,
     transaction::{AgreementReceiptPayload, DealRole, QuotePayload, TimeWindow},
 };
@@ -439,7 +440,7 @@ fn quote_for_an_enquiry_and_for_a_want_give_equal_receipts() {
         cp_did.to_string(),
         author_did.to_string(),
         &terms,
-        crate::progress::FormedAs::Quote,
+        FormedAs::Quote,
         None,
     );
     let snap_want = crate::progress::open(
@@ -448,7 +449,7 @@ fn quote_for_an_enquiry_and_for_a_want_give_equal_receipts() {
         cp_did.to_string(),
         author_did.to_string(),
         &terms,
-        crate::progress::FormedAs::Quote,
+        FormedAs::Quote,
         None,
     );
     assert_ne!(snap_enq.agreement, snap_want.agreement);

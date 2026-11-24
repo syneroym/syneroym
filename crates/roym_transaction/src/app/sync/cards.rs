@@ -13,7 +13,10 @@ use crate::app::{
     AS_LISTED, CardRow, ENQUIRY_HISTORY, QUOTE_HISTORY, as_listed_ops,
     as_listed_ops::Trigger,
     disclosures,
-    enquiry_ops::{as_listed::AsListedState, store_received_enquiry},
+    enquiry_ops::{
+        as_listed::{AsListedRow, AsListedState},
+        store_received_enquiry,
+    },
     get_bytes, get_row, put_card,
     quote_ops::store_received_quote,
 };
@@ -164,10 +167,7 @@ pub(super) async fn file_quote_card<H: AppHost>(
     row.revocation_status = v.revocation_status;
     put_card(host, &row).await?;
     if let Answers::Enquiry { record_id } = &payload.answers
-        && let Ok(Some(held)) = get_row::<crate::app::enquiry_ops::as_listed::AsListedRow, _>(
-            host, AS_LISTED, record_id,
-        )
-        .await
+        && let Ok(Some(held)) = get_row::<AsListedRow, _>(host, AS_LISTED, record_id).await
         && held.state == AsListedState::Waiting
     {
         // A failed acceptance leaves the tap waiting; the drive tries again.

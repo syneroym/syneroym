@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 
 use serde::Serialize;
 use syneroym_roym_core::{
+    as_listed::as_listed_ready,
     directory::{MAX_REFUSED_RESULTS, MAX_STORED_PER_SOURCE, SearchHit},
     listing::{self, ListingStatus, ListingVerdict},
     membership::MembershipEvidence,
@@ -127,7 +128,7 @@ fn build_verified_row(
     let listing_id = verdict.listing_id.unwrap_or_default();
     let areas = payload.location.as_ref().map(|l| l.service_area.clone()).unwrap_or_default();
     let record_id = verdict.record_id.unwrap_or_default();
-    let can_agree_as_listed = syneroym_roym_core::as_listed::as_listed_ready(&payload).is_ok();
+    let can_agree_as_listed = as_listed_ready(&payload).is_ok();
     envelopes_by_record_id.insert(record_id.clone(), hit.envelope.clone());
     evidence.push(HeldEvidence {
         source: source.did.clone(),

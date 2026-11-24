@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::{
-    deal::{CommitmentKind, LocalText, ResourceKind, TextTranslation, commitment_id},
+    deal::{CommitmentKind, ExtensionRef, LocalText, ResourceKind, TextTranslation, commitment_id},
     disclosure::{MAX_DETAILS_DISCLOSURE_BYTES, MAX_RECORD_DISCLOSURE_BYTES},
     extension::{self, SCHEDULING_EXTENSION, SCHEDULING_SLOT_SCHEMA},
     lang::LangTag,
@@ -175,8 +175,7 @@ fn payment_timing_orders_the_commitments() {
 #[test]
 fn a_slot_listing_fills_the_scheduling_details_and_window() {
     let mut listing = base();
-    listing.extension =
-        Some(crate::deal::ExtensionRef { id: SCHEDULING_EXTENSION.to_string(), version: 1 });
+    listing.extension = Some(ExtensionRef { id: SCHEDULING_EXTENSION.to_string(), version: 1 });
     listing.booking = Some(listing::BookingTerms {
         lead_time_secs: 3_600,
         cancellation_window_secs: 86_400,
@@ -203,7 +202,7 @@ fn a_slot_listing_fills_the_scheduling_details_and_window() {
 #[test]
 fn a_listing_with_another_extension_fills_its_details_block() {
     let mut listing = base();
-    listing.extension = Some(crate::deal::ExtensionRef { id: "one-shot".to_string(), version: 1 });
+    listing.extension = Some(ExtensionRef { id: "one-shot".to_string(), version: 1 });
     assert!(
         !extension::registry()
             .workflow(listing.extension.as_ref().unwrap())
@@ -252,7 +251,7 @@ fn each_refusal_has_its_code() {
 
     let mut slot_listing = base();
     slot_listing.extension =
-        Some(crate::deal::ExtensionRef { id: SCHEDULING_EXTENSION.to_string(), version: 1 });
+        Some(ExtensionRef { id: SCHEDULING_EXTENSION.to_string(), version: 1 });
     slot_listing.booking = Some(listing::BookingTerms {
         lead_time_secs: 3_600,
         cancellation_window_secs: 86_400,
@@ -261,7 +260,7 @@ fn each_refusal_has_its_code() {
     assert_eq!(refusal(&slot_listing), "slot-required");
 
     let mut unknown = base();
-    unknown.extension = Some(crate::deal::ExtensionRef { id: "future".to_string(), version: 2 });
+    unknown.extension = Some(ExtensionRef { id: "future".to_string(), version: 2 });
     assert_eq!(refusal(&unknown), "extension-unknown");
 
     let mut offered_unasked = consent();
@@ -310,8 +309,7 @@ fn a_refusal_that_breaks_two_rules_reports_the_first_one() {
 
     let mut listing = base();
     listing.deal_terms = None;
-    listing.extension =
-        Some(crate::deal::ExtensionRef { id: SCHEDULING_EXTENSION.to_string(), version: 1 });
+    listing.extension = Some(ExtensionRef { id: SCHEDULING_EXTENSION.to_string(), version: 1 });
     assert_eq!(refusal(&listing), "no-deal-terms");
 }
 
@@ -348,7 +346,7 @@ fn generated_listings() -> Vec<ListingPayload> {
 
     let mut slot_listing = base();
     slot_listing.extension =
-        Some(crate::deal::ExtensionRef { id: SCHEDULING_EXTENSION.to_string(), version: 1 });
+        Some(ExtensionRef { id: SCHEDULING_EXTENSION.to_string(), version: 1 });
     slot_listing.booking = Some(listing::BookingTerms {
         lead_time_secs: 3_600,
         cancellation_window_secs: 86_400,
@@ -357,11 +355,11 @@ fn generated_listings() -> Vec<ListingPayload> {
     out.push(slot_listing.clone());
 
     let mut one_shot = base();
-    one_shot.extension = Some(crate::deal::ExtensionRef { id: "one-shot".to_string(), version: 1 });
+    one_shot.extension = Some(ExtensionRef { id: "one-shot".to_string(), version: 1 });
     out.push(one_shot);
 
     let mut unknown = base();
-    unknown.extension = Some(crate::deal::ExtensionRef { id: "future".to_string(), version: 2 });
+    unknown.extension = Some(ExtensionRef { id: "future".to_string(), version: 2 });
     out.push(unknown);
 
     out

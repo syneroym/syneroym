@@ -13,8 +13,8 @@ use serde::{Deserialize, Serialize};
 pub use crate::listing::as_listed::{NotComplete, as_listed_ready};
 use crate::{
     deal::{
-        Commitment, CommitmentKind, DealTerms, Details, LocalText, ResourceKind, TextTranslation,
-        commitment_id,
+        Commitment, CommitmentKind, DealTerms, Details, ExtensionRef, LocalText, ResourceKind,
+        TextTranslation, commitment_id,
     },
     disclosure::{MAX_DETAILS_DISCLOSURE_BYTES, MAX_RECORD_DISCLOSURE_BYTES},
     extension::{self, Manifest, SCHEDULING_EXTENSION, SCHEDULING_SLOT_SCHEMA},
@@ -96,7 +96,7 @@ impl AsListed {
     }
 }
 
-fn has_reserve_hook(ext: &crate::deal::ExtensionRef) -> bool {
+fn has_reserve_hook(ext: &ExtensionRef) -> bool {
     extension::registry().workflow(ext).is_some_and(Manifest::has_reserve_hook)
 }
 

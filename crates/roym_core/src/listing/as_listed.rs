@@ -5,9 +5,12 @@
 //! Each field is left out of the signed payload at its default, so a listing
 //! that sets none of them signs the same bytes it did before.
 
+use std::collections::HashSet;
+
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    as_listed::translation_langs,
     deal::{LocalText, MAX_TERMS_TEXT_LEN},
     extension,
     listing::{
@@ -172,12 +175,11 @@ impl ListingPayload {
         let Some(terms) = &self.deal_terms else {
             return Ok(());
         };
-        let listing_langs: std::collections::HashSet<String> =
+        let listing_langs: HashSet<String> =
             self.translations.iter().map(|t| t.lang.to_string()).collect();
         for text in [&terms.cancellation_terms, &terms.refund_terms, &terms.dispute_path] {
             text.validate("deal_terms", MAX_TERMS_TEXT_LEN)?;
-            if text.lang != self.lang || crate::as_listed::translation_langs(text) != listing_langs
-            {
+            if text.lang != self.lang || translation_langs(text) != listing_langs {
                 return Err(ListingError::DealTermsLanguages);
             }
         }
