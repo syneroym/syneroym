@@ -1601,10 +1601,10 @@ the review (116 MB free), so I stopped building.
   has not reviewed them yet (status.md says so); that is the owner's step,
   not a finding.
 
-**Counts of this round's new findings: 2 blocker, 7 major, 7 minor.
-Open: 16 (R16 to R31).** R31 was added after the first write of this
+**Counts of this round's new findings: 3 blocker, 7 major, 7 minor.
+Open: 17 (R16 to R32).** R31 was added after the first write of this
 round, when uncommitted changes from the implementation session showed
-it.
+it. R32 was added when the CI test shards on `731d0835` finished.
 
 ### R16 — CI is red: `backup/sections.rs` is over the file limit (blocker)
 
@@ -2053,4 +2053,53 @@ tests). Two more points for that change:
   Refuse `instant` with empty texts in the form, or show a line.
 - The owner reviews the Hindi of the new message.
 
-*Status:* Open (fix in progress, not committed).
+*Status:* Open. The fix is committed as `731d0835` (the same four files I
+read). The two points above are still open.
+
+### R32 — CI is red: two parity fixtures build a progress snapshot without `formed_as` (blocker)
+
+*Where:* `peer_signed_progress` in
+[deal_fixtures.rs:480](../../../../crates/roym_web/tests/dual_build_parity/deal_fixtures.rs#L480)
+to `:484`, used by scenario 157
+([booking.rs:577](../../../../crates/roym_web/tests/dual_build_parity/booking.rs#L577));
+and the tampered progress row of scenario 142
+([transaction_cards.rs:500](../../../../crates/roym_web/tests/dual_build_parity/transaction_cards.rs#L500)
+to `:510`).
+
+*Problem:* D-C3c-10 makes `AgreementProgressPayload.formed_as` required,
+with no serde default. That is the plan, and the code follows it. But
+these two parity fixtures write the payload as hand-made JSON and were
+not updated. So:
+
+- Scenario 157: every progress card the helper signs fails to parse.
+  The node refuses it, and `agreement.get` has no `seq`. The test stops at
+  `booking.rs:591` (`left: Null, right: 1`). The later checks of a wrong
+  key and a lower `seq` would also pass for the wrong reason: the card is
+  refused for the missing field, not for the key or the sequence.
+- Scenario 142: `validate_progress`
+  ([sections.rs:756](../../../../crates/roym_transaction/src/app/backup/sections.rs#L756))
+  refuses the tampered row with `progress '…': invalid row: missing field
+  formed_as`. It never reaches the signature check. The code is still
+  `-32602`, but the test asserts "does not verify", so it fails at
+  `transaction_cards.rs:532`. The test is meant to prove that a re-signed
+  bundle with a forged progress envelope is refused by its signature.
+  Without the field it does not test that.
+
+Status.md says only parity scenarios 256 to 259 were run while working,
+so the full parity suite never ran on this branch before CI.
+
+*Failure case:* CI on `731d0835`: "Test 1/6" fails
+`booking::scenario_157_progress_card_wrong_key_or_lower_seq_refused_parity`
+and "Test 5/6" fails
+`transaction_cards::scenario_142_transaction_export_import_roundtrip_parity`
+(both after three tries). Both fail the same way here after `mise run
+build:roym` (`cargo nextest run -p syneroym-roym-web --test
+dual_build_parity`, the two tests, `--retries 0`).
+
+*Fix:* add `"formed_as": "quote"` to the JSON in `peer_signed_progress`
+and to the `snapshot` of the tampered row in scenario 142. I tried this
+in a scratch edit: both tests pass on both builds. I then reverted it. To
+find other missed fixtures, run the whole `dual_build_parity` binary after
+`mise run build:roym`, not only the new scenarios.
+
+*Status:* Open.
