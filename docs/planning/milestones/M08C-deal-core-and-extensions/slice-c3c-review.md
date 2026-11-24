@@ -1873,16 +1873,20 @@ the exit criteria of section 10 for C3c2 cannot be ticked.
 of any of them needs the owner's yes, and then a row in the backlog and
 a correct Deviation. Correct the scenario-number sentence.
 
-*Status:* Deferred ([backlog row](../../deferred-backlog.md#12-roym-transaction-cards-agreement-and-what-m06c-c7-left-open)). The service tests that cover the
+*Status:* Fixed for the parts the owner asked for (5dee15a4), Deferred for the rest ([backlog row](../../deferred-backlog.md#12-roym-transaction-cards-agreement-and-what-m06c-c7-left-open)). The service tests that cover the
 two bugs were added in c060a853: the cap with real `answer:` rows, a
 filed half, an old agreement, a declined quote and one counterparty
 (R17), and the resumed answer and the retried acceptance (R18), plus the
-other-issuer test (R19) and the terms struct test (R21). The rest is in
-the one backlog row: `roym_as_listed_e2e.rs`, parity 253, 254 and 255,
-the substrate native `listing.get` test, the Playwright cases and story
-50. The scenario-number sentence is corrected in fcfea327: 253 and 254
-need one node, and only 255 needs two. This cut needs the owner's yes;
-it is recorded with that pickup trigger.
+other-issuer test (R19) and the terms struct test (R21). Story 50 now
+saves an instant offering, taps it from the directory, and shows the
+agreement on both Hubs on two real nodes. Parity 253 (the driver's
+answer) and 254 (`quote.from-listing`) deliver one tap to each build and
+check the quote. Both run the sibling `listing.get` call on the linked
+build. Deferred: `roym_as_listed_e2e.rs`, parity 255 (it needs two
+nodes), the substrate native `listing.get` test (253 and 254 now cover
+the call on both builds) and the Playwright cases beyond story 50. The
+scenario-number sentence is corrected in fcfea327 and the backlog row
+in the close-out. The owner accepted this cut.
 
 ### R23 — No living doc is updated, and two change docs miss their Deviations (major)
 
@@ -2309,7 +2313,13 @@ counterparty's node anyway (`consent-expired` in `auto_accept`). Check
 the consent before `load_current_listing`. Add one test that resumes
 after the consent time.
 
-*Status:* Open.
+*Status:* Fixed (13e33096). The consent check runs before the catalog
+read. A resumed row whose consent passed is put back as `declined` with
+code `consent-expired` and no card is sent; a later drive skips it. Test
+`a_resumed_answer_whose_consent_passed_ends_without_a_card` also checks
+that no quote and no `decline:` row exist. Proof: returning `Waiting`
+again made the test fail (`left: Answering, right: Declined`); restored,
+it passes.
 
 ### R34 — Inline qualified paths in two new test files (nit)
 
@@ -2322,7 +2332,8 @@ and `:514` (`syneroym_roym_core::paging::count`).
 
 *Fix:* `use std::collections::BTreeSet;` and call `paging::count`.
 
-*Status:* Open.
+*Status:* Fixed (13e33096). Both imports are at the top of their test
+files; no inline path remains. Clippy `-D warnings` passes on the crate.
 
 **Counts after this round:** of R16 to R32, 16 are fixed and R22 is
 deferred (it needs the owner's yes). New: R33 (minor) and R34 (nit), both
