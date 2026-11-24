@@ -470,13 +470,13 @@ async fn holds_one<H: AppHost>(
 
 /// The owner's own listing, as the catalog holds it, with the verified
 /// payload and the consent time the quote may use.
-struct CurrentListing {
-    payload: ListingPayload,
-    record_id: String,
-    owner: String,
+pub(super) struct CurrentListing {
+    pub(super) payload: ListingPayload,
+    pub(super) record_id: String,
+    pub(super) owner: String,
 }
 
-async fn load_current_listing<H: AppHost>(
+pub(super) async fn load_current_listing<H: AppHost>(
     host: &H,
     listing_id: &str,
     now: u64,

@@ -3,15 +3,8 @@
 use serde::{Deserialize, Serialize};
 use syneroym_app_host::AppHost;
 use syneroym_roym_core::{
-    as_listed::AsListed,
-    clock,
-    envelope::Response,
-    listing::{self, Acceptance, ListingPayload},
-    method::{
-        Reply, SiblingError, call_sibling,
-        catalog::{ListingGetOutput, ListingKeyInput},
-    },
-    paging, services, signing, transaction,
+    as_listed::AsListed, clock, envelope::Response, listing::Acceptance, method::Reply, paging,
+    signing, transaction,
 };
 
 use super::{
@@ -20,7 +13,10 @@ use super::{
         get_row,
     },
     WAITING_ANSWER_IN_PROGRESS,
-    answer::{AnswerRow, AnswerState, Trigger, Verdict, answer_id, evaluate, in_flight_instant},
+    answer::{
+        AnswerRow, AnswerState, CurrentListing, Trigger, Verdict, answer_id, evaluate,
+        in_flight_instant, load_current_listing,
+    },
     open_instant,
 };
 
@@ -62,7 +58,9 @@ pub(crate) async fn as_listed_status_at<H: AppHost>(
 ) -> Reply<AsListedStatusOutput> {
     ensure_collections(host).await.map_err(Response::internal_error)?;
     let listing_id = input.listing_id;
-    let current = load_current(host, &listing_id, now).await?;
+    let Some(current) = load_current_listing(host, &listing_id, now).await? else {
+        return Err(Response::invalid_params("no such listing"));
+    };
     let signing_ready = signing::person_principal(host, now).await.is_ok();
     let open: Vec<String> = open_instant(host, &listing_id, now)
         .await
@@ -85,40 +83,10 @@ pub(crate) async fn as_listed_status_at<H: AppHost>(
     })
 }
 
-struct Current {
-    payload: ListingPayload,
-    record_id: String,
-    owner: String,
-}
-
-async fn load_current<H: AppHost>(
-    host: &H,
-    listing_id: &str,
-    now: u64,
-) -> Result<Current, Response> {
-    let input = ListingKeyInput { listing_id: listing_id.to_string() };
-    let found: Option<ListingGetOutput> =
-        match call_sibling(host, services::CATALOG, "listing.get", &input).await {
-            Ok(found) => found,
-            Err(SiblingError::Refused(_)) => None,
-            Err(e) => return Err(Response::internal_error(e.to_string())),
-        };
-    let Some(found) = found else {
-        return Err(Response::invalid_params("no such listing"));
-    };
-    let verdict = listing::verify_envelope(&found.envelope, now);
-    let (Some(payload), Some(owner)) = (verdict.payload, verdict.issuer) else {
-        return Err(Response::internal_error(
-            "the catalog returned an offering that does not verify",
-        ));
-    };
-    Ok(Current { payload, record_id: found.record_id, owner })
-}
-
 async fn waiting_enquiries<H: AppHost>(
     host: &H,
     listing_id: &str,
-    current: &Current,
+    current: &CurrentListing,
     now: u64,
 ) -> Result<Vec<WaitingEnquiry>, Response> {
     let rows: Vec<RecordPointerRow> =
