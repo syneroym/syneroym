@@ -2145,8 +2145,9 @@ tests). Two more points for that change:
   Refuse `instant` with empty texts in the form, or show a line.
 - The owner reviews the Hindi of the new message.
 
-*Status:* Open. The fix is committed as `731d0835` (the same four files I
-read). The two points above are still open.
+*Status:* Fixed (731d0835, and the `instant` rule in the fix commits).
+The form now refuses `instant` with all three texts empty. The Hindi of
+the message is the owner's review step.
 
 ### R32 — CI is red: two parity fixtures build a progress snapshot without `formed_as` (blocker)
 
@@ -2199,3 +2200,132 @@ Proof: removing it from `peer_signed_progress` made scenario 157 fail at
 `booking.rs:591` (`left: Null, right: 1`); restored, it passes. After
 this change the full `dual_build_parity` binary ran on both builds: 276
 passed, 1 skipped.
+
+## Code review round 5 — Claude Opus 5.5 (Claude Code), 2026-11-24
+
+This round checks the fixes for round 4 (R16 to R32). Branch
+`feat/m08c-c3c2-agree-as-listed` at `f0bdfbd2`, main checkout, not a
+worktree. The fixes are the ten commits `3fb867b2` to `f0bdfbd2`. I read
+the diff `9f3d8ada..f0bdfbd2` and each finding's *Status* line that the
+implementer wrote. I did not change code.
+
+**CI.** `gh pr checks 382` on `f0bdfbd2` when this round was written:
+"Lints, licenses & checks" passed (R16 is gone). The six test shards and
+Playwright E2E were still pending. So CI is not yet proof for them; the
+local runs below cover the two parity tests that failed before.
+
+**Tests run here** (after `mise run build:roym`):
+
+- `cargo nextest run -p syneroym-roym-core -p syneroym-roym-transaction
+  -p syneroym-roym-federated-query`: 782 passed, 0 skipped.
+- `cargo nextest run -p syneroym-roym-web` (the whole `dual_build_parity`
+  binary and `method_contract`): 320 passed, 1 skipped. Scenarios 142 and
+  157 pass.
+- Hub: `TZ=UTC npx vitest run`: 51 files, 632 passed.
+- `cargo xtask check-file-lengths`, `check-change-docs`,
+  `check-module-layout` and `check-lint-suppressions` pass.
+
+**Each finding:**
+
+- **R16 — Fixed.** The three validators are in `backup/as_listed.rs`.
+  `check-file-lengths` passes locally and in CI's lint job.
+- **R17 — Fixed.** `in_flight_rows` skips a quote with a `decision:` row,
+  and `in_flight_instant` and `holds_one` both use it. The four cap tests
+  seed real `answer:` rows.
+- **R18 — Fixed.** `answer_waiting` resumes an `answering` row with its
+  stored `quote_id`, `sequence` and `formed_as`. `accept_waiting` uses
+  the fence's quote. Both tests exist and pass. One leftover is R33.
+- **R19 — Fixed.** `auto_accept` passes `quote.verdict.issuer` to
+  `terms_from_listing`, where `derive_listing_id(signer, slug)` must
+  equal the listing id. So a quote signed by another key gives
+  `not-complete`. The test `a_quote_signed_by_another_identity_is_shown`
+  covers it.
+- **R20 — Fixed.** The panel picks the author's translation, then the
+  original, then a machine translation. It signs `viewed_lang` and
+  `viewed_via_mt` for what it shows. The machine warning comes first, and
+  "Agree and send" stays disabled until the person confirms it. The three
+  Hub tests exist and pass.
+- **R21 — Fixed.** `keys` walks the serialised terms, and the test
+  compares that set with `TERM_FIELDS`. So a new field fails the test
+  until it gets a row and a change.
+- **R22 — Deferred, as recorded.** The service tests for R17, R18, R19
+  and R21 are added. The two-node test, parity 253 to 255, the native
+  `listing.get` test, the Playwright cases and story 50 are one backlog
+  row with a pickup trigger. The scenario-number Deviation is corrected.
+  This cut needs the owner's yes. Until then it is the one open item of
+  this round.
+- **R23 — Fixed.** The developer guide, architecture, requirements,
+  experience spec, terminology and traceability matrix describe agree as
+  listed, with no milestone ids. The value-exchange and extensions change
+  docs have their Deviations. `check-change-docs` passes.
+- **R24 — Fixed.** The certificate errors carry `data.code`, and
+  `auto_accept` branches on it. A refusal with no code is stored as
+  `accept-failed`.
+- **R25 — Fixed.** `answer_as_listed` refuses the node owner's own
+  enquiry, and `start` refuses a listing whose owner is not the node
+  owner. Both sign nothing.
+- **R26 — Fixed.** The new and changed messages exist in `en.ftl` and
+  `hi.ftl`. Their Hindi is the owner's review step.
+- **R27 — Fixed** in the production files. Four new test lines still use
+  inline paths (R34).
+- **R28 — Fixed.** `as_listed_section.ts` holds the form section, the
+  unused states are gone, the two shapes exist, and there is one scan and
+  one shared test fixture.
+- **R29 — Fixed.** The cheap checks run before the signature check, the
+  quote query is filtered by `request_record_id`, and
+  `conversation.list` is paged.
+- **R30 — Fixed.** The status row names the plan author and the
+  implementer, and the backlog table has no empty line.
+- **R31 — Fixed.** See its *Status* line above.
+- **R32 — Fixed.** Both fixtures carry `"formed_as": "quote"`. Scenarios
+  142 and 157 pass here.
+
+**New findings:** 0 blocker, 0 major, 1 minor (R33), 1 nit (R34).
+
+### R33 — A resumed answer whose consent has passed never ends (minor)
+
+*Where:* [answer.rs:315](../../../../crates/roym_transaction/src/app/as_listed_ops/answer.rs#L315)
+to `:342` (`start`), and `answer_waiting`.
+
+*Problem:* the R18 fix keeps an `answering` row open, with no decline,
+when the resume finds a withdrawn offering or a passed consent. `start`
+then returns `Waiting("offering-withdrawn")` or
+`Waiting("consent-expired")` and leaves the row as `answering`. Nothing
+else ends it. So `answer_waiting` picks it up on every drive. Each time it
+verifies the enquiry and calls the catalog's `listing.get`, because
+`load_current_listing` runs before the consent check.
+`deal.as-listed-status` hides the row once the consent has passed, so
+the owner sees nothing. I found this by reading the code; I did not run
+it.
+
+*Failure case:* the node stops after `claim_answer` and starts again
+after the tap's consent time. The row stays `answering`. Each later drive
+makes one catalog call for it, with no end.
+
+*Fix:* once `now > consent.valid_until_secs`, end the row without a
+card. For example, set it to `declined` with code `consent-expired` and
+send nothing. A quote signed after the consent would be refused by the
+counterparty's node anyway (`consent-expired` in `auto_accept`). Check
+the consent before `load_current_listing`. Add one test that resumes
+after the consent time.
+
+*Status:* Open.
+
+### R34 — Inline qualified paths in two new test files (nit)
+
+*Where:* [as_listed_terms.rs:67](../../../../crates/roym_transaction/src/app/tests/as_listed_terms.rs#L67),
+`:363` and `:365` (`std::collections::BTreeSet`);
+[as_listed_owner.rs:341](../../../../crates/roym_transaction/src/app/tests/as_listed_owner.rs#L341)
+and `:514` (`syneroym_roym_core::paging::count`).
+
+*Problem:* the import rule in AGENTS.md also covers test code.
+
+*Fix:* `use std::collections::BTreeSet;` and call `paging::count`.
+
+*Status:* Open.
+
+**Counts after this round:** of R16 to R32, 16 are fixed and R22 is
+deferred (it needs the owner's yes). New: R33 (minor) and R34 (nit), both
+open. **Open: 2 (R33, R34), plus R22 waiting for the owner.** Nothing
+blocks the merge in my view, if the owner accepts R22's deferral. R33 and
+R34 can be fixed in this PR, or R33 can become a backlog row.
