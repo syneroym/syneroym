@@ -1459,3 +1459,45 @@ nightly `wrap_comments` re-splits any comment line holding the
 backticked `tests.rs::the_linked_…` token as one long word — the
 re-split was verified by running fmt on a one-line pointer — so the
 pointer uses plain words, which fmt wraps only between words.
+
+## Code review round 3 — Claude Opus 5.5 (Claude Code), 2026-11-24
+
+This round checks the fixes of round 2 in `3e636bbd`, `27e29d31`,
+`02196adc` and `638586f5` (closed in `b5b38a86`). Branch
+`feat/m08c-c3c-agree-as-listed` at `b5b38a86`, main checkout, up to date.
+This time the fix session changed only the *Status* lines.
+
+**Tests I ran:** `cargo nextest run -p syneroym-roym-web --test
+method_contract`: 38 passed (it failed on `b5c8bf43`). `cargo nextest run
+-p syneroym-substrate --lib wake`: 28 passed. `cargo nextest run -p
+syneroym-roym-transaction drive`: 15 passed. `cargo nextest run -p
+syneroym-substrate --features roym --lib the_linked_build_registers`: 1
+passed. `cargo clippy -q -p syneroym-substrate -p syneroym-roym-transaction
+-p syneroym-roym-core --all-targets --all-features -- -D warnings`: clean.
+
+**CI.** `gh pr checks 381` on `b5b38a86` at review time: only the CLA check
+has finished (pass); lints, the six test shards and Playwright E2E are
+pending. So CI is not yet proof for this head.
+
+### Fixes checked
+
+- **R4 — Fixed.** `wake_reply` is tested directly in four cases (a string
+  envelope gives its `result`, a string with `error` gives `Err`, an
+  object gives itself, a string that is not JSON gives `Err`). The
+  warnings read is the pure `reply_warnings`, and the worker now logs
+  exactly what it returns; three tests cover order, entries that are not
+  strings, and no array. Each test fails if its function ignores the case.
+- **R10 — Fixed.** Section 6.7 lists the nine real `SyncOutput` fields and
+  gives `more`'s rule (a full window of 500 messages, which is
+  `SYNC_WINDOW`, and `last_seq` grew).
+- **R14 — Fixed.** `drive_ignores_events_of_transaction_itself` uses
+  `EVENT_CARD` and `EVENT_PROGRESS`; the scanner has no new exception; the
+  method-contract suite passes locally.
+- **R15 — Fixed.** `HashMap`, `SynAppManifest`, `WakeSpec` and `Notify`
+  are imported. The pointer comment keeps the test name and the file path
+  each whole, so a search finds both. The fix note explains why it is not
+  one line (nightly `wrap_comments`); I accept that.
+
+**Counts of this round's new findings: 0. Open: 0.** All findings R1 to
+R15 of C3c1 are fixed and verified. The review of C3c1 is closed, subject
+to CI passing on `b5b38a86`.
