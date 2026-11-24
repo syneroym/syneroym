@@ -507,7 +507,8 @@ async fn assert_tampered_progress_record(h: &Harness, bundle_val: &Value, now: u
                 "quote_author_did": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
                 "seq": 1,
                 "state": "agreed",
-                "commitments": []
+                "commitments": [],
+                "formed_as": "quote"
             }
         }
     });

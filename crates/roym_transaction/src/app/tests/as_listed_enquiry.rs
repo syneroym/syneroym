@@ -1,24 +1,20 @@
 //! Service tests for an enquiry that agrees to a listing as listed.
 
 use serde_json::json;
-use syneroym_identity::{Identity, substrate};
+use syneroym_identity::Identity;
 use syneroym_roym_core::{
     backup::{ImportInput, SECTION_AS_LISTED},
     deal::LocalText,
-    lang::LangTag,
-    listing::{
-        self, Acceptance, AddressDisclosure, DEFAULT_INSTANT_CAP, ListingDealTerms, ListingPayload,
-        ListingStatus, LocationTerms, OpenTo, PaymentModel, PaymentTerms, RelationshipTerms,
-        ServiceLocation,
-    },
+    listing::PaymentModel,
     method::NoParams,
-    record::{Envelope, RECORD_LISTING, RecordDraft},
     testing::TestHost,
     transaction::{self, DEFAULT_DATA_USE_NOTICE},
 };
-use z32;
 
-use super::fixture;
+use super::{
+    as_listed_fixture::{CONVERSATION, CONVERSATION_ADDRESS, ready_listing, sign_listing},
+    fixture,
+};
 use crate::app::{
     AS_LISTED, ENQUIRY_HISTORY, backup,
     enquiry_ops::{
@@ -27,84 +23,6 @@ use crate::app::{
     },
     get_bytes, get_row,
 };
-
-const CONVERSATION: &str = "conv_tap";
-const CONVERSATION_ADDRESS: &str = "did:key:zOwnerConversation";
-
-fn lang(code: &str) -> LangTag {
-    LangTag::parse_canonical(code).expect("valid tag")
-}
-
-fn text(body: &str) -> LocalText {
-    LocalText::plain(lang("en"), body)
-}
-
-fn deal_terms() -> ListingDealTerms {
-    ListingDealTerms {
-        cancellation_terms: text("Free until 24 hours before"),
-        refund_terms: text("Full refund"),
-        dispute_path: text("Write to us first"),
-        quote_valid_secs: 3_600,
-        payment_timing: None,
-    }
-}
-
-fn ready_listing(model: PaymentModel) -> ListingPayload {
-    ListingPayload {
-        listing_id: String::new(),
-        slug: "hedge-trimming".to_string(),
-        title: "Hedge trimming".to_string(),
-        summary: "Neat hedges.".to_string(),
-        lang: lang("en"),
-        translations: Vec::new(),
-        categories: vec!["gardening".to_string()],
-        conversation_address: CONVERSATION_ADDRESS.to_string(),
-        status: ListingStatus::Active,
-        extension: None,
-        booking: None,
-        payment: Some(PaymentTerms {
-            currency: "EUR".to_string(),
-            model,
-            amount_minor: Some(3_500),
-            tax_included: true,
-            fees_minor: None,
-            methods: vec!["cash".to_string()],
-            payee: "A. Gardener".to_string(),
-        }),
-        product: None,
-        service: None,
-        location: Some(LocationTerms {
-            where_: ServiceLocation::AtGiver,
-            service_area: Vec::new(),
-            address_disclosure: AddressDisclosure::OnAgreement,
-        }),
-        relationship: Some(RelationshipTerms { open_to: OpenTo::Anyone, member_of: None }),
-        acceptance: Acceptance::ConfirmFirst,
-        not_limited: false,
-        instant_cap: DEFAULT_INSTANT_CAP,
-        deal_terms: Some(deal_terms()),
-        service_record: None,
-    }
-}
-
-/// Signs `payload` under `key`, which must be the listing's own issuer so the
-/// id derives from it.
-fn sign_listing(key: &Identity, mut payload: ListingPayload, now: u64) -> (String, String) {
-    let issuer = substrate::derive_did_key(&key.public_key());
-    payload.listing_id = listing::derive_listing_id(&issuer, &payload.slug).expect("listing id");
-    let draft = RecordDraft {
-        version: listing::LISTING_VERSION,
-        record_type: RECORD_LISTING.to_string(),
-        subject: payload.listing_id.clone(),
-        payload: serde_json::to_value(&payload).expect("payload"),
-        expires_at_secs: None,
-        supersedes: None,
-    };
-    let (mut env, bytes) = Envelope::unsigned(draft, issuer, None, now).expect("envelope");
-    let sig = z32::encode(&key.sign(&bytes).to_bytes());
-    env.attach_signature(sig).expect("signature");
-    (env.to_json().expect("json"), payload.listing_id)
-}
 
 fn stub_conversation(host: &TestHost, conversation: &str, peer: &str) {
     let conversation = conversation.to_string();
@@ -153,7 +71,8 @@ async fn an_as_listed_enquiry_stores_its_offering_and_consent() {
     let owner = Identity::generate().expect("owner key");
     stub_conversation(&f.host, CONVERSATION, CONVERSATION_ADDRESS);
     let now = f.host.now();
-    let (envelope, listing_id) = sign_listing(&owner, ready_listing(PaymentModel::Fixed), now);
+    let (envelope, payload) = sign_listing(&owner, ready_listing(PaymentModel::Fixed), now);
+    let listing_id = payload.listing_id;
 
     let out =
         enquiry_ops::set(&f.host, input(Some(tap(&envelope)), None)).await.expect("enquiry set");
