@@ -7,7 +7,7 @@ use syneroym_roym_core::{
     lang::LangTag,
     progress::AgreementState,
     testing::TestHost,
-    transaction::SYNC_WINDOW,
+    transaction::{EVENT_CARD, EVENT_PROGRESS, SYNC_WINDOW},
 };
 
 use super::fixture;
@@ -203,8 +203,8 @@ async fn drive_ignores_events_of_transaction_itself() {
     mock_empty_changes(&f.host);
     seed_drive_cursor(&f.host).await;
 
-    f.host.push_event("transaction.card", "conv_tx_1");
-    f.host.push_event("transaction.progress", "conv_tx_2");
+    f.host.push_event(EVENT_CARD, "conv_tx_1");
+    f.host.push_event(EVENT_PROGRESS, "conv_tx_2");
     f.host.push_event("conversation.message", "conv_real");
 
     let out = drive(&f.host, DriveInput {}).await.expect("drive");
