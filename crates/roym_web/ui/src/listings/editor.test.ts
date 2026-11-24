@@ -70,9 +70,9 @@ function emptyForm(): ListingForm {
       instant_cap: "20",
       quote_valid_hours: "1",
       payment_timing: "none",
-      cancellation_terms: "Free until 24 hours before",
-      refund_terms: "Full refund",
-      dispute_path: "Write to us first",
+      cancellation_terms: "",
+      refund_terms: "",
+      dispute_path: "",
     },
   };
 }
@@ -163,13 +163,14 @@ describe("buildSetListingParams", () => {
       acceptance: "confirm-first",
       not_limited: false,
       instant_cap: 20,
-      deal_terms: {
-        cancellation_terms: { lang: "en", text: "Free until 24 hours before" },
-        refund_terms: { lang: "en", text: "Full refund" },
-        dispute_path: { lang: "en", text: "Write to us first" },
-        quote_valid_secs: 3600,
-      },
     });
+  });
+
+  it("refuses the three texts when only some are filled", () => {
+    const f = emptyForm();
+    f.title = "Hedge trimming";
+    f.as_listed.cancellation_terms = "Free until 24 hours before";
+    expect(() => buildSetListingParams(f)).toThrow(ListingInputError);
   });
 
   it("maps the agree as listed fields", () => {
@@ -198,6 +199,9 @@ describe("buildSetListingParams", () => {
   it("refuses a quote validity outside one to 168 hours", () => {
     const f = emptyForm();
     f.title = "Hedge trimming";
+    f.as_listed.cancellation_terms = "Free until 24 hours before";
+    f.as_listed.refund_terms = "Full refund";
+    f.as_listed.dispute_path = "Write to us first";
     f.as_listed.quote_valid_hours = "0";
     expect(() => buildSetListingParams(f)).toThrow(ListingInputError);
     f.as_listed.quote_valid_hours = "169";

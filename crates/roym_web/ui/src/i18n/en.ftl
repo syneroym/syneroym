@@ -866,6 +866,7 @@ listing-payment-timing-after = After the work
 listing-deal-cancellation = Cancellation terms
 listing-deal-refund = Refund terms
 listing-deal-dispute = Dispute path
+listing-error-deal-terms-required = Fill the cancellation, refund and dispute texts together, or leave all three empty.
 listing-error-quote-valid-hours = Quote validity must be 1 to 168 hours.
 as-listed-waiting-confirm = This offering waits for you to confirm each request.
 as-listed-cap-reached = This offering is waiting for you: it reached its limit of open instant agreements.

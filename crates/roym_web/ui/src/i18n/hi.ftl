@@ -843,6 +843,7 @@ listing-payment-timing-after = काम के बाद
 listing-deal-cancellation = रद्द करने की शर्तें
 listing-deal-refund = वापसी की शर्तें
 listing-deal-dispute = विवाद का रास्ता
+listing-error-deal-terms-required = रद्द करने, वापसी और विवाद के तीनों पाठ भरें, या तीनों खाली छोड़ें।
 listing-error-quote-valid-hours = कोटेशन की वैधता 1 से 168 घंटे के बीच होनी चाहिए।
 as-listed-waiting-confirm = यह पेशकश आपकी पुष्टि का इंतज़ार कर रही है।
 as-listed-cap-reached = यह पेशकश आपके लिए रुकी है: खुली तुरंत सहमतियों की सीमा पूरी हो गई।

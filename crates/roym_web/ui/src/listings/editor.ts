@@ -283,16 +283,23 @@ function serviceRecordBlock(f: ServiceRecordFields): Block {
   };
 }
 
-function asListedBlock(f: AsListedFields, lang: string): Block {
+/// The deal-terms block, or `undefined` when the owner left it empty. A
+/// listing with no block cannot be agreed as listed; the three texts must be
+/// filled together, because the node refuses an empty one.
+function asListedBlock(f: AsListedFields, lang: string): Block | undefined {
+  const texts = [f.cancellation_terms, f.refund_terms, f.dispute_path].map((s) => s.trim());
+  if (texts.every((body) => body === "")) return undefined;
+  if (texts.some((body) => body === "")) {
+    throw new ListingInputError(t("listing-error-deal-terms-required"));
+  }
   const hours = requireWhole(f.quote_valid_hours, t("listing-quote-valid-hours"));
   if (hours === 0 || hours > 168) {
     throw new ListingInputError(t("listing-error-quote-valid-hours"));
   }
-  const text = (body: string) => ({ lang, text: body.trim() });
   const block: Block = {
-    cancellation_terms: text(f.cancellation_terms),
-    refund_terms: text(f.refund_terms),
-    dispute_path: text(f.dispute_path),
+    cancellation_terms: { lang, text: texts[0] },
+    refund_terms: { lang, text: texts[1] },
+    dispute_path: { lang, text: texts[2] },
     quote_valid_secs: hours * 3_600,
   };
   if (f.payment_timing !== "none") block.payment_timing = f.payment_timing;
@@ -317,7 +324,8 @@ export function buildSetListingParams(form: ListingForm): Record<string, unknown
   params.acceptance = form.as_listed.acceptance;
   params.not_limited = form.as_listed.not_limited;
   params.instant_cap = requireWhole(form.as_listed.instant_cap, t("listing-instant-cap"));
-  params.deal_terms = asListedBlock(form.as_listed, lang);
+  const dealTerms = asListedBlock(form.as_listed, lang);
+  if (dealTerms !== undefined) params.deal_terms = dealTerms;
 
   if (form.translations && form.translations.length > 0) {
     const seenLangs = new Set<string>();
