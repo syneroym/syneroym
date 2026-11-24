@@ -2646,7 +2646,7 @@ roym transaction.sync "{\"conversation\":\"$CONV\"}"
 roym transaction.thread "{\"conversation\":\"$CONV\"}" | jq .result.cards
 ```
 
-`transaction.sync` takes `{conversation, full?}` and returns `{scanned, cards_filed, more}`. `more` is `true` when more unread messages remain in the conversation beyond the sync window. `transaction.drive` takes `{}` and returns `{synced, pending, rescanning, again, warnings?}`. It runs in the background via the node-local wake worker (or can be called directly) to synchronize conversations and advance deal lifecycles across the node.
+`transaction.sync` takes `{conversation, full?}` and returns `{scanned, filed, refused, unknown, countersigned, deferred, unsent_failures, last_seq, more}`. `more` is `true` only when this sync read a full window (500 messages) and `last_seq` grew; more unread messages may remain, and the next sync continues from the stored `last_seq`. `transaction.drive` takes `{}` and returns `{synced, pending, rescanning, again, warnings?}`. It runs in the background via the node-local wake worker (or can be called directly) to synchronize conversations and advance deal lifecycles across the node.
 
 `agreement.accept` takes `{quote_record_id, viewed_lang?, viewed_via_mt?}`. The two optional fields say what the person read, and the node signs them into the acceptance. Without them the node signs the quote's own language and `false`. `viewed_lang` must be a canonical tag. When `viewed_via_mt` is `false`, it must be the quote's `terms.lang` or the tag of one of its author translations. When `viewed_via_mt` is `true`, it can be any language except `terms.lang`. A value that breaks this rule answers `-32602` with `data.field` set to `viewed_lang` or `viewed_via_mt`.
 
