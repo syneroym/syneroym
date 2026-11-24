@@ -130,6 +130,7 @@ fn no_signed_payload_holds_a_hidden_value() {
         "did:key:zCounterparty".to_string(),
         "did:key:zAuthor".to_string(),
         &terms,
+        progress::FormedAs::Quote,
         None,
     );
     let snap_canonical = serde_json::to_string(&substrate::canonicalize_json_value(

@@ -320,6 +320,7 @@ fn partition_and_check_deal<'a>(
         quote_expires_at_secs: signed_terms.quote_expires_at_secs,
         quote_checked,
         quote_expired,
+        formed_as: progress_rec.map(|(_, p)| p.formed_as),
     };
 
     Ok(DealRecords { header, signed_terms, quote, receipts, progress: progress_rec, settlements })

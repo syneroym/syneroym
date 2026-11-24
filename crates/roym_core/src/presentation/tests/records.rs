@@ -7,6 +7,7 @@ use crate::{
     payment::{PAYMENT_ACKNOWLEDGEMENT_VERSION, PAYMENT_REQUEST_VERSION},
     progress::{
         AGREEMENT_PROGRESS_VERSION, AgreementProgressPayload, AgreementState, CommitmentProgress,
+        FormedAs,
     },
     record::{
         RECORD_AGREEMENT_PROGRESS, RECORD_AGREEMENT_RECEIPT, RECORD_FULFILMENT_RECEIPT,
@@ -384,6 +385,7 @@ fn snapshot_with_forged_party_is_refused() {
         seq: 1,
         state: AgreementState::Agreed,
         state_reason: None,
+        formed_as: FormedAs::Quote,
         cancel_reason: None,
         commitments: vec![CommitmentProgress {
             commitment_id: "c1".to_string(),
@@ -426,6 +428,7 @@ fn snapshot_with_unknown_commitment_is_refused() {
         seq: 1,
         state: AgreementState::Agreed,
         state_reason: None,
+        formed_as: FormedAs::Quote,
         cancel_reason: None,
         commitments: vec![CommitmentProgress {
             commitment_id: "no-such-commitment".to_string(),

@@ -2,7 +2,7 @@ use syneroym_identity::{Identity, substrate};
 use syneroym_roym_core::{
     deal::{Commitment, CommitmentKind, DealTerms, LocalText, ResourceKind},
     lang::LangTag,
-    progress::{self as core_progress, AgreementProgressPayload, AgreementState},
+    progress::{self as core_progress, AgreementProgressPayload, AgreementState, FormedAs},
     record::{Envelope, RECORD_AGREEMENT_RECEIPT, RECORD_QUOTE, RecordDraft},
     testing::sd::{PlainQuote, conceal_quote},
     transaction::{
@@ -153,6 +153,7 @@ async fn store_open_snapshot(
         counterparty_did.to_string(),
         fix.master_did.clone(),
         terms,
+        FormedAs::Quote,
         None,
     );
     let (snap1_env, snap1_rec_id) =

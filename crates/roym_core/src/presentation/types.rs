@@ -9,6 +9,7 @@ use crate::{
         CommitmentKind, ExtensionRef, ResourceKind, SettlementRole, transition::CommitmentState,
     },
     disclosure::SdError,
+    progress::FormedAs,
     transaction::DealRole,
 };
 
@@ -41,6 +42,9 @@ pub struct DealHeader {
     pub quote_checked: bool,
     #[serde(default)]
     pub quote_expired: bool,
+    /// How the deal formed, from the snapshot the presentation carries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub formed_as: Option<FormedAs>,
 }
 
 /// Verification verdict for a single record within the presentation.

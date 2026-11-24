@@ -119,6 +119,7 @@ fn make_decline_envelope(
         deal: deal.to_string(),
         conversation: conv.to_string(),
         reason: None,
+        code: None,
     };
     let draft = RecordDraft {
         version: DEAL_DECLINE_VERSION,
@@ -148,7 +149,11 @@ fn make_enquiry_envelope(
         sequence: 1,
         listing_id: None,
         categories: vec![],
-        description: LocalText::plain(LangTag::parse_canonical("en").expect("lang"), "Need repair"),
+        description: Some(LocalText::plain(
+            LangTag::parse_canonical("en").expect("lang"),
+            "Need repair",
+        )),
+        as_listed: None,
         area: None,
         window: None,
         data_use_notice: "notice".to_string(),

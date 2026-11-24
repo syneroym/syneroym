@@ -91,6 +91,7 @@ fn sample_progress() -> AgreementProgressPayload {
         "did:key:zCounterparty".to_string(),
         "did:key:zQuoteAuthor".to_string(),
         &sample_terms(),
+        FormedAs::Quote,
         None,
     )
 }
@@ -352,4 +353,66 @@ fn snapshot_from_another_signer_is_not_filed() {
     assert!(v.verified);
     assert_ne!(v.signer_did.as_deref(), Some(p.quote_author_did.as_str()));
     assert_eq!(v.signer_did.as_deref(), Some(other_did.as_str()));
+}
+
+#[test]
+fn formed_as_is_kept_by_every_apply() {
+    let terms = sample_terms();
+    let mut p = open(
+        "rec_quote123".to_string(),
+        "conv_123".to_string(),
+        "did:key:zCounterparty".to_string(),
+        "did:key:zQuoteAuthor".to_string(),
+        &terms,
+        FormedAs::AsListedConfirmed,
+        None,
+    );
+    assert_eq!(p.formed_as, FormedAs::AsListedConfirmed);
+
+    let events = [
+        AgreementEvent::Half {
+            commitment_id: "c1".to_string(),
+            role: SettlementRole::Giver,
+            record_id: "rec_half1".to_string(),
+        },
+        AgreementEvent::Half {
+            commitment_id: "c1".to_string(),
+            role: SettlementRole::Giver,
+            record_id: "rec_half1".to_string(),
+        },
+        AgreementEvent::Tick { now_secs: 1_500 },
+    ];
+    for event in events {
+        if let Some(next) = apply(&p, &terms, 1_000, &event).expect("apply") {
+            assert_eq!(next.formed_as, FormedAs::AsListedConfirmed, "{event:?}");
+            p = next;
+        }
+    }
+
+    let fresh = open(
+        "rec_quote123".to_string(),
+        "conv_123".to_string(),
+        "did:key:zCounterparty".to_string(),
+        "did:key:zQuoteAuthor".to_string(),
+        &terms,
+        FormedAs::AsListedInstant,
+        None,
+    );
+    let cancelled =
+        apply(&fresh, &terms, 1_000, &AgreementEvent::Cancel { reason: CancelReason::Other })
+            .expect("apply")
+            .expect("a change");
+    assert_eq!(cancelled.formed_as, FormedAs::AsListedInstant);
+
+    let not_formed = open(
+        "rec_quote123".to_string(),
+        "conv_123".to_string(),
+        "did:key:zCounterparty".to_string(),
+        "did:key:zQuoteAuthor".to_string(),
+        &terms,
+        FormedAs::AsListedInstant,
+        Some("slot-taken".to_string()),
+    );
+    assert_eq!(not_formed.state, AgreementState::NotFormed);
+    assert_eq!(not_formed.formed_as, FormedAs::AsListedInstant);
 }

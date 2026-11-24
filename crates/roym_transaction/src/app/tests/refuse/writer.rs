@@ -5,7 +5,7 @@ use syneroym_roym_core::{
     clock,
     deal::{DealTerms, LocalText},
     lang::LangTag,
-    progress::{self, AgreementState, RECORD_AGREEMENT_PROGRESS},
+    progress::{self, AgreementState, FormedAs, RECORD_AGREEMENT_PROGRESS},
     record::{Envelope, RECORD_QUOTE, RecordDraft},
     testing::{
         TestHost,
@@ -291,6 +291,7 @@ fn make_signed_refusal_snapshot(
         counterparty_did.to_string(),
         author_did.to_string(),
         terms,
+        FormedAs::Quote,
         Some(reason.to_string()),
     );
     let snap_draft = RecordDraft {

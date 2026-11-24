@@ -11,7 +11,7 @@ use crate::{
     lang::LangTag,
     progress::{
         AGREEMENT_PROGRESS_VERSION, AgreementProgressPayload, AgreementState, CancelReason,
-        CommitmentProgress,
+        CommitmentProgress, FormedAs,
     },
     record::{RECORD_AGREEMENT_PROGRESS, RECORD_AGREEMENT_RECEIPT, RECORD_QUOTE},
     testing::sd::{PlainPaymentRequest, PlainQuote, conceal_payment_request, conceal_quote},
@@ -319,6 +319,7 @@ fn snapshot_bound_to_the_quote_authors_half_is_the_writers() {
         seq: 1,
         state: AgreementState::Agreed,
         state_reason: None,
+        formed_as: FormedAs::Quote,
         cancel_reason: None,
         commitments: vec![
             CommitmentProgress {
@@ -360,6 +361,57 @@ fn snapshot_bound_to_the_quote_authors_half_is_the_writers() {
 }
 
 #[test]
+fn a_presentation_with_only_the_latest_snapshot_shows_formed_as() {
+    let fix = setup_test_deal(sample_two_commitment_terms());
+
+    let progress_payload = AgreementProgressPayload {
+        agreement: fix.quote_record_id.clone(),
+        conversation: "conv_music_deal_1234".to_string(),
+        counterparty_did: fix.counterparty_did.clone(),
+        quote_author_did: fix.author_did.clone(),
+        seq: 2,
+        state: AgreementState::Agreed,
+        state_reason: None,
+        formed_as: FormedAs::AsListedInstant,
+        cancel_reason: None,
+        commitments: vec![
+            CommitmentProgress {
+                commitment_id: "c1".to_string(),
+                state: CommitmentState::Promised,
+                reason: None,
+                claimed: Some(false),
+                halves: vec![],
+            },
+            CommitmentProgress {
+                commitment_id: "c2".to_string(),
+                state: CommitmentState::Promised,
+                reason: None,
+                claimed: Some(false),
+                halves: vec![],
+            },
+        ],
+    };
+    let snap_env = sign_test_record(
+        &fix.author_key,
+        RECORD_AGREEMENT_PROGRESS,
+        AGREEMENT_PROGRESS_VERSION,
+        &fix.quote_record_id,
+        serde_json::to_value(&progress_payload).expect("json"),
+        None,
+        1_200,
+    );
+
+    let presentation = Presentation {
+        presentation_version: 1,
+        records: vec![fix.author_half_env, fix.cp_half_env, snap_env],
+        disclosures: vec![],
+    };
+
+    let view = verify_presentation(&presentation, 1_300).expect("verify with snapshot");
+    assert_eq!(view.deal.formed_as, Some(FormedAs::AsListedInstant));
+}
+
+#[test]
 fn snapshot_from_another_key_is_writer_not_checked() {
     let fix = setup_test_deal(sample_two_commitment_terms());
 
@@ -371,6 +423,7 @@ fn snapshot_from_another_key_is_writer_not_checked() {
         seq: 1,
         state: AgreementState::Agreed,
         state_reason: None,
+        formed_as: FormedAs::Quote,
         cancel_reason: None,
         commitments: vec![
             CommitmentProgress {
@@ -423,6 +476,7 @@ fn snapshot_from_stranger_key_is_refused() {
         seq: 1,
         state: AgreementState::Agreed,
         state_reason: None,
+        formed_as: FormedAs::Quote,
         cancel_reason: None,
         commitments: vec![
             CommitmentProgress {
@@ -474,6 +528,7 @@ fn presentation_without_disclosures_shows_kinds_and_outcomes() {
         seq: 2,
         state: AgreementState::Cancelled,
         state_reason: None,
+        formed_as: FormedAs::Quote,
         cancel_reason: Some(CancelReason::CannotDeliver),
         commitments: vec![
             CommitmentProgress {

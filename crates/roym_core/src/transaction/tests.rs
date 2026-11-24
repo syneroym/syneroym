@@ -10,6 +10,7 @@ use crate::{
     testing::sd,
 };
 
+mod as_listed;
 mod lang;
 mod verify;
 mod viewed;
@@ -79,11 +80,12 @@ pub(super) fn sample_enquiry(issuer: &str) -> EnquiryPayload {
         sequence,
         listing_id: Some("lst_abc123".to_string()),
         categories: vec!["gardening".to_string()],
-        description: LocalText {
+        description: Some(LocalText {
             lang: LangTag::parse("en").unwrap(),
             text: "Need fence installed".to_string(),
             translations: vec![],
-        },
+        }),
+        as_listed: None,
         area: None,
         window: Some(TimeWindow { earliest_secs: 10000, latest_secs: 20000 }),
         data_use_notice: DEFAULT_DATA_USE_NOTICE.to_string(),
@@ -186,17 +188,17 @@ fn enquiry_payload_validate_rules() {
     assert_eq!(r.validate(), Err(TransactionError::InvalidSequence(0)));
     r.sequence = 1;
 
-    r.description.text = "   ".to_string();
+    r.description.as_mut().unwrap().text = "   ".to_string();
     assert!(matches!(
         r.validate(),
         Err(TransactionError::Translation(TranslationError::Empty { .. }))
     ));
-    r.description.text = "d".repeat(MAX_DESCRIPTION_LEN + 1);
+    r.description.as_mut().unwrap().text = "d".repeat(MAX_DESCRIPTION_LEN + 1);
     assert!(matches!(
         r.validate(),
         Err(TransactionError::Translation(TranslationError::TooLong { .. }))
     ));
-    r.description.text = "Valid description".to_string();
+    r.description.as_mut().unwrap().text = "Valid description".to_string();
 
     r.categories = (0..MAX_CATEGORIES + 1).map(|i| format!("c{i}")).collect();
     assert_eq!(r.validate(), Err(TransactionError::TooManyCategories));

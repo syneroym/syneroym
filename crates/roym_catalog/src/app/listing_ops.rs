@@ -450,6 +450,10 @@ async fn build_payload<H: AppHost>(
         location: p.location,
         relationship: p.relationship,
         service_record: p.service_record,
+        acceptance: listing::Acceptance::default(),
+        not_limited: false,
+        instant_cap: listing::DEFAULT_INSTANT_CAP,
+        deal_terms: None,
     })
 }
 

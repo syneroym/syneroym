@@ -103,6 +103,10 @@ fn core() -> ListingPayload {
         service: None,
         location: None,
         relationship: None,
+        acceptance: Acceptance::default(),
+        not_limited: false,
+        instant_cap: DEFAULT_INSTANT_CAP,
+        deal_terms: None,
         service_record: None,
     }
 }

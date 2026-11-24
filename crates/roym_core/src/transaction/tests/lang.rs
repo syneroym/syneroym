@@ -10,22 +10,22 @@ pub(super) fn sample_tag(s: &str) -> LangTag {
 #[test]
 fn enquiry_translation_validation() {
     let mut req = sample_enquiry("did:key:zRequester");
-    req.description.lang = sample_tag("hi");
+    req.description.as_mut().unwrap().lang = sample_tag("hi");
 
     // 5 translations exceeds limit of 4
     let tags = ["ta", "bn", "gu", "kn", "ml"];
-    req.description.translations = tags
+    req.description.as_mut().unwrap().translations = tags
         .into_iter()
         .map(|t| TextTranslation { lang: sample_tag(t), text: format!("Description {t}") })
         .collect();
     assert_eq!(req.validate(), Err(TransactionError::Translation(TranslationError::TooMany)));
 
     // 4 translations pass
-    req.description.translations.pop();
+    req.description.as_mut().unwrap().translations.pop();
     assert!(req.validate().is_ok());
 
     // Same tag as record
-    req.description.translations =
+    req.description.as_mut().unwrap().translations =
         vec![TextTranslation { lang: sample_tag("hi"), text: "Same as record".to_string() }];
     assert_eq!(
         req.validate(),
@@ -33,7 +33,7 @@ fn enquiry_translation_validation() {
     );
 
     // Duplicate tags
-    req.description.translations = vec![
+    req.description.as_mut().unwrap().translations = vec![
         TextTranslation { lang: sample_tag("en"), text: "English 1".to_string() },
         TextTranslation { lang: sample_tag("en"), text: "English 2".to_string() },
     ];
@@ -43,7 +43,7 @@ fn enquiry_translation_validation() {
     );
 
     // Empty description
-    req.description.translations =
+    req.description.as_mut().unwrap().translations =
         vec![TextTranslation { lang: sample_tag("en"), text: "   ".to_string() }];
     assert_eq!(
         req.validate(),
@@ -54,7 +54,7 @@ fn enquiry_translation_validation() {
     );
 
     // Description too long
-    req.description.translations =
+    req.description.as_mut().unwrap().translations =
         vec![TextTranslation { lang: sample_tag("en"), text: "a".repeat(MAX_DESCRIPTION_LEN + 1) }];
     assert_eq!(
         req.validate(),

@@ -315,6 +315,7 @@ fn progress_apply_closes_only_when_every_commitment_is_final() {
         "did:key:cp".to_string(),
         "did:key:author".to_string(),
         &terms,
+        crate::progress::FormedAs::Quote,
         None,
     );
     assert_eq!(snap0.state, AgreementState::Agreed);
@@ -399,6 +400,7 @@ fn a_failed_commitment_cancels_the_open_ones() {
         "did:key:cp".to_string(),
         "did:key:author".to_string(),
         &terms,
+        crate::progress::FormedAs::Quote,
         None,
     );
     assert_eq!(snap0.commitments[0].state, CommitmentState::Promised);
@@ -431,6 +433,7 @@ fn cancel_needs_every_commitment_open() {
         "did:key:cp".to_string(),
         "did:key:author".to_string(),
         &terms,
+        crate::progress::FormedAs::Quote,
         None,
     );
 

@@ -4,7 +4,7 @@ use super::{
     MAX_ADDRESS_LEN, MAX_CATEGORIES, MAX_CATEGORY_LEN, MAX_DESCRIPTION_LEN, MAX_NOTICE_LEN,
     MAX_PAYEE_LEN, MAX_PAYMENT_METHOD_LEN, MAX_PAYMENT_METHODS, MAX_SCOPE_LEN, MAX_TERMS_TEXT_LEN,
 };
-use crate::{area::AreaError, lang::TranslationError};
+use crate::{area::AreaError, as_listed::MAX_CONSENT_SECS, lang::TranslationError};
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum TransactionError {
@@ -103,6 +103,24 @@ pub enum TransactionError {
     #[error("description is over {MAX_DESCRIPTION_LEN} characters")]
     DescriptionTooLong,
 
+    #[error("description is required when as_listed is absent")]
+    DescriptionRequired,
+
+    #[error("an as-listed enquiry needs a listing_id")]
+    AsListedNeedsListing,
+
+    #[error("as_listed.variant is reserved and must be absent")]
+    VariantNotSupported,
+
+    #[error("as_listed.slot.slot_id does not match the id derived from listing_id and the window")]
+    SlotDiffers,
+
+    #[error(
+        "as_listed.valid_until_secs ({valid_until_secs}) must be after issued_at_secs \
+         ({issued_at_secs}) and at most {MAX_CONSENT_SECS} seconds later"
+    )]
+    ConsentWindowInvalid { issued_at_secs: u64, valid_until_secs: u64 },
+
     #[error("more than {MAX_CATEGORIES} categories")]
     TooManyCategories,
 
@@ -132,4 +150,20 @@ pub enum TransactionError {
 
     #[error(transparent)]
     Translation(#[from] TranslationError),
+}
+
+impl TransactionError {
+    /// The stable code a client reads in `error.data.code`. Only the
+    /// agree-as-listed refusals of an enquiry have one; the others are a
+    /// message only.
+    #[must_use]
+    pub fn code(&self) -> Option<&'static str> {
+        match self {
+            Self::DescriptionRequired => Some("description-required"),
+            Self::AsListedNeedsListing => Some("as-listed-needs-listing"),
+            Self::VariantNotSupported => Some("variant-not-supported"),
+            Self::SlotDiffers => Some("slot-differs"),
+            _ => None,
+        }
+    }
 }

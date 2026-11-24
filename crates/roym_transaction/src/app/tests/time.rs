@@ -8,7 +8,7 @@ use syneroym_roym_core::{
     },
     fulfilment::FULFILMENT_RECEIPT_VERSION,
     lang::LangTag,
-    progress::{self as core_progress, AgreementProgressPayload, AgreementState},
+    progress::{self as core_progress, AgreementProgressPayload, AgreementState, FormedAs},
     record::{
         Envelope, RECORD_AGREEMENT_RECEIPT, RECORD_FULFILMENT_RECEIPT, RECORD_QUOTE, RecordDraft,
     },
@@ -101,6 +101,7 @@ async fn store_open_snapshot(
         counterparty_did.to_string(),
         fix.master_did.clone(),
         terms,
+        FormedAs::Quote,
         None,
     );
     let (snap1_env, snap1_rec_id) =

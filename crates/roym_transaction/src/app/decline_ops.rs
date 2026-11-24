@@ -279,6 +279,7 @@ async fn build_and_sign_decline<H: AppHost>(
         deal: deal.to_string(),
         conversation: conversation.to_string(),
         reason,
+        code: None,
     };
     let payload_str =
         serde_json::to_string(&payload).map_err(|e| Response::internal_error(e.to_string()))?;

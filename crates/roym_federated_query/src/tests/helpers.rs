@@ -12,8 +12,9 @@ use syneroym_roym_core::{
     directory::{AreaMatch, SearchHit},
     lang::LangTag,
     listing::{
-        LISTING_VERSION, ListingPayload, ListingStatus, ListingTranslation, ListingVerdict,
-        PaymentModel, PaymentTerms, derive_listing_id, verify_envelope,
+        Acceptance, DEFAULT_INSTANT_CAP, LISTING_VERSION, ListingPayload, ListingStatus,
+        ListingTranslation, ListingVerdict, PaymentModel, PaymentTerms, derive_listing_id,
+        verify_envelope,
     },
     membership::{
         MAX_REASON_LEN, MAX_RULE_LEN, MEMBERSHIP_CREDENTIAL_VERSION, MODERATION_DECISION_VERSION,
@@ -137,6 +138,10 @@ pub fn sign_max_payload_listing_with_issuer(
         location: None,
         relationship: None,
         service_record: None,
+        acceptance: Acceptance::default(),
+        not_limited: false,
+        instant_cap: DEFAULT_INSTANT_CAP,
+        deal_terms: None,
     };
     let mut payload_val = serde_json::to_value(&payload).unwrap();
     payload_val["description"] = serde_json::Value::String(String::new());
@@ -214,6 +219,10 @@ fn sign_test_listing_with_issuer_and_translations(
         location: None,
         relationship: None,
         service_record: None,
+        acceptance: Acceptance::default(),
+        not_limited: false,
+        instant_cap: DEFAULT_INSTANT_CAP,
+        deal_terms: None,
     };
     let draft = RecordDraft {
         version: LISTING_VERSION,

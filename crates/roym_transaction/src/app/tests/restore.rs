@@ -14,7 +14,7 @@ use syneroym_roym_core::{
     method::conversation::ChangesInput,
     progress::{
         AGREEMENT_PROGRESS_VERSION, AgreementProgressPayload, AgreementState, CancelReason,
-        CommitmentProgress,
+        CommitmentProgress, FormedAs,
     },
     record::{
         Envelope, RECORD_AGREEMENT_PROGRESS, RECORD_AGREEMENT_RECEIPT, RECORD_QUOTE, RecordDraft,
@@ -178,6 +178,7 @@ fn make_progress_envelope(
         quote_author_did: author_did.clone(),
         state,
         state_reason: None,
+        formed_as: FormedAs::Quote,
         cancel_reason: None,
         commitments,
     };

@@ -61,6 +61,24 @@ pub fn currency_minor_exponent(code: &str) -> Option<u32> {
     }
 }
 
+/// Minor units written with `.` as the decimal sign and exactly the
+/// currency's number of digits after it, with no grouping. `None` for a code
+/// this build does not know, so a caller refuses rather than guesses a place
+/// for the decimal point.
+#[must_use]
+pub fn plain_amount(amount_minor: i64, currency: &str) -> Option<String> {
+    let exponent = currency_minor_exponent(currency)?;
+    let sign = if amount_minor < 0 { "-" } else { "" };
+    let magnitude = amount_minor.unsigned_abs();
+    if exponent == 0 {
+        return Some(format!("{sign}{magnitude}"));
+    }
+    let divisor = 10u64.pow(exponent);
+    let whole = magnitude / divisor;
+    let fraction = magnitude % divisor;
+    Some(format!("{sign}{whole}.{fraction:0width$}", width = exponent as usize))
+}
+
 #[cfg(test)]
 mod tests {
     use std::{fs, path::PathBuf};

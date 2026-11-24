@@ -5,7 +5,7 @@ use syneroym_roym_core::{
     deal::{Commitment, SignedTerms},
     progress::{
         self as core_progress, AGREEMENT_PROGRESS_VERSION, AgreementState, CommitmentProgress,
-        RECORD_AGREEMENT_PROGRESS,
+        FormedAs, RECORD_AGREEMENT_PROGRESS,
     },
     record::{Envelope, RECORD_AGREEMENT_RECEIPT},
     signing,
@@ -146,6 +146,7 @@ pub(crate) async fn stored_or_new_seq1_snapshot<H: AppHost>(
         row.counterparty_did.clone(),
         row.quote_author_did.clone(),
         &row.terms,
+        FormedAs::Quote,
         Some(reason.to_string()),
     );
     let (snap_env, snap_rec_id) = progress::sign(host, &snapshot).await?;
@@ -469,6 +470,7 @@ pub(crate) async fn finalize_agreed_deal<H: AppHost>(
                 row.counterparty_did.clone(),
                 row.quote_author_did.clone(),
                 &row.terms,
+                FormedAs::Quote,
                 None,
             );
             let (snap_env, snap_rec_id) = progress::sign(host, &snapshot).await?;
@@ -528,6 +530,7 @@ pub(crate) async fn repeat_countersigned<H: AppHost>(
         row.counterparty_did.clone(),
         row.quote_author_did.clone(),
         &row.terms,
+        FormedAs::Quote,
         None,
     );
     let (snap_env, snap_rec_id) = progress::sign(host, &snapshot).await?;
@@ -623,6 +626,7 @@ pub(crate) async fn handle_not_formed<H: AppHost, R: Reservations>(
         row.counterparty_did.clone(),
         row.quote_author_did.clone(),
         &row.terms,
+        FormedAs::Quote,
         Some(reason.to_string()),
     );
     let (snap_env, snap_rec_id) = progress::sign(host, &snapshot).await?;

@@ -6,7 +6,7 @@ use syneroym_roym_core::{
     deal::{Commitment, CommitmentKind, DealTerms, Details, ExtensionRef, LocalText, ResourceKind},
     lang::LangTag,
     listing::derive_slot_id,
-    progress::{self, AGREEMENT_PROGRESS_VERSION, RECORD_AGREEMENT_PROGRESS},
+    progress::{self, AGREEMENT_PROGRESS_VERSION, FormedAs, RECORD_AGREEMENT_PROGRESS},
     record::{Envelope, RECORD_AGREEMENT_RECEIPT, RECORD_QUOTE, RecordDraft},
     testing::{
         TestHost,
@@ -173,6 +173,7 @@ fn make_progress_card(
         counterparty_did.to_string(),
         author_did.clone(),
         terms,
+        FormedAs::Quote,
         state_reason.map(str::to_string),
     );
 

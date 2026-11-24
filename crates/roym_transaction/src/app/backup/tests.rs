@@ -335,6 +335,7 @@ fn make_test_decline_envelope(
         deal: deal.to_string(),
         conversation: conv.to_string(),
         reason: None,
+        code: None,
     };
     let draft = RecordDraft {
         version: DEAL_DECLINE_VERSION,

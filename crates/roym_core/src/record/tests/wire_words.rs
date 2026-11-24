@@ -19,11 +19,14 @@ use crate::{
     },
     lang::LangTag,
     listing::{
-        AddressDisclosure, BookingTerms, ListingPayload, ListingStatus, ListingTranslation,
-        LocationTerms, OpenTo, PaymentModel, PaymentTerms, ProductCondition, ProductDetail,
-        RelationshipTerms, ServiceDetail, ServiceLocation, ServiceRecordTerms,
+        Acceptance, AddressDisclosure, BookingTerms, DEFAULT_INSTANT_CAP, ListingPayload,
+        ListingStatus, ListingTranslation, LocationTerms, OpenTo, PaymentModel, PaymentTerms,
+        ProductCondition, ProductDetail, RelationshipTerms, ServiceDetail, ServiceLocation,
+        ServiceRecordTerms,
     },
-    progress::{AgreementProgressPayload, AgreementState, CancelReason, CommitmentProgress},
+    progress::{
+        AgreementProgressPayload, AgreementState, CancelReason, CommitmentProgress, FormedAs,
+    },
     testing::sd::{
         self, PlainFulfilment, PlainPaymentAck, PlainPaymentRequest, PlainQuote, PlainStep,
     },
@@ -231,14 +234,15 @@ fn enquiry() -> EnquiryPayload {
         sequence: 1,
         listing_id: Some("lst_1".to_string()),
         categories: vec!["gardening".to_string()],
-        description: LocalText {
+        description: Some(LocalText {
             lang: LangTag::parse("en").unwrap(),
             text: "Trim the hedge".to_string(),
             translations: vec![TextTranslation {
                 lang: LangTag::parse("hi").unwrap(),
                 text: "झाड़ी काटें".to_string(),
             }],
-        },
+        }),
+        as_listed: None,
         area: Some(Area::Circle { lat_e6: 1, lon_e6: 2, radius_m: 3 }),
         window: Some(TimeWindow { earliest_secs: 1_000, latest_secs: 2_000 }),
         data_use_notice: DEFAULT_DATA_USE_NOTICE.to_string(),
@@ -261,6 +265,7 @@ fn agreement_progress(
         } else {
             None
         },
+        formed_as: FormedAs::Quote,
         cancel_reason,
         commitments: vec![CommitmentProgress {
             commitment_id: "c1".to_string(),
@@ -328,6 +333,10 @@ fn listing(place: ServiceLocation, open_to: OpenTo) -> ListingPayload {
             warranty_secs: 10,
             retention_secs: 20,
         }),
+        acceptance: Acceptance::default(),
+        not_limited: false,
+        instant_cap: DEFAULT_INSTANT_CAP,
+        deal_terms: None,
     }
 }
 

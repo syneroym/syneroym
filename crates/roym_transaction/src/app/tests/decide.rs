@@ -10,6 +10,7 @@ use syneroym_roym_core::{
     listing::derive_slot_id,
     progress::{
         AgreementEvent, AgreementProgressPayload, AgreementState, CancelReason, CommitmentProgress,
+        FormedAs,
     },
     record::{Envelope, RECORD_AGREEMENT_RECEIPT, RECORD_QUOTE, RecordDraft},
     testing::{
@@ -457,6 +458,7 @@ async fn seed_snapshot_history(
         quote_author_did: master_did.to_string(),
         state: AgreementState::Agreed,
         state_reason: None,
+        formed_as: FormedAs::Quote,
         cancel_reason: None,
         commitments: vec![CommitmentProgress {
             commitment_id: "c1".to_string(),
@@ -486,6 +488,7 @@ async fn seed_snapshot_history(
         quote_author_did: master_did.to_string(),
         state: AgreementState::Agreed,
         state_reason: None,
+        formed_as: FormedAs::Quote,
         cancel_reason: None,
         commitments: vec![CommitmentProgress {
             commitment_id: "c1".to_string(),
