@@ -76,6 +76,7 @@ pub(crate) const DISCLOSURES: &str = "disclosures";
 pub(crate) const DRIVE_STATE: &str = "drive_state";
 pub(crate) const DRIVE_PENDING: &str = "drive_pending";
 pub(crate) const AS_LISTED: &str = "as_listed";
+pub(crate) mod as_listed_ops;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]

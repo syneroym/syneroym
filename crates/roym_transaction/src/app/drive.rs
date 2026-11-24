@@ -14,8 +14,8 @@ use syneroym_roym_core::{
 };
 
 use super::{
-    AGREEMENTS, AgreementRow, DRIVE_PENDING, DRIVE_STATE, decide, delete_row, ensure_collections,
-    get_row, put_row,
+    AGREEMENTS, AgreementRow, DRIVE_PENDING, DRIVE_STATE, as_listed_ops, decide, delete_row,
+    ensure_collections, get_row, put_row,
     sync::{SyncError, sync_direct},
 };
 
@@ -91,6 +91,7 @@ pub(crate) async fn drive_at<H: AppHost>(
         candidates.into_iter().take(MAX_DRIVE_CONVERSATIONS).collect();
 
     let synced_count = sync_batch(host, batch, now, &mut warnings).await?;
+    as_listed_ops::answer_waiting(host, now, &mut warnings).await;
 
     let pending_count =
         paging::count(host, DRIVE_PENDING, None).await.map_err(Response::internal_error)? as u32;

@@ -7,7 +7,7 @@
 
 use syneroym_app_host::AppHost;
 use syneroym_roym_core::{
-    deal::{Commitment, DealTerms, ExtensionRef, transition::CommitmentState},
+    deal::{Commitment, DealTerms, Details, ExtensionRef, transition::CommitmentState},
     envelope::{Response, RpcError},
     extension::{self, Manifest},
     method::{
@@ -282,18 +282,33 @@ pub(crate) async fn prepare<H: AppHost>(
     commitment: &CommitmentInput,
     terms_listing_id: Option<&str>,
 ) -> Result<TimeWindow, Response> {
-    let service = manifest_of(commitment.extension.as_ref())
-        .and_then(Manifest::hook_service)
-        .ok_or_else(|| Response::internal_error("the extension has no hook service"))?;
     let details = commitment
         .details
         .clone()
         .ok_or_else(|| Response::invalid_params("commitment requires details"))?;
-    let input = PrepareInput {
+    prepare_window(
+        host,
+        commitment.extension.as_ref(),
         details,
-        window: commitment.window,
-        listing_id: terms_listing_id.map(str::to_string),
-    };
+        commitment.window,
+        terms_listing_id,
+    )
+    .await
+}
+
+/// The `prepare` hook on a commitment's own parts. The as-listed answer calls
+/// this directly, because it has finished terms rather than an input.
+pub(crate) async fn prepare_window<H: AppHost>(
+    host: &H,
+    extension: Option<&ExtensionRef>,
+    details: Details,
+    window: Option<TimeWindow>,
+    terms_listing_id: Option<&str>,
+) -> Result<TimeWindow, Response> {
+    let service = manifest_of(extension)
+        .and_then(Manifest::hook_service)
+        .ok_or_else(|| Response::internal_error("the extension has no hook service"))?;
+    let input = PrepareInput { details, window, listing_id: terms_listing_id.map(str::to_string) };
     match call_sibling::<_, _, PrepareOutput>(host, service, "reservation.prepare", &input).await {
         Ok(out) => Ok(out.window),
         Err(SiblingError::Refused(e)) => {

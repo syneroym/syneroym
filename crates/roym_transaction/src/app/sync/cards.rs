@@ -6,8 +6,8 @@ use syneroym_roym_core::{deal::sd::reveal_terms_strict, record::RECORD_QUOTE, tr
 
 use super::{FileCardResult, refuse_card};
 use crate::app::{
-    CardRow, ENQUIRY_HISTORY, QUOTE_HISTORY, disclosures, enquiry_ops::store_received_enquiry,
-    get_bytes, put_card, quote_ops::store_received_quote,
+    CardRow, ENQUIRY_HISTORY, QUOTE_HISTORY, as_listed_ops, as_listed_ops::Trigger, disclosures,
+    enquiry_ops::store_received_enquiry, get_bytes, put_card, quote_ops::store_received_quote,
 };
 
 pub(super) async fn file_enquiry_card<H: AppHost>(
@@ -48,9 +48,15 @@ pub(super) async fn file_enquiry_card<H: AppHost>(
     row.version_count = Some(version_count);
     row.data = Some(serde_json::to_value(payload).unwrap_or(Value::Null));
     row.issuer = v.issuer;
-    row.record_id = v.record_id;
+    row.record_id = v.record_id.clone();
     row.revocation_status = v.revocation_status;
     put_card(host, &row).await?;
+    if payload.as_listed.is_some()
+        && let Some(record_id) = &v.record_id
+    {
+        // A failed answer leaves the tap waiting; the drive pass tries again.
+        let _ = as_listed_ops::answer_as_listed(host, record_id, Trigger::Driver, now).await;
+    }
     Ok(FileCardResult {
         filed: true,
         refused: false,
@@ -146,7 +152,7 @@ pub(super) async fn file_quote_card<H: AppHost>(
         &effective_disclosures,
     ));
     row.issuer = v.issuer;
-    row.record_id = v.record_id;
+    row.record_id = v.record_id.clone();
     row.revocation_status = v.revocation_status;
     put_card(host, &row).await?;
     Ok(FileCardResult {

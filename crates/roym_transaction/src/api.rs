@@ -19,9 +19,9 @@ use syneroym_roym_core::{
 };
 
 use crate::app::{
-    AgreementRef, HalfRecordedOutput, ListInput, agreement_ops, backup, decline_ops, drive,
-    enquiry_ops, fulfilment_ops, payment_ops, present_ops, progress_ops, quote_ops, step_ops, sync,
-    thread,
+    AgreementRef, HalfRecordedOutput, ListInput, agreement_ops, as_listed_ops, backup, decline_ops,
+    drive, enquiry_ops, fulfilment_ops, payment_ops, present_ops, progress_ops, quote_ops,
+    step_ops, sync, thread,
 };
 
 async fn ping<H: AppHost>(_host: &H, _: NoParams) -> Reply<PingOutput> {
@@ -50,10 +50,12 @@ syneroym_roym_core::service_methods! {
     "quote.list": quote_ops::list [ListInput => quote_ops::QuoteListOutput],
     "quote.history": quote_ops::history [quote_ops::QuoteKeyInput => quote_ops::QuoteHistoryOutput],
     "quote.verify": quote_ops::verify [DisclosedVerifyInput => DisclosedVerdict<QuotePayload>],
+    "quote.from-listing": as_listed_ops::answer_from_listing [as_listed_ops::FromListingInput => quote_ops::QuoteSetOutput],
 
     "deal.decline": decline_ops::decline [decline_ops::DealDeclineInput => decline_ops::DealDeclineOutput],
     "deal.present": present_ops::present [present_ops::PresentInput => Presentation],
     "deal.verify-presentation": present_ops::verify_presentation [Presentation => PresentationView],
+    "deal.as-listed-status": as_listed_ops::as_listed_status [as_listed_ops::AsListedStatusInput => as_listed_ops::AsListedStatusOutput],
 
     "agreement.accept": agreement_ops::accept [agreement_ops::AgreementAcceptInput => agreement_ops::AgreementAcceptOutput],
     "agreement.get": agreement_ops::get [agreement_ops::QuoteRecordInput => Option<agreement_ops::AgreementView>],

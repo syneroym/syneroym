@@ -15,6 +15,12 @@ use syneroym_core::{
 #[cfg(feature = "roym")]
 use super::handles::SharedNodeHandles;
 
+#[cfg(all(test, feature = "roym"))]
+mod tests;
+
+#[cfg(feature = "roym")]
+use syneroym_roym_core::services;
+
 #[cfg(feature = "roym")]
 const ROYM_APP_INSTANCE: &str = "roym";
 
@@ -499,6 +505,20 @@ fn singleton_entry(name: &str) -> syneroym_app_orchestration::TopologyEntry {
     }
 }
 
+/// Every intra-app dependency binding the linked build needs, as
+/// `(consumer, dependency)`. `roym.toml` declares the same edges; a test
+/// compares the two, so a new `depends_on` without a binding fails the build
+/// instead of failing one call at run time.
+#[cfg(feature = "roym")]
+pub(crate) const ROYM_BINDINGS: &[(&str, &str)] = &[
+    (services::CONVERSATION.name, services::PROFILE.name),
+    (services::CATALOG.name, services::PROFILE.name),
+    (services::DIRECTORY.name, services::CATALOG.name),
+    (services::TRANSACTION.name, services::CONVERSATION.name),
+    (services::TRANSACTION.name, services::SCHEDULING.name),
+    (services::TRANSACTION.name, services::CATALOG.name),
+];
+
 /// Registers the Roym app context for every service and persists all
 /// intra-app dependency bindings so they survive a restart.
 #[cfg(feature = "roym")]
@@ -508,7 +528,6 @@ async fn wire_roym_topology(
     web_id: &str,
 ) -> anyhow::Result<()> {
     use syneroym_app_orchestration::{AppInstanceId, LogicalServiceName, TopologyKey};
-    use syneroym_roym_core::services;
 
     for svc in services::ALL {
         endpoint_registry
@@ -533,51 +552,16 @@ async fn wire_roym_topology(
             .await?;
     }
 
-    // `conversation` and `catalog` each declare a `profile` dependency.
-    let profile_entry_json = serde_json::to_string(&singleton_entry(services::PROFILE.name))?;
-    for consumer in [services::CONVERSATION.name, services::CATALOG.name] {
+    for (consumer, dependency) in ROYM_BINDINGS {
         endpoint_registry
             .save_binding(
                 &roym_dispatch_id(consumer),
                 ROYM_APP_INSTANCE,
-                services::PROFILE.name,
-                &profile_entry_json,
+                dependency,
+                &serde_json::to_string(&singleton_entry(dependency))?,
             )
             .await?;
     }
-
-    // `directory` declares a `catalog` dependency.
-    let catalog_entry_json = serde_json::to_string(&singleton_entry(services::CATALOG.name))?;
-    endpoint_registry
-        .save_binding(
-            &roym_dispatch_id(services::DIRECTORY.name),
-            ROYM_APP_INSTANCE,
-            services::CATALOG.name,
-            &catalog_entry_json,
-        )
-        .await?;
-
-    // `transaction` declares `conversation` and `scheduling` dependencies. It
-    // needs a binding to the hook service of each extension manifest, and a
-    // test in `roym_core` (`services/tests.rs`) checks that.
-    let conv_entry_json = serde_json::to_string(&singleton_entry(services::CONVERSATION.name))?;
-    endpoint_registry
-        .save_binding(
-            &roym_dispatch_id(services::TRANSACTION.name),
-            ROYM_APP_INSTANCE,
-            services::CONVERSATION.name,
-            &conv_entry_json,
-        )
-        .await?;
-    let scheduling_entry_json = serde_json::to_string(&singleton_entry(services::SCHEDULING.name))?;
-    endpoint_registry
-        .save_binding(
-            &roym_dispatch_id(services::TRANSACTION.name),
-            ROYM_APP_INSTANCE,
-            services::SCHEDULING.name,
-            &scheduling_entry_json,
-        )
-        .await?;
 
     register_roym_wakes(endpoint_registry).await?;
 

@@ -1,12 +1,14 @@
 //! Quote record operations: set, get, list, history, decline, store.
 
 pub mod input;
+pub(crate) mod issue;
 #[cfg(test)]
 mod tests;
 
 use std::cmp::Reverse;
 
 pub use input::{CommitmentInput, DealTermsInput};
+pub(crate) use issue::{IssueQuote, issue_quote};
 use serde::{Deserialize, Serialize};
 use syneroym_app_host::{
     AppHost, AppSigning,
@@ -23,6 +25,7 @@ use syneroym_roym_core::{
     envelope::Response,
     method::{self, DisclosedVerdict, DisclosedVerifyInput, Reply},
     paging,
+    progress::FormedAs,
     record::{Envelope, RECORD_QUOTE},
     transaction::{
         self, Answers, DealRole, EnquiryPayload, MAX_QUOTE_LIFETIME_SECS, MIN_QUOTE_LIFETIME_SECS,
@@ -31,10 +34,10 @@ use syneroym_roym_core::{
 };
 
 use super::{
-    ENQUIRY_HISTORY, ListInput, OutgoingCard, QUOTE_HISTORY, QUOTES, RecordPointerRow, SendState,
+    ENQUIRY_HISTORY, ListInput, QUOTE_HISTORY, QUOTES, RecordPointerRow, SendState,
     conversation_mine_filter, count_mine, decline_ops, disclosures, ensure_collections,
     extension_rules, get_bytes, get_row, hooks, is_deal_ended, put_bytes, put_row,
-    resolve_principal_and_owner, send_card_and_file,
+    resolve_principal_and_owner,
 };
 
 #[derive(Debug, Deserialize)]
@@ -184,61 +187,25 @@ pub(crate) async fn set_at<H: AppHost>(
     };
 
     let terms = prepare_terms(host, &input.terms, expires_at_secs).await?;
-    let concealed = validate_and_conceal_terms(host, &terms).await?;
-
-    let payload = QuotePayload {
-        quote_id: quote_id.clone(),
-        conversation: conversation.clone(),
-        sequence,
-        answers: Answers::Enquiry { record_id: input.enquiry_record_id.clone() },
-        counterparty_did: counterparty_did.clone(),
-        terms: concealed.signed,
-    };
-    if let Err(e) = payload.validate() {
-        let resp = Response::invalid_params(e.to_string());
-        let resp = match &e {
-            transaction::TransactionError::Deal(de) => {
-                resp.with_data(serde_json::json!({ "code": de.code() }))
-            }
-            _ => resp,
-        };
-        return Err(resp);
-    }
-
-    let sign_input = QuoteSigningInput {
-        principal,
-        owner: &owner,
-        expires_at_secs,
-        supersedes,
-        disclosures: &concealed.disclosures,
-        now,
-    };
-    let signed = sign_and_store_quote(host, &payload, sign_input).await?;
-
-    let pointer = build_quote_pointer(&payload, &signed, &owner, next_count, now);
-    if let Err(e) = put_row(host, QUOTES, &quote_id, &pointer).await {
-        return Err(Response::internal_error(e));
-    }
-
-    let card = OutgoingCard {
-        card_type: RECORD_QUOTE,
-        version: QUOTE_VERSION,
-        envelope: &signed.envelope_json,
-        send: &concealed.disclosures,
-        view: &concealed.disclosures,
-    };
-    let (message_id, state, send_error) =
-        send_card_and_file(host, &conversation, &card, now, Some(next_count)).await;
-
-    Ok(QuoteSetOutput {
-        quote_id,
-        record_id: signed.record_id,
-        version_count: next_count,
-        expires_at_secs,
-        message_id,
-        state,
-        send_error: send_error.map(|e| e.to_string()),
-    })
+    issue_quote(
+        host,
+        IssueQuote {
+            principal,
+            owner: &owner,
+            enquiry_record_id: &input.enquiry_record_id,
+            quote_id: &quote_id,
+            conversation: &conversation,
+            counterparty_did: &counterparty_did,
+            terms,
+            sequence,
+            supersedes,
+            next_count,
+            formed_as: None,
+            expires_at_secs,
+            now,
+        },
+    )
+    .await
 }
 
 pub(crate) async fn measure_at<H: AppHost>(
@@ -509,13 +476,14 @@ fn build_quote_pointer(
     owner: &str,
     next_count: u64,
     now: u64,
+    formed_as: Option<FormedAs>,
 ) -> RecordPointerRow {
     let request_record_id = match &payload.answers {
         Answers::Enquiry { record_id } => Some(record_id.clone()),
         _ => None,
     };
     RecordPointerRow {
-        formed_as: None,
+        formed_as,
         envelope: signed.envelope_json.clone(),
         record_id: signed.record_id.clone(),
         id: payload.quote_id.clone(),

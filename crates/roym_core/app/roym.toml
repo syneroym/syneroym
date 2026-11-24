@@ -78,8 +78,9 @@ visibility = "public"
 # A card is sent over a conversation and read back from it. A commitment's
 # extension names the service that answers its reserve hooks, and
 # `transaction` calls those hooks as a sibling. So every such service
-# (today `scheduling`) must be in this list.
-depends_on = ["conversation", "scheduling"]
+# (today `scheduling`) must be in this list. `catalog` is here because the
+# as-listed answer reads the current offering version with `listing.get`.
+depends_on = ["conversation", "scheduling", "catalog"]
 
 [services.transaction.health_check.rpc]
 interface = "syneroym-roym:transaction/api@0.1.0"

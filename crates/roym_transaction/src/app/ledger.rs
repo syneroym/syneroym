@@ -15,6 +15,9 @@ pub(crate) enum LedgerKind {
     Confirmed,
     /// A signed `commitment-failure` record, with the state of its send.
     Failure,
+    /// The owner's answer to one as-listed enquiry: the fence that keeps it to
+    /// at most one quote.
+    Answer,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -140,7 +140,6 @@ pub(crate) async fn decline_at<H: AppHost>(
 
 /// The owner's node declines by itself. The code lets the reader's Hub show
 /// the sentence in the reader's own language.
-#[expect(dead_code, reason = "the as-listed answer calls it; that path lands next")]
 pub(crate) async fn decline_with_code<H: AppHost>(
     host: &H,
     declines: &str,
