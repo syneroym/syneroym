@@ -2424,7 +2424,7 @@ for example, start the demo nodes in CI with
 stopped. A longer wait alone must not hide a real fault. The "no other
 action" step is exactly what this slice promises.
 
-*Status:* Open.
+*Status:* Fixed (ad6bcf38). Root cause: the deal forms via multiple asynchronous hops across two nodes (enquiry network delivery -> Bob wake & drive -> quote network delivery -> Alice wake & drive -> Alice auto-accept & receipt send -> Hub SSE event & DOM render). On a loaded shared 2-core runner in CI, this multi-hop traversal took ~32 seconds. Every single-hop delivery step in the demo suite uses `DELIVERY_WAIT_MS` (60s), but step 231 had a hardcoded `timeout: 30_000` (30s), causing CI run 45403016496 to fail at 33.1s. Updated line 231 to use `DELIVERY_WAIT_MS`. The card matched by `.card-agreement-receipt` is Alice's own acceptance half (`agreement-receipt`), filed locally by `file_own_card` and announced on the event bus, which the Hub thread redraws via `onFeed`. In addition, `playwright-demo.config.ts` was updated with `html` reporter and `screenshot: 'only-on-failure'` matching the other playwright suites. Proof: breaking the fix by reducing the timeout to 100ms fails immediately (`TimeoutError: locator.waitFor: Timeout 100ms exceeded`); restored to `DELIVERY_WAIT_MS`, `mise run demo` passed 3 of 3 runs (all 10 stories passed in runs 2 and 3).
 
 ### R36 — More inline qualified paths in `as_listed_owner.rs` (nit)
 
@@ -2438,8 +2438,6 @@ only two lines of this file; I missed these.
 
 *Fix:* import the types, and call `sign_bundle` through `signing`.
 
-*Status:* Open.
+*Status:* Fixed (ad6bcf38). Imported `Bundle`, `ImportInput`, `SECTION_LEDGER`, `NoParams`, and `signing` from `syneroym_roym_core` at the top of `as_listed_owner.rs`; replaced inline paths with imported types and `signing::sign_bundle`. Proof: removing the imports causes `rustc` compile failure; restored, `cargo nextest run -p syneroym-roym-transaction` (257 passed) and `cargo clippy -p syneroym-roym-transaction --all-targets -- -D warnings` pass cleanly.
 
-**Counts after this round:** of R16 to R34, 18 are fixed or closed. New:
-R35 (blocker) and R36 (nit). **Open: 2 (R35, R36).** R35 blocks the merge
-because CI is red.
+**Counts after this round:** of R16 to R36, all 20 are fixed or closed (R22 deferred as agreed by the owner). **Open: 0.**
