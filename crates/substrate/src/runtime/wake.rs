@@ -222,6 +222,15 @@ fn wake_reply(val: Value) -> Result<Value, String> {
     if let Some(result) = obj.get("result") { Ok(result.clone()) } else { Ok(obj) }
 }
 
+/// Warning texts of a wake reply, in order. Entries that are not
+/// strings are skipped; a missing or non-array `warnings` is none.
+fn reply_warnings(val: &Value) -> Vec<&str> {
+    val.get("warnings")
+        .and_then(Value::as_array)
+        .map(|entries| entries.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default()
+}
+
 fn spawn_wake_call(
     proxy: Arc<dyn ServiceProxy>,
     service_id: String,
@@ -253,12 +262,8 @@ fn spawn_wake_call(
         match proxy.invoke(req).await {
             Ok(raw_val) => match wake_reply(raw_val) {
                 Ok(val) => {
-                    if let Some(warnings) = val.get("warnings").and_then(Value::as_array) {
-                        for w in warnings {
-                            if let Some(msg) = w.as_str() {
-                                warn!(service_id = %service_id, "{msg}");
-                            }
-                        }
+                    for msg in reply_warnings(&val) {
+                        warn!(service_id = %service_id, "{msg}");
                     }
                     if val.get("again").and_then(Value::as_bool).unwrap_or(false) {
                         has_pending.store(true, Ordering::SeqCst);

@@ -208,3 +208,49 @@ async fn a_reply_without_again_waits_for_the_interval() {
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert_eq!(proxy.invocations.lock().unwrap().len(), 2);
 }
+
+/// A Roym guest answers with a JSON-RPC envelope as a string; the
+/// worker must parse it before reading `again` or `warnings`.
+#[test]
+fn wake_reply_string_envelope_gives_its_result() {
+    let val = Value::String(r#"{"result":{"again":true,"synced":8}}"#.to_string());
+    assert_eq!(wake_reply(val), Ok(json!({"again": true, "synced": 8})));
+}
+
+#[test]
+fn wake_reply_string_envelope_with_error_gives_err() {
+    let val = Value::String(r#"{"error":{"code":-32603,"message":"guest failed"}}"#.to_string());
+    assert!(wake_reply(val).is_err());
+}
+
+/// A non-Roym service may answer with a plain JSON object; it is used
+/// as it is.
+#[test]
+fn wake_reply_plain_object_gives_itself() {
+    let val = json!({"again": true, "warnings": ["w"]});
+    assert_eq!(wake_reply(val.clone()), Ok(val));
+}
+
+#[test]
+fn wake_reply_string_that_is_not_json_gives_err() {
+    let val = Value::String("plain text reply".to_string());
+    assert!(wake_reply(val).is_err());
+}
+
+#[test]
+fn reply_warnings_lists_string_entries_in_order() {
+    let val = json!({"warnings": ["first", "second"]});
+    assert_eq!(reply_warnings(&val), vec!["first", "second"]);
+}
+
+#[test]
+fn reply_warnings_skips_entries_that_are_not_strings() {
+    let val = json!({"warnings": ["first", 7, null, "last"]});
+    assert_eq!(reply_warnings(&val), vec!["first", "last"]);
+}
+
+#[test]
+fn reply_warnings_is_empty_without_an_array() {
+    assert_eq!(reply_warnings(&json!({})), Vec::<&str>::new());
+    assert_eq!(reply_warnings(&json!({"warnings": "text"})), Vec::<&str>::new());
+}
