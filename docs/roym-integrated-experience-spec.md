@@ -240,10 +240,10 @@ tests before the next begins.
 | Goal | Required contract | User scenario | Excluded | Acceptance test |
 |---|---|---|---|---|
 | A person can be a participant without running a full install of their own | Device-bound participant key with encrypted backup and import (`[FND-IDT]` Lightweight Participant Identity) | A participant sets up, backs up, then restores on a clean machine | Recovery by an operator; social recovery | **Passed (C4, C5).** Restore on a clean node reproduces identity and history; no operator can impersonate |
-| A listing owner can publish what they offer | Versioned listing schema covering booking, payment, product, service, location, relationship, and service-record dimensions | Listing owner publishes a listing and edits it | Media galleries; stock counting | **Passed (C5).** Listing round-trips through export/import with schema version preserved |
+| A listing owner can publish what they offer | Versioned listing schema covering booking, payment, product, service, location, relationship, service-record, and the agree-as-listed terms (acceptance, instant limit, cancellation, refund and dispute texts, quote lifetime) | Listing owner publishes a listing and edits it | Media galleries; stock counting | **Passed (C5).** Listing round-trips through export/import with schema version preserved; the agree-as-listed fields are optional, so a listing that names none signs the same bytes as before |
 | Two people can talk | 1:1 text with X3DH + Double Ratchet; durable outbox with `pending`/`delivered`/`failed` visible to the user | Searcher messages an offline listing owner; listing owner comes online and sees it | Attachments; voice; video; group chat | **Passed (C5).** Message survives a process restart on both sides and is never shown as delivered while pending |
 | A need becomes an offer | Versioned enquiry → quote → agreement records, each signed | Counterparty describes a need, quote author quotes, counterparty accepts | Negotiation history rendering; templates | **Passed (C7).** Accepting a quote produces a signed agreement receipt containing every field listed in [Records](#records-and-what-each-one-proves) |
-| A person can find a listing owner through a group | Directory `search` by category, area, and filters, returning source and freshness | Searcher searches, sees results with trust evidence | Ranking; paid placement; free-text intent parsing | **Passed (C6).** Results state their source and age; missing evidence shows as unknown, never as positive |
+| A person can find a listing owner through a group | Directory `search` by category, area, and filters, returning source and freshness; a hit says whether it can be agreed as listed | Searcher searches, sees results with trust evidence, and taps "Agree as listed" or "Ask" | Ranking; paid placement; free-text intent parsing | **Passed (C6).** Results state their source and age; missing evidence shows as unknown, never as positive. A hit whose terms are complete shows both actions; one that books a slot shows "Ask" alone |
 | People are safe from unwanted contact | Block, report, per-sender contact rate limits, listing publication limits | Searcher blocks a listing owner and reports a listing | Automated moderation; appeals workflow | **Passed (C4, C5).** A blocked sender's messages never reach the recipient's inbox; the recipient keeps its transaction records |
 
 ### R2 — The transaction vertical (**Passed 2026-09-24**)
@@ -392,12 +392,16 @@ C11.  Listing owner replies in the same conversation
           or `deposited` until it is delivered (D4)
 C12.  Counterparty sends a structured request: category, description,
         approximate area, preferred window, attachments, data-use notice
+        — or agrees as listed: one signed version of the offering, the
+          close, refund and dispute texts it shows, and the language read
         — the exact address is disclosed only when it is needed
 C13.  Quote author sends a versioned quote card: scope, price, taxes and
         fees, schedule, location, payment method and payee,
         cancellation and refund terms, expiry, dispute path
 C14.  Counterparty accepts, rejects, or asks for changes
         — acceptance by both sides produces a signed agreement receipt
+        — an `instant` offering accepts the matching quote with no person
+          at the screen; any different term shows the quote first
         — a material change produces a new version, not an edit
 ```
 

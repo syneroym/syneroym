@@ -1,6 +1,13 @@
 ---
 status: draft
 living-docs-touched:
+  - docs/system-requirements-spec.md
+  - docs/roym-integrated-experience-spec.md
+  - docs/developer-guide.md
+  - docs/system-architecture.md
+  - docs/planning/traceability-matrix.md
+  - docs/TERMINOLOGY.md
+  - docs/planning/deferred-backlog.md
 ---
 # Roym Value Exchange
 
@@ -750,6 +757,14 @@ change doc refines each row below through its `AG-*` rows.
   commitment, and the agreement names its giver. In C1, commitments end
   `ended-unconfirmed`; `failed` requires `commitment-failure` in C3b.
   Reputation shows it in M08G.
+- **VX-54:** the owner can answer a tap as listed and an `instant` offering
+  can form from one tap. A slot offering cannot yet show its free slots
+  before the tap, because a searcher's node does not hold the owner's
+  availability. The Hub shows "Ask" alone on such a hit. Choosing a slot
+  before agreeing is in the deferred backlog, for the offering page in
+  M08D. The instant cap is checked again by the writer under its fence, so
+  the one-place race named in the plan remains possible and is also in the
+  backlog.
 
 ## Close-out
 
