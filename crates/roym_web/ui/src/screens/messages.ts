@@ -663,6 +663,7 @@ async function agreeAsListedOffer(
 ): Promise<void> {
   if (!listingId || !card.record_id) return;
   let status: {
+    instant_cap?: number;
     waiting?: Array<{ enquiry_record_id: string; reason: string }>;
   };
   try {
@@ -675,7 +676,7 @@ async function agreeAsListedOffer(
   const reason = status.waiting?.find((w) => w.enquiry_record_id === card.record_id)?.reason;
   if (!reason) return;
 
-  wrap.appendChild(text("p", asListedReasonText(reason), "as-listed-waiting"));
+  wrap.appendChild(text("p", asListedReasonText(reason, status.instant_cap ?? 0), "as-listed-waiting"));
   if (!["confirm-first", "cap-reached", "counterparty-holds-one"].includes(reason)) return;
 
   const confirmBtn = text("button", t("as-listed-confirm-button"), "button as-listed-confirm-button") as HTMLButtonElement;
@@ -695,18 +696,22 @@ async function agreeAsListedOffer(
 }
 
 /// Why the offering waits, as the owner sees it.
-function asListedReasonText(reason: string): string {
+function asListedReasonText(reason: string, cap: number): string {
   switch (reason) {
     case "confirm-first":
       return t("as-listed-waiting-confirm");
+    case "answer-in-progress":
+      return t("as-listed-answer-in-progress");
     case "cap-reached":
-      return t("as-listed-cap-reached");
+      return t("as-listed-cap-reached", { cap: String(cap) });
     case "counterparty-holds-one":
       return t("as-listed-counterparty-holds-one");
     case "signing-not-ready":
       return t("as-listed-signing-not-ready");
     case "slot-check-failed":
       return t("as-listed-slot-check-failed");
+    case "accept-failed":
+      return t("as-listed-accept-failed");
     default:
       return t("as-listed-not-complete");
   }

@@ -166,6 +166,13 @@ describe("buildSetListingParams", () => {
     });
   });
 
+  it("refuses instant with no deal texts", () => {
+    const f = emptyForm();
+    f.title = "Hedge trimming";
+    f.as_listed.acceptance = "instant";
+    expect(() => buildSetListingParams(f)).toThrow(ListingInputError);
+  });
+
   it("refuses the three texts when only some are filled", () => {
     const f = emptyForm();
     f.title = "Hedge trimming";

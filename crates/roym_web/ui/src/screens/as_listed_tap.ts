@@ -9,8 +9,10 @@ import { type MergedHit, runEnvelope } from "../directory/search";
 import { text } from "../dom";
 import { manifestFor, type ExtensionRef } from "../extensions/registry";
 import { currentLanguage, t } from "../i18n/i18n";
+import { sameLanguage } from "../i18n/text_lang";
 import { formatMinor } from "../money";
 import { call } from "../rpc";
+import { targetFor, translateTexts } from "../translation/translation";
 
 interface LocalText {
   lang: string;
@@ -42,6 +44,29 @@ interface VerifyAnswer {
   verified: boolean;
   payload?: ListingPayload;
   reason?: string;
+}
+
+interface DealTexts {
+  cancellation: string;
+  refund: string;
+  dispute: string;
+}
+
+/// The three deal texts in the language the reader will see, or the original
+/// when no translation exists.
+function authoredTexts(
+  terms: NonNullable<ListingPayload["deal_terms"]>,
+  lang: string,
+): DealTexts | null {
+  const pick = (field: LocalText): string | undefined => {
+    if (sameLanguage(field.lang, lang)) return field.text;
+    return field.translations?.find((tr) => sameLanguage(tr.lang, lang))?.text;
+  };
+  const cancellation = pick(terms.cancellation_terms);
+  const refund = pick(terms.refund_terms);
+  const dispute = pick(terms.dispute_path);
+  if (cancellation === undefined || refund === undefined || dispute === undefined) return null;
+  return { cancellation, refund, dispute };
 }
 
 /// Renders the panel under a verified hit. `openThread` shows the conversation
@@ -89,28 +114,77 @@ export function renderAsListedTap(
     const payment = payload.payment;
     const terms = payload.deal_terms;
     if (!payment || payment.model !== "fixed" || payment.amount_minor === undefined || !terms) {
-      panel.textContent = t("as-listed-not-complete");
+      panel.textContent = t("as-listed-tap-not-complete");
       return;
     }
 
-    const viewedLang = currentLanguage();
-    const viaMt =
-      payload.lang !== viewedLang &&
-      !(payload.translations ?? []).some((tr) => tr.lang === viewedLang);
+    const readerLang = currentLanguage();
+    const originalLang = payload.lang;
+    let shownLang = originalLang;
+    let viaMt = false;
+    let shown = authoredTexts(terms, readerLang);
+    if (shown !== null) {
+      shownLang = readerLang;
+    } else if (sameLanguage(originalLang, readerLang)) {
+      shown = {
+        cancellation: terms.cancellation_terms.text,
+        refund: terms.refund_terms.text,
+        dispute: terms.dispute_path.text,
+      };
+    } else {
+      const target = targetFor([
+        originalLang,
+        ...(payload.translations ?? []).map((tr) => tr.lang),
+      ]);
+      const originals = [
+        terms.cancellation_terms.text,
+        terms.refund_terms.text,
+        terms.dispute_path.text,
+      ];
+      if (target !== null) {
+        try {
+          const out = await translateTexts(originals, originalLang, target);
+          shown = { cancellation: out.texts[0], refund: out.texts[1], dispute: out.texts[2] };
+          shownLang = target;
+          viaMt = true;
+        } catch {
+          shown = null;
+        }
+      }
+      if (shown === null) {
+        shown = { cancellation: originals[0], refund: originals[1], dispute: originals[2] };
+      }
+    }
     const holdSecs = payload.acceptance === "instant" ? 3_600 : 48 * 3_600;
     const validHours = String(Math.round(terms.quote_valid_secs / 3600));
     const tapHours = String(Math.round(holdSecs / 3600));
 
+    const sendBtn = text("button", t("as-listed-send-button"), "button as-listed-send") as HTMLButtonElement;
+    const err = text("p", "", "as-listed-send-error");
+    sendBtn.disabled = viaMt;
+
     panel.textContent = "";
+    if (viaMt) {
+      const mtBox = document.createElement("div");
+      mtBox.className = "as-listed-mt-box";
+      mtBox.appendChild(text("p", t("as-listed-mt-warning"), "as-listed-mt-warning"));
+      const confirm = text("button", t("messages-accept-mt-confirm"), "button as-listed-mt-confirm") as HTMLButtonElement;
+      confirm.onclick = () => {
+        sendBtn.disabled = false;
+        mtBox.remove();
+      };
+      mtBox.appendChild(confirm);
+      panel.appendChild(mtBox);
+    }
     panel.appendChild(
       text("p", t("as-listed-price", { amount: formatMinor(payment.amount_minor, payment.currency) }), "as-listed-price"),
     );
     panel.appendChild(
       text("p", t("as-listed-will-be-paid-to", { payee: payment.payee }), "as-listed-payee"),
     );
-    panel.appendChild(text("p", t("as-listed-cancellation", { text: terms.cancellation_terms.text }), "as-listed-cancellation"));
-    panel.appendChild(text("p", t("as-listed-refund", { text: terms.refund_terms.text }), "as-listed-refund"));
-    panel.appendChild(text("p", t("as-listed-dispute", { text: terms.dispute_path.text }), "as-listed-dispute"));
+    panel.appendChild(text("p", t("as-listed-cancellation", { text: shown.cancellation }), "as-listed-cancellation"));
+    panel.appendChild(text("p", t("as-listed-refund", { text: shown.refund }), "as-listed-refund"));
+    panel.appendChild(text("p", t("as-listed-dispute", { text: shown.dispute }), "as-listed-dispute"));
     if (terms.payment_timing) {
       const timing =
         terms.payment_timing === "before-work"
@@ -123,12 +197,6 @@ export function renderAsListedTap(
     );
     panel.appendChild(text("p", t("as-listed-tap-holds", { hours: tapHours }), "as-listed-tap-holds"));
 
-    if (viaMt) {
-      panel.appendChild(text("p", t("as-listed-mt-warning"), "as-listed-mt-warning"));
-    }
-
-    const sendBtn = text("button", t("as-listed-send-button"), "button as-listed-send") as HTMLButtonElement;
-    const err = text("p", "", "as-listed-send-error");
     sendBtn.onclick = async () => {
       sendBtn.disabled = true;
       err.textContent = "";
@@ -141,7 +209,7 @@ export function renderAsListedTap(
           as_listed: {
             envelope,
             valid_for_secs: holdSecs,
-            viewed_lang: viewedLang,
+            viewed_lang: shownLang,
             viewed_via_mt: viaMt,
           },
           data_use_notice: t("request-data-use-notice"),

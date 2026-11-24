@@ -1,0 +1,89 @@
+// The "Agree as listed" section of the listing form. It is a form section of
+// its own so the listing screen stays a screen: the section owns the controls
+// it reads back and the signing-status call that decides whether instant is
+// offered.
+
+import { checkbox, field, input, select, text } from "../dom";
+import { t } from "../i18n/i18n";
+import { call } from "../rpc";
+import type { AsListedFields, Acceptance, PaymentTiming } from "./editor";
+
+/// Builds the section and a reader for its current values.
+export function asListedSection(): {
+  element: HTMLFieldSetElement;
+  read: () => AsListedFields;
+} {
+  const element = document.createElement("fieldset");
+  element.className = "listing-block block-as-listed";
+  const title = document.createElement("legend");
+  title.textContent = t("listing-as-listed-heading");
+
+  const acceptance = select(
+    [
+      ["confirm-first", t("listing-acceptance-confirm")],
+      ["instant", t("listing-acceptance-instant")],
+    ],
+    "confirm-first",
+  );
+  const signingNote = text("p", t("listing-instant-needs-signing"), "listing-instant-note");
+  signingNote.hidden = true;
+  let signingReady = false;
+  void call<{ certificate?: { state?: string } }>("transaction.signing-status")
+    .then((res) => {
+      signingReady = res?.certificate?.state === "installed";
+      const instant = Array.from(acceptance.options).find((o) => o.value === "instant");
+      if (instant) instant.disabled = !signingReady;
+      if (!signingReady && acceptance.value === "instant") {
+        acceptance.value = "confirm-first";
+      }
+    })
+    .catch(() => {
+      const instant = Array.from(acceptance.options).find((o) => o.value === "instant");
+      if (instant) instant.disabled = true;
+    });
+  acceptance.onchange = () => {
+    signingNote.hidden = signingReady || acceptance.value !== "instant";
+  };
+
+  const notLimited = checkbox(t("listing-not-limited"), false);
+  const instantCap = input(t("listing-instant-cap"), "20");
+  const quoteValidHours = input(t("listing-quote-valid-hours"), "1");
+  const paymentTiming = select(
+    [
+      ["none", t("listing-payment-timing-none")],
+      ["before-work", t("listing-payment-timing-before")],
+      ["after-work", t("listing-payment-timing-after")],
+    ],
+    "none",
+  );
+  const cancellation = input(t("listing-deal-cancellation"));
+  const refund = input(t("listing-deal-refund"));
+  const dispute = input(t("listing-deal-dispute"));
+
+  element.append(
+    title,
+    field(t("listing-acceptance"), acceptance),
+    signingNote,
+    field(t("listing-not-limited"), notLimited.wrap),
+    field(t("listing-instant-cap"), instantCap),
+    field(t("listing-quote-valid-hours"), quoteValidHours),
+    field(t("listing-payment-timing"), paymentTiming),
+    field(t("listing-deal-cancellation"), cancellation),
+    field(t("listing-deal-refund"), refund),
+    field(t("listing-deal-dispute"), dispute),
+  );
+
+  return {
+    element,
+    read: () => ({
+      acceptance: acceptance.value as Acceptance,
+      not_limited: notLimited.box.checked,
+      instant_cap: instantCap.value,
+      quote_valid_hours: quoteValidHours.value,
+      payment_timing: paymentTiming.value as PaymentTiming,
+      cancellation_terms: cancellation.value,
+      refund_terms: refund.value,
+      dispute_path: dispute.value,
+    }),
+  };
+}

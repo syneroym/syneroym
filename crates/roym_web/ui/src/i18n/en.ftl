@@ -869,7 +869,10 @@ listing-deal-dispute = Dispute path
 listing-error-deal-terms-required = Fill the cancellation, refund and dispute texts together, or leave all three empty.
 listing-error-quote-valid-hours = Quote validity must be 1 to 168 hours.
 as-listed-waiting-confirm = This offering waits for you to confirm each request.
-as-listed-cap-reached = This offering is waiting for you: it reached its limit of open instant agreements.
+as-listed-answer-in-progress = This answer is being signed. The owner should try again in a moment.
+as-listed-accept-failed = This device could not accept the quote. Read it before you accept.
+as-listed-tap-not-complete = This offering cannot be agreed as listed. Ask the owner for a quote.
+as-listed-cap-reached = This offering is waiting for you: it reached its limit of { $cap } open instant agreements.
 as-listed-counterparty-holds-one = This person already has an open instant agreement for this offering.
 as-listed-signing-not-ready = Signing is not ready on this device, so this offering waits.
 as-listed-slot-check-failed = The slot service did not answer, so this offering waits.
@@ -883,6 +886,9 @@ request-agree-as-listed = Agree as listed: { $id }
 
 # --- agree as listed, the counterparty's side ---
 as-listed-cancel-open = Cancel unconfirmed instant agreements
+as-listed-cancel-note = These instant agreements are not confirmed yet. Cancel them?
+as-listed-cancel-confirm = Cancel them
+as-listed-cancel-item = Agreement { $id }
 as-listed-cancelled = Cancelled { $count }.
 as-listed-loading = Reading the offering…
 as-listed-bad-offering = The offering does not verify on this node.

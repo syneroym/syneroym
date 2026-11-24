@@ -1,10 +1,8 @@
 import {
   buildSetListingParams,
   slotFromLocalDatetimes,
-  type Acceptance,
   type ListingForm,
   type OpenTo,
-  type PaymentTiming,
   type ServiceLocationKind,
 } from "../listings/editor";
 import {
@@ -14,6 +12,7 @@ import {
   SERVICE_LOCATION_KINDS,
 } from "../listings/labels";
 import { publishRefusalWords } from "../directory/membership";
+import { asListedSection } from "../listings/as_listed_section";
 import { checkbox, codeOptions, errText, field, input, refiller, select, text } from "../dom";
 import { formatDateTime } from "../i18n/format";
 import { codeWord, currentLanguage, messageId, t } from "../i18n/i18n";
@@ -196,6 +195,7 @@ function listingRow(row: ListingListRow, reload: () => Promise<void>): HTMLEleme
 /// with its reason.
 
 interface AsListedStatus {
+  instant_cap: number;
   open_instant: string[];
   waiting: Array<{ enquiry_record_id: string; reason: string }>;
 }
@@ -215,24 +215,49 @@ function asListedStatus(listingId: string): HTMLElement {
       return;
     }
     if (status.waiting.some((w) => w.reason === "cap-reached")) {
-      wrap.appendChild(text("p", t("as-listed-cap-reached"), "as-listed-limit-line"));
+      wrap.appendChild(
+        text(
+          "p",
+          t("as-listed-cap-reached", { cap: String(status.instant_cap) }),
+          "as-listed-limit-line",
+        ),
+      );
     }
     if (status.open_instant.length === 0) return;
 
     const cancelBtn = text("button", t("as-listed-cancel-open"), "button as-listed-cancel-open") as HTMLButtonElement;
     const result = text("p", "", "as-listed-cancel-result");
-    cancelBtn.onclick = async () => {
-      cancelBtn.disabled = true;
-      let cancelled = 0;
+    cancelBtn.onclick = () => {
+      const dialog = document.createElement("div");
+      dialog.className = "as-listed-cancel-dialog";
+      dialog.appendChild(text("p", t("as-listed-cancel-note"), "as-listed-cancel-note"));
+      const list = document.createElement("ul");
+      list.className = "as-listed-cancel-list";
       for (const agreement of status.open_instant) {
-        try {
-          await call("agreement.cancel", { agreement, reason: "other" });
-          cancelled += 1;
-        } catch {
-          // One that already moved is refused; the count says what worked.
-        }
+        list.appendChild(
+          text("li", t("as-listed-cancel-item", { id: agreement }), "as-listed-cancel-item"),
+        );
       }
-      result.textContent = t("as-listed-cancelled", { count: String(cancelled) });
+      dialog.appendChild(list);
+      const confirmBtn = text("button", t("as-listed-cancel-confirm"), "button as-listed-cancel-confirm") as HTMLButtonElement;
+      const keepBtn = text("button", t("common-cancel"), "button as-listed-cancel-keep") as HTMLButtonElement;
+      confirmBtn.onclick = async () => {
+        confirmBtn.disabled = true;
+        let cancelled = 0;
+        for (const agreement of status.open_instant) {
+          try {
+            await call("agreement.cancel", { agreement, reason: "other" });
+            cancelled += 1;
+          } catch {
+            // One that already moved is refused; the count says what worked.
+          }
+        }
+        result.textContent = t("as-listed-cancelled", { count: String(cancelled) });
+        dialog.remove();
+      };
+      keepBtn.onclick = () => dialog.remove();
+      dialog.append(confirmBtn, keepBtn);
+      wrap.append(dialog);
     };
     wrap.append(cancelBtn, result);
   })();
@@ -490,62 +515,7 @@ function buildEditor(onSaved: () => Promise<void>): { root: HTMLElement } {
   relationship.body.append(field(t("listing-label-open-to"), relOpen), field(t("listing-label-group-did"), relMember));
 
   // --- agree as listed ---
-  const asListed = document.createElement("fieldset");
-  asListed.className = "listing-block block-as-listed";
-  const asListedTitle = document.createElement("legend");
-  asListedTitle.textContent = t("listing-as-listed-heading");
-  const acceptance = select(
-    [
-      ["confirm-first", t("listing-acceptance-confirm")],
-      ["instant", t("listing-acceptance-instant")],
-    ],
-    "confirm-first",
-  );
-  const signingNote = text("p", t("listing-instant-needs-signing"), "listing-instant-note");
-  signingNote.hidden = true;
-  let signingReady = false;
-  void call<{ certificate?: { state?: string } }>("transaction.signing-status")
-    .then((res) => {
-      signingReady = res?.certificate?.state === "installed";
-      const instant = Array.from(acceptance.options).find((o) => o.value === "instant");
-      if (instant) instant.disabled = !signingReady;
-      if (!signingReady && acceptance.value === "instant") {
-        acceptance.value = "confirm-first";
-      }
-    })
-    .catch(() => {
-      const instant = Array.from(acceptance.options).find((o) => o.value === "instant");
-      if (instant) instant.disabled = true;
-    });
-  acceptance.onchange = () => {
-    signingNote.hidden = signingReady || acceptance.value !== "instant";
-  };
-  const notLimited = checkbox(t("listing-not-limited"), false);
-  const instantCap = input(t("listing-instant-cap"), "20");
-  const quoteValidHours = input(t("listing-quote-valid-hours"), "1");
-  const paymentTiming = select(
-    [
-      ["none", t("listing-payment-timing-none")],
-      ["before-work", t("listing-payment-timing-before")],
-      ["after-work", t("listing-payment-timing-after")],
-    ],
-    "none",
-  );
-  const asCancellation = input(t("listing-deal-cancellation"));
-  const asRefund = input(t("listing-deal-refund"));
-  const asDispute = input(t("listing-deal-dispute"));
-  asListed.append(
-    asListedTitle,
-    field(t("listing-acceptance"), acceptance),
-    signingNote,
-    field(t("listing-not-limited"), notLimited.wrap),
-    field(t("listing-instant-cap"), instantCap),
-    field(t("listing-quote-valid-hours"), quoteValidHours),
-    field(t("listing-payment-timing"), paymentTiming),
-    field(t("listing-deal-cancellation"), asCancellation),
-    field(t("listing-deal-refund"), asRefund),
-    field(t("listing-deal-dispute"), asDispute),
-  );
+  const asListed = asListedSection();
 
   // --- service_record ---
   const serviceRecord = block("service_record", t("listing-block-service-record"));
@@ -565,7 +535,7 @@ function buildEditor(onSaved: () => Promise<void>): { root: HTMLElement } {
     service.details,
     location.details,
     relationship.details,
-    asListed,
+    asListed.element,
     serviceRecord.details,
   );
 
@@ -650,16 +620,7 @@ function buildEditor(onSaved: () => Promise<void>): { root: HTMLElement } {
           retention_secs: srRetention.value,
         },
       },
-      as_listed: {
-        acceptance: acceptance.value as Acceptance,
-        not_limited: notLimited.box.checked,
-        instant_cap: instantCap.value,
-        quote_valid_hours: quoteValidHours.value,
-        payment_timing: paymentTiming.value as PaymentTiming,
-        cancellation_terms: asCancellation.value,
-        refund_terms: asRefund.value,
-        dispute_path: asDispute.value,
-      },
+      as_listed: asListed.read(),
     };
 
     let params: Record<string, unknown>;

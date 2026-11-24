@@ -326,6 +326,9 @@ export function buildSetListingParams(form: ListingForm): Record<string, unknown
   params.instant_cap = requireWhole(form.as_listed.instant_cap, t("listing-instant-cap"));
   const dealTerms = asListedBlock(form.as_listed, lang);
   if (dealTerms !== undefined) params.deal_terms = dealTerms;
+  if (form.as_listed.acceptance === "instant" && dealTerms === undefined) {
+    throw new ListingInputError(t("listing-error-deal-terms-required"));
+  }
 
   if (form.translations && form.translations.length > 0) {
     const seenLangs = new Set<string>();

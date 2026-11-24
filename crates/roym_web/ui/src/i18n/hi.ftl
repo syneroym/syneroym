@@ -846,7 +846,10 @@ listing-deal-dispute = विवाद का रास्ता
 listing-error-deal-terms-required = रद्द करने, वापसी और विवाद के तीनों पाठ भरें, या तीनों खाली छोड़ें।
 listing-error-quote-valid-hours = कोटेशन की वैधता 1 से 168 घंटे के बीच होनी चाहिए।
 as-listed-waiting-confirm = यह पेशकश आपकी पुष्टि का इंतज़ार कर रही है।
-as-listed-cap-reached = यह पेशकश आपके लिए रुकी है: खुली तुरंत सहमतियों की सीमा पूरी हो गई।
+as-listed-answer-in-progress = इस जवाब पर हस्ताक्षर हो रहे हैं। मालिक थोड़ी देर बाद फिर कोशिश करे।
+as-listed-accept-failed = यह डिवाइस कोटेशन स्वीकार नहीं कर सका। स्वीकार करने से पहले उसे पढ़ें।
+as-listed-tap-not-complete = इस पेशकश पर सूची के अनुसार सहमति नहीं बन सकती। मालिक से कोटेशन माँगें।
+as-listed-cap-reached = यह पेशकश आपके लिए रुकी है: खुली तुरंत सहमतियों की सीमा { $cap } पूरी हो गई।
 as-listed-counterparty-holds-one = इस व्यक्ति के पास इस पेशकश की एक खुली तुरंत सहमति पहले से है।
 as-listed-signing-not-ready = इस डिवाइस पर हस्ताक्षर तैयार नहीं है, इसलिए यह पेशकश रुकी है।
 as-listed-slot-check-failed = स्लॉट सेवा ने जवाब नहीं दिया, इसलिए यह पेशकश रुकी है।
@@ -860,6 +863,9 @@ request-agree-as-listed = सूची के अनुसार सहमति
 
 # --- agree as listed, the counterparty's side ---
 as-listed-cancel-open = बिना पुष्टि वाली तुरंत सहमतियाँ रद्द करें
+as-listed-cancel-note = ये तुरंत सहमतियाँ अभी पक्की नहीं हुईं। इन्हें रद्द करें?
+as-listed-cancel-confirm = इन्हें रद्द करें
+as-listed-cancel-item = सहमति { $id }
 as-listed-cancelled = { $count } रद्द की गईं।
 as-listed-loading = पेशकश पढ़ी जा रही है…
 as-listed-bad-offering = यह पेशकश इस नोड पर सत्यापित नहीं होती।
