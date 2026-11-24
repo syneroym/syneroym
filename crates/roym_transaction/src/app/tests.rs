@@ -5,6 +5,7 @@ pub mod as_listed_accept;
 pub mod as_listed_enquiry;
 pub mod as_listed_fixture;
 pub mod as_listed_owner;
+pub mod as_listed_terms;
 pub mod cancel;
 pub mod commitment_failure;
 pub mod commitment_failure_backup;
