@@ -2080,15 +2080,15 @@ Each PR fixes the statements it makes false. C8 does the full pass.
 
 C3c1:
 
-- [ ] ADR-0031 accepted by the owner before step 2.
-- [ ] Every C3c1 row of section 3 names a test that exists and passes.
-- [ ] `roym_driver_e2e` passes with no `transaction.sync` call in it.
-- [ ] No test turns the wake off; the seven count sites assert state.
-- [ ] One `drive` call's time in the WASM build recorded, under 2 s.
-- [ ] Parity and method-contract pass after `mise run build:roym`.
-- [ ] Sizes recorded and within limits.
-- [ ] Deviations, backlog rows and living docs done.
-- [ ] `mise run verify` passes with no `--skip`.
+- [x] ADR-0031 accepted by the owner before step 2 (commit `561e42b9`, `docs/decisions/0031-node-local-wake.md`).
+- [x] Every C3c1 row of section 3 names a test that exists and passes (AG-50: `roym_driver_e2e`, `tests/drive.rs`, `runtime::wake`).
+- [x] `roym_driver_e2e` passes with no `transaction.sync` call in it (2 tests pass: `driver_e2e_advances_quotes_without_client_sync` and `stopped_quote_author_restarts_and_countersigns`).
+- [x] No test turns the wake off; the seven count sites assert state (`roym_flow.rs`, `roym_booking_e2e.rs`, `roym_transaction_e2e.rs`).
+- [x] One `drive` call's time in the WASM build recorded, under 2 s (69.8 ms for 8 conversations on a node with 200 agreements).
+- [x] Parity and method-contract pass after `mise run build:roym` (`dual_build_parity` 272 passed; `method_contract` 38 passed).
+- [x] Sizes recorded and within limits (`transaction` wasm 2,390,790, +52,370 bytes, +2.24% vs limit +15%; `scheduling` 715,723, +864 bytes; others unchanged; all within limits).
+- [x] Deviations, backlog rows and living docs done (ADR-0031, `AGENTS.md`, `developer-guide.md`, `system-architecture.md`, `change.md`, `deferred-backlog.md`).
+- [x] `mise run verify` passes with no `--skip` (CI passed on `27a9fa18` across all jobs, including Playwright E2E and 6 test shards; accepted by owner).
 
 C3c2:
 

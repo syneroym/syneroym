@@ -142,6 +142,20 @@ Every component is within its limit. `scheduling` was measured alone before it w
 
 Every component is within its limit. `transaction` grew with the commitment-failure record, the confirm pass, the filing of the failure and the checks of three more ledger rows on import. `scheduling` grew by the lapse.
 
+**C3c1 sizes** (release `wasm32-wasip2`, one `target/` folder, 2026-11-24; before: the C3b2 table's after column, after: the C3c1 code), in bytes:
+
+| Component | before | after | Change | Limit |
+| --- | --- | --- | --- | --- |
+| `transaction` | 2,338,420 | 2,390,790 | +52,370 (+2.24%) | +15% (350,763), new record code |
+| `scheduling` | 714,859 | 715,723 | +864 | +40 KB |
+| `catalog` | 896,138 | 896,138 | 0 | +40 KB |
+| `conversation` | 813,818 | 813,818 | 0 | +40 KB |
+| `directory` | 1,466,527 | 1,466,527 | 0 | +40 KB |
+| `profile` | 772,732 | 772,732 | 0 | +40 KB |
+| `web` | 311,202 | 311,202 | 0 | +40 KB |
+
+Every component is within its limit. `transaction` grew with `transaction.drive`, event polling and recovery integration. `scheduling` grew slightly from shared dependency updates.
+
 **Parity runs need a fresh WASM build.** The dual-build parity harness loads pre-built `wasm32-wasip2` components. Every slice that changes a `roym_*` crate runs `mise run build:roym` before it trusts a parity run.
 
 ## 2. Facts checked in the code for this plan
@@ -274,6 +288,8 @@ Added on 2026-11-20 (agreements doc, open question 13, refined in the PR #372 re
 - Demo: extend story 50 with a deal agreed as listed (the plan confirms).
 
 Change docs: roym-agreements, roym-value-exchange (VX-54), roym-extensions (EX-18).
+
+- **C3c1 result ([PR #381](https://github.com/syneroym/syneroym/pull/381)):** a service declares a node-local wake in its manifest (ADR-0031); the substrate's WakeWorker wakes it on event bus matches or on an interval; transaction declares a wake for conversation.message and runs transaction.drive, syncing conversations in the background with no Hub session and recovering deciding rows; two-node tests advance deals with no manual transaction.sync call. Agree as listed terms mapping, listing fields and automatic acceptance are C3c2.
 
 ### C4 — Widgets (L)
 
