@@ -6,6 +6,7 @@ use syneroym_roym_core::{
     as_listed::{self, AsListed},
     deal::transition::CommitmentState,
     listing::{self, Acceptance, DEFAULT_INSTANT_CAP, ListingPayload, ListingStatus},
+    paging,
     progress::{AgreementState, CommitmentProgress, FormedAs},
     record::{Envelope, RecordDraft},
     signing::{CERTIFICATE_ID, CERTIFICATES},
@@ -26,7 +27,7 @@ use crate::app::{
     },
     backup,
     decide::{self, DecisionRow, DecisionState},
-    delete_row, enquiry_ops, get_row,
+    decline_ops, delete_row, enquiry_ops, get_row,
     ledger::LedgerKind,
     put_row,
 };
@@ -338,7 +339,7 @@ async fn two_answers_of_one_tap_make_one_quote() {
     assert_eq!(first.quote_id, second.quote_id);
     assert_eq!(first.record_id, second.record_id);
 
-    let quotes = syneroym_roym_core::paging::count(&f.host, QUOTES, None).await.expect("count");
+    let quotes = paging::count(&f.host, QUOTES, None).await.expect("count");
     assert_eq!(quotes, 1, "one tap makes at most one quote");
 }
 
@@ -511,7 +512,7 @@ async fn one_counterparty_tapping_twice_gets_one_instant_quote() {
         .await
         .expect("second answer");
     assert!(matches!(outcome, Outcome::Waiting("counterparty-holds-one")));
-    let quotes = syneroym_roym_core::paging::count(&f.host, QUOTES, None).await.expect("count");
+    let quotes = paging::count(&f.host, QUOTES, None).await.expect("count");
     assert_eq!(quotes, 1, "one tap makes at most one quote");
 }
 
@@ -554,6 +555,59 @@ async fn an_answer_that_reached_its_fence_is_resumed_with_the_same_quote_id() {
         get_row::<RecordPointerRow, _>(&f.host, QUOTES, &quote_id).await.expect("read").is_some(),
         "the resume signs the same quote"
     );
+}
+
+#[tokio::test]
+async fn a_resumed_answer_whose_consent_passed_ends_without_a_card() {
+    let f = fixture();
+    let now = f.host.now();
+    let peer = Identity::generate().expect("peer");
+    let (enquiry, payload, _) = tap(&f, &peer, Acceptance::Instant, 20, now).await;
+    let quote_id = transaction::derive_quote_id(CONVERSATION, &f.master_did, 1).expect("quote id");
+    put_row(
+        &f.host,
+        LEDGER,
+        &answer_id(&enquiry),
+        &AnswerRow {
+            kind: LedgerKind::Answer,
+            enquiry_record_id: enquiry.clone(),
+            conversation: CONVERSATION.to_string(),
+            listing_id: payload.listing_id.clone(),
+            quote_id: quote_id.clone(),
+            sequence: 1,
+            quote_record_id: None,
+            formed_as: FormedAs::AsListedInstant,
+            state: AnswerState::Answering,
+            code: None,
+            created_at_secs: now,
+        },
+    )
+    .await
+    .expect("fence");
+
+    let later = now + 3_601;
+    let mut warnings = Vec::new();
+    as_listed_ops::answer_waiting(&f.host, later, &mut warnings).await;
+    assert!(warnings.is_empty(), "{warnings:?}");
+    let answer: AnswerRow =
+        get_row(&f.host, LEDGER, &answer_id(&enquiry)).await.expect("read").expect("answer");
+    assert_eq!(answer.state, AnswerState::Declined);
+    assert_eq!(answer.code.as_deref(), Some("consent-expired"));
+    assert!(
+        get_row::<RecordPointerRow, _>(&f.host, QUOTES, &quote_id).await.expect("read").is_none(),
+        "a passed consent signs no quote"
+    );
+    assert!(
+        get_row::<decline_ops::DeclineRow, _>(&f.host, LEDGER, &decline_ops::decline_id(&enquiry))
+            .await
+            .expect("read")
+            .is_none(),
+        "the owner sends no decline card for a tap that ended"
+    );
+
+    let mut again = Vec::new();
+    as_listed_ops::answer_waiting(&f.host, later, &mut again).await;
+    assert!(again.is_empty(), "{again:?}");
 }
 
 #[tokio::test]

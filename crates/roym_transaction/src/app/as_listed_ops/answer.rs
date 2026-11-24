@@ -312,6 +312,15 @@ async fn start<H: AppHost>(
         },
     };
 
+    if now > consent.valid_until_secs {
+        if let Some(row) = &resume {
+            end_answer(host, row, "consent-expired").await?;
+            return Ok(Start::Done(Outcome::Declined));
+        }
+        decline(host, enquiry_record_id, listing_id, conversation, "consent-expired", now).await?;
+        return Ok(Start::Declined);
+    }
+
     let Some(current) = load_current_listing(host, listing_id, now).await? else {
         if resume.is_some() {
             return Ok(Start::Done(Outcome::Waiting("offering-withdrawn")));
@@ -329,13 +338,6 @@ async fn start<H: AppHost>(
         }
         decline(host, enquiry_record_id, listing_id, conversation, "offering-withdrawn", now)
             .await?;
-        return Ok(Start::Declined);
-    }
-    if now > consent.valid_until_secs {
-        if resume.is_some() {
-            return Ok(Start::Done(Outcome::Waiting("consent-expired")));
-        }
-        decline(host, enquiry_record_id, listing_id, conversation, "consent-expired", now).await?;
         return Ok(Start::Declined);
     }
 
@@ -586,6 +588,17 @@ async fn mark_answered<H: AppHost>(
     row.state = AnswerState::Answered;
     row.quote_record_id = Some(quote_record_id.to_string());
     put_row(host, LEDGER, &answer_id(&row.enquiry_record_id), &row)
+        .await
+        .map_err(Response::internal_error)
+}
+
+/// Ends a stored answer that can no longer be signed. It writes no card: the
+/// counterparty's own check refuses a quote issued after its consent.
+async fn end_answer<H: AppHost>(host: &H, row: &AnswerRow, code: &str) -> Result<(), Response> {
+    let mut ended = row.clone();
+    ended.state = AnswerState::Declined;
+    ended.code = Some(code.to_string());
+    put_row(host, LEDGER, &answer_id(&ended.enquiry_record_id), &ended)
         .await
         .map_err(Response::internal_error)
 }

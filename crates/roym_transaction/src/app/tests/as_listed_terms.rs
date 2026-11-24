@@ -1,6 +1,8 @@
 //! The terms struct test: every field of `DealTerms` and `Commitment` must
 //! change `same_terms`.
 
+use std::collections::BTreeSet;
+
 use serde_json::{Value, json};
 use syneroym_identity::Identity;
 use syneroym_roym_core::{
@@ -64,7 +66,7 @@ const TERM_FIELDS: &[&str] = &[
 
 /// The keys of a serialised value, not descending into the two free-form
 /// blocks whose contents are the extension's, not the terms'.
-fn keys(value: &Value, out: &mut std::collections::BTreeSet<String>) {
+fn keys(value: &Value, out: &mut BTreeSet<String>) {
     match value {
         Value::Object(map) => {
             for (key, inner) in map {
@@ -360,9 +362,9 @@ fn a_changed_field_anywhere_in_the_terms_fails_the_check() {
     let base = full_terms(&tap.terms, now);
     assert!(same_terms(&base, &base, now, now));
 
-    let mut seen = std::collections::BTreeSet::new();
+    let mut seen = BTreeSet::new();
     keys(&serde_json::to_value(&base).expect("terms json"), &mut seen);
-    let expected: std::collections::BTreeSet<&str> = TERM_FIELDS.iter().copied().collect();
+    let expected: BTreeSet<&str> = TERM_FIELDS.iter().copied().collect();
     assert_eq!(seen, expected.into_iter().map(str::to_string).collect());
 
     for field in TERM_FIELDS {
