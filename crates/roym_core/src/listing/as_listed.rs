@@ -9,8 +9,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     deal::{LocalText, MAX_TERMS_TEXT_LEN},
-    extension::{self, Manifest},
-    listing::{ListingError, ListingPayload, OpenTo},
+    extension,
+    listing::{
+        ListingError, ListingPayload, ListingStatus, OpenTo, PaymentModel, PaymentTerms,
+        ServiceLocation,
+    },
     transaction::MIN_QUOTE_LIFETIME_SECS,
 };
 
@@ -69,6 +72,85 @@ pub(crate) fn is_default_cap(value: &u16) -> bool {
     *value == DEFAULT_INSTANT_CAP
 }
 
+/// Why a listing cannot become the terms of a quote without a person filling
+/// the gaps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotComplete {
+    PriceNotFixed,
+    TaxNotIncluded,
+    AtReceiver,
+    SlotRequired,
+    SlotNotOffered,
+    NoDealTerms,
+    /// The listing names an extension this build does not know, so it cannot
+    /// say what the owner's commitment would carry.
+    ExtensionUnknown,
+    ListingNotActive,
+    QuoteTooLarge,
+    /// The build mapped a field wrongly. It carries the `DealError` code, so a
+    /// person sees a normal refusal instead of a quote that `quote.set` would
+    /// refuse.
+    Invalid(&'static str),
+}
+
+impl NotComplete {
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::PriceNotFixed => "price-not-fixed",
+            Self::TaxNotIncluded => "tax-not-included",
+            Self::AtReceiver => "at-receiver",
+            Self::SlotRequired => "slot-required",
+            Self::SlotNotOffered => "slot-not-offered",
+            Self::NoDealTerms => "no-deal-terms",
+            Self::ExtensionUnknown => "extension-unknown",
+            Self::ListingNotActive => "listing-not-active",
+            Self::QuoteTooLarge => "quote-too-large",
+            Self::Invalid(code) => code,
+        }
+    }
+}
+
+/// The listing-only part: what a directory can decide without a slot or a
+/// clock. It runs the same first refusals as [`terms_from_listing`].
+pub fn as_listed_ready(listing: &ListingPayload) -> Result<(), NotComplete> {
+    ready(listing).map(|_| ())
+}
+
+/// The refusals that do not depend on the tap's slot.
+pub(crate) fn ready(
+    listing: &ListingPayload,
+) -> Result<(&PaymentTerms, &ListingDealTerms), NotComplete> {
+    if listing.status != ListingStatus::Active {
+        return Err(NotComplete::ListingNotActive);
+    }
+    let payment = fixed_payment(listing)?;
+    if !payment.tax_included {
+        return Err(NotComplete::TaxNotIncluded);
+    }
+    if listing.location.as_ref().is_some_and(|l| l.where_ == ServiceLocation::AtReceiver) {
+        return Err(NotComplete::AtReceiver);
+    }
+    let deal_terms = listing.deal_terms.as_ref().ok_or(NotComplete::NoDealTerms)?;
+    if let Some(ext) = &listing.extension
+        && !extension::is_known_workflow(ext)
+    {
+        return Err(NotComplete::ExtensionUnknown);
+    }
+    Ok((payment, deal_terms))
+}
+
+fn fixed_payment(listing: &ListingPayload) -> Result<&PaymentTerms, NotComplete> {
+    let payment = listing.payment.as_ref().ok_or(NotComplete::PriceNotFixed)?;
+    if payment.model != PaymentModel::Fixed
+        || payment.amount_minor.is_none()
+        || payment.payee.trim().is_empty()
+    {
+        return Err(NotComplete::PriceNotFixed);
+    }
+    Ok(payment)
+}
+
 impl ListingPayload {
     /// The rules of the "agree as listed" section. Runs inside
     /// [`ListingPayload::validate`], so `listing.set` and every verifier
@@ -78,9 +160,8 @@ impl ListingPayload {
             if self.relationship.as_ref().map(|r| r.open_to) != Some(OpenTo::Anyone) {
                 return Err(ListingError::InstantNotAllowed { reason: "not-open-to-anyone" });
             }
-            let slot_offering = self.extension.as_ref().is_some_and(|ext| {
-                extension::registry().workflow(ext).is_some_and(Manifest::has_reserve_hook)
-            });
+            let slot_offering =
+                self.extension.as_ref().is_some_and(extension::is_known_workflow_with_reserve_hook);
             if !slot_offering && !self.not_limited {
                 return Err(ListingError::InstantNotAllowed { reason: "not-limited-or-slot" });
             }

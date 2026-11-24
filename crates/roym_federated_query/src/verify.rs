@@ -127,6 +127,7 @@ fn build_verified_row(
     let listing_id = verdict.listing_id.unwrap_or_default();
     let areas = payload.location.as_ref().map(|l| l.service_area.clone()).unwrap_or_default();
     let record_id = verdict.record_id.unwrap_or_default();
+    let can_agree_as_listed = syneroym_roym_core::as_listed::as_listed_ready(&payload).is_ok();
     envelopes_by_record_id.insert(record_id.clone(), hit.envelope.clone());
     evidence.push(HeldEvidence {
         source: source.did.clone(),
@@ -154,6 +155,7 @@ fn build_verified_row(
         areas,
         lang: payload.lang.to_string(),
         translations: payload.translations,
+        can_agree_as_listed,
     })
 }
 

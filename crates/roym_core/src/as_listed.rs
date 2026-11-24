@@ -10,6 +10,7 @@ use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
 
+pub use crate::listing::as_listed::{NotComplete, as_listed_ready};
 use crate::{
     deal::{
         Commitment, CommitmentKind, DealTerms, Details, LocalText, ResourceKind, TextTranslation,
@@ -17,10 +18,7 @@ use crate::{
     },
     disclosure::{MAX_DETAILS_DISCLOSURE_BYTES, MAX_RECORD_DISCLOSURE_BYTES},
     extension::{self, Manifest, SCHEDULING_EXTENSION, SCHEDULING_SLOT_SCHEMA},
-    listing::{
-        self, ListingDealTerms, ListingPayload, ListingStatus, PaymentModel, PaymentTerms,
-        PaymentTiming, ServiceLocation,
-    },
+    listing::{self, ListingPayload, PaymentTerms, PaymentTiming, as_listed::ready},
     money,
     transaction::{DealRole, QuoteLocation, TimeWindow, TransactionError},
 };
@@ -96,83 +94,6 @@ impl AsListed {
         }
         Ok(())
     }
-}
-
-/// Why a listing cannot become the terms of a quote without a person filling
-/// the gaps.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NotComplete {
-    PriceNotFixed,
-    TaxNotIncluded,
-    AtReceiver,
-    SlotRequired,
-    SlotNotOffered,
-    NoDealTerms,
-    /// The listing names an extension this build does not know, so it cannot
-    /// say what the owner's commitment would carry.
-    ExtensionUnknown,
-    ListingNotActive,
-    QuoteTooLarge,
-    /// The build mapped a field wrongly. It carries the `DealError` code, so a
-    /// person sees a normal refusal instead of a quote that `quote.set` would
-    /// refuse.
-    Invalid(&'static str),
-}
-
-impl NotComplete {
-    #[must_use]
-    pub const fn code(self) -> &'static str {
-        match self {
-            Self::PriceNotFixed => "price-not-fixed",
-            Self::TaxNotIncluded => "tax-not-included",
-            Self::AtReceiver => "at-receiver",
-            Self::SlotRequired => "slot-required",
-            Self::SlotNotOffered => "slot-not-offered",
-            Self::NoDealTerms => "no-deal-terms",
-            Self::ExtensionUnknown => "extension-unknown",
-            Self::ListingNotActive => "listing-not-active",
-            Self::QuoteTooLarge => "quote-too-large",
-            Self::Invalid(code) => code,
-        }
-    }
-}
-
-/// The listing-only part: what a directory can decide without a slot or a
-/// clock. It runs the same first refusals as [`terms_from_listing`].
-pub fn as_listed_ready(listing: &ListingPayload) -> Result<(), NotComplete> {
-    ready(listing).map(|_| ())
-}
-
-/// The refusals that do not depend on the tap's slot.
-fn ready(listing: &ListingPayload) -> Result<(&PaymentTerms, &ListingDealTerms), NotComplete> {
-    if listing.status != ListingStatus::Active {
-        return Err(NotComplete::ListingNotActive);
-    }
-    let payment = fixed_payment(listing)?;
-    if !payment.tax_included {
-        return Err(NotComplete::TaxNotIncluded);
-    }
-    if listing.location.as_ref().is_some_and(|l| l.where_ == ServiceLocation::AtReceiver) {
-        return Err(NotComplete::AtReceiver);
-    }
-    let deal_terms = listing.deal_terms.as_ref().ok_or(NotComplete::NoDealTerms)?;
-    if let Some(ext) = &listing.extension
-        && extension::registry().workflow(ext).is_none()
-    {
-        return Err(NotComplete::ExtensionUnknown);
-    }
-    Ok((payment, deal_terms))
-}
-
-fn fixed_payment(listing: &ListingPayload) -> Result<&PaymentTerms, NotComplete> {
-    let payment = listing.payment.as_ref().ok_or(NotComplete::PriceNotFixed)?;
-    if payment.model != PaymentModel::Fixed
-        || payment.amount_minor.is_none()
-        || payment.payee.trim().is_empty()
-    {
-        return Err(NotComplete::PriceNotFixed);
-    }
-    Ok(payment)
 }
 
 fn has_reserve_hook(ext: &crate::deal::ExtensionRef) -> bool {

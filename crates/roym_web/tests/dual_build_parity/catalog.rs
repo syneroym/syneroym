@@ -368,3 +368,95 @@ async fn listing_with_translation_parity() {
     assert_eq!(trs[0]["lang"], "en");
     assert_eq!(trs[0]["title"], "Hedge trimming");
 }
+
+#[tokio::test]
+async fn scenario_257_listing_as_listed_fields_round_trip_parity() {
+    let h = harness().await;
+    enrol_signing(&h, "catalog").await;
+
+    let mut params = full_listing_params("hedge-trimming", "Hedge trimming");
+    params["acceptance"] = json!("instant");
+    params["not_limited"] = json!(true);
+    params["instant_cap"] = json!(3);
+    params["deal_terms"] = json!({
+        "cancellation_terms": { "lang": "en", "text": "Free until 24 hours before" },
+        "refund_terms": { "lang": "en", "text": "Full refund" },
+        "dispute_path": { "lang": "en", "text": "Write to us first" },
+        "quote_valid_secs": 3600,
+        "payment_timing": "after-work"
+    });
+
+    let (_id, gw, gn) = set_and_get(&h, params).await;
+    assert_eq!(
+        gw["result"]["envelope"], gn["result"]["envelope"],
+        "the signed listing envelope must be byte-identical"
+    );
+
+    let env: Value = serde_json::from_str(gw["result"]["envelope"].as_str().unwrap()).unwrap();
+    assert_eq!(env["payload"]["acceptance"], "instant");
+    assert_eq!(env["payload"]["not_limited"], true);
+    assert_eq!(env["payload"]["instant_cap"], 3);
+    assert_eq!(env["payload"]["deal_terms"]["quote_valid_secs"], 3600);
+    assert_eq!(env["payload"]["deal_terms"]["payment_timing"], "after-work");
+}
+
+#[tokio::test]
+async fn scenario_258_listing_as_listed_refusals_parity() {
+    let h = harness().await;
+    enrol_signing(&h, "catalog").await;
+
+    let cases: Vec<(&str, Value, &str, Option<&str>)> = vec![
+        (
+            "instant needs anyone",
+            json!({ "acceptance": "instant", "relationship": { "open_to": "members", "member_of": "did:key:zGroup" } }),
+            "instant-not-allowed",
+            Some("not-open-to-anyone"),
+        ),
+        (
+            "instant needs a slot or no limit",
+            json!({ "acceptance": "instant", "extension": null, "not_limited": false }),
+            "instant-not-allowed",
+            Some("not-limited-or-slot"),
+        ),
+        ("cap out of range", json!({ "instant_cap": 0 }), "instant-cap-range", None),
+        (
+            "deal terms language set differs",
+            json!({ "translations": [{ "lang": "hi", "title": "झाड़ी काटना" }] }),
+            "deal-terms-languages",
+            None,
+        ),
+        (
+            "quote lifetime below the floor",
+            json!({ "deal_terms": {
+                "cancellation_terms": { "lang": "en", "text": "Cancel" },
+                "refund_terms": { "lang": "en", "text": "Refund" },
+                "dispute_path": { "lang": "en", "text": "Dispute" },
+                "quote_valid_secs": 60
+            }}),
+            "quote-valid-range",
+            None,
+        ),
+    ];
+
+    for (label, overrides, code, reason) in cases {
+        let mut params = full_listing_params("hedge-trimming", "Hedge trimming");
+        if overrides.get("deal_terms").is_none() {
+            params["deal_terms"] = json!({
+                "cancellation_terms": { "lang": "en", "text": "Free until 24 hours before" },
+                "refund_terms": { "lang": "en", "text": "Full refund" },
+                "dispute_path": { "lang": "en", "text": "Write to us first" },
+                "quote_valid_secs": 3600
+            });
+        }
+        for (key, value) in overrides.as_object().unwrap() {
+            params[key] = value.clone();
+        }
+        let (w, n) = both_rpc(&h, "listing.set", params).await;
+        assert_eq!(w, n, "{label}");
+        assert!(is_err(&w, -32602), "{label}: {w}");
+        assert_eq!(w["error"]["data"]["code"], code, "{label}: {w}");
+        if let Some(reason) = reason {
+            assert_eq!(w["error"]["data"]["reason"], reason, "{label}: {w}");
+        }
+    }
+}

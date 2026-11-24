@@ -212,6 +212,29 @@ fn known_workflow_in(sources: &[&str], ext: &ExtensionRef) -> bool {
         .any(|h| h.kind == ManifestKind::Workflow && h.id == ext.id && h.version == ext.version)
 }
 
+/// Whether this build ships a `workflow` extension with this id and version
+/// that declares the reserve hook. It reads only the header of each manifest,
+/// so a component that needs just this answer (the catalog, for `listing.set`)
+/// does not link the schema checks. It always agrees with
+/// [`Registry::workflow`] and [`Manifest::has_reserve_hook`].
+#[must_use]
+pub fn is_known_workflow_with_reserve_hook(ext: &ExtensionRef) -> bool {
+    #[derive(Deserialize)]
+    struct Header {
+        id: String,
+        version: u32,
+        kind: ManifestKind,
+        #[serde(default)]
+        hooks: Vec<Hook>,
+    }
+    MANIFESTS.iter().filter_map(|source| serde_json::from_str::<Header>(source).ok()).any(|h| {
+        h.kind == ManifestKind::Workflow
+            && h.id == ext.id
+            && h.version == ext.version
+            && h.hooks.contains(&Hook::Reserve)
+    })
+}
+
 /// The manifests that ship with this build, parsed once.
 #[expect(
     clippy::expect_used,

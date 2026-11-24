@@ -37,6 +37,9 @@ export interface MergedHit {
     membership?: MembershipVerdict | null;
   }>;
   versions_differ: boolean;
+  /// Whether "Agree as listed" can succeed for this offering without a
+  /// slot. An older node omits it, so a missing value reads as false.
+  can_agree_as_listed?: boolean;
 }
 
 export interface RefusedHit {

@@ -35,6 +35,10 @@ pub struct MergedHit {
     pub versions_differ: bool,
     pub lang: String,
     pub translations: Vec<ListingTranslation>,
+    /// Whether "Agree as listed" can succeed for this offering without a
+    /// slot. A directory computes it; a searcher only shows the action then.
+    #[serde(default)]
+    pub can_agree_as_listed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -64,6 +68,7 @@ pub struct Row {
     pub areas: Vec<Area>,
     pub lang: String,
     pub translations: Vec<ListingTranslation>,
+    pub can_agree_as_listed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -250,6 +255,7 @@ fn build_hits(
                 versions_differ: distinct_record_ids.len() > 1,
                 lang: winner.lang.clone(),
                 translations: winner.translations.clone(),
+                can_agree_as_listed: winner.can_agree_as_listed,
             })
         })
         .collect()
