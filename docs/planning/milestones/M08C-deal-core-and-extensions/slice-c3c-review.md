@@ -934,7 +934,7 @@ syneroym-roym-transaction`: 226 tests in the crate.
   `docs/ideas/did-nid-match-process.md` and `99ff3dd0` bumps `url`. Both are
   the owner's commits; I did not review them.
 
-**Counts: 0 blocker, 0 major, 0 minor. 0 open.** All 13 findings are fixed and verified.
+**Counts: 0 blocker, 2 major, 11 minor. 13 open.** (The status of each finding is in its own *Status* line, and the close-out check is in round 2 below.)
 
 ### Findings
 
@@ -1041,7 +1041,7 @@ one `drive_at` over several conversations runs recovery exactly once.
 
 *Status:* Fixed (2611c71c). Made recovery observable: `drive_runs_recovery_once_per_call` and `sync_still_runs_recovery_once` seed an expired `deciding` row before calling `drive_at` / `sync_at`, asserting `state == NotFormed` and `recovery_queries == 1`. Proof: commenting out `recover_deciding_rows` in `drive.rs` caused `drive_runs_recovery_once_per_call` to fail (`left: 3, right: 2`); commenting out in `sync.rs` caused `sync_still_runs_recovery_once` to fail (`left: Deciding, right: NotFormed`).
 
-- [x] **R4 — minor.** *The worker's event test passes on the interval call, and most planned worker tests are missing.*
+- [ ] **R4 — minor.** *The worker's event test passes on the interval call, and most planned worker tests are missing.*
   *Where:* [wake/tests.rs:198](../../../../crates/substrate/src/runtime/wake/tests.rs#L198)
 to `:245`.
 
@@ -1072,7 +1072,7 @@ then record an event and assert a second call. Add the listed tests. Use a
 proxy that panics for the guard test, and a valid `every_secs` (use a fake
 clock or set `last_run_at` in the state instead of `every_secs = 0`).
 
-*Status:* Fixed (b9c87d66). `wake_worker_triggers_on_event` yields to let the first interval call finish, then records an event with current timestamp and asserts a second call occurs. Added all planned worker tests: `a_burst_of_events_gives_one_call`, `an_event_of_another_kind_gives_no_call`, `the_interval_calls_with_no_event`, `a_slow_call_is_never_overlapped`, `a_reload_of_the_event_window_gives_a_call`, `an_undeployed_service_is_not_called_again`, `a_reply_without_again_waits_for_the_interval`, and `a_panic_in_invoke_resets_running_guard`. Valid `every_secs` (30 or 60) used across tests. Proof: commenting out event matching trigger in `wake.rs` caused `wake_worker_triggers_on_event` to fail (`left: 1, right: 2`).
+*Status:* Open (round 2: partly fixed in b9c87d66). The event test and the listed tests now exist and work, but `wake_reply_string_envelope_with_warnings` and `wake_reply_string_envelope_with_error` only count calls, and neither path changes the count, so both pass if the worker ignores `warnings` and `error`. See round 2. Fix session note: `wake_worker_triggers_on_event` yields to let the first interval call finish, then records an event with current timestamp and asserts a second call occurs. Added all planned worker tests: `a_burst_of_events_gives_one_call`, `an_event_of_another_kind_gives_no_call`, `the_interval_calls_with_no_event`, `a_slow_call_is_never_overlapped`, `a_reload_of_the_event_window_gives_a_call`, `an_undeployed_service_is_not_called_again`, `a_reply_without_again_waits_for_the_interval`, and `a_panic_in_invoke_resets_running_guard`. Valid `every_secs` (30 or 60) used across tests. Proof: commenting out event matching trigger in `wake.rs` caused `wake_worker_triggers_on_event` to fail (`left: 1, right: 2`).
 
 - [x] **R5 — minor.** *A missing local endpoint logs a warning every second and loses the trigger.*
   *Where:* [wake.rs:134](../../../../crates/substrate/src/runtime/wake.rs#L134)
@@ -1193,7 +1193,7 @@ the struct form).
 
 *Status:* Fixed (e43c5e85). Restored the two "why" sentences in `crates/core/src/storage.rs` on `save_deploy_facts` doc comment regarding clearing by construction and partial deploy deduplication prevention.
 
-- [x] **R10 — minor.** *The developer guide's wake example is invalid, and `transaction.drive` is not documented.*
+- [ ] **R10 — minor.** *The developer guide's wake example is invalid, and `transaction.drive` is not documented.*
   *Where:* [developer-guide.md:1441](../../../../docs/developer-guide.md#L1441)
 to `:1448`; section 6.7.
 
@@ -1213,7 +1213,7 @@ output, nor the new `more` field of `transaction.sync`.
 `transaction.drive` (`{}` → `{synced, pending, rescanning, again,
 warnings?}`) and `more` to section 6.7.
 
-*Status:* Fixed (e43c5e85). Updated wake manifest example in `docs/developer-guide.md` with valid interface and event kind, documented wake limits and reply contract (including string envelope format), and added `transaction.drive` and `more` to section 6.7.
+*Status:* Open (round 2: partly fixed in e43c5e85). The wake example and the limits are right now, but the new section 6.7 text says `transaction.sync` returns `{scanned, cards_filed, more}`; there is no `cards_filed` field. See round 2. Fix session note: Updated wake manifest example in `docs/developer-guide.md` with valid interface and event kind, documented wake limits and reply contract (including string envelope format), and added `transaction.drive` and `more` to section 6.7.
 
 - [x] **R11 — minor.** *Two backlog notes of plan section 8 are missing.*
   *Where:* [deferred-backlog.md:416](../../deferred-backlog.md) ("A schedule
@@ -1274,3 +1274,142 @@ asks to reuse an existing helper.
 conv, seq, issued_at)` into `fixtures.rs` and call it from both files.
 
 *Status:* Fixed (b056b0a7). Deduplicated `peer_signed_request_with_identity` into `crates/roym_web/tests/dual_build_parity/fixtures.rs` and reused in `as_listed.rs` and `booking.rs`. Cleaned up inline qualified paths across `manifest.rs`, `wake.rs`, `tests/drive.rs`, `testing.rs`, `testing/stubs.rs`, `as_listed.rs`, and `booking.rs`.
+
+## Code review round 2 — Claude Opus 5.5 (Claude Code), 2026-11-24
+
+This round checks the fixes of round 1 in `20f925c3`, `3d4fad35`,
+`2611c71c`, `b9c87d66`, `b056b0a7` and `e43c5e85` (closed in `b5c8bf43`),
+and a CI failure on this branch. Branch `feat/m08c-c3c-agree-as-listed` at
+`b5c8bf43`, main checkout, up to date.
+
+**Process note.** The fix session rewrote the round 1 counts line to "0
+open … fixed and verified". A round's counts are its record, and checking
+the fixes is the reviewer's step. I put the round 1 line back. The fix
+session should change only the *Status* lines.
+
+**Tests I ran:** `cargo nextest run -p syneroym-substrate --lib wake`: 21
+passed. `cargo nextest run -p syneroym-roym-transaction drive`: 15 passed
+(221 tests in the crate, as status.md says). `cargo nextest run -p
+syneroym-substrate --features roym --lib the_linked_build_registers`: 1
+passed. `cargo nextest run -p syneroym-roym-web --test method_contract
+every_transaction_method`: **failed**, the same failure as CI (R14).
+
+### Fixes checked
+
+- **R1 — Fixed.** `wake_reply` parses a string reply as JSON, returns
+  `error` as a failure ("wake call failed" is logged) and uses `result`;
+  an object reply is read as it is. `again` and `warnings` are read from
+  the result. `MockProxy` now returns a string envelope by default, and
+  `wake_reply_contract_again_sets_has_pending` proves `again` through the
+  string path (it fails without the parse). A plain-text reply from a
+  non-Roym service is now logged as a failure on each call; ADR-0031 §6
+  asks for a JSON reply, so I accept that.
+- **R2 — Fixed.** The substrate test builds the expected map from the
+  embedded manifest through `roym_dispatch_id`, asserts it is not empty,
+  and asserts `wake_targets()` equals it with equal `WakeSpec`s. It passes
+  with `--features roym`. The text-search test in `roym_core` is removed.
+- **R3 — Fixed.** Both tests seed an expired `deciding` row, assert it
+  ends `not-formed`, and count exactly one recovery query on `LEDGER`. The
+  fix note says each test failed with its recovery call removed.
+- **R4 — Partly fixed, Open.** The event test now lets the first call
+  finish before it records the event, and every test named in round 1
+  exists. But `wake_reply_string_envelope_with_warnings` and
+  `wake_reply_string_envelope_with_error` assert only that no second call
+  happens. A reply with no `again` gives no second call whether `warnings`
+  and `error` are handled or not, so both tests pass with either branch
+  deleted. *Fix:* test `wake_reply` directly (it is a pure function): a
+  string envelope gives its `result`, a string with `error` gives `Err`, an
+  object gives itself, a string that is not JSON gives `Err`. Move the
+  `warnings` read into a pure function (for example `fn
+  reply_warnings(&Value) -> Vec<&str>`) and test it the same way.
+- **R5 — Fixed.** The lookup now runs before the bus read and before
+  `has_pending` is taken, so a trigger waits on the bus while the endpoint
+  is missing. `last_run_at` does not move, so the call runs on the first
+  tick after the endpoint returns. The warning is logged once per missing
+  period. Two tests cover the event trigger and the `has_pending` trigger.
+- **R6 — Fixed.** The linked build records `nativehost`. `restart` answers
+  "native-host service and has no restart path" and `status` reports
+  `Unknown` with the native-host reason; both are tested and the Deviation
+  is recorded. The third side effect, certificate renewal, now passes its
+  "is deployed" gate for `did:key:roym-*`, but step (3) of
+  `verify_installed_instance_cert` still refuses it, because the
+  certificate must be signed by the `master_did` key and no key exists for
+  a `did:key:roym-*` id. So no native-dispatch entry can be replaced. I
+  accept it.
+- **R7 — Fixed.** `poll_events` treats an empty cursor like `reload`: it
+  takes the head and starts a rescan. `TestHost::read_events(None)` now
+  answers like the real bus (no events, the head cursor), and the tests
+  that need events seed a cursor first.
+- **R8 — Fixed.** The test is renamed `stopped_quote_author_restarts_and_countersigns`
+  and its comment no longer claims the reload path.
+- **R9 — Fixed.** Both sentences are back on `save_deploy_facts`.
+- **R10 — Partly fixed, Open.** The wake example now matches `roym.toml`,
+  and the limits and the reply contract are documented. But the new
+  section 6.7 text says `transaction.sync` "returns `{scanned, cards_filed,
+  more}`". `SyncOutput` has no `cards_filed`; it has `scanned`, `filed`,
+  `refused`, `unknown`, `countersigned`, `deferred`, `unsent_failures`,
+  `last_seq` and `more`. It also says `more` is true "when more unread
+  messages remain beyond the sync window"; the code sets it only when the
+  window was full and `last_seq` grew. *Fix:* list the real fields, and
+  give `more`'s exact rule.
+- **R11 — Fixed.** Both backlog rows have their ADR-0031 note.
+- **R12 — Fixed.** The status row gives each count with its command; the
+  counts I repeated match.
+- **R13 — Fixed** in the files named in round 1, and the helper is one
+  function in `fixtures.rs`. The fix commits add new inline paths
+  elsewhere (R15).
+
+**Counts of this round's new findings: 0 blocker, 1 major, 1 minor.
+Open after this round: 4 (R4, R10, R14, R15).**
+
+### R14 — CI is red: the method-contract test reads two event kinds in a test as method names (major)
+
+*Where:* [tests/drive.rs:206](../../../../crates/roym_transaction/src/app/tests/drive.rs#L206)
+and `:207`, at `b5c8bf43`.
+
+*Problem:* `every_transaction_method_has_typed_input_and_output` scans every
+`.rs` file under `crates/roym_transaction/src`, tests included, and refuses
+any string literal that routes to `transaction` but is not in the method
+table ([check.rs:136](../../../../crates/roym_core/src/method/check.rs#L136)).
+`drive_ignores_events_of_transaction_itself` writes the event kinds as
+literals: `push_event("transaction.card", …)` and
+`push_event("transaction.progress", …)`. The router sends `transaction.*`
+names to `transaction`, so the check reads them as methods that are
+missing from the table. This has failed since `2a919468`. I missed it in
+round 1 because CI was still pending then. I ran the test locally on
+`b5c8bf43` and got the same two lines as CI.
+
+*Failure case:* CI test shard fails on every push of this branch
+(`contract::every_transaction_method_has_typed_input_and_output`, 3 tries),
+so the PR cannot merge.
+
+*Fix:* use the constants that production code already uses:
+`transaction::EVENT_CARD` and `transaction::EVENT_PROGRESS` from
+`syneroym_roym_core::transaction`
+([transaction.rs:38](../../../../crates/roym_core/src/transaction.rs#L38)).
+The scanner then sees no literal. Do not add an exception to the scanner.
+Then run `cargo nextest run -p syneroym-roym-web --test method_contract`.
+
+*Status:* Open.
+
+### R15 — New inline qualified paths, and a pointer comment cut in two (minor)
+
+*Where:* [runtime/tests.rs:126](../../../../crates/substrate/src/runtime/tests.rs#L126)
+to `:147`; [wake/tests.rs:293](../../../../crates/substrate/src/runtime/wake/tests.rs#L293)
+and `:312`; [services/tests.rs:259](../../../../crates/roym_core/src/services/tests.rs#L259)
+to `:261`.
+
+*Problem:* The fix commits add `syneroym_app_orchestration::SynAppManifest::from_toml`,
+`std::collections::HashMap<String, syneroym_app_orchestration::WakeSpec>`
+(twice) and `tokio::sync::Notify` as inline types. AGENTS.md asks for types
+through `use`. The new pointer comment in `services/tests.rs` splits the
+path across two lines (`runtime/tests.` / `rs::the_linked_…`), so a search
+for the test name or the file path does not find it.
+
+*Failure case:* none at run time; the import rule is not met, and the
+comment cannot be searched.
+
+*Fix:* import `HashMap`, `SynAppManifest`, `WakeSpec` and `Notify`. Put the
+pointer on one line (a long line in a comment is fine), or drop it.
+
+*Status:* Open.
