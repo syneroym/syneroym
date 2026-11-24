@@ -1624,7 +1624,10 @@ CI. The PR cannot merge.
 `validate_auto_accept_entry` into `backup/as_listed.rs`, and call them from
 `sections.rs`. Do not raise any limit.
 
-*Status:* Open.
+*Status:* Fixed (3fb867b2). The three validators are in
+`backup/as_listed.rs`; `sections.rs` imports and calls them. No limit was
+raised. Proof: `cargo xtask check-file-lengths` now passes (694 production
+files at or under 800 lines; `sections.rs` 732, `as_listed.rs` 150).
 
 ### R17 — The instant cap counts an accepted instant deal twice (major)
 
@@ -1655,7 +1658,17 @@ row (any state), as the plan says; then the agreement is counted only by
 each with a real `answer:` row, and one that a cap of 2 allows two
 accepted deals.
 
-*Status:* Open.
+*Status:* Fixed (d7a5b97a, tests c060a853). `in_flight_rows` skips a row
+whose quote has a `decision:` row in any state, and both
+`in_flight_instant` and `holds_one` use it. Tests:
+`many_taps_before_any_acceptance_make_only_cap_quotes` (cap 2 gives two
+quotes and a third waits),
+`an_agreement_with_a_filed_half_no_longer_counts`,
+`an_agreement_older_than_seven_days_no_longer_counts` and
+`a_declined_instant_quote_frees_its_place`. Each seeds real `answer:`
+rows. Proof: removing the `decision:` skip made
+`an_agreement_with_a_filed_half_no_longer_counts` fail (`left: Waiting,
+right: Quoted`); restored, it passes.
 
 ### R18 — A failure after either fence is never tried again (major)
 
@@ -1698,7 +1711,18 @@ derived from. `deal.as-listed-status` shows an `answering` row. Counterparty:
 calls `auto_accept` with the fence's quote, which `claim` already accepts
 as `Held`. Add the two tests.
 
-*Status:* Open.
+*Status:* Fixed (owner d7a5b97a, counterparty cfa75974, tests c060a853).
+`answer_waiting` skips only answered and declined rows; an `answering`
+row is resumed with its stored quote id, sequence and `formed_as`, with
+no second evaluation and no decline. `deal.as-listed-status` shows it as
+`answer-in-progress`. `accept_waiting` uses a fence's quote instead of
+skipping the tap. Tests:
+`an_answer_that_reached_its_fence_is_resumed_with_the_same_quote_id`
+(drives through `answer_waiting`) and
+`a_signing_error_keeps_the_row_waiting_and_the_next_drive_accepts`.
+Proof: skipping any answer row made the first fail (`left: Answering,
+right: Answered`); skipping any `autoaccept:` row made the second fail
+(`left: Waiting, right: Accepted`). Restored, both pass.
 
 ### R19 — The automatic acceptance does not check that the listing owner signed the quote (major)
 
@@ -1724,7 +1748,11 @@ to Z, with no person at the screen.
 when it is missing). Add a test: the same terms in a quote signed by
 another identity give `Shown`.
 
-*Status:* Open.
+*Status:* Fixed (cfa75974, test c060a853). The expected terms use
+`quote.verdict.issuer`, and a missing issuer shows `not-complete`. Test
+`a_quote_signed_by_another_identity_is_shown`. Proof: with
+`verdict.issuer` in that place the test failed (`left: Accepted, right:
+Shown("not-complete")`); restored, it passes.
 
 ### R20 — The tap screen records a viewing that did not happen (major)
 
@@ -1753,7 +1781,14 @@ with the existing `mtWarning`), and send the language actually shown and
 warning first, with a confirm that enables "Agree and send". Add a Hub
 unit test for each of the three cases.
 
-*Status:* Open.
+*Status:* Fixed (88daea35). The panel shows the author's translation, the
+original, or a machine translation. `viewed_lang` and `viewed_via_mt`
+are what it shows. The machine warning comes first, and its confirm
+enables the tap. Tests cover the original (`shows every term and sends
+the consent with no description`), an author translation
+(`shows the author's translation and signs that language`) and a machine
+translation (`shows a machine translation first, and signs it after the
+person confirms`). Hub tests: 240 passed in the focused run.
 
 ### R21 — The struct test does not fail when a field is added (major)
 
@@ -1778,7 +1813,12 @@ a fixed table of `(json path, change)`, a check that every key of the
 serialised value has a row, and for each row a check that
 `same_terms` is false.
 
-*Status:* Open.
+*Status:* Fixed (c060a853, 05847f22). `full_terms` sets every field, `keys` walks
+the serialised keys (not into the two free-form blocks), and `TERM_FIELDS`
+is the fixed table. Each named field has a typed change, and each change
+must make `same_terms` false. Proof: removing `home_exchange` from the
+table failed the coverage check with the key in the left set and not the
+right; restored, it passes.
 
 ### R22 — Planned tests and step 8 are not built, and most of it is recorded nowhere (major)
 
@@ -1833,7 +1873,16 @@ the exit criteria of section 10 for C3c2 cannot be ticked.
 of any of them needs the owner's yes, and then a row in the backlog and
 a correct Deviation. Correct the scenario-number sentence.
 
-*Status:* Open.
+*Status:* Deferred ([backlog row](../../deferred-backlog.md#12-roym-transaction-cards-agreement-and-what-m06c-c7-left-open)). The service tests that cover the
+two bugs were added in c060a853: the cap with real `answer:` rows, a
+filed half, an old agreement, a declined quote and one counterparty
+(R17), and the resumed answer and the retried acceptance (R18), plus the
+other-issuer test (R19) and the terms struct test (R21). The rest is in
+the one backlog row: `roym_as_listed_e2e.rs`, parity 253, 254 and 255,
+the substrate native `listing.get` test, the Playwright cases and story
+50. The scenario-number sentence is corrected in fcfea327: 253 and 254
+need one node, and only 255 needs two. This cut needs the owner's yes;
+it is recorded with that pickup trigger.
 
 ### R23 — No living doc is updated, and two change docs miss their Deviations (major)
 
@@ -1858,7 +1907,13 @@ the two methods or the new ledger kinds that a backup import refuses.
 *Fix:* update the listed docs in this PR, without milestone or slice ids,
 and add the two Deviations rows in the doc that owns each.
 
-*Status:* Open.
+*Status:* Fixed (fcfea327). The developer guide has the listing fields,
+the `as_listed` enquiry block, the two methods, the `answer:` and
+`autoaccept:` ledger rows and backup schema 8. The architecture,
+requirements, experience spec, terminology and traceability matrix
+describe the flow and the hit's action. The value-exchange and extensions
+changes record their deviations and their front matter names the touched
+docs. `cargo xtask check-change-docs` passes.
 
 ### R24 — Error kinds are read from message text (minor)
 
@@ -1876,7 +1931,13 @@ error a permanent `shown` with an English message as its reason.
 *Fix:* put a `data.code` on the certificate errors (as `listing.set` does
 for its codes), branch on it, and store only a code as `reason`.
 
-*Status:* Open.
+*Status:* Fixed (d7a5b97a, cfa75974). `resolve_principal_and_owner` and
+the as-listed certificate map add `data.code` (`signing-not-enrolled`,
+`signing-certificate-expired`, `signing-certificate-stale`,
+`signing-no-owner`). `auto_accept` branches on `error_code`, and a
+refusal with no code is stored as `accept-failed`, never as a message.
+Test `a_signing_error_keeps_the_row_waiting_and_the_next_drive_accepts`
+covers the signing code path.
 
 ### R25 — The owner's answer does not check whose listing and whose enquiry (minor)
 
@@ -1897,7 +1958,10 @@ the owner's own sent enquiry follows the same path.
 node's own (`mine`, or issuer equal to the owner), and check
 `current.owner` against the node's owner from `resolve_principal_and_owner`.
 
-*Status:* Open.
+*Status:* Fixed (d7a5b97a). `answer_as_listed` refuses when the enquiry's
+issuer is this node's owner, and `start` refuses when the catalog's
+listing owner is not this node's owner. Both return `NotAsListed` and
+sign nothing.
 
 ### R26 — Wrong or missing values in what the owner and the person see (minor)
 
@@ -1923,7 +1987,15 @@ a person who taps is told to answer with a quote.
 pass `$cap` into the message; give the tap screen its own message; add the
 dialog. The owner reviews the Hindi of any changed message.
 
-*Status:* Open.
+*Status:* Fixed (d7a5b97a, 88daea35). A lost fence returns
+`answer-in-progress`; the status uses the current record id; the cap
+sentence takes `$cap` on the listing page and in the enquiry line; the
+tap screen has `as-listed-tap-not-complete`; and the cancel action opens
+a dialog that lists the agreements. Hindi is updated in both catalogs
+and needs the owner's review: `as-listed-answer-in-progress`,
+`as-listed-accept-failed`, `as-listed-tap-not-complete`,
+`as-listed-cancel-note`, `as-listed-cancel-confirm`,
+`as-listed-cancel-item`, and the changed `as-listed-cap-reached`.
 
 ### R27 — Inline qualified paths (minor)
 
@@ -1946,7 +2018,11 @@ with several `::`).
 *Fix:* import the types and constants; call functions through their
 parent module.
 
-*Status:* Open.
+*Status:* Fixed (950e02c6). `ExtensionRef`, `HashSet` and
+`translation_langs` are imported in the core files; `AsListedRow`,
+`Envelope`, `DecisionRow` and `LedgerKind` are imported where they are
+used; `super::super::AS_LISTED` and `crate::app::enquiry_ops::as_listed`
+are gone. The tests import `FormedAs` and `ExtensionRef`.
 
 ### R28 — Plan placements, unused states, missing shapes and repeated helpers (minor)
 
@@ -1974,7 +2050,12 @@ others.
 the two shape files; keep one `load_current_listing` and one scan; put
 the test helpers in one shared test module.
 
-*Status:* Open.
+*Status:* Fixed (88daea35, cfa75974, c060a853, c1ad860b, 05847f22). The form section is in
+`listings/as_listed_section.ts` and `listings.ts` is 745 lines. The three
+unused `AsListedState` variants are gone. `deal_as_listed_status_missing`
+and `quote_from_listing_missing` shapes exist. The two answer scans are
+one `in_flight_rows`, and the test helpers are in
+`tests/as_listed_fixture.rs`, shared by the three as-listed test files.
 
 ### R29 — Each drive does work that grows with all held records (minor)
 
@@ -1999,7 +2080,15 @@ rows before verifying (or keep a small index of open taps); query quotes
 with a `request_record_id` filter; page `conversation.list` or ask for the
 one conversation.
 
-*Status:* Open.
+*Status:* Fixed (d7a5b97a, cfa75974). `answer_waiting` reads the `answer:`
+row and skips `mine` before any signature check, and looks at the stored
+payload's `as_listed` before `verify_enquiry`. `accept_waiting` asks for
+the quotes of one enquiry with a `request_record_id` filter, and
+`conversation_peer` pages `conversation.list`. The catalog read and the
+prepare hook on a waiting confirm-first tap stay on each drive: the plan
+requires the current version and its slot to be checked before the fence,
+so a removed slot is declined at the next drive in both modes (D-C3c-12,
+P20).
 
 ### R30 — status.md and the backlog table are wrong (minor)
 
@@ -2019,7 +2108,10 @@ backlog rows are hard to read.
 implementer; remove the empty line. (This round sets the row's Step and
 code-review columns.)
 
-*Status:* Open.
+*Status:* Fixed (fcfea327 and the close-out commit). The C3c2 row names
+Claude Opus 5.5 as plan author and Gemini 3.8 Flash as implementer, and
+the Step is "Fixes done". The empty line before the four backlog rows is
+gone.
 
 ### R31 — The Hub cannot save a listing without the three as-listed texts (blocker)
 
@@ -2102,4 +2194,8 @@ in a scratch edit: both tests pass on both builds. I then reverted it. To
 find other missed fixtures, run the whole `dual_build_parity` binary after
 `mise run build:roym`, not only the new scenarios.
 
-*Status:* Open.
+*Status:* Fixed (c060a853). Both fixtures carry `"formed_as": "quote"`.
+Proof: removing it from `peer_signed_progress` made scenario 157 fail at
+`booking.rs:591` (`left: Null, right: 1`); restored, it passes. After
+this change the full `dual_build_parity` binary ran on both builds: 276
+passed, 1 skipped.
