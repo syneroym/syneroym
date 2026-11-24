@@ -1601,8 +1601,10 @@ the review (116 MB free), so I stopped building.
   has not reviewed them yet (status.md says so); that is the owner's step,
   not a finding.
 
-**Counts of this round's new findings: 1 blocker, 7 major, 7 minor.
-Open: 15 (R16 to R30).**
+**Counts of this round's new findings: 2 blocker, 7 major, 7 minor.
+Open: 16 (R16 to R31).** R31 was added after the first write of this
+round, when uncommitted changes from the implementation session showed
+it.
 
 ### R16 — CI is red: `backup/sections.rs` is over the file limit (blocker)
 
@@ -2018,3 +2020,37 @@ implementer; remove the empty line. (This round sets the row's Step and
 code-review columns.)
 
 *Status:* Open.
+
+### R31 — The Hub cannot save a listing without the three as-listed texts (blocker)
+
+*Where:* [editor.ts:286](../../../../crates/roym_web/ui/src/listings/editor.ts#L286)
+(`asListedBlock`) and `:320` at `a63ee51d`;
+[listings.ts:534](../../../../crates/roym_web/ui/src/screens/listings.ts#L534)
+to `:536`.
+
+*Problem:* `buildSetListingParams` always sends `deal_terms`. The form's
+three text fields start empty, so an owner who does not use agree as
+listed sends three empty `LocalText` values. `validate_as_listed` checks
+each text with `LocalText::validate`, which refuses an empty text. For a
+listing with translations, the block's translation set is also empty, so
+`deal-terms-languages` refuses it too. The unit test did not see this,
+because its `emptyForm()` fills the three texts.
+
+*Failure case:* at `a63ee51d`, any listing saved from the Hub with the
+three texts empty fails in `listing.set`. That is every ordinary listing,
+and every listing with a translation.
+
+*Fix:* send no `deal_terms` when all three texts are empty, and refuse
+the form when only some are filled. The implementation session already
+has this change in the main checkout, not yet committed (`editor.ts`,
+`editor.test.ts`, one new message `listing-error-deal-terms-required` in
+`en.ftl` and `hi.ftl`). I read it: it does this, and `TZ=UTC npx vitest
+run src/listings src/i18n src/screens/listings` passes (12 files, 224
+tests). Two more points for that change:
+
+- The form still accepts `instant` with no texts. Such an offering can
+  never be agreed as listed (`no-deal-terms`), and the owner is not told.
+  Refuse `instant` with empty texts in the form, or show a line.
+- The owner reviews the Hindi of the new message.
+
+*Status:* Open (fix in progress, not committed).
