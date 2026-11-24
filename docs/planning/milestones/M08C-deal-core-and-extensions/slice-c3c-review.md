@@ -2108,7 +2108,7 @@ backlog rows are hard to read.
 implementer; remove the empty line. (This round sets the row's Step and
 code-review columns.)
 
-*Status:* Fixed (fcfea327 and the close-out commit). The C3c2 row names
+*Status:* Fixed (fcfea327, 6bff5511). The C3c2 row names
 Claude Opus 5.5 as plan author and Gemini 3.8 Flash as implementer, and
 the Step is "Fixes done". The empty line before the four backlog rows is
 gone.
