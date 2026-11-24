@@ -13,15 +13,15 @@ use syneroym_roym_core::{
     },
     deal::{Commitment, CommitmentKind, ResourceKind, SettlementRole, SignedCommitment},
     envelope::Response,
-    fulfilment, listing, payment, progress,
-    transaction::{Answers, DealRole, ReceiptHalf},
+    fulfilment, payment, progress,
+    transaction::{DealRole, ReceiptHalf},
 };
 
 use super::{
     super::{
         AGREEMENT_PROGRESS, AS_LISTED, AgreementRow, FULFILMENTS, FulfilmentsRow, LEDGER, PAYMENTS,
         PaymentsRow, STEPS,
-        as_listed_ops::{AnswerRow, AnswerState, AutoAcceptRow},
+        as_listed_ops::{AnswerRow, AutoAcceptRow},
         decide::{CountersignRow, DecisionRow, DecisionState, RefusedRow, SnapshotRow},
         decline_ops::DeclineRow,
         enquiry_ops::as_listed::AsListedRow,
@@ -29,7 +29,7 @@ use super::{
         put_row,
         step_ops::StepRow,
     },
-    ImportedQuote, QuotesByRecordId, failure,
+    ImportedQuote, QuotesByRecordId, as_listed, failure,
     steps::{self, ValidatedSteps},
 };
 
@@ -60,50 +60,6 @@ pub(crate) struct ValidatedVerticalSections {
     pub(crate) progress: Vec<(String, SnapshotRow)>,
     pub(crate) as_listed: Vec<(String, AsListedRow)>,
     pub(crate) history_entries: Vec<HistoryEntry>,
-}
-
-/// Each stored tap must name an enquiry this node holds, and the offering
-/// envelope it kept must still verify. The row is a local record: a bundle
-/// that carries one without its enquiry, or with a forged offering, is not
-/// imported.
-fn validate_as_listed(
-    rows: Vec<Value>,
-    enquiries_by_record_id: &HashMap<String, String>,
-    now: u64,
-) -> Result<Vec<(String, AsListedRow)>, Response> {
-    let mut validated = Vec::new();
-    for r in rows {
-        let id = r.get("id").and_then(Value::as_str).unwrap_or("").to_string();
-        let payload = r.get("payload").cloned().unwrap_or(Value::Null);
-        let row: AsListedRow = serde_json::from_value(payload)
-            .map_err(|e| Response::invalid_params(format!("as_listed '{id}': invalid row: {e}")))?;
-        if id != row.enquiry_record_id {
-            return Err(Response::invalid_params(format!(
-                "as_listed '{id}': row names enquiry '{}'",
-                row.enquiry_record_id
-            )));
-        }
-        if !enquiries_by_record_id.contains_key(&row.enquiry_record_id) {
-            return Err(Response::invalid_params(format!(
-                "as_listed '{id}': names unheld enquiry '{}'",
-                row.enquiry_record_id
-            )));
-        }
-        let verdict = listing::verify_envelope(&row.envelope, now);
-        if !verdict.verified {
-            return Err(Response::invalid_params(format!(
-                "as_listed '{id}': offering does not verify: {:?}",
-                verdict.reason
-            )));
-        }
-        if verdict.record_id.as_deref() != Some(row.record_id.as_str()) {
-            return Err(Response::invalid_params(format!(
-                "as_listed '{id}': offering record id does not match the stored row"
-            )));
-        }
-        validated.push((id, row));
-    }
-    Ok(validated)
 }
 
 fn validate_payments(
@@ -533,95 +489,6 @@ fn validate_refused_entry(
     Ok(ValidatedLedgerRow::Refused(row))
 }
 
-/// One tap's automatic acceptance: it must name a held enquiry and a held
-/// quote that answers it.
-fn validate_auto_accept_entry(
-    id: &str,
-    enquiry_record_id: &str,
-    payload: Value,
-    quotes_by_record_id: &QuotesByRecordId,
-    enquiries_by_record_id: &HashMap<String, String>,
-) -> Result<ValidatedLedgerRow, Response> {
-    let row: AutoAcceptRow = serde_json::from_value(payload).map_err(|e| {
-        Response::invalid_params(format!("ledger '{id}': invalid autoaccept row: {e}"))
-    })?;
-    if row.enquiry_record_id != enquiry_record_id {
-        return Err(Response::invalid_params(format!(
-            "ledger '{id}': row names enquiry '{}'",
-            row.enquiry_record_id
-        )));
-    }
-    if !enquiries_by_record_id.contains_key(&row.enquiry_record_id) {
-        return Err(Response::invalid_params(format!(
-            "ledger '{id}': names unheld enquiry '{}'",
-            row.enquiry_record_id
-        )));
-    }
-    let Some(quote) = quotes_by_record_id.get(&row.quote_record_id) else {
-        return Err(Response::invalid_params(format!(
-            "ledger '{id}': names unheld quote '{}'",
-            row.quote_record_id
-        )));
-    };
-    let answers_this = matches!(
-        &quote.payload.answers,
-        Answers::Enquiry { record_id } if record_id == &row.enquiry_record_id
-    );
-    if !answers_this {
-        return Err(Response::invalid_params(format!(
-            "ledger '{id}': the quote does not answer this enquiry"
-        )));
-    }
-    Ok(ValidatedLedgerRow::AutoAccept(row))
-}
-
-/// One tap's answer row: it must name an enquiry this node holds, and an
-/// answered row must name a held quote that answers that enquiry.
-fn validate_answer_entry(
-    id: &str,
-    enquiry_record_id: &str,
-    payload: Value,
-    quotes_by_record_id: &QuotesByRecordId,
-    enquiries_by_record_id: &HashMap<String, String>,
-) -> Result<ValidatedLedgerRow, Response> {
-    let row: AnswerRow = serde_json::from_value(payload)
-        .map_err(|e| Response::invalid_params(format!("ledger '{id}': invalid answer row: {e}")))?;
-    if row.enquiry_record_id != enquiry_record_id {
-        return Err(Response::invalid_params(format!(
-            "ledger '{id}': row names enquiry '{}'",
-            row.enquiry_record_id
-        )));
-    }
-    if !enquiries_by_record_id.contains_key(&row.enquiry_record_id) {
-        return Err(Response::invalid_params(format!(
-            "ledger '{id}': names unheld enquiry '{}'",
-            row.enquiry_record_id
-        )));
-    }
-    if row.state == AnswerState::Answered {
-        let Some(quote_record_id) = &row.quote_record_id else {
-            return Err(Response::invalid_params(format!(
-                "ledger '{id}': an answered row names no quote"
-            )));
-        };
-        let Some(quote) = quotes_by_record_id.get(quote_record_id) else {
-            return Err(Response::invalid_params(format!(
-                "ledger '{id}': names unheld quote '{quote_record_id}'"
-            )));
-        };
-        let answers_this = matches!(
-            &quote.payload.answers,
-            Answers::Enquiry { record_id } if record_id == &row.enquiry_record_id
-        );
-        if !answers_this || quote.payload.quote_id != row.quote_id {
-            return Err(Response::invalid_params(format!(
-                "ledger '{id}': the quote does not answer this enquiry"
-            )));
-        }
-    }
-    Ok(ValidatedLedgerRow::Answer(row))
-}
-
 fn validate_ledger_entry(
     id: &str,
     payload: Value,
@@ -669,7 +536,7 @@ fn validate_ledger_entry(
         validate_decline_entry(id, payload, quotes_by_record_id, enquiries_by_record_id, now)
             .map(Some)
     } else if let Some(enquiry_record_id) = id.strip_prefix("autoaccept:") {
-        validate_auto_accept_entry(
+        as_listed::validate_auto_accept_entry(
             id,
             enquiry_record_id,
             payload,
@@ -678,7 +545,7 @@ fn validate_ledger_entry(
         )
         .map(Some)
     } else if let Some(enquiry_record_id) = id.strip_prefix("answer:") {
-        validate_answer_entry(
+        as_listed::validate_answer_entry(
             id,
             enquiry_record_id,
             payload,
@@ -822,7 +689,7 @@ pub(crate) fn validate_vertical_sections(
     let (progress, h_prog) = validate_progress(prog_rows, quotes_by_record_id, now)?;
     history_entries.extend(h_prog);
     let as_listed_rows = bundle_sections.get(SECTION_AS_LISTED).cloned().unwrap_or_default();
-    let as_listed = validate_as_listed(as_listed_rows, enquiries_by_record_id, now)?;
+    let as_listed = as_listed::validate_as_listed(as_listed_rows, enquiries_by_record_id, now)?;
 
     Ok(ValidatedVerticalSections {
         payments,
