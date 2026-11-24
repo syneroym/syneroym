@@ -92,6 +92,7 @@ pub(crate) async fn drive_at<H: AppHost>(
 
     let synced_count = sync_batch(host, batch, now, &mut warnings).await?;
     as_listed_ops::answer_waiting(host, now, &mut warnings).await;
+    as_listed_ops::accept_waiting(host, now, &mut warnings).await;
 
     let pending_count =
         paging::count(host, DRIVE_PENDING, None).await.map_err(Response::internal_error)? as u32;

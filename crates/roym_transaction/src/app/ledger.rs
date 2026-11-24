@@ -18,6 +18,9 @@ pub(crate) enum LedgerKind {
     /// The owner's answer to one as-listed enquiry: the fence that keeps it to
     /// at most one quote.
     Answer,
+    /// The counterparty's automatic acceptance: the fence that keeps one tap
+    /// to at most one acceptance.
+    AutoAccept,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

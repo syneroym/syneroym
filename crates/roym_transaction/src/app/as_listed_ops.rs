@@ -1,9 +1,11 @@
 //! The owner's side of "agree as listed": answering a tap, the status the
 //! owner's Hub reads, and the counts both need.
 
+pub(crate) mod accept;
 pub(crate) mod answer;
 pub(crate) mod status;
 
+pub(crate) use accept::{AutoAcceptRow, accept_waiting, auto_accept};
 pub(crate) use answer::{
     AnswerRow, AnswerState, FromListingInput, Trigger, answer_as_listed, answer_from_listing,
     answer_waiting,

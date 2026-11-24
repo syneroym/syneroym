@@ -21,7 +21,7 @@ use super::{
     super::{
         AGREEMENT_PROGRESS, AS_LISTED, AgreementRow, FULFILMENTS, FulfilmentsRow, LEDGER, PAYMENTS,
         PaymentsRow, STEPS,
-        as_listed_ops::{AnswerRow, AnswerState},
+        as_listed_ops::{AnswerRow, AnswerState, AutoAcceptRow},
         decide::{CountersignRow, DecisionRow, DecisionState, RefusedRow, SnapshotRow},
         decline_ops::DeclineRow,
         enquiry_ops::as_listed::AsListedRow,
@@ -47,6 +47,7 @@ pub(crate) enum ValidatedLedgerRow {
     Fence(LedgerRow),
     Decline(DeclineRow),
     Answer(AnswerRow),
+    AutoAccept(AutoAcceptRow),
     Refused(RefusedRow),
     Failure(FailureRow),
 }
@@ -532,6 +533,48 @@ fn validate_refused_entry(
     Ok(ValidatedLedgerRow::Refused(row))
 }
 
+/// One tap's automatic acceptance: it must name a held enquiry and a held
+/// quote that answers it.
+fn validate_auto_accept_entry(
+    id: &str,
+    enquiry_record_id: &str,
+    payload: Value,
+    quotes_by_record_id: &QuotesByRecordId,
+    enquiries_by_record_id: &HashMap<String, String>,
+) -> Result<ValidatedLedgerRow, Response> {
+    let row: AutoAcceptRow = serde_json::from_value(payload).map_err(|e| {
+        Response::invalid_params(format!("ledger '{id}': invalid autoaccept row: {e}"))
+    })?;
+    if row.enquiry_record_id != enquiry_record_id {
+        return Err(Response::invalid_params(format!(
+            "ledger '{id}': row names enquiry '{}'",
+            row.enquiry_record_id
+        )));
+    }
+    if !enquiries_by_record_id.contains_key(&row.enquiry_record_id) {
+        return Err(Response::invalid_params(format!(
+            "ledger '{id}': names unheld enquiry '{}'",
+            row.enquiry_record_id
+        )));
+    }
+    let Some(quote) = quotes_by_record_id.get(&row.quote_record_id) else {
+        return Err(Response::invalid_params(format!(
+            "ledger '{id}': names unheld quote '{}'",
+            row.quote_record_id
+        )));
+    };
+    let answers_this = matches!(
+        &quote.payload.answers,
+        Answers::Enquiry { record_id } if record_id == &row.enquiry_record_id
+    );
+    if !answers_this {
+        return Err(Response::invalid_params(format!(
+            "ledger '{id}': the quote does not answer this enquiry"
+        )));
+    }
+    Ok(ValidatedLedgerRow::AutoAccept(row))
+}
+
 /// One tap's answer row: it must name an enquiry this node holds, and an
 /// answered row must name a held quote that answers that enquiry.
 fn validate_answer_entry(
@@ -625,6 +668,15 @@ fn validate_ledger_entry(
     } else if id.starts_with("decline:") {
         validate_decline_entry(id, payload, quotes_by_record_id, enquiries_by_record_id, now)
             .map(Some)
+    } else if let Some(enquiry_record_id) = id.strip_prefix("autoaccept:") {
+        validate_auto_accept_entry(
+            id,
+            enquiry_record_id,
+            payload,
+            quotes_by_record_id,
+            enquiries_by_record_id,
+        )
+        .map(Some)
     } else if let Some(enquiry_record_id) = id.strip_prefix("answer:") {
         validate_answer_entry(
             id,

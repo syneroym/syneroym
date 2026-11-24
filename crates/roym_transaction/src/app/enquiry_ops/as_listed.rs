@@ -74,6 +74,11 @@ pub(crate) struct AsListedRow {
 pub(crate) enum AsListedState {
     /// The enquiry is signed and sent; nothing answers it yet.
     Waiting,
+    /// A quote answers it, but its terms are not the offering's, so the Hub
+    /// shows it as a normal quote with `reason`.
+    Shown,
+    /// The acceptance half is signed; the deal is agreed.
+    Accepted,
     /// An answer is being signed. The quote id is fixed, so a retry reuses it.
     Answering,
     /// A quote answers the tap.
