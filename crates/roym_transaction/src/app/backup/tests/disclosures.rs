@@ -167,6 +167,7 @@ async fn export_import_keeps_disclosures() {
     put_bytes(&f1.host, QUOTE_HISTORY, &q_rec_id, q_env.as_bytes()).await.unwrap();
     let q_ptr = RecordPointerRow {
         envelope: q_env.clone(),
+        formed_as: None,
         record_id: q_rec_id.clone(),
         id: q_payload.quote_id.clone(),
         conversation: "conv_1".to_string(),
@@ -217,6 +218,7 @@ async fn import_rebuilds_card_data_from_disclosures() {
     let mut sections = BTreeMap::new();
     let q_ptr = RecordPointerRow {
         envelope: q_env.clone(),
+        formed_as: None,
         record_id: q_rec_id.clone(),
         id: q_payload.quote_id.clone(),
         conversation: "conv_1".to_string(),
@@ -307,6 +309,7 @@ async fn import_refuses_disclosures_that_match_no_digest() {
     let mut sections = BTreeMap::new();
     let q_ptr = RecordPointerRow {
         envelope: q_env.clone(),
+        formed_as: None,
         record_id: q_rec_id.clone(),
         id: q_payload.quote_id.clone(),
         conversation: "conv_1".to_string(),
@@ -376,6 +379,7 @@ async fn import_refuses_agreement_terms_that_differ_from_the_quote() {
     let mut sections = BTreeMap::new();
     let q_ptr = RecordPointerRow {
         envelope: q_env.clone(),
+        formed_as: None,
         record_id: q_rec_id.clone(),
         id: q_payload.quote_id.clone(),
         conversation: "conv_1".to_string(),
@@ -414,6 +418,7 @@ async fn import_refuses_agreement_terms_that_differ_from_the_quote() {
 
     let agr_row = AgreementRow {
         quote_record_id: q_rec_id.clone(),
+        formed_as: None,
         quote_id: q_payload.quote_id.clone(),
         conversation: "conv_1".to_string(),
         counterparty_did: cp_did.clone(),
@@ -462,6 +467,7 @@ async fn import_refuses_a_quote_without_disclosures() {
     let mut sections = BTreeMap::new();
     let q_ptr = RecordPointerRow {
         envelope: q_env.clone(),
+        formed_as: None,
         record_id: q_rec_id.clone(),
         id: q_payload.quote_id.clone(),
         conversation: "conv_1".to_string(),

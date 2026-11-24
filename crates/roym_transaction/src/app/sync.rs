@@ -567,6 +567,7 @@ async fn file_agreement_receipt_card<H: AppHost>(
             Some(r) => r,
             None => AgreementRow {
                 quote_record_id: payload.quote_record_id.clone(),
+                formed_as: None,
                 quote_id: held.signed.quote_id.clone(),
                 conversation: conversation.to_string(),
                 counterparty_did: payload.counterparty_did.clone(),

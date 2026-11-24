@@ -196,6 +196,7 @@ fn unformed_agreement_row(
     now: u64,
 ) -> AgreementRow {
     AgreementRow {
+        formed_as: None,
         quote_record_id: quote_rec_id.to_string(),
         quote_id: quote.signed.quote_id.clone(),
         conversation: "conv_1".to_string(),
@@ -528,6 +529,7 @@ async fn transition_retries_and_advances_when_snapshot_key_already_exists() {
 
     let row = AgreementRow {
         quote_record_id: quote_rec_id.clone(),
+        formed_as: None,
         quote_id: quote.signed.quote_id.clone(),
         conversation: "conv_1".to_string(),
         counterparty_did: cp_did.clone(),

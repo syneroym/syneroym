@@ -130,7 +130,7 @@ pub(crate) fn full_listing_params(slug: &str, title: &str) -> Value {
 /// others report 1.
 pub(crate) fn expected_schema_version(service: &str) -> u32 {
     match service {
-        "transaction" => 7,
+        "transaction" => 8,
         "directory" => 6,
         "conversation" => 4,
         "catalog" => 5,

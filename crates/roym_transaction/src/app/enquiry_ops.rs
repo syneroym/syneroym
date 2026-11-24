@@ -3,6 +3,7 @@
 use std::cmp::Reverse;
 
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use syneroym_app_host::{
     AppHost, AppSigning,
     types::signing::{Principal, RecordDraft},
@@ -17,6 +18,8 @@ use syneroym_roym_core::{
     record::{Envelope, RECORD_ENQUIRY},
     transaction::{self, ENQUIRY_VERSION, EnquiryPayload, RecordVerdict, TimeWindow},
 };
+
+pub(crate) mod as_listed;
 
 use super::{
     ENQUIRIES, ENQUIRY_HISTORY, ListInput, OutgoingCard, RecordPointerRow, SendState,
@@ -34,7 +37,12 @@ pub struct EnquirySetInput {
     pub listing_id: Option<String>,
     #[serde(default)]
     pub categories: Vec<String>,
-    pub description: LocalText,
+    /// Required unless `as_listed` is set: a tap agrees to the offering, not
+    /// to words the person typed.
+    #[serde(default)]
+    pub description: Option<LocalText>,
+    #[serde(default)]
+    pub as_listed: Option<as_listed::AsListedInput>,
     #[serde(default)]
     pub area: Option<Area>,
     #[serde(default)]
@@ -83,6 +91,11 @@ pub(crate) async fn set<H: AppHost>(host: &H, input: EnquirySetInput) -> Reply<E
 
     ensure_collections(host).await.map_err(Response::internal_error)?;
 
+    let tap = match input.as_listed.as_ref() {
+        Some(spec) => Some(as_listed::resolve(host, spec, &input.conversation, &owner, now).await?),
+        None => None,
+    };
+
     let (sequence, supersedes, next_count) = resolve_enquiry_sequence(host, &input, &owner).await?;
 
     let enquiry_id = match transaction::derive_enquiry_id(&input.conversation, &owner, sequence) {
@@ -94,16 +107,20 @@ pub(crate) async fn set<H: AppHost>(host: &H, input: EnquirySetInput) -> Reply<E
         enquiry_id: enquiry_id.clone(),
         conversation: input.conversation.clone(),
         sequence,
-        listing_id: input.listing_id,
+        listing_id: tap.as_ref().map(|t| t.listing.listing_id.clone()).or(input.listing_id),
         categories: input.categories,
-        description: Some(input.description),
-        as_listed: None,
+        description: input.description,
+        as_listed: tap.as_ref().map(|t| t.consent.clone()),
         area: input.area,
         window: input.window,
         data_use_notice: input.data_use_notice,
     };
     if let Err(e) = payload.validate() {
-        return Err(Response::invalid_params(e.to_string()));
+        let response = Response::invalid_params(e.to_string());
+        return Err(match e.code() {
+            Some(code) => response.with_data(json!({ "code": code })),
+            None => response,
+        });
     }
 
     let signed = sign_and_store_enquiry(host, principal, &owner, &payload, supersedes).await?;
@@ -111,6 +128,9 @@ pub(crate) async fn set<H: AppHost>(host: &H, input: EnquirySetInput) -> Reply<E
     let pointer = build_enquiry_pointer(&payload, &signed, &owner, next_count, now);
     if let Err(e) = put_row(host, ENQUIRIES, &enquiry_id, &pointer).await {
         return Err(Response::internal_error(e));
+    }
+    if let Some(tap) = tap {
+        as_listed::store(host, &payload, &signed.record_id, tap, now).await?;
     }
 
     let card = OutgoingCard {
@@ -236,6 +256,7 @@ fn build_enquiry_pointer(
     now: u64,
 ) -> RecordPointerRow {
     RecordPointerRow {
+        formed_as: None,
         envelope: signed.envelope_json.clone(),
         record_id: signed.record_id.clone(),
         id: payload.enquiry_id.clone(),
@@ -359,6 +380,7 @@ pub(crate) async fn store_received_enquiry<H: AppHost>(
     let counterparty_did = if !mine && !owner.is_empty() { Some(owner.to_string()) } else { None };
     let pointer = RecordPointerRow {
         envelope: envelope.to_string(),
+        formed_as: None,
         record_id: record_id.to_string(),
         id: payload.enquiry_id.clone(),
         conversation: payload.conversation.clone(),

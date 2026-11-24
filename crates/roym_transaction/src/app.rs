@@ -44,7 +44,7 @@ use syneroym_roym_core::{
         conversation::{SendInput, SendOutput},
     },
     paging,
-    progress::{AgreementState, CancelReason, CommitmentProgress},
+    progress::{AgreementState, CancelReason, CommitmentProgress, FormedAs},
     record::Envelope,
     services,
     signing::{self, CertificateError},
@@ -55,8 +55,10 @@ use crate::api;
 
 // Schema version 6 switches deal and settlement records to selective
 // disclosure. Version 7 moves seat holds to the scheduling service, so a
-// bundle that holds `hold:` or `seat:` rows is refused.
-pub const SCHEMA_VERSION: u32 = 7;
+// bundle that holds `hold:` or `seat:` rows is refused. Version 8 adds a
+// required `formed_as` to every stored progress snapshot and the local
+// `as_listed` rows of an agreement made by tapping a listing.
+pub const SCHEMA_VERSION: u32 = 8;
 
 pub(crate) const ENQUIRIES: &str = "enquiries";
 pub(crate) const ENQUIRY_HISTORY: &str = "enquiry_history";
@@ -157,6 +159,9 @@ pub(crate) struct RecordPointerRow {
     pub(crate) declined_at_secs: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) decline_note: Option<String>,
+    /// How the author answered the enquiry, written by the as-listed answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) formed_as: Option<FormedAs>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -183,10 +188,18 @@ pub(crate) struct AgreementRow {
     pub(crate) counterparty: Option<ReceiptHalf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) quote_author: Option<ReceiptHalf>,
+    /// How the deal formed. `None` reads as a normal quote, which is what a
+    /// row written before this field existed was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) formed_as: Option<FormedAs>,
     pub(crate) updated_at_secs: u64,
 }
 
 impl AgreementRow {
+    pub(crate) fn formed_as(&self) -> FormedAs {
+        self.formed_as.unwrap_or(FormedAs::Quote)
+    }
+
     pub(crate) fn half(&self, role: DealRole) -> Option<&ReceiptHalf> {
         match role {
             DealRole::Counterparty => self.counterparty.as_ref(),

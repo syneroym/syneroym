@@ -178,6 +178,7 @@ async fn setup_test_deal_with_env(
 
     let row = AgreementRow {
         quote_record_id: q_rec_id.clone(),
+        formed_as: None,
         quote_id: quote.signed.quote_id.clone(),
         conversation: "conv_1".to_string(),
         counterparty_did: cp_did,
@@ -246,6 +247,7 @@ async fn crash_after_the_fence_is_finished_on_the_next_sync() {
 
     let ptr = RecordPointerRow {
         envelope: q_env_json,
+        formed_as: None,
         record_id: q_rec_id.clone(),
         id: quote.signed.quote_id.clone(),
         conversation: "conv_1".to_string(),

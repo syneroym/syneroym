@@ -515,6 +515,7 @@ fn build_quote_pointer(
         _ => None,
     };
     RecordPointerRow {
+        formed_as: None,
         envelope: signed.envelope_json.clone(),
         record_id: signed.record_id.clone(),
         id: payload.quote_id.clone(),
@@ -676,6 +677,7 @@ pub(crate) async fn store_received_quote<H: AppHost>(
     };
     let pointer = RecordPointerRow {
         envelope: envelope.to_string(),
+        formed_as: None,
         record_id: record_id.to_string(),
         id: payload.quote_id.clone(),
         conversation: payload.conversation.clone(),

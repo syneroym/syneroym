@@ -14,7 +14,7 @@ use syneroym_roym_core::{
     lang::LangTag,
     method::{self, DisclosedVerdict, DisclosedVerifyInput, ParamError, Reply},
     paging,
-    progress::{AgreementState, CancelReason, CommitmentProgress},
+    progress::{AgreementState, CancelReason, CommitmentProgress, FormedAs},
     record::{Envelope, RECORD_AGREEMENT_RECEIPT},
     signing,
     transaction::{
@@ -62,6 +62,16 @@ pub struct AgreementAcceptOutput {
     pub send_error: Option<String>,
 }
 
+/// How the author answered the enquiry, read from this node's own quote
+/// pointer. A quote written before the field existed reads as a normal quote.
+async fn quote_formed_as<H: AppHost>(host: &H, quote_id: &str) -> Option<FormedAs> {
+    get_row::<RecordPointerRow, _>(host, QUOTES, quote_id)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|p| p.formed_as)
+}
+
 #[derive(Debug, Serialize)]
 pub struct AgreementView {
     pub quote_record_id: String,
@@ -84,12 +94,16 @@ pub struct AgreementView {
     pub commitments: Vec<CommitmentProgress>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agreed_at_secs: Option<u64>,
+    /// How the deal formed. Always present: `quote` when nothing says
+    /// otherwise.
+    pub formed_as: FormedAs,
     pub track_ends: Vec<u64>,
 }
 
 impl From<AgreementRow> for AgreementView {
     fn from(r: AgreementRow) -> Self {
         let pair = pair_state(r.counterparty.as_ref(), r.quote_author.as_ref());
+        let formed_as = r.formed_as();
         let track_ends = if let Some(agreed_at) = r.agreed_at_secs {
             r.terms.commitments.iter().map(|c| track_end(c.window.as_ref(), agreed_at)).collect()
         } else {
@@ -111,6 +125,7 @@ impl From<AgreementRow> for AgreementView {
             seq: r.seq,
             commitments: r.commitments,
             agreed_at_secs: r.agreed_at_secs,
+            formed_as,
             track_ends,
         }
     }
@@ -349,6 +364,7 @@ async fn load_or_init_agreement_row<H: AppHost>(
         Ok(Some(r)) => Ok(r),
         Ok(None) => Ok(AgreementRow {
             quote_record_id: quote_record_id.to_string(),
+            formed_as: quote_formed_as(host, &quote_payload.quote_id).await,
             quote_id: quote_payload.quote_id.clone(),
             conversation: quote_payload.conversation.clone(),
             counterparty_did: quote_payload.counterparty_did.clone(),

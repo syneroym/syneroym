@@ -15,6 +15,7 @@
         ],
         "conversation": "string",
         "counterparty_did": "string",
+        "formed_as": "string",
         "quote_author_did": "string",
         "seq": "number",
         "state": "agreed"

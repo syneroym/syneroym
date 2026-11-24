@@ -8,21 +8,22 @@ use serde_json::Value;
 use syneroym_app_host::AppHost;
 use syneroym_roym_core::{
     backup::{
-        SECTION_AGREEMENT_PROGRESS, SECTION_FULFILMENTS, SECTION_LEDGER, SECTION_PAYMENTS,
-        SECTION_STEPS,
+        SECTION_AGREEMENT_PROGRESS, SECTION_AS_LISTED, SECTION_FULFILMENTS, SECTION_LEDGER,
+        SECTION_PAYMENTS, SECTION_STEPS,
     },
     deal::{Commitment, CommitmentKind, ResourceKind, SettlementRole, SignedCommitment},
     envelope::Response,
-    fulfilment, payment, progress,
+    fulfilment, listing, payment, progress,
     transaction::{DealRole, ReceiptHalf},
 };
 
 use super::{
     super::{
-        AGREEMENT_PROGRESS, AgreementRow, FULFILMENTS, FulfilmentsRow, LEDGER, PAYMENTS,
+        AGREEMENT_PROGRESS, AS_LISTED, AgreementRow, FULFILMENTS, FulfilmentsRow, LEDGER, PAYMENTS,
         PaymentsRow, STEPS,
         decide::{CountersignRow, DecisionRow, DecisionState, RefusedRow, SnapshotRow},
         decline_ops::DeclineRow,
+        enquiry_ops::as_listed::AsListedRow,
         ledger::{FailureRow, LedgerRow},
         put_row,
         step_ops::StepRow,
@@ -54,7 +55,52 @@ pub(crate) struct ValidatedVerticalSections {
     pub(crate) steps: Vec<(String, StepRow)>,
     pub(crate) ledger: Vec<(String, ValidatedLedgerRow)>,
     pub(crate) progress: Vec<(String, SnapshotRow)>,
+    pub(crate) as_listed: Vec<(String, AsListedRow)>,
     pub(crate) history_entries: Vec<HistoryEntry>,
+}
+
+/// Each stored tap must name an enquiry this node holds, and the offering
+/// envelope it kept must still verify. The row is a local record: a bundle
+/// that carries one without its enquiry, or with a forged offering, is not
+/// imported.
+fn validate_as_listed(
+    rows: Vec<Value>,
+    enquiries_by_record_id: &HashMap<String, String>,
+    now: u64,
+) -> Result<Vec<(String, AsListedRow)>, Response> {
+    let mut validated = Vec::new();
+    for r in rows {
+        let id = r.get("id").and_then(Value::as_str).unwrap_or("").to_string();
+        let payload = r.get("payload").cloned().unwrap_or(Value::Null);
+        let row: AsListedRow = serde_json::from_value(payload)
+            .map_err(|e| Response::invalid_params(format!("as_listed '{id}': invalid row: {e}")))?;
+        if id != row.enquiry_record_id {
+            return Err(Response::invalid_params(format!(
+                "as_listed '{id}': row names enquiry '{}'",
+                row.enquiry_record_id
+            )));
+        }
+        if !enquiries_by_record_id.contains_key(&row.enquiry_record_id) {
+            return Err(Response::invalid_params(format!(
+                "as_listed '{id}': names unheld enquiry '{}'",
+                row.enquiry_record_id
+            )));
+        }
+        let verdict = listing::verify_envelope(&row.envelope, now);
+        if !verdict.verified {
+            return Err(Response::invalid_params(format!(
+                "as_listed '{id}': offering does not verify: {:?}",
+                verdict.reason
+            )));
+        }
+        if verdict.record_id.as_deref() != Some(row.record_id.as_str()) {
+            return Err(Response::invalid_params(format!(
+                "as_listed '{id}': offering record id does not match the stored row"
+            )));
+        }
+        validated.push((id, row));
+    }
+    Ok(validated)
 }
 
 fn validate_payments(
@@ -665,6 +711,8 @@ pub(crate) fn validate_vertical_sections(
     history_entries.extend(h_led);
     let (progress, h_prog) = validate_progress(prog_rows, quotes_by_record_id, now)?;
     history_entries.extend(h_prog);
+    let as_listed_rows = bundle_sections.get(SECTION_AS_LISTED).cloned().unwrap_or_default();
+    let as_listed = validate_as_listed(as_listed_rows, enquiries_by_record_id, now)?;
 
     Ok(ValidatedVerticalSections {
         payments,
@@ -672,6 +720,7 @@ pub(crate) fn validate_vertical_sections(
         steps,
         ledger,
         progress,
+        as_listed,
         history_entries,
     })
 }
@@ -698,6 +747,9 @@ pub(crate) async fn write_vertical_sections<H: AppHost>(
     }
     for (id, row) in validated.progress {
         put_row(host, AGREEMENT_PROGRESS, &id, &row).await.map_err(Response::internal_error)?;
+    }
+    for (id, row) in validated.as_listed {
+        put_row(host, AS_LISTED, &id, &row).await.map_err(Response::internal_error)?;
     }
     Ok(())
 }

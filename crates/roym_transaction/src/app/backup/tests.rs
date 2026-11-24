@@ -508,6 +508,7 @@ fn refused_row_refused_on_unheld_quote_or_counterparty_half() {
     let _sample_quote = quotes.get("rec_quote_1").expect("quote");
     let held_agreement = AgreementRow {
         quote_record_id: "rec_quote_1".to_string(),
+        formed_as: None,
         quote_id: "quote_1".to_string(),
         conversation: "conv_1".to_string(),
         counterparty_did: "did:key:cp".to_string(),
@@ -624,6 +625,7 @@ async fn decline_of_older_quote_version_in_history_imports_successfully() {
 
     let q2_ptr = RecordPointerRow {
         envelope: q2_json.clone(),
+        formed_as: None,
         record_id: q2_rec_id.clone(),
         id: q2_payload.quote_id.clone(),
         conversation: "conv_1".to_string(),

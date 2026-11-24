@@ -298,6 +298,7 @@ pub(super) async fn setup_agreed_deal(
 
     let agr_row = AgreementRow {
         quote_record_id: quote_record_id.clone(),
+        formed_as: None,
         quote_id,
         conversation: "conv_1".to_string(),
         counterparty_did: counterparty_did.clone(),

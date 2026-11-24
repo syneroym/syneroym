@@ -54,6 +54,7 @@ async fn seed_drive_cursor(host: &TestHost) {
 
 fn dummy_agreement_row(conv: &str, state: Option<AgreementState>, now: u64) -> AgreementRow {
     AgreementRow {
+        formed_as: None,
         quote_record_id: "rec_q_1".to_string(),
         quote_id: "q_1".to_string(),
         conversation: conv.to_string(),
