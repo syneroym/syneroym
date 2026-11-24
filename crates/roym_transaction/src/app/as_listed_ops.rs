@@ -20,6 +20,7 @@ use super::{AGREEMENTS, AgreementRow};
 pub(crate) const OPEN_INSTANT_SECS: u64 = 7 * 86_400;
 
 /// Why a tap waits, as the owner's Hub shows it.
+pub(crate) const WAITING_ANSWER_IN_PROGRESS: &str = "answer-in-progress";
 pub(crate) const WAITING_CONFIRM_FIRST: &str = "confirm-first";
 pub(crate) const WAITING_CAP_REACHED: &str = "cap-reached";
 pub(crate) const WAITING_COUNTERPARTY_HOLDS_ONE: &str = "counterparty-holds-one";

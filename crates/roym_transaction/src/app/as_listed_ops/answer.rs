@@ -15,6 +15,7 @@ use syneroym_roym_core::{
     },
     paging,
     progress::FormedAs,
+    record::Envelope,
     services,
     signing::{self, CertificateError},
     transaction::{self, EnquiryPayload, RECORD_QUOTE},
@@ -23,14 +24,16 @@ use syneroym_roym_core::{
 use super::{
     super::{
         ENQUIRIES, ENQUIRY_HISTORY, LEDGER, OutgoingCard, QUOTES, RecordPointerRow, count_mine,
-        disclosures, ensure_collections, get_bytes, get_row, hooks, is_deal_ended,
+        decide, decline_ops, disclosures, ensure_collections, get_bytes, get_row, hooks,
+        is_deal_ended,
         ledger::LedgerKind,
         put_row,
         quote_ops::{IssueQuote, QuoteSetOutput, issue_quote},
         resolve_principal_and_owner, send_card_and_file,
     },
-    WAITING_CAP_REACHED, WAITING_CONFIRM_FIRST, WAITING_COUNTERPARTY_HOLDS_ONE,
-    WAITING_SIGNING_NOT_READY, WAITING_SLOT_CHECK_FAILED, open_instant,
+    WAITING_ANSWER_IN_PROGRESS, WAITING_CAP_REACHED, WAITING_CONFIRM_FIRST,
+    WAITING_COUNTERPARTY_HOLDS_ONE, WAITING_SIGNING_NOT_READY, WAITING_SLOT_CHECK_FAILED,
+    open_instant,
 };
 
 /// The owner's Hub calls this to answer a waiting tap by hand.
@@ -67,6 +70,9 @@ pub(crate) struct AnswerRow {
     pub(crate) conversation: String,
     pub(crate) listing_id: String,
     pub(crate) quote_id: String,
+    /// The quote sequence the id was derived from, kept so a retry after a
+    /// crash signs the same record.
+    pub(crate) sequence: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) quote_record_id: Option<String>,
     pub(crate) formed_as: FormedAs,
@@ -126,16 +132,25 @@ pub(crate) async fn answer_as_listed<H: AppHost>(
     now: u64,
 ) -> Result<Outcome, Response> {
     ensure_collections(host).await.map_err(Response::internal_error)?;
+    let node_owner = signing::owner_did(host).await.map_err(certificate_error)?;
     let (enquiry, conversation, counterparty) =
         load_held_enquiry(host, enquiry_record_id, now).await?;
     let (Some(consent), Some(listing_id)) = (&enquiry.as_listed, &enquiry.listing_id) else {
         return Ok(Outcome::NotAsListed);
     };
-    let start = start(host, enquiry_record_id, listing_id, &conversation, consent, now).await?;
-    let (reuse_quote_id, current, consent) = match start {
+    if counterparty == node_owner {
+        return Ok(Outcome::NotAsListed);
+    }
+    let start =
+        start(host, enquiry_record_id, listing_id, &conversation, consent, &node_owner, now)
+            .await?;
+    let (current, consent) = match start {
         Start::Done(outcome) => return Ok(outcome),
         Start::Declined => return Ok(Outcome::Declined),
-        Start::Fresh { reuse_quote_id, current, consent } => (reuse_quote_id, current, consent),
+        Start::Resume { answer, current, consent } => {
+            return resume(host, &answer, &counterparty, current, consent, now).await;
+        }
+        Start::Fresh { current, consent } => (current, consent),
     };
 
     let verdict =
@@ -149,37 +164,37 @@ pub(crate) async fn answer_as_listed<H: AppHost>(
         }
     };
 
-    let fresh = reuse_quote_id.is_none();
     let sequence = count_mine(host, QUOTES, &conversation, &current.owner)
         .await
         .map_err(Response::internal_error)?
         + 1;
-    let quote_id = match &reuse_quote_id {
-        Some(id) => id.clone(),
-        None => transaction::derive_quote_id(&conversation, &current.owner, sequence)
-            .map_err(|e| Response::internal_error(e.to_string()))?,
-    };
+    let quote_id = transaction::derive_quote_id(&conversation, &current.owner, sequence)
+        .map_err(|e| Response::internal_error(e.to_string()))?;
     let answer = AnswerRow {
         kind: LedgerKind::Answer,
         enquiry_record_id: enquiry_record_id.to_string(),
         conversation: conversation.clone(),
         listing_id: listing_id.clone(),
         quote_id: quote_id.clone(),
+        sequence,
         quote_record_id: None,
         formed_as,
         state: AnswerState::Answering,
         code: None,
         created_at_secs: now,
     };
-    if fresh && !claim_answer(host, &answer).await? {
+    if !claim_answer(host, &answer).await? {
         if let Some(row) = get_row::<AnswerRow, _>(host, LEDGER, &answer_id(enquiry_record_id))
             .await
             .map_err(Response::internal_error)?
-            && row.state == AnswerState::Answered
         {
-            return resend(host, &row, now).await;
+            return match row.state {
+                AnswerState::Answered => resend(host, &row, now).await,
+                AnswerState::Declined => Ok(Outcome::Declined),
+                AnswerState::Answering => Ok(Outcome::Waiting(WAITING_ANSWER_IN_PROGRESS)),
+            };
         }
-        return Ok(Outcome::Waiting(WAITING_CONFIRM_FIRST));
+        return Ok(Outcome::Waiting(WAITING_ANSWER_IN_PROGRESS));
     }
 
     let principal = signing::person_principal(host, now).await.map_err(certificate_error)?.0;
@@ -208,11 +223,62 @@ pub(crate) async fn answer_as_listed<H: AppHost>(
     Ok(Outcome::Quoted(out))
 }
 
+/// Finishes an answer that reached its fence but not its quote. The quote id
+/// and the formed-as value are the stored ones, so a retry cannot turn the
+/// same tap into a second answer or change how it was formed.
+async fn resume<H: AppHost>(
+    host: &H,
+    answer: &AnswerRow,
+    counterparty: &str,
+    current: Box<CurrentListing>,
+    consent: AsListed,
+    now: u64,
+) -> Result<Outcome, Response> {
+    let terms = match as_listed::terms_from_listing(&current.payload, &current.owner, &consent, now)
+    {
+        Ok(terms) => terms,
+        Err(reason) => return Ok(Outcome::Waiting(reason.code())),
+    };
+    let principal = signing::person_principal(host, now).await.map_err(certificate_error)?.0;
+    let expires_at_secs = terms.quote_expires_at_secs;
+    let out = issue_quote(
+        host,
+        IssueQuote {
+            principal,
+            owner: &current.owner,
+            enquiry_record_id: &answer.enquiry_record_id,
+            quote_id: &answer.quote_id,
+            conversation: &answer.conversation,
+            counterparty_did: counterparty,
+            terms,
+            sequence: answer.sequence,
+            supersedes: None,
+            next_count: 1,
+            formed_as: Some(answer.formed_as),
+            expires_at_secs,
+            now,
+        },
+    )
+    .await?;
+    mark_answered(host, answer, &out.record_id).await?;
+    Ok(Outcome::Quoted(out))
+}
+
 /// What is already known about this tap, before any term is built.
 enum Start {
     Done(Outcome),
     Declined,
-    Fresh { reuse_quote_id: Option<String>, current: Box<CurrentListing>, consent: AsListed },
+    /// The answer reached its fence; the stored row's id, sequence and
+    /// formed-as must be reused.
+    Resume {
+        answer: AnswerRow,
+        current: Box<CurrentListing>,
+        consent: AsListed,
+    },
+    Fresh {
+        current: Box<CurrentListing>,
+        consent: AsListed,
+    },
 }
 
 async fn start<H: AppHost>(
@@ -221,14 +287,15 @@ async fn start<H: AppHost>(
     listing_id: &str,
     conversation: &str,
     consent: &AsListed,
+    node_owner: &str,
     now: u64,
 ) -> Result<Start, Response> {
     let existing: Option<AnswerRow> = get_row(host, LEDGER, &answer_id(enquiry_record_id))
         .await
         .map_err(Response::internal_error)?;
-    let mut reuse_quote_id = None;
-    if let Some(row) = &existing {
-        match row.state {
+    let resume = match &existing {
+        None => None,
+        Some(row) => match row.state {
             AnswerState::Answered => return Ok(Start::Done(resend(host, row, now).await?)),
             AnswerState::Declined => return Ok(Start::Done(Outcome::Declined)),
             AnswerState::Answering => {
@@ -240,22 +307,34 @@ async fn start<H: AppHost>(
                     let row = answered(row, &ptr.record_id);
                     return Ok(Start::Done(resend(host, &row, now).await?));
                 }
-                reuse_quote_id = Some(row.quote_id.clone());
+                Some(row.clone())
             }
-        }
-    }
+        },
+    };
 
     let Some(current) = load_current_listing(host, listing_id, now).await? else {
+        if resume.is_some() {
+            return Ok(Start::Done(Outcome::Waiting("offering-withdrawn")));
+        }
         decline(host, enquiry_record_id, listing_id, conversation, "offering-withdrawn", now)
             .await?;
         return Ok(Start::Declined);
     };
+    if current.owner != node_owner {
+        return Ok(Start::Done(Outcome::NotAsListed));
+    }
     if current.payload.status != ListingStatus::Active {
+        if resume.is_some() {
+            return Ok(Start::Done(Outcome::Waiting("offering-withdrawn")));
+        }
         decline(host, enquiry_record_id, listing_id, conversation, "offering-withdrawn", now)
             .await?;
         return Ok(Start::Declined);
     }
     if now > consent.valid_until_secs {
+        if resume.is_some() {
+            return Ok(Start::Done(Outcome::Waiting("consent-expired")));
+        }
         decline(host, enquiry_record_id, listing_id, conversation, "consent-expired", now).await?;
         return Ok(Start::Declined);
     }
@@ -266,7 +345,11 @@ async fn start<H: AppHost>(
         variant: None,
         valid_until_secs: consent.valid_until_secs,
     };
-    Ok(Start::Fresh { reuse_quote_id, current: Box::new(current), consent })
+    let current = Box::new(current);
+    match resume {
+        Some(answer) => Ok(Start::Resume { answer, current, consent }),
+        None => Ok(Start::Fresh { current, consent }),
+    }
 }
 
 /// What one attempt on a verified offering decides.
@@ -321,15 +404,17 @@ pub(super) async fn evaluate<H: AppHost>(
     Ok(Verdict::Answer { terms: Box::new(terms), formed_as: FormedAs::AsListedInstant })
 }
 
-/// Counts quotes already issued for a listing that wait for their answer.
-pub(crate) async fn in_flight_instant<H: AppHost>(
+/// The instant quotes that still hold a place for `listing_id`: answered
+/// rows whose quote has no decision fence and has not ended. A quote that
+/// formed an agreement is counted by the agreement, not here.
+async fn in_flight_rows<H: AppHost>(
     host: &H,
     listing_id: &str,
     now: u64,
-) -> Result<u32, String> {
+) -> Result<Vec<AnswerRow>, String> {
     let filter = json!({ "kind": "answer" }).to_string();
     let rows: Vec<AnswerRow> = paging::query_all(host, LEDGER, Some(filter)).await?;
-    let mut count = 0;
+    let mut in_flight = Vec::new();
     for row in rows {
         if row.listing_id != listing_id
             || row.formed_as != FormedAs::AsListedInstant
@@ -337,12 +422,27 @@ pub(crate) async fn in_flight_instant<H: AppHost>(
         {
             continue;
         }
+        if get_row::<decide::DecisionRow, _>(host, LEDGER, &decide::decision_id(&row.quote_id))
+            .await?
+            .is_some()
+        {
+            continue;
+        }
         if is_deal_ended(host, &row.quote_id, None, now).await? {
             continue;
         }
-        count += 1;
+        in_flight.push(row);
     }
-    Ok(count)
+    Ok(in_flight)
+}
+
+/// Counts quotes already issued for a listing that wait for their answer.
+pub(crate) async fn in_flight_instant<H: AppHost>(
+    host: &H,
+    listing_id: &str,
+    now: u64,
+) -> Result<u32, String> {
+    Ok(in_flight_rows(host, listing_id, now).await?.len() as u32)
 }
 
 async fn holds_one<H: AppHost>(
@@ -358,17 +458,8 @@ async fn holds_one<H: AppHost>(
     {
         return Ok(true);
     }
-    let filter = json!({ "kind": "answer" }).to_string();
-    let rows: Vec<AnswerRow> = paging::query_all(host, LEDGER, Some(filter)).await?;
-    for row in rows {
-        if row.listing_id != listing_id
-            || row.formed_as != FormedAs::AsListedInstant
-            || row.state != AnswerState::Answered
-        {
-            continue;
-        }
-        if !is_deal_ended(host, &row.quote_id, None, now).await?
-            && let Some(ptr) = get_row::<RecordPointerRow, _>(host, QUOTES, &row.quote_id).await?
+    for row in in_flight_rows(host, listing_id, now).await? {
+        if let Some(ptr) = get_row::<RecordPointerRow, _>(host, QUOTES, &row.quote_id).await?
             && ptr.counterparty_did.as_deref() == Some(counterparty)
         {
             return Ok(true);
@@ -541,7 +632,7 @@ async fn resend<H: AppHost>(host: &H, row: &AnswerRow, now: u64) -> Result<Outco
 }
 
 fn expiry_of(ptr: &RecordPointerRow) -> Option<u64> {
-    let envelope = syneroym_roym_core::record::Envelope::from_json(&ptr.envelope).ok()?;
+    let envelope = Envelope::from_json(&ptr.envelope).ok()?;
     envelope.payload.get("terms")?.get("quote_expires_at_secs")?.as_u64()
 }
 
@@ -553,13 +644,14 @@ async fn decline<H: AppHost>(
     code: &str,
     now: u64,
 ) -> Result<Outcome, Response> {
-    super::super::decline_ops::decline_with_code(host, enquiry_record_id, code, now).await?;
+    decline_ops::decline_with_code(host, enquiry_record_id, code, now).await?;
     let row = AnswerRow {
         kind: LedgerKind::Answer,
         enquiry_record_id: enquiry_record_id.to_string(),
         conversation: conversation.to_string(),
         listing_id: listing_id.to_string(),
         quote_id: String::new(),
+        sequence: 0,
         quote_record_id: None,
         formed_as: FormedAs::AsListedInstant,
         state: AnswerState::Declined,
@@ -586,18 +678,21 @@ pub(crate) async fn answer_waiting<H: AppHost>(host: &H, now: u64, warnings: &mu
         if row.mine || row.declined_at_secs.is_some() {
             continue;
         }
+        match get_row::<AnswerRow, _>(host, LEDGER, &answer_id(&row.record_id)).await {
+            Ok(Some(answered)) if answered.state != AnswerState::Answering => continue,
+            Ok(_) => {}
+            Err(_) => continue,
+        }
         let Some(bytes) = get_bytes(host, ENQUIRY_HISTORY, &row.record_id).await.ok().flatten()
         else {
             continue;
         };
         let Ok(envelope) = String::from_utf8(bytes) else { continue };
-        let verdict = transaction::verify_enquiry(&envelope, now);
-        let Some(payload) = verdict.payload else { continue };
-        if payload.as_listed.is_none() {
+        if !holds_as_listed_tap(&envelope) {
             continue;
         }
-        let held = get_row::<AnswerRow, _>(host, LEDGER, &answer_id(&row.record_id)).await;
-        if matches!(held, Ok(Some(_))) {
+        let verdict = transaction::verify_enquiry(&envelope, now);
+        if verdict.payload.is_none() {
             continue;
         }
         if let Err(e) = answer_as_listed(host, &row.record_id, Trigger::Driver, now).await {
@@ -607,17 +702,29 @@ pub(crate) async fn answer_waiting<H: AppHost>(host: &H, now: u64, warnings: &mu
     }
 }
 
-fn certificate_error(e: CertificateError) -> Response {
+/// A cheap look at the stored enquiry before its signature is verified: only
+/// an enquiry that carries an `as_listed` block can be an answer's input.
+fn holds_as_listed_tap(envelope: &str) -> bool {
+    Envelope::from_json(envelope)
+        .ok()
+        .is_some_and(|env| env.payload.get("as_listed").is_some_and(|v| !v.is_null()))
+}
+
+pub(crate) fn certificate_error(e: CertificateError) -> Response {
     match e {
-        CertificateError::NotEnrolled => Response::invalid_params("signing-not-enrolled"),
+        CertificateError::NotEnrolled => Response::invalid_params("signing-not-enrolled")
+            .with_data(json!({"code": "signing-not-enrolled"})),
         CertificateError::Expired(t) => {
             Response::invalid_params(format!("signing-certificate-expired at {t}"))
+                .with_data(json!({"code": "signing-certificate-expired"}))
         }
         CertificateError::Stale { installed_for, current } => Response::invalid_params(format!(
             "signing-certificate-stale: {installed_for} vs {current}"
-        )),
+        ))
+        .with_data(json!({"code": "signing-certificate-stale"})),
         CertificateError::NoOwner => {
             Response::invalid_params("this installation has no recorded owner")
+                .with_data(json!({"code": "signing-no-owner"}))
         }
         other => Response::internal_error(other.to_string()),
     }

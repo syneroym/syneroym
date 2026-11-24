@@ -19,7 +19,8 @@ use super::{
         ENQUIRIES, ENQUIRY_HISTORY, LEDGER, RecordPointerRow, ensure_collections, get_bytes,
         get_row,
     },
-    answer::{AnswerRow, Trigger, Verdict, answer_id, evaluate, in_flight_instant},
+    WAITING_ANSWER_IN_PROGRESS,
+    answer::{AnswerRow, AnswerState, Trigger, Verdict, answer_id, evaluate, in_flight_instant},
     open_instant,
 };
 
@@ -86,6 +87,7 @@ pub(crate) async fn as_listed_status_at<H: AppHost>(
 
 struct Current {
     payload: ListingPayload,
+    record_id: String,
     owner: String,
 }
 
@@ -110,7 +112,7 @@ async fn load_current<H: AppHost>(
             "the catalog returned an offering that does not verify",
         ));
     };
-    Ok(Current { payload, owner })
+    Ok(Current { payload, record_id: found.record_id, owner })
 }
 
 async fn waiting_enquiries<H: AppHost>(
@@ -136,11 +138,20 @@ async fn waiting_enquiries<H: AppHost>(
         if enquiry_listing != listing_id || now > consent.valid_until_secs {
             continue;
         }
-        if answered(host, &row.record_id).await? {
-            continue;
+        match answer_state(host, &row.record_id).await? {
+            Some(AnswerState::Answered | AnswerState::Declined) => continue,
+            Some(AnswerState::Answering) => {
+                waiting.push(WaitingEnquiry {
+                    enquiry_record_id: row.record_id,
+                    conversation: row.conversation,
+                    reason: WAITING_ANSWER_IN_PROGRESS.to_string(),
+                });
+                continue;
+            }
+            None => {}
         }
         let consent = AsListed {
-            record_id: current.payload.listing_id.clone(),
+            record_id: current.record_id.clone(),
             slot: consent.slot.clone(),
             variant: None,
             valid_until_secs: consent.valid_until_secs,
@@ -168,11 +179,14 @@ async fn waiting_enquiries<H: AppHost>(
     Ok(waiting)
 }
 
-async fn answered<H: AppHost>(host: &H, enquiry_record_id: &str) -> Result<bool, Response> {
+async fn answer_state<H: AppHost>(
+    host: &H,
+    enquiry_record_id: &str,
+) -> Result<Option<AnswerState>, Response> {
     Ok(get_row::<AnswerRow, _>(host, LEDGER, &answer_id(enquiry_record_id))
         .await
         .map_err(Response::internal_error)?
-        .is_some())
+        .map(|row| row.state))
 }
 
 async fn held_enquiry<H: AppHost>(

@@ -311,22 +311,26 @@ pub(crate) async fn resolve_principal_and_owner<H: AppHost>(
     let owner = match signing::owner_did(host).await {
         Ok(o) => o,
         Err(CertificateError::NoOwner) => {
-            return Err(Response::invalid_params("this installation has no recorded owner"));
+            return Err(Response::invalid_params("this installation has no recorded owner")
+                .with_data(json!({"code": "signing-no-owner"})));
         }
         Err(e) => return Err(Response::internal_error(e.to_string())),
     };
     let (principal, _master) = match signing::person_principal(host, now).await {
         Ok(res) => res,
         Err(CertificateError::NotEnrolled) => {
-            return Err(Response::invalid_params("signing-not-enrolled"));
+            return Err(Response::invalid_params("signing-not-enrolled")
+                .with_data(json!({"code": "signing-not-enrolled"})));
         }
         Err(CertificateError::Expired(t)) => {
-            return Err(Response::invalid_params(format!("signing-certificate-expired at {t}")));
+            return Err(Response::invalid_params(format!("signing-certificate-expired at {t}"))
+                .with_data(json!({"code": "signing-certificate-expired"})));
         }
         Err(CertificateError::Stale { installed_for, current }) => {
             return Err(Response::invalid_params(format!(
                 "signing-certificate-stale: {installed_for} vs {current}"
-            )));
+            ))
+            .with_data(json!({"code": "signing-certificate-stale"})));
         }
         Err(e) => return Err(Response::internal_error(e.to_string())),
     };
