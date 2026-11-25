@@ -6,6 +6,7 @@ use syneroym_roym_core::{
     method::{
         MethodInfo, NoParams, PingOutput, Reply,
         conversation::{ChangesInput, ChangesOutput, SendInput, SendOutput},
+        widget::{WidgetAnswerInput, WidgetListInput, WidgetListOutput, WidgetSendInput},
     },
     services,
     signing::verbs::{
@@ -14,7 +15,7 @@ use syneroym_roym_core::{
     },
 };
 
-use crate::app::{backup, group, messages};
+use crate::app::{backup, group, messages, widget};
 
 async fn ping<H: AppHost>(_host: &H, _: NoParams) -> Reply<PingOutput> {
     Ok(PingOutput { service: services::CONVERSATION.name.to_string() })
@@ -45,6 +46,9 @@ syneroym_roym_core::service_methods! {
     "group.unhide": group::unhide [messages::ConversationRef => group::GroupUnhideOutput],
     "conversation.signing-status": signing_status [NoParams => SigningStatusOutput],
     "conversation.install-signing-certificate": install_signing_certificate [InstallCertificateInput => InstallCertificateOutput],
+    "widget.send": widget::send [WidgetSendInput => SendOutput],
+    "widget.answer": widget::answer [WidgetAnswerInput => SendOutput],
+    "widget.list": widget::list [WidgetListInput => WidgetListOutput],
 }
 
 pub fn method_table() -> Vec<MethodInfo> {

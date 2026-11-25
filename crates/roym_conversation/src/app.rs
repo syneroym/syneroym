@@ -4,6 +4,7 @@ pub mod backup;
 pub mod group;
 pub mod inbox;
 pub mod messages;
+pub mod widget;
 
 use std::collections::HashMap;
 
