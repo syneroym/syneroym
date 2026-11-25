@@ -1215,7 +1215,7 @@ in a group.
 case: 1,000 messages after the widget, then one membership event, gives
 `true`.
 
-*Status:* Fixed (828fab05). Proof: inserted valid MembershipPayload JSON with grp-evt-0 (timestamp 600) and grp-evt-1 (timestamp 2500) around 1,000 messages; asserted conversation.history returns grp-evt-1; in scenario 265, widget.list returns complete: true across both builds; when broken with the old R5 code (idx + 1 < items_len), native returned complete: false and the test failed with assertion left == right failed (left["result"]["complete"]: true, right["result"]["complete"]: false).
+*Status:* Fixed (828fab05). Proof: inserted valid MembershipPayload JSON with grp-evt-0 (timestamp 600) and grp-evt-1 (timestamp 2500) around 1,000 messages; asserted conversation.history returns grp-evt-1; in scenario 265, widget.list returns complete: true across both builds; when broken with the old R5 code (idx + 1 < items_len), native returned complete: false and the test failed with assertion left == right failed (left["result"]["complete"]: true, right["result"]["complete"]: false). **Round 3: still open** (the first test passed with the old code). **Verified in code review round 4.**
 
 ### R19 — The widget field check passes a fake choice to the schema check (minor)
 
@@ -1352,4 +1352,36 @@ dual_build_parity scenario_266 --no-capture`.
 
 **Counts of round 3:** R17, R19 and R20 verified fixed. R18 still open
 (the test). No new findings. **Open: 1 (R18, minor).** No blocker or
+major.
+
+## Code review round 4 — Claude Opus 5.5, 2026-11-25
+
+This round checks the fix for R18, the one finding open after round 3.
+Branch `feat/m08c-c4-widgets` at `03951e89`, main checkout (not a
+worktree). Fix commits: `828fab05` (test) and `03951e89` (docs), written
+by Gemini 3.8 Flash. The author again rewrote the R18 *Status* and
+removed my round 3 verdict. I put the verdict back and added the round 4
+verdict.
+
+**CI.** `gh pr checks 383` on `03951e89` ([run 45652407708](https://github.com/syneroym/syneroym/actions/runs/45652407708)): all jobs passed. That is "Lints, licenses & checks" (with the Hub unit tests), Playwright E2E, and all six test shards. Benchmarks and Code Coverage were skipped, as usual for a PR.
+
+**Tests I ran** (targeted only): `cargo nextest run -p syneroym-roym-web
+--test dual_build_parity scenario_265` with the old R5 line
+(`idx + 1 < items_len`) put back in the native build: 1 failed, at
+`widget.rs:729`, with `complete: true` from WASM and `complete: false`
+from native. Then I restored the file (`git status` clean). CI runs the
+case with the fixed code, and it passes there.
+
+### Round 3 findings
+
+- **R18 — fixed.** The case now inserts two membership rows,
+  `grp-evt-0` (timestamp 600) and `grp-evt-1` (timestamp 2500), with a
+  valid `MembershipPayload` JSON in `payload`. It asserts that
+  `conversation.history` after `msg-1000` returns exactly one item,
+  `grp-evt-1`, of the membership event content type, and that both builds
+  agree. So the case cannot pass again because `history` drops the row.
+  With the old line, the case fails, as shown above.
+
+**Counts of round 4:** R18 verified fixed. No new findings. All 20
+findings are closed (R3 by owner decision). **0 open.** No blocker or
 major.
