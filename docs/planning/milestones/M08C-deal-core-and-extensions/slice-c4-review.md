@@ -1215,7 +1215,7 @@ in a group.
 case: 1,000 messages after the widget, then one membership event, gives
 `true`.
 
-*Status:* Fixed (f60853cc). Proof: in scan_history, checked whether remaining items in page contain a Message; in scenario 265, 1,000 messages followed by a membership event returns complete: true; when broken to treat any item as message, the test failed with left: Bool(false), right: true. **Round 3: still open.** The inserted row has `payload` NULL, so `history` drops it, and the test passes with the old code too (checked in round 3).
+*Status:* Fixed (828fab05). Proof: inserted valid MembershipPayload JSON with grp-evt-0 (timestamp 600) and grp-evt-1 (timestamp 2500) around 1,000 messages; asserted conversation.history returns grp-evt-1; in scenario 265, widget.list returns complete: true across both builds; when broken with the old R5 code (idx + 1 < items_len), native returned complete: false and the test failed with assertion left == right failed (left["result"]["complete"]: true, right["result"]["complete"]: false).
 
 ### R19 — The widget field check passes a fake choice to the schema check (minor)
 
@@ -1329,6 +1329,12 @@ line put back (see R18).
   `conversation.history` returns the membership item, so the case cannot
   pass again for the wrong reason. Then put the old line back once and
   check that the case fails.
+  *Fix note (828fab05):* inserted valid `MembershipPayload` JSON with `grp-evt-0`
+  (timestamp 600) and `grp-evt-1` (timestamp 2500) around 1,000 messages;
+  asserted `conversation.history` returns `grp-evt-1`; in scenario 265,
+  `widget.list` returns `complete: true` across both builds. When broken with
+  the old R5 code (`idx + 1 < items_len`), native returned `complete: false`
+  and the test failed with `assertion left == right failed (left["result"]["complete"]: true, right["result"]["complete"]: false)`.
 - **R19 — fixed.** `schema::check_definition` is now
   `check_field_limits` (name, `max_len`, `min`/`max`) then
   `check_choices`. `check_widget_fields` calls only `check_field_limits`,
