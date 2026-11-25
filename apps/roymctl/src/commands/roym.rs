@@ -18,6 +18,7 @@ pub mod signing;
 pub mod step;
 pub mod transaction;
 pub mod trust;
+pub mod widget;
 
 #[cfg(test)]
 mod tests;
@@ -39,6 +40,7 @@ pub use transaction::TransactionCommands;
 #[cfg(test)]
 pub(crate) use transaction::{parse_minor_units, parse_slot_window, parse_window};
 pub use trust::CredentialCommands;
+pub use widget::WidgetCommands;
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum RoymCommands {
@@ -98,6 +100,11 @@ pub enum RoymCommands {
     Step {
         #[command(subcommand)]
         command: StepCommands,
+    },
+    /// Interactive chat widgets (such as polls) and their answers.
+    Widget {
+        #[command(subcommand)]
+        command: WidgetCommands,
     },
 }
 
@@ -165,5 +172,8 @@ pub async fn handle(
             group::handle_group(command, dir, run_as, ucan_path).await
         }
         RoymCommands::Step { command } => step::handle_step(command, dir, run_as, ucan_path).await,
+        RoymCommands::Widget { command } => {
+            widget::handle_widget(command, dir, run_as, ucan_path).await
+        }
     }
 }

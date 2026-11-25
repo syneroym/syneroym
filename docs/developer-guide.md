@@ -1894,11 +1894,13 @@ An agreement holds at most 64 step rows, of both parties together. A receiving n
 
 **Checks.** One set of functions in `crates/roym_core/src/extension/check.rs` decides whether a commitment's extension is valid. `DealTerms::validate`, the check of a quote with hidden fields and the presentation checker all call it. A node that does not know the extension checks only the shape of `details` (the `extra` limits, the id and schema names). It marks the commitment as not checked.
 
+**Extension manifests and chat widgets.** Extension manifests are JSON files under `crates/roym_core/extensions/`. Manifests come in three kinds: `workflow` (e.g. `scheduling.json`, `one-shot.json`), `insight`, and `chat` (e.g. `poll.json`). A `chat` manifest declares `widgets`: widget types, semantic tag, typed fields, and choice field rules (`min_choices`, `max_choices`). Widget labels derive into catalog string IDs: `ext-<ext>-widget-<type>` for the widget type and `ext-<ext>-widget-<type>-<field>` for each field label.
+
 **Refusals.**
 
 | Code | Meaning |
 |---|---|
-| `extension-unknown` | `quote.set`, `listing.set` or `step.add` names an extension this node does not know. `agreement.accept` refuses it when this node gives that part of the deal. |
+| `extension-unknown` | `quote.set`, `listing.set`, `step.add` or `widget.send` names an extension this node does not know. `agreement.accept` refuses it when this node gives that part of the deal. |
 | `details-invalid` | A field of `details.data` or step `data` does not fit its schema, or step `data` is not an object. |
 | `details-mismatch` | `details` and the extension do not match, or the schema is not one of the manifest's. |
 | `extension-shape` | The id, the schema name or `details.extra` has a wrong shape or is too large. `listing.set` sends it for a bad extension id or version. |
@@ -1914,6 +1916,17 @@ An agreement holds at most 64 step rows, of both parties together. A receiving n
 | `too-many-steps` | The agreement already holds 64 steps. |
 | `booking-required` | A listing names `scheduling` and has no `booking` block. |
 | `payment-required` | A listing names an extension and has no `payment` block. |
+| `widget-version` | A widget definition has an unsupported version. |
+| `widget-json` | A widget definition or answer is not valid JSON. |
+| `widget-rules` | A widget definition breaks extension rules for a known type. |
+| `widget-refused` | `widget.answer` was called on a widget whose definition was refused. |
+| `widget-too-large` | A widget definition is larger than 8 KiB. |
+| `widget-shape` | A widget definition violates shape rules (e.g. missing prompt, invalid field types, duplicate choice codes). |
+| `not-a-widget` | `widget.answer` was called on a message that is not a widget. |
+| `widget-not-found` | The widget id named in `widget.answer` was not found in the conversation. |
+| `widget-deleted` | The widget named in `widget.answer` was deleted. |
+| `answer-too-large` | A widget answer body is larger than 8 KiB. |
+| `answer-invalid` | A widget answer violates field rules (e.g. choice code not among declared options, missing required field). |
 
 #### Call a JSON-RPC method on a WASM app via HTTP Proxy
 
@@ -2561,7 +2574,14 @@ MESSAGE_ID=$(roym conversation.send "{\"conversation\":\"$CONV\",\"body\":\"Hell
   || { echo "open or send failed" >&2; false; }
 ```
 
-`conversation.open` returns `{conversation_id, peer_address}`. If you open the same address again, you get the same conversation. `conversation.send` takes an optional `languages` list (0 to 3 tags in canonical form, main language first) and returns `{message_id, state, sender_timestamp_ms}`. The `state` starts as `pending`. It becomes `deposited` when the message waits at the other node, and `delivered` when the other node has it. `failed` means it could not be sent. `conversation.delivery-status` with `{"message_id": "…"}` reads the state again.
+`conversation.open` returns `{conversation_id, peer_address}`. If you open the same address again, you get the same conversation. `conversation.send` takes an optional `languages` list (0 to 3 tags in canonical form, main language first) and returns `{message_id, state, sender_timestamp_ms}`. The `state` starts as `pending`. It becomes `deposited` when the message waits at the other node, and `delivered` when the other node has it. `failed` means it could not be sent. `conversation.send` refuses the two widget content types (`application/vnd.roym.widget+json` and `application/vnd.roym.widget-answer+json`) with "this content type is reserved". `conversation.delivery-status` with `{"message_id": "…"}` reads the state again.
+
+**Widgets.** Chat messages also support interactive widgets (content type `application/vnd.roym.widget+json`) and widget answers (`application/vnd.roym.widget-answer+json`) in 1:1 chats and groups:
+
+- `widget.send` takes `{conversation, widget, languages?}`. `widget` is a `WidgetDefinition` (`extension`, `type`, `semantic`, `prompt`, `fields`). The definition must be up to 8 KiB (`MAX_WIDGET_BODY_BYTES`). The type must be known to this node (`extension-unknown` if unknown), and its schema and field rules are verified. Returns `{message_id, state, sender_timestamp_ms}`.
+- `widget.answer` takes `{conversation, widget_id, data, languages?}`. `data` is an object of field answers. It validates the answer against the widget definition and sends a `widget-answer` chat message. Returns `{message_id, state, sender_timestamp_ms}`.
+- `widget.list` takes `{conversation, widget_ids?}`. It scans history forward from the oldest asked widget (up to 1,000 messages) and tallies the newest valid answer per author. It returns `{widgets, complete}`. Each widget view has `widget_id`, `state`, `checked`, `refused`, `definition`, `counts`, `answers` and more.
+- `roymctl roym widget poll`, `roymctl roym widget answer`, and `roymctl roym widget list` provide CLI access.
 
 To read messages, call `conversation.history` (`{conversation, limit?, cursor?}`, with a `next_cursor` for the next page), or `conversation.changes` (`{conversation, after_seq?, limit?}`) to get only what is new after a `visible_seq` you already know. Each message has `id`, `direction`, `state`, `visible_seq`, `content_type`, `body_encoding`, `body` and `languages`.
 

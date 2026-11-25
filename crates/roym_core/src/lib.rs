@@ -42,3 +42,4 @@ pub mod taxonomy;
 pub mod testing;
 pub mod transaction;
 pub mod verdict;
+pub mod widget;

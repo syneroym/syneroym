@@ -170,6 +170,28 @@ Every component is within its limit. `transaction` grew with `transaction.drive`
 
 Every component is within its limit. `transaction` grew with agree-as-listed answer, automatic acceptance, terms mapping and backup section. `catalog` grew with listing acceptance fields and validation. `directory` grew with `as_listed_ready` projection.
 
+**C4a sizes** (release `wasm32-wasip2`, one `target/` folder, 2026-11-25; before: the C3c2 table's after column, after: the C4a code), in bytes:
+
+| Component | before | after | Change | Limit |
+| --- | --- | --- | --- | --- |
+| `transaction` | 2,699,817 | 2,714,637 | +14,820 (+0.55%) | +40 KB |
+| `catalog` | 960,197 | 960,590 | +393 (+0.04%) | +40 KB |
+| `directory` | 1,504,040 | 1,504,433 | +393 (+0.03%) | +40 KB |
+| `conversation` | 813,818 | 984,691 | +170,873 (+21.00%) | +15% (122,072); owner approved deviation (+22% ceiling) |
+| `profile` | 772,732 | 772,748 | +16 (+0.00%) | +40 KB |
+| `scheduling` | 715,723 | 715,723 | 0 | +40 KB |
+| `web` | 311,202 | 311,242 | +40 (+0.01%) | +40 KB |
+
+Every component except `conversation` is within its limit. `conversation` previously held no schema or record validation code (813,818 bytes). Adding three new RPC methods (`widget.send`, `widget.answer`, `widget.list`), forward scan over history, answer deduplication, choice counting, dynamic JSON schema validation, and the shipped chat widget registry reader grew the binary by +170,873 bytes (+21.00%, limit +15%).
+
+Twiggy symbol analysis of the wasm core module diff between main and branch identifies the three largest new items contributing to this growth:
+1. `syneroym_roym_conversation::api::dispatch` async state machine (+85,474 bytes): the unified dispatch function was expanded by inlined async futures for the three new RPC methods (`widget.send`, `widget.answer`, `widget.list`).
+2. `syneroym_roym_core::widget` and `serde_json` deserialization (+35,210 bytes): dynamic JSON parsing, validation, and serialization of `WidgetDefinition`, `WidgetFieldRule`, `WidgetView`, and `AnswerBody`, alongside associated `.rodata` tables.
+3. `syneroym_roym_conversation::app::widget` logic (+15,860 bytes): history pagination, forward scanning, author answer deduplication, and choice tally projection (`project_widgets`, `scan_filtered`, `scan_unfiltered`).
+No unexpected components, deal schemas, or external dependencies are linked. On 2026-11-25, the owner approved this deviation with a revised ceiling of +22% (993,000 bytes) in force for C4a. The owner's words, in code review round 2: "22 percent limit is fine. No good option anyways."
+
+Stop-rule measurement for `widget.list`: 28 ms native / 54 ms WASM (< 200 ms limit), measured on 200 `widget_ids` in a chat with 1,000 messages (scenario 266). Command: `cargo nextest run -p syneroym-roym-web --test dual_build_parity scenario_266 --no-capture`.
+
 **Parity runs need a fresh WASM build.** The dual-build parity harness loads pre-built `wasm32-wasip2` components. Every slice that changes a `roym_*` crate runs `mise run build:roym` before it trusts a parity run.
 
 ## 2. Facts checked in the code for this plan
@@ -312,7 +334,7 @@ Change docs: roym-agreements, roym-value-exchange (VX-54), roym-extensions (EX-1
 - Inline definitions up to 8 KB (EX-11). A larger definition is refused. Fetch by hash from the sender's node would need a new wire-reachable method, so it is a backlog row (section 6, question 4).
 - Widget labels from the string catalog (EX-13, the widget half of ML-28). The widget-answer translation hook point (the last M08C part of ML-26).
 - Widgets work in any chat, so this slice changes `conversation` and the Hub chat, not `transaction`.
-- With C1 to C4, the card table has twelve types: `enquiry`, `quote`, `agreement-receipt`, `agreement-progress`, `payment-request`, `payment-acknowledgement`, `fulfilment-receipt`, `deal-decline` (C1), `step` (C3a), `commitment-failure` (C3b), `widget`, `widget-answer` (C4).
+- With C1 to C4, the card table has twelve types in the early design. As decided in C4a under Q2 (b), widgets and widget answers travel as ordinary chat messages of content types `application/vnd.roym.widget+json` and `application/vnd.roym.widget-answer+json`, not deal cards, so the card table remains at ten types: `enquiry`, `quote`, `agreement-receipt`, `agreement-progress`, `payment-request`, `payment-acknowledgement`, `fulfilment-receipt`, `deal-decline` (C1), `step` (C3a), and `commitment-failure` (C3b).
 - Criteria: EX-10, EX-11 (inline only), EX-12, EX-13; ML-26 (widget answer), ML-28 (widget labels).
 - Demo: extend story 20 with a poll in the chat (the plan confirms).
 

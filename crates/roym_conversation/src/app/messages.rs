@@ -27,6 +27,7 @@ use syneroym_roym_core::{
         profile::{ContactKeyInput, ResolveAddressOutput},
     },
     services,
+    widget::{WIDGET_ANSWER_CONTENT_TYPE, WIDGET_CONTENT_TYPE},
 };
 
 use super::{contacts_map, from_host, load_admission_info, set_admission_peer};
@@ -266,10 +267,46 @@ pub(crate) async fn send<H: AppHost>(host: &H, input: SendInput) -> Reply<SendOu
         })?;
     let languages: Vec<String> = input.languages.into_iter().map(|t| t.to_string()).collect();
 
-    let conversation = input.conversation;
-    let body = input.body;
     let content_type = input.content_type.as_deref().unwrap_or("text/plain");
 
+    send_body(
+        host,
+        input.conversation,
+        content_type,
+        languages,
+        input.body.into_bytes(),
+        |is_group, ct| {
+            if ct == MEMBERSHIP_EVENT_CONTENT_TYPE
+                || ct == DELETION_REQUEST_CONTENT_TYPE
+                || ct == GROUP_PROFILE_CONTENT_TYPE
+                || ct == WIDGET_CONTENT_TYPE
+                || ct == WIDGET_ANSWER_CONTENT_TYPE
+                || (is_group && ct == "application/vnd.roym.card+json")
+            {
+                Some(if ct == "application/vnd.roym.card+json" {
+                    CARDS_NOT_IN_GROUPS_MESSAGE
+                } else {
+                    "this content type is reserved"
+                })
+            } else {
+                None
+            }
+        },
+    )
+    .await
+}
+
+pub(crate) async fn send_body<H: AppHost, F>(
+    host: &H,
+    conversation: String,
+    content_type: &str,
+    languages: Vec<String>,
+    body: Vec<u8>,
+    check_reserved: F,
+) -> Reply<SendOutput>
+where
+    F: FnOnce(bool, &str) -> Option<&'static str>,
+{
     let is_group = match AppConversation::group_info(host, conversation.clone()).await {
         Ok(info) => {
             if info.restored {
@@ -284,29 +321,14 @@ pub(crate) async fn send<H: AppHost>(host: &H, input: SendInput) -> Reply<SendOu
         Err(e) => return Err(from_host(e)),
     };
 
-    if content_type == MEMBERSHIP_EVENT_CONTENT_TYPE
-        || content_type == DELETION_REQUEST_CONTENT_TYPE
-        || content_type == GROUP_PROFILE_CONTENT_TYPE
-        || (is_group && content_type == "application/vnd.roym.card+json")
-    {
-        return Err(Response::invalid_params(
-            if content_type == "application/vnd.roym.card+json" {
-                CARDS_NOT_IN_GROUPS_MESSAGE
-            } else {
-                "this content type is reserved"
-            },
-        ));
+    if let Some(msg) = check_reserved(is_group, content_type) {
+        return Err(Response::invalid_params(msg));
     }
 
-    let message_id = AppConversation::send(
-        host,
-        conversation.clone(),
-        content_type.to_string(),
-        languages,
-        body.into_bytes(),
-    )
-    .await
-    .map_err(from_host)?;
+    let message_id =
+        AppConversation::send(host, conversation, content_type.to_string(), languages, body)
+            .await
+            .map_err(from_host)?;
 
     let host_msg = AppConversation::get_message(host, message_id.clone()).await.ok();
     Ok(SendOutput {

@@ -19,6 +19,7 @@ pub mod check;
 pub mod ids;
 mod load;
 pub mod schema;
+pub mod widget;
 
 #[cfg(test)]
 mod tests;
@@ -29,14 +30,18 @@ pub use check::{
 };
 pub use load::ManifestError;
 pub use schema::{Check, Field, FieldType, Schema, SchemaError};
+pub use widget::{WidgetFieldRule, WidgetType, WidgetTypes, widget_types};
 
 pub const SCHEDULING_EXTENSION: &str = "scheduling";
 pub const SCHEDULING_SLOT_SCHEMA: &str = "scheduling/slot@1";
 
 /// The manifests that ship with this build. The Hub's registry module lists
 /// the same files.
-pub const MANIFESTS: &[&str] =
-    &[include_str!("../extensions/scheduling.json"), include_str!("../extensions/one-shot.json")];
+pub const MANIFESTS: &[&str] = &[
+    include_str!("../extensions/scheduling.json"),
+    include_str!("../extensions/one-shot.json"),
+    include_str!("../extensions/poll.json"),
+];
 
 /// Whether `id` has the shape of an extension id. A directory uses this to
 /// check a search filter without loading the registry.
@@ -55,6 +60,8 @@ pub enum ManifestKind {
     Workflow,
     /// Only reads. It names what it reads and has no other part.
     Insight,
+    /// Adds widgets to any chat.
+    Chat,
 }
 
 /// A call that the deal core makes on an extension that holds a resource.
@@ -121,6 +128,9 @@ pub struct Manifest {
     /// What an `insight` extension may read. Empty for a `workflow`.
     #[serde(default)]
     pub reads: Vec<String>,
+    /// The widget types of a `chat` extension. Empty for the other kinds.
+    #[serde(default)]
+    pub widgets: Vec<WidgetType>,
 }
 
 impl Manifest {
@@ -187,6 +197,13 @@ impl Registry {
 
     pub fn step_type(&self, ext: &ExtensionRef, step_type: &str) -> Option<&StepType> {
         self.workflow(ext)?.steps.iter().find(|s| s.step_type == step_type)
+    }
+
+    /// A `chat` manifest's widget type.
+    pub fn widget_type(&self, ext: &ExtensionRef, widget_type: &str) -> Option<&WidgetType> {
+        self.get(ext)
+            .filter(|m| m.kind == ManifestKind::Chat)
+            .and_then(|m| m.widgets.iter().find(|w| w.widget_type == widget_type))
     }
 }
 

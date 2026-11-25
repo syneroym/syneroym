@@ -3,8 +3,8 @@ use std::{collections::HashMap, fs, path::PathBuf};
 use serde_json::{Value, json};
 
 use super::{
-    ExtensionRef, MANIFESTS, ManifestError, ManifestKind, Registry, SCHEDULING_EXTENSION,
-    SCHEDULING_SLOT_SCHEMA, ids, registry,
+    ExtensionRef, FieldType, MANIFESTS, ManifestError, ManifestKind, Registry,
+    SCHEDULING_EXTENSION, SCHEDULING_SLOT_SCHEMA, ids, registry,
 };
 use crate::{deal::ResourceKind, services};
 
@@ -49,12 +49,15 @@ fn with_field(field: Value) -> Value {
 #[test]
 fn every_shipped_manifest_loads() {
     let loaded = Registry::parse(MANIFESTS).unwrap();
-    assert_eq!(loaded.manifests().len(), 2);
+    assert_eq!(loaded.manifests().len(), 3);
     for (id, version) in [(SCHEDULING_EXTENSION, 1), ("one-shot", 1)] {
         let from_parse = loaded.workflow(&ext(id, version)).unwrap();
         let from_static = registry().workflow(&ext(id, version)).unwrap();
         assert_eq!(from_parse, from_static);
     }
+    let poll_parse = loaded.widget_type(&ext("poll", 1), "poll/single").unwrap();
+    let poll_static = registry().widget_type(&ext("poll", 1), "poll/single").unwrap();
+    assert_eq!(poll_parse, poll_static);
 }
 
 #[test]
@@ -268,7 +271,7 @@ fn an_unknown_check_field_type_or_key_does_not_load() {
     let m = with_field(json!({ "name": "where", "type": "location" }));
     assert!(matches!(parse_one(&m), Err(ManifestError::Format(_))));
     let mut m = base();
-    m["widgets"] = json!([]);
+    m["extra_key"] = json!([]);
     assert!(matches!(parse_one(&m), Err(ManifestError::Format(_))));
 }
 
@@ -411,4 +414,165 @@ fn the_header_check_agrees_with_the_registry() {
     }
     assert!(super::is_known_workflow(&ext("scheduling", 1)));
     assert!(!super::is_known_workflow(&ext("scheduling", 2)));
+}
+
+fn chat_manifest() -> Value {
+    json!({
+        "id": "poll",
+        "version": 1,
+        "kind": "chat",
+        "widgets": [
+            {
+                "type": "poll/single",
+                "semantic": "poll",
+                "fields": [
+                    { "name": "option", "type": "choice", "required": true, "min_choices": 2, "max_choices": 12 }
+                ]
+            }
+        ]
+    })
+}
+
+#[test]
+fn a_chat_manifest_loads_and_its_widget_type_is_found() {
+    let loaded = parse_one(&chat_manifest()).unwrap();
+    let reference = ext("poll", 1);
+    let manifest = loaded.get(&reference).unwrap();
+    assert_eq!(manifest.kind, ManifestKind::Chat);
+    assert!(loaded.workflow(&reference).is_none());
+    let widget = loaded.widget_type(&reference, "poll/single").unwrap();
+    assert_eq!(widget.semantic, "poll");
+    assert_eq!(widget.fields.len(), 1);
+    assert_eq!(widget.fields[0].name, "option");
+    assert_eq!(widget.fields[0].field_type, FieldType::Choice);
+    assert!(widget.fields[0].required);
+    assert_eq!(widget.fields[0].min_choices, Some(2));
+    assert_eq!(widget.fields[0].max_choices, Some(12));
+}
+
+#[test]
+fn a_chat_manifest_with_a_deal_key_is_refused() {
+    for (key, val) in [
+        ("resource_kinds", json!(["goods-or-service"])),
+        ("hooks", json!(["reserve", "confirm", "release"])),
+        ("details", json!([{ "schema": "poll/slot@1", "fields": [] }])),
+        ("steps", json!([{ "type": "poll/started", "by": "giver", "fields": [] }])),
+        ("reads", json!(["event-log"])),
+        ("service", json!("poll")),
+    ] {
+        let mut m = chat_manifest();
+        m[key] = val;
+        assert!(refused(&m).contains("chat manifest has only widgets"), "key {key}");
+    }
+    let mut empty_widgets = chat_manifest();
+    empty_widgets["widgets"] = json!([]);
+    assert!(refused(&empty_widgets).contains("at least one widget"));
+}
+
+#[test]
+fn a_workflow_or_insight_manifest_with_widgets_is_refused() {
+    let mut workflow = base();
+    workflow["widgets"] = json!([{
+        "type": "demo/widget",
+        "semantic": "poll",
+        "fields": [{ "name": "opt", "type": "choice", "min_choices": 2, "max_choices": 4 }]
+    }]);
+    assert!(refused(&workflow).contains("only a chat manifest has widgets"));
+
+    let mut insight_manifest = insight();
+    insight_manifest["widgets"] = json!([{
+        "type": "digest/widget",
+        "semantic": "poll",
+        "fields": [{ "name": "opt", "type": "choice", "min_choices": 2, "max_choices": 4 }]
+    }]);
+    assert!(refused(&insight_manifest).contains("insight has only reads"));
+}
+
+#[test]
+fn a_widget_type_must_start_with_its_extension_id() {
+    let mut m = chat_manifest();
+    m["widgets"][0]["type"] = json!("other/single");
+    assert!(refused(&m).contains("must start with 'poll/'"));
+
+    let mut m2 = chat_manifest();
+    m2["widgets"][0]["type"] = json!("poll/BAD_NAME");
+    assert!(refused(&m2).contains("must be [a-z0-9-]"));
+}
+
+#[test]
+fn a_widget_choice_rule_needs_min_and_max_choices() {
+    let mut m = chat_manifest();
+    m["widgets"][0]["fields"][0]["min_choices"] = json!(null);
+    assert!(refused(&m).contains("needs min_choices and max_choices"));
+
+    let mut m = chat_manifest();
+    m["widgets"][0]["fields"][0]["min_choices"] = json!(1);
+    assert!(refused(&m).contains("min_choices must be at least 2"));
+
+    let mut m = chat_manifest();
+    m["widgets"][0]["fields"][0]["min_choices"] = json!(10);
+    m["widgets"][0]["fields"][0]["max_choices"] = json!(5);
+    assert!(refused(&m).contains("min_choices is above max_choices"));
+
+    let mut m = chat_manifest();
+    m["widgets"][0]["fields"][0]["max_choices"] = json!(33);
+    assert!(refused(&m).contains("max_choices must be at most 32"));
+
+    let mut text_field = chat_manifest();
+    text_field["widgets"][0]["fields"] = json!([{
+        "name": "note",
+        "type": "text",
+        "max_len": 50,
+        "min_choices": 2
+    }]);
+    assert!(refused(&text_field).contains("only a choice field takes min_choices or max_choices"));
+}
+
+#[test]
+fn a_widget_field_of_type_money_is_refused() {
+    let mut m = chat_manifest();
+    m["widgets"][0]["fields"] = json!([{
+        "name": "price",
+        "type": "money"
+    }]);
+    assert!(refused(&m).contains("cannot use money"));
+}
+
+#[test]
+fn a_listing_cannot_name_a_chat_extension() {
+    let reference = ext("poll", 1);
+    assert!(!super::is_known_workflow(&reference));
+    assert!(registry().workflow(&reference).is_none());
+}
+
+#[test]
+fn widget_types_agree_with_the_registry() {
+    let reference = ext("poll", 1);
+    let from_reader = super::widget_types().get(&reference, "poll/single").unwrap();
+    let from_registry = registry().widget_type(&reference, "poll/single").unwrap();
+    assert_eq!(from_reader, from_registry);
+    assert!(super::widget_types().get(&reference, "poll/nonexistent").is_none());
+    assert!(super::widget_types().get(&ext("scheduling", 1), "scheduling/slot").is_none());
+}
+
+#[test]
+fn widget_ids_are_derived_and_a_clash_is_refused() {
+    let m = Registry::parse(MANIFESTS).unwrap();
+    let sources = ids::manifest_message_sources(m.get(&ext("poll", 1)).unwrap());
+    assert_eq!(
+        sources,
+        vec![
+            ("ext-poll-widget-single".to_string(), "poll/widget/single".to_string()),
+            ("ext-poll-widget-single-option".to_string(), "poll/widget/single/option".to_string()),
+        ]
+    );
+
+    let mut clashing = chat_manifest();
+    clashing["widgets"].as_array_mut().unwrap().push(json!({
+        "type": "poll/single-option",
+        "semantic": "poll",
+        "fields": [{ "name": "val", "type": "text", "max_len": 50 }]
+    }));
+    let err = Registry::parse(&[&clashing.to_string()]).unwrap_err();
+    assert!(err.to_string().contains("is made twice"));
 }

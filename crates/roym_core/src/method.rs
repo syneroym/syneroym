@@ -31,6 +31,7 @@ pub mod profile;
 pub mod scheduling;
 #[cfg(test)]
 mod tests;
+pub mod widget;
 
 pub type Reply<T> = Result<T, Response>;
 

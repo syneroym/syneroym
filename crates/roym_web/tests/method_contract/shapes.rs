@@ -5,6 +5,7 @@ use syneroym_identity::{
     delegation::{DelegationCertificate, SCOPE_RECORD_SIGNING},
     substrate::resolve_did_key,
 };
+use syneroym_roym_core::widget;
 use syneroym_rpc::ConversationDeliveryState;
 
 use super::{
@@ -395,6 +396,42 @@ async fn conversation_message_shapes(h: &Harness, conv_id: &str) {
 
     let hist_deleted = rpc(h, "conversation.history", json!({ "conversation": conv_id })).await;
     assert_shape("conversation_history_deleted_message", &hist_deleted);
+
+    let poll_def = widget::poll_definition("Favorite color?", &["Red".into(), "Blue".into()]);
+    let w_send = rpc(
+        h,
+        "widget.send",
+        json!({
+            "conversation": conv_id,
+            "widget": poll_def,
+        }),
+    )
+    .await;
+    assert_shape("widget_send", &w_send);
+    let widget_id = w_send["message_id"].as_str().unwrap();
+
+    let w_ans = rpc(
+        h,
+        "widget.answer",
+        json!({
+            "conversation": conv_id,
+            "widget_id": widget_id,
+            "data": { "option": "o1" },
+        }),
+    )
+    .await;
+    assert_shape("widget_answer", &w_ans);
+
+    let w_list = rpc(
+        h,
+        "widget.list",
+        json!({
+            "conversation": conv_id,
+            "widget_ids": [widget_id],
+        }),
+    )
+    .await;
+    assert_shape("widget_list", &w_list);
 }
 
 #[tokio::test]

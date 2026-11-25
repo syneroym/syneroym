@@ -77,5 +77,7 @@ mod trust;
 mod trust_evidence_cap;
 #[path = "dual_build_parity/trust_sources.rs"]
 mod trust_sources;
+#[path = "dual_build_parity/widget.rs"]
+mod widget;
 #[path = "dual_build_parity/wire_origin.rs"]
 mod wire_origin;

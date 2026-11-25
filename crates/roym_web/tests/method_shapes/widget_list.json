@@ -1,0 +1,60 @@
+{
+  "complete": "boolean",
+  "widgets": [
+    {
+      "answers": [
+        {
+          "author": "string",
+          "data": {
+            "option": "string"
+          },
+          "direction": "outgoing",
+          "languages": [],
+          "last_error": "null",
+          "message_id": "string",
+          "sender_timestamp_ms": "number",
+          "state": "pending"
+        }
+      ],
+      "author": "string",
+      "checked": "boolean",
+      "counts": [
+        {
+          "choice": "string",
+          "count": "number",
+          "field": "string"
+        }
+      ],
+      "definition": {
+        "extension": {
+          "id": "string",
+          "version": "number"
+        },
+        "fields": [
+          {
+            "choices": [
+              {
+                "code": "string",
+                "text": "string"
+              }
+            ],
+            "name": "string",
+            "required": "boolean",
+            "type": "string"
+          }
+        ],
+        "prompt": "string",
+        "semantic": "string",
+        "type": "string"
+      },
+      "direction": "outgoing",
+      "ignored_answers": "number",
+      "languages": [],
+      "last_error": "null",
+      "refused": "null",
+      "sender_timestamp_ms": "number",
+      "state": "pending",
+      "widget_id": "string"
+    }
+  ]
+}

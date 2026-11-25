@@ -473,3 +473,73 @@ fn step_data_is_a_json_object_with_an_empty_default() {
     assert!(parse_step_data(Some("[1]")).is_err());
     assert!(parse_step_data(Some("not json")).is_err());
 }
+
+fn parse_widget(args: &[&str]) -> Result<WidgetCommands, clap::Error> {
+    let mut full = vec!["roymctl"];
+    full.extend_from_slice(args);
+    Wrapper::<WidgetCommands>::try_parse_from(full).map(|w| w.command)
+}
+
+#[test]
+fn widget_poll_reads_its_flags() {
+    let cmd = parse_widget(&[
+        "poll",
+        "--conversation",
+        "conv_1",
+        "--question",
+        "Which day?",
+        "--option",
+        "Saturday",
+        "--option",
+        "Sunday",
+        "--lang",
+        "en",
+    ])
+    .unwrap();
+    let WidgetCommands::Poll { conversation, question, options, langs, .. } = cmd else {
+        panic!("expected widget poll");
+    };
+    assert_eq!(conversation, "conv_1");
+    assert_eq!(question, "Which day?");
+    assert_eq!(options, vec!["Saturday", "Sunday"]);
+    assert_eq!(langs, vec!["en"]);
+}
+
+#[test]
+fn widget_answer_reads_its_flags() {
+    let cmd = parse_widget(&[
+        "answer",
+        "--conversation",
+        "conv_1",
+        "--widget",
+        "w_1",
+        "--data",
+        r#"{"option":"o1"}"#,
+        "--lang",
+        "en",
+    ])
+    .unwrap();
+    let WidgetCommands::Answer { conversation, widget_id, data, langs, .. } = cmd else {
+        panic!("expected widget answer");
+    };
+    assert_eq!(conversation, "conv_1");
+    assert_eq!(widget_id, "w_1");
+    assert_eq!(data, r#"{"option":"o1"}"#);
+    assert_eq!(langs, vec!["en"]);
+}
+
+#[test]
+fn widget_list_reads_its_flags() {
+    let cmd = parse_widget(&["list", "--conversation", "conv_1"]).unwrap();
+    let WidgetCommands::List { conversation, .. } = cmd else {
+        panic!("expected widget list");
+    };
+    assert_eq!(conversation, "conv_1");
+}
+
+#[test]
+fn widget_data_validation() {
+    assert_eq!(widget::parse_widget_data(r#"{"option":"o1"}"#).unwrap(), json!({ "option": "o1" }));
+    assert!(widget::parse_widget_data("[1]").is_err());
+    assert!(widget::parse_widget_data("not-json").is_err());
+}

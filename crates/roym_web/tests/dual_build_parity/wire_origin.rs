@@ -1,5 +1,5 @@
 use serde_json::{Value, json};
-use syneroym_roym_core::services;
+use syneroym_roym_core::{services, widget};
 
 use super::{fixtures::*, helpers::*};
 
@@ -78,6 +78,11 @@ async fn scenario_73_every_catalog_and_conversation_verb_is_wired_and_locally_ad
             .await;
     let message_id = sent["result"]["message_id"].as_str().unwrap().to_string();
 
+    let poll_def = widget::poll_definition("Question?", &["A".into(), "B".into()]);
+    let (w_send, _) =
+        both_rpc(&h, "widget.send", json!({ "conversation": conv_id, "widget": poll_def })).await;
+    let widget_id = w_send["result"]["message_id"].as_str().unwrap_or("missing").to_string();
+
     // The guard test: every listing, availability and conversation verb,
     // driven once through the local path with params
     // that reach the handler. A -32601 means the verb was never wired; a
@@ -122,6 +127,12 @@ async fn scenario_73_every_catalog_and_conversation_verb_is_wired_and_locally_ad
         ("group.sync", json!({ "conversation": conv_id })),
         ("group.hide", json!({ "conversation": conv_id })),
         ("group.unhide", json!({ "conversation": conv_id })),
+        ("widget.send", json!({ "conversation": conv_id, "widget": poll_def })),
+        (
+            "widget.answer",
+            json!({ "conversation": conv_id, "widget_id": widget_id, "data": { "option": "o1" } }),
+        ),
+        ("widget.list", json!({ "conversation": conv_id })),
     ];
 
     for (method, params) in calls {

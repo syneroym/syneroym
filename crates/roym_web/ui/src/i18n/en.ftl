@@ -846,6 +846,8 @@ category-picker-full = You can choose up to { $max } categories.
 
 ext-details-heading = Extra terms
 ext-not-checked = Not checked on this device
+ext-poll-widget-single = Poll
+ext-poll-widget-single-option = Your choice
 ext-scheduling-slot-listing-id = Listing code:
 ext-scheduling-slot-slot-id = Slot code:
 ext-scheduling-step-started = Work started

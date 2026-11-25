@@ -8,9 +8,13 @@ import {
   labelIds,
   manifestFor,
   ONE_SHOT_REF,
+  POLL_REF,
   SCHEDULING_REF,
   stepNameId,
   stepType,
+  widgetFieldLabelId,
+  widgetNameId,
+  widgetType,
 } from "./registry";
 
 const JSON_FILES = import.meta.glob<unknown>("../../../../roym_core/extensions/*.json", {
@@ -61,7 +65,18 @@ describe("the message ids", () => {
       "ext-scheduling-slot-listing-id",
       "ext-scheduling-slot-slot-id",
       "ext-scheduling-step-started",
+      "ext-poll-widget-single",
+      "ext-poll-widget-single-option",
     ]);
+  });
+
+  it("derives widget message ids and finds widget type", () => {
+    expect(widgetNameId("poll", "poll/single")).toBe("ext-poll-widget-single");
+    expect(widgetFieldLabelId("poll", "poll/single", "option")).toBe(
+      "ext-poll-widget-single-option",
+    );
+    expect(widgetType(POLL_REF, "poll/single")).toBeDefined();
+    expect(widgetType({ id: "scheduling", version: 1 }, "poll/single")).toBeUndefined();
   });
 
   it("are keyed by field name, and by field and choice, for a schema", () => {

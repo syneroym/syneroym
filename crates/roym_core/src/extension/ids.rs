@@ -33,6 +33,20 @@ pub fn step_name_id(ext_id: &str, step_type: &str) -> String {
     format!("ext-{}-step-{}", dashed(ext_id), dashed(name))
 }
 
+/// The name of a widget type.
+pub fn widget_name_id(ext_id: &str, widget_type: &str) -> String {
+    let name =
+        widget_type.strip_prefix(ext_id).and_then(|r| r.strip_prefix('/')).unwrap_or(widget_type);
+    format!("ext-{}-widget-{}", dashed(ext_id), dashed(name))
+}
+
+/// The label of a field of a widget type.
+pub fn widget_field_label_id(ext_id: &str, widget_type: &str, field: &str) -> String {
+    let name =
+        widget_type.strip_prefix(ext_id).and_then(|r| r.strip_prefix('/')).unwrap_or(widget_type);
+    format!("ext-{}-widget-{}-{}", dashed(ext_id), dashed(name), dashed(field))
+}
+
 /// Every id that this manifest implies, with the place that makes it, in
 /// manifest order. A place is the extension, the kind of thing (field, choice
 /// or step), the schema's short name, the field name and the choice. The
@@ -60,6 +74,17 @@ pub fn manifest_message_sources(manifest: &Manifest) -> Vec<(String, String)> {
             step_name_id(ext, &step.step_type),
             format!("{ext}/step/{}", name.unwrap_or(&step.step_type)),
         ));
+    }
+    for widget in &manifest.widgets {
+        let name = widget.widget_type.strip_prefix(ext).and_then(|r| r.strip_prefix('/'));
+        let short = name.unwrap_or(&widget.widget_type);
+        out.push((widget_name_id(ext, &widget.widget_type), format!("{ext}/widget/{short}")));
+        for field in &widget.fields {
+            out.push((
+                widget_field_label_id(ext, &widget.widget_type, &field.name),
+                format!("{ext}/widget/{short}/{}", field.name),
+            ));
+        }
     }
     out
 }
