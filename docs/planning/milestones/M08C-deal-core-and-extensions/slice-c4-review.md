@@ -502,7 +502,7 @@ point may be missing" (a new Hindi message) when `complete` is false for a
 drawn poll, or state that the Hub ignores it and add the limit to the
 backlog row text. Add a Hub test for the chosen behaviour.
 
-*Status:* Open (reopened in round 3: the backlog row is missing, see round 3). Was: Fixed (ec5139bb). Agreed. Hub ignores `complete: false` today because threads only load the first 200 messages; limit recorded in deferred backlog row; Hub unit test added.
+*Status:* Fixed (1a4d4e54) after round 3 (backlog row added). Was: Fixed (ec5139bb). Agreed. Hub ignores `complete: false` today because threads only load the first 200 messages; limit recorded in deferred backlog row; Hub unit test added.
 
 ## Plan review round 3 — Claude Sonnet 5.5, 2026-11-25
 
@@ -542,4 +542,4 @@ messages …" a sentence: "The Hub draws the counts it has and shows no sign
 when `complete` is false, so a count in a long chat can be too low." Then
 the statement in D-C4-10 is true.
 
-*Status:* Open
+*Status:* Fixed (1a4d4e54). The section 8 row now says the Hub draws the counts it has and shows no sign when `complete` is false. Checked in the plan.
