@@ -146,7 +146,14 @@ test.describe('Roym Hub', () => {
     await page.goto(HUB_URL);
     await page.waitForLoadState('networkidle');
     await loginWithDelegatedKey(page);
+
+    // Finish the list call that opens the screen before measuring the two reloads below.
+    const list = await holdRpc(page, 'conversation.list');
     await openMessages(page);
+    await expect.poll(() => list.held.length).toBe(1);
+    await list.answer(0, { conversations: [] });
+    await expect(page.locator('.conversations-empty')).toBeVisible();
+    list.held.length = 0;
 
     // Clicking a search hit reloads the conversation list. Click it twice while the list
     // call is held, then answer newest first, so the older reload finishes last.
@@ -158,7 +165,6 @@ test.describe('Roym Hub', () => {
         body: JSON.stringify({ jsonrpc: '2.0', id, result: { matches: [{ conversation: 'c1', body: 'hello' }] } }),
       });
     });
-    const list = await holdRpc(page, 'conversation.list');
     await page.locator('.message-search-input').fill('hello');
     await page.getByRole('button', { name: 'Search', exact: true }).click();
     const hit = page.locator('.search-hit').first();
