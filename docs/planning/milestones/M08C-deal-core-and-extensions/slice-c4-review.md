@@ -502,4 +502,44 @@ point may be missing" (a new Hindi message) when `complete` is false for a
 drawn poll, or state that the Hub ignores it and add the limit to the
 backlog row text. Add a Hub test for the chosen behaviour.
 
-*Status:* Fixed (ec5139bb). Agreed. Hub ignores `complete: false` today because threads only load the first 200 messages; limit recorded in deferred backlog row; Hub unit test added.
+*Status:* Open (reopened in round 3: the backlog row is missing, see round 3). Was: Fixed (ec5139bb). Agreed. Hub ignores `complete: false` today because threads only load the first 200 messages; limit recorded in deferred backlog row; Hub unit test added.
+
+## Plan review round 3 — Claude Sonnet 5.5, 2026-11-25
+
+Closure check of the three open items of round 2, on `feat/m08c-c4-widgets`
+at `7406924d` (fix `ec5139bb`). I read the plan diff between `8f4a3f6f` and
+`7406924d` and the places it touches.
+
+**Summary: P3 and P10 confirmed closed. P11 stays open (minor). Open: 1.**
+
+- **P3 — Confirmed closed.** `parse_widget_body` now parses to
+  `serde_json::Value`, checks `widget_version` (`widget-version`), then
+  deserializes and maps any serde failure to `Shape` (`widget-shape`). The
+  plan says `widget.send` of an unknown field type is refused as invalid
+  params at the typed input, with no `data.code`. Scenario 262 now uses a
+  definition that breaks a `check_shape` rule. Scenario 264 carries the
+  unknown field type (`location`) as an inbound body. The two tests
+  `a_body_with_unknown_version_and_extra_keys_returns_widget_version` and
+  `a_body_with_unknown_field_type_returns_widget_shape` are listed.
+- **P10 — Confirmed closed.** `WidgetView` has `state` and `last_error`
+  (D-C4-7, next to `ignored_answers`), copied from the message row. D-C4-10
+  says an own widget shows its state word when not `delivered` and a retry
+  button calling `conversation.retry` with the widget id. The Hub tests
+  (`poll.test.ts`, `generic.test.ts`) name a `failed` own poll.
+- **P11 — Open.** The plan now defines the behaviour: the Hub ignores
+  `complete: false` and draws the counts it has, and `render.test.ts` checks
+  that a `false` value renders without error. That is a valid choice. But the
+  text says this is "recorded in the backlog row", and it is not. The two
+  new rows in section 8 say the scan stops at 1,000 messages and that the Hub
+  shows the oldest 200 messages. Neither says that a poll can show counts that
+  are too low, with no sign in the Hub. The review fix asked for this to be
+  written down.
+
+#### P11 check, round 3
+
+*Fix:* Add to the section 8 row "`widget.list` scans at most 1,000
+messages …" a sentence: "The Hub draws the counts it has and shows no sign
+when `complete` is false, so a count in a long chat can be too low." Then
+the statement in D-C4-10 is true.
+
+*Status:* Open
