@@ -852,6 +852,22 @@ ext-scheduling-slot-listing-id = Listing code:
 ext-scheduling-slot-slot-id = Slot code:
 ext-scheduling-step-started = Work started
 
+## Widgets
+
+widget-poll-count =
+    { $count ->
+        [one] 1 vote
+       *[other] { $count } votes
+    }
+widget-poll-your-choice = You chose: { $choice }
+widget-votes-visible = Everyone in this chat can see each vote.
+widget-answer-send = Send answer
+widget-answers-heading = Answers
+widget-unknown-heading = A widget this app does not know: { $type }
+widget-refused = This widget cannot be shown: { $reason }
+widget-too-large = This widget is too large for this app.
+widget-answer-failed = Could not send answer: { $detail }
+
 # --- agree as listed, the owner's side ---
 listing-as-listed-heading = Agree as listed
 listing-acceptance = Acceptance
