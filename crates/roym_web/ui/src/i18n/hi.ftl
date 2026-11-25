@@ -823,6 +823,8 @@ category-picker-full = आप अधिकतम { $max } श्रेणिय�
 
 ext-details-heading = अतिरिक्त शर्तें
 ext-not-checked = इस डिवाइस पर जाँचा नहीं गया
+ext-poll-widget-single = पोल
+ext-poll-widget-single-option = आपकी पसंद
 ext-scheduling-slot-listing-id = लिस्टिंग कोड:
 ext-scheduling-slot-slot-id = स्लॉट कोड:
 ext-scheduling-step-started = काम शुरू हुआ

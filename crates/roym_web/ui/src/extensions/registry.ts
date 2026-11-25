@@ -3,6 +3,7 @@
 // to always agree on which extensions are known.
 
 import oneShot from "../../../../roym_core/extensions/one-shot.json";
+import poll from "../../../../roym_core/extensions/poll.json";
 import scheduling from "../../../../roym_core/extensions/scheduling.json";
 
 export type FieldType =
@@ -37,15 +38,33 @@ export interface StepDef {
   fields: FieldDef[];
 }
 
+export interface WidgetFieldRuleDef {
+  name: string;
+  type: FieldType;
+  required?: boolean;
+  max_len?: number;
+  min?: number;
+  max?: number;
+  min_choices?: number;
+  max_choices?: number;
+}
+
+export interface WidgetTypeDef {
+  type: string;
+  semantic: string;
+  fields: WidgetFieldRuleDef[];
+}
+
 export interface Manifest {
   id: string;
   version: number;
-  kind: "workflow" | "insight";
+  kind: "workflow" | "insight" | "chat";
   resource_kinds?: string[];
   hooks?: string[];
   details?: SchemaDef[];
   steps?: StepDef[];
   reads?: string[];
+  widgets?: WidgetTypeDef[];
 }
 
 export interface ExtensionRef {
@@ -63,7 +82,7 @@ export const SCHEDULING_REF: ExtensionRef = { id: SCHEDULING_EXTENSION, version:
 export const ONE_SHOT_REF: ExtensionRef = { id: ONE_SHOT_EXTENSION, version: 1 };
 
 /// In the order of `MANIFESTS` in `roym_core/src/extension.rs`.
-export const MANIFESTS: readonly Manifest[] = [scheduling, oneShot] as unknown as Manifest[];
+export const MANIFESTS: readonly Manifest[] = [scheduling, oneShot, poll] as unknown as Manifest[];
 
 /// A `workflow` manifest only. An `insight` id is unknown here, as it is to
 /// the node.
@@ -77,6 +96,10 @@ export function detailsSchema(ext: ExtensionRef, schema: string): SchemaDef | un
 
 export function stepType(ext: ExtensionRef, type: string): StepDef | undefined {
   return manifestFor(ext)?.steps?.find((s) => s.type === type);
+}
+
+export function widgetType(ext: ExtensionRef, type: string): WidgetTypeDef | undefined {
+  return MANIFESTS.find((m) => m.kind === "chat" && m.id === ext.id && m.version === ext.version)?.widgets?.find((w) => w.type === type);
 }
 
 // Message ids are derived from codes, as the node derives them. The schema
@@ -107,6 +130,14 @@ export function stepNameId(extId: string, type: string): string {
   return `ext-${dashed(extId)}-step-${dashed(afterPrefix(extId, type))}`;
 }
 
+export function widgetNameId(extId: string, type: string): string {
+  return `ext-${dashed(extId)}-widget-${dashed(afterPrefix(extId, type))}`;
+}
+
+export function widgetFieldLabelId(extId: string, type: string, field: string): string {
+  return `ext-${dashed(extId)}-widget-${dashed(afterPrefix(extId, type))}-${dashed(field)}`;
+}
+
 /// The message id of each field of a schema, keyed by the field name, and of
 /// each choice, keyed `field:choice`. Read it through `codeWord`, so a field
 /// from another build is drawn under its own name.
@@ -134,6 +165,12 @@ export function manifestMessageIds(manifest: Manifest): string[] {
     }
   }
   for (const step of manifest.steps ?? []) ids.push(stepNameId(manifest.id, step.type));
+  for (const widget of manifest.widgets ?? []) {
+    ids.push(widgetNameId(manifest.id, widget.type));
+    for (const field of widget.fields) {
+      ids.push(widgetFieldLabelId(manifest.id, widget.type, field.name));
+    }
+  }
   return ids;
 }
 

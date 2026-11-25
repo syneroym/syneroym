@@ -3,7 +3,7 @@
 //! The same list is used for a commitment's `details.data` and for a step's
 //! `data`. Every number is an integer, as the deal records have no floats.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::listing;
@@ -18,7 +18,7 @@ pub const MAX_CODE_LEN: usize = 128;
 pub const MAX_CHOICE_LEN: usize = 32;
 
 /// The value type of a field.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum FieldType {
     /// Free text in the record's language.
@@ -179,7 +179,7 @@ fn wrong(name: &str, expected: &str) -> SchemaError {
 }
 
 /// The load-time rules for one field definition.
-pub(super) fn check_definition(field: &Field) -> Result<(), String> {
+pub(crate) fn check_definition(field: &Field) -> Result<(), String> {
     let name = &field.name;
     let name_ok = !name.is_empty()
         && name.len() <= MAX_FIELD_NAME_LEN
@@ -192,7 +192,7 @@ pub(super) fn check_definition(field: &Field) -> Result<(), String> {
     check_choices(field)
 }
 
-fn check_len_limit(field: &Field) -> Result<(), String> {
+pub(crate) fn check_len_limit(field: &Field) -> Result<(), String> {
     let name = &field.name;
     match (field.field_type.len_ceiling(), field.max_len) {
         (Some(ceiling), Some(max)) if (1..=ceiling).contains(&max) => Ok(()),
@@ -203,7 +203,7 @@ fn check_len_limit(field: &Field) -> Result<(), String> {
     }
 }
 
-fn check_number_limits(field: &Field) -> Result<(), String> {
+pub(crate) fn check_number_limits(field: &Field) -> Result<(), String> {
     let name = &field.name;
     if field.field_type != FieldType::Number {
         if field.min.is_some() || field.max.is_some() {

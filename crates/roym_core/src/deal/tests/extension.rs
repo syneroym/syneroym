@@ -156,6 +156,33 @@ fn a_commitment_naming_an_insight_is_not_checked() {
     );
 }
 
+#[test]
+fn a_commitment_naming_a_chat_extension_is_not_checked() {
+    let chat = json!({
+        "id": "poll",
+        "version": 1,
+        "kind": "chat",
+        "widgets": [
+            {
+                "type": "poll/single",
+                "semantic": "poll",
+                "fields": [
+                    { "name": "option", "type": "choice", "required": true, "min_choices": 2, "max_choices": 12 }
+                ]
+            }
+        ]
+    });
+    let with_chat = Registry::parse(&[&chat.to_string()]).unwrap();
+    let mut c = unknown_commitment("c1", DealRole::QuoteAuthor);
+    c.extension = Some(ExtensionRef { id: "poll".to_string(), version: 1 });
+    c.details.as_mut().unwrap().extension = "poll".to_string();
+    c.details.as_mut().unwrap().schema = "poll/x@1".to_string();
+    assert_eq!(
+        extension::check_commitment_extension(&with_chat, &c).unwrap(),
+        ExtensionCheck::NotChecked
+    );
+}
+
 fn extra_cases() -> Vec<(Vec<DetailsExtra>, &'static str)> {
     let item = |label: &str, value: &str| DetailsExtra {
         label: label.to_string(),

@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::{Hook, MAX_STEP_TYPE_LEN, Manifest, ManifestKind, ids, schema};
+use super::{FieldType, Hook, MAX_STEP_TYPE_LEN, Manifest, ManifestKind, ids, schema, widget};
 use crate::{
     deal::{MAX_EXTENSION_ID_LEN, ResourceKind},
     listing, services,
@@ -36,14 +36,17 @@ pub(super) fn check_manifest(m: &Manifest) -> Result<(), ManifestError> {
     match m.kind {
         ManifestKind::Workflow => check_workflow(m).map_err(fail),
         ManifestKind::Insight => check_insight(m).map_err(fail),
+        ManifestKind::Chat => check_chat(m).map_err(fail),
     }
 }
 
 fn check_insight(m: &Manifest) -> Result<(), String> {
     let has_workflow_part = !m.resource_kinds.is_empty()
         || !m.hooks.is_empty()
+        || m.service.is_some()
         || !m.details.is_empty()
-        || !m.steps.is_empty();
+        || !m.steps.is_empty()
+        || !m.widgets.is_empty();
     if has_workflow_part {
         return Err("an insight has only reads".to_string());
     }
@@ -60,9 +63,119 @@ fn check_workflow(m: &Manifest) -> Result<(), String> {
     if !m.reads.is_empty() {
         return Err("only an insight has reads".to_string());
     }
+    if !m.widgets.is_empty() {
+        return Err("only a chat manifest has widgets".to_string());
+    }
     check_hooks(m)?;
     check_schemas(m)?;
     check_steps(m)
+}
+
+fn check_chat(m: &Manifest) -> Result<(), String> {
+    let has_other_part = !m.resource_kinds.is_empty()
+        || !m.hooks.is_empty()
+        || m.service.is_some()
+        || !m.details.is_empty()
+        || !m.steps.is_empty()
+        || !m.reads.is_empty();
+    if has_other_part {
+        return Err("a chat manifest has only widgets".to_string());
+    }
+    if m.widgets.is_empty() {
+        return Err("a chat manifest must have at least one widget".to_string());
+    }
+    let mut type_names = HashSet::new();
+    for widget in &m.widgets {
+        if widget.widget_type.len() > widget::MAX_WIDGET_TYPE_LEN {
+            return Err(format!("widget type '{}' is too long", widget.widget_type));
+        }
+        name_after_prefix(&m.id, &widget.widget_type)?;
+        if !type_names.insert(widget.widget_type.as_str()) {
+            return Err(format!("widget type '{}' is listed twice", widget.widget_type));
+        }
+        if !listing::valid_token(&widget.semantic, widget::MAX_SEMANTIC_LEN) {
+            return Err(format!("semantic '{}' is not a code", widget.semantic));
+        }
+        if widget.fields.is_empty() {
+            return Err(format!("widget '{}' must have at least one field", widget.widget_type));
+        }
+        if widget.fields.len() > widget::MAX_WIDGET_FIELDS {
+            return Err(format!(
+                "widget '{}' has too many fields (at most {})",
+                widget.widget_type,
+                widget::MAX_WIDGET_FIELDS
+            ));
+        }
+        check_widget_fields(&widget.fields)?;
+    }
+    Ok(())
+}
+
+fn check_widget_fields(fields: &[super::widget::WidgetFieldRule]) -> Result<(), String> {
+    let mut field_names = HashSet::new();
+    for rule in fields {
+        if !field_names.insert(rule.name.as_str()) {
+            return Err(format!("field '{}' is listed twice", rule.name));
+        }
+        let name = &rule.name;
+        let name_ok = !name.is_empty()
+            && name.len() <= schema::MAX_FIELD_NAME_LEN
+            && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+        if !name_ok {
+            return Err(format!(
+                "field name '{name}' is not [a-z0-9_]{{1,{}}}",
+                schema::MAX_FIELD_NAME_LEN
+            ));
+        }
+        if rule.field_type == FieldType::Money {
+            return Err(format!("field '{name}': a chat widget cannot use money"));
+        }
+        let dummy = super::Field {
+            name: rule.name.clone(),
+            field_type: rule.field_type,
+            required: rule.required,
+            max_len: rule.max_len,
+            min: rule.min,
+            max: rule.max,
+            choices: None,
+        };
+        schema::check_len_limit(&dummy)?;
+        schema::check_number_limits(&dummy)?;
+        check_choice_rule(rule)?;
+    }
+    Ok(())
+}
+
+fn check_choice_rule(rule: &super::widget::WidgetFieldRule) -> Result<(), String> {
+    let name = &rule.name;
+    if rule.field_type == FieldType::Choice {
+        match (rule.min_choices, rule.max_choices) {
+            (Some(min), Some(max)) => {
+                if min < 2 {
+                    return Err(format!("field '{name}': min_choices must be at least 2"));
+                }
+                if min > max {
+                    return Err(format!("field '{name}': min_choices is above max_choices"));
+                }
+                if max > widget::MAX_WIDGET_CHOICES {
+                    return Err(format!(
+                        "field '{name}': max_choices must be at most {}",
+                        widget::MAX_WIDGET_CHOICES
+                    ));
+                }
+            }
+            _ => {
+                return Err(format!(
+                    "field '{name}': a choice field needs min_choices and max_choices"
+                ));
+            }
+        }
+    } else if rule.min_choices.is_some() || rule.max_choices.is_some() {
+        return Err(format!(
+            "field '{name}': only a choice field takes min_choices or max_choices"
+        ));
+    }
+    Ok(())
 }
 
 fn check_hooks(m: &Manifest) -> Result<(), String> {

@@ -1,0 +1,14 @@
+{
+  "id": "poll",
+  "version": 1,
+  "kind": "chat",
+  "widgets": [
+    {
+      "type": "poll/single",
+      "semantic": "poll",
+      "fields": [
+        { "name": "option", "type": "choice", "required": true, "min_choices": 2, "max_choices": 12 }
+      ]
+    }
+  ]
+}
