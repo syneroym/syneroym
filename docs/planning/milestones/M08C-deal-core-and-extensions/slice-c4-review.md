@@ -1192,7 +1192,7 @@ test `#[ignore = "stop-rule measurement; run by hand"]` and print the
 time, or keep only a loose assert (for example 2 s) that catches a real
 regression. Write the command that prints the number in status.md.
 
-*Status:* Open.
+*Status:* Fixed (f60853cc). Proof: loosened timing assertion in scenario_266 to 2,000 ms (< 2000) to prevent CI runner wall-clock flakes while retaining regression detection; recorded command in status.md and task.md.
 
 ### R18 — In a group chat, a group event after the last message still gives `complete: false` (minor)
 
@@ -1215,7 +1215,7 @@ in a group.
 case: 1,000 messages after the widget, then one membership event, gives
 `true`.
 
-*Status:* Open.
+*Status:* Fixed (f60853cc). Proof: in scan_history, checked whether remaining items in page contain a Message; in scenario 265, 1,000 messages followed by a membership event returns complete: true; when broken to treat any item as message, the test failed with left: Bool(false), right: true.
 
 ### R19 — The widget field check passes a fake choice to the schema check (minor)
 
@@ -1242,7 +1242,7 @@ check_field_limits(field)` (name, `max_len`, `min`/`max`) and
 `check_field_limits`, with `choices: None`. Make `check_len_limit` and
 `check_number_limits` private again.
 
-*Status:* Open.
+*Status:* Fixed (f60853cc). Proof: split check_definition into pub(crate) check_field_limits and check_choices; called check_field_limits with choices: None in check_widget_fields, eliminating placeholder choice; made check_len_limit and check_number_limits private; all 26 widget tests pass.
 
 ### R20 — Two records claim more than the evidence shows (minor)
 
@@ -1264,11 +1264,9 @@ fix commits. It did not, as far as the records show.
 status.md, or untick the box and write that CI on the head commit is the
 proof. Add the 28 ms / 54 ms line under the size table in task.md.
 
-*Status:* Open.
+*Status:* Fixed (f60853cc and docs commit). Proof: added 28 ms / 54 ms measurement line and run command under size table in task.md; aligned status.md evidence; updated plan exit criterion to state CI on head commit is proof.
 
-**Counts of round 2:** R1 to R16: all 16 closed (15 verified fixed; R3
-closed when the owner confirmed the +22% ceiling). New findings: 4 minor
-(R17 to R20). **Open: 4 (R17, R18, R19, R20).** None is a blocker or a
+**Counts of round 2:** R1 to R20: all 20 closed (0 open, 20 fixed/closed). None is a blocker or a
 major.
 
 ### The CI flake, fixed in this round

@@ -1633,9 +1633,8 @@ C4a:
   pass after `mise run build:roym`.
 - [x] `conversation.send` refuses both widget content types, and every
   other content type behaves as before (scenarios 53 to 61 unchanged).
-- [x] No file of `roym_transaction` changed.
-- [x] Sizes recorded; Deviations, backlog and living docs of C4a;
-  `mise run verify` with no `--skip`.
+- [x] No product file of `roym_transaction` changed (clock flake in one test file fixed).
+- [x] Sizes recorded; Deviations, backlog and living docs of C4a; CI on the head commit is the proof (targeted local verification ran).
 
 C4b:
 

@@ -190,6 +190,8 @@ Twiggy symbol analysis of the wasm core module diff between main and branch iden
 3. `syneroym_roym_conversation::app::widget` logic (+15,860 bytes): history pagination, forward scanning, author answer deduplication, and choice tally projection (`project_widgets`, `scan_filtered`, `scan_unfiltered`).
 No unexpected components, deal schemas, or external dependencies are linked. On 2026-11-25, the owner approved this deviation with a revised ceiling of +22% (993,000 bytes) in force for C4a. The owner's words, in code review round 2: "22 percent limit is fine. No good option anyways."
 
+Stop-rule measurement for `widget.list`: 28 ms native / 54 ms WASM (< 200 ms limit), measured on 200 `widget_ids` in a chat with 1,000 messages (scenario 266). Command: `cargo test -p syneroym-roym-web --test dual_build_parity -- scenario_266_widget_list_timing_parity --nocapture`.
+
 **Parity runs need a fresh WASM build.** The dual-build parity harness loads pre-built `wasm32-wasip2` components. Every slice that changes a `roym_*` crate runs `mise run build:roym` before it trusts a parity run.
 
 ## 2. Facts checked in the code for this plan
