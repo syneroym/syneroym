@@ -2,7 +2,10 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::{FieldType, Hook, MAX_STEP_TYPE_LEN, Manifest, ManifestKind, ids, schema, widget};
+use super::{
+    Field, FieldType, Hook, MAX_STEP_TYPE_LEN, Manifest, ManifestKind, ids, schema,
+    widget::{self, WidgetFieldRule},
+};
 use crate::{
     deal::{MAX_EXTENSION_ID_LEN, ResourceKind},
     listing, services,
@@ -43,7 +46,6 @@ pub(super) fn check_manifest(m: &Manifest) -> Result<(), ManifestError> {
 fn check_insight(m: &Manifest) -> Result<(), String> {
     let has_workflow_part = !m.resource_kinds.is_empty()
         || !m.hooks.is_empty()
-        || m.service.is_some()
         || !m.details.is_empty()
         || !m.steps.is_empty()
         || !m.widgets.is_empty();
@@ -111,42 +113,35 @@ fn check_chat(m: &Manifest) -> Result<(), String> {
     Ok(())
 }
 
-fn check_widget_fields(fields: &[super::widget::WidgetFieldRule]) -> Result<(), String> {
+fn check_widget_fields(fields: &[WidgetFieldRule]) -> Result<(), String> {
     let mut field_names = HashSet::new();
     for rule in fields {
         if !field_names.insert(rule.name.as_str()) {
             return Err(format!("field '{}' is listed twice", rule.name));
         }
-        let name = &rule.name;
-        let name_ok = !name.is_empty()
-            && name.len() <= schema::MAX_FIELD_NAME_LEN
-            && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
-        if !name_ok {
-            return Err(format!(
-                "field name '{name}' is not [a-z0-9_]{{1,{}}}",
-                schema::MAX_FIELD_NAME_LEN
-            ));
-        }
         if rule.field_type == FieldType::Money {
-            return Err(format!("field '{name}': a chat widget cannot use money"));
+            return Err(format!("field '{}': a chat widget cannot use money", rule.name));
         }
-        let dummy = super::Field {
+        let dummy = Field {
             name: rule.name.clone(),
             field_type: rule.field_type,
             required: rule.required,
             max_len: rule.max_len,
             min: rule.min,
             max: rule.max,
-            choices: None,
+            choices: if rule.field_type == FieldType::Choice {
+                Some(vec!["placeholder".to_string()])
+            } else {
+                None
+            },
         };
-        schema::check_len_limit(&dummy)?;
-        schema::check_number_limits(&dummy)?;
+        schema::check_definition(&dummy)?;
         check_choice_rule(rule)?;
     }
     Ok(())
 }
 
-fn check_choice_rule(rule: &super::widget::WidgetFieldRule) -> Result<(), String> {
+fn check_choice_rule(rule: &WidgetFieldRule) -> Result<(), String> {
     let name = &rule.name;
     if rule.field_type == FieldType::Choice {
         match (rule.min_choices, rule.max_choices) {

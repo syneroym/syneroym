@@ -5,6 +5,7 @@ use syneroym_identity::{
     delegation::{DelegationCertificate, SCOPE_RECORD_SIGNING},
     substrate::resolve_did_key,
 };
+use syneroym_roym_core::widget;
 use syneroym_rpc::ConversationDeliveryState;
 
 use super::{
@@ -396,10 +397,7 @@ async fn conversation_message_shapes(h: &Harness, conv_id: &str) {
     let hist_deleted = rpc(h, "conversation.history", json!({ "conversation": conv_id })).await;
     assert_shape("conversation_history_deleted_message", &hist_deleted);
 
-    let poll_def = syneroym_roym_core::widget::poll_definition(
-        "Favorite color?",
-        &["Red".into(), "Blue".into()],
-    );
+    let poll_def = widget::poll_definition("Favorite color?", &["Red".into(), "Blue".into()]);
     let w_send = rpc(
         h,
         "widget.send",

@@ -1,5 +1,5 @@
 use serde_json::{Value, json};
-use syneroym_roym_core::services;
+use syneroym_roym_core::{services, widget};
 
 use super::{fixtures::*, helpers::*};
 
@@ -78,8 +78,7 @@ async fn scenario_73_every_catalog_and_conversation_verb_is_wired_and_locally_ad
             .await;
     let message_id = sent["result"]["message_id"].as_str().unwrap().to_string();
 
-    let poll_def =
-        syneroym_roym_core::widget::poll_definition("Question?", &["A".into(), "B".into()]);
+    let poll_def = widget::poll_definition("Question?", &["A".into(), "B".into()]);
     let (w_send, _) =
         both_rpc(&h, "widget.send", json!({ "conversation": conv_id, "widget": poll_def })).await;
     let widget_id = w_send["result"]["message_id"].as_str().unwrap_or("missing").to_string();

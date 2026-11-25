@@ -22,10 +22,9 @@ pub const ANSWER_BODY_VERSION: u32 = 1;
 /// The whole message body, so the limit is what travels.
 pub const MAX_WIDGET_BODY_BYTES: usize = 8 * 1024;
 pub const MAX_ANSWER_BODY_BYTES: usize = 8 * 1024;
-pub const MAX_WIDGET_FIELDS: usize = 16;
-pub const MAX_WIDGET_CHOICES: usize = 32;
-pub const MAX_WIDGET_TYPE_LEN: usize = 64;
-pub const MAX_SEMANTIC_LEN: usize = 32;
+pub use crate::extension::widget::{
+    MAX_SEMANTIC_LEN, MAX_WIDGET_CHOICES, MAX_WIDGET_FIELDS, MAX_WIDGET_TYPE_LEN,
+};
 pub const MAX_PROMPT_LEN: usize = schema::MAX_TEXT_LEN;
 pub const MAX_WIDGET_LABEL_LEN: usize = 128;
 pub const MAX_CHOICE_TEXT_LEN: usize = 128;
@@ -35,7 +34,7 @@ pub enum WidgetError {
     #[error("widget body is too large: {bytes} bytes")]
     TooLarge { bytes: usize },
     #[error("unknown widget version: {0}")]
-    UnknownVersion(u32),
+    UnknownVersion(u64),
     #[error("invalid widget json: {0}")]
     Json(String),
     #[error("invalid widget shape: {0}")]
@@ -99,23 +98,26 @@ pub struct WidgetDefinition {
     pub fields: Vec<DefinedField>,
 }
 
+impl DefinedField {
+    pub fn to_schema_field(&self) -> schema::Field {
+        schema::Field {
+            name: self.name.clone(),
+            field_type: self.field_type,
+            required: self.required,
+            max_len: self.max_len,
+            min: self.min,
+            max: self.max,
+            choices: self
+                .choices
+                .as_ref()
+                .map(|choices| choices.iter().map(|c| c.code.clone()).collect()),
+        }
+    }
+}
+
 impl WidgetDefinition {
     pub fn answer_fields(&self) -> Vec<schema::Field> {
-        self.fields
-            .iter()
-            .map(|f| schema::Field {
-                name: f.name.clone(),
-                field_type: f.field_type,
-                required: f.required,
-                max_len: f.max_len,
-                min: f.min,
-                max: f.max,
-                choices: f
-                    .choices
-                    .as_ref()
-                    .map(|choices| choices.iter().map(|c| c.code.clone()).collect()),
-            })
-            .collect()
+        self.fields.iter().map(DefinedField::to_schema_field).collect()
     }
 }
 
@@ -184,7 +186,7 @@ pub fn parse_widget_body(body: &[u8]) -> Result<WidgetDefinition, WidgetError> {
         .and_then(Value::as_u64)
         .ok_or_else(|| WidgetError::Json("missing widget_version".to_string()))?;
     if version != u64::from(WIDGET_BODY_VERSION) {
-        return Err(WidgetError::UnknownVersion(version as u32));
+        return Err(WidgetError::UnknownVersion(version));
     }
     let parsed: WidgetBody =
         serde_json::from_value(val).map_err(|e| WidgetError::Shape(e.to_string()))?;
@@ -246,7 +248,7 @@ pub fn check_shape(def: &WidgetDefinition) -> Result<(), WidgetError> {
                 f.name
             )));
         }
-        let choices = if f.field_type == FieldType::Choice {
+        if f.field_type == FieldType::Choice {
             let list = f.choices.as_ref().ok_or_else(|| {
                 WidgetError::Shape(format!("field '{}': choice field needs choices", f.name))
             })?;
@@ -256,7 +258,6 @@ pub fn check_shape(def: &WidgetDefinition) -> Result<(), WidgetError> {
                     f.name
                 )));
             }
-            let mut codes = Vec::with_capacity(list.len());
             for c in list {
                 if c.text.trim().is_empty() || c.text.len() > MAX_CHOICE_TEXT_LEN {
                     return Err(WidgetError::Shape(format!(
@@ -265,27 +266,14 @@ pub fn check_shape(def: &WidgetDefinition) -> Result<(), WidgetError> {
                         f.name
                     )));
                 }
-                codes.push(c.code.clone());
             }
-            Some(codes)
-        } else {
-            if f.choices.is_some() {
-                return Err(WidgetError::Shape(format!(
-                    "field '{}': only choice fields have choices",
-                    f.name
-                )));
-            }
-            None
-        };
-        let dummy = schema::Field {
-            name: f.name.clone(),
-            field_type: f.field_type,
-            required: f.required,
-            max_len: f.max_len,
-            min: f.min,
-            max: f.max,
-            choices,
-        };
+        } else if f.choices.is_some() {
+            return Err(WidgetError::Shape(format!(
+                "field '{}': only choice fields have choices",
+                f.name
+            )));
+        }
+        let dummy = f.to_schema_field();
         schema::check_definition(&dummy).map_err(WidgetError::Shape)?;
     }
     Ok(())
@@ -377,7 +365,7 @@ pub fn parse_answer_body(body: &[u8]) -> Result<AnswerBody, WidgetError> {
         .and_then(Value::as_u64)
         .ok_or_else(|| WidgetError::Json("missing answer_version".to_string()))?;
     if version != u64::from(ANSWER_BODY_VERSION) {
-        return Err(WidgetError::UnknownVersion(version as u32));
+        return Err(WidgetError::UnknownVersion(version));
     }
     let answer: AnswerBody =
         serde_json::from_value(val).map_err(|e| WidgetError::Answer(e.to_string()))?;

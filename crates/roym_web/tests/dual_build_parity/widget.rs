@@ -1,6 +1,9 @@
 use serde_json::json;
-use syneroym_roym_core::widget::{
-    WIDGET_ANSWER_CONTENT_TYPE, WIDGET_CONTENT_TYPE, answer_body, poll_definition, widget_body,
+use syneroym_roym_core::{
+    conversation::group,
+    widget::{
+        WIDGET_ANSWER_CONTENT_TYPE, WIDGET_CONTENT_TYPE, answer_body, poll_definition, widget_body,
+    },
 };
 use syneroym_rpc::{ConversationDeliveryState, ConversationMessage};
 
@@ -446,10 +449,7 @@ async fn scenario_263_a_poll_in_a_group_parity() {
     )
     .await;
     assert_eq!(w_ans_rem, n_ans_rem);
-    assert_eq!(
-        w_ans_rem["error"]["message"],
-        syneroym_roym_core::conversation::group::GROUP_REMOVED_NOTICE
-    );
+    assert_eq!(w_ans_rem["error"]["message"], group::GROUP_REMOVED_NOTICE);
 }
 
 #[tokio::test]

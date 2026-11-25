@@ -1,3 +1,5 @@
+use std::iter;
+
 use serde_json::json;
 
 use super::*;
@@ -144,7 +146,7 @@ fn a_body_of_exactly_the_limit_passes_and_one_byte_more_is_refused() {
     let mut exact_8192 = json_bytes;
     if exact_8192.len() < MAX_WIDGET_BODY_BYTES {
         let pad = MAX_WIDGET_BODY_BYTES - exact_8192.len();
-        exact_8192.extend(std::iter::repeat_n(b' ', pad));
+        exact_8192.extend(iter::repeat_n(b' ', pad));
     }
     assert_eq!(exact_8192.len(), 8 * 1024);
     assert!(parse_widget_body(&exact_8192).is_ok());
@@ -292,7 +294,7 @@ fn an_answer_to_an_unknown_type_is_checked_against_its_own_fields() {
 }
 
 #[test]
-fn poll_definition_builds_the_hub_fixture() {
+fn poll_definition_has_the_hub_shape() {
     let p = poll_definition(
         "Which day shall we meet?",
         &["Saturday".to_string(), "Sunday".to_string()],
