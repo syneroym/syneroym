@@ -1568,7 +1568,7 @@ ids does not see them.
 | "`RECORD_TYPES` is not read by any verifier" (`:665`) | Unchanged. C4 adds no record type. |
 | "More demo stories" (`:705`) | C4b extends story 20. |
 | New: "Poll options and widget labels are not offered to machine translation" | C4b adds it (D-C4-11). Target: TBD. |
-| New: "`widget.list` scans at most 1,000 messages forward from the oldest asked widget, misses an answer whose sender's clock puts it before its widget, and caps unfiltered listings at 50 widgets" | C4a adds it (D-C4-7). The fix is a stored count (section 7.8). Target: TBD. |
+| New: "`widget.list` scans at most 1,000 messages forward from the oldest asked widget, misses an answer whose sender's clock puts it before its widget, and caps unfiltered listings at 50 widgets" | C4a adds it (D-C4-7). The Hub draws the counts it has and shows no sign when `complete` is false, so a count in a long chat can be too low. The fix is a stored count (section 7.8). Target: TBD. |
 | New: "The Hub thread shows only the oldest 200 messages" | C4b adds it (P1). The fix is thread paging. Target: TBD. |
 | New: "A voter's local clock stepping back can hide a change of vote" | C4a adds it (P9, Q4). Target: TBD. |
 | New: "A person cannot take back a vote" | C4b adds it (Q4). Target: TBD. |
