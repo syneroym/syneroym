@@ -899,8 +899,9 @@ describe("widget messages in messages thread", () => {
     direction: "incoming" as const,
     sender_timestamp_ms: 1000,
     content_type: contentType,
-    body_encoding: "utf8",
+    body_encoding: "utf8" as const,
     body: body ?? "",
+    languages: ["en"],
     state: "delivered" as const,
     stored_at_secs: 1,
   });

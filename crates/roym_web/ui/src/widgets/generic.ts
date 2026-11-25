@@ -1,9 +1,9 @@
 import { fieldView } from "../cards/fields";
 import { messageText } from "../chat/message_text";
-import { labelled } from "../dom";
+import { errText, labelled } from "../dom";
 import { widgetFieldLabelId, widgetNameId, widgetType } from "../extensions/registry";
 import type { DefinedField, WidgetDefinition, WidgetRenderOptions, WidgetView } from "./view";
-import { codeWord, errText, t } from "../i18n/i18n";
+import { codeWord, t } from "../i18n/i18n";
 import { call } from "../rpc";
 import { messageStateWord } from "../screens/messages";
 import type { FieldDef, SchemaDef } from "../extensions/registry";

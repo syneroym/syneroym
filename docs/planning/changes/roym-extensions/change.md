@@ -3,6 +3,7 @@ status: draft
 demo:
   - crates/substrate/tests/e2e/demo/60-roym-step.spec.ts
   - crates/substrate/tests/e2e/demo/50-roym-deal.spec.ts
+  - crates/substrate/tests/e2e/demo/20-roym-chat.spec.ts
 living-docs-touched:
   - docs/system-requirements-spec.md
   - docs/system-architecture.md

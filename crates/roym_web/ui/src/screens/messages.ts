@@ -608,6 +608,7 @@ export function messageElement(
       author: m.author,
       direction: m.direction,
       sender_timestamp_ms: m.sender_timestamp_ms,
+      languages: m.languages ?? [],
       definition: undefined,
       refused: "widget-refused",
       checked: false,

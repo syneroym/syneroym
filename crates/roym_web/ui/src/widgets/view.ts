@@ -38,7 +38,7 @@ export interface AnswerView {
   author: string;
   direction: Direction;
   sender_timestamp_ms: number;
-  languages: string[];
+  languages?: string[];
   data: Record<string, unknown>;
   state: StoredState;
   last_error?: string | null;
@@ -49,7 +49,7 @@ export interface WidgetView {
   author: string;
   direction: Direction;
   sender_timestamp_ms: number;
-  languages: string[];
+  languages?: string[];
   definition?: WidgetDefinition | null;
   refused?: string | null;
   checked: boolean;
