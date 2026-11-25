@@ -4,9 +4,9 @@
 owner, who answers the questions in section 2.1. You do not have the
 planning conversation. This plan is meant to stand alone.*
 
-**Status: plan reviewed, 2026-11-25 (round 1 by Claude Sonnet 5.5, all 9
-findings folded). The owner accepted the recommended answer of every
-question in section 2.1 on 2026-11-25.**
+**Status: plan reviewed, 2026-11-25 (round 2 by Claude Sonnet 5.5, all items
+folded). The owner accepted the recommended answer of every question in
+section 2.1 on 2026-11-25.**
 
 **Size and PRs.** [task.md](task.md) sizes C4 as L. Checked against the
 code, it is about 1,500 lines of production code (Rust and TypeScript) and
@@ -791,7 +791,9 @@ pub enum WidgetError {
 
 pub enum WidgetCheck { Checked, NotChecked }
 
-/// Size first, then JSON, version and shape.
+/// Size first, then parse to `serde_json::Value`, check `widget_version`
+/// (returns `UnknownVersion` / "widget-version"), and deserialize the
+/// definition (mapping any serde failure to `Shape` / "widget-shape").
 pub fn parse_widget_body(body: &[u8]) -> Result<WidgetDefinition, WidgetError>;
 /// Shape, then size of the serialized body.
 pub fn widget_body(def: &WidgetDefinition) -> Result<String, WidgetError>;
@@ -821,9 +823,14 @@ pub fn poll_definition(prompt: &str, options: &[String]) -> WidgetDefinition;
    `MAX_CHOICE_TEXT_LEN` bytes. A `label`, when present, is not blank and
    at most `MAX_WIDGET_LABEL_LEN` bytes.
    All structs deny unknown fields (`deny_unknown_fields`), and `field_type`
-   must deserialize into one of today's eight variants of `FieldType`. A
-   definition from a peer with an unknown field type (e.g. `location`) or
-   unknown field is refused as `Shape("widget-shape")` (P3).
+   must deserialize into one of today's eight variants of `FieldType`.
+   In `parse_widget_body`, the body is parsed to `serde_json::Value` first,
+   `widget_version` is checked, and deserialization into `WidgetBody` maps
+   any serde failure (unknown field type like `location` or unknown key) to
+   `Shape("widget-shape")` (P3).
+   For `widget.send`, input deserialization of `WidgetSendInput` with an
+   unknown field type fails at the RPC layer as invalid params (`-32602`)
+   without `data.code` (P3).
 
 `check_type`: `types.get(&def.extension, &def.widget_type)`. `None` gives
 `NotChecked`. Otherwise `semantic` equals the type's; the field names, in
@@ -953,6 +960,8 @@ pub struct WidgetView {
     pub answers: Vec<AnswerView>,
     /// Answers that named this widget and failed `check_answer`.
     pub ignored_answers: u32,
+    pub state: StoredState,
+    pub last_error: Option<String>,
 }
 pub struct ChoiceCount { pub field: String, pub choice: String, pub count: u32 }
 pub struct AnswerView {
@@ -1023,7 +1032,7 @@ widget.list(conversation, widget_ids):
       if not complete or page.next_cursor is None: break
       cursor = page.next_cursor
 
-  views = widgets.map(project)            // parse_widget_body, check_type; refused code on error
+  views = widgets.map(project)            // parse_widget_body, check_type; carries m.state and m.last_error; refused code on error
   by_widget = answers.filter_map(parse_answer_body).group_by(widget_id)
   for view with a definition:
     valid = by_widget[view.widget_id].filter(check_answer ok)
@@ -1045,6 +1054,11 @@ Rules, each with a test (section 7):
   own outgoing messages regardless of admission). `AnswerView` carries
   `state` and `last_error` so the Hub displays the state word and retry
   button for the person's own answer.
+- **Own widget state and retry** (P10). `WidgetView` carries `state` and
+  `last_error` from the widget's message row. For an own widget
+  (`direction == Direction::Outgoing`), the Hub shows its state word when
+  not `delivered`, and if `failed`, shows a retry button calling
+  `conversation.retry` with `view.widget_id`.
 - **A deleted answer is not counted.** The author's earlier answer then
   counts again. The Hub offers no delete for an answer (it draws no bubble
   for it), so this happens only through `conversation.delete-message`.
@@ -1151,7 +1165,12 @@ New folder `crates/roym_web/ui/src/widgets/`:
   `semantic` is `poll` and the definition has exactly one required
   `choice` field, else `renderGenericWidget`. A `refused` view draws
   `renderRefusedCard`-like text: `widget-too-large` for that code, else
-  `widget-refused` with the reason.
+  `widget-refused` with the reason. For an own widget (`view.direction === 'outgoing'`),
+  it shows its state word when not `delivered` (`messages-state-*`), and if
+  `failed`, shows a retry button calling `conversation.retry` with `view.widget_id`
+  (P10). The Hub ignores `complete: false` when rendering widgets (it draws
+  the counts collected up to the scan cap), because the Hub thread shows only
+  the oldest 200 messages today; recorded in the backlog row (P11).
 - `composer.ts`: the "Poll" button beside the composer, and its form:
   the question, two option inputs, "Add option" up to 12, "Remove" down to
   2, "Send poll". It calls `widget.send` with `pollDefinition` and the
@@ -1172,7 +1191,8 @@ Wiring:
   ([messages.ts:517](../../../../crates/roym_web/ui/src/screens/messages.ts#L517)):
   a widget message draws `renderWidget` from the map, or `widget-refused`
   when the map has none; an answer message is not drawn (as a `repeat`
-  card is not, `:396`).
+  card is not, `:396`). The state word and retry action for the widget message
+  are rendered on the widget card (P10).
 - `groups.ts` `reloadThread` (`:656`) calls `widget.list`, and
   `renderThreadMessages` (`:151`) takes the map and does the same.
 - Both composers get the "Poll" button.
@@ -1338,6 +1358,8 @@ Each step builds, and its tests pass, before the next starts.
 - `a_body_of_exactly_the_limit_passes_and_one_byte_more_is_refused`
   (8,192 bytes)
 - `an_unknown_body_version_is_refused`
+- `a_body_with_unknown_version_and_extra_keys_returns_widget_version` (P3)
+- `a_body_with_unknown_field_type_returns_widget_shape` (P3)
 - `a_poll_with_one_or_thirteen_options_breaks_its_type_rules`
 - `a_known_type_with_another_semantic_or_field_breaks_its_rules`
 - `an_unknown_type_is_not_checked_but_its_shape_is`
@@ -1364,7 +1386,8 @@ Each step builds, and its tests pass, before the next starts.
   `complete: false` when more exist (P8).
 - `scenario_262_widget_refusals_parity`: `widget.send` with an unknown
   type (`extension-unknown`), a body over 8 KiB (`widget-too-large`), a
-  definition with an unknown field type (`widget-shape`, P3);
+  definition breaking a `check_shape` rule (`widget-shape`, P3; `widget.send`
+  with an unknown field type is rejected as invalid params at RPC parse);
   `conversation.send` with each widget content type (reserved);
   `widget.answer` to a text message (`not-a-widget`), to a widget of
   another conversation (`widget-not-found`), to a deleted widget
@@ -1373,9 +1396,11 @@ Each step builds, and its tests pass, before the next starts.
   the group (the group helpers of `group.rs`); a removed member cannot
   answer (`GROUP_REMOVED_NOTICE`).
 - `scenario_264_inbound_bad_or_unknown_widgets_parity`: an inbound widget
-  over 8 KiB and one with a bad shape are listed with `refused` codes; an
-  inbound unknown type (built from known field types) is listed with
-  `checked: false`, and an answer to it is sent and counted.
+  over 8 KiB (`widget-too-large`), one with a bad shape, and one with an
+  unknown field type (e.g. `location`, P3) are listed with `refused` codes
+  (`widget-too-large`, `widget-shape`); an inbound unknown type (built from
+  known field types) is listed with `checked: false`, and an answer to it
+  is sent and counted.
 
 ### 7.3 Method contract
 
@@ -1383,7 +1408,8 @@ Each step builds, and its tests pass, before the next starts.
   (`UPDATE_METHOD_SHAPES=1`), and their probes.
 - `contract.rs:40` assertion updated from 24 to 27 for `conversation` (P5).
 - Scenario 73 in `wire_origin.rs` updated to include all three methods,
-  asserting they are dispatched locally and refused on the wire (P5).
+  asserting they are wired and locally admitted (neither `-32601` nor
+  `-32013`) (P5).
 
 ### 7.4 Two-node and three-node (`crates/substrate/tests/roym_widget_e2e.rs`)
 
@@ -1406,17 +1432,18 @@ Each step builds, and its tests pass, before the next starts.
   the person's own choice; a tap calls `widget.answer` with `{ [fieldName]: code }`
   derived from the definition (P7); a tap on the current choice makes no call;
   a choice text with markup is drawn as text; the `lang` of the options;
-  state word and retry button drawn when the user's own answer has state
-  `failed` (P2).
+  state word and retry button drawn when an own poll or own answer has state
+  `failed` (P2, P10).
 - `widgets/generic.test.ts`: an unknown type draws its fields and "Not
   checked on this device"; each field type's input; labels (catalog, then
-  author, then name); state word and retry button for own answer with state
-  `failed` (P2); "Send answer"; the answers list. The widget-answer hook
-  point: "a node with no engine draws no translate action and makes no call",
-  the exact `translation.translate` params, and the `unavailable` stub
-  (`-32020`), as in `chat/message_text.test.ts`.
+  author, then name); state word and retry button for own widget or own answer
+  with state `failed` (P2, P10); "Send answer"; the answers list. The
+  widget-answer hook point: "a node with no engine draws no translate action
+  and makes no call", the exact `translation.translate` params, and the
+  `unavailable` stub (`-32020`), as in `chat/message_text.test.ts`.
 - `widgets/render.test.ts`: poll versus generic choice; the two refused
-  texts.
+  texts; `renderWidget` renders normally and without error when `complete`
+  is `false` (P11).
 - `widgets/composer.test.ts`: 2 to 12 options; the blank and repeated
   option rules; the `widget.send` params.
 - `messages.test.ts` and `groups.test.ts`: a widget message draws the
