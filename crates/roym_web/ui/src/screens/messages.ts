@@ -114,6 +114,7 @@ export async function renderMessages(
   container.replaceChildren();
   const box = document.createElement("div");
   box.className = "messages-screen";
+  container.appendChild(box);
 
   const initialConvId = initial?.conversationId;
   const initialPreFill = initial?.preFill;
@@ -298,7 +299,6 @@ export async function renderMessages(
   });
 
   await reloadList(initialConvId, initialPreFill);
-  container.appendChild(box);
 }
 
 async function renderThread(

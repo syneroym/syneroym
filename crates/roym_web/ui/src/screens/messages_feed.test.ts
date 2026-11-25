@@ -307,6 +307,47 @@ describe("a feed redraw keeps the other open work", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(node.historyCalls).toBe(2);
   });
+
+  it("does not drop the feed listener when an event arrives during the initial load", async () => {
+    startFeed();
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    let releaseList: (() => void) | null = null;
+    const listBlocked = new Promise<void>((resolve) => {
+      releaseList = resolve;
+    });
+    let emitted = false;
+    const messages: unknown[] = [textMessage("m1", "First")];
+    const node = stubNode(messages, [], {
+      "conversation.list": async () => {
+        if (!emitted) {
+          emitted = true;
+          FakeFeedSource.instance!.emit(
+            "change",
+            JSON.stringify({ kind: "conversation.message", subject: CONV }),
+            "c1",
+          );
+          await listBlocked;
+        }
+        return {
+          conversations: [{ id: CONV, peer_address: "peer-1", message_count: 1 }],
+        };
+      },
+    });
+
+    const renderPromise = renderMessages(container, ME);
+    await vi.advanceTimersByTimeAsync(FEED_BURST_MS);
+    releaseList!();
+    await renderPromise;
+
+    expect(node.historyCalls).toBe(1);
+
+    messages.push(textMessage("m2", "Second"));
+    await feedReportsChange();
+
+    expect(node.historyCalls).toBe(2);
+    expect(container.textContent).toContain("Second");
+  });
 });
 
 describe("what the person sends draws the thread at once", () => {
