@@ -1,6 +1,6 @@
 //! Widget operations for conversation: send, answer, and list.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde_json::Value;
 use syneroym_app_host::{
@@ -83,8 +83,13 @@ pub(crate) async fn answer<H: AppHost>(host: &H, input: WidgetAnswerInput) -> Re
     if msg.deleted_at.is_some() {
         return Err(refusal(&WidgetError::Deleted));
     }
+    if !msg.outgoing && msg.visible_seq == 0 {
+        return Err(refusal(&WidgetError::NotFound));
+    }
 
     let def = parse_widget_body(&msg.body)
+        .map_err(|e| refusal(&WidgetError::Refused(e.code().to_string())))?;
+    check_type(widget_types(), &def)
         .map_err(|e| refusal(&WidgetError::Refused(e.code().to_string())))?;
     check_answer(&def, &input.data).map_err(|e| refusal(&e))?;
     let body = answer_body(&input.widget_id, &input.data).map_err(|e| refusal(&e))?;
@@ -122,38 +127,45 @@ async fn scan_history<H: AppHost, F>(
     mut handle_msg: F,
 ) -> Result<bool, Response>
 where
-    F: FnMut(Message, &mut bool),
+    F: FnMut(Message),
 {
     let mut seen = 0;
-    let mut complete = true;
+    let mut scan_complete = true;
 
     while seen < MAX_WIDGET_SCAN_MESSAGES {
         let page = AppConversation::history(host, conversation.to_string(), 200, cursor)
             .await
             .map_err(from_host)?;
-        for item in page.items {
+        let items_len = page.items.len();
+        for (idx, item) in page.items.into_iter().enumerate() {
             let HistoryItem::Message(m) = item else { continue };
             seen += 1;
+            let at_cap = seen == MAX_WIDGET_SCAN_MESSAGES;
+            let more_in_chat = idx + 1 < items_len || page.next_cursor.is_some();
             if m.deleted_at.is_some() {
-                if seen == MAX_WIDGET_SCAN_MESSAGES {
-                    complete = false;
+                if at_cap {
+                    if more_in_chat {
+                        scan_complete = false;
+                    }
                     break;
                 }
                 continue;
             }
-            handle_msg(m, &mut complete);
-            if seen == MAX_WIDGET_SCAN_MESSAGES {
-                complete = false;
+            handle_msg(m);
+            if at_cap {
+                if more_in_chat {
+                    scan_complete = false;
+                }
                 break;
             }
         }
-        if !complete || page.next_cursor.is_none() {
+        if !scan_complete || page.next_cursor.is_none() {
             break;
         }
         cursor = page.next_cursor;
     }
 
-    Ok(complete)
+    Ok(scan_complete)
 }
 
 async fn scan_filtered<H: AppHost>(
@@ -161,13 +173,22 @@ async fn scan_filtered<H: AppHost>(
     conversation: &str,
     widget_ids: &[String],
 ) -> Result<(Vec<Message>, Vec<Message>, bool), Response> {
-    let mut valid_widgets = Vec::new();
+    let mut seen_ids = HashSet::new();
+    let mut deduped_ids = Vec::new();
     for wid in widget_ids {
+        if seen_ids.insert(wid.as_str()) {
+            deduped_ids.push(wid.clone());
+        }
+    }
+
+    let mut valid_widgets = Vec::new();
+    for wid in &deduped_ids {
         match AppConversation::get_message(host, wid.clone()).await {
             Ok(m) => {
                 if m.conversation == conversation
                     && m.content_type == WIDGET_CONTENT_TYPE
                     && m.deleted_at.is_none()
+                    && (m.outgoing || m.visible_seq != 0)
                 {
                     valid_widgets.push(m);
                 }
@@ -186,7 +207,7 @@ async fn scan_filtered<H: AppHost>(
     };
 
     let mut answers = Vec::new();
-    let complete = scan_history(host, conversation, Some(oldest.id.clone()), |m, _| {
+    let complete = scan_history(host, conversation, Some(oldest.id.clone()), |m| {
         if m.content_type == WIDGET_ANSWER_CONTENT_TYPE {
             answers.push(m);
         }
@@ -202,13 +223,14 @@ async fn scan_unfiltered<H: AppHost>(
 ) -> Result<(Vec<Message>, Vec<Message>, bool), Response> {
     let mut widgets = Vec::new();
     let mut answers = Vec::new();
+    let mut more_widgets = false;
 
-    let complete = scan_history(host, conversation, None, |m, comp| {
+    let scan_complete = scan_history(host, conversation, None, |m| {
         if m.content_type == WIDGET_CONTENT_TYPE {
             if widgets.len() < MAX_UNFILTERED_WIDGETS {
                 widgets.push(m);
             } else {
-                *comp = false;
+                more_widgets = true;
             }
         } else if m.content_type == WIDGET_ANSWER_CONTENT_TYPE {
             answers.push(m);
@@ -216,7 +238,7 @@ async fn scan_unfiltered<H: AppHost>(
     })
     .await?;
 
-    Ok((widgets, answers, complete))
+    Ok((widgets, answers, scan_complete && !more_widgets))
 }
 
 fn project_widgets(widgets: Vec<Message>, answers: Vec<Message>) -> Vec<WidgetView> {
@@ -323,23 +345,14 @@ fn compute_view_answers_and_counts(
         })
         .collect();
 
-    let mut counts = Vec::new();
-    for field in &def.fields {
-        if let (FieldType::Choice, Some(choices)) = (field.field_type, &field.choices) {
-            for choice in choices {
-                let count = latest
-                    .iter()
-                    .filter(|(_, body)| {
-                        body.data.get(&field.name).and_then(Value::as_str) == Some(&choice.code)
-                    })
-                    .count() as u32;
-                counts.push(ChoiceCount {
-                    field: field.name.clone(),
-                    choice: choice.code.clone(),
-                    count,
-                });
-            }
-        }
+    let mut counts = zero_counts(def);
+    for count in &mut counts {
+        count.count = latest
+            .iter()
+            .filter(|(_, body)| {
+                body.data.get(&count.field).and_then(Value::as_str) == Some(&count.choice)
+            })
+            .count() as u32;
     }
 
     (counts, answers, ignored)
