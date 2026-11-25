@@ -28,7 +28,7 @@ no earlier round, so no earlier item needed re-checking. I also read the
 review files of C3c (round headings and the kinds of findings) for what
 earlier plan reviews looked for.
 
-**Summary: 9 findings: 1 blocker, 2 major, 6 minor. 9 open.**
+**Summary: 9 findings: 1 blocker, 2 major, 6 minor. 0 open, 9 fixed.**
 
 ### What was checked and found correct
 
@@ -106,7 +106,7 @@ of each, for the record:
 
 ### Findings
 
-#### P1 — `history` pages oldest first; the whole `widget.list` scan, its early stop and its cost claims are inverted (blocker)
+#### [x] P1 — `history` pages oldest first; the whole `widget.list` scan, its early stop and its cost claims are inverted (blocker)
 
 *Where:* D-C4-7 (the pseudo-code, the rules "The scan stops early" and "The
 order is not taken from `visible_seq`"), point 12 of section 2.2, section
@@ -184,9 +184,9 @@ points 4 and 12 and in section 7.8.
    the cap case with 1,001 messages after the oldest asked widget) and the
    200 ms measurement to match.
 
-*Status:* Open
+*Status:* Fixed (c4199a05). Agreed. Redesigned `widget.list` for forward paging from the oldest asked widget using `get_message`; corrected point 12 to oldest 200; scenario 265, section 7.8, and backlog updated.
 
-#### P2 — A vote that fails to send is invisible, and the voter's own count still includes it (major)
+#### [x] P2 — A vote that fails to send is invisible, and the voter's own count still includes it (major)
 
 *Where:* D-C4-7 (`AnswerView`), D-C4-10 (`messageElement`: "an answer
 message is not drawn"), Q4.
@@ -215,9 +215,9 @@ test that `widget.list` returns the state. Decide in the plan whether a
 `failed` own answer is counted (recommended: yes, as the chat counts it, with
 the state shown) and write it down.
 
-*Status:* Open
+*Status:* Fixed (c4199a05). Agreed. `AnswerView` gains `state: StoredState` and `last_error: Option<String>`; own answer state word and retry button added to poll and generic cards; parity scenario 261 and unit tests updated.
 
-#### P3 — A widget from a newer build with a new field type or new key is refused, not drawn by the generic card (major)
+#### [x] P3 — A widget from a newer build with a new field type or new key is refused, not drawn by the generic card (major)
 
 *Where:* Section 1 and the last "How this is shown" bullet ("If a newer app
 sends a widget this app does not know, the chat shows its fields … and the
@@ -253,9 +253,9 @@ field. A person on build N sees "This widget cannot be shown: widget-json".
   and refuse only to *answer* that field. This is more code in `conversation`
   (size limit) and in the Hub.
 
-*Status:* Open
+*Status:* Fixed (c4199a05). Agreed on option (a). `check_shape` enforces strict shape and known `FieldType` variants; unknown field type or key is refused with `Shape("widget-shape")`; user story, Section 1, and parity scenario 262 updated.
 
-#### P4 — What `widget.list` does with an asked id that is deleted, not a widget, or from another chat is not defined (minor)
+#### [x] P4 — What `widget.list` does with an asked id that is deleted, not a widget, or from another chat is not defined (minor)
 
 *Where:* D-C4-7 pseudo-code and rules, D-C4-10 (`messageElement`).
 
@@ -277,9 +277,9 @@ deleted, missing, non-widget or other-conversation id is left out of
 message it draws as deleted; and a missing id, not a deleted one, draws
 `widget-refused`. Add the case to scenario 265.
 
-*Status:* Open
+*Status:* Fixed (c4199a05). Agreed. An asked id that is deleted, missing, non-widget, or foreign is omitted from `widgets` and does not start a scan; Hub skips deleted messages and draws `widget-refused` for missing ids; scenario 265 updated.
 
-#### P5 — Two guard tests list every conversation method and are not in the plan (minor)
+#### [x] P5 — Two guard tests list every conversation method and are not in the plan (minor)
 
 *Where:* Step 4 (parity and method contract), section 7.3.
 
@@ -300,9 +300,9 @@ needed for `widget.answer`; create one first, as it does for
 `conversation` methods (`group.unhide`, `conversation.delivery-status`) and
 write the result in the plan, as the C3b review asked for the service lists.
 
-*Status:* Open
+*Status:* Fixed (c4199a05). Agreed. Step 4, section 7.3, and exit criteria update `contract.rs` table length assertion from 24 to 27, and add `widget.send`, `widget.answer`, `widget.list` to scenario 73 in `wire_origin.rs`.
 
-#### P6 — The `send_body` extraction does not say where the reserved-type check goes (minor)
+#### [x] P6 — The `send_body` extraction does not say where the reserved-type check goes (minor)
 
 *Where:* D-C4-6, "Shared send path", and the behaviour audit line "`conversation.send` refuses the two widget content types".
 
@@ -323,9 +323,9 @@ check that the caller gives (`conversation.send` passes today's list plus the
 two widget types; the widget methods pass none). The order of errors stays
 as today, and scenarios 207 and 208 do not change.
 
-*Status:* Open
+*Status:* Fixed (c4199a05). Agreed. `send_body` takes a `check_reserved` closure invoked after group checks, preserving error precedence for removed members (scenarios 207 and 208 unchanged).
 
-#### P7 — The Hub poll card hard-codes the field name and the heading (minor)
+#### [x] P7 — The Hub poll card hard-codes the field name and the heading (minor)
 
 *Where:* D-C4-10 (`poll.ts`, `render.ts`).
 
@@ -342,9 +342,9 @@ The card also says "Poll" and does not say "Not checked on this device".
 the catalog only when the type is known (the generic card's rule). Add a
 `poll.test.ts` case.
 
-*Status:* Open
+*Status:* Fixed (c4199a05). Agreed. `renderPoll` dynamically uses the definition's choice field name in the answer payload, draws `ext-not-checked` when `checked` is false, and uses catalog heading only for known types; `poll.test.ts` updated.
 
-#### P8 — `widget.list` with no ids can return about 8 MB, and the output-size claim is wrong (minor)
+#### [x] P8 — `widget.list` with no ids can return about 8 MB, and the output-size claim is wrong (minor)
 
 *Where:* D-C4-7, rule "Size of the output".
 
@@ -361,9 +361,9 @@ page, which `widget.list` is not.
 50 oldest after `--from`, with `complete: false`), and replace the size
 sentence with the real bound. Add the bound to scenario 265.
 
-*Status:* Open
+*Status:* Fixed (c4199a05). Agreed. Capped unfiltered widget listings at `MAX_UNFILTERED_WIDGETS = 50` widgets (~400 KiB) with `complete: false` when more exist; updated size rules, scenario 265, and backlog.
 
-#### P9 — "Newest answer" uses the voter's own clock, and a clock that steps back makes a vote do nothing (minor)
+#### [x] P9 — "Newest answer" uses the voter's own clock, and a clock that steps back makes a vote do nothing (minor)
 
 *Where:* Q4 and D-C4-7 ("per author: max by (sender_timestamp_ms,
 message_id)").
@@ -380,4 +380,4 @@ and the fix needs a counter in the message, not the clock), and state in Q4
 that a clock step back can hide a change of vote. No code change needed in
 C4.
 
-*Status:* Open
+*Status:* Fixed (c4199a05). Agreed. Recorded as a known limit in Section 8 deferred backlog and D-C4-7; Q4 updated to state that local clock step-backs preserve earlier votes.
