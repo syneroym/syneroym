@@ -24,6 +24,7 @@ pub enum MethodAuth {
 const ROUTES: &[(&str, Service, MethodAuth)] = &[
     ("conversation.", CONVERSATION, MethodAuth::Owner),
     ("group.", CONVERSATION, MethodAuth::Owner),
+    ("widget.", CONVERSATION, MethodAuth::Owner),
     ("profile.", PROFILE, MethodAuth::Owner),
     ("contacts.", PROFILE, MethodAuth::Owner),
     ("block.", PROFILE, MethodAuth::Owner),
@@ -149,6 +150,14 @@ mod tests {
         assert_eq!(route("unknown.method"), None);
         assert_eq!(route("session.whoami"), None);
         assert_eq!(route(""), None);
+    }
+
+    #[test]
+    fn widget_methods_route_to_conversation() {
+        for method in ["widget.send", "widget.answer", "widget.list"] {
+            assert_eq!(route(method), Some(CONVERSATION), "{method}");
+            assert_eq!(method_auth(method), Some(MethodAuth::Owner), "{method}");
+        }
     }
 
     #[test]
