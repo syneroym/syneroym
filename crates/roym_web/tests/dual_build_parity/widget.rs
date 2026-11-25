@@ -690,20 +690,39 @@ async fn assert_scan_cap_and_unfiltered(h: &Harness, poll_bytes: &[u8]) {
     assert_eq!(lw_1000, ln_1000);
     assert_eq!(lw_1000["result"]["complete"], true);
 
+    let payload = json!({
+        "action": "add", "subject_address": "did:key:zCreator",
+        "subject_sig_key": vec![0u8; 32], "new_epoch": 1, "member_list_hash": "hash",
+    })
+    .to_string();
+
     let svc = did_for_service("conversation");
     for conv_svc in [&h.wasm_conversation, &h.native_conversation] {
         let store = conv_svc.store_for(&svc).await.unwrap();
         let guard = store.conn().lock().unwrap();
-        guard
-            .execute(
+        for (id, ts) in [("grp-evt-0", 600), ("grp-evt-1", 2500)] {
+            let sql = format!(
                 "INSERT INTO dag_entries (entry_id, conversation_id, author, sender_timestamp, \
                  epoch, kind, header, ciphertext, nonce, payload, signature, applied) VALUES \
-                 ('grp-evt-1', ?1, 'did:key:zCreator', 2500, 1, 'membership', X'', NULL, NULL, \
-                 NULL, zeroblob(64), 1)",
-                [conv_cap],
-            )
-            .unwrap();
+                 ('{id}', ?1, 'did:key:zCreator', {ts}, 1, 'membership', X'', NULL, NULL, ?2, \
+                 zeroblob(64), 1)"
+            );
+            guard.execute(&sql, [conv_cap, payload.as_str()]).unwrap();
+        }
     }
+
+    let (hw, hn) = both_rpc(
+        h,
+        "conversation.history",
+        json!({ "conversation": conv_cap, "cursor": "msg-1000", "limit": 10 }),
+    )
+    .await;
+    assert_eq!(hw, hn);
+    let hist_msgs = hw["result"]["messages"].as_array().unwrap();
+    assert_eq!(hist_msgs.len(), 1);
+    assert_eq!(hist_msgs[0]["content_type"], group::MEMBERSHIP_EVENT_CONTENT_TYPE);
+    assert_eq!(hist_msgs[0]["id"], "grp-evt-1");
+
     let (lw_grp, ln_grp) =
         both_rpc(h, "widget.list", json!({ "conversation": conv_cap, "widget_ids": ["w-oldest"] }))
             .await;
