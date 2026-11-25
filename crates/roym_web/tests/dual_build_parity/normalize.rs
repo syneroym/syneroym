@@ -55,12 +55,19 @@ pub(crate) fn collect_ordered_ids(val: &Value, out: &mut Vec<String>) {
     match val {
         Value::Object(map) => {
             for (k, v) in map {
-                if (k == "messages" || k == "matches" || k == "cards")
+                if (k == "messages"
+                    || k == "matches"
+                    || k == "cards"
+                    || k == "widgets"
+                    || k == "answers")
                     && let Value::Array(rows) = v
                 {
                     for row in rows {
-                        let maybe_id =
-                            row.get("id").or_else(|| row.get("message_id")).and_then(Value::as_str);
+                        let maybe_id = row
+                            .get("id")
+                            .or_else(|| row.get("message_id"))
+                            .or_else(|| row.get("widget_id"))
+                            .and_then(Value::as_str);
                         if let Some(id) = maybe_id
                             && !out.iter().any(|e| e == id)
                         {
