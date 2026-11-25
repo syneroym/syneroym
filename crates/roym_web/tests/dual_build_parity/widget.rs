@@ -1,8 +1,9 @@
-use serde_json::json;
+use serde_json::{Value, json};
 use syneroym_roym_core::{
     conversation::group,
     widget::{
-        WIDGET_ANSWER_CONTENT_TYPE, WIDGET_CONTENT_TYPE, answer_body, poll_definition, widget_body,
+        WIDGET_ANSWER_CONTENT_TYPE, WIDGET_CONTENT_TYPE, WidgetBody, answer_body, poll_definition,
+        widget_body,
     },
 };
 use syneroym_rpc::{ConversationDeliveryState, ConversationMessage};
@@ -21,6 +22,39 @@ fn inbound_custom(
     m.content_type = content_type.to_string();
     m.body = body;
     m
+}
+
+async fn deliver_both(h: &Harness, m: ConversationMessage) {
+    h.deliver(true, m.clone()).await;
+    h.deliver(false, m).await;
+}
+
+async fn deliver_poll(h: &Harness, id: &str, conv: &str, ts: i64, body: &[u8]) {
+    deliver_both(
+        h,
+        inbound_custom(id, conv, "did:key:zPeer", ts, WIDGET_CONTENT_TYPE, body.to_vec()),
+    )
+    .await;
+}
+
+async fn deliver_ans(
+    h: &Harness,
+    id: &str,
+    conv: &str,
+    wid: &str,
+    opt: &str,
+    author: &str,
+    ts: i64,
+) {
+    let b = answer_body(wid, &json!({ "option": opt })).unwrap().into_bytes();
+    deliver_both(h, inbound_custom(id, conv, author, ts, WIDGET_ANSWER_CONTENT_TYPE, b)).await;
+}
+
+fn normalize_views(w: &mut Value, n: &mut Value) {
+    strip_volatile(w);
+    strip_volatile(n);
+    normalize_message_ids(w);
+    normalize_message_ids(n);
 }
 
 #[tokio::test]
@@ -43,10 +77,7 @@ async fn scenario_260_widget_send_and_list_parity() {
     let mut ln =
         one_rpc(&h, false, "widget.list", json!({ "conversation": conv, "widget_ids": [wid_n] }))
             .await;
-    strip_volatile(&mut lw);
-    strip_volatile(&mut ln);
-    normalize_message_ids(&mut lw);
-    normalize_message_ids(&mut ln);
+    normalize_views(&mut lw, &mut ln);
     assert_eq!(lw, ln);
 
     let widget_w = &lw["result"]["widgets"][0];
@@ -64,10 +95,7 @@ async fn scenario_260_widget_send_and_list_parity() {
 
     let (mut lw_all, mut ln_all) =
         both_rpc(&h, "widget.list", json!({ "conversation": conv })).await;
-    strip_volatile(&mut lw_all);
-    strip_volatile(&mut ln_all);
-    normalize_message_ids(&mut lw_all);
-    normalize_message_ids(&mut ln_all);
+    normalize_views(&mut lw_all, &mut ln_all);
     assert_eq!(lw_all, ln_all);
     assert_eq!(lw_all["result"]["widgets"].as_array().unwrap().len(), 1);
     assert_eq!(lw_all["result"]["complete"], true);
@@ -76,41 +104,11 @@ async fn scenario_260_widget_send_and_list_parity() {
 async fn deliver_scenario_261_inbound(h: &Harness, conv: &str) {
     let poll = poll_definition("Which path?", &["Left".into(), "Right".into()]);
     let poll_bytes = widget_body(&poll).unwrap().into_bytes();
-
-    let m_poll =
-        inbound_custom("w1", conv, "did:key:zAuthor", 1_000, WIDGET_CONTENT_TYPE, poll_bytes);
-    h.deliver(true, m_poll.clone()).await;
-    h.deliver(false, m_poll).await;
-
-    let ans1 = answer_body("w1", &json!({ "option": "o1" })).unwrap().into_bytes();
-    let m_a1 =
-        inbound_custom("ans-a1", conv, "did:key:zVoterA", 2_000, WIDGET_ANSWER_CONTENT_TYPE, ans1);
-    h.deliver(true, m_a1.clone()).await;
-    h.deliver(false, m_a1).await;
-
-    let ans2 = answer_body("w1", &json!({ "option": "o2" })).unwrap().into_bytes();
-    let m_a2 =
-        inbound_custom("ans-a2", conv, "did:key:zVoterA", 3_000, WIDGET_ANSWER_CONTENT_TYPE, ans2);
-    h.deliver(true, m_a2.clone()).await;
-    h.deliver(false, m_a2).await;
-
-    let ans_b = answer_body("w1", &json!({ "option": "o1" })).unwrap().into_bytes();
-    let m_b1 =
-        inbound_custom("ans-b1", conv, "did:key:zVoterB", 2_500, WIDGET_ANSWER_CONTENT_TYPE, ans_b);
-    h.deliver(true, m_b1.clone()).await;
-    h.deliver(false, m_b1).await;
-
-    let ans_bad = answer_body("w1", &json!({ "option": "o99" })).unwrap().into_bytes();
-    let m_b_bad = inbound_custom(
-        "ans-b-bad",
-        conv,
-        "did:key:zVoterB",
-        3_500,
-        WIDGET_ANSWER_CONTENT_TYPE,
-        ans_bad,
-    );
-    h.deliver(true, m_b_bad.clone()).await;
-    h.deliver(false, m_b_bad).await;
+    deliver_poll(h, "w1", conv, 1_000, &poll_bytes).await;
+    deliver_ans(h, "ans-a1", conv, "w1", "o1", "did:key:zVoterA", 2_000).await;
+    deliver_ans(h, "ans-a2", conv, "w1", "o2", "did:key:zVoterA", 3_000).await;
+    deliver_ans(h, "ans-b1", conv, "w1", "o1", "did:key:zVoterB", 2_500).await;
+    deliver_ans(h, "ans-b-bad", conv, "w1", "o99", "did:key:zVoterB", 3_500).await;
 }
 
 #[tokio::test]
@@ -201,13 +199,21 @@ async fn assert_widget_send_refusals(h: &Harness, conv: &str) {
     assert_eq!(w_unk["error"]["code"], -32602);
     assert_eq!(w_unk["error"]["data"]["code"], "extension-unknown");
 
+    let esc_prompt = "\u{1}".repeat(500);
+    let esc_opts: Vec<String> = (1..=12).map(|_| "\u{1}".repeat(120)).collect();
+    let large_poll = poll_definition(&esc_prompt, &esc_opts);
+    let (w_lg, n_lg) =
+        both_rpc(h, "widget.send", json!({ "conversation": conv, "widget": large_poll })).await;
+    assert_eq!(w_lg, n_lg);
+    assert_eq!(w_lg["error"]["data"]["code"], "widget-too-large");
+
     let big_prompt = "x".repeat(8 * 1024);
     let mut large_def = poll_definition("Q?", &["A".into(), "B".into()]);
     large_def.prompt = big_prompt;
-    let (w_lg, n_lg) =
+    let (w_shp, n_shp) =
         both_rpc(h, "widget.send", json!({ "conversation": conv, "widget": large_def })).await;
-    assert_eq!(w_lg, n_lg);
-    assert_eq!(w_lg["error"]["data"]["code"], "widget-shape");
+    assert_eq!(w_shp, n_shp);
+    assert_eq!(w_shp["error"]["data"]["code"], "widget-shape");
 
     let mut blank_def = poll_definition("   ", &["A".into(), "B".into()]);
     blank_def.prompt = "".to_string();
@@ -249,6 +255,97 @@ async fn assert_widget_send_refusals(h: &Harness, conv: &str) {
     assert_eq!(w_res2["error"]["message"], "this content type is reserved");
 }
 
+async fn assert_inbound_widget_refusals(h: &Harness, conv: &str) {
+    let unk_widget = json!({
+        "widget_version": 1,
+        "widget": {
+            "extension": { "id": "survey", "version": 1 },
+            "type": "survey/long",
+            "semantic": "form",
+            "prompt": "Fill",
+            "fields": (0..5).map(|i| json!({ "name": format!("f{i}"), "type": "long-text", "required": false, "max_len": 2048 })).collect::<Vec<_>>()
+        }
+    }).to_string().into_bytes();
+    let m_unk_form = inbound_custom(
+        "w-form-lg",
+        conv,
+        "did:key:zPeer262",
+        1_100,
+        WIDGET_CONTENT_TYPE,
+        unk_widget,
+    );
+    deliver_both(h, m_unk_form).await;
+
+    let mut lg_ans_data = serde_json::Map::new();
+    for i in 0..5 {
+        lg_ans_data.insert(format!("f{i}"), json!("a".repeat(1800)));
+    }
+    let (w_ans_lg, n_ans_lg) = both_rpc(
+        h,
+        "widget.answer",
+        json!({ "conversation": conv, "widget_id": "w-form-lg", "data": lg_ans_data }),
+    )
+    .await;
+    assert_eq!(w_ans_lg, n_ans_lg);
+    assert_eq!(w_ans_lg["error"]["data"]["code"], "answer-too-large");
+
+    let poll_def = poll_definition("Choice?", &["A".into(), "B".into()]);
+    let poll_bytes = widget_body(&poll_def).unwrap().into_bytes();
+    let m_unadmitted = inbound_custom(
+        "w-unadmitted",
+        conv,
+        "did:key:zPeer262",
+        1_200,
+        WIDGET_CONTENT_TYPE,
+        poll_bytes,
+    );
+    deliver_both(h, m_unadmitted).await;
+
+    let svc = did_for_service("conversation");
+    for conv_svc in [&h.wasm_conversation, &h.native_conversation] {
+        let store = conv_svc.store_for(&svc).await.unwrap();
+        let guard = store.conn().lock().unwrap();
+        guard
+            .execute(
+                "UPDATE messages SET visible_seq = 0, admission = 'undecided' WHERE id = \
+                 'w-unadmitted'",
+                [],
+            )
+            .unwrap();
+    }
+
+    let (w_unad_ans, n_unad_ans) = both_rpc(
+        h,
+        "widget.answer",
+        json!({ "conversation": conv, "widget_id": "w-unadmitted", "data": { "option": "o1" } }),
+    )
+    .await;
+    assert_eq!(w_unad_ans, n_unad_ans);
+    assert_eq!(w_unad_ans["error"]["data"]["code"], "widget-not-found");
+
+    let opts20: Vec<String> = (1..=20).map(|i| format!("Opt {i}")).collect();
+    let p20 = poll_definition("Many?", &opts20);
+    let p20_bytes = serde_json::to_vec(&WidgetBody { widget_version: 1, widget: p20 }).unwrap();
+    let m_20 = inbound_custom(
+        "w-20-opts",
+        conv,
+        "did:key:zPeer262",
+        1_300,
+        WIDGET_CONTENT_TYPE,
+        p20_bytes,
+    );
+    deliver_both(h, m_20).await;
+
+    let (w_ans_20, n_ans_20) = both_rpc(
+        h,
+        "widget.answer",
+        json!({ "conversation": conv, "widget_id": "w-20-opts", "data": { "option": "o1" } }),
+    )
+    .await;
+    assert_eq!(w_ans_20, n_ans_20);
+    assert_eq!(w_ans_20["error"]["data"]["code"], "widget-refused");
+}
+
 #[tokio::test]
 async fn scenario_262_widget_refusals_parity() {
     let h = harness().await;
@@ -258,8 +355,7 @@ async fn scenario_262_widget_refusals_parity() {
     assert_widget_send_refusals(&h, &conv).await;
 
     let m_txt = inbound("txt-msg-262", &conv, "did:key:zPeer262", 1_000, "hello");
-    h.deliver(true, m_txt.clone()).await;
-    h.deliver(false, m_txt).await;
+    deliver_both(&h, m_txt).await;
 
     let (w_not_w, n_not_w) = both_rpc(
         &h,
@@ -269,6 +365,8 @@ async fn scenario_262_widget_refusals_parity() {
     .await;
     assert_eq!(w_not_w, n_not_w);
     assert_eq!(w_not_w["error"]["data"]["code"], "not-a-widget");
+
+    assert_inbound_widget_refusals(&h, &conv).await;
 
     let poll_def = poll_definition("Choice?", &["A".into(), "B".into()]);
     let (w_send, n_send) =
@@ -408,10 +506,7 @@ async fn scenario_263_a_poll_in_a_group_parity() {
         json!({ "conversation": gid_n, "widget_ids": ["w-grp-1"] }),
     )
     .await;
-    strip_volatile(&mut lw);
-    strip_volatile(&mut ln);
-    normalize_message_ids(&mut lw);
-    normalize_message_ids(&mut ln);
+    normalize_views(&mut lw, &mut ln);
     assert_eq!(lw, ln);
     assert_eq!(
         lw["result"]["widgets"][0]["counts"],
@@ -521,10 +616,7 @@ async fn scenario_264_inbound_bad_or_unknown_widgets_parity() {
     h.deliver(false, m_unk).await;
 
     let (mut lw, mut ln) = both_rpc(&h, "widget.list", json!({ "conversation": conv })).await;
-    strip_volatile(&mut lw);
-    strip_volatile(&mut ln);
-    normalize_message_ids(&mut lw);
-    normalize_message_ids(&mut ln);
+    normalize_views(&mut lw, &mut ln);
     assert_eq!(lw, ln);
 
     let widgets = lw["result"]["widgets"].as_array().unwrap();
@@ -546,10 +638,7 @@ async fn scenario_264_inbound_bad_or_unknown_widgets_parity() {
 
     let (mut lw2, mut ln2) =
         both_rpc(&h, "widget.list", json!({ "conversation": conv, "widget_ids": ["w-unk"] })).await;
-    strip_volatile(&mut lw2);
-    strip_volatile(&mut ln2);
-    normalize_message_ids(&mut lw2);
-    normalize_message_ids(&mut ln2);
+    normalize_views(&mut lw2, &mut ln2);
     assert_eq!(lw2, ln2);
 
     let unk_view = &lw2["result"]["widgets"][0];
@@ -565,87 +654,120 @@ async fn scenario_265_widget_list_forward_scan_parity() {
     let poll = poll_definition("Q1", &["A".into(), "B".into()]);
     let poll_bytes = widget_body(&poll).unwrap().into_bytes();
 
-    let m1 = inbound_custom(
-        "w-scan-1",
-        conv,
-        "did:key:zPeer",
-        1_000,
-        WIDGET_CONTENT_TYPE,
-        poll_bytes.clone(),
-    );
-    h.deliver(true, m1.clone()).await;
-    h.deliver(false, m1).await;
+    deliver_ans(&h, "ans-early", conv, "w-scan-1", "o1", "did:key:zEarly", 500).await;
+    deliver_poll(&h, "w-scan-1", conv, 1_000, &poll_bytes).await;
+    deliver_ans(&h, "ans-w2", conv, "w-scan-2", "o2", "did:key:zMid", 1_500).await;
+    deliver_poll(&h, "w-scan-2", conv, 2_000, &poll_bytes).await;
 
-    let m2 = inbound_custom(
-        "w-scan-2",
-        conv,
-        "did:key:zPeer",
-        2_000,
-        WIDGET_CONTENT_TYPE,
-        poll_bytes.clone(),
-    );
-    h.deliver(true, m2.clone()).await;
-    h.deliver(false, m2).await;
+    for i in 1..=205 {
+        deliver_both(&h, inbound(&format!("pad-{i}"), conv, "did:key:zPeer", 2_000 + i, "pad"))
+            .await;
+    }
+    deliver_ans(&h, "ans-late", conv, "w-scan-1", "o1", "did:key:zLate", 2_300).await;
+
+    deliver_poll(&h, "w-del", conv, 2_400, &poll_bytes).await;
+    both_rpc(
+        &h,
+        "conversation.delete-message",
+        json!({ "message_id": "w-del", "ask_peer": false }),
+    )
+    .await;
 
     let (mut lw, mut ln) = both_rpc(
         &h,
         "widget.list",
-        json!({ "conversation": conv, "widget_ids": ["w-scan-1", "missing-id"] }),
+        json!({ "conversation": conv, "widget_ids": ["w-scan-1", "w-scan-1", "w-scan-2", "w-del", "missing-id"] }),
     )
     .await;
-    strip_volatile(&mut lw);
-    strip_volatile(&mut ln);
-    normalize_message_ids(&mut lw);
-    normalize_message_ids(&mut ln);
+    normalize_views(&mut lw, &mut ln);
     assert_eq!(lw, ln);
     let listed = lw["result"]["widgets"].as_array().unwrap();
-    assert_eq!(listed.len(), 1);
+    assert_eq!(listed.len(), 2);
     assert_eq!(listed[0]["definition"]["prompt"], "Q1");
+    assert_eq!(listed[0]["counts"][0]["count"], 1);
+    assert_eq!(listed[1]["definition"]["prompt"], "Q1");
+    assert_eq!(listed[1]["counts"][1]["count"], 1);
 
     let conv_cap = "conv-265-cap";
-    let m_oldest = inbound_custom(
-        "w-oldest",
-        conv_cap,
-        "did:key:zPeer",
-        500,
-        WIDGET_CONTENT_TYPE,
-        poll_bytes.clone(),
-    );
-    h.deliver(true, m_oldest.clone()).await;
-    h.deliver(false, m_oldest).await;
-
+    deliver_poll(&h, "w-oldest", conv_cap, 500, &poll_bytes).await;
     for i in 1..=1000 {
-        let msg = inbound(&format!("msg-{i}"), conv_cap, "did:key:zPeer", 1000 + i, "dummy text");
-        h.deliver(true, msg.clone()).await;
-        h.deliver(false, msg).await;
+        deliver_both(&h, inbound(&format!("msg-{i}"), conv_cap, "did:key:zPeer", 1000 + i, "text"))
+            .await;
     }
-
-    let (lw_cap, ln_cap) = both_rpc(
+    let (lw_1000, ln_1000) = both_rpc(
         &h,
         "widget.list",
         json!({ "conversation": conv_cap, "widget_ids": ["w-oldest"] }),
     )
     .await;
-    assert_eq!(lw_cap, ln_cap);
-    assert_eq!(lw_cap["result"]["complete"], false);
+    assert_eq!(lw_1000, ln_1000);
+    assert_eq!(lw_1000["result"]["complete"], true);
 
-    let conv_unfiltered = "conv-265-unfiltered";
+    deliver_both(&h, inbound("msg-1001", conv_cap, "did:key:zPeer", 2001, "extra")).await;
+    let (lw_1001, ln_1001) = both_rpc(
+        &h,
+        "widget.list",
+        json!({ "conversation": conv_cap, "widget_ids": ["w-oldest"] }),
+    )
+    .await;
+    assert_eq!(lw_1001, ln_1001);
+    assert_eq!(lw_1001["result"]["complete"], false);
+
+    let conv_unf = "conv-265-unfiltered";
     for i in 1..=51 {
-        let wid_msg = inbound_custom(
-            &format!("w-unf-{i}"),
-            conv_unfiltered,
-            "did:key:zPeer",
-            1000 + i,
-            WIDGET_CONTENT_TYPE,
-            poll_bytes.clone(),
-        );
-        h.deliver(true, wid_msg.clone()).await;
-        h.deliver(false, wid_msg).await;
+        deliver_poll(&h, &format!("w-unf-{i}"), conv_unf, 1000 + i, &poll_bytes).await;
     }
+    for i in 1..=205 {
+        deliver_both(
+            &h,
+            inbound(&format!("pad-u-{i}"), conv_unf, "did:key:zPeer", 1100 + i, "pad"),
+        )
+        .await;
+    }
+    deliver_ans(&h, "ans-unf-1", conv_unf, "w-unf-1", "o1", "did:key:zAns", 1400).await;
 
-    let (lw_unf, ln_unf) =
-        both_rpc(&h, "widget.list", json!({ "conversation": conv_unfiltered })).await;
+    let (lw_unf, ln_unf) = both_rpc(&h, "widget.list", json!({ "conversation": conv_unf })).await;
     assert_eq!(lw_unf, ln_unf);
     assert_eq!(lw_unf["result"]["widgets"].as_array().unwrap().len(), 50);
     assert_eq!(lw_unf["result"]["complete"], false);
+    assert_eq!(lw_unf["result"]["widgets"][0]["widget_id"], "w-unf-1");
+    assert_eq!(lw_unf["result"]["widgets"][0]["counts"][0]["count"], 1);
+}
+
+#[tokio::test]
+async fn scenario_266_widget_list_timing_parity() {
+    let h = harness().await;
+    let conv = "conv-266-timing";
+    let poll = poll_definition("Q?", &["A".into(), "B".into()]);
+    let poll_bytes = widget_body(&poll).unwrap().into_bytes();
+
+    for i in 1..=200 {
+        deliver_poll(&h, &format!("w-time-{i}"), conv, i as i64, &poll_bytes).await;
+    }
+    for i in 201..=1000 {
+        deliver_both(
+            &h,
+            inbound(&format!("msg-time-{i}"), conv, "did:key:zPeer", i as i64, "chat"),
+        )
+        .await;
+    }
+    let ids: Vec<String> = (1..=200).map(|i| format!("w-time-{i}")).collect();
+
+    let t_native = std::time::Instant::now();
+    let ln =
+        one_rpc(&h, false, "widget.list", json!({ "conversation": conv, "widget_ids": ids })).await;
+    let d_native_ms = t_native.elapsed().as_millis();
+
+    let t_wasm = std::time::Instant::now();
+    let lw =
+        one_rpc(&h, true, "widget.list", json!({ "conversation": conv, "widget_ids": ids })).await;
+    let d_wasm_ms = t_wasm.elapsed().as_millis();
+
+    println!(
+        "STOP_RULE_MEASUREMENT: widget.list 1000 messages {}ms native / {}ms wasm (< 200ms limit)",
+        d_native_ms, d_wasm_ms
+    );
+    assert_eq!(lw["result"]["widgets"].as_array().unwrap().len(), 200);
+    assert_eq!(ln["result"]["widgets"].as_array().unwrap().len(), 200);
+    assert!(d_wasm_ms < 200, "WASM widget.list took {d_wasm_ms}ms (>= 200ms limit)");
 }

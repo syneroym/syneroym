@@ -313,3 +313,91 @@ fn poll_definition_has_the_hub_shape() {
     assert_eq!(value["fields"][0]["choices"][1]["code"], "o2");
     assert_eq!(value["fields"][0]["choices"][1]["text"], "Sunday");
 }
+
+#[test]
+fn widget_body_at_exact_limit_and_one_byte_over_is_refused() {
+    let mut def = WidgetDefinition {
+        extension: ExtensionRef { id: "poll".to_string(), version: 1 },
+        widget_type: "poll/single".to_string(),
+        semantic: "poll".to_string(),
+        prompt: "P".to_string(),
+        fields: (0..4)
+            .map(|i| DefinedField {
+                name: format!("f{i}"),
+                field_type: FieldType::Choice,
+                required: false,
+                max_len: None,
+                min: None,
+                max: None,
+                label: None,
+                choices: Some(
+                    (0..20)
+                        .map(|c| DefinedChoice { code: format!("c{c}"), text: "A".repeat(50) })
+                        .collect(),
+                ),
+            })
+            .collect(),
+    };
+
+    while serde_json::to_string(&WidgetBody {
+        widget_version: WIDGET_BODY_VERSION,
+        widget: def.clone(),
+    })
+    .unwrap()
+    .len()
+        < MAX_WIDGET_BODY_BYTES
+    {
+        if def.prompt.len() < MAX_PROMPT_LEN - 10 {
+            def.prompt.push('a');
+        } else {
+            let mut grown = false;
+            for f in &mut def.fields {
+                for c in f.choices.as_mut().unwrap() {
+                    if c.text.len() < MAX_CHOICE_TEXT_LEN - 10 {
+                        c.text.push('b');
+                        grown = true;
+                        break;
+                    }
+                }
+                if grown {
+                    break;
+                }
+            }
+            if !grown {
+                panic!("cannot grow further");
+            }
+        }
+    }
+
+    let exact = widget_body(&def).unwrap();
+    assert_eq!(exact.len(), MAX_WIDGET_BODY_BYTES);
+
+    def.prompt.push('x');
+    let err = widget_body(&def).unwrap_err();
+    assert_eq!(err.code(), "widget-too-large");
+    assert_eq!(err, WidgetError::TooLarge { bytes: MAX_WIDGET_BODY_BYTES + 1 });
+}
+
+#[test]
+fn answer_body_and_parse_answer_body_over_limit_returns_answer_too_large() {
+    let large_data = json!({ "text": "x".repeat(MAX_ANSWER_BODY_BYTES) });
+    let err = answer_body("w1", &large_data).unwrap_err();
+    assert_eq!(err.code(), "answer-too-large");
+
+    let large_bytes = vec![b' '; MAX_ANSWER_BODY_BYTES + 1];
+    let err2 = parse_answer_body(&large_bytes).unwrap_err();
+    assert_eq!(err2.code(), "answer-too-large");
+
+    let base_json = serde_json::to_string(&AnswerBody {
+        answer_version: ANSWER_BODY_VERSION,
+        widget_id: "w1".to_string(),
+        data: json!({ "v": "" }),
+    })
+    .unwrap();
+    let pad = MAX_ANSWER_BODY_BYTES - base_json.len();
+    let exact_data = json!({ "v": "a".repeat(pad) });
+    let s = answer_body("w1", &exact_data).unwrap();
+    assert_eq!(s.len(), MAX_ANSWER_BODY_BYTES);
+    let parsed = parse_answer_body(s.as_bytes()).unwrap();
+    assert_eq!(parsed.widget_id, "w1");
+}
