@@ -180,6 +180,11 @@ fn wrong(name: &str, expected: &str) -> SchemaError {
 
 /// The load-time rules for one field definition.
 pub(crate) fn check_definition(field: &Field) -> Result<(), String> {
+    check_field_limits(field)?;
+    check_choices(field)
+}
+
+pub(crate) fn check_field_limits(field: &Field) -> Result<(), String> {
     let name = &field.name;
     let name_ok = !name.is_empty()
         && name.len() <= MAX_FIELD_NAME_LEN
@@ -188,11 +193,10 @@ pub(crate) fn check_definition(field: &Field) -> Result<(), String> {
         return Err(format!("field name '{name}' is not [a-z0-9_]{{1,{MAX_FIELD_NAME_LEN}}}"));
     }
     check_len_limit(field)?;
-    check_number_limits(field)?;
-    check_choices(field)
+    check_number_limits(field)
 }
 
-pub(crate) fn check_len_limit(field: &Field) -> Result<(), String> {
+fn check_len_limit(field: &Field) -> Result<(), String> {
     let name = &field.name;
     match (field.field_type.len_ceiling(), field.max_len) {
         (Some(ceiling), Some(max)) if (1..=ceiling).contains(&max) => Ok(()),
@@ -203,7 +207,7 @@ pub(crate) fn check_len_limit(field: &Field) -> Result<(), String> {
     }
 }
 
-pub(crate) fn check_number_limits(field: &Field) -> Result<(), String> {
+fn check_number_limits(field: &Field) -> Result<(), String> {
     let name = &field.name;
     if field.field_type != FieldType::Number {
         if field.min.is_some() || field.max.is_some() {

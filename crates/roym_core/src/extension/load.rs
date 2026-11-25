@@ -129,13 +129,9 @@ fn check_widget_fields(fields: &[WidgetFieldRule]) -> Result<(), String> {
             max_len: rule.max_len,
             min: rule.min,
             max: rule.max,
-            choices: if rule.field_type == FieldType::Choice {
-                Some(vec!["placeholder".to_string()])
-            } else {
-                None
-            },
+            choices: None,
         };
-        schema::check_definition(&dummy)?;
+        schema::check_field_limits(&dummy)?;
         check_choice_rule(rule)?;
     }
     Ok(())

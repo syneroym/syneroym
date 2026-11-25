@@ -136,12 +136,14 @@ where
         let page = AppConversation::history(host, conversation.to_string(), 200, cursor)
             .await
             .map_err(from_host)?;
-        let items_len = page.items.len();
+        let last_msg_idx =
+            page.items.iter().rposition(|item| matches!(item, HistoryItem::Message(_)));
         for (idx, item) in page.items.into_iter().enumerate() {
             let HistoryItem::Message(m) = item else { continue };
             seen += 1;
             let at_cap = seen == MAX_WIDGET_SCAN_MESSAGES;
-            let more_in_chat = idx + 1 < items_len || page.next_cursor.is_some();
+            let more_messages_in_page = last_msg_idx.is_some_and(|last| idx < last);
+            let more_in_chat = more_messages_in_page || page.next_cursor.is_some();
             if m.deleted_at.is_some() {
                 if at_cap {
                     if more_in_chat {
