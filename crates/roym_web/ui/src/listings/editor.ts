@@ -13,6 +13,8 @@ export type ServiceLocationKind = "at-giver" | "at-receiver" | "remote";
 export type AddressDisclosure = "on-agreement" | "public";
 export type OpenTo = "anyone" | "members" | "referral" | "past-counterparties";
 export type ListingStatus = "draft" | "active" | "withdrawn";
+export type Acceptance = "instant" | "confirm-first";
+export type PaymentTiming = "before-work" | "after-work" | "none";
 
 /// One editor block, plus the checkbox that says whether the listing owner filled it in.
 export interface BlockToggle<T> {
@@ -63,6 +65,19 @@ export interface RelationshipFields {
   member_of: string;
 }
 
+/// The "Agree as listed" section: how the owner answers a tap, how long a
+/// quote built from the listing stays valid, and the texts it carries.
+export interface AsListedFields {
+  acceptance: Acceptance;
+  not_limited: boolean;
+  instant_cap: string;
+  quote_valid_hours: string;
+  payment_timing: PaymentTiming;
+  cancellation_terms: string;
+  refund_terms: string;
+  dispute_path: string;
+}
+
 export interface ServiceRecordFields {
   issues_fulfilment_receipt: boolean;
   warranty_secs: string;
@@ -89,6 +104,7 @@ export interface ListingForm {
   location: BlockToggle<LocationFields>;
   relationship: BlockToggle<RelationshipFields>;
   service_record: BlockToggle<ServiceRecordFields>;
+  as_listed: AsListedFields;
 }
 
 import {
@@ -267,6 +283,29 @@ function serviceRecordBlock(f: ServiceRecordFields): Block {
   };
 }
 
+/// The deal-terms block, or `undefined` when the owner left it empty. A
+/// listing with no block cannot be agreed as listed; the three texts must be
+/// filled together, because the node refuses an empty one.
+function asListedBlock(f: AsListedFields, lang: string): Block | undefined {
+  const texts = [f.cancellation_terms, f.refund_terms, f.dispute_path].map((s) => s.trim());
+  if (texts.every((body) => body === "")) return undefined;
+  if (texts.some((body) => body === "")) {
+    throw new ListingInputError(t("listing-error-deal-terms-required"));
+  }
+  const hours = requireWhole(f.quote_valid_hours, t("listing-quote-valid-hours"));
+  if (hours === 0 || hours > 168) {
+    throw new ListingInputError(t("listing-error-quote-valid-hours"));
+  }
+  const block: Block = {
+    cancellation_terms: { lang, text: texts[0] },
+    refund_terms: { lang, text: texts[1] },
+    dispute_path: { lang, text: texts[2] },
+    quote_valid_secs: hours * 3_600,
+  };
+  if (f.payment_timing !== "none") block.payment_timing = f.payment_timing;
+  return block;
+}
+
 /// The `listing.set` params for this form. Every number in the result is an
 /// integer; blocks whose checkbox is off are omitted entirely.
 export function buildSetListingParams(form: ListingForm): Record<string, unknown> {
@@ -281,6 +320,15 @@ export function buildSetListingParams(form: ListingForm): Record<string, unknown
     categories: form.categories,
     status: form.status,
   };
+
+  params.acceptance = form.as_listed.acceptance;
+  params.not_limited = form.as_listed.not_limited;
+  params.instant_cap = requireWhole(form.as_listed.instant_cap, t("listing-instant-cap"));
+  const dealTerms = asListedBlock(form.as_listed, lang);
+  if (dealTerms !== undefined) params.deal_terms = dealTerms;
+  if (form.as_listed.acceptance === "instant" && dealTerms === undefined) {
+    throw new ListingInputError(t("listing-error-deal-terms-required"));
+  }
 
   if (form.translations && form.translations.length > 0) {
     const seenLangs = new Set<string>();

@@ -295,7 +295,7 @@ mod snapshot {
     use syneroym_roym_core::{
         deal::{DealTerms, transition::CommitmentState},
         progress::{
-            self, AGREEMENT_PROGRESS_VERSION, AgreementProgressPayload, AgreementState,
+            self, AGREEMENT_PROGRESS_VERSION, AgreementProgressPayload, AgreementState, FormedAs,
             RECORD_AGREEMENT_PROGRESS,
         },
         record::{Envelope, RECORD_QUOTE, RecordDraft},
@@ -384,6 +384,7 @@ mod snapshot {
             f.master_did.clone(),
             author_did,
             terms,
+            FormedAs::Quote,
             None,
         );
         file(&f, &author, &snap, "msg_p1", now + 10).await;

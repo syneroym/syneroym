@@ -4,7 +4,7 @@ use syneroym_app_host::AppHost;
 use syneroym_roym_core::{
     progress::{self, AgreementState, MAX_DEFER_SECS},
     record::Envelope,
-    transaction::DealRole,
+    transaction::{DealRole, RecordVerdict},
 };
 
 use super::{
@@ -85,6 +85,7 @@ async fn apply_writer_progress<H: AppHost>(
         let mut updated_agr = agr;
         updated_agr.seq = Some(p.seq);
         updated_agr.state = Some(p.state);
+        updated_agr.formed_as = Some(p.formed_as);
         updated_agr.state_reason = p.state_reason.clone();
         updated_agr.cancel_reason = p.cancel_reason;
         updated_agr.commitments = p.commitments.clone();
@@ -114,6 +115,7 @@ fn init_progress_agreement_row(
     now: u64,
 ) -> AgreementRow {
     AgreementRow {
+        formed_as: Some(p.formed_as),
         quote_record_id: p.agreement.clone(),
         quote_id: held.signed.quote_id.clone(),
         conversation: conversation.to_string(),
@@ -132,6 +134,27 @@ fn init_progress_agreement_row(
     }
 }
 
+/// Verifies the card's record and checks it names this conversation. Returns
+/// the verdict and the payload, because the caller still needs the signer.
+fn verify_progress_card(
+    envelope: &str,
+    conversation: &str,
+    now: u64,
+) -> Result<
+    (RecordVerdict<progress::AgreementProgressPayload>, progress::AgreementProgressPayload),
+    String,
+> {
+    let v = progress::verify_agreement_progress(envelope, now);
+    if !v.verified {
+        return Err(v.reason.unwrap_or_else(|| "agreement progress does not verify".to_string()));
+    }
+    let p = v.payload.clone().ok_or_else(|| "missing payload".to_string())?;
+    if p.conversation != conversation {
+        return Err("card names another conversation".to_string());
+    }
+    Ok((v, p))
+}
+
 pub(crate) async fn file_progress_card<H: AppHost>(
     host: &H,
     mut row: CardRow,
@@ -145,18 +168,12 @@ pub(crate) async fn file_progress_card<H: AppHost>(
         return refuse_card(host, row, "disclosures not permitted on agreement progress card")
             .await;
     }
-    let v = progress::verify_agreement_progress(envelope, now);
-    if !v.verified {
-        let reason = v.reason.unwrap_or_else(|| "agreement progress does not verify".to_string());
-        return refuse_card(host, row, reason).await;
-    }
-    let p = match v.payload.as_ref() {
-        Some(p) => p,
-        None => return refuse_card(host, row, "missing payload").await,
+    let (verdict, p) = match verify_progress_card(envelope, conversation, now) {
+        Ok(v) => v,
+        Err(reason) => return refuse_card(host, row, &reason).await,
     };
-    if p.conversation != conversation {
-        return refuse_card(host, row, "card names another conversation").await;
-    }
+    let v = &verdict;
+    let p = &p;
     let is_counterparty = owner == p.counterparty_did;
     let is_writer = owner == p.quote_author_did;
     if !is_counterparty && !is_writer {
@@ -192,6 +209,11 @@ pub(crate) async fn file_progress_card<H: AppHost>(
         Some(a) => a,
         None => init_progress_agreement_row(p, &held, conversation, now),
     };
+    if let Some(held_as) = agr.formed_as
+        && held_as != p.formed_as
+    {
+        return refuse_card(host, row, "formed-as-changed").await;
+    }
 
     let rec_id = v.record_id.clone().unwrap_or_default();
     let snap_key = snapshot_id(&p.agreement, p.seq);
@@ -232,7 +254,7 @@ pub(crate) async fn file_progress_card<H: AppHost>(
 
     row.known = true;
     row.verified = true;
-    row.record_id = v.record_id;
+    row.record_id = v.record_id.clone();
     row.data = serde_json::to_value(p).ok();
     put_card(host, &row).await?;
     Ok(FileCardResult {
@@ -274,6 +296,7 @@ async fn apply_newer_snapshot<H: AppHost>(
     agr.state_reason = p.state_reason.clone();
     agr.cancel_reason = p.cancel_reason;
     agr.seq = Some(p.seq);
+    agr.formed_as = Some(p.formed_as);
     agr.commitments = p.commitments.clone();
     if agr.agreed_at_secs.is_none() && p.state == AgreementState::Agreed {
         let agreed_at = agr

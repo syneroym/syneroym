@@ -109,6 +109,18 @@ pub struct SetListingInput {
     pub relationship: Option<listing::RelationshipTerms>,
     #[serde(default)]
     pub service_record: Option<listing::ServiceRecordTerms>,
+    #[serde(default)]
+    pub acceptance: listing::Acceptance,
+    #[serde(default)]
+    pub not_limited: bool,
+    #[serde(default = "default_instant_cap")]
+    pub instant_cap: u16,
+    #[serde(default)]
+    pub deal_terms: Option<listing::ListingDealTerms>,
+}
+
+fn default_instant_cap() -> u16 {
+    listing::DEFAULT_INSTANT_CAP
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -360,9 +372,12 @@ async fn write_version<H: AppHost>(
 
     if let Err(e) = payload.validate() {
         let response = Response::invalid_params(e.to_string());
-        return Err(match e.code() {
-            Some(code) => response.with_data(json!({ "code": code })),
-            None => response,
+        return Err(match (e.code(), e.reason()) {
+            (Some(code), Some(reason)) => {
+                response.with_data(json!({ "code": code, "reason": reason }))
+            }
+            (Some(code), None) => response.with_data(json!({ "code": code })),
+            (None, _) => response,
         });
     }
 
@@ -450,6 +465,10 @@ async fn build_payload<H: AppHost>(
         location: p.location,
         relationship: p.relationship,
         service_record: p.service_record,
+        acceptance: p.acceptance,
+        not_limited: p.not_limited,
+        instant_cap: p.instant_cap,
+        deal_terms: p.deal_terms,
     })
 }
 

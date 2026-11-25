@@ -14,7 +14,7 @@ use syneroym_roym_core::{
     method::conversation::ChangesInput,
     progress::{
         AGREEMENT_PROGRESS_VERSION, AgreementProgressPayload, AgreementState, CancelReason,
-        CommitmentProgress,
+        CommitmentProgress, FormedAs,
     },
     record::{
         Envelope, RECORD_AGREEMENT_PROGRESS, RECORD_AGREEMENT_RECEIPT, RECORD_QUOTE, RecordDraft,
@@ -178,6 +178,7 @@ fn make_progress_envelope(
         quote_author_did: author_did.clone(),
         state,
         state_reason: None,
+        formed_as: FormedAs::Quote,
         cancel_reason: None,
         commitments,
     };
@@ -213,6 +214,7 @@ async fn seed_initial_agreed_state(f: &super::TestFixture, s: InitialAgreedState
     let (p1_json, p1_rec_id, p1_payload) = s.p1;
     let initial_row = AgreementRow {
         quote_record_id: s.q_rec_id.to_string(),
+        formed_as: None,
         quote_id: s.quote.quote_id.clone(),
         conversation: "conv_1".to_string(),
         counterparty_did: s.cp_did.to_string(),
@@ -250,6 +252,7 @@ async fn seed_initial_agreed_state(f: &super::TestFixture, s: InitialAgreedState
     put_bytes(&f.host, QUOTE_HISTORY, s.q_rec_id, s.q_json.as_bytes()).await.unwrap();
     let ptr = RecordPointerRow {
         envelope: "{}".to_string(),
+        formed_as: None,
         record_id: s.q_rec_id.to_string(),
         id: s.quote.quote_id.clone(),
         conversation: "conv_1".to_string(),
@@ -404,6 +407,7 @@ async fn restored_writer_reuses_its_sent_countersign() {
 
     let initial_row = AgreementRow {
         quote_record_id: q_rec_id.clone(),
+        formed_as: None,
         quote_id: quote.quote_id.clone(),
         conversation: "conv_1".to_string(),
         counterparty_did: cp_did.clone(),
@@ -504,6 +508,7 @@ fn empty_agreement_row(
     now: u64,
 ) -> AgreementRow {
     AgreementRow {
+        formed_as: None,
         quote_record_id: q_rec_id.to_string(),
         quote_id: quote.quote_id.clone(),
         conversation: "conv_1".to_string(),

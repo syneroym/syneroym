@@ -163,3 +163,96 @@ test('Roym deal story: Alice and Bob form an agreement and decline a quote with 
     await bobSession.close();
   }
 });
+
+test('Roym deal story: Alice agrees as listed and both Hubs see the agreement', async ({ browser, page }, testInfo) => {
+  const env = readDemoEnv();
+  const need = (key: string) => requireEnv(env, key, SCRIPT);
+  const alice = { hub: need('ALICE_HUB_URL'), key: need('ALICE_KEY'), did: need('ALICE_DID'), addr: need('ALICE_ADDR') };
+  const bob = {
+    hub: need('BOB_HUB_URL'), key: need('BOB_KEY'), did: need('BOB_DID'), addr: need('BOB_ADDR'),
+    directoryDid: need('BOB_DIRECTORY_DID'),
+  };
+
+  const runTag = Date.now().toString(36);
+  const listingTitle = `Instant hedge trim (${runTag})`;
+  let listingId = '';
+
+  const bobSession = await newSession(browser, testInfo);
+  const bobPage = await bobSession.newPage();
+
+  try {
+    await step(page, "Alice's screen: sign in", async () => {
+      await page.goto(alice.hub);
+      await page.waitForLoadState('networkidle');
+      await loginWithDelegatedKey(page, alice.key);
+    });
+
+    await step(bobPage, "Bob's screen: sign in", async () => {
+      await bobPage.goto(bob.hub);
+      await bobPage.waitForLoadState('networkidle');
+      await loginWithDelegatedKey(bobPage, bob.key);
+    });
+
+    await step(bobPage, "Bob's screen: publish an instant offering with its own terms", async () => {
+      await ensureOwnSynOrg(bobPage, bob.directoryDid, 'language-lessons', 'en');
+      listingId = await publishListing(
+        bobPage, listingTitle, 'language-lessons', bob.directoryDid, 'en', undefined, bob.addr,
+        {
+          acceptance: 'instant',
+          notLimited: true,
+          cap: '5',
+          quoteHours: '1',
+          paymentTiming: 'after-work',
+          cancellation: 'Free until 24 hours before',
+          refund: 'Full refund',
+          dispute: 'Write to us first',
+        },
+      );
+    });
+
+    await step(page, "Alice's screen: find the offering and open the agree-as-listed panel", async () => {
+      const hit = await findListingHit(page, bob.directoryDid, 'language-lessons', listingId, listingTitle, 'en');
+      await expect(hit.locator('.hit-agree-as-listed')).toBeVisible();
+      await hit.locator('.hit-agree-as-listed').click();
+      const panel = page.locator('.hit-as-listed');
+      await expect(panel.locator('.as-listed-price')).toBeVisible({ timeout: DELIVERY_WAIT_MS });
+      await expect(panel).toContainText('Free until 24 hours before');
+      await expect(panel).toContainText('Full refund');
+      await expect(panel).toContainText('Write to us first');
+      await expect(panel.locator('.as-listed-mt-warning')).toHaveCount(0);
+    });
+
+    await step(page, "Alice's screen: agree and send the listing's own terms", async () => {
+      await page.locator('.hit-as-listed button.as-listed-send').click();
+      await expect(page.locator('.messages-screen')).toBeVisible({ timeout: DELIVERY_WAIT_MS });
+    });
+
+    await step(page, "Alice's screen: the deal forms with no other action", async () => {
+      await expect(runReceiptCard(page, runTag).first()).toBeVisible({ timeout: DELIVERY_WAIT_MS });
+    });
+
+    await step(bobPage, "Bob's screen: open the conversation and see the same agreement", async () => {
+      await bobPage.bringToFront();
+      await openMessages(bobPage);
+      await openConversation(bobPage, alice.addr);
+      await expect(runReceiptCard(bobPage, runTag).first()).toBeVisible({ timeout: DELIVERY_WAIT_MS });
+    });
+
+    await step(page, "Both Hubs hold the same two promised commitments", async () => {
+      const aliceConversation = await conversationWith(page, bob.addr);
+      const bobConversation = await conversationWith(bobPage, alice.addr);
+      await expect
+        .poll(async () => (await fetchAgreement(page, aliceConversation, runTag))?.commitments.length, {
+          timeout: DELIVERY_WAIT_MS,
+        })
+        .toBe(2);
+      await expect
+        .poll(async () => (await fetchAgreement(bobPage, bobConversation, runTag))?.commitments.length, {
+          timeout: DELIVERY_WAIT_MS,
+        })
+        .toBe(2);
+    });
+  } finally {
+    await bobSession.close();
+  }
+});

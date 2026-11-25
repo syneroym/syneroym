@@ -64,6 +64,16 @@ function emptyForm(): ListingForm {
       enabled: false,
       value: { issues_fulfilment_receipt: false, warranty_secs: "0", retention_secs: "0" },
     },
+    as_listed: {
+      acceptance: "confirm-first",
+      not_limited: false,
+      instant_cap: "20",
+      quote_valid_hours: "1",
+      payment_timing: "none",
+      cancellation_terms: "",
+      refund_terms: "",
+      dispute_path: "",
+    },
   };
 }
 
@@ -150,7 +160,59 @@ describe("buildSetListingParams", () => {
       lang: "en",
       categories: [],
       status: "active",
+      acceptance: "confirm-first",
+      not_limited: false,
+      instant_cap: 20,
     });
+  });
+
+  it("refuses instant with no deal texts", () => {
+    const f = emptyForm();
+    f.title = "Hedge trimming";
+    f.as_listed.acceptance = "instant";
+    expect(() => buildSetListingParams(f)).toThrow(ListingInputError);
+  });
+
+  it("refuses the three texts when only some are filled", () => {
+    const f = emptyForm();
+    f.title = "Hedge trimming";
+    f.as_listed.cancellation_terms = "Free until 24 hours before";
+    expect(() => buildSetListingParams(f)).toThrow(ListingInputError);
+  });
+
+  it("maps the agree as listed fields", () => {
+    const f = emptyForm();
+    f.title = "Hedge trimming";
+    f.as_listed = {
+      acceptance: "instant",
+      not_limited: true,
+      instant_cap: "3",
+      quote_valid_hours: "2",
+      payment_timing: "after-work",
+      cancellation_terms: "Free until 24 hours before",
+      refund_terms: "Full refund",
+      dispute_path: "Write to us first",
+    };
+    const params = buildSetListingParams(f);
+    expect(params.acceptance).toBe("instant");
+    expect(params.not_limited).toBe(true);
+    expect(params.instant_cap).toBe(3);
+    const terms = params.deal_terms as Record<string, unknown>;
+    expect(terms.quote_valid_secs).toBe(7200);
+    expect(terms.payment_timing).toBe("after-work");
+    expect(terms.cancellation_terms).toEqual({ lang: "en", text: "Free until 24 hours before" });
+  });
+
+  it("refuses a quote validity outside one to 168 hours", () => {
+    const f = emptyForm();
+    f.title = "Hedge trimming";
+    f.as_listed.cancellation_terms = "Free until 24 hours before";
+    f.as_listed.refund_terms = "Full refund";
+    f.as_listed.dispute_path = "Write to us first";
+    f.as_listed.quote_valid_hours = "0";
+    expect(() => buildSetListingParams(f)).toThrow(ListingInputError);
+    f.as_listed.quote_valid_hours = "169";
+    expect(() => buildSetListingParams(f)).toThrow(ListingInputError);
   });
 
   it("names no extension for an enquiry and sends no booking block when it is off", () => {

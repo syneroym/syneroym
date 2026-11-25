@@ -9,11 +9,13 @@ use syneroym_app_host::{
 };
 use syneroym_identity::{Identity, substrate};
 use syneroym_roym_core::{
+    deal::LocalText,
     directory::{AreaMatch, SearchHit},
     lang::LangTag,
     listing::{
-        LISTING_VERSION, ListingPayload, ListingStatus, ListingTranslation, ListingVerdict,
-        PaymentModel, PaymentTerms, derive_listing_id, verify_envelope,
+        Acceptance, DEFAULT_INSTANT_CAP, LISTING_VERSION, ListingDealTerms, ListingPayload,
+        ListingStatus, ListingTranslation, ListingVerdict, OpenTo, PaymentModel, PaymentTerms,
+        RelationshipTerms, derive_listing_id, verify_envelope,
     },
     membership::{
         MAX_REASON_LEN, MAX_RULE_LEN, MEMBERSHIP_CREDENTIAL_VERSION, MODERATION_DECISION_VERSION,
@@ -81,6 +83,67 @@ pub fn sign_test_listing(slug: &str, title: &str, now: u64) -> (String, String, 
     sign_test_listing_with_issuer(&key, &issuer, slug, title, now)
 }
 
+/// A listing that `as_listed_ready` accepts: a fixed price, tax included,
+/// and the deal terms a quote needs.
+pub fn sign_ready_listing(slug: &str, title: &str, now: u64) -> (String, String, String) {
+    let key = Identity::generate().unwrap();
+    let issuer = substrate::derive_did_key(&key.public_key());
+    let listing_id = derive_listing_id(&issuer, slug).unwrap();
+    let text = |body: &str| LocalText::plain(LangTag::parse_canonical("en").unwrap(), body);
+    let payload = ListingPayload {
+        listing_id: listing_id.clone(),
+        slug: slug.to_string(),
+        title: title.to_string(),
+        summary: format!("Summary {slug}"),
+        lang: LangTag::parse_canonical("en").expect("valid tag"),
+        translations: Vec::new(),
+        categories: vec!["services".to_string()],
+        conversation_address: format!("{issuer}#conv"),
+        status: ListingStatus::Active,
+        extension: None,
+        booking: None,
+        payment: Some(PaymentTerms {
+            currency: "EUR".to_string(),
+            model: PaymentModel::Fixed,
+            amount_minor: Some(3_500),
+            tax_included: true,
+            fees_minor: None,
+            methods: vec!["cash".to_string()],
+            payee: "A. Provider".to_string(),
+        }),
+        product: None,
+        service: None,
+        location: None,
+        relationship: Some(RelationshipTerms { open_to: OpenTo::Anyone, member_of: None }),
+        service_record: None,
+        acceptance: Acceptance::Instant,
+        not_limited: true,
+        instant_cap: DEFAULT_INSTANT_CAP,
+        deal_terms: Some(ListingDealTerms {
+            cancellation_terms: text("Free until 24 hours before"),
+            refund_terms: text("Full refund"),
+            dispute_path: text("Write to us first"),
+            quote_valid_secs: 3_600,
+            payment_timing: None,
+        }),
+    };
+    let draft = RecordDraft {
+        version: LISTING_VERSION,
+        record_type: RECORD_LISTING.to_string(),
+        subject: listing_id.clone(),
+        payload: serde_json::to_value(&payload).unwrap(),
+        expires_at_secs: None,
+        supersedes: None,
+    };
+    let (mut env, bytes) = Envelope::unsigned(draft, issuer, None, now).unwrap();
+    let sig = z32::encode(&key.sign(&bytes).to_bytes());
+    env.attach_signature(sig).unwrap();
+    let envelope_json = env.to_json().unwrap();
+    let verdict: ListingVerdict = verify_envelope(&envelope_json, now);
+    let record_id = verdict.record_id.unwrap();
+    (listing_id, record_id, envelope_json)
+}
+
 pub fn sign_test_listing_with_translation(
     slug: &str,
     title: &str,
@@ -137,6 +200,10 @@ pub fn sign_max_payload_listing_with_issuer(
         location: None,
         relationship: None,
         service_record: None,
+        acceptance: Acceptance::default(),
+        not_limited: false,
+        instant_cap: DEFAULT_INSTANT_CAP,
+        deal_terms: None,
     };
     let mut payload_val = serde_json::to_value(&payload).unwrap();
     payload_val["description"] = serde_json::Value::String(String::new());
@@ -214,6 +281,10 @@ fn sign_test_listing_with_issuer_and_translations(
         location: None,
         relationship: None,
         service_record: None,
+        acceptance: Acceptance::default(),
+        not_limited: false,
+        instant_cap: DEFAULT_INSTANT_CAP,
+        deal_terms: None,
     };
     let draft = RecordDraft {
         version: LISTING_VERSION,

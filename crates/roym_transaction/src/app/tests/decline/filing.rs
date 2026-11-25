@@ -15,6 +15,7 @@ async fn setup_quote_for_decline_filing(
 
     let ptr = RecordPointerRow {
         envelope: q_json,
+        formed_as: None,
         record_id: q_rec_id.clone(),
         id: quote.quote_id.clone(),
         conversation: "conv_1".to_string(),
@@ -194,6 +195,7 @@ async fn decline_filing_refuses_when_unrefused_half_exists() {
 
     let agr_row = AgreementRow {
         quote_record_id: q_rec_id.clone(),
+        formed_as: None,
         quote_id: quote.quote_id.clone(),
         conversation: "conv_1".to_string(),
         counterparty_did: cp_did.clone(),

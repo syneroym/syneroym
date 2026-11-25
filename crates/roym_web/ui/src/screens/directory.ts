@@ -19,6 +19,7 @@ import { recordText, textFields, type TextVersion } from "../records/record_text
 import { call } from "../rpc";
 import { categoryPicker } from "../taxonomy/category_picker";
 import { categoryLabel } from "../taxonomy/taxonomy";
+import { renderAsListedTap } from "./as_listed_tap";
 import { openTab } from "../navigation";
 import {
   machineNote,
@@ -472,6 +473,18 @@ function renderHitCard(hit: MergedHit, runId: string): HTMLElement {
       }
     };
     card.append(engage, engageOut);
+    if (hit.can_agree_as_listed) {
+      const agree = text("button", t("directory-agree-as-listed-button"), "button hit-agree-as-listed") as HTMLButtonElement;
+      const tapHost = document.createElement("div");
+      tapHost.className = "hit-as-listed";
+      agree.onclick = () => {
+        agree.disabled = true;
+        renderAsListedTap(tapHost, hit, runId, async (conversationId) => {
+          await openTab("messages", { conversationId });
+        });
+      };
+      card.append(agree, tapHost);
+    }
   }
 
   return card;

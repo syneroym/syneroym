@@ -5,7 +5,7 @@ use syneroym_roym_core::{
     clock,
     deal::{DealTerms, LocalText},
     lang::LangTag,
-    progress::{self, AgreementState, RECORD_AGREEMENT_PROGRESS},
+    progress::{self, AgreementState, FormedAs, RECORD_AGREEMENT_PROGRESS},
     record::{Envelope, RECORD_QUOTE, RecordDraft},
     testing::{
         TestHost,
@@ -119,6 +119,7 @@ async fn two_syncs_send_one_refusal() {
         .unwrap();
     let ptr = RecordPointerRow {
         envelope: q_env,
+        formed_as: None,
         record_id: q_rec_id.clone(),
         id: quote_payload.signed.quote_id.clone(),
         conversation: "conv_1".to_string(),
@@ -217,6 +218,7 @@ async fn a_countersigned_half_before_expiry_still_forms_the_agreement() {
 
     let mut row = AgreementRow {
         quote_record_id: q_rec_id.clone(),
+        formed_as: None,
         quote_id: quote_payload.signed.quote_id.clone(),
         conversation: "conv_1".to_string(),
         counterparty_did: counterparty_did.clone(),
@@ -291,6 +293,7 @@ fn make_signed_refusal_snapshot(
         counterparty_did.to_string(),
         author_did.to_string(),
         terms,
+        FormedAs::Quote,
         Some(reason.to_string()),
     );
     let snap_draft = RecordDraft {
@@ -467,6 +470,7 @@ async fn acceptance_when_quote_already_agreed_is_refused() {
 
     let mut row = AgreementRow {
         quote_record_id: q_rec_id.clone(),
+        formed_as: None,
         quote_id: quote_payload.signed.quote_id.clone(),
         conversation: "conv_1".to_string(),
         counterparty_did: cp_did.clone(),
@@ -542,6 +546,7 @@ async fn refusal_crash_on_refused_write_resends_no_second_snapshot() {
 
     let mut row = AgreementRow {
         quote_record_id: q_rec_id.clone(),
+        formed_as: None,
         quote_id: quote_v1.signed.quote_id.clone(),
         conversation: "conv_1".to_string(),
         counterparty_did: cp_did.clone(),
@@ -566,6 +571,7 @@ async fn refusal_crash_on_refused_write_resends_no_second_snapshot() {
     // QUOTES pointer points to a newer record_id (superseding quote v1)
     let ptr = RecordPointerRow {
         envelope: "".to_string(),
+        formed_as: None,
         id: quote_v1.signed.quote_id.clone(),
         record_id: "rec_quote_v2".to_string(),
         conversation: "conv_1".to_string(),

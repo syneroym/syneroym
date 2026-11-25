@@ -1,5 +1,6 @@
 //! Transaction data backup: export and import.
 
+pub(crate) mod as_listed;
 pub(crate) mod disclosures;
 pub(crate) mod failure;
 pub(crate) mod reservations;
@@ -15,9 +16,10 @@ use serde_json::{Value, json};
 use syneroym_app_host::AppHost;
 use syneroym_roym_core::{
     backup::{
-        self, Bundle, ImportInput, SECTION_AGREEMENT_PROGRESS, SECTION_AGREEMENTS, SECTION_CARDS,
-        SECTION_DISCLOSURES, SECTION_ENQUIRIES, SECTION_ENQUIRY_HISTORY, SECTION_FULFILMENTS,
-        SECTION_LEDGER, SECTION_PAYMENTS, SECTION_QUOTE_HISTORY, SECTION_QUOTES, SECTION_STEPS,
+        self, Bundle, ImportInput, SECTION_AGREEMENT_PROGRESS, SECTION_AGREEMENTS,
+        SECTION_AS_LISTED, SECTION_CARDS, SECTION_DISCLOSURES, SECTION_ENQUIRIES,
+        SECTION_ENQUIRY_HISTORY, SECTION_FULFILMENTS, SECTION_LEDGER, SECTION_PAYMENTS,
+        SECTION_QUOTE_HISTORY, SECTION_QUOTES, SECTION_STEPS,
     },
     clock, commitment_failure,
     deal::DealTerms,
@@ -29,9 +31,9 @@ use syneroym_roym_core::{
 };
 
 use super::{
-    AGREEMENT_PROGRESS, AGREEMENTS, AgreementRow, CARDS, CardRow, DISCLOSURES, ENQUIRIES,
-    ENQUIRY_HISTORY, FULFILMENTS, LEDGER, PAYMENTS, QUOTE_HISTORY, QUOTES, RecordPointerRow,
-    SCHEMA_VERSION, STEPS, ensure_collections, get_bytes, put_bytes, put_row,
+    AGREEMENT_PROGRESS, AGREEMENTS, AS_LISTED, AgreementRow, CARDS, CardRow, DISCLOSURES,
+    ENQUIRIES, ENQUIRY_HISTORY, FULFILMENTS, LEDGER, PAYMENTS, QUOTE_HISTORY, QUOTES,
+    RecordPointerRow, SCHEMA_VERSION, STEPS, ensure_collections, get_bytes, put_bytes, put_row,
 };
 
 #[derive(Debug, Serialize)]
@@ -67,6 +69,7 @@ pub(crate) async fn export<H: AppHost>(host: &H, _input: NoParams) -> Reply<Bund
             (SECTION_FULFILMENTS, FULFILMENTS),
             (SECTION_STEPS, STEPS),
             (SECTION_DISCLOSURES, DISCLOSURES),
+            (SECTION_AS_LISTED, AS_LISTED),
         ],
     )
     .await

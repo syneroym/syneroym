@@ -156,6 +156,20 @@ Every component is within its limit. `transaction` grew with the commitment-fail
 
 Every component is within its limit. `transaction` grew with `transaction.drive`, event polling and recovery integration. `scheduling` grew slightly from shared dependency updates.
 
+**C3c2 sizes** (release `wasm32-wasip2`, one `target/` folder, 2026-11-25; before: the C3c1 table's after column, after: the C3c2 code), in bytes:
+
+| Component | before | after | Change | Limit |
+| --- | --- | --- | --- | --- |
+| `transaction` | 2,390,790 | 2,699,817 | +309,027 (+12.92%) | +15% (358,618), new record code |
+| `catalog` | 896,138 | 960,197 | +64,059 (+7.15%) | +15% (134,420), new record code |
+| `directory` | 1,466,527 | 1,504,040 | +37,513 | +40 KB |
+| `conversation` | 813,818 | 813,818 | 0 | +40 KB |
+| `profile` | 772,732 | 772,732 | 0 | +40 KB |
+| `scheduling` | 715,723 | 715,723 | 0 | +40 KB |
+| `web` | 311,202 | 311,202 | 0 | +40 KB |
+
+Every component is within its limit. `transaction` grew with agree-as-listed answer, automatic acceptance, terms mapping and backup section. `catalog` grew with listing acceptance fields and validation. `directory` grew with `as_listed_ready` projection.
+
 **Parity runs need a fresh WASM build.** The dual-build parity harness loads pre-built `wasm32-wasip2` components. Every slice that changes a `roym_*` crate runs `mise run build:roym` before it trusts a parity run.
 
 ## 2. Facts checked in the code for this plan
@@ -290,6 +304,7 @@ Added on 2026-11-20 (agreements doc, open question 13, refined in the PR #372 re
 Change docs: roym-agreements, roym-value-exchange (VX-54), roym-extensions (EX-18).
 
 - **C3c1 result ([PR #381](https://github.com/syneroym/syneroym/pull/381)):** a service declares a node-local wake in its manifest (ADR-0031); the substrate's WakeWorker wakes it on event bus matches or on an interval; transaction declares a wake for conversation.message and runs transaction.drive, syncing conversations in the background with no Hub session and recovering deciding rows; two-node tests advance deals with no manual transaction.sync call. Agree as listed terms mapping, listing fields and automatic acceptance are C3c2.
+- **C3c2 result ([PR #382](https://github.com/syneroym/syneroym/pull/382)):** agree as listed on both nodes; pure terms mapping from listing in `roym_core`; new listing fields (acceptance, not_limited, instant_cap, deal_terms); enquiry `as_listed` with consent; owner answers via `quote.from-listing` or driver in instant/confirm-first mode; counterparty automatically accepts matching terms; `formed_as` in progress snapshots; backup schema version 8; demo story 50 shows instant agreement formed end-to-end from directory tap.
 
 ### C4 — Widgets (L)
 

@@ -83,11 +83,19 @@ pub(crate) async fn run_with_reservations<H: AppHost, R: Reservations>(
         return Ok(false);
     }
 
-    if let Some(ptr) = get_row::<RecordPointerRow, _>(host, QUOTES, &quote.signed.quote_id).await?
-        && ptr.record_id != row.quote_record_id
-    {
-        return handle_refusal(host, row, &quote.signed, &cp_record_id, "quote-superseded", now)
+    if let Some(ptr) = get_row::<RecordPointerRow, _>(host, QUOTES, &quote.signed.quote_id).await? {
+        if ptr.record_id != row.quote_record_id {
+            return handle_refusal(
+                host,
+                row,
+                &quote.signed,
+                &cp_record_id,
+                "quote-superseded",
+                now,
+            )
             .await;
+        }
+        row.formed_as = ptr.formed_as;
     }
 
     if now >= quote.signed.terms.quote_expires_at_secs {
@@ -146,6 +154,7 @@ pub(crate) async fn stored_or_new_seq1_snapshot<H: AppHost>(
         row.counterparty_did.clone(),
         row.quote_author_did.clone(),
         &row.terms,
+        row.formed_as(),
         Some(reason.to_string()),
     );
     let (snap_env, snap_rec_id) = progress::sign(host, &snapshot).await?;
@@ -469,6 +478,7 @@ pub(crate) async fn finalize_agreed_deal<H: AppHost>(
                 row.counterparty_did.clone(),
                 row.quote_author_did.clone(),
                 &row.terms,
+                row.formed_as(),
                 None,
             );
             let (snap_env, snap_rec_id) = progress::sign(host, &snapshot).await?;
@@ -528,6 +538,7 @@ pub(crate) async fn repeat_countersigned<H: AppHost>(
         row.counterparty_did.clone(),
         row.quote_author_did.clone(),
         &row.terms,
+        row.formed_as(),
         None,
     );
     let (snap_env, snap_rec_id) = progress::sign(host, &snapshot).await?;
@@ -623,6 +634,7 @@ pub(crate) async fn handle_not_formed<H: AppHost, R: Reservations>(
         row.counterparty_did.clone(),
         row.quote_author_did.clone(),
         &row.terms,
+        row.formed_as(),
         Some(reason.to_string()),
     );
     let (snap_env, snap_rec_id) = progress::sign(host, &snapshot).await?;

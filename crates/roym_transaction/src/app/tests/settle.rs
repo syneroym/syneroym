@@ -13,7 +13,7 @@ use syneroym_roym_core::{
     fulfilment::{FULFILMENT_RECEIPT_VERSION, FulfilmentHidden, FulfilmentReceiptPayload},
     lang::LangTag,
     method::NoParams,
-    progress::{self as core_progress, AgreementProgressPayload, AgreementState},
+    progress::{self as core_progress, AgreementProgressPayload, AgreementState, FormedAs},
     record::{
         Envelope, RECORD_AGREEMENT_RECEIPT, RECORD_FULFILMENT_RECEIPT, RECORD_QUOTE, RecordDraft,
     },
@@ -139,6 +139,7 @@ async fn store_open_snapshot(
         counterparty_did.to_string(),
         fix.master_did.clone(),
         terms,
+        FormedAs::Quote,
         None,
     );
     let (snap1_env, snap1_rec_id) =
@@ -297,6 +298,7 @@ pub(super) async fn setup_agreed_deal(
 
     let agr_row = AgreementRow {
         quote_record_id: quote_record_id.clone(),
+        formed_as: None,
         quote_id,
         conversation: "conv_1".to_string(),
         counterparty_did: counterparty_did.clone(),

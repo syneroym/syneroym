@@ -12,6 +12,7 @@ import {
   SERVICE_LOCATION_KINDS,
 } from "../listings/labels";
 import { publishRefusalWords } from "../directory/membership";
+import { asListedSection } from "../listings/as_listed_section";
 import { checkbox, codeOptions, errText, field, input, refiller, select, text } from "../dom";
 import { formatDateTime } from "../i18n/format";
 import { codeWord, currentLanguage, messageId, t } from "../i18n/i18n";
@@ -182,6 +183,7 @@ function listingRow(row: ListingListRow, reload: () => Promise<void>): HTMLEleme
   };
 
   wrap.append(historyBtn, withdrawBtn, historyHost);
+  wrap.appendChild(asListedStatus(row.listing_id));
   wrap.appendChild(publishToDirectory(row.listing_id));
   wrap.appendChild(availabilityEditor(row.listing_id));
   return wrap;
@@ -191,6 +193,77 @@ function listingRow(row: ListingListRow, reload: () => Promise<void>): HTMLEleme
 /// listing to it. Publishing is always the listing owner's own action -- a
 /// directory never pulls. A refusal (over the limit, or a draft) is shown
 /// with its reason.
+
+interface AsListedStatus {
+  instant_cap: number;
+  open_instant: string[];
+  waiting: Array<{ enquiry_record_id: string; reason: string }>;
+}
+
+/// The offering's as-listed state: the limit line while a tap waits for a
+/// place, and one action that cancels the unconfirmed instant agreements.
+function asListedStatus(listingId: string): HTMLElement {
+  const wrap = document.createElement("div");
+  wrap.className = "as-listed-status";
+  void (async () => {
+    let status: AsListedStatus;
+    try {
+      status = await call("deal.as-listed-status", { listing_id: listingId });
+    } catch {
+      // The transaction service is not reachable, or this build does not
+      // know the method. Nothing to show.
+      return;
+    }
+    if (status.waiting.some((w) => w.reason === "cap-reached")) {
+      wrap.appendChild(
+        text(
+          "p",
+          t("as-listed-cap-reached", { cap: String(status.instant_cap) }),
+          "as-listed-limit-line",
+        ),
+      );
+    }
+    if (status.open_instant.length === 0) return;
+
+    const cancelBtn = text("button", t("as-listed-cancel-open"), "button as-listed-cancel-open") as HTMLButtonElement;
+    const result = text("p", "", "as-listed-cancel-result");
+    cancelBtn.onclick = () => {
+      const dialog = document.createElement("div");
+      dialog.className = "as-listed-cancel-dialog";
+      dialog.appendChild(text("p", t("as-listed-cancel-note"), "as-listed-cancel-note"));
+      const list = document.createElement("ul");
+      list.className = "as-listed-cancel-list";
+      for (const agreement of status.open_instant) {
+        list.appendChild(
+          text("li", t("as-listed-cancel-item", { id: agreement }), "as-listed-cancel-item"),
+        );
+      }
+      dialog.appendChild(list);
+      const confirmBtn = text("button", t("as-listed-cancel-confirm"), "button as-listed-cancel-confirm") as HTMLButtonElement;
+      const keepBtn = text("button", t("common-cancel"), "button as-listed-cancel-keep") as HTMLButtonElement;
+      confirmBtn.onclick = async () => {
+        confirmBtn.disabled = true;
+        let cancelled = 0;
+        for (const agreement of status.open_instant) {
+          try {
+            await call("agreement.cancel", { agreement, reason: "other" });
+            cancelled += 1;
+          } catch {
+            // One that already moved is refused; the count says what worked.
+          }
+        }
+        result.textContent = t("as-listed-cancelled", { count: String(cancelled) });
+        dialog.remove();
+      };
+      keepBtn.onclick = () => dialog.remove();
+      dialog.append(confirmBtn, keepBtn);
+      wrap.append(dialog);
+    };
+    wrap.append(cancelBtn, result);
+  })();
+  return wrap;
+}
+
 function publishToDirectory(listingId: string): HTMLElement {
   const wrap = document.createElement("div");
   wrap.className = "publish-to-directory";
@@ -365,10 +438,12 @@ function buildEditor(onSaved: () => Promise<void>): { root: HTMLElement } {
   const payCurrency = input(t("listing-placeholder-currency"), "EUR");
   payCurrency.className = "payment-currency-input";
   const payModel = select(codeOptions(PRICING_MODEL_LABELS, ["per-hour", "fixed", "per-unit", "quote-only"]), "per-hour");
+  payModel.className = "payment-model";
   const payAmount = input(t("listing-placeholder-amount"));
   payAmount.className = "payment-amount-input";
   const payFees = input(t("listing-placeholder-fees"));
   const payTax = checkbox(t("listing-label-tax-included"), false);
+  payTax.box.className = "payment-tax-included";
   const payMethodsWrap = document.createElement("div");
   payMethodsWrap.className = "payment-methods";
   const payMethodBoxes = PAYMENT_METHODS.map((m) => {
@@ -379,6 +454,7 @@ function buildEditor(onSaved: () => Promise<void>): { root: HTMLElement } {
     return cb.box;
   });
   const payPayee = input(t("listing-placeholder-payee"));
+  payPayee.className = "payment-payee-input";
   payment.body.append(
     field(t("listing-label-currency"), payCurrency),
     field(t("listing-label-model"), payModel),
@@ -441,6 +517,9 @@ function buildEditor(onSaved: () => Promise<void>): { root: HTMLElement } {
   const relMember = input(t("listing-placeholder-group-did"));
   relationship.body.append(field(t("listing-label-open-to"), relOpen), field(t("listing-label-group-did"), relMember));
 
+  // --- agree as listed ---
+  const asListed = asListedSection();
+
   // --- service_record ---
   const serviceRecord = block("service_record", t("listing-block-service-record"));
   const srReceipt = checkbox(t("listing-label-fulfilment-receipt"), false);
@@ -459,6 +538,7 @@ function buildEditor(onSaved: () => Promise<void>): { root: HTMLElement } {
     service.details,
     location.details,
     relationship.details,
+    asListed.element,
     serviceRecord.details,
   );
 
@@ -468,6 +548,15 @@ function buildEditor(onSaved: () => Promise<void>): { root: HTMLElement } {
 
   saveBtn.onclick = async () => {
     result.textContent = "";
+    const asListedFields = asListed.read();
+    // An instant offering must be open to anyone. The as-listed section
+    // cannot reach the relationship controls, so the save turns the block on
+    // with `anyone` when the owner picked instant.
+    if (asListedFields.acceptance === "instant" && !relationship.enabled.checked) {
+      relationship.enabled.checked = true;
+      relationship.details.open = true;
+      relOpen.value = "anyone";
+    }
     const form: ListingForm = {
       slug: slug.value,
       title: title.value,
@@ -543,6 +632,7 @@ function buildEditor(onSaved: () => Promise<void>): { root: HTMLElement } {
           retention_secs: srRetention.value,
         },
       },
+      as_listed: asListedFields,
     };
 
     let params: Record<string, unknown>;

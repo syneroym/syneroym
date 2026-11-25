@@ -1,4 +1,4 @@
-use syneroym_roym_core::progress::{AgreementProgressPayload, AgreementState};
+use syneroym_roym_core::progress::{AgreementProgressPayload, AgreementState, FormedAs};
 
 use crate::app::{
     AGREEMENT_PROGRESS,
@@ -23,6 +23,7 @@ async fn test_progress_fork_detection() {
         quote_author_did: f.master_did.clone(),
         state: AgreementState::Agreed,
         state_reason: None,
+        formed_as: FormedAs::Quote,
         cancel_reason: None,
         commitments: vec![],
     };

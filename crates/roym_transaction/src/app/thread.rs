@@ -244,6 +244,7 @@ mod tests {
 
         let agr_v1 = AgreementRow {
             quote_record_id: "rec_v1".to_string(),
+            formed_as: None,
             quote_id: "q1".to_string(),
             conversation: "conv_1".to_string(),
             counterparty_did: "did:key:alice".to_string(),
@@ -262,6 +263,7 @@ mod tests {
 
         let agr_v2 = AgreementRow {
             quote_record_id: "rec_v2".to_string(),
+            formed_as: None,
             quote_id: "q1".to_string(),
             conversation: "conv_1".to_string(),
             counterparty_did: "did:key:alice".to_string(),

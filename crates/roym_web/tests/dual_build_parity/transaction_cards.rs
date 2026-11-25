@@ -345,11 +345,11 @@ async fn scenario_142_transaction_export_import_roundtrip_parity() {
         let bundle: Bundle = serde_json::from_value(side["result"].clone()).unwrap();
         bundle.check_integrity().expect("exported bundle must pass integrity");
         let sections = &bundle.manifest.sections;
-        assert_eq!(sections["enquiries"].schema_version, 7);
-        assert_eq!(sections["quotes"].schema_version, 7);
-        assert_eq!(sections["agreements"].schema_version, 7);
-        assert_eq!(sections["cards"].schema_version, 7);
-        assert_eq!(sections["disclosures"].schema_version, 7);
+        assert_eq!(sections["enquiries"].schema_version, 8);
+        assert_eq!(sections["quotes"].schema_version, 8);
+        assert_eq!(sections["agreements"].schema_version, 8);
+        assert_eq!(sections["cards"].schema_version, 8);
+        assert_eq!(sections["disclosures"].schema_version, 8);
     }
 
     let bundle_val = exp_w["result"].clone();
@@ -507,7 +507,8 @@ async fn assert_tampered_progress_record(h: &Harness, bundle_val: &Value, now: u
                 "quote_author_did": "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
                 "seq": 1,
                 "state": "agreed",
-                "commitments": []
+                "commitments": [],
+                "formed_as": "quote"
             }
         }
     });

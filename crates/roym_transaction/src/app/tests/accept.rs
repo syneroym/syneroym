@@ -6,7 +6,7 @@ use syneroym_roym_core::{
     deal::{Commitment, CommitmentKind, DealTerms, Details, ExtensionRef, LocalText, ResourceKind},
     lang::LangTag,
     listing::derive_slot_id,
-    progress::{self, AGREEMENT_PROGRESS_VERSION, RECORD_AGREEMENT_PROGRESS},
+    progress::{self, AGREEMENT_PROGRESS_VERSION, FormedAs, RECORD_AGREEMENT_PROGRESS},
     record::{Envelope, RECORD_AGREEMENT_RECEIPT, RECORD_QUOTE, RecordDraft},
     testing::{
         TestHost,
@@ -166,6 +166,26 @@ fn make_progress_card(
     state_reason: Option<&str>,
     now: u64,
 ) -> (CardRow, String) {
+    make_progress_card_with_formed_as(
+        author,
+        agreement,
+        counterparty_did,
+        terms,
+        state_reason,
+        FormedAs::Quote,
+        now,
+    )
+}
+
+fn make_progress_card_with_formed_as(
+    author: &Identity,
+    agreement: &str,
+    counterparty_did: &str,
+    terms: &DealTerms,
+    state_reason: Option<&str>,
+    formed_as: FormedAs,
+    now: u64,
+) -> (CardRow, String) {
     let author_did = substrate::derive_did_key(&author.public_key());
     let progress_payload = progress::open(
         agreement.to_string(),
@@ -173,6 +193,7 @@ fn make_progress_card(
         counterparty_did.to_string(),
         author_did.clone(),
         terms,
+        formed_as,
         state_reason.map(str::to_string),
     );
 
@@ -645,4 +666,67 @@ async fn counterparty_files_author_countersigned_half_delivered_after_expiry() {
         get_row(&f.host, AGREEMENTS, &q_rec_id).await.expect("get agr").expect("agr exists");
     assert!(agr.quote_author.is_some());
     assert_eq!(agr.agreed_at_secs, Some(now + 50));
+}
+
+#[tokio::test]
+async fn a_snapshot_whose_formed_as_changed_is_refused() {
+    let f = fixture();
+    let now = f.host.now();
+    let author = Identity::generate().expect("generate author");
+    let (quote, rec_id, env) = build_and_sign_quote(
+        &author,
+        &f.master_did,
+        vec![author_service_commitment("c1")],
+        now + 3600,
+        now,
+    );
+    let v = verify_quote(&env, now);
+    store_received_quote(&f.host, &env, &v, &quote.signed, now, &f.master_did)
+        .await
+        .expect("store quote");
+    disclosures::store(&f.host, &rec_id, RECORD_QUOTE, &quote.disclosures, now)
+        .await
+        .expect("store disclosures");
+    agreement_ops::accept_at(
+        &f.host,
+        AgreementAcceptInput {
+            quote_record_id: rec_id.clone(),
+            viewed_lang: None,
+            viewed_via_mt: None,
+        },
+        now,
+    )
+    .await
+    .expect("accept");
+
+    let (card, snap_env) = make_progress_card_with_formed_as(
+        &author,
+        &rec_id,
+        &f.master_did,
+        &quote.terms,
+        None,
+        FormedAs::AsListedInstant,
+        now + 10,
+    );
+    let res = file_progress_card(&f.host, card, &snap_env, &[], "conv_1", now + 10, &f.master_did)
+        .await
+        .expect("file progress card");
+    assert!(res.filed && !res.refused, "{res:?}");
+
+    let (card, snap_env) = make_progress_card_with_formed_as(
+        &author,
+        &rec_id,
+        &f.master_did,
+        &quote.terms,
+        None,
+        FormedAs::Quote,
+        now + 20,
+    );
+    let res = file_progress_card(&f.host, card, &snap_env, &[], "conv_1", now + 20, &f.master_did)
+        .await
+        .expect("file progress card");
+    assert!(res.refused, "{res:?}");
+    let stored: CardRow =
+        get_row(&f.host, CARDS, "msg_progress_1").await.expect("get card").expect("card exists");
+    assert_eq!(stored.reason.as_deref(), Some("formed-as-changed"));
 }

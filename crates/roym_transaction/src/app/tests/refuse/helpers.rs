@@ -135,10 +135,11 @@ pub(crate) fn build_and_sign_enquiry_conv(
         conversation: conv.to_string(),
         sequence: 1,
         categories: vec!["repair".to_string()],
-        description: LocalText::plain(
+        description: Some(LocalText::plain(
             LangTag::parse_canonical("en").expect("parse lang"),
             "Need fix",
-        ),
+        )),
+        as_listed: None,
         data_use_notice: "Standard notice".to_string(),
         window: None,
         area: None,

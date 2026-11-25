@@ -139,6 +139,7 @@ async fn revision_after_acceptance_is_refused() {
 
     let agr_row = AgreementRow {
         quote_record_id: q_rec_id.clone(),
+        formed_as: None,
         quote_id: quote_id.clone(),
         conversation: "conv_1".to_string(),
         counterparty_did: counterparty_did.clone(),

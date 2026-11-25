@@ -69,6 +69,7 @@ async fn roll_forward<H: AppHost>(host: &H, row: &mut AgreementRow) -> Result<Sn
         cur_snap = next_snap;
         row.seq = Some(cur_seq);
         row.state = Some(cur_snap.snapshot.state);
+        row.formed_as = Some(cur_snap.snapshot.formed_as);
         row.state_reason = cur_snap.snapshot.state_reason.clone();
         row.cancel_reason = cur_snap.snapshot.cancel_reason;
         row.commitments = cur_snap.snapshot.commitments.clone();
@@ -117,6 +118,7 @@ async fn finalize_snapshot<H: AppHost>(
     }
 
     row.state = Some(snap_row.snapshot.state);
+    row.formed_as = Some(snap_row.snapshot.formed_as);
     row.state_reason = snap_row.snapshot.state_reason.clone();
     row.cancel_reason = snap_row.snapshot.cancel_reason;
     row.seq = Some(snap_row.snapshot.seq);

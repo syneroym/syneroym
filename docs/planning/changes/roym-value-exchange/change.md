@@ -1,6 +1,15 @@
 ---
 status: draft
 living-docs-touched:
+  - docs/system-requirements-spec.md
+  - docs/roym-integrated-experience-spec.md
+  - docs/developer-guide.md
+  - docs/system-architecture.md
+  - docs/planning/traceability-matrix.md
+  - docs/TERMINOLOGY.md
+  - docs/planning/deferred-backlog.md
+demo:
+  - crates/substrate/tests/e2e/demo/50-roym-deal.spec.ts
 ---
 # Roym Value Exchange
 
@@ -140,7 +149,7 @@ These are overview criteria. Each module change document refines them into tests
 | VX-4 | A public want shows only an approximate area. The exact address is shared only inside a conversation, as today. | |
 | **List-Search** | | |
 | VX-5 | An offering found by search gets an enquiry, or is agreed as listed (VX-54). The owner answers an enquiry with a quote. The other side can ask for changes, and the owner answers each with a new version, until one side accepts or rejects. | |
-| VX-54 | A participant agrees to an offering with complete terms in one action. The owner chooses for each offering: **instant** (the owner's node forms the agreement with no action by the owner) or **confirm first** (the owner confirms in one action). Instant is possible only for an offering open to anyone whose availability the owner's node can check (a slot), or that the owner marked as not limited. The owner's node limits how many open instant agreements it holds. The result is the same agreement record as any other deal. | |
+| VX-54 | A participant agrees to an offering with complete terms in one action. The owner chooses for each offering: **instant** (the owner's node forms the agreement with no action by the owner) or **confirm first** (the owner confirms in one action). Instant is possible only for an offering open to anyone whose availability the owner's node can check (a slot), or that the owner marked as not limited. The owner's node limits how many open instant agreements it holds. The result is the same agreement record as any other deal. | Through AG-44, AG-45, AG-49. Service: `crates/roym_transaction/src/app/tests/as_listed_owner.rs`, `tests/as_listed_accept.rs`; Hub: `as_listed_tap.test.ts`; E2E demo: `crates/substrate/tests/e2e/demo/50-roym-deal.spec.ts`. |
 | VX-6 | Want-Bid and List-Search end in the same agreement record and the same commitment states. | |
 | VX-56 | Before agreeing, each party sees what it gives, what it receives and the difference: on the quote, or, on the as-listed path, on the offering. When a quote has more than one version, each party also sees one combined summary of what changed from the first version to the latest, for each side. | |
 | **Agreements** | | |
@@ -750,6 +759,14 @@ change doc refines each row below through its `AG-*` rows.
   commitment, and the agreement names its giver. In C1, commitments end
   `ended-unconfirmed`; `failed` requires `commitment-failure` in C3b.
   Reputation shows it in M08G.
+- **VX-54:** the owner can answer a tap as listed and an `instant` offering
+  can form from one tap. A slot offering cannot yet show its free slots
+  before the tap, because a searcher's node does not hold the owner's
+  availability. The Hub shows "Ask" alone on such a hit. Choosing a slot
+  before agreeing is in the deferred backlog, for the offering page in
+  M08D. The instant cap is checked again by the writer under its fence, so
+  the one-place race named in the plan remains possible and is also in the
+  backlog.
 
 ## Close-out
 

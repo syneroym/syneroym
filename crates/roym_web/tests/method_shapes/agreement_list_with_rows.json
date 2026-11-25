@@ -16,6 +16,7 @@
         "record_id": "string"
       },
       "counterparty_did": "string",
+      "formed_as": "string",
       "pair": {
         "state": "complete"
       },
@@ -127,6 +128,7 @@
         "record_id": "string"
       },
       "counterparty_did": "string",
+      "formed_as": "string",
       "pair": {
         "role": "counterparty",
         "state": "half"

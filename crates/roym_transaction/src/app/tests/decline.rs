@@ -119,6 +119,7 @@ fn make_decline_envelope(
         deal: deal.to_string(),
         conversation: conv.to_string(),
         reason: None,
+        code: None,
     };
     let draft = RecordDraft {
         version: DEAL_DECLINE_VERSION,
@@ -148,7 +149,11 @@ fn make_enquiry_envelope(
         sequence: 1,
         listing_id: None,
         categories: vec![],
-        description: LocalText::plain(LangTag::parse_canonical("en").expect("lang"), "Need repair"),
+        description: Some(LocalText::plain(
+            LangTag::parse_canonical("en").expect("lang"),
+            "Need repair",
+        )),
+        as_listed: None,
         area: None,
         window: None,
         data_use_notice: "notice".to_string(),
@@ -182,6 +187,7 @@ async fn repeated_decline_returns_the_same_record() {
 
     let ptr = RecordPointerRow {
         envelope: q_json,
+        formed_as: None,
         record_id: q_rec_id.clone(),
         id: quote.quote_id.clone(),
         conversation: "conv_1".to_string(),
@@ -238,6 +244,7 @@ async fn decline_with_hindi_lang() {
 
     let ptr = RecordPointerRow {
         envelope: q_json,
+        formed_as: None,
         record_id: q_rec_id.clone(),
         id: quote.quote_id.clone(),
         conversation: "conv_1".to_string(),
@@ -303,6 +310,7 @@ async fn decline_resends_if_message_id_is_empty() {
 
     let ptr = RecordPointerRow {
         envelope: q_json,
+        formed_as: None,
         record_id: q_rec_id.clone(),
         id: quote.quote_id.clone(),
         conversation: "conv_1".to_string(),
@@ -369,6 +377,7 @@ async fn cannot_decline_enquiry_with_accepted_quote() {
 
     let enq_ptr = RecordPointerRow {
         envelope: enq_json,
+        formed_as: None,
         record_id: enq_rec_id.clone(),
         id: enquiry_id.clone(),
         conversation: "conv_1".to_string(),
@@ -394,6 +403,7 @@ async fn cannot_decline_enquiry_with_accepted_quote() {
 
     let q_ptr = RecordPointerRow {
         envelope: q_json,
+        formed_as: None,
         record_id: q_rec_id.clone(),
         id: quote.quote_id.clone(),
         conversation: "conv_1".to_string(),
@@ -413,6 +423,7 @@ async fn cannot_decline_enquiry_with_accepted_quote() {
     // Create unrefused counterparty half
     let agr_row = AgreementRow {
         quote_record_id: q_rec_id.clone(),
+        formed_as: None,
         quote_id: quote.quote_id.clone(),
         conversation: "conv_1".to_string(),
         counterparty_did: cp_did.clone(),
@@ -500,6 +511,7 @@ async fn counterparty_can_decline_quote_v2_after_v1_refused() {
 
     let ptr2 = RecordPointerRow {
         envelope: q2_json,
+        formed_as: None,
         record_id: q2_rec_id.clone(),
         id: quote_id.clone(),
         conversation: "conv_1".to_string(),
@@ -520,6 +532,7 @@ async fn counterparty_can_decline_quote_v2_after_v1_refused() {
     // snapshot
     let agr_v1 = AgreementRow {
         quote_record_id: q1_rec_id.clone(),
+        formed_as: None,
         quote_id: quote_id.clone(),
         conversation: "conv_1".to_string(),
         counterparty_did: f.master_did.clone(),
@@ -568,6 +581,7 @@ async fn a_decline_card_is_verified_after_export_and_import() {
     disclosures::store(&f.host, &q_rec_id, RECORD_QUOTE, &disc, now).await.unwrap();
     let ptr = RecordPointerRow {
         envelope: q_json,
+        formed_as: None,
         record_id: q_rec_id.clone(),
         id: quote.quote_id.clone(),
         conversation: "conv_1".to_string(),

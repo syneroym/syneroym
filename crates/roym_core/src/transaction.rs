@@ -31,6 +31,8 @@ pub use crate::{
 pub mod decline;
 pub use decline::{DEAL_DECLINE_VERSION, DealDeclinePayload, verify_deal_decline};
 
+pub use crate::as_listed::{AsListed, MAX_CONSENT_SECS, SlotChoice};
+
 pub const ENQUIRY_VERSION: u32 = 1;
 pub const QUOTE_VERSION: u32 = 1;
 pub const AGREEMENT_RECEIPT_VERSION: u32 = 1;
@@ -140,7 +142,13 @@ pub struct EnquiryPayload {
     pub listing_id: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub categories: Vec<String>,
-    pub description: LocalText,
+    /// Required unless `as_listed` is set: a tap agrees to the listing, not to
+    /// words the person typed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<LocalText>,
+    /// The counterparty's consent to one offering version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub as_listed: Option<AsListed>,
     /// Approximate, deliberately. An exact address is disclosed inside a
     /// quote, when the work needs one, and never here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -260,7 +268,16 @@ impl EnquiryPayload {
         if self.sequence < 1 {
             return Err(TransactionError::InvalidSequence(self.sequence));
         }
-        self.description.validate("description", MAX_DESCRIPTION_LEN)?;
+        match (&self.description, &self.as_listed) {
+            (Some(description), _) => {
+                description.validate("description", MAX_DESCRIPTION_LEN)?;
+            }
+            (None, None) => return Err(TransactionError::DescriptionRequired),
+            (None, Some(_)) => {}
+        }
+        if let Some(as_listed) = &self.as_listed {
+            as_listed.validate(self.listing_id.as_deref())?;
+        }
         if self.categories.len() > MAX_CATEGORIES {
             return Err(TransactionError::TooManyCategories);
         }
@@ -403,6 +420,11 @@ pub fn verify_enquiry(envelope: &str, now_secs: u64) -> RecordVerdict<EnquiryPay
         Err(e) => return RecordVerdict::refused(format!("payload: {e}")),
     };
     if let Err(e) = payload.validate() {
+        return RecordVerdict::refused(e.to_string());
+    }
+    if let Some(as_listed) = &payload.as_listed
+        && let Err(e) = as_listed.validate_consent(verified.issued_at_secs)
+    {
         return RecordVerdict::refused(e.to_string());
     }
     let expected_id =

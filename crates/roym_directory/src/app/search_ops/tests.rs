@@ -3,8 +3,8 @@ use syneroym_roym_core::{
     directory::SearchQuery,
     lang::LangTag,
     listing::{
-        ListingPayload, ListingStatus, ListingTranslation, PaymentModel, PaymentTerms,
-        derive_listing_id,
+        Acceptance, DEFAULT_INSTANT_CAP, ListingPayload, ListingStatus, ListingTranslation,
+        PaymentModel, PaymentTerms, derive_listing_id,
     },
 };
 
@@ -41,6 +41,10 @@ fn sample_payload() -> ListingPayload {
         location: None,
         relationship: None,
         service_record: None,
+        acceptance: Acceptance::default(),
+        not_limited: false,
+        instant_cap: DEFAULT_INSTANT_CAP,
+        deal_terms: None,
     }
 }
 

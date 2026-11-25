@@ -135,6 +135,27 @@ pub(crate) async fn decline_at<H: AppHost>(
     input: DealDeclineInput,
     now: u64,
 ) -> Reply<DealDeclineOutput> {
+    decline_at_with_code(host, input, None, now).await
+}
+
+/// The owner's node declines by itself. The code lets the reader's Hub show
+/// the sentence in the reader's own language.
+pub(crate) async fn decline_with_code<H: AppHost>(
+    host: &H,
+    declines: &str,
+    code: &str,
+    now: u64,
+) -> Reply<DealDeclineOutput> {
+    let input = DealDeclineInput { declines: declines.to_string(), note: None, lang: None };
+    decline_at_with_code(host, input, Some(code), now).await
+}
+
+pub(crate) async fn decline_at_with_code<H: AppHost>(
+    host: &H,
+    input: DealDeclineInput,
+    code: Option<&str>,
+    now: u64,
+) -> Reply<DealDeclineOutput> {
     ensure_collections(host).await.map_err(Response::internal_error)?;
     let (principal, owner) = resolve_principal_and_owner(host, now).await?;
 
@@ -153,8 +174,8 @@ pub(crate) async fn decline_at<H: AppHost>(
         &input.declines,
         &deal,
         &conversation,
-        input.note.as_deref(),
-        input.lang.as_deref(),
+        &input,
+        code,
     )
     .await?;
 
@@ -261,12 +282,12 @@ async fn build_and_sign_decline<H: AppHost>(
     declines: &str,
     deal: &str,
     conversation: &str,
-    note: Option<&str>,
-    lang: Option<&str>,
+    input: &DealDeclineInput,
+    code: Option<&str>,
 ) -> Reply<(String, String)> {
-    let reason = match note {
+    let reason = match input.note.as_deref() {
         Some(n) => {
-            let lang_tag = lang.unwrap_or("en");
+            let lang_tag = input.lang.as_deref().unwrap_or("en");
             let lang = LangTag::parse_canonical(lang_tag)
                 .map_err(|e| Response::invalid_params(format!("invalid lang tag: {e}")))?;
             Some(LocalText::plain(lang, n.to_string()))
@@ -279,6 +300,7 @@ async fn build_and_sign_decline<H: AppHost>(
         deal: deal.to_string(),
         conversation: conversation.to_string(),
         reason,
+        code: code.map(str::to_string),
     };
     let payload_str =
         serde_json::to_string(&payload).map_err(|e| Response::internal_error(e.to_string()))?;

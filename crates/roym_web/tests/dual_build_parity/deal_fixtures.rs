@@ -480,7 +480,7 @@ pub(crate) fn peer_signed_progress(
     let payload = json!({
         "agreement": agreement, "conversation": conv, "counterparty_did": counterparty_did,
         "quote_author_did": quote_author_did, "seq": seq, "state": state,
-        "commitments": commitments,
+        "commitments": commitments, "formed_as": "quote",
     });
     let draft = syneroym_signed_record::RecordDraft {
         version: progress::AGREEMENT_PROGRESS_VERSION,

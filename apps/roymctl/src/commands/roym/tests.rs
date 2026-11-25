@@ -229,6 +229,17 @@ fn parse_window_valid_and_invalid() {
 }
 
 #[test]
+fn parse_slot_window_valid_and_invalid() {
+    let v = parse_slot_window("100..200").unwrap();
+    assert_eq!(v["earliest_secs"], 100);
+    assert_eq!(v["latest_secs"], 200);
+
+    assert!(parse_slot_window("200..100").is_err());
+    assert!(parse_slot_window("100").is_err());
+    assert!(parse_slot_window("abc..200").is_err());
+}
+
+#[test]
 fn parse_minor_units_handles_various_exponents() {
     assert_eq!(parse_minor_units("12.34", "USD", 2).unwrap(), 1234);
     assert_eq!(parse_minor_units("12.3", "USD", 2).unwrap(), 1230);

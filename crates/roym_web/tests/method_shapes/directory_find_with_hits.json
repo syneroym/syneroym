@@ -2,6 +2,7 @@
   "hits": [
     {
       "age_secs": "number",
+      "can_agree_as_listed": "boolean",
       "categories": [
         "string"
       ],

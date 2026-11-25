@@ -13,7 +13,7 @@ use crate::{
     },
     progress::{
         AGREEMENT_PROGRESS_VERSION, AgreementProgressPayload, AgreementState, CommitmentProgress,
-        RECORD_AGREEMENT_PROGRESS,
+        FormedAs, RECORD_AGREEMENT_PROGRESS,
     },
 };
 
@@ -155,6 +155,7 @@ fn records_with_mismatched_conversation_are_refused() {
         seq: 1,
         state: AgreementState::Agreed,
         state_reason: None,
+        formed_as: FormedAs::Quote,
         cancel_reason: None,
         commitments: vec![CommitmentProgress {
             commitment_id: "c1".to_string(),

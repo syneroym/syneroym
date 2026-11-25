@@ -10,6 +10,7 @@ use syneroym_roym_core::{
     listing::derive_slot_id,
     progress::{
         AgreementEvent, AgreementProgressPayload, AgreementState, CancelReason, CommitmentProgress,
+        FormedAs,
     },
     record::{Envelope, RECORD_AGREEMENT_RECEIPT, RECORD_QUOTE, RecordDraft},
     testing::{
@@ -195,6 +196,7 @@ fn unformed_agreement_row(
     now: u64,
 ) -> AgreementRow {
     AgreementRow {
+        formed_as: None,
         quote_record_id: quote_rec_id.to_string(),
         quote_id: quote.signed.quote_id.clone(),
         conversation: "conv_1".to_string(),
@@ -457,6 +459,7 @@ async fn seed_snapshot_history(
         quote_author_did: master_did.to_string(),
         state: AgreementState::Agreed,
         state_reason: None,
+        formed_as: FormedAs::Quote,
         cancel_reason: None,
         commitments: vec![CommitmentProgress {
             commitment_id: "c1".to_string(),
@@ -486,6 +489,7 @@ async fn seed_snapshot_history(
         quote_author_did: master_did.to_string(),
         state: AgreementState::Agreed,
         state_reason: None,
+        formed_as: FormedAs::Quote,
         cancel_reason: None,
         commitments: vec![CommitmentProgress {
             commitment_id: "c1".to_string(),
@@ -525,6 +529,7 @@ async fn transition_retries_and_advances_when_snapshot_key_already_exists() {
 
     let row = AgreementRow {
         quote_record_id: quote_rec_id.clone(),
+        formed_as: None,
         quote_id: quote.signed.quote_id.clone(),
         conversation: "conv_1".to_string(),
         counterparty_did: cp_did.clone(),

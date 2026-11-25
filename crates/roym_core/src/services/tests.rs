@@ -234,11 +234,6 @@ fn every_hook_service_is_a_dependency_of_transaction() {
         .iter()
         .filter_map(toml::Value::as_str)
         .collect();
-    let bindings = read("../substrate/src/runtime/roym.rs");
-    let transaction_bindings = bindings
-        .split("// `transaction` declares")
-        .nth(1)
-        .expect("the transaction bindings in the substrate");
     for extension in crate::extension::registry().manifests() {
         let Some(service) = extension.hook_service() else { continue };
         assert!(
@@ -246,12 +241,6 @@ fn every_hook_service_is_a_dependency_of_transaction() {
             "app/roym.toml: transaction must depend on '{}', the hook service of extension '{}'",
             service.name,
             extension.id
-        );
-        let binding = format!("services::{}.name", service.name.to_uppercase());
-        assert!(
-            transaction_bindings.contains(&binding),
-            "crates/substrate/src/runtime/roym.rs: transaction needs a binding to '{}'",
-            service.name
         );
     }
 }

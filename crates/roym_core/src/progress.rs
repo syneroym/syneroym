@@ -73,6 +73,15 @@ pub struct CommitmentProgress {
     pub halves: Vec<String>,
 }
 
+/// How the writer answered the enquiry that led to this agreement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum FormedAs {
+    Quote,
+    AsListedInstant,
+    AsListedConfirmed,
+}
+
 /// One agreement progress snapshot signed as `agreement-progress`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgreementProgressPayload {
@@ -82,6 +91,8 @@ pub struct AgreementProgressPayload {
     pub quote_author_did: String,
     pub seq: u32,
     pub state: AgreementState,
+    /// How the deal formed. The same in every snapshot of one agreement.
+    pub formed_as: FormedAs,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state_reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -177,6 +188,7 @@ pub fn open(
     counterparty_did: String,
     quote_author_did: String,
     terms: &DealTerms,
+    formed_as: FormedAs,
     not_formed_reason: Option<String>,
 ) -> AgreementProgressPayload {
     let state = if not_formed_reason.is_some() {
@@ -202,6 +214,7 @@ pub fn open(
         quote_author_did,
         seq: 1,
         state,
+        formed_as,
         state_reason: not_formed_reason,
         cancel_reason: None,
         commitments,

@@ -427,4 +427,12 @@ async fn sync_backup_shapes() {
 
     let imp = rpc(&h, "transaction.import", json!({ "bundle": exp })).await;
     assert_shape("transaction_import", &imp);
+
+    let status_missing =
+        rpc_err(&h, "deal.as-listed-status", json!({ "listing_id": "lst_nonexistent" })).await;
+    assert_shape("deal_as_listed_status_missing", &status_missing);
+
+    let from_missing =
+        rpc_err(&h, "quote.from-listing", json!({ "enquiry_record_id": "req_nonexistent" })).await;
+    assert_shape("quote_from_listing_missing", &from_missing);
 }

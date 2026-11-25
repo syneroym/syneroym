@@ -30,6 +30,12 @@ export interface EnquiryData {
   conversation?: string;
   sequence?: number;
   listing_id?: string;
+  /// Present when the enquiry agrees to one offering version as listed.
+  as_listed?: {
+    record_id?: string;
+    slot?: { slot_id?: string; window?: { earliest_secs: number; latest_secs: number } };
+    valid_until_secs?: number;
+  };
   categories?: string[];
   description?: LocalText | string;
   lang?: string;
@@ -121,7 +127,9 @@ export function renderEnquiry(data?: EnquiryData): HTMLElement {
   if (data?.listing_id) {
     const listP = document.createElement("p");
     listP.className = "request-listing";
-    listP.textContent = t("request-listing", { id: data.listing_id });
+    listP.textContent = data.as_listed
+      ? t("request-agree-as-listed", { id: data.listing_id })
+      : t("request-listing", { id: data.listing_id });
     card.appendChild(listP);
   }
 

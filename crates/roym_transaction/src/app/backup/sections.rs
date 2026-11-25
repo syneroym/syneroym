@@ -8,8 +8,8 @@ use serde_json::Value;
 use syneroym_app_host::AppHost;
 use syneroym_roym_core::{
     backup::{
-        SECTION_AGREEMENT_PROGRESS, SECTION_FULFILMENTS, SECTION_LEDGER, SECTION_PAYMENTS,
-        SECTION_STEPS,
+        SECTION_AGREEMENT_PROGRESS, SECTION_AS_LISTED, SECTION_FULFILMENTS, SECTION_LEDGER,
+        SECTION_PAYMENTS, SECTION_STEPS,
     },
     deal::{Commitment, CommitmentKind, ResourceKind, SettlementRole, SignedCommitment},
     envelope::Response,
@@ -19,15 +19,17 @@ use syneroym_roym_core::{
 
 use super::{
     super::{
-        AGREEMENT_PROGRESS, AgreementRow, FULFILMENTS, FulfilmentsRow, LEDGER, PAYMENTS,
+        AGREEMENT_PROGRESS, AS_LISTED, AgreementRow, FULFILMENTS, FulfilmentsRow, LEDGER, PAYMENTS,
         PaymentsRow, STEPS,
+        as_listed_ops::{AnswerRow, AutoAcceptRow},
         decide::{CountersignRow, DecisionRow, DecisionState, RefusedRow, SnapshotRow},
         decline_ops::DeclineRow,
+        enquiry_ops::as_listed::AsListedRow,
         ledger::{FailureRow, LedgerRow},
         put_row,
         step_ops::StepRow,
     },
-    ImportedQuote, QuotesByRecordId, failure,
+    ImportedQuote, QuotesByRecordId, as_listed, failure,
     steps::{self, ValidatedSteps},
 };
 
@@ -44,6 +46,8 @@ pub(crate) enum ValidatedLedgerRow {
     Countersign(CountersignRow),
     Fence(LedgerRow),
     Decline(DeclineRow),
+    Answer(AnswerRow),
+    AutoAccept(AutoAcceptRow),
     Refused(RefusedRow),
     Failure(FailureRow),
 }
@@ -54,6 +58,7 @@ pub(crate) struct ValidatedVerticalSections {
     pub(crate) steps: Vec<(String, StepRow)>,
     pub(crate) ledger: Vec<(String, ValidatedLedgerRow)>,
     pub(crate) progress: Vec<(String, SnapshotRow)>,
+    pub(crate) as_listed: Vec<(String, AsListedRow)>,
     pub(crate) history_entries: Vec<HistoryEntry>,
 }
 
@@ -530,6 +535,24 @@ fn validate_ledger_entry(
     } else if id.starts_with("decline:") {
         validate_decline_entry(id, payload, quotes_by_record_id, enquiries_by_record_id, now)
             .map(Some)
+    } else if let Some(enquiry_record_id) = id.strip_prefix("autoaccept:") {
+        as_listed::validate_auto_accept_entry(
+            id,
+            enquiry_record_id,
+            payload,
+            quotes_by_record_id,
+            enquiries_by_record_id,
+        )
+        .map(Some)
+    } else if let Some(enquiry_record_id) = id.strip_prefix("answer:") {
+        as_listed::validate_answer_entry(
+            id,
+            enquiry_record_id,
+            payload,
+            quotes_by_record_id,
+            enquiries_by_record_id,
+        )
+        .map(Some)
     } else if id.starts_with("refused:") {
         validate_refused_entry(id, payload, quotes_by_record_id, agreements_map).map(Some)
     } else if id.starts_with("payreq:") || id.starts_with("ack:") || id.starts_with("fulfil:") {
@@ -665,6 +688,8 @@ pub(crate) fn validate_vertical_sections(
     history_entries.extend(h_led);
     let (progress, h_prog) = validate_progress(prog_rows, quotes_by_record_id, now)?;
     history_entries.extend(h_prog);
+    let as_listed_rows = bundle_sections.get(SECTION_AS_LISTED).cloned().unwrap_or_default();
+    let as_listed = as_listed::validate_as_listed(as_listed_rows, enquiries_by_record_id, now)?;
 
     Ok(ValidatedVerticalSections {
         payments,
@@ -672,6 +697,7 @@ pub(crate) fn validate_vertical_sections(
         steps,
         ledger,
         progress,
+        as_listed,
         history_entries,
     })
 }
@@ -698,6 +724,9 @@ pub(crate) async fn write_vertical_sections<H: AppHost>(
     }
     for (id, row) in validated.progress {
         put_row(host, AGREEMENT_PROGRESS, &id, &row).await.map_err(Response::internal_error)?;
+    }
+    for (id, row) in validated.as_listed {
+        put_row(host, AS_LISTED, &id, &row).await.map_err(Response::internal_error)?;
     }
     Ok(())
 }

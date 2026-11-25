@@ -11,8 +11,8 @@ use syneroym_roym_core::{
 use syneroym_signed_record::RecordDraft;
 
 use super::helpers::{
-    FakeProxy, canned_search_hit, canned_search_response, sign_record, sign_test_listing,
-    sign_test_listing_with_issuer, sign_test_listing_with_translation,
+    FakeProxy, canned_search_hit, canned_search_response, sign_ready_listing, sign_record,
+    sign_test_listing, sign_test_listing_with_issuer, sign_test_listing_with_translation,
 };
 use crate::{Source, find, verify::build_refused_row};
 
@@ -313,4 +313,23 @@ fn refused_row_has_empty_lang_and_translations() {
     let row = build_refused_row(&source, hit, verdict);
     assert_eq!(row.lang, "");
     assert!(row.translations.is_empty());
+}
+
+#[tokio::test]
+async fn a_hit_says_whether_agree_as_listed_can_succeed() {
+    let (ready_id, ready_rec, ready_env) = sign_ready_listing("ready", "Ready offer", 1000);
+    let (plain_id, plain_rec, plain_env) = sign_test_listing("plain", "Plain offer", 1000);
+    let hits = vec![
+        canned_search_hit(&ready_id, &ready_rec, &ready_env, Default::default(), 1000),
+        canned_search_hit(&plain_id, &plain_rec, &plain_env, Default::default(), 1000),
+    ];
+    let source = Source { did: "did:key:s1".to_string(), pinned_issuer: None };
+    let resp = canned_search_response(hits, false);
+    let proxy = FakeProxy::new(Ok(vec![Ok(resp)]));
+
+    let res = find(&proxy, &[source], &SearchQuery::default(), 1000).await.unwrap();
+    let ready = res.page.hits.iter().find(|h| h.listing_id == ready_id).expect("ready hit");
+    let plain = res.page.hits.iter().find(|h| h.listing_id == plain_id).expect("plain hit");
+    assert!(ready.can_agree_as_listed);
+    assert!(!plain.can_agree_as_listed);
 }

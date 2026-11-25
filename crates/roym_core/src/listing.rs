@@ -16,7 +16,14 @@ use crate::{
     deal::{ExtensionRef, MAX_EXTENSION_ID_LEN},
     extension::SCHEDULING_EXTENSION,
     lang::{LangTag, TranslationError, check_text, check_translation_langs},
+    listing::as_listed::MAX_LISTING_QUOTE_VALID_SECS,
     money,
+    transaction::MIN_QUOTE_LIFETIME_SECS,
+};
+
+pub mod as_listed;
+pub use as_listed::{
+    Acceptance, DEFAULT_INSTANT_CAP, ListingDealTerms, MAX_INSTANT_CAP, PaymentTiming,
 };
 
 pub const LISTING_VERSION: u32 = 1;
@@ -217,6 +224,23 @@ pub struct ListingPayload {
     pub relationship: Option<RelationshipTerms>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub service_record: Option<ServiceRecordTerms>,
+
+    /// `confirm-first` (the default) or `instant`.
+    #[serde(default, skip_serializing_if = "as_listed::is_default")]
+    pub acceptance: Acceptance,
+    /// The owner says the offering never runs out, so `instant` is allowed
+    /// even when the listing books no slots.
+    #[serde(default, skip_serializing_if = "as_listed::is_false")]
+    pub not_limited: bool,
+    /// Open instant agreements this offering may hold at one time.
+    #[serde(
+        default = "as_listed::default_instant_cap",
+        skip_serializing_if = "as_listed::is_default_cap"
+    )]
+    pub instant_cap: u16,
+    /// The texts and validity a quote built from this listing carries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deal_terms: Option<ListingDealTerms>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -273,18 +297,43 @@ pub enum ListingError {
     ServiceListTooLong(&'static str),
     #[error("an entry in {0} is longer than {MAX_SERVICE_LIST_ITEM_LEN} bytes")]
     ServiceListItemTooLong(&'static str),
+    #[error("acceptance instant is not allowed: {reason}")]
+    InstantNotAllowed { reason: &'static str },
+    #[error("instant_cap must be 1..={MAX_INSTANT_CAP}, got {0}")]
+    InstantCapRange(u16),
+    #[error("deal terms texts must use the listing's language and translation languages")]
+    DealTermsLanguages,
+    #[error(
+        "quote_valid_secs must be {MIN_QUOTE_LIFETIME_SECS}..={MAX_LISTING_QUOTE_VALID_SECS}, got \
+         {0}"
+    )]
+    QuoteValidRange(u64),
     #[error(transparent)]
     Translation(#[from] TranslationError),
 }
 
 impl ListingError {
     /// The stable code a client reads in `error.data.code`. Only the
-    /// refusals about the extension have one; the others are a message only.
+    /// refusals about the extension and the as-listed fields have one; the
+    /// others are a message only.
     pub fn code(&self) -> Option<&'static str> {
         match self {
             Self::PaymentRequired => Some("payment-required"),
             Self::ExtensionShape(_) => Some("extension-shape"),
             Self::BookingRequired => Some("booking-required"),
+            Self::InstantNotAllowed { .. } => Some("instant-not-allowed"),
+            Self::InstantCapRange(_) => Some("instant-cap-range"),
+            Self::DealTermsLanguages => Some("deal-terms-languages"),
+            Self::QuoteValidRange(_) => Some("quote-valid-range"),
+            _ => None,
+        }
+    }
+
+    /// The detail a code such as `instant-not-allowed` carries in
+    /// `error.data.reason`.
+    pub fn reason(&self) -> Option<&'static str> {
+        match self {
+            Self::InstantNotAllowed { reason } => Some(reason),
             _ => None,
         }
     }
@@ -388,6 +437,7 @@ impl ListingPayload {
         self.validate_location()?;
         self.validate_relationship()?;
         self.validate_translations()?;
+        self.validate_as_listed()?;
 
         Ok(())
     }
