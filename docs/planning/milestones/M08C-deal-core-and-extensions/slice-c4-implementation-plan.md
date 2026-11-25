@@ -4,9 +4,9 @@
 owner, who answers the questions in section 2.1. You do not have the
 planning conversation. This plan is meant to stand alone.*
 
-**Status: plan written, 2026-11-25, by Claude Opus 5.5. Not reviewed yet.
-The owner accepted the recommended answer of every question in section
-2.1 on 2026-11-25.**
+**Status: plan reviewed, 2026-11-25 (round 1 by Claude Sonnet 5.5, all 9
+findings folded). The owner accepted the recommended answer of every
+question in section 2.1 on 2026-11-25.**
 
 **Size and PRs.** [task.md](task.md) sizes C4 as L. Checked against the
 code, it is about 1,500 lines of production code (Rust and TypeScript) and
@@ -107,8 +107,9 @@ both change `conversation` and the Hub chat (task.md section 4).
   host interface as the person (`principal::delegated`), like a quote.
 - **Projection:** the node's checked view of a received item, which the
   Hub draws. The Hub never draws a widget from the raw message body.
-- **Scan:** one pass of `widget.list` over the newest messages of one
-  conversation.
+- **Scan:** one pass of `widget.list` over the messages of one
+  conversation, paging forward from the oldest asked widget (or from the start
+  when listing without ids).
 
 ## 1. What C4 builds, in one paragraph
 
@@ -127,8 +128,9 @@ valid answer of each person. The widget's fixed labels (its name, its field
 labels) come from the string catalog. The author's question and options are
 free text in the message's language. A free-text field of an answer gets a
 translate action at the new "widget answer" hook point. A widget of a type
-this build does not know is drawn by the generic card from its field types,
-with "Not checked on this device".
+this build does not know, but built from the field types it does know, is drawn
+by the generic card with "Not checked on this device". A widget with an unknown
+field type or unknown key is refused (`widget-shape`).
 
 ### Why C4 is split in two (Q1)
 
@@ -148,20 +150,22 @@ C4a:
 
 C4b:
 
-- Alice opens her chat with Bob and taps "Poll". She types "Which day
+- In a chat within the messages the Hub shows (the first 200 messages today),
+  Alice opens her chat with Bob and taps "Poll". She types "Which day
   shall we meet?" and two options, "Saturday" and "Sunday", and taps
   "Send poll".
 - Both chats show the poll card: the question, the two options, "0 votes"
   next to each, and the line "Everyone in this chat can see each vote."
 - Bob taps "Sunday". His chat shows "You chose: Sunday" and "1 vote" next
-  to Sunday. A few seconds later, Alice's chat shows "1 vote" next to
+  to Sunday. (If sending his vote fails, Bob sees the failure state and a retry
+  button). A few seconds later, Alice's chat shows "1 vote" next to
   Sunday too.
 - Bob changes his mind and taps "Saturday". The counts move to Saturday on
   both chats.
 - In a group, every member sees the same poll and the same counts.
-- If a newer app sends a widget this app does not know, the chat shows its
-  fields as plain labelled lines with "Not checked on this device", and
-  the person can still answer it.
+- If a newer app sends a widget of a type this app does not know but built from
+  the field types it does know, the chat shows its fields as plain labelled
+  lines with "Not checked on this device", and the person can still answer it.
 
 How a developer can see it work:
 
@@ -191,6 +195,8 @@ stored count (section 7.8).
 
 #### Q1. How many PRs?
 
+Owner answer: (b), 2026-11-25.
+
 - (a) One PR. About 3,000 lines with tests. One close-out.
 - **(b) Two PRs: C4a (node), then C4b (Hub and demo).** Recommended. Each
   PR has one reviewer question. C4a can be checked with `roymctl` and the
@@ -198,6 +204,8 @@ stored count (section 7.8).
   Hub code together needs many rounds.
 
 #### Q2. What carries a widget and an answer?
+
+Owner answer: (b), 2026-11-25.
 
 EX-12 says "a signed `widget-answer` record". ADR-0030 ("Consequences",
 `:82`) leaves open whether that signature is a person signature. The
@@ -238,6 +246,8 @@ own decision.
 
 #### Q3. Widgets in groups?
 
+Owner answer: (a), 2026-11-25.
+
 The extensions doc's example is "A poll in a family chat" (`:146`).
 
 - **(a) Yes, in every chat, 1:1 and group.** Recommended. With Q2 (b) it
@@ -245,6 +255,8 @@ The extensions doc's example is "A poll in a family chat" (`:146`).
 - (b) 1:1 only in M08C. A family poll then waits for a later slice.
 
 #### Q4. May a person change an answer?
+
+Owner answer: (a), 2026-11-25.
 
 - **(a) Yes. The newest valid answer of each person counts.** Recommended.
   The Hub lets the person tap another option. An earlier answer stays in
@@ -256,8 +268,13 @@ The extensions doc's example is "A poll in a family chat" (`:146`).
 "Newest" is by the sender's own clock, then by message id (D-C4-7). A
 person's own answers are all stamped by that person's own node, so the
 order of one person's answers does not depend on another node's clock.
+If a voter's local clock steps back (e.g. time sync), a later vote carries
+an older timestamp than the earlier one, so the earlier vote continues to
+count (backlog row, section 8).
 
 #### Q5. Which widget types ship?
+
+Owner answer: (a), 2026-11-25.
 
 - **(a) Only `poll/single`.** Recommended. The generic card draws any
   other type, from a newer build, from its field types (EX-11's last
@@ -268,6 +285,8 @@ order of one person's answers does not depend on another node's clock.
   adds a second composer and about six more Hindi messages.
 
 #### Q6. Where is the poll type declared?
+
+Owner answer: (a), 2026-11-25.
 
 - **(a) A new manifest kind `chat`, and a new manifest
   `crates/roym_core/extensions/poll.json`.** Recommended. A `chat`
@@ -286,6 +305,8 @@ order of one person's answers does not depend on another node's clock.
 
 #### Q7. What does a poll show?
 
+Owner answer: (a), 2026-11-25.
+
 Every member's node holds every answer message, so a vote is never secret
 inside the chat.
 
@@ -297,6 +318,8 @@ inside the chat.
 
 #### Q8. Demo
 
+Owner answer: (a), 2026-11-25.
+
 - **(a) Story 20 gets three steps: Alice sends a poll to Bob, Bob votes,
   Alice sees the count.** Recommended. task.md (Demo line) names story 20.
   A group poll is shown by the Playwright case in `roym-groups.spec.ts`
@@ -304,6 +327,8 @@ inside the chat.
 - (b) No demo step. The Hub unit tests and Playwright cover it.
 
 #### Q9. Which size limit applies to `conversation`?
+
+Owner answer: (a), 2026-11-25.
 
 task.md section 1: a component with new record code may grow by 15%, any
 other by 40 KB. `conversation` is 813,818 bytes (C3c2 table).
@@ -394,13 +419,17 @@ other by 40 KB. `conversation` is 813,818 bytes (C3c2 table).
 11. **A group has at most 256 members**
     ([store.rs:100](../../../../crates/conversation/src/store.rs#L100)).
     So the newest answer per person is a short list.
-12. **The Hub's thread loads the newest 200 messages**
-    (`conversation.history` with no `limit`,
+12. **The Hub's thread loads the oldest 200 messages**
+    (`conversation.history` with no `limit` and no cursor fetches in ascending
+    chronological order,
     [messages.ts:386](../../../../crates/roym_web/ui/src/screens/messages.ts#L386);
-    the default of 200 at
-    [messages.rs:375](../../../../crates/roym_conversation/src/app/messages.rs#L375)).
-    The answers to a widget that the Hub draws are newer than the widget,
-    so a scan of the newest 1,000 messages holds them (D-C4-7).
+    the default limit of 200 at
+    [messages.rs:375](../../../../crates/roym_conversation/src/app/messages.rs#L375);
+    store query `ORDER BY sender_timestamp ASC, author ASC, id ASC` at
+    [store/history.rs:65](../../../../crates/conversation/src/store/history.rs#L65)).
+    There is no paging in the Hub today. `widget.list` receives the ids of
+    widgets the caller wants, reads each with `get_message`, and pages forward
+    from the oldest asked widget to collect answers (D-C4-7).
 13. **A widget message fits the mailbox.** A sealed mailbox message holds
     a body of about 13 KiB (`MAILBOX_CARD_BODY_BYTES`,
     [card.rs:40](../../../../crates/roym_core/src/card.rs#L40)). A widget
@@ -791,6 +820,10 @@ pub fn poll_definition(prompt: &str, options: &[String]) -> WidgetDefinition;
    1 to `MAX_WIDGET_CHOICES` choices; each `text` is not blank and at most
    `MAX_CHOICE_TEXT_LEN` bytes. A `label`, when present, is not blank and
    at most `MAX_WIDGET_LABEL_LEN` bytes.
+   All structs deny unknown fields (`deny_unknown_fields`), and `field_type`
+   must deserialize into one of today's eight variants of `FieldType`. A
+   definition from a peer with an unknown field type (e.g. `location`) or
+   unknown field is refused as `Shape("widget-shape")` (P3).
 
 `check_type`: `types.get(&def.extension, &def.widget_type)`. `None` gives
 `NotChecked`. Otherwise `semantic` equals the type's; the field names, in
@@ -835,27 +868,30 @@ pub struct WidgetListInput {
 // widget.send and widget.answer return SendOutput (method/conversation.rs:20).
 ```
 
-**Shared send path.** Move the body of `conversation.send` after the
-content-type check
-([messages.rs:273](../../../../crates/roym_conversation/src/app/messages.rs#L273)
-to `:318`: the group checks, `AppConversation::send`, the read-back of the
-state) into one function in `messages.rs`:
+**Shared send path.** Move the body of `conversation.send` from `messages.rs:273`
+into a shared function in `messages.rs`:
 
 ```rust
-pub(crate) async fn send_body<H: AppHost>(
+pub(crate) async fn send_body<H: AppHost, F>(
     host: &H,
     conversation: String,
     content_type: &str,
     languages: Vec<String>,
     body: Vec<u8>,
-    refuse_in_group: bool, // true only for the card content type
-) -> Reply<SendOutput>;
+    check_reserved: F,
+) -> Reply<SendOutput>
+where
+    F: FnOnce(bool /* is_group */, &str /* content_type */) -> Option<&'static str>;
 ```
 
-`conversation.send` keeps its checks, adds the two widget content types to
-the reserved list, and calls it. `widget.send` and `widget.answer` call it
-with `refuse_in_group = false`. No behaviour of `conversation.send`
-changes for the content types it accepts today.
+`send_body` performs the group checks once (`group_info`, `GROUP_RESTORED_NOTICE`,
+`GROUP_REMOVED_NOTICE`), then invokes `check_reserved(is_group, content_type)`.
+`conversation.send` passes today's reserved check (including cards not in groups)
+plus the two widget content types ("this content type is reserved").
+`widget.send` and `widget.answer` pass a check that returns `None`.
+This preserves the exact error precedence: a removed group member receives
+`GROUP_REMOVED_NOTICE` rather than a reserved content type error (scenarios 207
+and 208 remain unchanged).
 
 ```text
 widget.send(input):
@@ -865,7 +901,7 @@ widget.send(input):
     NotChecked -> -32602 "extension-unknown"             // a node sends only types it knows
     Checked    -> ok
   body = widget_body(input.widget)                       -> "widget-too-large"
-  send_body(host, conversation, WIDGET_CONTENT_TYPE, languages, body, false)
+  send_body(host, conversation, WIDGET_CONTENT_TYPE, languages, body, |_, _| None)
 
 widget.answer(input):
   languages = check_tag_list(input.languages)
@@ -877,7 +913,7 @@ widget.answer(input):
   def = parse_widget_body(m.body)                    -> "widget-refused" (with the inner code in the message)
   check_answer(def, input.data)                      -> "answer-invalid"
   body = answer_body(input.widget_id, input.data)    -> "answer-too-large"
-  send_body(host, conversation, WIDGET_ANSWER_CONTENT_TYPE, languages, body, false)
+  send_body(host, conversation, WIDGET_ANSWER_CONTENT_TYPE, languages, body, |_, _| None)
 ```
 
 `widget.answer` accepts a widget of a type this node does not know: the
@@ -886,15 +922,16 @@ answer is checked against the widget's own fields (Q5 (a)).
 ### D-C4-7. `widget.list`: the scan and the count
 
 ```rust
-/// A cap for one call. With `widget_ids`, the scan normally stops much
-/// sooner: at the page that holds the oldest asked widget.
+/// A cap for one call: messages scanned forward from the oldest asked widget.
 pub const MAX_WIDGET_SCAN_MESSAGES: usize = 1_000;
 /// The Hub's page is 200 messages, so it never asks for more widgets.
 pub const MAX_LISTED_WIDGET_IDS: usize = 200;
+/// Output cap when listing widgets without ids (e.g. roymctl).
+pub const MAX_UNFILTERED_WIDGETS: usize = 50;
 
 pub struct WidgetListOutput {
-    pub widgets: Vec<WidgetView>,   // newest first, as history
-    /// False when the scan stopped at the bound before the first message.
+    pub widgets: Vec<WidgetView>,
+    /// False when the scan stopped at the cap before the end of chat.
     pub complete: bool,
 }
 pub struct WidgetView {
@@ -925,36 +962,74 @@ pub struct AnswerView {
     pub sender_timestamp_ms: i64,
     pub languages: Vec<String>,
     pub data: Value,
+    pub state: StoredState,
+    pub last_error: Option<String>,
 }
 ```
 
 ```text
 widget.list(conversation, widget_ids):
   if widget_ids.len() > MAX_LISTED_WIDGET_IDS: -32602
-  wanted = set(widget_ids)                 // empty: every widget
-  widgets = []; answers = []; seen = 0; cursor = None
-  loop:
-    page = AppConversation::history(conversation, 200, cursor)
-    for item in page.items:
-      if item is not a Message: continue
-      seen += 1
+  widgets = []; answers = []; complete = true
+
+  if widget_ids is not empty:
+    // P1 & P4: Fetch asked widgets directly; drop missing, deleted, foreign or non-widget
+    valid_widgets = []
+    for wid in widget_ids:
+      m = AppConversation::get_message(wid)
+      if m is NotFound or m.conversation != conversation: continue
+      if m.content_type != WIDGET_CONTENT_TYPE: continue
       if m.deleted_at.is_some(): continue
-      if m.content_type == WIDGET_CONTENT_TYPE and (wanted is empty or m.id in wanted):
-        widgets.push(m); wanted_found += 1
-      if m.content_type == WIDGET_ANSWER_CONTENT_TYPE: answers.push(m)
-      if seen == MAX_WIDGET_SCAN_MESSAGES: stop, complete = false
-    if page.next_cursor is None: complete = true; stop
-    // Every answer is newer than its widget, so once every asked widget
-    // is found, the pages before this one hold nothing more to count.
-    if wanted is not empty and wanted_found == wanted.len(): complete = true; stop
-    cursor = page.next_cursor
+      valid_widgets.push(m)
+    if valid_widgets is empty:
+      return { widgets: [], complete: true }
+
+    widgets = valid_widgets
+    // Oldest asked widget by (sender_timestamp, author, id)
+    oldest = min(widgets, by: (sender_timestamp, author, id))
+    cursor = Some(oldest.id)
+    seen = 0
+    loop:
+      page = AppConversation::history(conversation, 200, cursor)
+      for item in page.items:
+        if item is not a Message: continue
+        seen += 1
+        if m.deleted_at.is_some(): continue
+        if m.content_type == WIDGET_ANSWER_CONTENT_TYPE:
+          answers.push(m)
+        if seen == MAX_WIDGET_SCAN_MESSAGES:
+          complete = false; break
+      if not complete or page.next_cursor is None: break
+      cursor = page.next_cursor
+
+  else:
+    // Empty widget_ids (roymctl): page forward from start, capped at MAX_UNFILTERED_WIDGETS
+    cursor = None; seen = 0
+    loop:
+      page = AppConversation::history(conversation, 200, cursor)
+      for item in page.items:
+        if item is not a Message: continue
+        seen += 1
+        if m.deleted_at.is_some(): continue
+        if m.content_type == WIDGET_CONTENT_TYPE:
+          if widgets.len() < MAX_UNFILTERED_WIDGETS:
+            widgets.push(m)
+          else:
+            complete = false
+        if m.content_type == WIDGET_ANSWER_CONTENT_TYPE:
+          answers.push(m)
+        if seen == MAX_WIDGET_SCAN_MESSAGES:
+          complete = false; break
+      if not complete or page.next_cursor is None: break
+      cursor = page.next_cursor
+
   views = widgets.map(project)            // parse_widget_body, check_type; refused code on error
   by_widget = answers.filter_map(parse_answer_body).group_by(widget_id)
   for view with a definition:
     valid = by_widget[view.widget_id].filter(check_answer ok)
     view.ignored_answers = the others' count
     latest = per author: max by (sender_timestamp_ms, message_id)
-    view.answers = latest sorted newest first
+    view.answers = latest sorted newest first (carries state and last_error)
     view.counts = for each choice field, each choice: count of latest whose data[field] == code
   return { widgets: views, complete }
 ```
@@ -965,11 +1040,20 @@ Rules, each with a test (section 7):
   dropped before the newest is chosen, so a bad message never hides a good
   earlier one. The tie-break by message id is the same on every node
   (point 3).
+- **Own answer state and retry** (P2). An own answer in `failed` or
+  `pending` state is counted locally on the voter's node (as history returns
+  own outgoing messages regardless of admission). `AnswerView` carries
+  `state` and `last_error` so the Hub displays the state word and retry
+  button for the person's own answer.
 - **A deleted answer is not counted.** The author's earlier answer then
   counts again. The Hub offers no delete for an answer (it draws no bubble
   for it), so this happens only through `conversation.delete-message`.
-- **A deleted widget is not listed.** The Hub draws "message deleted" for
-  it, as today.
+- **Deleted, missing or foreign widget ids** (P4). An asked id that is
+  deleted, missing, not of `WIDGET_CONTENT_TYPE`, or belonging to another
+  conversation is omitted from `widgets` and does not start a scan. The Hub
+  does not ask for ids of messages with `deleted_at_secs` (drawn as "message
+  deleted"). A drawn widget whose id is missing from `widget.list` draws
+  `widget-refused`.
 - **Every message history returns counts**: own and peers', and restored
   rows. History returns only the person's own messages and accepted ones
   ([history.rs:64](../../../../crates/conversation/src/store/history.rs#L64)),
@@ -979,25 +1063,24 @@ Rules, each with a test (section 7):
 - **An answer whose widget is not in the scan is not counted.** An answer
   never names a widget in another conversation in the count, because only
   this conversation's history is read.
-- **The scan stops early, and nothing is stored.** The Hub passes the ids
-  of the widgets in the messages it loaded (today the newest 200, point
-  12). The scan reads back from the newest message and stops after the
-  page that holds the oldest asked widget, because every answer was
-  written after its widget. So a call on today's Hub reads one or two
-  pages. If the Hub later loads older pages on scroll, it passes the ids
-  of the pages it holds, and the scan reads back to the oldest of them.
-  `MAX_WIDGET_SCAN_MESSAGES` is only a cap; a widget older than the cap is
-  not found, and `complete` is false. An asked id that is not found is
-  left out of `widgets`, and the Hub draws `widget-refused` for it.
-- **The order is not taken from `visible_seq`** (point 4). History is in
-  sender-time order (point 4). An answer from a node whose clock is
-  behind may sort just before its widget; the scan reads to the end of
-  that page, so such an answer is still found when it is on the same
-  page. Further back, it is not counted (backlog row, section 8).
-- **Size of the output.** Every scanned message appears once at most, as
-  a widget or as one answer of one widget. So the output is no larger
-  than the scanned bodies (at most 1,000 × 8 KiB). `conversation.history`
-  already returns up to 200 bodies of up to 256 KiB each.
+- **The scan pages forward from the oldest asked widget** (P1). The Hub passes
+  the ids of the widgets in the messages it loaded (today within the oldest
+  200, point 12). The scan fetches those definitions directly, finds the
+  oldest by `(sender_timestamp, author, id)`, and pages forward with
+  `history(conversation, 200, cursor = Some(oldest.id))` up to 1,000 messages.
+  If the cap is hit before reaching the end of chat, `complete: false`.
+- **Clock skew and ordering** (P9). History is in sender-time order (point 4).
+  Answers sort after their widget in history. If a sender's clock is behind
+  such that an answer sorts before its widget, it is missed by the forward
+  scan and not counted (backlog row, section 8). If a voter's local clock
+  steps back, their subsequent vote carries an older timestamp and will not
+  replace their earlier vote in `max by (sender_timestamp_ms, message_id)`
+  (backlog row, section 8).
+- **Size of the output** (P8). When `widget_ids` is specified, at most 200
+  widgets are returned. When `widget_ids` is empty, at most
+  `MAX_UNFILTERED_WIDGETS = 50` widgets are returned (at most ~400 KiB of
+  definitions, well below message size limits, avoiding up to 8 MB
+  unbounded replies).
 
 ### D-C4-8. Groups
 
@@ -1031,17 +1114,22 @@ New folder `crates/roym_web/ui/src/widgets/`:
   `pollDefinition(question, options)`, which builds the same definition as
   `poll_definition` (codes `o1`, …). A test compares it with a fixture
   that the Rust test writes the same way.
-- `poll.ts`: `renderPoll(view, opts)`. It draws the heading from
-  `ext-poll-widget-single`; the prompt with `messageText(prompt,
-  view.languages, "p", { translatable: incoming })` (the chat message hook
-  point,
+- `poll.ts`: `renderPoll(view, opts)`. The heading is the catalog name
+  for a known type, else `widget-unknown-heading` with the type code;
+  "Not checked on this device" (`ext-not-checked`) when `checked` is false
+  (P7). The prompt with `messageText(prompt, view.languages, "p", {
+  translatable: incoming })` (the chat message hook point,
   [message_text.ts:33](../../../../crates/roym_web/ui/src/chat/message_text.ts#L33));
   the line `widget-votes-visible`; one button per option with the choice
   text (`textContent`, `lang` from the first language) and the count
   (`widget-poll-count`, a Fluent plural); and "You chose: …" for the
-  person's own newest answer. A tap on an option calls `widget.answer`
-  with `{ option: code }`, then redraws. A tap on the person's current
-  choice does nothing.
+  person's own newest answer. If the person's newest own answer is not
+  `delivered`, show its state word (`messages-state-*`), and if `failed`,
+  show a retry button calling `conversation.retry` with `AnswerView.message_id`
+  (P2). A tap on an option finds the choice field name from the definition
+  (`const fieldName = view.definition.fields[0].name;`) and calls `widget.answer`
+  with `{ [fieldName]: code }` (P7), then redraws. A tap on the person's
+  current choice does nothing.
 - `generic.ts`: `renderGenericWidget(view, opts)`. The heading is the
   catalog name for a known type, else `widget-unknown-heading` with the
   type code; "Not checked on this device" (`ext-not-checked`) when
@@ -1051,8 +1139,10 @@ New folder `crates/roym_web/ui/src/widgets/`:
   type="datetime-local">`, sent as seconds; `duration` minutes, sent as
   seconds; `choice` a `<select>` of the author texts. The label is the
   catalog label for a known type, else the author `label`, else the field
-  name. "Send answer" calls `widget.answer`. Under the form, the answers:
-  each author's name and its fields, drawn with `fieldView`
+  name. If the person's newest own answer is not `delivered`, show its state
+  word, and if `failed`, show a retry button (P2). "Send answer" calls
+  `widget.answer`. Under the form, the answers: each author's name and its
+  fields, drawn with `fieldView`
   ([fields.ts:65](../../../../crates/roym_web/ui/src/cards/fields.ts#L65))
   for the non-text fields, and each `text` or `long-text` value with
   `messageText(value, answer.languages, "span", { translatable: incoming
@@ -1072,14 +1162,17 @@ Wiring:
 
 - `messages.ts` `fillThread`
   ([messages.ts:363](../../../../crates/roym_web/ui/src/screens/messages.ts#L363)):
-  call `widget.list` next to `transaction.thread`, with the ids of the
+  `conversation.history` loads the oldest 200 messages today (P1). Call
+  `widget.list` next to `transaction.thread`, with the ids of non-deleted
   widget messages in the loaded history (so `conversation.history` comes
-  first), and keep a map by `widget_id`. With no widget message in the
-  page, it makes no `widget.list` call. In `messageElement`
+  first), and keep a map by `widget_id`. A deleted message is drawn as
+  "message deleted" and its id is not sent to `widget.list` (P4). With no
+  widget message in the page, it makes no `widget.list` call. In
+  `messageElement`
   ([messages.ts:517](../../../../crates/roym_web/ui/src/screens/messages.ts#L517)):
   a widget message draws `renderWidget` from the map, or `widget-refused`
   when the map has none; an answer message is not drawn (as a `repeat`
-  card is not, `:396`). The state word and the retry action stay.
+  card is not, `:396`).
 - `groups.ts` `reloadThread` (`:656`) calls `widget.list`, and
   `renderThreadMessages` (`:151`) takes the map and does the same.
 - Both composers get the "Poll" button.
@@ -1162,9 +1255,14 @@ Each step builds, and its tests pass, before the next starts.
   `crates/roym_web/tests/dual_build_parity/widget.rs`, registered in
   `dual_build_parity.rs`.
 - `UPDATE_METHOD_SHAPES=1` for the three new methods; the probes in
-  `method_contract/shapes.rs`; `every_conversation_method_has_typed_input_and_output`
+  `method_contract/shapes.rs`.
+- Update `contract.rs:40` assertion `table.len() == 24` to 27 for
+  `conversation`; `every_conversation_method_has_typed_input_and_output`
   ([contract.rs:38](../../../../crates/roym_web/tests/method_contract/contract.rs#L38))
-  passes with the new file.
+  passes with the new file (P5).
+- Add `widget.send`, `widget.answer`, and `widget.list` to the scenario 73
+  method list in `wire_origin.rs:116` (creating a widget first for
+  `widget.answer`), asserting they are wired and locally admitted (P5).
 
 #### Step 5 — `roymctl roym widget`
 
@@ -1255,14 +1353,18 @@ Each step builds, and its tests pass, before the next starts.
 - `scenario_261_inbound_answers_count_the_newest_of_each_author_parity`:
   an inbound poll and inbound answers from two authors, one author
   answers twice; a deleted answer brings back the earlier one; an invalid
-  answer is in `ignored_answers` and does not hide an earlier valid one.
-- `scenario_265_widget_list_reads_back_only_to_the_asked_widgets_parity`:
-  with `widget_ids`, only those widgets are listed, an unknown id is left
-  out, more than 200 ids is refused, and the scan stops at the page of the
-  oldest asked widget (the harness counts the history calls, or a widget
-  placed before that page is not returned).
+  answer is in `ignored_answers` and does not hide an earlier valid one;
+  own answer in `failed` state is counted locally with its state and last_error
+  in `AnswerView` (P2).
+- `scenario_265_widget_list_forward_scan_parity`: with `widget_ids`, only
+  those widgets are listed, a missing or deleted id is left out; the scan
+  pages forward from the oldest asked widget to collect answers and stops
+  after 1,000 messages (`complete: false`) (P1, P4); with empty `widget_ids`,
+  at most `MAX_UNFILTERED_WIDGETS = 50` widgets are returned, with
+  `complete: false` when more exist (P8).
 - `scenario_262_widget_refusals_parity`: `widget.send` with an unknown
-  type (`extension-unknown`), a body over 8 KiB (`widget-too-large`);
+  type (`extension-unknown`), a body over 8 KiB (`widget-too-large`), a
+  definition with an unknown field type (`widget-shape`, P3);
   `conversation.send` with each widget content type (reserved);
   `widget.answer` to a text message (`not-a-widget`), to a widget of
   another conversation (`widget-not-found`), to a deleted widget
@@ -1272,13 +1374,16 @@ Each step builds, and its tests pass, before the next starts.
   answer (`GROUP_REMOVED_NOTICE`).
 - `scenario_264_inbound_bad_or_unknown_widgets_parity`: an inbound widget
   over 8 KiB and one with a bad shape are listed with `refused` codes; an
-  inbound unknown type is listed with `checked: false`, and an answer to
-  it is sent and counted.
+  inbound unknown type (built from known field types) is listed with
+  `checked: false`, and an answer to it is sent and counted.
 
 ### 7.3 Method contract
 
 - Shapes for `widget.send`, `widget.answer` and `widget.list`
   (`UPDATE_METHOD_SHAPES=1`), and their probes.
+- `contract.rs:40` assertion updated from 24 to 27 for `conversation` (P5).
+- Scenario 73 in `wire_origin.rs` updated to include all three methods,
+  asserting they are dispatched locally and refused on the wire (P5).
 
 ### 7.4 Two-node and three-node (`crates/substrate/tests/roym_widget_e2e.rs`)
 
@@ -1296,16 +1401,20 @@ Each step builds, and its tests pass, before the next starts.
 ### 7.5 Hub unit tests (`npm test`)
 
 - `widgets/view.test.ts`: `pollDefinition` equals the Rust fixture.
-- `widgets/poll.test.ts`: heading from the catalog; zero counts; the
-  person's own choice; a tap calls `widget.answer` with `{option: code}`;
-  a tap on the current choice makes no call; a choice text with markup is
-  drawn as text; the `lang` of the options.
+- `widgets/poll.test.ts`: heading from catalog for known type, else generic
+  code (P7); `ext-not-checked` drawn when `checked: false` (P7); zero counts;
+  the person's own choice; a tap calls `widget.answer` with `{ [fieldName]: code }`
+  derived from the definition (P7); a tap on the current choice makes no call;
+  a choice text with markup is drawn as text; the `lang` of the options;
+  state word and retry button drawn when the user's own answer has state
+  `failed` (P2).
 - `widgets/generic.test.ts`: an unknown type draws its fields and "Not
   checked on this device"; each field type's input; labels (catalog, then
-  author, then name); "Send answer"; the answers list. The widget-answer
-  hook point: "a node with no engine draws no translate action and makes
-  no call", the exact `translation.translate` params, and the
-  `unavailable` stub (`-32020`), as in `chat/message_text.test.ts`.
+  author, then name); state word and retry button for own answer with state
+  `failed` (P2); "Send answer"; the answers list. The widget-answer hook
+  point: "a node with no engine draws no translate action and makes no call",
+  the exact `translation.translate` params, and the `unavailable` stub
+  (`-32020`), as in `chat/message_text.test.ts`.
 - `widgets/render.test.ts`: poll versus generic choice; the two refused
   texts.
 - `widgets/composer.test.ts`: 2 to 12 options; the blank and repeated
@@ -1343,11 +1452,14 @@ Each step builds, and its tests pass, before the next starts.
   `extension/load.rs` (182) and `ids.rs` (70) stay small. TypeScript files
   have no line gate, but `messages.ts` is 1,174 lines, so every new Hub
   part goes into `widgets/`.
-- **Time of `widget.list`:** with `widget_ids` from today's Hub, one call
-  reads one or two history pages of 200. The cap case (1,000 messages,
-  five pages, no `widget_ids`) is only for `roymctl`. C4a step 3 records
-  both on the WASM build (as C3c1 recorded `transaction.drive`). Stop
-  rule: the Hub case over 200 ms, stop and tell the owner.
+- **Time of `widget.list`:** with `widget_ids` from today's Hub,
+  `get_message` fetches the definitions, and history pages forward from the
+  oldest asked widget. For 200 messages, it reads at most one or two history
+  pages of 200. The cap case (1,000 messages, five pages) bounds scan work.
+  Listing without `widget_ids` is capped at `MAX_UNFILTERED_WIDGETS = 50`
+  widgets to avoid returning up to 8 MB (P8). C4a step 3 records both on the
+  WASM build (as C3c1 recorded `transaction.drive`). Stop rule: the Hub case
+  over 200 ms, stop and tell the owner.
 - **The Hub calls `widget.list` on a thread redraw only when the page
   holds a widget.** It is one call next to the two calls of today
   (`transaction.thread`, `conversation.history`).
@@ -1429,7 +1541,9 @@ ids does not see them.
 | "`RECORD_TYPES` is not read by any verifier" (`:665`) | Unchanged. C4 adds no record type. |
 | "More demo stories" (`:705`) | C4b extends story 20. |
 | New: "Poll options and widget labels are not offered to machine translation" | C4b adds it (D-C4-11). Target: TBD. |
-| New: "`widget.list` finds a widget only in the newest 1,000 messages, and misses an answer whose sender's clock puts it a page before its widget" | C4a adds it (D-C4-7). The fix is a stored count (section 7.8). Target: TBD. |
+| New: "`widget.list` scans at most 1,000 messages forward from the oldest asked widget, misses an answer whose sender's clock puts it before its widget, and caps unfiltered listings at 50 widgets" | C4a adds it (D-C4-7). The fix is a stored count (section 7.8). Target: TBD. |
+| New: "The Hub thread shows only the oldest 200 messages" | C4b adds it (P1). The fix is thread paging. Target: TBD. |
+| New: "A voter's local clock stepping back can hide a change of vote" | C4a adds it (P9, Q4). Target: TBD. |
 | New: "A person cannot take back a vote" | C4b adds it (Q4). Target: TBD. |
 | New: "A poll does not show who voted for what" | C4b adds it (Q7). Target: TBD. |
 | New: "Only the poll can be made in the Hub" | C4b adds it (Q5): other widget types come with the extensions that need them. Target: TBD. |
@@ -1487,8 +1601,9 @@ C4a:
 - [ ] One `widget.list` with the Hub's `widget_ids` on the WASM build under 200
   ms, recorded.
 - [ ] `roym_widget_e2e` passes (both tests).
-- [ ] Parity 260 to 265 and the method contract pass after `mise run
-  build:roym`.
+- [ ] Parity 260 to 265 (including forward scan, missing/deleted id handling,
+  and 50-widget unfiltered cap) and the method contract (count 27, scenario 73)
+  pass after `mise run build:roym`.
 - [ ] `conversation.send` refuses both widget content types, and every
   other content type behaves as before (scenarios 53 to 61 unchanged).
 - [ ] No file of `roym_transaction` changed.
