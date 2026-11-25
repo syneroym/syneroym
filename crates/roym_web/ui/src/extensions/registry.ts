@@ -75,11 +75,13 @@ export interface ExtensionRef {
 export const SCHEDULING_EXTENSION = "scheduling";
 export const SCHEDULING_SLOT_SCHEMA = "scheduling/slot@1";
 export const ONE_SHOT_EXTENSION = "one-shot";
+export const POLL_EXTENSION = "poll";
 
 /// What a listing writes to name each shipped extension. A test checks that
 /// `manifestFor` finds both.
 export const SCHEDULING_REF: ExtensionRef = { id: SCHEDULING_EXTENSION, version: 1 };
 export const ONE_SHOT_REF: ExtensionRef = { id: ONE_SHOT_EXTENSION, version: 1 };
+export const POLL_REF: ExtensionRef = { id: POLL_EXTENSION, version: 1 };
 
 /// In the order of `MANIFESTS` in `roym_core/src/extension.rs`.
 export const MANIFESTS: readonly Manifest[] = [scheduling, oneShot, poll] as unknown as Manifest[];
