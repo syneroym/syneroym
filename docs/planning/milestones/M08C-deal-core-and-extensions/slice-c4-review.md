@@ -10,8 +10,9 @@ never renumbered.*
 Checked [slice-c4-implementation-plan.md](slice-c4-implementation-plan.md) on
 branch `feat/m08c-c4-widgets` at `a7ab43a9` (on top of `main` at
 `aa25961b`). This is the main checkout, not a worktree (`git rev-parse
---git-dir` is `.git`). `git pull` had nothing to pull: the branch has no
-upstream yet, so the push of this round creates it. The plan was written by
+--git-dir` is `.git`). `git pull` had nothing to pull: the local branch had no
+upstream set (the branch was already on the remote at `a7ab43a9`); the push
+of this round set it. The plan was written by
 Claude Opus 5.5. This review is by Claude Sonnet 5.5.
 
 Read: AGENTS.md ("Writing for readers" and the code rules);
