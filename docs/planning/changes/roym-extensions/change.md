@@ -287,6 +287,14 @@ The manifest reserves `kind = "insight"`, with a `reads` list (for example `even
 - **The author's prompt, labels, and choice texts are content, not catalog labels.** They are rendered in the message's primary language.
 - **The `conversation` component grows by +170,873 bytes (+21.00%), over the +15% target limit (owner decision, 2026-11-25).** `conversation` previously held no schema or record validation code (813,818 bytes). Adding three new RPC methods (`widget.send`, `widget.answer`, `widget.list`), forward scan over history, answer deduplication, choice counting, dynamic JSON schema validation, and the shipped chat widget registry reader added 170 KB. The owner approved the size increase with a new limit of +22% in force. The owner's words, in code review round 2: "22 percent limit is fine. No good option anyways."
 
+**Rules and differences in C4b (2026-11-25, [slice plan](../../milestones/M08C-deal-core-and-extensions/slice-c4-implementation-plan.md)).**
+
+- **D-C4-10: Poll card and composer in the Hub.** The Hub renders single-choice polls (`poll@1`) via a dedicated card (`renderPoll`) showing question prompt, choice options, vote counts, and user's own choice. Tapping another option changes the vote by calling `widget.answer`. The composer form validates 2 to 12 non-empty, distinct options. Only polls can be composed in the Hub; generic widgets can be rendered and answered.
+- **D-C4-11: Generic widget card and translation hook points.** Any non-poll widget definition renders via `renderGenericWidget`, drawing fields and listing recent answers with author addresses and timestamps. Free-text answers include a translation hook point for ML-26.
+- **P11: Hub ignores `complete: false` from `widget.list`.** The Hub draws the counts returned by `widget.list` without warning the user when answers are truncated, as the current Hub thread loads only the oldest 200 messages (`MAX_MESSAGES = 200`).
+- **Message search snippet extraction for widgets.** Search hits on `application/vnd.roym.widget+json` display the widget's prompt as the search snippet; `application/vnd.roym.widget-answer+json` messages are skipped from search results.
+- **Raw answer messages are hidden in threads.** In 1:1 messages (`messages.ts`) and group threads (`groups.ts`), messages of type `application/vnd.roym.widget-answer+json` have their message elements hidden (`display: none` / skipped) because answers are already summarized inside the parent widget card.
+
 ## Close-out
 
 Before merge, update the living docs (requirements, architecture, integrated spec, developer guide, terminology) so they describe the result. Then set `status: done` and fill in `living-docs-touched`. Record anything you postponed in [deferred-backlog.md](../../deferred-backlog.md).
