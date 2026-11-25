@@ -253,7 +253,9 @@ field. A person on build N sees "This widget cannot be shown: widget-json".
   and refuse only to *answer* that field. This is more code in `conversation`
   (size limit) and in the Hub.
 
-*Status:* Fixed (c4199a05). Agreed on option (a). `check_shape` enforces strict shape and known `FieldType` variants; unknown field type or key is refused with `Shape("widget-shape")`; user story, Section 1, and parity scenario 262 updated.
+*Status:* Open (reopened in round 2, see P3 note). Was: Fixed (c4199a05). Agreed on option (a). `check_shape` enforces strict shape and known `FieldType` variants; unknown field type or key is refused with `Shape("widget-shape")`; user story, Section 1, and parity scenario 262 updated.
+
+*Round 2 note:* The text now says the right thing for the person, but the code path it names cannot give `widget-shape`. See "P3 check, round 2" below.
 
 #### [x] P4 — What `widget.list` does with an asked id that is deleted, not a widget, or from another chat is not defined (minor)
 
@@ -381,3 +383,125 @@ that a clock step back can hide a change of vote. No code change needed in
 C4.
 
 *Status:* Fixed (c4199a05). Agreed. Recorded as a known limit in Section 8 deferred backlog and D-C4-7; Q4 updated to state that local clock step-backs preserve earlier votes.
+
+## Plan review round 2 — Claude Sonnet 5.5, 2026-11-25
+
+Closure check of round 1, on branch `feat/m08c-c4-widgets` at `7fa0af92` (the
+fix is `c4199a05`, the close-out is `7fa0af92`). I read the plan diff
+between `7d508103` and `7fa0af92` and the new D-C4-5, D-C4-7 and D-C4-10
+text, and checked the stale wording by search ("newest 200", "newest 1,000",
+"newest first", "read back": no match is left). I did not re-read the whole
+plan, only what the fixes touched.
+
+**Summary: 8 of 9 round 1 items confirmed closed. 1 reopened (P3). 2 new
+items (P10 major, P11 minor). Open: 3 (P3, P10, P11).**
+
+### Round 1 items
+
+- **P1 — Confirmed closed.** `widget.list` now fetches each asked widget
+  with `get_message`, takes the oldest by `(sender_timestamp, author, id)`
+  and pages forward with that id as the exclusive cursor, up to 1,000
+  messages, with `complete: false` at the cap. The unfiltered path scans
+  from the start. Points 4 and 12, section 7.8, scenario 265, the backlog
+  rows and the first user bullet ("within the first 200 messages") agree.
+  One gap is left as P11.
+- **P2 — Confirmed closed for answers.** `AnswerView` has `state` and
+  `last_error`; the poll card and the generic card show the state word and a
+  retry button (`conversation.retry` with `message_id`) for the person's own
+  newest answer; tests are listed. The same fix lost something: see P10.
+- **P3 — Reopened.** The user text, section 1 and the strict-parse choice
+  (a) are right. The error code is not: see below.
+- **P4 — Confirmed closed.** Deleted, missing, other-chat and non-widget ids
+  are dropped before any scan; the Hub does not send ids of deleted messages
+  and draws `widget-refused` for a missing one; scenario 265 covers it.
+- **P5 — Confirmed closed.** Count 24 to 27 and the scenario 73 list are in
+  step 4 and section 7.3. One wording nit for the fixer: section 7.3 says
+  scenario 73 asserts the verbs are "refused on the wire". Scenario 73 only
+  checks that each verb is wired and locally admitted (not `-32601`, not
+  `-32013`); say that, or add the wire check where it exists.
+- **P6 — Confirmed closed.** `send_body` does the group checks once, then
+  calls `check_reserved(is_group, content_type)`; the error order for a
+  removed member stays.
+- **P7 — Confirmed closed.** The answer key comes from the definition, the
+  heading from the catalog only for a known type, and `ext-not-checked` is
+  drawn when `checked` is false.
+- **P8 — Confirmed closed.** `MAX_UNFILTERED_WIDGETS = 50` (about 400 KiB),
+  at most 200 widgets with ids, `complete: false` when more exist.
+- **P9 — Confirmed closed.** The limit is in Q4, D-C4-7 and a backlog row.
+
+#### P3 check, round 2 — the code `widget-shape` is not reachable (major)
+
+*Where:* D-C4-5 (`parse_widget_body`, `check_shape` item 5), scenario 262
+(`widget.send` with an unknown field type gives `widget-shape`), scenario
+264, section 1.
+
+*Problem:* The fix puts the rule under `check_shape` ("a definition from a
+peer with an unknown field type … is refused as `Shape("widget-shape")`").
+But `check_shape` takes an already parsed `WidgetDefinition`, and a value
+with an unknown `FieldType` variant or an unknown key cannot be built. The
+failure happens earlier, in serde, inside `parse_widget_body`, whose own
+comment says "Size first, then JSON, version and shape". A serde failure is
+`Json(String)`, code `widget-json`. For `widget.send` it happens even
+earlier, when the method input `WidgetSendInput` is parsed, and the answer is
+the generic invalid-params error with no `data.code`. So scenario 262 as
+written cannot pass, and the Hub shows `widget-json` for a widget from a
+newer build.
+
+The same order problem hides the version check: a body with
+`widget_version: 2` and a new key fails `deny_unknown_fields` as `Json`
+before `UnknownVersion` is reached, so `widget-version` is not reachable
+either for the case it is meant for.
+
+*Failure case:* Build N+1 sends a widget with a `location` field. Build N
+shows "This widget cannot be shown: widget-json", and the test that expects
+`widget-shape` fails (or is written to pass on the wrong code).
+
+*Fix:* In `parse_widget_body`, parse to `serde_json::Value` first. Read
+`widget_version` and answer `UnknownVersion` (`widget-version`). Then
+deserialize the definition and map any serde error to `Shape` (`widget-shape`).
+Say that `widget.send` of an unknown field type is refused as invalid
+params from the typed input (no `data.code`), and change scenario 262 to
+use a definition that parses but breaks a `check_shape` rule instead, and
+scenario 264 to carry the unknown field type as an inbound body. Add a test
+that a version 2 body with a new key gives `widget-version`.
+
+*Status:* Open
+
+#### P10 — The widget's own message has no state word or retry any more (major)
+
+*Where:* D-C4-10, the `messages.ts` wiring; `WidgetView` in D-C4-7.
+
+*Problem:* Before the fix, the wiring text ended: "an answer message is not
+drawn … The state word and the retry action stay." That sentence was about
+the widget's own bubble, and the fix removed it. `WidgetView` has no `state`
+either (only `AnswerView` got one). A person's own poll is a message that can
+`fail` like any other, and `renderWidget` replaces the bubble. This is the
+same problem as P2, for the author of the poll.
+
+*Failure case:* Alice sends a poll. The send fails. Her screen shows the
+poll with "0 votes" and no failure word and no retry. Bob never gets it.
+
+*Fix:* Put the sentence back, or better, add `state` and `last_error` to
+`WidgetView` and have `renderWidget` show the state word (not `delivered`)
+and the retry button for an own widget. Add a Hub test for a `failed` own
+poll (word shown, retry calls `conversation.retry` with the widget id), next
+to the P2 tests.
+
+*Status:* Open
+
+#### P11 — What the Hub shows when `widget.list` says `complete: false` is not defined (minor)
+
+*Where:* D-C4-7 (`complete`), D-C4-10 (`messages.ts` wiring).
+
+*Problem:* After the P1 fix the count is read from at most 1,000 messages
+after the oldest asked widget. The Hub only shows the oldest 200 messages, so
+in a long chat the poll is drawn while its answers may be later than the
+scan. `complete: false` is returned, but no Hub text uses it. The counts
+are then too low with no sign.
+
+*Fix:* Say what the Hub does: for example show a line "Votes after this
+point may be missing" (a new Hindi message) when `complete` is false for a
+drawn poll, or state that the Hub ignores it and add the limit to the
+backlog row text. Add a Hub test for the chosen behaviour.
+
+*Status:* Open
