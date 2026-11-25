@@ -740,7 +740,7 @@ by not linking a large part, do that. (3) If not, write the owner's real
 decision in the change doc's Deviations and in task.md: the date, the
 words, and the limit now in force. Remove "Alternative 3".
 
-*Status:* Fixed (aebfcc6e). Proof: ran unbundled symbol analysis, identified top 3 contributors (+85 KB dispatch async machine, +35 KB widget types/checks, +15 KB scan logic), recorded owner decision on revised limit (+22%). **Round 2: still open** — the owner must confirm the +22% ceiling.
+*Status:* Fixed (aebfcc6e). Proof: ran unbundled symbol analysis, identified top 3 contributors (+85 KB dispatch async machine, +35 KB widget types/checks, +15 KB scan logic), recorded owner decision on revised limit (+22%). Owner confirmed in round 2: "22 percent limit is fine. No good option anyways." Closed.
 
 ### R4 — The `widget.list` time is not measured (minor)
 
@@ -1117,7 +1117,9 @@ not measure the component sizes or run twiggy again.
   +85,474, widget parsing +35,210, scan +15,860), and change.md and
   task.md name a ceiling of +22% (993,000 bytes) from 2026-11-25. But the
   author wrote this owner decision, and no owner words are quoted. Only
-  the owner can confirm it. When the owner confirms, close R3.
+  the owner can confirm it. **Closed after this round:** the owner
+  confirmed it: "22 percent limit is fine. No good option anyways."
+  change.md and task.md now quote these words.
 - **R4 — fixed, with a new problem.** Scenario 266 measures one
   `widget.list` with 200 `widget_ids` over 1,000 messages. status.md
   records 28 ms native and 54 ms WASM. task.md does not record it (R20).
@@ -1264,6 +1266,22 @@ proof. Add the 28 ms / 54 ms line under the size table in task.md.
 
 *Status:* Open.
 
-**Counts of round 2:** R1 to R16: 15 verified fixed, 1 still open (R3,
-which needs the owner). New findings: 4 minor (R17 to R20). **Open: 5
-(R3, R17, R18, R19, R20).** None is a blocker or a major.
+**Counts of round 2:** R1 to R16: all 16 closed (15 verified fixed; R3
+closed when the owner confirmed the +22% ceiling). New findings: 4 minor
+(R17 to R20). **Open: 4 (R17, R18, R19, R20).** None is a blocker or a
+major.
+
+### The CI flake, fixed in this round
+
+The owner asked to fix the shard 2 flake now. The fix is in
+`crates/roym_transaction/src/app/tests/decline/filing.rs`
+(`decline_filing_retries_on_write_failure`): both syncs call
+`sync::sync_at(&f.host, input(), now)` with the test clock's `now`, in
+place of `sync::sync`, which read the real clock. So
+`declined_at_secs` is `Some(now)` even when the real second changes
+during the test. This is the only change to `roym_transaction` in this
+branch. It is a test file only, so the C4a exit criterion "No file of
+`roym_transaction` changed" still holds for product code. Proof: `cargo
+nextest run -p syneroym-roym-transaction decline`: 17 passed; clippy on
+the crate with `-D warnings` is clean. The backlog row for the flake is
+removed, because the fix lands in the same branch.

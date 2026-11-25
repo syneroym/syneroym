@@ -303,9 +303,12 @@ async fn decline_filing_retries_on_write_failure() {
     // Injected storage failure on QUOTES write
     f.host.fail_write(QUOTES, &quote.quote_id);
 
+    // Both syncs run at the test clock's `now`, so `declined_at_secs` is
+    // exact even when the real clock moves to the next second.
+    let input = || SyncInput { conversation: "conv_1".to_string(), full: false };
+
     // First sync fails because of the write error
-    let sync_err =
-        sync::sync(&f.host, SyncInput { conversation: "conv_1".to_string(), full: false }).await;
+    let sync_err = sync::sync_at(&f.host, input(), now).await;
     assert!(sync_err.is_err(), "sync must fail on storage error");
     assert!(f.host.was_failed_write_hit(), "failing write must have fired");
 
@@ -319,10 +322,7 @@ async fn decline_filing_retries_on_write_failure() {
     assert_eq!(ptr_before.declined_at_secs, None);
 
     // Second sync without failing write succeeds and files the card as verified
-    let sync_res =
-        sync::sync(&f.host, SyncInput { conversation: "conv_1".to_string(), full: false })
-            .await
-            .expect("second sync must succeed");
+    let sync_res = sync::sync_at(&f.host, input(), now).await.expect("second sync must succeed");
     assert_eq!(sync_res.filed, 1);
     assert_eq!(sync_res.refused, 0);
 

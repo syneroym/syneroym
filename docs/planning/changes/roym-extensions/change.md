@@ -284,7 +284,7 @@ The manifest reserves `kind = "insight"`, with a `reads` list (for example `even
 - **Only the `poll` extension ships in M08C (owner decision, question Q5).** Other widget types come with the extensions that need them.
 - **A new manifest kind `chat` and `poll.json` (owner decision, question Q6).** A `chat` manifest declares widgets only. `WidgetFieldRule` adds `min_choices` and `max_choices` for choice fields. A widget cannot have fields of type `money`.
 - **The author's prompt, labels, and choice texts are content, not catalog labels.** They are rendered in the message's primary language.
-- **The `conversation` component grows by +170,873 bytes (+21.00%), over the +15% target limit (owner decision, 2026-11-25).** `conversation` previously held no schema or record validation code (813,818 bytes). Adding three new RPC methods (`widget.send`, `widget.answer`, `widget.list`), forward scan over history, answer deduplication, choice counting, dynamic JSON schema validation, and the shipped chat widget registry reader added 170 KB. The owner approved the size increase with a new limit of +22% in force.
+- **The `conversation` component grows by +170,873 bytes (+21.00%), over the +15% target limit (owner decision, 2026-11-25).** `conversation` previously held no schema or record validation code (813,818 bytes). Adding three new RPC methods (`widget.send`, `widget.answer`, `widget.list`), forward scan over history, answer deduplication, choice counting, dynamic JSON schema validation, and the shipped chat widget registry reader added 170 KB. The owner approved the size increase with a new limit of +22% in force. The owner's words, in code review round 2: "22 percent limit is fine. No good option anyways."
 
 ## Close-out
 

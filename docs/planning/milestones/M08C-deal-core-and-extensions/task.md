@@ -188,7 +188,7 @@ Twiggy symbol analysis of the wasm core module diff between main and branch iden
 1. `syneroym_roym_conversation::api::dispatch` async state machine (+85,474 bytes): the unified dispatch function was expanded by inlined async futures for the three new RPC methods (`widget.send`, `widget.answer`, `widget.list`).
 2. `syneroym_roym_core::widget` and `serde_json` deserialization (+35,210 bytes): dynamic JSON parsing, validation, and serialization of `WidgetDefinition`, `WidgetFieldRule`, `WidgetView`, and `AnswerBody`, alongside associated `.rodata` tables.
 3. `syneroym_roym_conversation::app::widget` logic (+15,860 bytes): history pagination, forward scanning, author answer deduplication, and choice tally projection (`project_widgets`, `scan_filtered`, `scan_unfiltered`).
-No unexpected components, deal schemas, or external dependencies are linked. On 2026-11-25, the owner approved this deviation with a revised ceiling of +22% (993,000 bytes) in force for C4a.
+No unexpected components, deal schemas, or external dependencies are linked. On 2026-11-25, the owner approved this deviation with a revised ceiling of +22% (993,000 bytes) in force for C4a. The owner's words, in code review round 2: "22 percent limit is fine. No good option anyways."
 
 **Parity runs need a fresh WASM build.** The dual-build parity harness loads pre-built `wasm32-wasip2` components. Every slice that changes a `roym_*` crate runs `mise run build:roym` before it trusts a parity run.
 
