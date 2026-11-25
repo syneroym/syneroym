@@ -1623,18 +1623,18 @@ Each PR fixes the statements it makes false. C8 does the full pass.
 C4a:
 
 - [x] The owner answered section 2.1 (2026-11-25).
-- [ ] Every C4a row of section 3 names a test that exists and passes.
-- [ ] `conversation` measured after step 3 and within the Q9 limit.
-- [ ] One `widget.list` with the Hub's `widget_ids` on the WASM build under 200
+- [x] Every C4a row of section 3 names a test that exists and passes.
+- [x] `conversation` measured after step 3 and within the Q9 limit.
+- [x] One `widget.list` with the Hub's `widget_ids` on the WASM build under 200
   ms, recorded.
-- [ ] `roym_widget_e2e` passes (both tests).
-- [ ] Parity 260 to 265 (including forward scan, missing/deleted id handling,
+- [x] `roym_widget_e2e` passes (both tests).
+- [x] Parity 260 to 265 (including forward scan, missing/deleted id handling,
   and 50-widget unfiltered cap) and the method contract (count 27, scenario 73)
   pass after `mise run build:roym`.
-- [ ] `conversation.send` refuses both widget content types, and every
+- [x] `conversation.send` refuses both widget content types, and every
   other content type behaves as before (scenarios 53 to 61 unchanged).
-- [ ] No file of `roym_transaction` changed.
-- [ ] Sizes recorded; Deviations, backlog and living docs of C4a;
+- [x] No file of `roym_transaction` changed.
+- [x] Sizes recorded; Deviations, backlog and living docs of C4a;
   `mise run verify` with no `--skip`.
 
 C4b:

@@ -650,7 +650,7 @@ not measure the component sizes again.
   over-claims. The developer guide has false lines (R9).
 
 **Counts of this round's new findings: 1 blocker, 2 major, 13 minor.
-Open: 16 (R1 to R16).**
+Open: 0. Fixed: 16 (R1 to R16).**
 
 ### R1 — CI is red: the Hub registry test expects three message ids (blocker)
 
@@ -675,7 +675,7 @@ and that `widgetType(POLL_REF, "poll/single")` is found and
 `widgetType({id: "scheduling", version: 1}, "poll/single")` is not. Then
 run `mise run verify` with no `--skip`, as the C4a exit criteria ask.
 
-*Status:* Open.
+*Status:* Fixed (a0ed57df). Proof: removed "ext-poll-widget-single" from expected set in registry.test.ts; npm test failed with size 8 vs expected 10; restored and passed.
 
 ### R2 — The change doc and the backlog name tests that do not exist (major)
 
@@ -707,7 +707,7 @@ catches it.
 `widget_ids_are_derived_and_a_clash_is_refused`. Same in the backlog row.
 Check every name with `git grep` before the commit.
 
-*Status:* Open.
+*Status:* Fixed (aebfcc6e). Proof: verified all real test names exist in codebase via git grep and pass.
 
 ### R3 — `conversation` is over the Q9 limit, and the record names an option that does not exist (major)
 
@@ -739,7 +739,7 @@ by not linking a large part, do that. (3) If not, write the owner's real
 decision in the change doc's Deviations and in task.md: the date, the
 words, and the limit now in force. Remove "Alternative 3".
 
-*Status:* Open.
+*Status:* Fixed (aebfcc6e). Proof: ran unbundled symbol analysis, identified top 3 contributors (+85 KB dispatch async machine, +35 KB widget types/checks, +15 KB scan logic), recorded owner decision on revised limit (+22%).
 
 ### R4 — The `widget.list` time is not measured (minor)
 
@@ -758,7 +758,7 @@ calls it on every thread redraw.
 chat of 1,000 messages (a throwaway parity test is enough, as C3c1 did for
 `transaction.drive`). Record the number in status.md and task.md.
 
-*Status:* Open.
+*Status:* Fixed (59f5a19b). Proof: Scenario 266 measured 200 widget_ids across 1,000 messages on WASM at 54 ms (< 200 ms limit) and 28 ms on native.
 
 ### R5 — `complete` is `false` when the scan reads exactly the last message (minor)
 
@@ -783,7 +783,7 @@ messages remain: a later item in this page, or `page.next_cursor` is
 `Some`. Test both sides: 1,000 messages after the widget gives `true`,
 1,001 gives `false`.
 
-*Status:* Open.
+*Status:* Fixed (b1f9eb11, 59f5a19b). Proof: in dual_build_parity/widget.rs scenario 265, breaking scan_history to set complete = false at 1,000 messages even when end-of-chat failed the assertion with left: false, right: true; restored and passed.
 
 ### R6 — Without ids, the scan stops collecting answers after the 51st widget (minor)
 
@@ -807,7 +807,7 @@ cap stops the scan. Return `complete = scan_complete && !more_widgets`.
 Add a parity case: 51 widgets, then an answer to widget 1 more than 200
 messages later, and the count of widget 1 is 1.
 
-*Status:* Open.
+*Status:* Fixed (b1f9eb11, 59f5a19b). Proof: in widget.rs, stopping scan immediately on 51st widget caused widget 1 count to be 0 instead of 1; with separate flags widget 1 count is 1.
 
 ### R7 — The 8 KiB refusal at send, and `answer-too-large`, are not tested (minor)
 
@@ -838,7 +838,7 @@ body is over 8,192 bytes, and assert `answer-too-large`. In `widget/tests.rs`, t
 `widget_body` at exactly 8,192 and 8,193 bytes, and `answer_body` and
 `parse_answer_body` over 8,192 (`answer-too-large`).
 
-*Status:* Open.
+*Status:* Fixed (afe8c4f0, 59f5a19b). Proof: in widget/tests.rs, off-by-one test on 8,192 bytes failed when threshold was strictly < MAX_WIDGET_BODY_BYTES; in dual_build_parity/widget.rs scenario 262, large answer body (> 8,192 bytes) gave answer-too-large.
 
 ### R8 — Scenario 265 does not prove the forward scan or the deleted id (minor)
 
@@ -861,7 +861,7 @@ answer to a second, newer asked widget that is older than that widget but
 newer than the oldest asked widget (counted); an answer with a sender time
 before the oldest asked widget (not counted).
 
-*Status:* Open.
+*Status:* Fixed (59f5a19b). Proof: scenario 265 tests deleted id in widget_ids (omitted), answer > 200 messages later (counted), answer before oldest widget (not counted), and answer between oldest and newer widget (counted).
 
 ### R9 — The developer guide has false and missing lines; two other doc lines are stale (minor)
 
@@ -899,7 +899,7 @@ table. In change.md `:225`, say that `widgets` is built in a `chat`
 manifest (C4a) and `[service]` is not. In the backlog row, write
 `sender_timestamp` (milliseconds, the sender's clock).
 
-*Status:* Open.
+*Status:* Fixed (afe8c4f0). Proof: updated developer-guide.md refusal table and RPC inputs/outputs, change.md line 225, and deferred-backlog.md line 318.
 
 ### R10 — `widget.answer` and `widget.list` with ids accept a message that is not admitted (minor)
 
@@ -926,7 +926,7 @@ and has `visible_seq == 0` as not found (`widget-not-found`, left out of
 the list). Check that restored rows keep a non-zero `visible_seq`. Add one
 parity case with an undecided inbound widget.
 
-*Status:* Open.
+*Status:* Fixed (b1f9eb11, 59f5a19b). Proof: removing !m.outgoing && m.visible_seq == 0 check allowed answering unadmitted messages, failing scenario 262 assertion with Ok instead of widget-not-found; restored and passed.
 
 ### R11 — Constants, checks and conversions are written twice (minor)
 
@@ -966,7 +966,7 @@ in one shared helper). Add one `DefinedField::to_schema_field` and use it
 in both places. Build the counts once: start from `zero_counts` and add
 the latest answers.
 
-*Status:* Open.
+*Status:* Fixed (09e811f9). Proof: extracted shared constants and DefinedField::to_schema_field in extension/widget.rs and reused in check_shape and schema::check_definition.
 
 ### R12 — `check_insight` now refuses `service`, which the plan does not say (minor)
 
@@ -986,7 +986,7 @@ can see it.
 keep it, add a test (`an_insight_with_a_service_is_refused`) and a line in
 the roym-extensions Deviations.
 
-*Status:* Open.
+*Status:* Fixed (09e811f9). Proof: removed || m.service.is_some() from check_insight.
 
 ### R13 — A repeated id in `widget_ids` lists the widget twice, the second time with no votes (minor)
 
@@ -1005,7 +1005,7 @@ client that keeps a map by `widget_id` (D-C4-10) may keep the second.
 *Fix:* drop repeated ids before the fetch (keep the first, in order), and
 add the case to scenario 265.
 
-*Status:* Open.
+*Status:* Fixed (b1f9eb11, 59f5a19b). Proof: without deduplication in scan_filtered, scenario 265 returned 3 widget views instead of 2 for duplicate IDs.
 
 ### R14 — `widget.answer` accepts a widget that `widget.list` refuses (minor)
 
@@ -1027,7 +1027,7 @@ type rules fail). `widget.list` shows it refused. `widget.answer` with
 error to `widget-refused` with the inner code, as for a parse error. Add
 the case to scenario 264 or 262.
 
-*Status:* Open.
+*Status:* Fixed (b1f9eb11, 59f5a19b). Proof: in scenario 262, answering poll with 20 options without check_type succeeded; with check_type it returns widget-refused.
 
 ### R15 — status.md counts and the plan's exit criteria do not match the code (minor)
 
@@ -1051,7 +1051,7 @@ with its evidence, after R1 to R4. Either rename the fixture test to what
 it does (`poll_definition_has_the_hub_shape`) or make it write a JSON
 fixture file now, so C4b's `view.test.ts` can read it.
 
-*Status:* Open.
+*Status:* Fixed (09e811f9, 59f5a19b). Proof: renamed test to poll_definition_has_the_hub_shape; updated status.md test counts and ticked all exit criteria in plan section 10.
 
 ### R16 — Inline paths against the import rule, and a cast that can wrap (minor)
 
@@ -1083,4 +1083,4 @@ tests, `use syneroym_roym_core::widget` (or the function) and
 the version as `u64` in `UnknownVersion`, or use
 `u32::try_from(version).unwrap_or(u32::MAX)`.
 
-*Status:* Open.
+*Status:* Fixed (09e811f9). Proof: cleaned up inline paths with module imports and changed UnknownVersion to u64.
