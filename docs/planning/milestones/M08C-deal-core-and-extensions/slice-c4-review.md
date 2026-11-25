@@ -253,9 +253,7 @@ field. A person on build N sees "This widget cannot be shown: widget-json".
   and refuse only to *answer* that field. This is more code in `conversation`
   (size limit) and in the Hub.
 
-*Status:* Open (reopened in round 2, see P3 note). Was: Fixed (c4199a05). Agreed on option (a). `check_shape` enforces strict shape and known `FieldType` variants; unknown field type or key is refused with `Shape("widget-shape")`; user story, Section 1, and parity scenario 262 updated.
-
-*Round 2 note:* The text now says the right thing for the person, but the code path it names cannot give `widget-shape`. See "P3 check, round 2" below.
+*Status:* Fixed (ec5139bb). Reopened in round 2 and fixed in ec5139bb: `parse_widget_body` parses to `Value` first, checks `widget_version`, and maps serde errors to `Shape("widget-shape")`; `widget.send` rejects unknown field types at RPC parse; scenarios 262 and 264 updated.
 
 #### [x] P4 — What `widget.list` does with an asked id that is deleted, not a widget, or from another chat is not defined (minor)
 
@@ -394,7 +392,7 @@ text, and checked the stale wording by search ("newest 200", "newest 1,000",
 plan, only what the fixes touched.
 
 **Summary: 8 of 9 round 1 items confirmed closed. 1 reopened (P3). 2 new
-items (P10 major, P11 minor). Open: 3 (P3, P10, P11).**
+items (P10 major, P11 minor). All 3 addressed in ec5139bb: 0 open, 3 fixed.**
 
 ### Round 1 items
 
@@ -429,7 +427,7 @@ items (P10 major, P11 minor). Open: 3 (P3, P10, P11).**
   at most 200 widgets with ids, `complete: false` when more exist.
 - **P9 — Confirmed closed.** The limit is in Q4, D-C4-7 and a backlog row.
 
-#### P3 check, round 2 — the code `widget-shape` is not reachable (major)
+#### [x] P3 check, round 2 — the code `widget-shape` is not reachable (major)
 
 *Where:* D-C4-5 (`parse_widget_body`, `check_shape` item 5), scenario 262
 (`widget.send` with an unknown field type gives `widget-shape`), scenario
@@ -465,9 +463,9 @@ use a definition that parses but breaks a `check_shape` rule instead, and
 scenario 264 to carry the unknown field type as an inbound body. Add a test
 that a version 2 body with a new key gives `widget-version`.
 
-*Status:* Open
+*Status:* Fixed (ec5139bb). Agreed. `parse_widget_body` parses to `Value` first, checks `widget_version`, and maps serde errors to `Shape("widget-shape")`; `widget.send` rejects unknown field types at RPC parse without `data.code`; scenarios 262 and 264 updated.
 
-#### P10 — The widget's own message has no state word or retry any more (major)
+#### [x] P10 — The widget's own message has no state word or retry any more (major)
 
 *Where:* D-C4-10, the `messages.ts` wiring; `WidgetView` in D-C4-7.
 
@@ -487,9 +485,9 @@ and the retry button for an own widget. Add a Hub test for a `failed` own
 poll (word shown, retry calls `conversation.retry` with the widget id), next
 to the P2 tests.
 
-*Status:* Open
+*Status:* Fixed (ec5139bb). Agreed. `WidgetView` gains `state: StoredState` and `last_error: Option<String>`; `renderWidget` shows state word and retry button calling `conversation.retry` for own widgets; Hub unit tests added.
 
-#### P11 — What the Hub shows when `widget.list` says `complete: false` is not defined (minor)
+#### [x] P11 — What the Hub shows when `widget.list` says `complete: false` is not defined (minor)
 
 *Where:* D-C4-7 (`complete`), D-C4-10 (`messages.ts` wiring).
 
@@ -504,4 +502,4 @@ point may be missing" (a new Hindi message) when `complete` is false for a
 drawn poll, or state that the Hub ignores it and add the limit to the
 backlog row text. Add a Hub test for the chosen behaviour.
 
-*Status:* Open
+*Status:* Fixed (ec5139bb). Agreed. Hub ignores `complete: false` today because threads only load the first 200 messages; limit recorded in deferred backlog row; Hub unit test added.
