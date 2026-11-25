@@ -3,13 +3,13 @@ import { searchHits, snippetAround } from "./message_search.js";
 
 describe("conversation.search matches to result-list hits", () => {
   // The shape `conversation.search` returns: full stored message rows.
-  const row = (id: string, conversation: string, body?: string) => ({
+  const row = (id: string, conversation: string, body?: string, contentType = "text/plain") => ({
     id,
     conversation,
     author: "did:key:someone",
     direction: "incoming",
     sender_timestamp_ms: 1000,
-    content_type: "text/plain",
+    content_type: contentType,
     body_encoding: "utf8",
     ...(body === undefined ? {} : { body }),
     state: "delivered",
@@ -37,6 +37,42 @@ describe("conversation.search matches to result-list hits", () => {
     const body = "<b onclick=x>hedge</b>";
     const [hit] = searchHits([row("m1", "conv1", body)], "hedge");
     expect(hit.snippet).toBe(body);
+  });
+
+  it("extracts widget prompt from json body for widget content type", () => {
+    const widgetBody = JSON.stringify({
+      widget: {
+        prompt: "Which hedge trimmer should we purchase?",
+        type: "poll/single",
+      },
+    });
+    const hits = searchHits(
+      [row("m-widget", "conv1", widgetBody, "application/vnd.roym.widget+json")],
+      "hedge",
+    );
+    expect(hits).toEqual([
+      { conversation: "conv1", snippet: "Which hedge trimmer should we purchase?" },
+    ]);
+  });
+
+  it("skips answer messages of widget answer content type", () => {
+    const answerBody = JSON.stringify({
+      widget_id: "m-widget",
+      data: { option: "hedge" },
+    });
+    const hits = searchHits(
+      [row("m-ans", "conv1", answerBody, "application/vnd.roym.widget-answer+json")],
+      "hedge",
+    );
+    expect(hits).toEqual([]);
+  });
+
+  it("skips widget message when body is not valid json", () => {
+    const hits = searchHits(
+      [row("m-bad", "conv1", "not valid json { hedge }", "application/vnd.roym.widget+json")],
+      "hedge",
+    );
+    expect(hits).toEqual([]);
   });
 });
 

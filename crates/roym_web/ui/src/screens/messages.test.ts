@@ -7,6 +7,7 @@ import {
   computeNewestQuoteMap,
   computeNewestRequestMap,
   isQuoteSuperseded,
+  messageElement,
   messageStateWord,
   openQuoteForm,
   readQuoteForm,
@@ -15,6 +16,7 @@ import {
   renderMessages,
   stateHint,
 } from "./messages.js";
+import type { WidgetView } from "../widgets/view";
 import { stubRpc } from "../testing/stub-rpc";
 
 describe("newestRequestMap and quote superseded notice", () => {
@@ -886,5 +888,109 @@ describe("request form category picker reset", () => {
     expect(listingInput.value).toBe("");
     expect(descInput.value).toBe("");
     expect(host.querySelectorAll(".request-cats-input .picker-chip")).toHaveLength(0);
+  });
+});
+
+describe("widget messages in messages thread", () => {
+  const baseMessage = (id: string, contentType: string, body?: string) => ({
+    id,
+    conversation: "conv-1",
+    author: "did:key:alice",
+    direction: "incoming" as const,
+    sender_timestamp_ms: 1000,
+    content_type: contentType,
+    body_encoding: "utf8",
+    body: body ?? "",
+    state: "delivered" as const,
+    stored_at_secs: 1,
+  });
+
+  it("a widget message draws the widget card", () => {
+    const msg = baseMessage("msg-w1", "application/vnd.roym.widget+json");
+    const widgetView: WidgetView = {
+      widget_id: "msg-w1",
+      author: "did:key:alice",
+      direction: "incoming",
+      sender_timestamp_ms: 1000,
+      definition: {
+        extension: { id: "poll", version: 1 },
+        type: "poll/single",
+        semantic: "poll",
+        prompt: "Where to eat?",
+        fields: [
+          {
+            name: "option",
+            type: "choice",
+            required: true,
+            choices: [
+              { code: "o1", text: "Pizza" },
+              { code: "o2", text: "Sushi" },
+            ],
+          },
+        ],
+      },
+      checked: true,
+      counts: [
+        { field: "option", choice: "o1", count: 2 },
+        { field: "option", choice: "o2", count: 1 },
+      ],
+      answers: [],
+      ignored_answers: 0,
+      state: "delivered",
+    };
+    const widgetMap = new Map<string, WidgetView>([["msg-w1", widgetView]]);
+
+    const el = messageElement(
+      msg,
+      new Map(),
+      [],
+      new Map(),
+      new Map(),
+      "conv-1",
+      "did:key:me",
+      async () => {},
+      widgetMap,
+    );
+
+    const card = el.querySelector(".widget-card");
+    expect(card).not.toBeNull();
+    expect(el.querySelector(".widget-card .message-body")?.textContent).toBe("Where to eat?");
+  });
+
+  it("an answer message draws nothing (display none)", () => {
+    const msg = baseMessage("msg-a1", "application/vnd.roym.widget-answer+json");
+    const el = messageElement(
+      msg,
+      new Map(),
+      [],
+      new Map(),
+      new Map(),
+      "conv-1",
+      "did:key:me",
+      async () => {},
+    );
+
+    expect(el.style.display).toBe("none");
+    expect(el.querySelector(".widget-card")).toBeNull();
+  });
+
+  it("a widget missing from the map draws widget-refused", () => {
+    const msg = baseMessage("msg-w-missing", "application/vnd.roym.widget+json");
+    const el = messageElement(
+      msg,
+      new Map(),
+      [],
+      new Map(),
+      new Map(),
+      "conv-1",
+      "did:key:me",
+      async () => {},
+      new Map(),
+    );
+
+    const card = el.querySelector(".widget-refused");
+    expect(card).not.toBeNull();
+    const reason = el.querySelector(".refused-notice");
+    expect(reason?.textContent).toContain("This widget cannot be shown: widget-refused");
   });
 });

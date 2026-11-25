@@ -17,6 +17,9 @@ import { categoryPicker } from "../taxonomy/category_picker";
 import { buildDealTerms } from "./quote_terms";
 import { attachSizeLine } from "./quote_size";
 import type { MessagesInitialState, RequestPreFill } from "../navigation";
+import { pollComposer } from "../widgets/composer";
+import { renderWidget } from "../widgets/render";
+import type { WidgetView } from "../widgets/view";
 import {
   computeNewestQuoteMap,
   computeNewestRequestMap,
@@ -357,8 +360,15 @@ async function renderThread(
   const langField = document.createElement("div");
   langField.className = "field";
   langField.append(text("span", t("messages-languages-label")), langList.root);
-  composeRow.append(composeInput, sendBtn, composeErr, langField);
-  pane.appendChild(composeRow);
+
+  const pollComp = pollComposer({
+    conversation: conv.id,
+    languages: () => langList.value(),
+    onSent: () => redraw.now(),
+  });
+
+  composeRow.append(composeInput, sendBtn, pollComp.button, composeErr, langField);
+  pane.append(composeRow, pollComp.form);
 
   const fillThread = async (into: DocumentFragment) => {
     const cardMap = new Map<string, CardRow>();
@@ -392,12 +402,32 @@ async function renderThread(
       return;
     }
 
+    const widgetIds = messages
+      .filter((m) => m.content_type === "application/vnd.roym.widget+json" && m.deleted_at_secs == null)
+      .map((m) => m.id);
+    const widgetMap = new Map<string, WidgetView>();
+    if (widgetIds.length > 0) {
+      try {
+        const res = await call<{ widgets: WidgetView[] }>("widget.list", {
+          conversation: conv.id,
+          widget_ids: widgetIds,
+        });
+        if (res?.widgets) {
+          for (const w of res.widgets) {
+            widgetMap.set(w.widget_id, w);
+          }
+        }
+      } catch {
+        // non-fatal
+      }
+    }
+
     for (const m of messages) {
       if (m.content_type === "application/vnd.roym.card+json" && cardMap.get(m.id)?.repeat) {
         continue;
       }
       into.appendChild(
-        messageElement(m, cardMap, allCards, newestRequestMap, newestQuoteMap, conv.id, myDid, redraw.now),
+        messageElement(m, cardMap, allCards, newestRequestMap, newestQuoteMap, conv.id, myDid, redraw.now, widgetMap),
       );
     }
   };
@@ -514,7 +544,7 @@ export function refusalText(reason: string): string {
   return t("messages-refused-other", { reason });
 }
 
-function messageElement(
+export function messageElement(
   m: MessageRow,
   cardMap: Map<string, CardRow>,
   allCards: CardRow[],
@@ -523,10 +553,16 @@ function messageElement(
   convId: string,
   myDid: string,
   refresh: () => Promise<void>,
+  widgetMap?: Map<string, WidgetView>,
 ): HTMLElement {
   const wrap = document.createElement("div");
   wrap.className = `message message-${m.direction}`;
   wrap.dataset.state = m.state;
+
+  if (m.content_type === "application/vnd.roym.widget-answer+json") {
+    wrap.style.display = "none";
+    return wrap;
+  }
 
   if (m.content_type === "application/vnd.roym.card+json") {
     const cardRow = cardMap.get(m.id);
@@ -566,6 +602,24 @@ function messageElement(
     }
   } else if (m.deleted_at_secs != null) {
     wrap.appendChild(text("span", t("messages-message-deleted"), "message-body deleted"));
+  } else if (m.content_type === "application/vnd.roym.widget+json") {
+    const defaultView: WidgetView = {
+      widget_id: m.id,
+      author: m.author,
+      direction: m.direction,
+      sender_timestamp_ms: m.sender_timestamp_ms,
+      definition: undefined,
+      refused: "widget-refused",
+      checked: false,
+      counts: [],
+      answers: [],
+      ignored_answers: 0,
+      state: m.state,
+      last_error: m.last_error,
+    };
+    const view = widgetMap?.get(m.id) ?? defaultView;
+    wrap.appendChild(renderWidget(view, { conversation: convId, refresh }));
+    return wrap;
   } else if (m.body_encoding === "utf8") {
     const nodes = messageText(m.body ?? t("messages-no-body"), m.languages ?? [], "span", {
       translatable: m.direction === "incoming",

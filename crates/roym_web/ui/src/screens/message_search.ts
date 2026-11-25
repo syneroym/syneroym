@@ -3,6 +3,7 @@
 export interface SearchMatch {
   conversation: string;
   body?: string;
+  content_type?: string;
   languages?: string[];
 }
 
@@ -33,6 +34,26 @@ export function searchHits(matches: SearchMatch[], query: string): SearchHit[] {
   const hits: SearchHit[] = [];
   for (const m of matches) {
     if (!m.body) continue;
+    if (m.content_type === "application/vnd.roym.widget-answer+json") {
+      continue;
+    }
+    if (m.content_type === "application/vnd.roym.widget+json") {
+      try {
+        const parsed = JSON.parse(m.body);
+        const prompt = parsed?.widget?.prompt;
+        if (typeof prompt !== "string" || !prompt) {
+          continue;
+        }
+        hits.push({
+          conversation: m.conversation,
+          snippet: snippetAround(prompt, query),
+          languages: m.languages,
+        });
+      } catch {
+        continue;
+      }
+      continue;
+    }
     hits.push({
       conversation: m.conversation,
       snippet: snippetAround(m.body, query),

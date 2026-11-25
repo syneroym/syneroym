@@ -8,6 +8,7 @@ import {
   renderThreadMessages,
   type GroupMessageRow,
 } from "./groups";
+import type { WidgetView } from "../widgets/view";
 import { stubRpc } from "../testing/stub-rpc";
 import { readerReads } from "../testing/translation";
 import { setTargetsForTest } from "../translation/translation";
@@ -668,5 +669,99 @@ describe("Group messages with a translation engine", () => {
     const calls = stubRpc({});
     expect(renderMessageRow(row("incoming"), nameOf).querySelector(".message-translate")).toBeNull();
     expect(calls).toEqual([]);
+  });
+});
+
+describe("widget messages in groups thread", () => {
+  const nameOf = (addr: string) => addr;
+  const msg = (id: string, contentType: string): GroupMessageRow => ({
+    id,
+    conversation: "grp-1",
+    author: "did:key:zAlice",
+    direction: "incoming",
+    sender_timestamp_ms: 1000,
+    content_type: contentType,
+    body_encoding: "utf8",
+    body: "",
+    state: "delivered",
+  });
+
+  it("a widget message draws the widget card in the group thread", () => {
+    const threadList = document.createElement("div");
+    const widgetView: WidgetView = {
+      widget_id: "m-w1",
+      author: "did:key:zAlice",
+      direction: "incoming",
+      sender_timestamp_ms: 1000,
+      definition: {
+        extension: { id: "poll", version: 1 },
+        type: "poll/single",
+        semantic: "poll",
+        prompt: "Group lunch?",
+        fields: [
+          {
+            name: "option",
+            type: "choice",
+            required: true,
+            choices: [
+              { code: "o1", text: "Tacos" },
+              { code: "o2", text: "Salad" },
+            ],
+          },
+        ],
+      },
+      checked: true,
+      counts: [
+        { field: "option", choice: "o1", count: 3 },
+        { field: "option", choice: "o2", count: 0 },
+      ],
+      answers: [],
+      ignored_answers: 0,
+      state: "delivered",
+    };
+    const widgetMap = new Map<string, WidgetView>([["m-w1", widgetView]]);
+
+    renderThreadMessages(
+      threadList,
+      [msg("m-w1", "application/vnd.roym.widget+json")],
+      nameOf,
+      () => {},
+      () => {},
+      widgetMap,
+    );
+
+    const card = threadList.querySelector(".widget-card");
+    expect(card).not.toBeNull();
+    expect(threadList.querySelector(".widget-card .message-body")?.textContent).toBe("Group lunch?");
+  });
+
+  it("an answer message in a group thread draws nothing (skipped)", () => {
+    const threadList = document.createElement("div");
+    renderThreadMessages(
+      threadList,
+      [msg("m-a1", "application/vnd.roym.widget-answer+json")],
+      nameOf,
+      () => {},
+      () => {},
+    );
+
+    expect(threadList.children).toHaveLength(0);
+  });
+
+  it("a widget missing from the map draws widget-refused in the group thread", () => {
+    const threadList = document.createElement("div");
+    renderThreadMessages(
+      threadList,
+      [msg("m-w-missing", "application/vnd.roym.widget+json")],
+      nameOf,
+      () => {},
+      () => {},
+      new Map(),
+    );
+
+    const card = threadList.querySelector(".widget-refused");
+    expect(card).not.toBeNull();
+    const reason = threadList.querySelector(".refused-notice");
+    expect(reason?.textContent).toContain("This widget cannot be shown: widget-refused");
   });
 });

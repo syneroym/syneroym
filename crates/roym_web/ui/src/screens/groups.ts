@@ -6,6 +6,9 @@ import { currentLanguage, formatLocale, t } from "../i18n/i18n";
 import { languageList } from "../i18n/language_list";
 import { sortByName } from "../names";
 import { renderRefusedCard } from "../cards/refused";
+import { pollComposer } from "../widgets/composer";
+import { renderWidget } from "../widgets/render";
+import type { WidgetView } from "../widgets/view";
 import {
   MEMBERSHIP_EVENT_CONTENT_TYPE,
   deliveryWords,
@@ -154,6 +157,8 @@ export function renderThreadMessages(
   nameOf: (addr: string) => string,
   onDelete: (id: string) => void,
   onRetry: (msg: GroupMessageRow) => void,
+  widgetMap?: Map<string, WidgetView>,
+  reloadThread?: () => Promise<void>,
 ) {
   threadList.replaceChildren();
   let lastProfileName: string | null = null;
@@ -162,6 +167,10 @@ export function renderThreadMessages(
   for (const m of messages) {
     if (m.direction === "outgoing" && (m.state === "pending" || m.state === "failed")) {
       hasPendingOrFailedOwn = true;
+    }
+
+    if (m.content_type === "application/vnd.roym.widget-answer+json") {
+      continue;
     }
 
     if (m.content_type === MEMBERSHIP_EVENT_CONTENT_TYPE) {
@@ -187,6 +196,36 @@ export function renderThreadMessages(
 
     if (m.content_type === "application/vnd.roym.card+json") {
       threadList.appendChild(renderRefusedCard("card", 1, t("group-cards-not-allowed")));
+      continue;
+    }
+
+    if (m.content_type === "application/vnd.roym.widget+json") {
+      if (m.deleted_at_secs) {
+        threadList.appendChild(renderMessageRow(m, nameOf, onDelete, onRetry));
+      } else {
+        const defaultView: WidgetView = {
+          widget_id: m.id,
+          author: m.author,
+          direction: m.direction,
+          sender_timestamp_ms: m.sender_timestamp_ms,
+          definition: undefined,
+          refused: "widget-refused",
+          checked: false,
+          counts: [],
+          answers: [],
+          ignored_answers: 0,
+          state: m.state,
+          last_error: m.last_error,
+        };
+        const view = widgetMap?.get(m.id) ?? defaultView;
+        threadList.appendChild(
+          renderWidget(view, {
+            conversation: m.conversation,
+            refresh: reloadThread,
+            nameOf,
+          }),
+        );
+      }
       continue;
     }
 
@@ -469,9 +508,20 @@ export async function renderGroups(container: HTMLElement) {
       const langField = document.createElement("div");
       langField.className = "field";
       langField.append(text("span", t("group-languages-label")), langList.root);
-      composerBox.append(sendInput, sendBtn, sendErr, langField);
+
+      const pollComp = pollComposer({
+        conversation: gid,
+        languages: () => langList.value(),
+        onSent: reloadThread,
+      });
+
+      composerBox.append(sendInput, sendBtn, pollComp.button, sendErr, langField);
+      threadCol.appendChild(composerBox);
+      threadCol.appendChild(pollComp.form);
     }
-    threadCol.appendChild(composerBox);
+    if (info.restored_only || !info.is_member) {
+      threadCol.appendChild(composerBox);
+    }
 
     // Info Panel
     const infoPanel = document.createElement("div");
@@ -661,6 +711,27 @@ export async function renderGroups(container: HTMLElement) {
         });
         if (seq !== currentSelectionSeq) return;
         const msgs = hist.messages || [];
+
+        const widgetIds = msgs
+          .filter((m) => m.content_type === "application/vnd.roym.widget+json" && !m.deleted_at_secs)
+          .map((m) => m.id);
+        const widgetMap = new Map<string, WidgetView>();
+        if (widgetIds.length > 0) {
+          try {
+            const res = await call<{ widgets: WidgetView[] }>("widget.list", {
+              conversation: gid,
+              widget_ids: widgetIds,
+            });
+            if (res?.widgets) {
+              for (const w of res.widgets) {
+                widgetMap.set(w.widget_id, w);
+              }
+            }
+          } catch {
+            // non-fatal
+          }
+        }
+
         renderThreadMessages(
           threadList,
           msgs,
@@ -685,6 +756,8 @@ export async function renderGroups(container: HTMLElement) {
               }
             }
           },
+          widgetMap,
+          reloadThread,
         );
       } catch (err) {
         if (err instanceof RpcError && err.type === "NotSignedIn") {

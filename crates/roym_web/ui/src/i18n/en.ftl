@@ -867,6 +867,15 @@ widget-unknown-heading = A widget this app does not know: { $type }
 widget-refused = This widget cannot be shown: { $reason }
 widget-too-large = This widget is too large for this app.
 widget-answer-failed = Could not send answer: { $detail }
+widget-poll-button = Poll
+widget-poll-question = Question
+widget-poll-option = Option { $n }
+widget-poll-add-option = Add option
+widget-poll-remove-option = Remove option
+widget-poll-send = Send poll
+widget-poll-needs-two = A poll needs at least two options.
+widget-poll-options-differ = Options must be different.
+widget-send-failed = Could not send poll: { $detail }
 
 # --- agree as listed, the owner's side ---
 listing-as-listed-heading = Agree as listed
