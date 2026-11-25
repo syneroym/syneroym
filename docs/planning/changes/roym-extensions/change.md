@@ -276,6 +276,16 @@ The manifest reserves `kind = "insight"`, with a `reads` list (for example `even
 - **The `ReservationView` of a confirmed reservation still shows its expiry.** The value is not used after a confirm, because a confirmed reservation never lapses.
 - **The 15 minutes are a constant, not a setting (owner decision, question Q5).** No Roym service reads the app configuration yet.
 
+**Rules and differences in C4a (2026-11-25, [slice plan](../../milestones/M08C-deal-core-and-extensions/slice-c4-implementation-plan.md)).**
+
+- **Widgets and answers are chat messages, not deal cards or signed records (owner decision, question Q2 (b)).** They travel with their own content types `application/vnd.roym.widget+json` and `application/vnd.roym.widget-answer+json`. The card table stays at ten types, and the card count does not grow. EX-12's "signed" is authenticated by the chat message signature.
+- **Widgets work in direct chats and in groups (owner decision, question Q3).** Deal cards remain direct-chat only.
+- **Newest valid answer per author counts (owner decision, question Q4).** Invalid answers are ignored and do not hide an earlier valid answer.
+- **Only the `poll` extension ships in M08C (owner decision, question Q5).** Other widget types come with the extensions that need them.
+- **A new manifest kind `chat` and `poll.json` (owner decision, question Q6).** A `chat` manifest declares widgets only. `WidgetFieldRule` adds `min_choices` and `max_choices` for choice fields. A widget cannot have fields of type `money`.
+- **The author's prompt, labels, and choice texts are content, not catalog labels.** They are rendered in the message's primary language.
+- **The `conversation` component grows by +170,873 bytes (+21.00%), over the +15% target limit (owner decision, 2026-11-25).** `conversation` previously held no schema or record validation code (813,818 bytes). Adding three new RPC methods (`widget.send`, `widget.answer`, `widget.list`), forward scan over history, answer deduplication, choice counting, dynamic JSON schema validation, and the shipped chat widget registry reader added 170 KB. The owner approved the size increase to preserve the reviewed architecture.
+
 ## Close-out
 
 Before merge, update the living docs (requirements, architecture, integrated spec, developer guide, terminology) so they describe the result. Then set `status: done` and fill in `living-docs-touched`. Record anything you postponed in [deferred-backlog.md](../../deferred-backlog.md).
