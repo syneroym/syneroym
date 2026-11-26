@@ -1659,4 +1659,12 @@ in this document uses a fixed bucket of `floor(now / 3600)` or
 counter row per key and bucket. Say that the doubled burst at a bucket edge is
 accepted. Add the boundary case to OB-59's test.
 
-**Status:** Open
+**Status:** Fixed (08e80be3). Agreed, as proposed. The Limits list says once that every per-hour and per-day limit (OB-42, OB-57, OB-58, OB-59) uses a fixed bucket on the receiving node's clock, with one counter row per key and bucket, and that the doubled burst at a bucket edge is accepted. OB-59's test adds the bucket-edge case.
+
+## Fix session round 4 — Claude Opus 5.5 (Claude Code), 2026-11-26
+
+The fix is in `08e80be3` on `claude/m08e-obligations-change-doc-62dcfb`,
+which fast-forwarded to the round 4 review commit `30bf777b` first. P42 is
+fixed as proposed. No open question changed. Every finding P1 to P42 is
+closed, except the four that wait for the owner (questions 3, 16, 17, 18).
+
