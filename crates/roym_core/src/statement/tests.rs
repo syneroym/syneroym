@@ -80,6 +80,27 @@ fn test_terms() -> DealTerms {
     }
 }
 
+fn formed_entry(agreement: &str, occurred_at_secs: u64) -> EventLogEntry {
+    EventLogEntry {
+        id: format!("{agreement}:-:agreement-formed"),
+        occurred_at_secs,
+        recorded_at_secs: 0,
+        event: LogEvent::AgreementFormed,
+        agreement: agreement.to_string(),
+        conversation: "conv_1".to_string(),
+        counterparty_did: "did:key:alice".to_string(),
+        commitment_id: None,
+        direction: None,
+        resource_kind: None,
+        commitment_kind: None,
+        final_state: None,
+        currency: "INR".to_string(),
+        declared_value_minor: None,
+        settlement_note: None,
+        records: vec!["h1".to_string()],
+    }
+}
+
 #[test]
 fn bad_period_when_from_gte_to() {
     let terms = test_terms();
@@ -88,7 +109,6 @@ fn bad_period_when_from_gte_to() {
         counterparty_did: "did:key:alice",
         owner_role: DealRole::QuoteAuthor,
         terms: &terms,
-        agreed_at_secs: Some(100),
     };
     let err_equal =
         build("did:key:bob", 1000, 1000, 2000, &[], std::slice::from_ref(&agr)).unwrap_err();
@@ -106,9 +126,9 @@ fn period_boundary_from_in_to_out() {
         counterparty_did: "did:key:alice",
         owner_role: DealRole::QuoteAuthor,
         terms: &terms,
-        agreed_at_secs: Some(100),
     };
     let entries = vec![
+        formed_entry("rec_agr", 100),
         EventLogEntry {
             id: "rec_agr:c1:commitment-settled".to_string(),
             occurred_at_secs: 1000,
@@ -161,9 +181,9 @@ fn given_and_received_rows_with_totals() {
         counterparty_did: "did:key:alice",
         owner_role: DealRole::QuoteAuthor,
         terms: &terms,
-        agreed_at_secs: Some(100),
     };
     let entries = vec![
+        formed_entry("rec_agr", 100),
         EventLogEntry {
             id: "rec_agr:c1:commitment-settled".to_string(),
             occurred_at_secs: 1500,
@@ -225,7 +245,6 @@ fn failed_cancelled_and_ended_unconfirmed_are_not_rows_and_not_open_at_end() {
         counterparty_did: "did:key:alice",
         owner_role: DealRole::QuoteAuthor,
         terms: &terms,
-        agreed_at_secs: Some(100),
     };
     let entries = vec![
         EventLogEntry {
@@ -279,7 +298,6 @@ fn open_at_end_includes_agreed_commitment_without_final_entry() {
         counterparty_did: "did:key:alice",
         owner_role: DealRole::QuoteAuthor,
         terms: &terms,
-        agreed_at_secs: Some(100),
     };
     let entries = vec![EventLogEntry {
         id: "rec_agr:-:agreement-formed".to_string(),
@@ -314,7 +332,6 @@ fn open_at_end_excludes_commitments_with_any_final_entry_whatever_its_time() {
         counterparty_did: "did:key:alice",
         owner_role: DealRole::QuoteAuthor,
         terms: &terms,
-        agreed_at_secs: Some(100),
     };
     // Final entry occurs at t=2500 (after to_secs=2000)
     let entries = vec![
@@ -370,7 +387,6 @@ fn commitment_settled_after_to_is_in_open_at_end() {
         counterparty_did: "did:key:alice",
         owner_role: DealRole::QuoteAuthor,
         terms: &terms,
-        agreed_at_secs: Some(100),
     };
     // Settled at t=2500 (after to_secs=2000)
     let entries = vec![
@@ -428,27 +444,29 @@ fn settlement_note_is_present_on_row() {
         counterparty_did: "did:key:alice",
         owner_role: DealRole::QuoteAuthor,
         terms: &terms,
-        agreed_at_secs: Some(100),
     };
     let note = text("passed envelope");
-    let entries = vec![EventLogEntry {
-        id: "rec_agr:c1:commitment-settled".to_string(),
-        occurred_at_secs: 1500,
-        recorded_at_secs: 0,
-        event: LogEvent::CommitmentSettled,
-        agreement: "rec_agr".to_string(),
-        conversation: "conv_1".to_string(),
-        counterparty_did: "did:key:alice".to_string(),
-        commitment_id: Some("c1".to_string()),
-        direction: Some(Direction::Given),
-        resource_kind: Some(ResourceKind::GoodsOrService),
-        commitment_kind: Some(CommitmentKind::Fulfilment),
-        final_state: Some(CommitmentState::Fulfilled),
-        currency: "INR".to_string(),
-        declared_value_minor: Some(500),
-        settlement_note: Some(note.clone()),
-        records: vec![],
-    }];
+    let entries = vec![
+        formed_entry("rec_agr", 100),
+        EventLogEntry {
+            id: "rec_agr:c1:commitment-settled".to_string(),
+            occurred_at_secs: 1500,
+            recorded_at_secs: 0,
+            event: LogEvent::CommitmentSettled,
+            agreement: "rec_agr".to_string(),
+            conversation: "conv_1".to_string(),
+            counterparty_did: "did:key:alice".to_string(),
+            commitment_id: Some("c1".to_string()),
+            direction: Some(Direction::Given),
+            resource_kind: Some(ResourceKind::GoodsOrService),
+            commitment_kind: Some(CommitmentKind::Fulfilment),
+            final_state: Some(CommitmentState::Fulfilled),
+            currency: "INR".to_string(),
+            declared_value_minor: Some(500),
+            settlement_note: Some(note.clone()),
+            records: vec![],
+        },
+    ];
 
     let st = build("did:key:bob", 1000, 2000, 3000, &entries, &[agr]).unwrap();
     assert_eq!(st.rows.len(), 1);
@@ -510,9 +528,9 @@ fn total_overflow_above_max_safe_integer_refuses() {
         counterparty_did: "did:key:alice",
         owner_role: DealRole::QuoteAuthor,
         terms: &terms,
-        agreed_at_secs: Some(100),
     };
     let entries = vec![
+        formed_entry("rec_agr", 100),
         EventLogEntry {
             id: "rec_agr:c1:commitment-settled".to_string(),
             occurred_at_secs: 1500,
@@ -556,6 +574,72 @@ fn total_overflow_above_max_safe_integer_refuses() {
 }
 
 #[test]
+fn agreement_without_formed_entry_is_not_in_open_at_end() {
+    let terms = test_terms();
+    let agr = AgreementSource {
+        agreement: "rec_agr",
+        counterparty_did: "did:key:alice",
+        owner_role: DealRole::QuoteAuthor,
+        terms: &terms,
+    };
+    // No AgreementFormed entry in entries
+    let st = build("did:key:bob", 1000, 2000, 3000, &[], &[agr]).unwrap();
+    assert!(st.open_at_end.is_empty());
+}
+
+#[test]
+fn entry_with_unknown_agreement_or_commitment_is_skipped() {
+    let terms = test_terms();
+    let agr = AgreementSource {
+        agreement: "rec_agr",
+        counterparty_did: "did:key:alice",
+        owner_role: DealRole::QuoteAuthor,
+        terms: &terms,
+    };
+    let entries = vec![
+        formed_entry("rec_agr", 100),
+        EventLogEntry {
+            id: "unknown_agr:c1:commitment-settled".to_string(),
+            occurred_at_secs: 1500,
+            recorded_at_secs: 0,
+            event: LogEvent::CommitmentSettled,
+            agreement: "unknown_agr".to_string(),
+            conversation: "conv_1".to_string(),
+            counterparty_did: "did:key:alice".to_string(),
+            commitment_id: Some("c1".to_string()),
+            direction: Some(Direction::Given),
+            resource_kind: Some(ResourceKind::GoodsOrService),
+            commitment_kind: Some(CommitmentKind::Fulfilment),
+            final_state: Some(CommitmentState::Fulfilled),
+            currency: "INR".to_string(),
+            declared_value_minor: Some(500),
+            settlement_note: None,
+            records: vec![],
+        },
+        EventLogEntry {
+            id: "rec_agr:unknown_comm:commitment-settled".to_string(),
+            occurred_at_secs: 1500,
+            recorded_at_secs: 0,
+            event: LogEvent::CommitmentSettled,
+            agreement: "rec_agr".to_string(),
+            conversation: "conv_1".to_string(),
+            counterparty_did: "did:key:alice".to_string(),
+            commitment_id: Some("unknown_comm".to_string()),
+            direction: Some(Direction::Given),
+            resource_kind: Some(ResourceKind::GoodsOrService),
+            commitment_kind: Some(CommitmentKind::Fulfilment),
+            final_state: Some(CommitmentState::Fulfilled),
+            currency: "INR".to_string(),
+            declared_value_minor: Some(500),
+            settlement_note: None,
+            records: vec![],
+        },
+    ];
+    let st = build("did:key:bob", 1000, 2000, 3000, &entries, &[agr]).unwrap();
+    assert!(st.rows.is_empty());
+}
+
+#[test]
 fn struct_exhaustiveness_for_statement() {
     let terms = test_terms();
     let agr = AgreementSource {
@@ -563,7 +647,6 @@ fn struct_exhaustiveness_for_statement() {
         counterparty_did: "did:key:alice",
         owner_role: DealRole::QuoteAuthor,
         terms: &terms,
-        agreed_at_secs: Some(100),
     };
     let st = build("did:key:bob", 1000, 2000, 3000, &[], &[agr]).unwrap();
 

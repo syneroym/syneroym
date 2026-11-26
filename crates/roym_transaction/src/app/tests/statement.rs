@@ -1,22 +1,23 @@
 use syneroym_identity::{Identity, substrate};
 use syneroym_roym_core::{
     clock,
-    deal::{LocalText, ResourceKind, transition::CommitmentState},
+    deal::{DealTerms, LocalText, ResourceKind, transition::CommitmentState},
     eventlog::Direction,
     lang::LangTag,
     progress::{AgreementProgressPayload, AgreementState, CommitmentProgress, FormedAs},
     statement::EepSection,
-    transaction::DealRole,
+    transaction::{DealRole, ReceiptHalf},
 };
 
 use super::{
     fixture, fixture_with_master,
-    settle::{make_service_commitment, sample_note, setup_agreed_deal},
+    settle::{make_currency_commitment, make_service_commitment, sample_note, setup_agreed_deal},
 };
 use crate::app::{
     AGREEMENT_PROGRESS, AGREEMENTS, AgreementRow,
     decide::SnapshotRow,
     fulfilment_ops::{self, FulfilmentSignInput},
+    payment_ops::{self, PaymentAckInput},
     put_row,
     statement_ops::{self, StatementExportInput},
 };
@@ -80,7 +81,7 @@ async fn statement_export_refuses_bad_period() {
 
 async fn setup_cp_deal(cp_fix: &super::TestFixture, author_did: &str, now: u64) -> AgreementRow {
     let comm = make_service_commitment("c1");
-    let terms = syneroym_roym_core::deal::DealTerms {
+    let terms = DealTerms {
         currency: "EUR".to_string(),
         commitments: vec![comm],
         home_exchange: None,
@@ -106,7 +107,12 @@ async fn setup_cp_deal(cp_fix: &super::TestFixture, author_did: &str, now: u64) 
         terms,
         agreed_at_secs: Some(now),
         counterparty: None,
-        quote_author: None,
+        quote_author: Some(ReceiptHalf {
+            record_id: "h_qa".to_string(),
+            envelope: "{}".to_string(),
+            issuer: author_did.to_string(),
+            issued_at_secs: now,
+        }),
         state: Some(AgreementState::Agreed),
         state_reason: None,
         cancel_reason: None,
@@ -120,7 +126,7 @@ async fn setup_cp_deal(cp_fix: &super::TestFixture, author_did: &str, now: u64) 
         agreement: "rec_deal_cp".to_string(),
         commitment_id: "c1".to_string(),
         conversation: "conv_1".to_string(),
-        counterparty: Some(syneroym_roym_core::transaction::ReceiptHalf {
+        counterparty: Some(ReceiptHalf {
             record_id: "h_cp".to_string(),
             envelope: "{}".to_string(),
             issuer: cp_fix.master_did.clone(),
@@ -138,30 +144,15 @@ async fn setup_cp_deal(cp_fix: &super::TestFixture, author_did: &str, now: u64) 
     .await
     .unwrap();
 
-    let formed_snap = AgreementProgressPayload {
-        agreement: "rec_deal_cp".to_string(),
-        conversation: "conv_1".to_string(),
-        counterparty_did: cp_fix.master_did.clone(),
-        quote_author_did: author_did.to_string(),
-        seq: 1,
-        state: AgreementState::Agreed,
-        formed_as: FormedAs::Quote,
-        state_reason: None,
-        cancel_reason: None,
-        commitments: vec![make_prog("c1", CommitmentState::Promised, vec![])],
-    };
-    let snap_key1 = crate::app::decide::snapshot_id("rec_deal_cp", 1);
-    let snap_row1 = SnapshotRow {
-        seq: 1,
-        agreement: "rec_deal_cp".to_string(),
-        conversation: "conv_1".to_string(),
-        snapshot: formed_snap,
-        envelope: "{}".to_string(),
-        record_id: "snap_rec_1".to_string(),
-        message_id: None,
-        stored_at_secs: now,
-    };
-    put_row(&cp_fix.host, AGREEMENT_PROGRESS, &snap_key1, &snap_row1).await.unwrap();
+    store_progress_snapshot(
+        cp_fix,
+        "rec_deal_cp",
+        1,
+        AgreementState::Agreed,
+        vec![make_prog("c1", CommitmentState::Promised, vec![])],
+        now,
+    )
+    .await;
     agr_row
 }
 
@@ -224,7 +215,8 @@ async fn statement_export_with_and_without_money() {
 
     let mut service1 = make_service_commitment("c1");
     service1.giver = DealRole::Counterparty;
-    let (agreement, _) = setup_agreed_deal(&fix, &cp, vec![service1], now).await;
+    let curr = make_currency_commitment("c2", &fix.master_did);
+    let (agreement, _) = setup_agreed_deal(&fix, &cp, vec![service1, curr], now).await;
 
     fix.host.set_now(now + 10);
     fulfilment_ops::sign_at(
@@ -239,6 +231,23 @@ async fn statement_export_with_and_without_money() {
     .await
     .expect("sign fulfilment");
 
+    fix.host.set_now(now + 15);
+    payment_ops::acknowledge_at(
+        &fix.host,
+        PaymentAckInput {
+            agreement: agreement.clone(),
+            commitment_id: "c2".to_string(),
+            observed_at_secs: None,
+            method: None,
+            reference: None,
+            settlement_note: Some(sample_note("Payment received in full")),
+            supersedes: None,
+        },
+        now + 15,
+    )
+    .await
+    .expect("ack payment");
+
     let stmt = statement_ops::export(
         &fix.host,
         StatementExportInput { from_secs: now, to_secs: now + 100 },
@@ -246,7 +255,7 @@ async fn statement_export_with_and_without_money() {
     .await
     .expect("export statement");
 
-    assert_eq!(stmt.rows.len(), 1);
+    assert_eq!(stmt.rows.len(), 2);
     assert_eq!(stmt.rows[0].commitment_id, "c1");
     assert_eq!(stmt.rows[0].direction, Direction::Received);
     assert_eq!(stmt.rows[0].resource_kind, ResourceKind::GoodsOrService);
@@ -254,9 +263,28 @@ async fn statement_export_with_and_without_money() {
         stmt.rows[0].settlement_note.as_ref().unwrap().text,
         "Service delivered successfully"
     );
-    assert_eq!(stmt.totals.len(), 1);
-    assert_eq!(stmt.totals[0].currency, "EUR");
-    assert_eq!(stmt.totals[0].direction, Direction::Received);
-    assert_eq!(stmt.totals[0].resource_kind, ResourceKind::GoodsOrService);
-    assert_eq!(stmt.totals[0].sum_minor, 5000);
+
+    assert_eq!(stmt.rows[1].commitment_id, "c2");
+    assert_eq!(stmt.rows[1].direction, Direction::Received);
+    assert_eq!(stmt.rows[1].resource_kind, ResourceKind::Currency);
+    assert_eq!(stmt.rows[1].settlement_note.as_ref().unwrap().text, "Payment received in full");
+
+    assert_eq!(stmt.totals.len(), 2);
+    let service_total = stmt
+        .totals
+        .iter()
+        .find(|t| t.resource_kind == ResourceKind::GoodsOrService)
+        .expect("service total");
+    assert_eq!(service_total.currency, "EUR");
+    assert_eq!(service_total.direction, Direction::Received);
+    assert_eq!(service_total.sum_minor, 5000);
+
+    let currency_total = stmt
+        .totals
+        .iter()
+        .find(|t| t.resource_kind == ResourceKind::Currency)
+        .expect("currency total");
+    assert_eq!(currency_total.currency, "EUR");
+    assert_eq!(currency_total.direction, Direction::Received);
+    assert_eq!(currency_total.sum_minor, 5000);
 }

@@ -132,6 +132,10 @@ impl TestHost {
         self.reads.lock().unwrap().clone()
     }
 
+    pub fn clear_reads(&self) {
+        self.reads.lock().unwrap().clear();
+    }
+
     pub fn last_call(&self) -> Option<RecordedCall> {
         self.last_call.lock().unwrap().clone()
     }

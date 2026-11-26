@@ -166,6 +166,7 @@ fn event_kind_agreement_cancelled() {
 #[test]
 fn event_kind_agreement_not_formed() {
     let terms = test_terms();
+    let cp_half = vec!["rec_cp_receipt".to_string()];
     let input = DeriveInput {
         owner_role: DealRole::QuoteAuthor,
         agreement: "rec_agr1",
@@ -174,7 +175,7 @@ fn event_kind_agreement_not_formed() {
         terms: &terms,
         state: Some(AgreementState::NotFormed),
         commitments: &[],
-        agreed: None,
+        agreed: Some(FormedFact { quote_author_issued_at_secs: None, receipt_halves: &cp_half }),
         snapshots: &[HeldSnapshot {
             seq: 1,
             issued_at_secs: 1400,
@@ -716,4 +717,36 @@ fn deal_with_no_currency_commitment_gives_same_entry_kinds() {
     assert_eq!(d.entries[2].event, LogEvent::CommitmentSettled);
     assert_eq!(d.entries[2].commitment_kind, Some(CommitmentKind::Fulfilment));
     assert_eq!(d.entries[3].event, LogEvent::AgreementClosed);
+}
+
+#[test]
+fn settled_commitment_held_back_while_formed_cannot_be_made() {
+    let terms = test_terms();
+    let cp_half = vec!["rec_cp_receipt".to_string()];
+    let input = DeriveInput {
+        owner_role: DealRole::Counterparty,
+        agreement: "rec_agr1",
+        conversation: "conv_1",
+        counterparty_did: "did:key:bob",
+        terms: &terms,
+        state: Some(AgreementState::Agreed),
+        commitments: &[CommitmentProgress {
+            commitment_id: "c1".to_string(),
+            state: CommitmentState::Fulfilled,
+            halves: vec!["rec_f1".to_string()],
+            claimed: None,
+            reason: None,
+        }],
+        agreed: Some(FormedFact { quote_author_issued_at_secs: None, receipt_halves: &cp_half }),
+        snapshots: &[],
+        settling: &[SettlingHalf {
+            commitment_id: "c1",
+            records: &["rec_f1".to_string()],
+            settling_issued_at_secs: Some(1500),
+            settlement_note: None,
+        }],
+    };
+    let d = derive(&input);
+    assert!(!d.complete);
+    assert!(d.entries.is_empty());
 }
