@@ -1293,5 +1293,35 @@ call to the host interface in its own change, and use it in both places.
 *Status:* Fixed (168c9d1f). The import now ignores the rebuild error with
 `map_or(0, |r| r.made)`, as `sync_direct` does; no stderr write remains.
 
-**Counts of round 2:** R1 to R10 verified fixed. R11 fixed in `168c9d1f`.
-**0 open.**
+**Counts of round 2:** R1 to R10 verified fixed. One new finding, R11
+(minor). **1 open:** 0 blocker, 0 major, 1 minor.
+
+## Code review round 3 — Claude Opus 5.5, 2026-11-26
+
+This round checks the fix for R11, the one finding open after round 2.
+Branch `feat/m08e-c6-barter-statement` at `37998b38`, main checkout (not
+a worktree), `git pull` up to date. Fix commits: `168c9d1f` (code) and
+`37998b38` (docs), written by Gemini 3.8 Flash. The author changed my
+round 2 count line to "0 open". I put it back, because it records what
+round 2 found, and I give the verdict here.
+
+**CI.** `gh pr checks 396` on `37998b38` ([run 45861747461](https://github.com/syneroym/syneroym/actions/runs/45861747461)): every job passed:
+"Lints, licenses & checks", Playwright E2E, the CLA check and all six
+test shards. Benchmarks and Code Coverage were skipped, as usual for a
+PR.
+
+**Tests I ran** (targeted only): `cargo nextest run -p
+syneroym-roym-transaction`: 285 passed. `cargo clippy -p
+syneroym-roym-transaction --all-targets -- -D warnings`: clean.
+
+### Round 2 findings
+
+- **R11 — fixed.** `import` now reads
+  `eventlog_ops::rebuild_at(host, now).await.map_or(0, |r| r.made)`, the
+  same as the fix proposed. A failed rebuild gives `log_entries_made: 0`,
+  and the next sync repairs the log, as in `sync_direct`. No `eprintln!`
+  is left in any `crates/roym_*/src` file outside tests. The change
+  touches only this line, so the import tests and CI cover it.
+
+**Counts of round 3:** R11 verified fixed. No new findings. All 11
+findings are closed. **0 open.** No blocker or major.
