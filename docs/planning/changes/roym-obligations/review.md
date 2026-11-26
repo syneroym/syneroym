@@ -155,7 +155,7 @@ draft says is impossible. It breaks the main claim of OB-6 and VX-49.
 3. Add a test row to OB-6: one proof per refusal reason (`BadCertificate`,
    `TooOld`, `FromFuture`, wrong interface) that must not verify.
 
-**Status:** Open
+**Status:** Fixed (f72b2a8e). Agreed. Step 4 runs the whole open check through a new pure `verify_message(plaintext, destination, deposit_id, at_secs)` in `mailbox_format` (`check_signature` and `check_sender`, with the stored time as "now"). The text names `BadCertificate`, `TooOld` and `FromFuture` as cases it refuses, says a later revocation of the sender instance cannot be shown and is checked against the anchor at verify time, and OB-6 has one test per refusal reason. Step 6 also refuses a demand signed more than 24 hours before the stored time, so a back-dated demand cannot shorten the issuer's notice.
 
 ### P2 — blocker — The claim safety net can release the claim of an agreement that has formed
 
@@ -207,7 +207,7 @@ The scheduling extension avoids this. A reservation there has its own expiry
 - Add a service test with a controllable clock: accept, advance past the quote
   expiry, file the countersign, confirm.
 
-**Status:** Open
+**Status:** Fixed (f72b2a8e). Agreed, as proposed. Nothing releases an unconfirmed claim at the quote's expiry. `transaction` releases it when the deal ends, and the drive only 30 days after the quote's expiry (the conversation card retry time). `claim-confirm` on a freed round takes a new round when the version is free, else answers `eep-claimed`, and the issuer signs a `commitment-failure` for the `eep-return`, signed by the receiver (new deviation). `eep-return` gains the `failed` end. New OB-39.
 
 ### P3 — major — The send path cannot do what the write order and the demand states need
 
@@ -256,7 +256,7 @@ draft depends on four things that this path does not give:
 - Move the demand-state rows that depend on this out of OB-23 until the
   feature exists, or make E2 deliver it first.
 
-**Status:** Open
+**Status:** Fixed (f72b2a8e), with a change to the proposal: the `out:`/`sent:` rows stay, but only to cover the gap between storing a record and handing it to `enqueue`; `sent:` is written when `enqueue` accepts, and the proxy outbox owns retries. New section "The send path": every call is `proxy.enqueue`; E2 adds the "deposit first" option and a deposit status read that returns the state and one proof per deposit (a retry is a new seal); `obligation.drive` copies each proof into its own data, so it rides in `obligation`'s backup, and what a substrate-only restore loses is stated. OB-23 stays, and says its receipt states are built when the read exists, instead of moving them out. New OB-51.
 
 ### P4 — major — The claim key has no generation, so a claim after a release is undefined
 
@@ -282,7 +282,7 @@ that `claim` reads the round's `free:` row and takes a new round when it is
 free. State what `claim` answers for a freed round that another agreement has
 since taken (`eep-claimed`). Add both cases to OB-20.
 
-**Status:** Open
+**Status:** Fixed (f72b2a8e). Agreed. `key:` rows carry a generation, as the scheduling extension's `Key` rows do. A repeat answers success only while the newest generation's round holds; a claim after a release takes a new round, or answers `eep-claimed` if another agreement took the version. Both cases added to OB-20.
 
 ### P5 — major — Version 1's expiry can be too short, or already past, when the agreement forms
 
@@ -316,7 +316,7 @@ expired. VX-14 and OB-11 do not cover this.
 
 Add a service test with a controllable clock for both.
 
-**Status:** Open
+**Status:** Fixed (f72b2a8e). Took the first option: `EepIssueTerms` holds a life (`expires_in_secs`, 7 days to 5 years), and version 1 computes `expires_at_secs` from its own signing time. The "matches" rule compares the life. OB-14 and the new OB-37 test it.
 
 ### P6 — major — `eep-return` ends `ended-unconfirmed` in the same sync that should close or reinstate it
 
@@ -342,7 +342,7 @@ resolution window (for example 7 days), and a `tick` only moves it if the
 issuer's snapshot shows no version. Add an OB row (or extend OB-21) that checks
 the commitment's state after each row of the resolve table, not only the EEP.
 
-**Status:** Open
+**Status:** Fixed (f72b2a8e). Agreed. The `eep-return` track end is the latest track end of the issuer's other commitments plus a 7-day resolution window, and its `tick` moves it only when no matching version is held. OB-21 now checks the commitment's state, not only the EEP.
 
 ### P7 — major — Closing a pure set-off at once races with `agreement.cancel`
 
@@ -374,7 +374,7 @@ own node, so `cancel` is refused. The one-way case is not safe.
 
 Add a two-node race test for set-off plus cancel.
 
-**Status:** Open
+**Status:** Fixed (f72b2a8e), with a change to the proposal, pending the owner: open question 18. None of the three options fits. Refusing cancel for every `eep-return` removes "cannot deliver" from every redemption; a grace period does not help an offline node; "wait for a moved commitment" never ends in a pure set-off, where nothing else moves. The race exists only when the counterparty receives an `eep-return`, so the writer refuses `agreement.cancel` with `eep-return-to-counterparty` in exactly that case. It narrows the agreements document's cancel rule, so it is an owner question. New OB-41, deviation added.
 
 ### P8 — major — The resolve table is ambiguous and incomplete
 
@@ -400,7 +400,7 @@ that was not issued counts as not claimed); otherwise close. Test it with a
 table over all combinations, not "one case per row" (OB-21 says one case per
 row, which would miss mixes).
 
-**Status:** Open
+**Status:** Fixed (f72b2a8e). Agreed. The table is now a function with an order: failed or cancelled is handled elsewhere; reinstate if any issuer-given commitment is unconfirmed and "not claimed" (an `eep-issue` that was never issued counts as not claimed); otherwise close. Mixes decide by the worst case. OB-21 tests every combination of up to three commitments. Option B of open question 3 is one line of the function.
 
 ### P9 — major — A confirmed claim has no exit when the writer's snapshots stop
 
@@ -423,7 +423,7 @@ says each party computes the date), plus a grace period. Then it resolves with
 `claimed` read from the last snapshot it holds. State this as the last-resort
 rule and add a test (OB-21 variant) where the writer stops.
 
-**Status:** Open
+**Status:** Fixed (f72b2a8e). Agreed. At the `eep-return`'s own track end plus 7 days, the issuer's node resolves from its own view: a commitment its snapshots do not show final counts as unconfirmed, and `claimed` is whether the issuer itself signed a giver's half, which it always knows. The states table lists it as a way out. New OB-40.
 
 ### P10 — major — The wire methods let any verified caller make the receiver sign, store and send
 
@@ -461,7 +461,7 @@ fresh key. So:
   also add an unknown-EEP counter).
 - Add an OB row for each.
 
-**Status:** Open
+**Status:** Fixed (f72b2a8e), with a change to the proposal: "answer in the call's own reply" only reaches a direct caller; on the mailbox path nothing comes back, which is acceptable for a caller that is not a holder. `eep-unknown` and `not-holder` sign and store nothing. `deliver` on the holder's node stores only records that answer a request it sent or extend a chain it holds. One open demand per (EEP, version) on the issuer. A node-wide limit of 100 such calls an hour, whatever the caller, because a fresh caller DID costs nothing. New OB-42, OB-43.
 
 ### P11 — major — A split is automatic for any holder and has no limit, and this is not in the deviations
 
@@ -488,7 +488,7 @@ hour limit is per caller DID and so does not stop it.
   split above it with a coded decline.
 - Add OB rows for the limit.
 
-**Status:** Open
+**Status:** Owner decision: open question 16. The doc now says the overview does not settle whether an issuer may refuse a split, records it in `## Deviations`, and applies the recommendation marked "pending open question 16": automatic inside limits (parts of at least 100 minor units or the whole value, at most 64 live EEPs of one issuer per holder), `split-limit` above them, and Roym does not mark a refusal as evidence. New OB-44. Applied in f72b2a8e.
 
 ### P12 — major — The countersign rule is weaker than the draft says for third parties, and it does not cover other records
 
@@ -528,7 +528,7 @@ hour limit is per caller DID and so does not stop it.
   receipt for a demand), or say that they stop counting as evidence and the
   Hub shows it.
 
-**Status:** Open
+**Status:** Point 1: Owner decision: open question 17. The doc states the limit plainly (a third party cannot see the issuer's store, and an acknowledgement's time is written by its signer) and recommends that a third party count an acknowledgement at full strength only with a mailbox `stored` time of its own deposit. Point 2: Fixed (f72b2a8e). New subsection "Countersigns for every record": the holder acknowledges declines as well as versions, and a demand, request, decline or acknowledgement sent "deposit first" has a third-party time through its deposit proof. A record with no countersign shows as "signed with a key revoked as compromised". New OB-49. The case where both keys are compromised is stated as a limit.
 
 ### P13 — major — E1 changes the type that three other crates already read, and the draft does not list them
 
@@ -568,7 +568,7 @@ and `revoke_key`). Change `RevocationSource` so a check takes the master DID
 (`check_key(master, key)`), and add a test that a key listed in the wrong
 master's anchor has no effect.
 
-**Status:** Open
+**Status:** Fixed (f72b2a8e). Agreed. E1 lists every reader and writer of `revoked_keys` (auth with both key forms, the mailbox caller check, the UCAN edge check, `revoke_key`, `revoke-instance`, test support) and what each does: live-key checks still refuse at once; `revoke_key` takes a reason and a time (default `compromised`, now); `revoke-instance` writes `retired`. `RevocationSource` becomes `check_key(master, key)` over a map by master. New OB-50 tests that a key in the wrong master's anchor has no effect.
 
 ### P14 — minor — It is not said who verifies an `eep` card, or in what order the holder moves the commitment
 
@@ -589,7 +589,7 @@ commitment only on its success, and that `obligation` returns the verdict. Say
 that a found card is checked against the derived id and the commitment before it
 is stored.
 
-**Status:** Open
+**Status:** Fixed (f72b2a8e). Agreed. The filing node calls `obligation.receive` (or `eep.verify`) first and moves the commitment only on success. A found card given to `obligation.issue` is checked against the derived id and the commitment before it is stored (OB-14).
 
 ### P15 — minor — The deposit proof is not complete
 
@@ -620,7 +620,7 @@ is stored.
 
 **Fix:** Add these to the proof struct and the check, one test each.
 
-**Status:** Open
+**Status:** Fixed (f72b2a8e). Agreed, with one addition: for the `rejected(call_failed)` case the doc does both things the reviewer offered: a row in the "No answer" table that does not count it against the issuer, and Hub wording that never says "never collected" for it. `DepositProof` gains `eep_version` and `sender`; `StoredStatement` gains `sender`; step 7 checks a `delivered` receipt as `verify_signed` does; the deposit's time-to-live is the smaller of the mailbox limit and the time left to `answer_by_secs`.
 
 ### P16 — minor — Catch-up and restore details
 
@@ -647,7 +647,7 @@ is stored.
 
 **Fix:** Edit the rules as above.
 
-**Status:** Open
+**Status:** Fixed (f72b2a8e), with a change to the proposal: the manifest has no start time, so `obligation.export` writes `export_started_at_secs` in its own section, which the signed manifest digest covers. Rule 3 has no skew. Rule 4 never allows catch-up on an unreadable anchor: the node signs nothing and retries on the next drive. Lost claim rows are named, with a backlog row at close-out.
 
 ### P17 — minor — The 16-record limit does not keep a call under the size of a sealed message
 
@@ -667,7 +667,7 @@ stay under `MAILBOX_CARD_BODY_BYTES` (13 KiB,
 with different idempotency keys). Measure an `eep` version in E3, as the draft
 says, and write the number here.
 
-**Status:** Open
+**Status:** Fixed (f72b2a8e). Agreed. A call's request is at most 48 KiB of JSON; a larger set goes as several calls with their own keys. E3 measures an `eep` version and writes the number. New OB-48.
 
 ### P18 — minor — The idempotency key of `deliver` blocks a second legitimate delivery
 
@@ -684,7 +684,7 @@ makes it worse: the holder can ask only once an hour.
 **Fix:** Include the request's `record_id` (or a counter) in the key of every
 answer, so one logical answer per request.
 
-**Status:** Open
+**Status:** Fixed (f72b2a8e). Agreed. The key of every answer names the request it answers (plus a part number when split), so one logical answer per request.
 
 ### P19 — minor — The "above the listed price" check is not defined for every listing
 
@@ -703,7 +703,7 @@ price shows 'price not checked'", which covers only two of the four cases.
 **Fix:** Say the check runs only for `Fixed` listings in the same currency, and
 shows "price not checked" in all other cases. Add both cases to OB-19.
 
-**Status:** Open
+**Status:** Fixed (f72b2a8e). Agreed. The check runs only for a `fixed` listing with an amount in the agreement's currency; every other case shows "price not checked". OB-19 has one case per model and one for another currency.
 
 ### P20 — minor — Two small changes would leave more room for M08H, and the task-file edit is correct
 
@@ -734,7 +734,7 @@ and keeps version-1 EEPs valid. The `task.md` edit is correct: the new text
 matches this document and the M08H task (H0 extends the module doc with
 endorsement, reissue, refusal, swaps), and nothing else changed.
 
-**Status:** Open
+**Status:** Fixed (f72b2a8e), with a change to the proposal: the split request's `parts` are objects with `holder_did` (null in M08E), and the reserved `endorsement` is on the request, not on the `split-part` cause, because the old holder signs the request and the endorsement is its consent. `{ kind: "transferred", endorsement }` is reserved and refused by M08E nodes with `cause-not-supported`; if H0 needs more, it raises `eep` to version 2 with the same sentence. The "Left for M08H" table says so.
 
 ### P21 — minor — Two open-question recommendations need a correction
 
@@ -765,7 +765,7 @@ host (the deploy should fail clearly or fall back).
 **Fix:** Edit both texts, and ask the owner about the holder's "not received"
 half in question 3.
 
-**Status:** Open
+**Status:** Question 1: Fixed (f72b2a8e). The reason is rewritten: a demand that reached the issuer or its mailbox before expiry must still be answered in its notice, and the lower limit is the open mailbox's longest hold. Question 13: Fixed (f72b2a8e): with no mailbox host the deploy fails with a clear error and does not fall back. Question 3: Owner decision: open question 3. It now lists options A (the draft), B (the overview's reading) and C (A plus the reviewer's signed "not received" half), with the reviewer's point on the risk to the holder. Recommendation: A now, and decide C together with the agreements document's open question 15, which the owner placed with M08G.
 
 ### P22 — minor — Some differences from the overview and the agreements document are not in `## Deviations`
 
@@ -793,7 +793,7 @@ are missing:
 
 **Fix:** Add the rows, and add the agreements document to the close-out list.
 
-**Status:** Open
+**Status:** Fixed (f72b2a8e). Agreed. All seven rows are in `## Deviations` under "Added in review round 1", plus the life field, the track window, the issuer's own tick and the split of AG-24/AG-25. The close-out names the agreements document (reason codes, cancel rule, `commitment-failure`, card count).
 
 ### P23 — minor — OB rows missing, and the E3/E4 split of rows is wrong in one place
 
@@ -819,7 +819,7 @@ are missing:
 **Fix:** Add the rows and move OB-31/OB-32 to E4, or build the wire table and
 the demand acceptance in E3 and say so.
 
-**Status:** Open
+**Status:** Fixed (f72b2a8e), with a change to the proposal: instead of moving OB-31 to E4, E3 builds the wire table with all five entries and the `acknowledge` and `deliver` handlers (both are needed for E3's acknowledgements), and E4 adds the `demand`, `split` and `holdings` handlers with OB-32. New rows OB-37 to OB-51 cover partial redemption, `held-check`, the late confirm, `demand-open` and `answer_by_secs`, the limits, the Hub texts and the split of OB-13. OB-23 now names all "no answer" levels.
 
 ### P24 — minor — Small facts and wording
 
@@ -846,4 +846,31 @@ the demand acceptance in E3 and say so.
 
 **Fix:** Edit the lines.
 
-**Status:** Open
+**Status:** Fixed (f72b2a8e), with a change to one point. The split row count is 20. `eep-terms-mismatch` is added. Fence, derive step, catch-up and outstanding are defined in Terms. The first task is marked E0. On the generator: the facts are right, but `Kem::derive_keypair` does not help, because `single_shot_seal_with_rng` takes a random source, not a key pair, and the only API that takes an ephemeral key is `hpke`'s `danger` module, which says its API is unstable. So E2 writes a small `rand_core` 0.10 generator that expands the seed with HKDF-SHA256, with no new crate.
+
+## Fix session round 1 — Claude Opus 5.5 (Claude Code), 2026-11-26
+
+Fixes are in `f72b2a8e` on `claude/m08e-obligations-change-doc-62dcfb`.
+All 24 findings are handled. Every finding was checked against the code
+first (P1 `check_sender`, P3 `proxy.wit` and the router's
+`DepositContext`, P13 the `revoked_keys` readers, P19 `PaymentModel`,
+P24 `hpke` 0.15.1); all are correct.
+
+Changed from the proposal, with the reason in the item's status: P3
+(the `out:` rows stay for the gap before `enqueue`), P7 (a narrower
+cancel rule than any of the three options), P10 (an error reply reaches
+only a direct caller), P15 (both the table row and the Hub wording),
+P16 (the export start time lives in `obligation`'s own section), P20
+(the reserved endorsement is on the request), P23 (E3 builds the whole
+wire table) and P24 (no `derive_keypair`; a small HKDF generator).
+
+Owner decisions: open question 3 (P21, with the reviewer's signed "not
+received" half as option C), open question 16 (P11, may an issuer
+refuse a split), open question 17 (P12 point 1, strength of an
+acknowledgement for a third party) and open question 18 (P7, the cancel
+rule). The design text applies each recommendation, marked "pending
+open question N".
+
+New OB rows: OB-37 to OB-51, appended; no id was renumbered. Open
+question 1 has a new reason, and questions 7 and 13 have more text.
+
