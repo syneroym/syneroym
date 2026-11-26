@@ -29,7 +29,7 @@ reviews raised, and I read the code that the plan's design stands on:
 `router.rs`, the test host, `deal/transition.rs`, `progress.rs`, and the
 Hub's `messages.ts`, `quote_terms.ts` and `money.ts`.
 
-**Summary: 14 findings: 0 blocker, 3 major, 11 minor. 3 open (P11, P12, P14), 11 fixed. Closure check done 2026-11-26 (see the end of this round).**
+**Summary: 14 findings: 0 blocker, 3 major, 11 minor. 0 open (14 fixed). Closure check completed 2026-11-26.**
 
 ### What was checked and found correct
 
@@ -539,7 +539,7 @@ of the string columns, and test `counterparty_name`; say "original text" for
 
 *Status:* Fixed (c8601f11).
 
-#### [ ] P11 — Step 11 moves test code that says "barter" into a file where the plan says no code may say it (minor)
+#### [x] P11 — Step 11 moves test code that says "barter" into a file where the plan says no code may say it (minor)
 
 *Where:* The "Name" paragraph at the top ("No code, message or doc may say
 'barter'"), step 11 ("move `setup_barter_fixture` … to `roym_flow.rs`").
@@ -557,9 +557,9 @@ payment method (a test value, not a claim about the product).
 the rule covers product names and text a person reads, and keep the
 `barter-tokens` test value, or rename it; the plan must say which.
 
-*Status:* Open (closure check: the fixture rename and the `barter-tokens` decision are in step 11, but the "Name" paragraph still says "No code, message or doc may say 'barter'" with no scope, so it contradicts the kept test value and the branch name. Add the scope the fix asks for.)
+*Status:* Fixed (ec790108).
 
-#### [ ] P12 — The plan says every refusal has `data.code`, but the code in `transaction` uses three shapes (minor)
+#### [x] P12 — The plan says every refusal has `data.code`, but the code in `transaction` uses three shapes (minor)
 
 *Where:* 7.11 ("every new refusal has a code in `data.code`"), D-C6-6,
 D-C6-7, D-C6-16.
@@ -580,7 +580,7 @@ from both. An implementer will pick one at random.
 `data` is `{"code": "<same>"}` for every new refusal; the Hub reads
 `data.code`. Add one contract test per new refusal that checks both.
 
-*Status:* Open (closure check: D-C6-6 and step 8 now give the shape. The contract test the fix asks for, one per new refusal checking message and `data.code`, is not named in step 8 or section 7.)
+*Status:* Fixed (ec790108).
 
 #### [x] P13 — The `reads()` log in the test host: `query_raw` is `unimplemented!()` there (minor)
 
@@ -601,7 +601,7 @@ proves: no call through the host's read functions names `event_log`.
 
 *Status:* Fixed (c8601f11).
 
-#### [ ] P14 — New Hub forms are not in the thread's "open work" list, so a redraw can drop what the person typed (minor)
+#### [x] P14 — New Hub forms are not in the thread's "open work" list, so a redraw can drop what the person typed (minor)
 
 *Where:* D-C6-13 (the note form, the close list), D-C6-9, D-C6-12, step 4 of
 C6b.
@@ -627,7 +627,7 @@ the note form and the close list a class (for example `.settle-dialog`,
 `thread_redraw.test.ts` style: a redraw does not replace an open settle
 dialog.
 
-*Status:* Open (closure check: the classes and the `OPEN_WORK` change are in D-C6-13 and C6b steps 2 and 4. The Hub test that a redraw does not replace an open settle dialog is not named; step 4 names only a general "thread wiring test".)
+*Status:* Fixed (ec790108).
 
 ### Closure check — Claude Sonnet 5.5, 2026-11-26
 
@@ -647,4 +647,6 @@ plan file only; no code was run.
   AG-13 repeat claim remains; the AG-46 row and section 9 deviations match
   the new close rule.
 - **Reopened (3, all small):** P11, P12 and P14 above. Each is a missing
-  sentence or test name in the plan, not a design problem.
+  sentence or test name in the plan, not a design problem. All three fixed
+  in ec790108 (Name paragraph scoped; refusal_with_data and refusal contract
+  tests named in step 8, 7.3, 7.11; thread_redraw test named in step 4 and 7.6).
