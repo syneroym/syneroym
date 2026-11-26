@@ -1885,7 +1885,7 @@ status. In change.md `:297`, name only `roym_widget_e2e.rs`
 (`a_poll_in_a_group_shows_the_same_counts_on_every_member`) and parity
 scenario 263 for the group poll, and say that story 20 shows the 1:1 poll.
 
-*Status:* Fixed (339e6898). Agreed. Updated locator to `.widget-poll-composer-hint` matching composer.ts; clarified in change.md that group poll voting is tested in `roym_widget_e2e.rs` and parity scenario 263 while story 20 covers 1:1 chat. Proof: with `.poll-composer-hint` the spec fails on missing element timeout; with `.widget-poll-composer-hint` it matches `hintP.className = "widget-poll-composer-hint"`.
+*Status:* Fixed (339e6898). Agreed. Updated locator to `.widget-poll-composer-hint` matching composer.ts; clarified in change.md that group poll voting is tested in `roym_widget_e2e.rs` and parity scenario 263 while story 20 covers 1:1 chat. Proof: with `.poll-composer-hint` the spec fails on missing element timeout; with `.widget-poll-composer-hint` it matches `hintP.className = "widget-poll-composer-hint"`. Verified in code review round 3.
 
 ### [x] R32 — A widget with no view shows its raw JSON body (major)
 
@@ -1918,7 +1918,7 @@ in `messages.ts`, `groups.ts` and `message_search.ts`. When it gives
 Build the test bodies with `pollDefinition` and the real `widget` key.
 Either use `missingWidgetView` or delete it.
 
-*Status:* Fixed (8bff4472). Agreed. Added `widgetPrompt` helper in `view.ts` reading real wire format `parsed?.widget?.prompt`; removed unused `missingWidgetView`; updated fallback in `messages.ts`, `groups.ts`, `message_search.ts` to `widgetPrompt(m.body) ?? t("messages-no-body")`; updated test fixtures in `messages.test.ts` and `groups.test.ts` to real wire format. Proof: without `widgetPrompt`, `parsed.definition?.prompt` evaluates to undefined and thread draws raw JSON body; with `widgetPrompt`, thread extracts prompt cleanly.
+*Status:* Fixed (8bff4472). Agreed. Added `widgetPrompt` helper in `view.ts` reading real wire format `parsed?.widget?.prompt`; removed unused `missingWidgetView`; updated fallback in `messages.ts`, `groups.ts`, `message_search.ts` to `widgetPrompt(m.body) ?? t("messages-no-body")`; updated test fixtures in `messages.test.ts` and `groups.test.ts` to real wire format. Proof: without `widgetPrompt`, `parsed.definition?.prompt` evaluates to undefined and thread draws raw JSON body; with `widgetPrompt`, thread extracts prompt cleanly. Verified in code review round 3.
 
 ### [x] R33 — An own widget shows its state twice and two Retry buttons, and a restored one still offers Retry (major)
 
@@ -1953,7 +1953,7 @@ history row (the screens have it), or record in the Deviations why the
 retry is shown. Add tests: an own failed widget row has exactly one state
 word and one Retry button; a restored failed widget row has none.
 
-*Status:* Fixed (8bff4472). Agreed. Removed card-level widget `stateAndRetry` from `poll.ts`, `generic.ts`, and refused card so the row alone owns the widget's state and retry button; wired `isRestored` flag through `WidgetRenderOptions` so restored answers suppress retry; added unit tests in `messages.test.ts`, `groups.test.ts`, `poll.test.ts`, and `generic.test.ts`. Proof: with card-level widget retry enabled, test sees 2 state words and 2 retry buttons; with fix, test asserts exactly 1 state word and 1 retry button on active row, and 1 state word and 0 retry buttons on restored row.
+*Status:* Fixed (8bff4472). Agreed. Removed card-level widget `stateAndRetry` from `poll.ts`, `generic.ts`, and refused card so the row alone owns the widget's state and retry button; wired `isRestored` flag through `WidgetRenderOptions` so restored answers suppress retry; added unit tests in `messages.test.ts`, `groups.test.ts`, `poll.test.ts`, and `generic.test.ts`. Proof: with card-level widget retry enabled, test sees 2 state words and 2 retry buttons; with fix, test asserts exactly 1 state word and 1 retry button on active row, and 1 state word and 0 retry buttons on restored row. Verified in code review round 3.
 
 ### [x] R34 — Small leftovers of the R27 and R30 fixes (minor)
 
@@ -1986,4 +1986,58 @@ import. Import `canRetry` and `messageStateWord` in the tests from
 the status.md counts from the run, and give the CI run of the head the
 status names.
 
-*Status:* Fixed (8bff4472). Agreed. Extracted `widgetHeading` and `stateAndRetry` to `widgets/parts.ts` to eliminate import cycle; removed unused `direction` parameter from `canRetry`; moved imports in `messages.test.ts` to `chat/message_state` and dropped mid-file re-export in `messages.ts`; updated status.md test counts (56 files, 693 passed; 5 files, 37 in `src/widgets`).
+*Status:* Fixed (8bff4472). Agreed. Extracted `widgetHeading` and `stateAndRetry` to `widgets/parts.ts` to eliminate import cycle; removed unused `direction` parameter from `canRetry`; moved imports in `messages.test.ts` to `chat/message_state` and dropped mid-file re-export in `messages.ts`; updated status.md test counts (56 files, 693 passed; 5 files, 37 in `src/widgets`). Verified in code review round 3.
+
+## Code review round 3 — Claude Opus 5.5, 2026-11-26
+
+This round checks the C4b fixes for R31 to R34. Branch
+`feat/m08c-c4b-widgets-hub` at `fe9d97ec`, main checkout (not a worktree),
+`git pull` up to date. Fix commits: `339e6898`, `8bff4472` and `fe9d97ec`
+(`git diff 893766fa..fe9d97ec`, 17 files). The fixes were written by
+Gemini 3.8 Flash. The author set the four *Status* lines to "Fixed". I
+checked each one against the code and added "Verified in code review
+round 3" to each.
+
+**CI.** `gh pr checks 384` on `fe9d97ec` ([run 45751287834](https://github.com/syneroym/syneroym/actions/runs/45751287834)):
+all jobs passed, Playwright E2E and the 6 test shards included. The run
+on `5d8c02ce` (run 45747255959) was cancelled by a later push, so CI
+never ran the R31 case with the old class name. The fixed case passes in
+this run.
+
+**Tests I ran** (targeted only): `TZ=UTC npx vitest run` in
+`crates/roym_web/ui`: 56 files, 693 passed. `src/widgets` alone: 5
+files, 37 passed. `npx tsc --noEmit`: clean. These match status.md. I ran
+the round 2 probe again (`src/screens/zz-probe.test.ts`, real wire body
+built with `pollDefinition`, then deleted; `git status` clean).
+
+**Counts of round 3 (C4b):** R31 to R34 all verified. No new findings.
+**0 open.**
+
+### Round 2 findings
+
+- **R31 — fixed.** The case waits for `.widget-poll-composer-hint`, the
+  class that `composer.ts:38` sets. It passes in CI. The extensions
+  deviation names `roym_widget_e2e.rs`
+  (`a_poll_in_a_group_shows_the_same_counts_on_every_member`) and parity
+  scenario 263 for the group poll, and says story 20 shows the 1:1 poll.
+- **R32 — fixed.** `widgetPrompt` in `widgets/view.ts` reads
+  `widget.prompt`. `messages.ts`, `groups.ts` and `message_search.ts` use
+  it, and a body with no prompt draws `messages-no-body`, never the raw
+  body. The probe drew "Where to eat?" for a real body with no view. The
+  test fixtures use the real `widget` key. `missingWidgetView` is gone.
+- **R33 — fixed.** The card no longer draws the widget's own state or
+  Retry (in `poll.ts`, `generic.ts` and the refused card); the row does.
+  The probe: an own failed poll has one state word and one Retry in a 1:1
+  chat, and one Retry in a group; a pending poll has one state word; a
+  restored failed poll has no Retry in either screen; an own refused
+  widget keeps the row's one Retry. An own failed answer shows Retry, and
+  a restored one does not (`isRestored` looks up the answer's history
+  row). New tests cover each case in `messages.test.ts`,
+  `groups.test.ts`, `poll.test.ts` and `generic.test.ts`.
+- **R34 — fixed.** `widgetHeading` and `stateAndRetry` are in
+  `widgets/parts.ts`, which imports no widget renderer, so the import
+  cycle is gone. The mid-file import and re-export in `messages.ts` are
+  gone, and the tests import from `chat/message_state`. `canRetry` has no
+  unused field. status.md gives the counts of this run. One small leftover
+  that is not worth a finding: `messages.ts:22` and `:24` both import from
+  `../widgets/view`, and could be one import.
