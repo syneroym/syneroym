@@ -13,6 +13,7 @@ pub mod commitment_failure_backup;
 pub mod commitment_failure_writer;
 pub mod decide;
 pub mod decline;
+pub mod defaults;
 pub mod disclosure;
 pub mod drive;
 pub mod eventlog;

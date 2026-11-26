@@ -5,6 +5,7 @@ pub mod backup;
 pub mod close_ops;
 pub mod decide;
 pub mod decline_ops;
+pub mod defaults_ops;
 pub mod disclosures;
 pub mod drive;
 pub mod enquiry_ops;
@@ -61,8 +62,9 @@ use crate::api;
 // disclosure. Version 7 moves seat holds to the scheduling service, so a
 // bundle that holds `hold:` or `seat:` rows is refused. Version 8 adds a
 // required `formed_as` to every stored progress snapshot and the local
-// `as_listed` rows of an agreement made by tapping a listing.
-pub const SCHEMA_VERSION: u32 = 8;
+// `as_listed` rows of an agreement made by tapping a listing. Version 9
+// adds deal_defaults and derives the event log on import.
+pub const SCHEMA_VERSION: u32 = 9;
 
 pub(crate) const ENQUIRIES: &str = "enquiries";
 pub(crate) const ENQUIRY_HISTORY: &str = "enquiry_history";

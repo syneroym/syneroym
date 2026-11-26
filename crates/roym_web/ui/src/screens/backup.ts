@@ -50,6 +50,7 @@ interface ImportReply {
   imported?: unknown;
   /// Booked slots that the transaction import could not take again.
   reservations_failed?: unknown;
+  log_entries_made?: number;
 }
 
 /// The number of records an import reply reports, or `undefined` when it

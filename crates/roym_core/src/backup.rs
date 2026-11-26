@@ -46,6 +46,7 @@ pub const SECTION_CREDENTIALS: &str = "credentials";
 pub const SECTION_REVOCATIONS: &str = "revocations";
 pub const SECTION_DECISIONS: &str = "moderation_decisions";
 pub const SECTION_HELD_MEMBERSHIPS: &str = "held_memberships";
+pub const SECTION_DEAL_DEFAULTS: &str = "deal_defaults";
 /// The digest prefix, so a section digest can never be mistaken for a
 /// record id or a report id.
 pub const SECTION_DIGEST_PREFIX: &str = "sec_";
@@ -467,6 +468,7 @@ mod tests {
             SECTION_FULFILMENTS,
             SECTION_STEPS,
             SECTION_DISCLOSURES,
+            SECTION_DEAL_DEFAULTS,
         ] {
             assert!(
                 single_section_bundle(section).check_integrity().is_ok(),
