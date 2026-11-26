@@ -11,7 +11,11 @@ Owner answers recorded 2026-11-26.**
 statement". [task.md](task.md) calls it "Mixed exchanges, event log,
 statement and settlement", and the agreements doc does not use the word
 "barter" (its "Terms" section, owner decision on its open question 1). This
-plan uses the task.md name. No code, message or doc may say "barter".
+plan uses the task.md name. The rule that no code, message or doc may say
+"barter" covers product features, UI copy, API fields, and production code.
+It does not forbid arbitrary test fixture values (such as the `barter-tokens`
+payment method in `templates.test.ts`), and it does not rename git branch
+names.
 
 **Size and PRs.** [task.md](task.md) sizes C6 as L. Checked against the
 code, it is about 1,400 lines of Rust, 1,600 lines of TypeScript and as
@@ -1211,9 +1215,13 @@ New `app/statement_ops.rs`. Service test `tests/statement.rs`.
 #### Step 8 — The method table and the router
 
 `api.rs`: the eight new rows. `router.rs`: the two prefixes. Every new
-refusal carries `{"code": "<same>"}` in `data`. The method contract count 47
-to 55 (`contract.rs:83`) and its shape rows (`shapes_transaction.rs`).
-`scenario_144`'s list gets the three missing methods and the eight new ones.
+refusal returns `refusal_with_data` with the code string as the message and
+`data` as `{"code": "<same>"}`. Method contract tests in
+`crates/roym_web/tests/method_contract/`: update count from 47 to 55
+(`contract.rs:83`), add shape rows (`shapes_transaction.rs`), and add one
+contract test per new refusal checking that the returned error message and
+`data.code` both match the code string. `scenario_144`'s list gets the three
+missing methods and the eight new ones.
 
 #### Step 9 — Parity
 
@@ -1272,8 +1280,10 @@ template tests in `templates.test.ts` (905 lines; put new cases in a new
 (`screens/thread_redraw.ts`). The panel handles the "Sent. Waiting for
 the other person's node." state when a half is signed locally before the
 snapshot arrives. Settlement note form (`.settle-dialog`) and close list
-(`.close-list`) join `OPEN_WORK`. `agreement_panel.test.ts` and a thread wiring
-test (C4 R30: the wiring needs its own test).
+(`.close-list`) join `OPEN_WORK`. `agreement_panel.test.ts`, a thread wiring
+test (C4 R30), and a Hub test in `thread_redraw.test.ts` style verifying that
+an incoming message redraw does not replace an open settle dialog
+(`.settle-dialog`) or close list (`.close-list`).
 
 #### Step 5 — The statement screen and the tab
 
@@ -1353,6 +1363,11 @@ backlog, `mise run verify` with no `--skip`.
 - Count 55 (`contract.rs:83`); typed input and output for each new row.
 - -32013 off the node for each new row (automatic, `:191`), and in
   `scenario_144`'s list.
+- One refusal contract test per new refusal (`no-such-commitment`,
+  `not-your-side`, `bad-commitment-list`, `agreement-not-open`,
+  `bad-period`, `statement-total-overflow`, `bad-deal-defaults`) checking
+  that the refusal message equals the code string and `data.code` equals
+  the code string.
 
 ### 7.4 Service tests (`roym_transaction/src/app/tests/`)
 
@@ -1408,6 +1423,9 @@ Vitest:
 - `agreement_panel.test.ts`: the buttons for each (side, kind, state); an
   ended-unconfirmed line reads as a normal end; waiting state shows "Sent.
   Waiting for the other person's node." with no button; a redraw after an action.
+- `thread_redraw.test.ts`: a thread redraw from an incoming message does not
+  replace an open settle dialog (`.settle-dialog`) or close list
+  (`.close-list`).
 - `suggest_changes.test.ts`: the compose box gets the line; nothing is
   sent.
 - `statement.test.ts` and `statement_csv.test.ts`: the formula guard across
@@ -1493,8 +1511,10 @@ read: { $reason }". Plus the changed texts of D-C6-15.
 - **Silent failures** (C2 R21, R22, C4 R25): the derive step's error is
   ignored on purpose, and its test checks the sync passes and the next one
   repairs; every Hub action shows its failure and a retry.
-- **Errors classed by text** (C1 R3, C3c R24): every new refusal has a
-  code in `data.code`.
+- **Errors classed by text** (C1 R3, C3c R24): every new refusal in
+  `transaction` uses `refusal_with_data` where `data` is `{"code": "<same>"}`
+  and the message equals that code string; the Hub reads `data.code`.
+  Contract tests check both fields for every new refusal.
 - **Hub state that does not match the service** (C1 R38, C2 R2): the
   panel redraws from `agreement.get`; the totals come from the signed
   terms.
