@@ -2086,4 +2086,12 @@ read gives a value other than `unknown`, and that the Hub reads that row. Add th
 case "no call for longer than the status rows are kept; the warning stays" to
 OB-69.
 
-**Status:** Open
+**Status:** Fixed, as proposed. `obligation.drive` writes `mailbox_of:<issuer>` (the mailbox DID or `none`, with the time of the read) whenever a status read gives a value other than `unknown`, and the Hub reads that row. OB-69 has the case where the status rows are gone and the warning stays. The row is in "Rows that grow, and their cleanup": one per issuer of a held version, overwritten, kept as the versions are.
+
+## Fix session round 7 — Claude Opus 5.5 (Claude Code), 2026-11-26
+
+Fast-forwarded to `f5765f41`. P48 is fixed: a per-issuer row
+`mailbox_of:<issuer>` holds the last known mailbox value, written by
+`obligation.drive` and read by the Hub. OB-69 is changed in place, and the row
+is listed in "Rows that grow, and their cleanup". No new OB row and no owner
+question.
