@@ -29,7 +29,7 @@ reviews raised, and I read the code that the plan's design stands on:
 `router.rs`, the test host, `deal/transition.rs`, `progress.rs`, and the
 Hub's `messages.ts`, `quote_terms.ts` and `money.ts`.
 
-**Summary: 14 findings: 0 blocker, 3 major, 11 minor. 0 open (14 fixed). Closure check completed 2026-11-26.**
+**Summary: 15 findings: 0 blocker, 3 major, 12 minor. 1 open (P15), 14 fixed. Closure check completed 2026-11-26; P15 found in the second closure check.**
 
 ### What was checked and found correct
 
@@ -650,3 +650,40 @@ plan file only; no code was run.
   sentence or test name in the plan, not a design problem. All three fixed
   in ec790108 (Name paragraph scoped; refusal_with_data and refusal contract
   tests named in step 8, 7.3, 7.11; thread_redraw test named in step 4 and 7.6).
+
+### Second closure check — Claude Sonnet 5.5, 2026-11-26
+
+I read the plan change in `ec790108` against P11, P12 and P14 and checked
+the names it cites against the code on this branch. P11 and P14 are closed:
+the "Name" paragraph is scoped, and the `thread_redraw.test.ts` case is named
+in step 4 and in the Hub test list. P12 is closed in substance (the shape and
+a contract test per refusal are named), but the fix brought in the finding
+below.
+
+#### [ ] P15 — The P12 fix names a helper that does not exist and a refusal code the plan never defines (minor)
+
+*Where:* Step 8 and 7.11 (`refusal_with_data`), 7.3 (`bad-deal-defaults`),
+D-C6-6, D-C6-16.
+
+*Problem:* Step 8 and 7.11 say every new refusal "returns `refusal_with_data`".
+No function of that name exists in `crates/` (`git grep` finds only the plan),
+and the plan does not list adding one. The real calls are
+`Response::invalid_params(code).with_data(json!({"code": code}))`
+([envelope.rs:62](../../../../crates/roym_core/src/envelope.rs#L62), `:50`).
+Also the 7.3 test list names the code `bad-deal-defaults`, but D-C6-16 only says
+the texts follow `check_text` and step 7 gives no code; the code list in
+D-C6-6 does not have it either.
+
+*Failure case:* The implementer searches for `refusal_with_data`, finds
+nothing, and writes a new helper in one place or inlines the two calls in
+another. The refusal test for `deal.defaults-set` then asserts a code that no
+section of the plan defines, so the code is chosen at random (or the test
+checks the message the existing `check_text` path already gives, which is not
+`bad-deal-defaults`).
+
+*Fix:* Either name the real two-call form, or add one small helper to a named
+file (for example `app/refusal.rs`) as part of step 8. Add `bad-deal-defaults`
+to D-C6-6's code list and say in D-C6-16 and step 7 that both
+`deal.defaults-set` and the import use it.
+
+*Status:* Open.
