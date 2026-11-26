@@ -1668,3 +1668,53 @@ which fast-forwarded to the round 4 review commit `30bf777b` first. P42 is
 fixed as proposed. No open question changed. Every finding P1 to P42 is
 closed, except the four that wait for the owner (questions 3, 16, 17, 18).
 
+
+## Doc review round 5 (fixes check) — Claude Sonnet 5.5 (Claude Code), 2026-11-26
+
+Checked `change.md` at `ab5ae3c9` on `claude/m08e-obligations-change-doc-62dcfb`
+(fix in `08e80be3`, status in `ab5ae3c9`). My branch was fast-forwarded to that
+tip first. This round checks P42 and reads only the changed text.
+
+**Summary:** P42 is confirmed fixed. The changed text creates 1 new minor
+finding, P43. So this file is not yet closed.
+
+- **P42.** Confirmed fixed. The Limits list now has one bullet, "How limits
+  count" (change.md:948), that says every "per hour" and "per day" limit uses a
+  fixed bucket, `floor(now / 3600)` or `floor(now / 86400)`, on the receiving
+  node's own clock, with one counter row per key and bucket. It names OB-42,
+  OB-57, OB-58 and OB-59, says that a rolling window is not used, and accepts a
+  burst of up to twice the limit at a bucket edge. I searched the document for
+  every limit with a time unit: OB-42 and the Methods bullet (100 an hour,
+  node-wide), OB-57 and its bullet (60 an hour per caller), OB-58 and its bullet
+  (one holdings answer per holder per hour), the one-per-hour counter of the
+  automatic checks, and OB-59 (5 per day). All of them are covered by that
+  bullet, and none is left with another definition.
+- **Testability.** OB-42, OB-57, OB-58 and OB-59 can be tested as written. A
+  service test has a controllable clock (see "Kinds of test"), so a test can fill
+  a bucket and step over its edge. OB-59 now says exactly that: a second demand
+  gets a decline naming it, the sixth in one bucket gets an error only, and
+  after `floor(now / 86400)` changes the next demand is signed again. OB-57 and
+  OB-58 say only "Service", but their window is now defined, so the edge case
+  follows from the bullet.
+
+### P43 — minor — The counter rows of the limits are never removed
+
+**Where:** change.md:948 ("one counter row per key and bucket, for example
+`count:<key>:<bucket>`"), OB-57.
+
+**Problem:** A fixed bucket needs one row per key and bucket. Nothing says when
+an old row goes. For OB-58 and OB-59 the number of keys is bounded by the
+holders and the EEPs the node knows. For OB-57 the key is the caller DID, and a
+caller DID costs nothing (the reason given for the node-wide limit at
+change.md:951). Each new DID that makes one call adds a row, and the 60-call
+limit never stops it, because each DID stays under the limit. So the number of
+rows grows with the number of distinct callers for as long as the node runs.
+The rest of the design says "no row is ever deleted" only for claims and the
+event log, which need it. These counters do not.
+
+**Fix:** Say that `obligation.drive` deletes counter rows older than the
+current bucket (one bucket back is enough), in a bounded number per run, as
+`transaction.drive` bounds its work. Add one case to OB-57: a row from an old
+bucket is gone after the next drive.
+
+**Status:** Open
