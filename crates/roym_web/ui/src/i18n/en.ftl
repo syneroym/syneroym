@@ -933,3 +933,24 @@ as-listed-send-button = Agree and send
 as-listed-sent-waiting = Sent. Waiting for the owner's answer.
 as-listed-send-failed = Could not send: { $detail }
 directory-agree-as-listed-button = Agree as listed
+
+# --- deals and statement (M08C C6b) ---
+deal-you-give = You give: { $amount }
+deal-you-receive = You receive: { $amount }
+deal-diff-you-give-more = You give { $amount } more than you receive
+deal-diff-you-receive-more = You receive { $amount } more than you give
+deal-giver-me = I give
+deal-giver-them = They give
+deal-kind-service = Service
+deal-kind-goods = Goods
+deal-kind-money = Money
+deal-row-when = When
+deal-add-line = Add a line
+deal-remove-line = Remove
+deal-more-terms = More terms
+deal-save-defaults = Save as my defaults
+deal-saved-defaults = Saved
+deal-row-value-hint = What this is worth in { $currency }. Used only for the totals.
+deal-from-secs-placeholder = From (secs)
+deal-to-secs-placeholder = To (secs)
+deal-error-value-required = Value is required for each commitment

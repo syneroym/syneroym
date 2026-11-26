@@ -133,4 +133,51 @@ describe("buildDealTerms", () => {
     expect(comms[1].description?.lang).toBe("ta");
     expect(comms[1].description?.text).toBe("INR 100.00");
   });
+
+  it("builds commitments from custom rows with multi-row after dependencies", () => {
+    const deal = buildDealTerms(
+      {
+        scope: "Full renovation",
+        currency: "INR",
+        timing: "before-work",
+        rows: [
+          {
+            giver: "quote-author",
+            kind: "service",
+            description: "Painting",
+            declaredValueMinor: 3000,
+            where: "at-receiver",
+          },
+          {
+            giver: "quote-author",
+            kind: "service",
+            description: "Carpentry",
+            declaredValueMinor: 4000,
+            where: "at-receiver",
+          },
+          {
+            giver: "counterparty",
+            kind: "money",
+            declaredValueMinor: 5000,
+            payee: "Painter",
+          },
+          {
+            giver: "counterparty",
+            kind: "goods",
+            description: "Paint cans",
+            declaredValueMinor: 2000,
+          },
+        ],
+      },
+      "en",
+    );
+
+    const comms = deal.commitments as TestCommitment[];
+    expect(comms).toHaveLength(4);
+    // Before work: author services (c1, c2) happen after counterparty money (c3)
+    expect(comms[0].after).toEqual(["c3"]);
+    expect(comms[1].after).toEqual(["c3"]);
+    expect(comms[2].after).toEqual([]); // money c3
+    expect(comms[3].after).toEqual([]); // goods c4
+  });
 });

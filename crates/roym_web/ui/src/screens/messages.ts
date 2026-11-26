@@ -1,7 +1,7 @@
 import { canRetry, messageStateWord } from "../chat/message_state";
 import { messageLang, messageText } from "../chat/message_text";
 import { errText, field, refiller, text } from "../dom";
-import { currentLanguage, messageId, t } from "../i18n/i18n";
+import { currentLanguage, t } from "../i18n/i18n";
 import { languageList } from "../i18n/language_list";
 import { languageName, textLangSelect } from "../i18n/text_lang";
 import { onFeed } from "../events";
@@ -9,14 +9,9 @@ import { call, refusalCode, RpcError } from "../rpc";
 import { whoami } from "../session/login";
 import { renderCard } from "../cards/render";
 import { renderRefusedCard } from "../cards/refused";
-import { toMinorUnits, currencyMinorExponent } from "../money";
-import type { ServiceLocationKind } from "../listings/editor";
-import { serviceLocationEditorLabel } from "../listings/labels";
 import { type SearchMatch, searchHits } from "./message_search";
 import { waitingRedraw } from "./thread_redraw";
 import { categoryPicker } from "../taxonomy/category_picker";
-import { buildDealTerms } from "./quote_terms";
-import { attachSizeLine } from "./quote_size";
 import type { MessagesInitialState, RequestPreFill } from "../navigation";
 import { pollComposer } from "../widgets/composer";
 import { renderWidget } from "../widgets/render";
@@ -907,282 +902,21 @@ export function openDeclineDialog(anchor: HTMLElement, card: CardRow, refresh: (
   anchor.appendChild(dialog);
 }
 
-export function openQuoteForm(
-  anchor: HTMLElement,
-  reqCard: CardRow,
-  convId: string,
-  refresh: () => Promise<void>,
-) {
-  const existing = anchor.querySelector(".quote-form");
-  if (existing) {
-    existing.remove();
-    return;
-  }
+import {
+  formatQuoteError,
+  openQuoteForm,
+  type QuoteFormError,
+  type QuoteFormResult,
+  readQuoteForm,
+} from "../quote_form/form";
 
-  const form = document.createElement("div");
-  form.className = "quote-form";
-
-  const quoteLang = textLangSelect("quote-text-lang", currentLanguage());
-
-  const scopeInput = document.createElement("input");
-  scopeInput.placeholder = t("quote-scope-placeholder");
-  scopeInput.className = "quote-scope-input";
-
-  const giveInput = document.createElement("input");
-  giveInput.placeholder = t("quote-give-placeholder");
-  giveInput.setAttribute("aria-label", t("quote-give-label"));
-  giveInput.className = "quote-give-input";
-
-  const currencyInput = document.createElement("input");
-  currencyInput.placeholder = t("quote-currency-placeholder");
-  currencyInput.defaultValue = "EUR";
-  currencyInput.className = "quote-currency-input";
-
-  const amountInput = document.createElement("input");
-  amountInput.placeholder = t("quote-amount-placeholder");
-  amountInput.className = "quote-amount-input";
-
-  const taxInput = document.createElement("input");
-  taxInput.placeholder = t("quote-tax-placeholder");
-  taxInput.className = "quote-tax-input";
-
-  const feesInput = document.createElement("input");
-  feesInput.placeholder = t("quote-fees-placeholder");
-  feesInput.className = "quote-fees-input";
-
-  const payeeInput = document.createElement("input");
-  payeeInput.placeholder = t("quote-payee-placeholder");
-  payeeInput.className = "quote-payee-input";
-
-  const timingSelect = document.createElement("select");
-  timingSelect.className = "quote-timing-select";
-  const optAfter = document.createElement("option");
-  optAfter.value = "after-work";
-  optAfter.textContent = t("quote-timing-after");
-  const optBefore = document.createElement("option");
-  optBefore.value = "before-work";
-  optBefore.textContent = t("quote-timing-before");
-  timingSelect.append(optAfter, optBefore);
-
-  const whereSelect = document.createElement("select");
-  whereSelect.className = "quote-where-select";
-  const optReceiver = document.createElement("option");
-  optReceiver.value = "at-receiver";
-  optReceiver.textContent = serviceLocationEditorLabel("at-receiver");
-  const optGiver = document.createElement("option");
-  optGiver.value = "at-giver";
-  optGiver.textContent = serviceLocationEditorLabel("at-giver");
-  const optRem = document.createElement("option");
-  optRem.value = "remote";
-  optRem.textContent = serviceLocationEditorLabel("remote");
-  whereSelect.append(optReceiver, optGiver, optRem);
-
-  const addressWrap = document.createElement("div");
-  addressWrap.className = "quote-address-wrap";
-  const addressNotice = text("p", t("quote-address-disclosure-notice"), "address-disclosure-notice");
-  const addressInput = document.createElement("input");
-  addressInput.placeholder = t("quote-address-placeholder");
-  addressInput.className = "quote-address-input";
-  addressWrap.append(addressNotice, addressInput);
-
-  whereSelect.onchange = () => {
-    addressWrap.style.display = whereSelect.value === "at-receiver" ? "block" : "none";
-  };
-
-  const cancInput = document.createElement("input");
-  cancInput.placeholder = t("quote-cancellation-placeholder");
-  cancInput.defaultValue = t("quote-default-cancellation");
-  cancInput.className = "quote-canc-input";
-
-  const refInput = document.createElement("input");
-  refInput.placeholder = t("quote-refund-placeholder");
-  refInput.defaultValue = t("quote-default-refund");
-  refInput.className = "quote-ref-input";
-
-  const dispInput = document.createElement("input");
-  dispInput.placeholder = t("quote-dispute-placeholder");
-  dispInput.defaultValue = t("quote-default-dispute");
-  dispInput.className = "quote-disp-input";
-
-  const hoursInput = document.createElement("input");
-  hoursInput.placeholder = t("quote-hours-placeholder");
-  hoursInput.defaultValue = "24";
-  hoursInput.type = "number";
-  hoursInput.className = "quote-hours-input";
-
-  const submitBtn = text("button", t("quote-send-button"), "button submit-quote-button") as HTMLButtonElement;
-  const cancelBtn = text("button", t("common-cancel"), "button cancel-quote-button") as HTMLButtonElement;
-  const errP = text("p", "", "quote-form-error");
-
-  const detachSizeLine = attachSizeLine(form, () => {
-    const res = readQuoteForm(form);
-    return "terms" in res ? res.terms : undefined;
-  });
-
-  cancelBtn.onclick = () => {
-    detachSizeLine();
-    form.remove();
-  };
-
-  submitBtn.onclick = async () => {
-    errP.textContent = "";
-    const parsed = readQuoteForm(form);
-    if ("error" in parsed) {
-      errP.textContent = formatQuoteError(parsed.error);
-      return;
-    }
-    const terms = parsed.terms;
-
-    const hours = Number.parseInt(hoursInput.value || "24", 10);
-    const expires_in_secs = Math.max(300, hours * 3600);
-
-    submitBtn.disabled = true;
-    try {
-      await call("quote.set", {
-        enquiry_record_id: reqCard.record_id,
-        expires_in_secs,
-        terms,
-      });
-      detachSizeLine();
-      form.remove();
-      await refresh();
-    } catch (err) {
-      errP.textContent = t("quote-failed", { detail: errText(err) });
-      submitBtn.disabled = false;
-    }
-  };
-
-  form.append(
-    field(t("quote-text-language"), quoteLang),
-    scopeInput,
-    giveInput,
-    currencyInput,
-    amountInput,
-    taxInput,
-    feesInput,
-    payeeInput,
-    timingSelect,
-    whereSelect,
-    addressWrap,
-    cancInput,
-    refInput,
-    dispInput,
-    hoursInput,
-    submitBtn,
-    cancelBtn,
-    errP,
-  );
-  anchor.appendChild(form);
-}
-
-export type QuoteFormError =
-  | { key: string; args?: Record<string, string | number> }
-  | { raw: string };
-
-export type QuoteFormResult =
-  | { terms: Record<string, unknown> }
-  | { error: QuoteFormError };
-
-export function formatQuoteError(err: QuoteFormError): string {
-  if ("raw" in err) return err.raw;
-  switch (err.key) {
-    case "quote-scope-required":
-      return t("quote-scope-required");
-    case "quote-currency-required":
-      return t("quote-currency-required");
-    case "quote-currency-unknown":
-      return t("quote-currency-unknown", err.args);
-    case "quote-amount-required":
-      return t("quote-amount-required");
-    case "quote-payee-required":
-      return t("quote-payee-required");
-    default:
-      return err.key;
-  }
-}
-
-export function readQuoteForm(form: HTMLElement): QuoteFormResult {
-  const scopeInput = form.querySelector<HTMLInputElement>(".quote-scope-input");
-  const giveInput = form.querySelector<HTMLInputElement>(".quote-give-input");
-  const currencyInput = form.querySelector<HTMLInputElement>(".quote-currency-input");
-  const amountInput = form.querySelector<HTMLInputElement>(".quote-amount-input");
-  const taxInput = form.querySelector<HTMLInputElement>(".quote-tax-input");
-  const feesInput = form.querySelector<HTMLInputElement>(".quote-fees-input");
-  const payeeInput = form.querySelector<HTMLInputElement>(".quote-payee-input");
-  const timingSelect = form.querySelector<HTMLSelectElement>(".quote-timing-select");
-  const whereSelect = form.querySelector<HTMLSelectElement>(".quote-where-select");
-  const addressInput = form.querySelector<HTMLInputElement>(".quote-address-input");
-  const cancInput = form.querySelector<HTMLInputElement>(".quote-canc-input");
-  const refInput = form.querySelector<HTMLInputElement>(".quote-ref-input");
-  const dispInput = form.querySelector<HTMLInputElement>(".quote-disp-input");
-  const quoteLang = form.querySelector<HTMLSelectElement>(".quote-text-lang");
-
-  const scope = scopeInput?.value.trim() ?? "";
-  if (!scope) return { error: { key: messageId("quote-scope-required") } };
-
-  const currency = currencyInput?.value.trim().toUpperCase() ?? "";
-  if (!currency) return { error: { key: messageId("quote-currency-required") } };
-
-  const exp = currencyMinorExponent(currency);
-  if (exp === undefined) {
-    return { error: { key: messageId("quote-currency-unknown"), args: { currency } } };
-  }
-
-  let amountMinor: number | undefined;
-  try {
-    amountMinor = toMinorUnits(amountInput?.value ?? "", exp);
-  } catch (e) {
-    return { error: { raw: errText(e) } };
-  }
-  if (amountMinor === undefined) return { error: { key: messageId("quote-amount-required") } };
-
-  let taxMinor = 0;
-  if (taxInput?.value.trim()) {
-    try {
-      taxMinor = toMinorUnits(taxInput.value, exp) ?? 0;
-    } catch (e) {
-      return { error: { raw: errText(e) } };
-    }
-  }
-
-  let feesMinor = 0;
-  if (feesInput?.value.trim()) {
-    try {
-      feesMinor = toMinorUnits(feesInput.value, exp) ?? 0;
-    } catch (e) {
-      return { error: { raw: errText(e) } };
-    }
-  }
-
-  const payee = payeeInput?.value.trim() ?? "";
-  if (!payee) return { error: { key: messageId("quote-payee-required") } };
-
-  const where = (whereSelect?.value ?? "at-receiver") as ServiceLocationKind;
-  const address = where === "at-receiver" ? addressInput?.value.trim() : undefined;
-  const timing = (timingSelect?.value ?? "after-work") as "before-work" | "after-work";
-  const lang = quoteLang?.value ?? "en";
-
-  return {
-    terms: buildDealTerms(
-      {
-        give: giveInput?.value.trim() || undefined,
-        scope,
-        currency,
-        amountMinor,
-        taxMinor,
-        feesMinor,
-        payee,
-        timing,
-        where,
-        address,
-        cancellation: cancInput?.value.trim(),
-        refund: refInput?.value.trim(),
-        dispute: dispInput?.value.trim(),
-      },
-      lang,
-    ),
-  };
-}
+export {
+  formatQuoteError,
+  openQuoteForm,
+  type QuoteFormError,
+  type QuoteFormResult,
+  readQuoteForm,
+};
 
 function openDeleteDialog(anchor: HTMLElement, m: MessageRow, refresh: () => Promise<void>) {
   const existing = anchor.querySelector(".delete-dialog");

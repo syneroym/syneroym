@@ -906,3 +906,24 @@ as-listed-send-button = सहमति दें और भेजें
 as-listed-sent-waiting = भेज दिया। मालिक के जवाब का इंतज़ार है।
 as-listed-send-failed = भेजा नहीं जा सका: { $detail }
 directory-agree-as-listed-button = सूची के अनुसार सहमति
+
+# --- deals and statement (M08C C6b) ---
+deal-you-give = आप देते हैं: { $amount }
+deal-you-receive = आप प्राप्त करते हैं: { $amount }
+deal-diff-you-give-more = आप प्राप्त करने से { $amount } अधिक देते हैं
+deal-diff-you-receive-more = आप देने से { $amount } अधिक प्राप्त करते हैं
+deal-giver-me = मैं देता हूँ
+deal-giver-them = वे देते हैं
+deal-kind-service = सेवा
+deal-kind-goods = वस्तुएँ
+deal-kind-money = धन
+deal-row-when = कब
+deal-add-line = पंक्ति जोड़ें
+deal-remove-line = हटाएं
+deal-more-terms = अधिक शर्तें
+deal-save-defaults = मेरे डिफ़ॉल्ट के रूप में सहेजें
+deal-saved-defaults = सहेजा गया
+deal-row-value-hint = { $currency } में इसका क्या मूल्य है। केवल योग के लिए उपयोग किया जाता है।
+deal-from-secs-placeholder = से (सेकंड)
+deal-to-secs-placeholder = तक (सेकंड)
+deal-error-value-required = प्रत्येक प्रतिबद्धता के लिए मूल्य आवश्यक है
