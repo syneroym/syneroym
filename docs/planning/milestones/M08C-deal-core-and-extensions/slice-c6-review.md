@@ -687,3 +687,478 @@ to D-C6-6's code list and say in D-C6-16 and step 7 that both
 `deal.defaults-set` and the import use it.
 
 *Status:* Fixed (87763d94). Verified: D-C6-6, D-C6-16, step 7, step 8 and 7.11 now name the real two-call form (or a helper in `app/refusal.rs`), and `bad-deal-defaults` is in D-C6-6's list and used by both `deal.defaults-set` and the import.
+
+## Code review round 1 — Claude Opus 5.5, 2026-11-26
+
+This is the first code review of **part C6a** (event log, statement,
+`agreement.close`, saved deal terms, `roymctl`, two-node test): plan
+section 6.1, D-C6-1 to D-C6-8, D-C6-16, sections 7.1 to 7.5, 7.8, 7.9, 8
+and 9. PR #396 (draft), branch `feat/m08e-c6-barter-statement` at
+`dc9e7557`, main checkout (not a worktree), `git pull` up to date. Diff:
+`git diff origin/main...HEAD` (68 files; merge base `edd71c11`). The code
+was written by Gemini 3.8 Flash. There was no earlier code review round,
+so there was no Fixed or Rejected item to check again. All plan review
+items (P1 to P15) are closed. New findings start at R1.
+
+**CI.** `gh pr checks 396` on `dc9e7557` ([run 45826164453](https://github.com/syneroym/syneroym/actions/runs/45826164453)):
+"Lints, licenses & checks", Playwright E2E and the CLA check passed. The
+six test shards were still **pending** when I read them, so CI is not yet
+proof that the Rust suite passes. I ran the C6a tests myself (below).
+
+**Tests I ran** (targeted only):
+
+- `cargo nextest run -p syneroym-roym-core -p syneroym-roym-transaction`:
+  826 passed, 0 skipped (`roym-core` 545, `roym-transaction` 281).
+  Filtered to the new tests: `roym-core` `eventlog statement` 27 passed;
+  `roym-transaction` `eventlog statement close defaults` 25 passed.
+- `cargo nextest run -p roymctl`: 229 passed.
+- After `mise run build:roym`: `dual_build_parity` scenarios 260 to 276
+  and the `method_contract` test binary (results in the line below this
+  list).
+- One probe test, written in `roym_transaction/src/app/tests/`, run and
+  deleted again (`git status` clean after): a receiver signs a fulfilment
+  with a note, one sync runs while every read of `disclosures` fails, then
+  the fault is removed and `eventlog.rebuild` and `eventlog.list` run. The
+  marker says `complete: true` and the `commitment-settled` entry has no
+  note, also after the rebuild (R1).
+
+Results after `mise run build:roym` (built cleanly): `dual_build_parity`
+scenarios 260 to 276: 19 passed, scenarios 267 to 276 all among them (10
+of 10, none skipped for missing artifacts); `method_contract`: 40 passed,
+0 skipped.
+
+### Checked and found correct
+
+- **Pure rules in `roym_core` (D-C6-1, D-C6-2).** `eventlog.rs` and
+  `statement.rs` hold the types and the pure `derive` and `build`.
+  `EventLogEntry` has the plan's fields, `deny_unknown_fields`, and reuses
+  `LocalText`, `ResourceKind`, `CommitmentKind` and `CommitmentState`. Row
+  ids are `<agreement>:<commitment_id or ->:<event>`.
+- **Derive rules (D-C6-3).** `agreement-formed` takes only
+  `quote_author.issued_at_secs` and waits when it is missing; the agreement
+  ends and the three failure ends take the lowest-`seq` held snapshot that
+  shows them; `commitment-settled` takes the receiver half's time and its
+  note; a missing fact leaves the entry out and sets `complete: false`.
+- **The marker and the creates.** `derive_agreement` skips an agreement
+  only when its marker is complete and has the row's `seq` and `state`; it
+  creates each entry alone with `create`, counts only "created", returns on
+  a create error before the marker is written, and `eventlog.rebuild`
+  ignores markers. The derive runs at the end of `sync_direct`, after the
+  tick, with its result ignored (so also in `transaction.drive`), and in
+  `eventlog.list`, `statement.export` and the import.
+- **AG-28.** The derive step writes `event_log` only with `create` and
+  never reads it. `TestHost` records `get` and `query` reads; `$gte` and
+  `$lte` are in the test filter.
+- **`eventlog.list` (D-C6-5).** Limit 1 to 500, default 100;
+  `$gte` filter, full read, sort by `(recorded_at_secs, id)`, drop at or
+  before the cursor, `next` only when more rows exist. Scenario 269 pages
+  5 rows by 2.
+- **`agreement.close` (D-C6-6).** Every id is checked before any signature
+  (`bad-commitment-list`, `no-such-commitment`, `not-your-side`,
+  `agreement-not-open` for cancelled, not-formed and not countersigned); a
+  closed agreement skips every id as `final`; each id goes through
+  `fulfilment_ops::sign_at` or the new `payment_ops::acknowledge_at` with
+  no note, method or reference; a failure stops the call and keeps the
+  halves made. `acknowledge_at` is a pure split: the body of `acknowledge`
+  is unchanged.
+- **`statement.export` (D-C6-7).** `[from, to)` by the settling half's
+  `occurred_at_secs`; only `commitment-settled` makes a row; totals per
+  `(currency, direction, resource_kind)` with `checked_add` and the
+  2^53 - 1 check; `eeps` is always `not-available`; the three
+  `EepSection` forms serialise to the agreements doc's JSON;
+  `bad-period` before any read.
+- **Saved deal terms (D-C6-16).** One row `defaults` in `deal_defaults`;
+  the three texts through `validate` and `check_record_text`;
+  `quote_valid_secs` in the `quote.set` range; every failure is
+  `bad-deal-defaults`. Section `deal_defaults` in the export list, the
+  constant in `roym_core::backup`, `SCHEMA_VERSION` 9 with its comment line,
+  `log_entries_made` in the import output, the method shape and the Hub
+  type. `validate_bundle_header` moved to `backup/header.rs` unchanged.
+- **Refusal shape.** Every new refusal uses `refusal(code)`, which is
+  `Response::invalid_params(code).with_data(json!({"code": code}))`. The
+  method contract checks message and `data.code` for all seven planned
+  codes. `agreement.close` answers an unknown agreement with
+  `no-such-agreement`, the code that `fulfilment.sign`,
+  `payment.acknowledge` and `step.add` already use (now with `data.code`).
+- **Method table and router.** 55 rows (`contract.rs` asserts 55); router
+  rows `eventlog.` and `statement.` with `MethodAuth::Owner`;
+  `scenario_144` now lists every `transaction` method, the three it
+  missed included.
+- **No wire change.** No WIT, card type, record type, transition table or
+  `CARD_TYPES`/`RECORD_TYPES` change in the diff. Every new method is
+  local-only.
+- **`roymctl` (D-C6-8).** `agreement close`, `eventlog list|rebuild`,
+  `statement --from --to` (UTC midnight), `defaults get|set`. The
+  `--close-as` name instead of `--as` (a global flag) is in the
+  agreements doc's Deviations.
+- **Two-node test.** `roym_statement_e2e.rs` uses the shared harness and
+  `roym_flow` helpers, no port literal; the mixed fixture moved to
+  `roym_flow.rs` with the new names; the first test closes a
+  three-commitment deal from both sides and compares the three rows'
+  `settled_at_secs`, value, currency and opposite direction.
+- **Sizes and rules.** No new production file over 800 lines (`backup.rs`
+  784, `app.rs` 751, `payment_ops.rs` 740); new test files under 800; no
+  `mod.rs`; no `too_many_lines` suppression; no planning id in code or test
+  names; "barter" only as a test fixture value (`barter-scope`), which the
+  plan allows. WASM size of `transaction` reported as 2,866,281 bytes
+  (+5.6%), inside the +15% limit (Q9).
+
+Counts: **0 blocker, 5 major, 5 minor.**
+
+### Findings
+
+#### R1 — The derive step turns read errors into missing facts, so a statement can lose a note or get a wrong time for good (major)
+
+*Where:* `crates/roym_transaction/src/app/eventlog_ops/gather.rs:108`
+(`if let Ok(Some(sr))`), `:149` and `:199` (`.ok()??`), `:230`
+(`disclosures::load(...).ok()??`), `:50` (`unwrap_or(sr.stored_at_secs)`),
+`:171` (`.or_else(|| receiver_halves.first())`).
+
+*Problem:* D-C6-3 says "a missing fact defers the entry, never guesses
+it", and "on any error or failure, no marker is written (or `complete:
+false`)". The gather step does the opposite. A failed read of a snapshot,
+a `payments` row, a `fulfilments` row or a `disclosures` row is treated as
+"not held". A snapshot envelope that does not parse uses the local
+`stored_at_secs`. A currency half that the snapshot does not name falls
+back to the first stored half. Then `derive` creates the entry and the
+marker says `complete: true`. Because the entry id is fixed and `create`
+refuses a second row, neither the next sync nor `eventlog.rebuild` can
+correct it.
+
+*Failure case:* (proved with the probe test above) the receiver signs a
+fulfilment with the note "All done". On the next sync one read of
+`disclosures` fails. The `commitment-settled` entry is created with no
+note, the marker is complete, and after the fault is gone
+`eventlog.rebuild` makes 0 and the entry still has no note. The
+statement row for that commitment has no note for ever (AG-33). In the
+same way, a failed read of snapshot `seq` 1 makes the `agreement-closed`
+or `commitment-failed` time come from a later snapshot, for good.
+
+*Fix:* Make the gather functions return `Result` and pass every read
+error up, so `derive_agreement` fails and writes no marker (the next sync
+retries). Treat only `Ok(None)` as "not held". Drop the `stored_at_secs`
+fallback: an envelope that does not parse is an error. Drop the
+`.first()` fallback: when the snapshot does not name a receiver half,
+the fact is missing (`complete: false`). Add a service test with
+`fail_read` on `disclosures` and one on `agreement_progress`, each
+followed by a clean sync, that checks the note and the time.
+
+*Status:* Open.
+
+#### R2 — The statement uses the row's `agreed_at_secs` and other guesses, so the two parties' statements can differ (major)
+
+*Where:* `crates/roym_core/src/statement.rs:189` (row `agreed_at_secs`
+fallback), `:247` (`open_at_end` fallback `.or(agr.agreed_at_secs)`),
+`:194`, `:219` and the other `unwrap_or` defaults in `build_rows`;
+`crates/roym_transaction/src/app/statement_ops.rs:68`.
+
+*Problem:* D-C6-3 says `AgreementRow.agreed_at_secs` "is not used because
+it can fall back to the local clock or snapshot arrival time". D-C6-4
+says `open_at_end` "uses only `agreement-formed` and
+`commitment-settled`". `build` falls back to `agreed_at_secs` both for a
+row's `agreed_at_secs` and for deciding which agreements are open. On the
+counterparty node that value can be `ctx.issued_at` of the snapshot or
+`ctx.now` (`sync/receipts.rs:301` to `:306`) when the countersigned half
+is not held yet. `build_rows` also invents values when the join fails:
+`Direction::Received`, an empty English description, `GoodsOrService`,
+`Fulfilment`, value 0.
+
+*Failure case:* Alice (counterparty) files Bob's snapshot (issued at
+T2) before Bob's countersigned half (issued at T1, T1 < T2) arrives. Her
+row gets `agreed_at_secs = T2` (or her local `now`). Bob's
+`agreement-formed` time is T1. For a period that ends between T1 and T2,
+Bob's statement lists the deal's commitments in `open_at_end` and Alice's
+does not; for a later period both list them, with different
+`agreed_at_secs`. AG-29's "both parties put it in the same period" fails
+for `open_at_end`, and the time is not from a signed record.
+
+*Fix:* Remove `agreed_at_secs` from `AgreementSource` and both fallbacks:
+an agreement with no `agreement-formed` entry is not in `open_at_end`.
+For rows, make `derive` hold back `commitment-settled` entries (with
+`complete: false`) while it cannot make `agreement-formed`, so every
+settled entry has a formed entry beside it. In `build_rows`, skip an entry whose agreement or
+commitment is not found, instead of inventing fields. Add a unit test
+with an agreement that has `agreed_at_secs` set but no formed entry, and
+check it is not in `open_at_end`.
+
+*Status:* Open.
+
+#### R3 — The C6a decisions are not in the change docs' Deviations, and the test columns are not filled (major)
+
+*Where:* `docs/planning/changes/roym-agreements/change.md:1510` to
+`:1516` (the new block "Rules and differences in C6a");
+`docs/planning/changes/roym-value-exchange/change.md:772`; the acceptance
+rows AG-27 to AG-30 and AG-33 (`roym-agreements/change.md:148` to `:158`).
+
+*Problem:* Plan section 9 lists what the C6a close-out writes in the
+agreements doc's Deviations: Q4 (a) saved terms as a `transaction` row in
+the backup; Q5 (a) the log is not in the bundle and the import rebuilds
+it, so `recorded_at_secs` is the import time (the doc says export and
+import "carry ... the event log", `:1009`); Q6 (a) `counterparty_name` is
+never filled by the service; D-C6-3 the marker, and entries that wait for
+a missing fact; D-C6-4 the times of non-settle events can differ between
+nodes, against the doc's "both parties give one event the same time"
+(`:915`); D-C6-6 `agreement.close`'s exact input, output and repeat rule
+(the doc says "Returns the records made"); D-C6-7 `eeps` always
+`not-available`, `bad-period`, `statement-total-overflow`, and the derive
+in the export; and the new methods `deal.defaults-get` and
+`deal.defaults-set`, which the doc's method table does not list. None of
+these is written. The new block holds instead five notes that are not
+differences from the doc (scenario 267's entry count, scenario 270's
+totals rows, `SCHEMA_VERSION`, a test helper rename) and one real one
+(`--close-as`). The value-exchange note says only what C6a builds; it does
+not say VX-45's "agreement signed" event is `agreement-formed` and that
+EEP events are M08E's. The AG and VX test columns do not name the new
+test files.
+
+*Failure case:* A reader of the agreements doc believes the backup bundle
+carries the event log, that both nodes always give every event the same
+time, and that `agreement.close` returns the records it makes on a
+repeat. C6b and M08E build on those false statements. The AGENTS.md rule
+"record every code-vs-plan difference in its `## Deviations` section"
+fails.
+
+*Fix:* Replace the C6a block with the items of plan section 9 that belong
+to C6a (Q4, Q5, Q6, D-C6-3, D-C6-4, D-C6-6, D-C6-7, the two
+`deal.defaults-*` methods and `--close-as`). Drop the notes that are not differences. Add the VX-45 and
+VX-46 notes to the value-exchange doc. Fill the test columns of AG-27 to
+AG-30, AG-33, AG-46, AG-48 (C6a parts) and VX-45, VX-46, VX-55 with the
+test file names.
+
+*Status:* Open.
+
+#### R4 — The living docs give wrong method inputs and wrong facts (major)
+
+*Where:* `docs/developer-guide.md:2721` to `:2725`;
+`docs/TERMINOLOGY.md:97` to `:99`; `docs/system-architecture.md:1264`;
+`docs/system-requirements-spec.md:699`.
+
+*Problem:* The developer guide describes methods that do not exist in
+this form:
+
+- `eventlog.list` "filtered by optional `agreement`, `conversation`,
+  `event`, and timestamp ranges (`from_occurred_at_secs`,
+  `to_occurred_at_secs`)". The real input is `{after?: {recorded_at_secs,
+  id}, limit?}` with `deny_unknown_fields`.
+- `eventlog.rebuild` "resetting the watermark". There is no watermark;
+  it ignores the per-agreement markers and creates only missing rows.
+- `statement.export` "Takes `from_occurred_at_secs`, `to_occurred_at_secs`,
+  and optional `currency`". The real input is `{from_secs, to_secs}`, no
+  currency filter, and `deny_unknown_fields`.
+- `agreement.close` "Repeated calls return stored records". A repeat of a
+  receiver close returns `records: []` and every id in `skipped` with
+  `final` (D-C6-6).
+- `deal.defaults-*` fields include `payment_timing` and `currency`.
+  `DealDefaults` has only the three texts and `quote_valid_secs`.
+  TERMINOLOGY's "Saved deal terms" row has the same two wrong fields.
+
+Also: the plan's developer guide items (the `transaction` method table,
+the `event_log`, `event_log_state` and `deal_defaults` collections) are
+not written. The architecture "Closed" line now says an agreement closes
+"or when closed via `agreement.close`"; there is no separate close:
+`agreement.close` only signs halves, and the agreement closes when every
+commitment is final. The requirements line names `FulfilmentRecord`; the
+record is `FulfilmentReceiptPayload` (`roym_core/src/fulfilment.rs:58`).
+
+*Failure case:* A developer calls `statement.export {from_occurred_at_secs,
+to_occurred_at_secs, currency}` as the guide says and gets `-32602`
+(unknown field). A developer who reads the architecture doc expects
+`agreement.close` as giver to close the agreement; it only claims.
+
+*Fix:* Rewrite the five bullets from the code (inputs, outputs, refusal
+codes, the marker), add the three collections and the methods to the
+`transaction` table, fix the TERMINOLOGY row's field list, change the
+architecture line back to "once every commitment reaches a final state"
+and add one sentence that `agreement.close` signs one settlement half per
+listed commitment, and use the real record name in the requirements line.
+
+*Status:* Open.
+
+#### R5 — The plan's time measurements and the seven-component size report are missing (major)
+
+*Where:* plan section 10 (C6a exit criteria), 7.8 and 7.9;
+`docs/planning/milestones/M08C-deal-core-and-extensions/status.md:25`;
+`task.md` section 1 (not changed);
+`crates/roym_core/src/statement.rs:186` to `:190` and `:260` to `:282`.
+
+*Problem:* Two exit criteria of C6a are not met. (1) "The derive step's
+time over 50 agreements and the export's time over 1,000 agreements
+recorded on the WASM build, within the stop rules" (200 ms and 2 s). No
+test or note records either. (2) "Report all seven components, before
+and after, from one `target/` folder". status.md gives only `transaction`,
+and task.md's size table is not updated. The first matters here, because
+`build` is quadratic: for each settled entry it scans all entries for the
+formed entry and all agreements for the join, and `build_open_at_end`
+scans all entries twice for each commitment of each agreement. With 1,000
+agreements of three commitments (about 5,000 entries) that is tens of
+millions of string compares per export, on top of `derive_all`'s 1,000
+marker reads.
+
+*Failure case:* The export over 1,000 agreements goes over the 2 s stop
+rule on the WASM build, and nobody knows until a person with a year of
+deals opens the statement screen in C6b.
+
+*Fix:* Build one map `agreement -> formed time` and one map
+`(agreement, commitment_id) -> (settled time, has final)` in one pass
+over the entries, and one map for the agreements; then each row and each
+open commitment is one lookup. Add a parity scenario (like scenario 266
+for `widget.list`) that seeds 50 closed agreements for one sync and 1,000
+agreements for one export, prints both times, and fails only well above
+the stop rules. Record the numbers and the seven component sizes in
+status.md and task.md section 1.
+
+*Status:* Open.
+
+#### R6 — A not-formed agreement never gets a complete marker, so it is derived again on every sync (minor)
+
+*Where:* `crates/roym_transaction/src/app/eventlog_ops/gather.rs:41` to
+`:42`; `crates/roym_core/src/eventlog.rs:138` to `:143`;
+`crates/roym_core/src/eventlog/tests.rs:167`;
+`crates/roym_transaction/src/app/tests/eventlog.rs:211`.
+
+*Problem:* `gather` sets `agreed: Some(FormedFact { quote_author_issued_at_secs: None, .. })`
+whenever the row holds the counterparty half. A not-formed row always
+holds it (the author filed the acceptance, `sync.rs:600`, then
+`decide::run` refused) and never gets a quote author half. So
+`derive_formed` returns `false` and the marker is `complete: false` for
+ever. Every `transaction.sync` and `transaction.drive` of that
+conversation, every `eventlog.list` and every `statement.export` then
+reads that agreement's snapshots, payments, fulfilments and disclosures
+again. The marker exists to stop that (D-C6-3, "Cost"). Both tests miss
+it: the unit test passes `agreed: None`, and the service test turns an
+agreed deal (both halves) into `NotFormed`.
+
+*Failure case:* A conversation where Bob sent five offer versions and
+Alice's acceptance of each older one was refused (`quote-superseded`)
+holds five not-formed rows. Each sync re-derives all five, for ever, and
+the work grows with the history.
+
+*Fix:* Set `agreed` only when `state` is `Agreed`, `Closed` or
+`Cancelled` (or when the quote author half is held). Change the unit test
+to pass the counterparty half for a not-formed input and assert
+`complete: true`, and change the service test to build a not-formed row
+with only the counterparty half and check the marker is complete.
+
+*Status:* Open.
+
+#### R7 — The import writes the saved deal terms before it checks the bundle, and fails after its writes when the derive fails (minor)
+
+*Where:* `crates/roym_transaction/src/app/backup.rs:123` and `:191`;
+`crates/roym_transaction/src/app/backup/defaults.rs:19`.
+
+*Problem:* (1) `import` checks every section first (`verify_imported_*`,
+`validate_vertical_sections`) and writes after. `import_defaults_section`
+both checks and writes, and it runs before those checks. (2) The import
+ends with `rebuild_at(host, now).await?`. When the derive fails (for
+example one `create` error), the call returns an error after every
+section is written. Plan Q5 and VX-45 say the log never blocks: the
+import should report what it wrote. Also the section reader guesses the
+row shape (`r.get("payload")...unwrap_or_else(|| r.clone())`).
+
+*Failure case:* (1) A bundle with good deal terms and one bad agreement
+row is refused with the agreement's error, but the node's saved terms are
+already replaced. (2) A restore that wrote every row answers an internal
+error; the Hub shows the restore as failed and the person restores again.
+
+*Fix:* Split the section into `validate_defaults_section` (called with
+the other checks, before any write) and a write step after
+`write_imported_cards`. Make the rebuild's error not fail the import:
+log it and return `log_entries_made: 0`, as `sync_direct` ignores it (the
+next sync repairs). Read the row in the one shape that `export` writes.
+
+*Status:* Open.
+
+#### R8 — Several tests prove less than their names (minor)
+
+*Where:* `crates/roym_transaction/src/app/tests/eventlog.rs:414`;
+`crates/substrate/tests/roym_statement_e2e.rs:188`;
+`crates/roym_transaction/src/app/tests/statement.rs:220`;
+`crates/roym_core/src/eventlog/tests.rs:483`;
+`crates/roym_transaction/src/app/tests/eventlog_reads.rs:15`.
+
+*Problem and failure case:*
+
+- `fail_write_event_log_does_not_fail_sync_and_recovers_next_sync`
+  checks the entry through `eventlog.list`, which runs the derive itself.
+  The test passes when the second sync derives nothing.
+- `the_driver_logs_with_no_hub` polls `eventlog.list`, which derives. So
+  it proves that the wake files the snapshot, not that the wake writes the
+  log (plan 7.5: "through the wake alone").
+- `statement_export_with_and_without_money` has only a deal without
+  money. A bug in currency rows passes it.
+- `corrected_acknowledgement_does_not_move_occurred_at` gives `derive` the
+  time directly; the choice of the half is in `gather` (`:166` to `:171`),
+  which no test runs with a correction.
+- `full_deal_path_never_reads_event_log_until_list_called` writes the
+  deal rows with `setup_agreed_deal` and calls only `sign_at`,
+  `acknowledge_at` and `derive_conversation`. Plan 7.4 asks for a full
+  deal: enquiry, quote, accept, countersign, two settlements, close, with
+  the read log on. `transaction.sync`, `agreement.accept` and
+  `agreement.close` are not in it.
+- Plan 7.4 also asks for each event kind on the counterparty's node; only
+  `commitment-settled` is there.
+
+*Fix:* Read `event_log` rows with `get_row` (not `list`) in the first two
+tests. Add a currency commitment to the money test and assert its row and
+total. Add a service test that files two receiver acknowledgements (the
+second with `supersedes`) and checks the time is the first one's. Run the
+read test through `quote.set`, `agreement.accept`, `transaction.sync`,
+both settlements and `agreement.close`, and clear the read log only
+before the first call. Add the counterparty cases for the agreement ends
+and the three failure ends.
+
+*Status:* Open.
+
+#### R9 — status.md test counts do not match what the tests print (minor)
+
+*Where:* `docs/planning/milestones/M08C-deal-core-and-extensions/status.md:25`.
+
+*Problem:* The C6 row says "roym-core 229 passed; roym-transaction 297
+passed; ... method_contract 38 passed; roymctl 25 passed". On `dc9e7557`, `cargo nextest run -p
+syneroym-roym-core` prints 545, `-p syneroym-roym-transaction` 281, and
+`-p roymctl` 229, and the `method_contract` binary 40. 297 is more than the whole `roym-transaction` suite.
+The filtered C6 counts are 27 (`roym-core` `eventlog statement`) and 25
+(`roym-transaction` `eventlog statement close defaults`).
+
+*Failure case:* A reviewer or the slice close uses the row as evidence of
+what ran, and the numbers prove nothing.
+
+*Fix:* Rerun and copy the numbers with the command that printed each one,
+as the C4 rows do.
+
+*Status:* Open.
+
+#### R10 — Small rule and duplication points in the new code (minor)
+
+*Where:* `crates/roym_core/src/eventlog.rs:148`, `:187`, `:235`, `:289`
+(four copies of the `EventLogEntry` literal), `:221` (`unreachable!()`);
+`crates/roym_transaction/src/app/eventlog_ops/gather.rs:28` and
+`crates/roym_transaction/src/app/statement_ops.rs:53` (the same
+owner-role and counterparty code twice);
+`crates/roym_transaction/src/app/refusal.rs:4` (`#[allow(dead_code)]` on a
+function that is used); `crates/roym_transaction/src/app/backup.rs:200`
+(a `use` line at the end of the file);
+`apps/roymctl/src/commands/roym/transaction.rs:693` (`_ =>
+unreachable!()`).
+
+*Problem:* AGENTS.md asks to look for an existing helper and to keep the
+code without suppressions. The four entry literals differ only in a few
+fields; a new field must be added in four places. The `allow` hides
+nothing and stays in the code. The `use` at the end of `backup.rs` breaks
+the import layout. The two `unreachable!()` replace a compile-time match
+check with a run-time panic: in `roymctl`, a new `TransactionCommands`
+variant that is added to neither match compiles and panics when used.
+
+*Failure case:* A later field on `EventLogEntry` (for example an EEP id
+in M08E) is set in three of the four places; one event kind writes it as
+absent.
+
+*Fix:* One helper `fn entry(input, event, commitment: Option<(&Commitment,
+&CommitmentProgress)>, occurred_at, records, note) -> EventLogEntry`; map
+the three failure states to their event with a small `fn` that returns
+`Option<LogEvent>`. One helper for the owner role and the counterparty
+DID, used by both files. Remove the `allow`. Move the `use` to the top.
+In `roymctl`, keep one exhaustive `match` (the lifecycle arms call their
+handlers and return).
+
+*Status:* Open.
