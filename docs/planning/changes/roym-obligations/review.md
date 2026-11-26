@@ -1571,3 +1571,92 @@ Open questions: no new one, and none changed in substance. Question 18's
 rule now says "no commitment other than `eep-return` commitments", which
 is the same narrow rule in clearer words and names the two-way set-off.
 
+
+## Doc review round 4 (fixes check) — Claude Sonnet 5.5 (Claude Code), 2026-11-26
+
+Checked `change.md` at `2f5dd5f6` on `claude/m08e-obligations-change-doc-62dcfb`
+(fixes in `f9f65008`, statuses in `2f5dd5f6`). My branch was fast-forwarded to
+that tip first. This round checks P38 to P41, the open parts of P34 and P35,
+and reads only the text that the fixes added.
+
+**Summary:** P38 to P41 are confirmed fixed, and the open parts of P34 and P35
+are closed. The new text creates 1 new minor finding, P42. Every finding in this
+file is closed, apart from the owner questions (3, 16, 17 and 18) and P42.
+
+What was checked and found correct:
+
+- **P38.** Confirmed fixed. `expired` now releases a claim that this node took
+  as the counterparty only when the quote's expiry plus 30 days has passed
+  (change.md, Release and `claim-release` rows). `not-formed`, `declined` and
+  `cancelled` are named as certain ends and release at once. The text says why:
+  each node computes `expired` from its own clock, and a countersigned half
+  signed before the expiry can still move the deal to `agreed` (agreements
+  change.md, "One way out of an end state"). The sentence "when the writer files
+  the acceptance after the expiry, it sends `not-formed` with `quote-expired`"
+  matches the agreements document, so in practice a release comes sooner. The
+  writer-is-issuer case needs no `expired` rule, because the writer writes the
+  `not-formed` snapshot itself. The states table, line 462 and the deviation
+  rows now say the same thing. OB-62 tests exactly the case I described: accept,
+  move past the expiry, a competing claim, then the late countersign, and the
+  competitor gets `eep-claimed`. It is in E4.
+- **P39.** Confirmed fixed. Every demand that hits a coded decline gets its own
+  signed decline, and its `answers` names that demand and its time is the time
+  of this answer. At most 5 coded declines are signed per (EEP, version) per
+  day. Past that, the demand gets an error in the direct reply and nothing is
+  signed (OB-59). A non-holder cannot use up the 5, because `not-holder` and
+  `eep-unknown` are error only. On the mailbox path the error ends as an unsigned
+  `rejected(call_failed)`, which the "No answer" table already says is not counted
+  against the issuer. So an honest holder is not harmed.
+- **P34 and P35.** Closed. OB-59 is the sound version of P34's sixth point. The
+  states table and the deviation row now use `RESOLUTION_WINDOW_SECS` and
+  `ISSUER_TICK_GRACE_SECS`, and the states table lists `why: deal-ended` and
+  `why: commitment-cancelled` as ends of a confirmed claim.
+- **P40.** Confirmed fixed, all five. The stored-time paragraph now says the open
+  check bounds the sealed message's send time and not the demand's own time, and
+  that the real bound is `answer_by_secs` (about 7 days). OB-41 and the rule say
+  "no commitment other than `eep-return` commitments", name the two-way set-off,
+  and OB-41 has three cases. The `eep` version row is gone from the proof table
+  (the countersign table never listed it). The states table and the deviation
+  row are updated.
+- **P41.** Confirmed fixed. `invocation.delivery()` is a new function with a
+  `delivery-info` record (`mailbox`, `stored-at-secs`) that answers `none` for
+  every call that did not come from a mailbox. A new function in the same
+  interface leaves `caller()` and every existing guest unchanged, which is the
+  claim the text makes. The E2 task now names the WIT, the puller, the
+  `AppInvocation` shim, `roym_core::admit::delivery` and a `TestHost` setter,
+  and OB-63 tests it.
+- **OB-59 rewritten in place.** This is acceptable. The rule "ids are never
+  renumbered" keeps references stable: a finding, a task or a deviation that
+  says "OB-59" must still point at the same rule. The corrected row is the same
+  rule (what a repeated demand gets), the id is unchanged, and the row says
+  "(Changed in review round 3, P39)". This document is still a draft with no
+  built tests, so no test file names OB-59 yet. Earlier rounds did the same for
+  OB-6, OB-13, OB-14, OB-19, OB-21, OB-25, OB-40, OB-41, OB-42, OB-44 and OB-48.
+  I would add a new id only when a row changes what it tests, for example if
+  OB-59 were split in two. The older status lines of P34 in this file still
+  describe the first OB-59 ("signed once per (EEP, version, code)"). They stay as
+  history, and the round 3 note replaces them.
+- **Open question 18.** Still matches the race, now with the clearer words "no
+  commitment other than `eep-return` commitments", which includes the two-way
+  set-off. I did not decide it.
+
+### P42 — minor — The "per day" window of OB-59 is not defined
+
+**Where:** change.md, "Repeated declines" and OB-59 ("at most 5 coded declines
+are signed per (EEP, version) per day"; test: "the sixth in one day gets an
+error only"). The same gap is in OB-42, OB-57 and OB-58 ("an hour").
+
+**Problem:** A day or an hour can be a fixed bucket (`floor(now / 86400)`) or a
+rolling window (the last 86 400 seconds). The two give different answers at the
+edge: a fixed bucket allows 10 declines in two minutes across midnight, and a
+rolling window does not. A test cannot be written without the choice, and the
+counter row differs (one row per bucket, or a list of times). The counter is a
+stored row, which OB-42 already allows ("one counter per hour").
+
+**Fix:** Say once, in the Limits list, that every "per hour" and "per day" limit
+in this document uses a fixed bucket of `floor(now / 3600)` or
+`floor(now / 86400)` seconds, counted on the receiving node's clock, with one
+counter row per key and bucket. Say that the doubled burst at a bucket edge is
+accepted. Add the boundary case to OB-59's test.
+
+**Status:** Open
