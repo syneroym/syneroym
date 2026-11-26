@@ -1325,3 +1325,229 @@ and 18 still wait for the owner.
 New OB rows: OB-52 to OB-61, appended; no id was renumbered. New
 deviations are under "Added in review round 2".
 
+
+## Doc review round 3 (fixes check) — Claude Sonnet 5.5 (Claude Code), 2026-11-26
+
+Checked `change.md` at `1d2d9768` on `claude/m08e-obligations-change-doc-62dcfb`
+(fixes in `2e402ac1`, statuses in `1d2d9768`). My branch was fast-forwarded to
+that tip first and already held my round 2 commit `de9bd0f4`. This round checks
+P25 to P37 and reads the text the fixes added: OB-52 to OB-61, the new tables,
+and the round 2 deviations.
+
+**Summary:** 11 of P25 to P37 are confirmed fixed. P34 is fixed except for
+one point whose replacement is unsound (P39), and P35 is half applied (P40).
+The new text also reopens part of P2 (P38). The new findings are P38 to P41: 0
+blocker, 2 major, 2 minor. So this file has open items, and it cannot yet say
+that every finding is closed.
+
+**Open question 18.** It now matches the race. The race needs three things:
+the counterparty is the issuer, it receives an `eep-return`, and its `G` is
+empty, so it closes at the first snapshot. The new rule and the new option
+text say exactly that. They also give the reason that the other case is safe
+(a non-empty `G` closes only after a commitment has moved, and then cancel is
+refused with `commitment-moved`). I checked this against the states: it holds.
+The wide rule is kept as the second option, described correctly. One wording
+detail is in P40. I did not decide questions 3, 16, 17 or 18.
+
+What was checked and found correct:
+
+- **P25.** Confirmed fixed. One input `why` (`deal-ended` or
+  `commitment-cancelled`) replaces the second flag, which is simpler than my
+  proposal. `deal-ended` frees a confirmed round, the rule "no `ver:<id>:<v+1>`"
+  stays, and the drive frees only an unconfirmed round (change.md:460, the
+  Release row). OB-52 is the test I asked for. See P38 for how this
+  interacts with `expired`.
+- **P26.** Confirmed fixed. `obligation.demand { demand, version }` and
+  `obligation.split { request, version }` (change.md, Methods table). The order
+  is: verify both together, catch-up with a known restore, then `eep-unknown`
+  and `not-holder` as error only. Catch-up accepts an EEP with no record at all.
+  OB-53 tests both.
+- **P27.** Confirmed fixed with option (a), and the code supports it. The
+  mailbox's `claim` answer carries `deposited_at_secs` for each message
+  (`ClaimedMessage`, [mailbox.rs:198](../../../../crates/core/src/mailbox.rs#L198);
+  built at `store/claim.rs:125`), so the puller has the time. E2 only has to pass
+  it on. The cited type is `ClaimedMessage` in `core/mailbox.rs`, not
+  `ClaimAnswer` in `claim.rs`; this is a small slip. OB-54 tests it. **The
+  pushback on option (b) is right in its result, but the reason is wrong.** See
+  the next bullet and P40.
+- **The 8-day claim.** The draft says the only bound on a demand's signed
+  `issued_at_secs` on the issuer's node is "the open check's time-to-live plus
+  the skew (8 days)". In the code, `check_sender` bounds the sealed message's
+  `sent_at_secs`, not the demand record's `issued_at_secs`
+  ([message.rs:440-472](../../../../crates/mailbox_format/src/message.rs#L440)).
+  A holder can sign a demand and send it days later. The real bound is the
+  demand's own `answer_by_secs = issued_at_secs + 7 days`: after that, the node
+  answers `demand-late`. So a holder can back-date a demand by up to about 7
+  days, which would cut the issuer's notice to almost nothing if the demand's
+  time were used as "reached". The number is 7 days, not 8, and it comes from
+  `answer_by_secs`. The conclusion (use the mailbox's time) stands.
+- **P28.** Confirmed fixed. The check works for any record R. `P.binding`
+  replaces `eep_version`, and a table gives, for each of the five types, its
+  signer, its destination and what binds it, its method and its place. OB-55
+  has one valid and one changed proof per type.
+- **P29.** Confirmed fixed. The sender instance key follows the same time rule
+  as records, and a routine `revoke-instance` (`retired`) keeps earlier proofs.
+  OB-56 tests both reasons.
+- **P30.** Confirmed fixed, and OB-41 has both cases. See P40 for one word.
+- **P31.** Confirmed fixed, and I accept the route. Attributing a failure to
+  the signer of its `commitment-failure`, with reason `eep-claimed` only ever
+  signed by the receiver, needs no new state. A `claim-lost` state would add a
+  row to every transition table and its own `other-failed` behaviour, and the
+  signer and the reason already tell the two cases apart. The three deviation
+  rows (VX-12, the demand carrying a version, and the M08G pass-on) are
+  recorded.
+- **P32.** Confirmed fixed. `compromised` needs an explicit
+  `effective_from_secs`, and `retired` defaults to now. Question 17's reason and
+  the countersign paragraph both say the protection is only as good as that
+  time. OB-61 tests it.
+- **P33.** Confirmed fixed, and **the pushback is right**. `10^max(exponent-2,0)`
+  gives 1 paisa for INR (exponent 2), which is not "one major unit". The
+  correct value is `10^exponent` minor units: ₹1 = 100 paise, ¥1 = 1, 1 dinar =
+  1000 fils (`money::currency_minor_exponent` returns 2, 0 and 3). My formula
+  was wrong. A face value under twice that cannot be split. OB-25 now says it
+  holds the validator's rules, OB-44 the policy limits, with one test per
+  exponent (0, 2, 3).
+- **P34.** Five of the six points are confirmed fixed: OB-51 split between E2
+  and E3, `not-built` (OB-60), OB-42 reworded, OB-48 split into OB-48, OB-57 and
+  OB-58, and the diagram shows `call-failed`. The sixth point, a limit per
+  holder, is replaced by "a coded decline is signed once per (EEP, version,
+  code)" (OB-59). That replacement is not sound: see P39.
+- **P35.** Fixed in the Commitments section and in OB-40 (`RESOLUTION_WINDOW_SECS`
+  and `ISSUER_TICK_GRACE_SECS` are used and defined), but two places still say
+  "track end plus 7 days": the states table and the round 1 deviation row. See
+  P40.
+- **P36.** Confirmed fixed. The status of P24 is corrected, and the text now
+  says no public `hpke` API takes an ephemeral key (`Kem` has only `encap` and
+  `encap_with_rng`; `encap_with_eph` and `encap_det` are test code,
+  `hpke-0.15.1/src/kat_tests.rs:29-37`). The E2 task has the direct `rand_core`
+  0.10 dependency with `default-features = false`, `TryRng<Error = Infallible>`
+  plus `TryCryptoRng`, and the known-answer test.
+- **P37.** Confirmed fixed (change.md, Limits). The 48 KiB is the request
+  string as sent, and OB-48 says the same.
+- **OB-52 to OB-61.** Each is testable as written. OB-57 and OB-58 are now one
+  rule each. Every row appears in exactly one slice of the task list.
+
+### P38 — major — A release for `expired` still frees an unconfirmed claim at the quote's expiry
+
+**Where:** change.md:460 (Release: "when `transaction` sees the deal end
+`expired`, …"), 462 ("So nothing releases an unconfirmed claim at the quote's
+expiry"), the Release row of the write-order table, OB-39; agreements
+change.md "Deal and agreement" (`expired` is "computed" by each node's clock).
+
+**Problem:** The text says two opposite things. Line 462 says nothing releases an
+unconfirmed claim at the quote's expiry. Line 460 says `transaction` releases it
+when it sees the deal end `expired`. In the agreements document, `expired` is
+not an event that a node waits for. Each node computes it from its own clock
+when `quote_expires_at_secs` passes and it holds no countersigned half signed
+before that time. So an issuer that is the counterparty gets `expired` at the
+quote's expiry, `transaction` calls `claim-release { why: deal-ended }` at once,
+and the unconfirmed claim is freed. That is the case P2 was about. A countersigned
+half signed before the expiry may still arrive later (the agreements document
+lets it move the deal from `expired` to `agreed`). Now `claim-confirm` takes a
+new round if the version is free. If another agreement took it in between, the
+formed agreement's `eep-return` ends `failed` by the issuer's own
+`commitment-failure`. The holder returned the version in a formed agreement and
+it was claimed elsewhere first. That is the "cannot be spent elsewhere" rule of
+VX-17 failing for this agreement, and OB-39 does not catch it: the test frees the
+claim, then confirm takes it back, and passes.
+
+**Fix:** Pick one rule and write it once:
+
+- For a counterparty that holds an `accepted` row, treat `expired` as a release
+  trigger only after the quote's expiry plus the card retry time (30 days), the
+  same bound as the drive's safety net. Before that, `expired` frees nothing.
+  `not-formed`, `declined` and `cancelled` are certain ends and release at once.
+- Or accept the outcome and say so: an `expired` deal releases at expiry, and a
+  late countersigned half may then fail the `eep-return` with `eep-claimed`.
+  Then change line 462 and the P2 text, and add a test with a competing claim
+  between the expiry and the late half.
+
+I recommend the first. It matches what this document already says in line 462.
+
+**Status:** Open
+
+### P39 — major — A decline signed once per (EEP, version, code) is sent again for a different demand, and it no longer answers that demand
+
+**Where:** change.md:427 (Repeated declines), OB-59 (change.md:177),
+`EepDeclinePayload` (change.md:872-873: `answers` names the one demand declined),
+the demand states (a decline "was filed").
+
+**Problem:** This replaces my proposal for a limit per holder. A decline carries
+`answers: "rec_…"`, the record id of the one demand it declines. OB-59 says a
+later demand that hits the same code "gets the stored decline sent again". That
+decline's `answers` names the first demand, not this one. The holder's node
+matches a decline to a demand by `answers`, so the second demand never reaches
+the state `declined`. After 7 days it ends `unanswered`, and the evidence may
+read "received, not answered", or "stored, never collected". That counts against
+an issuer that did answer. The time can also be wrong: a stored `eep-claimed`
+decline may be weeks old, and the claim it states may be gone, so the second
+demand would get an old fact. The text also reads as if the issuer never
+signs for the same code twice, but a decline for a different holder of the same
+EEP and version (after a transfer in M08H) would be skipped as well.
+
+**Fix:** Keep the aim (the node cannot be made to sign without limit) and keep
+`answers` true. For example:
+
+- Sign a coded decline for every demand, but allow at most N signed declines
+  per (EEP, version) per day (for example 5). Past that, answer in the direct
+  reply with an error and sign nothing, and say that an honest holder's evidence
+  in that case is its demand and the issuer's error. The 60-call limit per
+  caller still applies.
+- Or let the decline name more than one demand (`answers` becomes a list). Then a
+  stored decline can be extended only by signing again, so this is not cheaper.
+
+Change OB-59 to match, with a test that a second demand gets a decline whose
+`answers` names it, and that the N+1th gets an error only.
+
+**Status:** Open
+
+### P40 — minor — Wording and leftovers
+
+**Where:** change.md:425 (the stored-time paragraph), 158 (OB-41), 630 (the
+table row for `eep-decline` and `eep` versions), 794 (the states table), 1234
+(a deviation row).
+
+**Problem:**
+
+- Line 425 gives "8 days" and the open check as the bound on a demand's
+  `issued_at_secs`. See the bullet above: the bound is `answer_by_secs`, 7 days.
+  Fix the number and the reason.
+- OB-41 and the rule say "gives no other commitment". In a two-way set-off the
+  counterparty also gives an `eep-return`, so the words read as "the rule does
+  not apply". That is the right result (the writer is also an issuer, and its
+  own close moves a commitment, so cancel is refused), but the text should say
+  "no other commitment than an `eep-return`" and state this case in OB-41.
+- The row for an `eep` version sent by `deliver` is subject to the 24-hour rule.
+  An old version sent again in answer to a holdings request is older than 24
+  hours, so its proof never verifies. This is harmless, because
+  acknowledgements are the countersign for versions, but then the row is not
+  needed. Remove the row or exempt it.
+- The states table (change.md:794) and the deviation row (:1234) still say "track
+  end plus 7 days" (P35). Use the two constant names. The states table also lists
+  only "the release of a cancelled `eep-return`" as an end of a confirmed claim.
+  Add `deal-ended`.
+
+**Fix:** Edit the five places.
+
+**Status:** Open
+
+### P41 — minor — The stored-time feature needs a named host change and test host
+
+**Where:** change.md:425, E2 task, deviation row for `D-C6-6`.
+
+**Problem:** The text says the delivery caller context "gains `from-mailbox:
+option<stored-at-secs>`, which the guest reads with the caller". Today the guest
+reads the caller through `caller: func() -> caller-origin`, a variant whose
+`verified` arm holds one string
+([invocation.wit:14-33](../../../../crates/wit_interfaces/wit/invocation/invocation.wit#L14)).
+A new field needs either a new variant arm payload or a new function. It also
+touches `AppInvocation::caller` in the dual-build shim, `roym_core::admit::Caller`
+and the shared `TestHost`, which the Roym service tests use. The E2 task lists
+the feature in one phrase.
+
+**Fix:** Name the WIT shape (for example a new function
+`delivery: func() -> option<delivery-info>`, so no existing guest changes), and
+add the shim, `admit` and `TestHost` to the E2 task. OB-54's "fake mailbox
+caller context" then has a concrete place.
+
+**Status:** Open
