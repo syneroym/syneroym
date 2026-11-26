@@ -4,8 +4,8 @@
 owner, who answers the questions in section 2.1. You do not have the
 planning conversation. This plan is meant to stand alone.*
 
-**Status: plan written, 2026-11-26 (Claude Opus 5.5). Not reviewed yet.
-The owner has not answered section 2.1.**
+**Status: plan reviewed round 1 (Claude Sonnet 5.5, 2026-11-26; folded by Gemini 3.8 Flash, 2026-11-26).
+Owner answers recorded 2026-11-26.**
 
 **Name.** The planning prompt called this slice "Barter, event log and
 statement". [task.md](task.md) calls it "Mixed exchanges, event log,
@@ -212,6 +212,8 @@ the recommended answer.
 has a visible result through `roymctl`. C6b relies on a merged and tested
 API.
 
+Owner answer: (b), 2026-11-26.
+
 #### Q2. Where are the agreement actions in the Hub?
 
 task.md asks for "the agreement screen" with each commitment's state, the
@@ -234,6 +236,8 @@ each commitment as `c1: promised`
 it, as story 50 does. A list of deals across conversations is useful, but
 it is new navigation that no criterion asks for. It is a backlog row.
 
+Owner answer: (a), 2026-11-26. It needs P1's panel state.
+
 #### Q3. Where is the statement screen?
 
 - (a) A new tab "Statement".
@@ -246,6 +250,8 @@ Adding a tab is four small edits
 [main.ts:151](../../../../crates/roym_web/ui/src/main.ts#L151),
 [main.ts:180](../../../../crates/roym_web/ui/src/main.ts#L180) and both
 `.ftl` files).
+
+Owner answer: (a), 2026-11-26.
 
 #### Q4. Where are the saved deal terms kept?
 
@@ -269,6 +275,8 @@ service that signs quotes. A node setting survives a new browser, and a
 restore. `profile` holds the person's public card data; deal defaults do
 not belong next to it.
 
+Owner answer: (a), 2026-11-26. It needs P9's constant and import check.
+
 #### Q5. Is the event log in the backup bundle?
 
 The agreements doc says export and import "carry disclosures and the event
@@ -288,6 +296,8 @@ in a statement, so (b) would need a check that is the derive step again.
 The one loss: `recorded_at_secs` becomes the import time. It only orders
 `eventlog.list`. This is a deviation of the agreements doc (section 9).
 
+Owner answer: (a), 2026-11-26. The claim that it keeps backup.rs small is not right, but the fallback in step 7 is.
+
 #### Q6. Who fills `counterparty_name` in the statement?
 
 The statement row has `counterparty_name` "from the owner's contacts; not
@@ -304,6 +314,8 @@ signed" (agreements doc `:935`). Contacts are in `profile`
 already builds a DID-to-name map this way
 ([groups.ts:434](../../../../crates/roym_web/ui/src/screens/groups.ts#L434)
 to `:459`). `roymctl` shows the DID, which is what a developer needs.
+
+Owner answer: (a), 2026-11-26.
 
 #### Q7. What does "Suggest changes" send?
 
@@ -322,6 +334,8 @@ today.
 which C7 also changes (task.md section 4), for a line a person can read.
 The version number is the one both Hubs show on the card (D-C6-12).
 
+Owner answer: (a), 2026-11-26.
+
 #### Q8. Is `INR` also the default currency of the listing editor?
 
 AG-48 makes `INR` the quote form's last fallback. The quote form's
@@ -336,6 +350,8 @@ and so is the listing editor's
 listing first. Two different defaults would make an offer from a new
 listing `EUR` and an offer with no listing `INR`.
 
+Owner answer: (a), 2026-11-26.
+
 #### Q9. Which size limit applies to `transaction`?
 
 C6a adds the log rows, the statement, the close and the defaults to
@@ -349,6 +365,8 @@ signed record.
 the statement and log types with their `serde` code, the derive step, and
 four new methods in the dispatch future. +40 KB would force the statement
 out of `transaction`, which the agreements doc decided against (`:877`).
+
+Owner answer: (a), 2026-11-26. Agreed, as an explicit owner decision, because C6 adds no signed record but still gets the +15% limit.
 
 #### Q10. Demo
 
@@ -365,6 +383,8 @@ has two cases today: a one-lesson deal with a decline, and agree as listed
 **Recommendation: (a).** Case one also shows the decline with a note,
 which story 50 is the only story to show. The demo goal in task.md names
 exactly the third case.
+
+Owner answer: (a), 2026-11-26.
 
 ### 2.2 Points found while reading
 
@@ -405,11 +425,15 @@ exactly the third case.
    - Both return the stored half on a repeat (`AlreadyRecorded`,
      [fulfilment_ops.rs:117](../../../../crates/roym_transaction/src/app/fulfilment_ops.rs#L117),
      [payment_ops.rs:548](../../../../crates/roym_transaction/src/app/payment_ops.rs#L548)).
-   - The writer moves the commitment in `progress_ops::transition_at`
-     ([progress_ops.rs:146](../../../../crates/roym_transaction/src/app/progress_ops.rs#L146)),
-     called from the local methods (`payment_ops.rs:191`, `:326`,
-     `fulfilment_ops.rs:265`) and from filed cards
-     (`sync/settle_receipts.rs:202`, `:331`, `:532`).
+   - Only the quote author's node moves a commitment state at once
+     (`progress_ops::transition_at`,
+     [progress_ops.rs:146](../../../../crates/roym_transaction/src/app/progress_ops.rs#L146),
+     called from `payment_ops.rs:325` and `fulfilment_ops.rs:264` only
+     when `owner == quote_author_did`). The counterparty's node files its
+     own signed half locally, but its `AgreementRow` commitment state
+     moves only when it files the quote author's newer snapshot
+     ([sync/receipts.rs:277](../../../../crates/roym_transaction/src/app/sync/receipts.rs#L277),
+     `apply_newer_snapshot`).
 6. **Every value the log needs is held on both nodes.**
    - The agreement row has the plain `terms` (declared values,
      descriptions, givers), the state, each commitment's progress,
@@ -521,10 +545,10 @@ exactly the third case.
 | roym-agreements | AG-23 | The Hub part: before signing and on the agreement panel, each value, the total given, the total received, the difference when they differ; never a block (C6b). The range rule was C1. | Hub `deal_totals.test.ts`, `templates/quote_totals.test.ts`, `agreement_panel.test.ts`; Playwright `roym-deal.spec.ts` case D1 |
 | roym-agreements | AG-27 | Every event once, one event per final commitment state; a repeated sync and `eventlog.rebuild` add nothing (C6a) | unit `eventlog/tests.rs`; service `tests/eventlog.rs` on both nodes; parity 267, 268 |
 | roym-agreements | AG-28 | Nothing on the deal path reads `event_log` (C6a) | service `tests/eventlog_reads.rs` with the read log |
-| roym-agreements | AG-29 | `statement.export` by `occurred_at_secs` of the settling half; given and received; totals per currency; with and without money (C6a); the Hub's export (C6b) | unit `statement/tests.rs`; service `tests/statement.rs`; two-node `roym_statement_e2e`; parity 270; Playwright D5 and story 50 |
+| roym-agreements | AG-29 | `statement.export` by `occurred_at_secs` of the settling half; given and received; totals per currency; with and without money (C6a); the Hub's export (C6b). On the counterparty node, settled commitments list once the author's snapshot is filed | unit `statement/tests.rs`; service `tests/statement.rs`; two-node `roym_statement_e2e`; parity 270; Playwright D5 and story 50 |
 | roym-agreements | AG-30 | The `eeps` section is always present; `not-available` in M08C. The `available` and `unavailable` forms are typed and serialised. The fake-sibling test is M08E (task.md section 5) | unit `statement/tests.rs` |
 | roym-agreements | AG-33 | The statement part: `statement.export` shows the receiver's note on the row (C1 built the note, C2 hid it) | service `tests/statement.rs` |
-| roym-agreements | AG-46 | `agreement.close` signs one half per listed commitment, skips final ones, and a repeat returns the same records (C6a); the Hub list, which leaves out a commitment whose window has not started unless picked (C6b) | service `tests/close.rs`; parity 271, 272; Hub `close_list.test.ts`; Playwright D2 |
+| roym-agreements | AG-46 | `agreement.close` signs one half per listed commitment, skips final ones with `final` (`records: []` on repeated close; repeated claims return stored records) (C6a); the Hub list, which leaves out a commitment whose window has not started unless picked (C6b) | service `tests/close.rs`; parity 271, 272; Hub `close_list.test.ts`; Playwright D2 |
 | roym-agreements | AG-47 | The combined summary per side, from disclosures the node holds (C6b) | Hub `version_summary.test.ts`; Playwright D3 |
 | roym-agreements | AG-48 | The fill order: listing, then saved deal terms, then built-in text; payee; `INR`; "More terms" closed (C6b); the saved terms on the node (C6a) | Hub `quote_defaults.test.ts`; service `tests/defaults.rs`; parity 275; Playwright D4 |
 | roym-agreements | AG-52 | "Suggest changes" starts a message naming the version (C6b) | Hub `suggest_changes.test.ts`; Playwright D3 |
@@ -709,11 +733,18 @@ pub struct Derived {
 
 | Event | When | `occurred_at_secs` | `records` |
 | --- | --- | --- | --- |
-| `agreement-formed` | `agreed` is set | `agreed_at_secs` (the countersigned half's `issued_at_secs`) | both receipt halves |
+| `agreement-formed` | `agreed` is set | `quote_author.issued_at_secs` (the countersigned half) | both receipt halves |
 | `agreement-closed`, `-cancelled`, `-not-formed` | `state` is that end | `issued_at_secs` of the **lowest-`seq` held snapshot** with that state | that snapshot |
-| `commitment-settled` | the commitment is `fulfilled` or `acknowledged` | the settling half's `issued_at_secs` | every half of that commitment the node holds |
+| `commitment-settled` | the commitment is `fulfilled` or `acknowledged` | the settling half's `issued_at_secs` (from snapshot `halves`) | every half of that commitment the node holds |
 | `commitment-failed`, `-ended-unconfirmed`, `-cancelled` | the commitment is in that end | `issued_at_secs` of the lowest-`seq` held snapshot that shows it | that snapshot |
 
+- `occurred_at_secs` of `agreement-formed` comes from `quote_author.issued_at_secs`
+  (the countersigned half) and nothing else. If the node does not hold it yet,
+  the entry is deferred (`complete: false`). `AgreementRow.agreed_at_secs` is not
+  used because it can fall back to the local clock or snapshot arrival time.
+- For `commitment-settled`, the settling half is taken from the half named in
+  the snapshot's `halves` for that commitment and role. Later corrections
+  with `supersedes` do not move this time.
 - Commitment events carry `direction` (`given` when `owner_role` is the
   commitment's giver), the kinds, `final_state`, the currency and the
   declared value. `commitment-settled` carries the receiver half's
@@ -722,7 +753,9 @@ pub struct Derived {
   is `fulfilled` but the node does not hold the settling half yet (the
   counterparty's card is late), or no held snapshot shows a state the row
   holds, the entry is left out and `complete` is `false`. The next sync
-  derives it. So a time in the log always comes from a signed record.
+  derives it. On the counterparty node, `commitment-settled` is derived
+  once the author's snapshot is filed (P1 option a). So a time in the log
+  always comes from a signed record.
 - `not-formed` refusals of a superseded version (agreements doc `:657`)
   have an agreement row for that version's `record_id`; they give one
   `agreement-not-formed` for that row. That is correct: that acceptance
@@ -734,8 +767,8 @@ pub struct Derived {
   ([sync.rs:162](../../../../crates/roym_transaction/src/app/sync.rs#L162)):
   `let _ = eventlog_ops::derive_conversation(host, conversation, now).await;`
   The result is ignored, so the log never blocks a deal (VX-45).
-- In `transaction.import` (Q5), `eventlog.rebuild` and `statement.export`
-  (D-C6-7).
+- In `transaction.import` (Q5), `eventlog.list` (P7), `eventlog.rebuild` and
+  `statement.export` (D-C6-7).
 
 **Cost: a marker per agreement.** Without a marker, every sync would read
 all snapshots, halves and disclosures of every agreement of the
@@ -744,7 +777,9 @@ conversation. `event_log_state` holds one row per agreement:
 conversation's agreement rows (it already has the filter) and runs the
 derive step only for an agreement whose row `seq` (or `state`, for a
 `not-formed` row with no `seq`) differs from the marker, or whose marker
-says `complete: false`. It writes the marker after the creates, so a stop
+says `complete: false`. It writes the marker after the creates, only when
+every create answered "created" or "repeat". On any error or failure, no
+marker is written (or `complete: false`), so the next sync retries. A stop
 in between repeats the creates, which the data layer refuses as repeats.
 Every new event on both nodes comes with a new snapshot `seq` (the writer
 writes one per change, `progress_ops.rs:146`; the counterparty files it),
@@ -768,7 +803,8 @@ the earliest snapshot each node holds. When a snapshot card is lost, the
 counterparty's earliest held snapshot can be a later one, so its time for
 `commitment-failed`, `-ended-unconfirmed`, `-cancelled` and the agreement
 ends can be later than the writer's. The statement uses only the two
-times that are equal, so both parties' statements still match. This is a
+times that are equal, so both parties' statements still match. `open_at_end`
+uses only `agreement-formed` and `commitment-settled` (D-C6-7). This is a
 deviation of the agreements doc's sentence "So both parties give one event
 the same time" (`:915`), recorded in section 9.
 
@@ -780,11 +816,14 @@ eventlog.list    { after?: { recorded_at_secs, id }, limit?: u32 (1..=500, defau
 eventlog.rebuild {} -> { made: u32 }
 ```
 
-- `list` queries `event_log` with `{"recorded_at_secs": {"$gte": after}}`
-  (or no filter), reads every page (`paging::query_all`), sorts by
-  `(recorded_at_secs, id)`, drops rows at or before the cursor and returns
-  `limit` rows. The data layer has no ordered query (point 8). A backlog
-  row records the cost for a large log.
+- `list` runs the marker-gated derive step over every agreement first (as
+  `statement.export` does), so a local settlement shows immediately without
+  waiting for a sync. It queries `event_log` with
+  `{"recorded_at_secs": {"$gte": after}}` (or no filter), reads every page
+  (`paging::query_all`), sorts by `(recorded_at_secs, id)`, drops rows at or
+  before the cursor and returns `limit` rows. AG-28 still holds: the derive
+  step reads `event_log_state`, never `event_log`. The data layer has no
+  ordered query (point 8). A backlog row records the cost for a large log.
 - `rebuild` runs the derive step over every agreement row, ignoring the
   markers, and answers the number of rows it created.
 
@@ -797,20 +836,32 @@ agreement.close { agreement, as: "giver" | "receiver", commitments: [commitment_
 ```
 
 - **Check every id first, sign after.** Before it signs anything, it
-  refuses the whole call with `-32602` and a code if an id is not in the
+  refuses the whole call with `-32602` and `data.code` if an id is not in the
   agreement (`no-such-commitment`), if this node's party is not the
   commitment's `as` side (`not-your-side`), if the list is empty or has a
-  repeat (`bad-commitment-list`), or if the agreement is not `agreed`
-  (`agreement-not-open`). So a bad list signs nothing.
+  repeat (`bad-commitment-list`). An agreement that is `closed` is not an
+  error: every listed id (in the agreement and on the caller's side) is
+  `skipped` with reason `final`. Refuse `agreement-not-open` only for
+  `cancelled`, `not-formed` and an agreement that is not yet formed. So a
+  bad list signs nothing.
 - **Then one half per id, in the order given,** through the existing
   paths: `fulfilment_ops::sign_at` for a `fulfilment` commitment and
   `payment_ops::acknowledge_at` for a `currency` one, with no note,
   method or reference. This reuses their fences, their idempotency and
   the writer's transition. No new signing code.
-- A commitment that is already final is put in `skipped` with `final`. A
-  commitment whose half by this node exists returns that half in
+- **Repeat rule and final commitments.** A commitment that is already final
+  is put in `skipped` with `final` (no record returned). A commitment whose
+  half this node already signed and that is not final returns that half in
   `records`: the underlying method answers `AlreadyRecorded` with the
-  record. So a repeated call returns the same records (AG-13).
+  record. Settling halves of a repeat are not returned because the first
+  call made the commitments final; so a repeated close of all commitments
+  gives `records: []` and `skipped: [...]`. A repeated claim (giver half)
+  returns stored records.
+- **Refusal response shape.** Every new refusal in `transaction` returns
+  the code as the message and carries `{"code": "<same>"}` in `data` (for
+  example `no-such-commitment`, `not-your-side`, `bad-commitment-list`,
+  `agreement-not-open`, `bad-period`, `statement-total-overflow`). The Hub
+  reads `data.code`.
 - If one signature fails (for example `NotEnrolled`), the call stops and
   returns that error. The halves already made stay. A retry makes only
   the missing ones. The Hub says so.
@@ -830,18 +881,22 @@ statement.export { from_secs, to_secs } -> Statement     // [from, to)
 - `description` comes from the agreement row's plain terms. The log entry
   holds no description; `build` joins entries with agreement rows.
 - `open_at_end`: the commitments of every agreement whose
-  `agreement-formed` occurred before `to_secs` and that have no final
-  commitment entry that occurred before `to_secs`.
+  `agreement-formed` occurred before `to_secs` and that have no
+  `commitment-settled` entry before `to_secs`. A commitment that ended in
+  any final state (`failed`, `cancelled`, `ended-unconfirmed`) is not open
+  when the node holds any final entry for it, whatever its time.
 - `totals`: per `(currency, direction, resource_kind)`, the sum of
-  `declared_value_minor` with `checked_add`. An overflow (more than
-  9.2 × 10^18 in one group) refuses the export with
-  `statement-total-overflow`. It cannot happen below about 9,000 rows at
-  the largest value.
+  `declared_value_minor` with `checked_add`. An overflow (more than 2^53 - 1,
+  or 9,007,199,254,740,991, in one group) refuses the export with
+  `statement-total-overflow`. This protects JavaScript and JSON readers from
+  silent number corruption.
 - `eeps` is `{ "status": "not-available" }` in M08C. `EepSection` has all
   three forms, so M08E fills it without a shape change (point 13).
 - Before it builds, it runs the marker-gated derive step over every
-  agreement, so a commitment settled seconds ago through a local method
-  is in the export without waiting for a sync.
+  agreement, so a commitment settled seconds ago through a local method on
+  the author's node is in the export without waiting for a sync. On the
+  counterparty node, a settled commitment appears in the export after the
+  author's next snapshot is filed.
 - `from_secs >= to_secs` is refused with `-32602`, `bad-period`.
 
 `statement::build(owner_did, from, to, now, entries, agreements) ->
@@ -907,6 +962,13 @@ Move the form out of `messages.ts` (1,226 lines) into a folder
 - A listing has no "goods in return" field until M08D (agreements doc
   `:866`), so the form pre-fills only a money row. The author adds goods
   or service rows for the other side by hand.
+- The fresh form has one author service row and one "They give: Money"
+  row (keeping the classes of point 18). The service row's declared value
+  starts as the money row's amount and follows it until the author types
+  in it. If the author does not want to value a goods or service row,
+  the field is still required (every commitment has a value, AG-23);
+  a hint under it says "What this is worth in <currency>. Used only for
+  the totals."
 - The form does not offer `service-in-slot` rows: a slot is booked through
   the agree-as-listed path or `roymctl`, as today.
 
@@ -1004,6 +1066,14 @@ export function versionSummary(first: DealTerms, latest: DealTerms, me: Role):
   person can check it. "Sign" calls `agreement.close` with the checked
   ids. The pure function `closeList(view, side, now)` is in
   `deals/close_list.ts`.
+- **Counterparty waiting state.** On the counterparty's node, when this
+  node has signed its half for an open commitment but the author's next
+  snapshot has not yet arrived to confirm it, the commitment line shows
+  "Sent. Waiting for the other person's node." with no button.
+- **Form elements in open work.** The settlement note form gets class
+  `.settle-dialog`, and the close list gets class `.close-list`. Both join
+  `.quote-form` in `OPEN_WORK` (`messages.ts`), so thread redraws do not
+  destroy what a person is typing.
 - The panel redraws after each action from `agreement.get`, never from
   its own guess (C1 R38, C2 R2).
 
@@ -1023,13 +1093,17 @@ export function versionSummary(first: DealTerms, latest: DealTerms, me: Role):
   columns `agreement, commitment_id, agreed_at, settled_at, direction,
   counterparty_did, counterparty_name, resource_kind, commitment_kind,
   description, currency, declared_value, settlement_note`. Dates are ISO
-  8601 in UTC. `declared_value` is the decimal amount (`minorToDecimal`),
-  so a spreadsheet reads it as a number. Fields are quoted as RFC 4180
-  says.
-- **CSV formula guard.** A description or note is text another person may
-  have written. A cell that starts with `=`, `+`, `-`, `@`, a tab or a
+  8601 with the local timezone offset (matching the local days picker).
+  `declared_value` is the decimal amount (`minorToDecimal`), so a
+  spreadsheet reads it as a number. `description` uses the original text
+  from `LocalText`. Fields are quoted as RFC 4180 says.
+- **CSV formula guard.** A cell that starts with `=`, `+`, `-`, `@`, a tab or a
   carriage return gets a leading `'`, so a spreadsheet does not run it as
-  a formula. The pure writer is `statement_csv.ts`.
+  a formula. The guard applies to every cell of all text columns (including
+  `counterparty_name`), not only description and note. The pure writer is
+  `statement_csv.ts`.
+- Hub totals for quotes use `BigInt` (D-C6-10), while statement totals stay
+  within 2^53 - 1 on the wire (D-C6-7).
 - One download helper `download(name, blob)` in `crates/roym_web/ui/src/download.ts`;
   the backup screen's inline code ([backup.ts:95](../../../../crates/roym_web/ui/src/screens/backup.ts#L95)
   to `:101`) moves to it.
@@ -1069,7 +1143,12 @@ DealDefaults { cancellation_terms: LocalText, refund_terms: LocalText,
 - They never reach the as-listed path: that path reads only the signed
   offering (AG-48).
 - Exported and imported as section `deal_defaults`
-  (`crates/roym_transaction/src/app/backup/defaults.rs`).
+  (`crates/roym_transaction/src/app/backup/defaults.rs`) with constant
+  `SECTION_DEAL_DEFAULTS` in `roym_core::backup`.
+- `transaction.import` validates imported `deal_defaults` texts using
+  `check_text` (matching the method check).
+- `TransactionImportOutput` gains `log_entries_made` (included in method
+  shapes and Hub backup types).
 
 ## 6. Step-by-step changes
 
@@ -1081,8 +1160,9 @@ Each step builds, and its tests pass, before the next starts.
 
 `crates/roym_core/src/testing.rs`, `testing/data_layer.rs`: add `$gte` and
 `$lte` to `matches_filter`, and a `reads: Mutex<Vec<(String, String)>>`
-log with a `reads()` getter, filled by `get`, `query` and `query_raw`.
-Unit tests for both in `testing` (or the nearest test file).
+log with a `reads()` getter, filled by `get` and `query` (leaving `query_raw`
+`unimplemented!()` as nothing in `roym_transaction` calls it). Unit tests for
+both in `testing` (or the nearest test file).
 
 #### Step 2 — The log rules (`roym_core`, pure)
 
@@ -1114,26 +1194,34 @@ New `app/statement_ops.rs`. Service test `tests/statement.rs`.
 
 #### Step 7 — Saved deal terms and the backup
 
+- `crates/roym_core/src/backup.rs`: add constant `SECTION_DEAL_DEFAULTS` and
+  add to `each_new_section_passes_check_integrity_on_its_own`.
 - New `app/defaults_ops.rs` and `app/backup/defaults.rs`.
-- `backup.rs`: the section in the export list and the import; the derive
-  step at the end of the import; `SCHEMA_VERSION` 9 with one line in its
-  comment. Keep `backup.rs` under 800 lines by putting the new code in
-  `backup/defaults.rs`; if it still crosses, move `validate_bundle_header`
-  (`backup.rs:191`) to `backup/header.rs`.
+- `backup.rs`: the section in the export list and the import; validate imported
+  defaults with `check_text`; the derive step at the end of the import;
+  `SCHEMA_VERSION` 9 with one line in its comment. Keep `backup.rs` under 800
+  lines by putting the new code in `backup/defaults.rs`; if it still crosses,
+  move `validate_bundle_header` (`backup.rs:191`) to `backup/header.rs`.
+- Update `dual_build_parity/transaction_cards.rs:348` to `:352` assertions for
+  `schema_version` 9.
+- Method shapes and Hub type for `TransactionImportOutput.log_entries_made`.
 - Service test `tests/defaults.rs`; the backup round trip in
   `backup/tests.rs` gains the section (or a new `backup/tests/defaults.rs`).
 
 #### Step 8 — The method table and the router
 
-`api.rs`: the eight new rows. `router.rs`: the two prefixes. The method
-contract count 47 to 55 (`contract.rs:83`) and its shape rows
-(`shapes_transaction.rs`). `scenario_144`'s list gets the three missing
-methods and the eight new ones.
+`api.rs`: the eight new rows. `router.rs`: the two prefixes. Every new
+refusal carries `{"code": "<same>"}` in `data`. The method contract count 47
+to 55 (`contract.rs:83`) and its shape rows (`shapes_transaction.rs`).
+`scenario_144`'s list gets the three missing methods and the eight new ones.
 
 #### Step 9 — Parity
 
 New `crates/roym_web/tests/dual_build_parity/statement.rs`, scenarios 267
-to 276 (section 7.2). Run `mise run build:roym` first.
+to 276 (section 7.2). Run `mise run build:roym` first. Scenario 272 asserts
+repeat close gives `records: []` and three `skipped: [final]`, while repeated
+claim returns stored records. Update schema version assertions in parity for
+version 9.
 
 #### Step 10 — `roymctl`
 
@@ -1143,9 +1231,13 @@ D-C6-8. Tests beside the existing `agreement` command tests.
 
 New `crates/substrate/tests/roym_statement_e2e.rs` (section 7.4), with
 `common::roym_flow` helpers. If a helper for a three-commitment deal is
-needed, add it to `roym_flow.rs` (433 lines), not a local copy
-(`roym_deal_e2e.rs:232` has `setup_barter_fixture`; move it to
-`roym_flow.rs` and use it from both).
+needed, add it to `roym_flow.rs` (433 lines), not a local copy. Move
+`setup_barter_fixture`, `BarterFixture`, `exchange_barter_fulfilments` from
+`roym_deal_e2e.rs:232` to `roym_flow.rs` as `setup_mixed_fixture`,
+`MixedFixture`, `exchange_mixed_fulfilments`, and fix header comment.
+`templates.test.ts:527` test string `barter-tokens` stays as an unknown payment
+method fixture. Test 7.5 performs two-way sync after `agreement.close` calls
+before comparing statements.
 
 #### Step 12 — Sizes, docs and close-out of C6a
 
@@ -1163,9 +1255,10 @@ backup screen moved to it). Each with its unit test.
 #### Step 2 — The quote form
 
 `quote_form/form.ts` and `rows.ts`; `quote_terms.ts` takes rows;
-`messages.ts` calls `openQuoteForm` from the new place. The quote form
-cases of `messages.test.ts` (`:256`, `:268`, `:300`) move to
-`quote_form.test.ts`; `quote_terms.test.ts` is updated.
+`messages.ts` calls `openQuoteForm` from the new place. The form keeps
+`.quote-form` in `OPEN_WORK`. The quote form cases of `messages.test.ts`
+(`:256`, `:268`, `:300`) move to `quote_form.test.ts`; `quote_terms.test.ts`
+is updated.
 
 #### Step 3 — The quote card
 
@@ -1176,8 +1269,11 @@ template tests in `templates.test.ts` (905 lines; put new cases in a new
 #### Step 4 — The agreement panel
 
 `deals/agreement_panel.ts`, wired in the thread redraw
-(`screens/thread_redraw.ts`). `agreement_panel.test.ts` and a thread wiring test
-(C4 R30: the wiring needs its own test).
+(`screens/thread_redraw.ts`). The panel handles the "Sent. Waiting for
+the other person's node." state when a half is signed locally before the
+snapshot arrives. Settlement note form (`.settle-dialog`) and close list
+(`.close-list`) join `OPEN_WORK`. `agreement_panel.test.ts` and a thread wiring
+test (C4 R30: the wiring needs its own test).
 
 #### Step 5 — The statement screen and the tab
 
@@ -1212,6 +1308,8 @@ backlog, `mise run verify` with no `--skip`.
 - `direction` from each side, for a commitment each party gives;
 - a settled commitment whose settling half is not held gives no entry and
   `complete: false`; adding the half gives the entry;
+- a corrected acknowledgement does not move `occurred_at_secs`;
+- a row whose `agreed_at_secs` differs from the half's time uses the half's time;
 - the lowest-`seq` snapshot wins when two held snapshots show the same
   end; with the first one missing, the second one's time is used;
 - `derive` run twice on the same input gives equal entries (the ids are
@@ -1227,10 +1325,11 @@ backlog, `mise run verify` with no `--skip`.
 - failed, cancelled and ended-unconfirmed are not rows and not in
   `open_at_end`; an agreed commitment with no final entry before `to` is
   in `open_at_end`;
+- `open_at_end` excludes commitments that have any held final entry;
 - a commitment settled after `to` but formed before is in `open_at_end`;
 - the note of the settling half is on the row (AG-33);
 - the three `EepSection` forms serialise to the agreements doc's JSON;
-- `checked_add` overflow gives `statement-total-overflow`;
+- `checked_add` overflow (above 2^53 - 1) gives `statement-total-overflow`;
 - a struct test that fails when a field is added to `Statement` or
   `EventLogEntry` without a test change (C3c R21).
 
@@ -1238,12 +1337,12 @@ backlog, `mise run verify` with no `--skip`.
 
 | # | Scenario |
 | --- | --- |
-| 267 | the writer settles both commitments; `eventlog.list` gives the same entries in both builds |
+| 267 | the writer settles both commitments; `eventlog.list` gives the same entries in both builds without waiting for a sync |
 | 268 | a second `transaction.sync` and `eventlog.rebuild` make no new entry (`made: 0`) |
 | 269 | `eventlog.list` paging: limit 2 over 5 entries, with the cursor |
 | 270 | `statement.export` for a period with given and received rows and totals |
 | 271 | `agreement.close` as receiver over three commitments |
-| 272 | a repeated `agreement.close` returns the same record ids |
+| 272 | a repeated `agreement.close` returns records: [] and skipped: [final]; repeated claim returns stored records |
 | 273 | `agreement.close` with a foreign id refuses and signs nothing |
 | 274 | `statement.export` with `from >= to` refuses `bad-period` |
 | 275 | `deal.defaults-set` then `deal.defaults-get`; a bad text is refused |
@@ -1261,27 +1360,32 @@ backlog, `mise run verify` with no `--skip`.
   same on the counterparty's node after it files the snapshot; a crash
   after the creates and before the marker (`crash_on_write` on
   `event_log_state`) gives the same rows after the next sync; a
-  `fail_write` on `event_log` does not fail `transaction.sync`.
+  `fail_write` on `event_log` does not fail `transaction.sync`; after the
+  `fail_write` is removed, the next ordinary sync derives the entry;
+  `eventlog.list` runs derive step with no sync.
 - `eventlog_reads.rs` (AG-28): a full deal (enquiry, quote, accept,
   countersign, two settlements, close) runs with the read log on; no read
   names `event_log`. Then `eventlog.list` does read it (the test checks
   the log works).
 - `statement.rs`: the export on both nodes of one deal gives the same rows
-  and dates; the note (AG-33); a deal with and without money (AG-29);
+  and dates; counterparty statement verified before and after author snapshot
+  is filed; the note (AG-33); a deal with and without money (AG-29);
   `eeps` is `not-available`.
 - `close.rs`: one call settles every receivable commitment of a
-  three-commitment deal; a repeat returns the same records (AG-13); a
-  final commitment is skipped; a bad list signs nothing; a failure in the
-  second signature leaves the first half and a retry makes the rest.
+  three-commitment deal; a repeat returns records: [] and three skipped
+  final; repeated claim returns stored records; a closed agreement skips all
+  as final; a bad list signs nothing; a failure in the second signature
+  leaves the first half and a retry makes the rest.
 - `defaults.rs`: set, get, refusals; the backup round trip.
 
 ### 7.5 Two-node and the substrate (`crates/substrate/tests/roym_statement_e2e.rs`)
 
 - `both_sides_close_a_three_commitment_deal`: Bob gives a lesson, Alice
   gives goods and money. Alice calls `agreement.close` as receiver and as
-  giver; Bob as giver and as receiver. Both nodes reach `closed`; both
-  statements for the period list three rows with the same `settled_at`
-  and opposite directions.
+  giver; Bob as giver and as receiver. Both nodes perform two-way sync
+  (or wait for the driver); both nodes reach `closed`; both statements
+  for the period list three rows with the same `settled_at` and opposite
+  directions.
 - `the_driver_logs_with_no_hub`: the counterparty's log gets its
   `commitment-settled` entries through the wake alone (no `transaction.sync`
   from the test), within the wait the driver tests use.
@@ -1298,14 +1402,17 @@ Vitest:
   not listed.
 - `quote_defaults.test.ts`: each level of the fill order; `INR`; the payee
   falls back to the author.
-- `quote_form.test.ts`: rows for either side, add and remove, 16 rows,
+- `quote_form.test.ts`: rows for either side, add and remove, 16 rows, form
+  with only scope and amount builds equal totals with no difference line,
   the built `DealTerms` (with `after`).
 - `agreement_panel.test.ts`: the buttons for each (side, kind, state); an
-  ended-unconfirmed line reads as a normal end; a redraw after an action.
+  ended-unconfirmed line reads as a normal end; waiting state shows "Sent.
+  Waiting for the other person's node." with no button; a redraw after an action.
 - `suggest_changes.test.ts`: the compose box gets the line; nothing is
   sent.
-- `statement.test.ts` and `statement_csv.test.ts`: the formula guard,
-  quoting, the decimal value.
+- `statement.test.ts` and `statement_csv.test.ts`: the formula guard across
+  all text columns including `counterparty_name`, quoting, decimal value,
+  local offset date.
 - `catalog.test.ts`, `hindi-screens.test.ts`: the new and changed ids.
 
 Playwright, `tests/roym-deal.spec.ts`:
@@ -1414,7 +1521,7 @@ read: { $reason }". Plus the changed texts of D-C6-15.
 | New: "`eventlog.list` and `statement.export` read the whole log" | C6a (D-C6-5). The data layer has no ordered query. Target TBD. |
 | New: "A list of all deals across conversations is not in the Hub" | C6b (Q2). Target TBD. |
 | New: "Times of failure and cancel events can differ between the two nodes" | C6a (D-C6-4). The statement does not use them. Target M08G (evidence may). |
-| New: "A statement total above 2^63 is refused" | C6a (D-C6-7). Target TBD. |
+| New: "A statement total above 2^53 - 1 is refused" | C6a (D-C6-7). Target TBD. |
 | New: "A listing cannot say what goods or services its owner accepts in return" | Already in M08D's scope (task.md section 8); add the row only if M08D's task.md does not name it. |
 
 No new `TODO` or `FIXME` marker is planned. If one is added, it gets a row
@@ -1451,15 +1558,18 @@ Each PR fixes the statements it makes false. C8 does the full pass.
     slice was planned": Q4 (a) (the saved terms are a `transaction` row,
     in the backup); Q5 (a) (the log is not in the bundle; the import
     rebuilds it); Q6 (a) (`counterparty_name` from the Hub); D-C6-3 (the
-    marker, and an entry waits for a missing fact); D-C6-4 (the times of
-    non-settle events can differ); D-C6-6 (`agreement.close`'s exact
-    input and output, and the checks before signing); D-C6-7 (`eeps` is
-    always `not-available` in M08C; `bad-period`;
-    `statement-total-overflow`; the export runs the derive step); D-C6-11
-    (no version comparison existed; the match rule); the new methods
-    `deal.defaults-get` and `deal.defaults-set`, which the method table
-    does not list; the test column of AG-23, AG-27 to AG-30, AG-33, AG-46
-    to AG-48, AG-52 (test file names); the "Tasks" checkbox for C6.
+    marker, and an entry waits for a missing fact; counterparty entries wait
+    for the author's snapshot); D-C6-4 (the times of non-settle events can
+    differ; `open_at_end` uses only formed and settled); D-C6-6
+    (`agreement.close`'s exact input and output, checks before signing,
+    repeat returns empty records and skipped final while claims return stored
+    records); D-C6-7 (`eeps` is always `not-available` in M08C; `bad-period`;
+    `statement-total-overflow` at 2^53 - 1 for JavaScript safety; the export
+    runs the derive step); D-C6-11 (no version comparison existed; the match
+    rule); the new methods `deal.defaults-get` and `deal.defaults-set`, which
+    the method table does not list; the test column of AG-23, AG-27 to AG-30,
+    AG-33, AG-46 to AG-48, AG-52 (test file names); the "Tasks" checkbox for
+    C6.
   - roym-value-exchange `## Deviations`: VX-45's "agreement signed" event
     is `agreement-formed`, and EEP events are M08E's; VX-46 through AG-29;
     the test columns of VX-2, VX-7, VX-45, VX-46, VX-55, VX-56.
