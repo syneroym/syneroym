@@ -53,7 +53,7 @@ const STATE_WORDS = new Map<string, string>([
   ["ended-unconfirmed", messageId("progress-state-ended-unconfirmed")],
 ]);
 
-const COMMITMENT_STATE_WORDS = new Map<string, string>([
+export const COMMITMENT_STATE_WORDS = new Map<string, string>([
   ["promised", messageId("commitment-state-promised")],
   ["payment-requested", messageId("commitment-state-payment-requested")],
   ["claimed", messageId("commitment-state-claimed")],
@@ -64,7 +64,7 @@ const COMMITMENT_STATE_WORDS = new Map<string, string>([
   ["cancelled", messageId("commitment-state-cancelled")],
 ]);
 
-const COMMITMENT_REASON_WORDS = new Map<string, string>([
+export const COMMITMENT_REASON_WORDS = new Map<string, string>([
   ["reservation-lost", messageId("commitment-reason-reservation-lost")],
   ["other-commitment-failed", messageId("commitment-reason-other-commitment-failed")],
 ]);

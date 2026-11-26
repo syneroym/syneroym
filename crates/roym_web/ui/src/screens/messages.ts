@@ -22,17 +22,20 @@ import {
   type WidgetView,
 } from "../widgets/view";
 import {
+  cardAgreementId,
+  computeNewestAgreementCardMap,
   computeNewestQuoteMap,
   computeNewestRequestMap,
   isQuoteSuperseded,
   newestVersionMap,
 } from "./thread_enquiry";
 import { renderVersionSummary, versionSummary, type DealTerms, type Role } from "../deals/version_summary";
+import { renderAgreementPanel } from "../deals/agreement_panel";
 
 /// Things the person has started inside a thread. A redraw from the event
 /// feed waits until they are gone, so it never throws away typed text. An
 /// element inside the thread that holds the person's input belongs here.
-const OPEN_WORK = ".quote-form, .decline-dialog, .delete-dialog, .accept-mt-box";
+const OPEN_WORK = ".quote-form, .decline-dialog, .delete-dialog, .accept-mt-box, .settle-dialog, .close-list";
 
 interface ConversationRow {
   id: string;
@@ -377,6 +380,7 @@ async function renderThread(
 
     const newestRequestMap = computeNewestRequestMap(allCards);
     const newestQuoteMap = computeNewestQuoteMap(allCards);
+    const newestAgreementCardMap = computeNewestAgreementCardMap(allCards);
 
     let messages: MessageRow[] = [];
     try {
@@ -431,6 +435,7 @@ async function renderThread(
           widgetMap,
           () => langList.value(),
           (id) => messages.find((x) => x.id === id)?.restored === true,
+          newestAgreementCardMap,
         ),
       );
     }
@@ -555,6 +560,7 @@ export function messageElement(
   widgetMap?: Map<string, WidgetView>,
   languages?: () => string[],
   isRestored?: (messageId: string) => boolean,
+  newestAgreementCardMap?: Map<string, string>,
 ): HTMLElement {
   const wrap = document.createElement("div");
   wrap.className = `message message-${m.direction}`;
@@ -630,6 +636,12 @@ export function messageElement(
 
       // Render contextual card action buttons
       renderCardActions(wrap, cardRow, convId, myDid, refresh, newestQuoteMap);
+
+      // Render agreement panel below newest card of agreement
+      const agrId = cardAgreementId(cardRow);
+      if (agrId && newestAgreementCardMap?.get(agrId) === m.id) {
+        wrap.appendChild(renderAgreementPanel(agrId, myDid, refresh));
+      }
     } else {
       wrap.appendChild(renderRefusedCard("card", 1, t("messages-unfiled-card")));
     }

@@ -935,3 +935,17 @@ deal-changes-changed = बदला गया: { $description }
 deal-suggest-changes = बदलाव का सुझाव दें
 deal-suggest-prefix = प्रस्ताव संस्करण { $n } के बारे में:
 deal-send-new-version = नया संस्करण भेजें
+deal-action-delivered = मैंने सौंप दिया
+deal-action-paid = मैंने भुगतान किया
+deal-action-received = प्राप्त हुआ
+deal-claimed-giver = आपने कहा कि आपने सौंप दिया
+deal-waiting-other-node = भेज दिया। दूसरे व्यक्ति के नोड का इंतज़ार है।
+deal-settle-note-placeholder = यह कैसे सौंपा गया (वैकल्पिक)
+deal-settle-confirm = पुष्टि करें
+deal-close-give-all = मैंने सब कुछ दे दिया
+deal-close-receive-all = मुझे सब कुछ प्राप्त हुआ
+deal-close-not-started = अभी शुरू नहीं हुआ
+deal-close-sign-button = हस्ताक्षर करें
+deal-unconfirmed-claimed = देने वाले का कहना है कि उसने सौंप दिया; प्राप्तकर्ता ने पुष्टि नहीं की।
+deal-unconfirmed-unrecorded = किसी ने कुछ भी दर्ज नहीं किया।
+

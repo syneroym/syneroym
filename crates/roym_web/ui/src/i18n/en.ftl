@@ -962,3 +962,17 @@ deal-changes-changed = Changed: { $description }
 deal-suggest-changes = Suggest changes
 deal-suggest-prefix = About offer version { $n }:
 deal-send-new-version = Send a new version
+deal-action-delivered = I delivered
+deal-action-paid = I paid
+deal-action-received = Received
+deal-claimed-giver = You said you delivered
+deal-waiting-other-node = Sent. Waiting for the other person's node.
+deal-settle-note-placeholder = How it was handed over (optional)
+deal-settle-confirm = Confirm
+deal-close-give-all = I gave everything
+deal-close-receive-all = I received everything
+deal-close-not-started = Not started yet
+deal-close-sign-button = Sign
+deal-unconfirmed-claimed = The giver says it delivered; the receiver did not confirm.
+deal-unconfirmed-unrecorded = Nobody recorded anything.
+

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { waitingRedraw } from "./thread_redraw";
 
-const OPEN = ".quote-form, .decline-dialog";
+const OPEN = ".quote-form, .decline-dialog, .settle-dialog, .close-list";
 
 function setUp() {
   const host = document.createElement("div");
@@ -75,6 +75,25 @@ describe("waitingRedraw", () => {
     form.remove();
     await settle();
     expect(calls()).toBe(1);
+  });
+
+  it("waits while settle-dialog or close-list is open and redraws when it leaves", async () => {
+    const { host, redraw, calls } = setUp();
+    const dialog = openElement(host, "settle-dialog");
+    await redraw.later();
+    await settle();
+    expect(calls()).toBe(0);
+    dialog.remove();
+    await settle();
+    expect(calls()).toBe(1);
+
+    const closeList = openElement(host, "close-list");
+    await redraw.later();
+    await settle();
+    expect(calls()).toBe(1);
+    closeList.remove();
+    await settle();
+    expect(calls()).toBe(2);
   });
 
   it("waits until the last open work leaves", async () => {
