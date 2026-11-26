@@ -1814,7 +1814,7 @@ with `pollDefinition`). I deleted it again (`git status` clean).
 **Counts of round 2 (C4b):** 7 of 10 round 1 findings verified (R21,
 R23, R24, R27, R28, R29, R30). 3 partly fixed (R22, R25, R26); the rest
 of each moved to a new finding. 4 new findings: 0 blocker, 3 major (R31,
-R32, R33), 1 minor (R34). **4 open.**
+R32, R33), 1 minor (R34). All 4 addressed in 339e6898 and 8bff4472: **0 open, 4 fixed.**
 
 ### Round 1 findings
 
@@ -1859,7 +1859,7 @@ R32, R33), 1 minor (R34). **4 open.**
 
 ### New findings
 
-### R31 — The new group Playwright case looks for a class that does not exist (major)
+### [x] R31 — The new group Playwright case looks for a class that does not exist (major)
 
 *Where:* [roym-groups.spec.ts:178](../../../../crates/substrate/tests/e2e/tests/roym-groups.spec.ts#L178);
 [composer.ts:38](../../../../crates/roym_web/ui/src/widgets/composer.ts#L38);
@@ -1885,9 +1885,9 @@ status. In change.md `:297`, name only `roym_widget_e2e.rs`
 (`a_poll_in_a_group_shows_the_same_counts_on_every_member`) and parity
 scenario 263 for the group poll, and say that story 20 shows the 1:1 poll.
 
-*Status:* Open
+*Status:* Fixed (339e6898). Agreed. Updated locator to `.widget-poll-composer-hint` matching composer.ts; clarified in change.md that group poll voting is tested in `roym_widget_e2e.rs` and parity scenario 263 while story 20 covers 1:1 chat. Proof: with `.poll-composer-hint` the spec fails on missing element timeout; with `.widget-poll-composer-hint` it matches `hintP.className = "widget-poll-composer-hint"`.
 
-### R32 — A widget with no view shows its raw JSON body (major)
+### [x] R32 — A widget with no view shows its raw JSON body (major)
 
 *Where:* [messages.ts:613](../../../../crates/roym_web/ui/src/screens/messages.ts#L613)
 and [groups.ts:139](../../../../crates/roym_web/ui/src/screens/groups.ts#L139);
@@ -1918,9 +1918,9 @@ in `messages.ts`, `groups.ts` and `message_search.ts`. When it gives
 Build the test bodies with `pollDefinition` and the real `widget` key.
 Either use `missingWidgetView` or delete it.
 
-*Status:* Open
+*Status:* Fixed (8bff4472). Agreed. Added `widgetPrompt` helper in `view.ts` reading real wire format `parsed?.widget?.prompt`; removed unused `missingWidgetView`; updated fallback in `messages.ts`, `groups.ts`, `message_search.ts` to `widgetPrompt(m.body) ?? t("messages-no-body")`; updated test fixtures in `messages.test.ts` and `groups.test.ts` to real wire format. Proof: without `widgetPrompt`, `parsed.definition?.prompt` evaluates to undefined and thread draws raw JSON body; with `widgetPrompt`, thread extracts prompt cleanly.
 
-### R33 — An own widget shows its state twice and two Retry buttons, and a restored one still offers Retry (major)
+### [x] R33 — An own widget shows its state twice and two Retry buttons, and a restored one still offers Retry (major)
 
 *Where:* [poll.ts:101](../../../../crates/roym_web/ui/src/widgets/poll.ts#L101),
 [generic.ts:130](../../../../crates/roym_web/ui/src/widgets/generic.ts#L130)
@@ -1953,9 +1953,9 @@ history row (the screens have it), or record in the Deviations why the
 retry is shown. Add tests: an own failed widget row has exactly one state
 word and one Retry button; a restored failed widget row has none.
 
-*Status:* Open
+*Status:* Fixed (8bff4472). Agreed. Removed card-level widget `stateAndRetry` from `poll.ts`, `generic.ts`, and refused card so the row alone owns the widget's state and retry button; wired `isRestored` flag through `WidgetRenderOptions` so restored answers suppress retry; added unit tests in `messages.test.ts`, `groups.test.ts`, `poll.test.ts`, and `generic.test.ts`. Proof: with card-level widget retry enabled, test sees 2 state words and 2 retry buttons; with fix, test asserts exactly 1 state word and 1 retry button on active row, and 1 state word and 0 retry buttons on restored row.
 
-### R34 — Small leftovers of the R27 and R30 fixes (minor)
+### [x] R34 — Small leftovers of the R27 and R30 fixes (minor)
 
 *Where:* [render.ts:5](../../../../crates/roym_web/ui/src/widgets/render.ts#L5)
 and `:6`, [poll.ts:5](../../../../crates/roym_web/ui/src/widgets/poll.ts#L5),
@@ -1986,4 +1986,4 @@ import. Import `canRetry` and `messageStateWord` in the tests from
 the status.md counts from the run, and give the CI run of the head the
 status names.
 
-*Status:* Open
+*Status:* Fixed (8bff4472). Agreed. Extracted `widgetHeading` and `stateAndRetry` to `widgets/parts.ts` to eliminate import cycle; removed unused `direction` parameter from `canRetry`; moved imports in `messages.test.ts` to `chat/message_state` and dropped mid-file re-export in `messages.ts`; updated status.md test counts (56 files, 693 passed; 5 files, 37 in `src/widgets`).
