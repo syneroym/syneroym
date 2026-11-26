@@ -25,6 +25,7 @@ pub mod refuse;
 pub mod restore;
 pub mod restore_reservations;
 pub mod settle;
+pub mod statement;
 pub mod step;
 pub mod step_backup;
 pub mod step_filing;

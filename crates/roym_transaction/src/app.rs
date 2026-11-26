@@ -19,6 +19,7 @@ pub mod progress;
 pub mod progress_ops;
 pub mod quote_ops;
 pub(crate) mod refusal;
+pub mod statement_ops;
 pub mod step_ops;
 pub mod sync;
 pub mod thread;
