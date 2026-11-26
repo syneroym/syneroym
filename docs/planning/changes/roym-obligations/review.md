@@ -374,7 +374,7 @@ own node, so `cancel` is refused. The one-way case is not safe.
 
 Add a two-node race test for set-off plus cancel.
 
-**Status:** Fixed (f72b2a8e), with a change to the proposal, pending the owner: open question 18. None of the three options fits. Refusing cancel for every `eep-return` removes "cannot deliver" from every redemption; a grace period does not help an offline node; "wait for a moved commitment" never ends in a pure set-off, where nothing else moves. The race exists only when the counterparty receives an `eep-return`, so the writer refuses `agreement.cancel` with `eep-return-to-counterparty` in exactly that case. It narrows the agreements document's cancel rule, so it is an owner question. New OB-41, deviation added.
+**Status:** Fixed (f72b2a8e), with a change to the proposal, pending the owner: open question 18. None of the three options fits. Refusing cancel for every `eep-return` removes "cannot deliver" from every redemption; a grace period does not help an offline node; "wait for a moved commitment" never ends in a pure set-off, where nothing else moves. The race exists only when the counterparty receives an `eep-return`, so the writer refuses `agreement.cancel` with `eep-return-to-counterparty` in exactly that case. It narrows the agreements document's cancel rule, so it is an owner question. New OB-41, deviation added. **Decided 2026-11-26, owner:** open question 18 accepted as recommended (the narrow rule of round 2, P30).
 
 ### P8 — major — The resolve table is ambiguous and incomplete
 
@@ -488,7 +488,7 @@ hour limit is per caller DID and so does not stop it.
   split above it with a coded decline.
 - Add OB rows for the limit.
 
-**Status:** Owner decision: open question 16. The doc now says the overview does not settle whether an issuer may refuse a split, records it in `## Deviations`, and applies the recommendation marked "pending open question 16": automatic inside limits (parts of at least 100 minor units or the whole value, at most 64 live EEPs of one issuer per holder), `split-limit` above them, and Roym does not mark a refusal as evidence. New OB-44. Applied in f72b2a8e.
+**Status:** Owner decision: open question 16. The doc now says the overview does not settle whether an issuer may refuse a split, records it in `## Deviations`, and applies the recommendation marked "pending open question 16": automatic inside limits (parts of at least 100 minor units or the whole value, at most 64 live EEPs of one issuer per holder), `split-limit` above them, and Roym does not mark a refusal as evidence. New OB-44. Applied in f72b2a8e. **Decided 2026-11-26, owner:** open question 16 accepted as recommended. The "pending" marks are removed.
 
 ### P12 — major — The countersign rule is weaker than the draft says for third parties, and it does not cover other records
 
@@ -528,7 +528,7 @@ hour limit is per caller DID and so does not stop it.
   receipt for a demand), or say that they stop counting as evidence and the
   Hub shows it.
 
-**Status:** Point 1: Owner decision: open question 17. The doc states the limit plainly (a third party cannot see the issuer's store, and an acknowledgement's time is written by its signer) and recommends that a third party count an acknowledgement at full strength only with a mailbox `stored` time of its own deposit. Point 2: Fixed (f72b2a8e). New subsection "Countersigns for every record": the holder acknowledges declines as well as versions, and a demand, request, decline or acknowledgement sent "deposit first" has a third-party time through its deposit proof. A record with no countersign shows as "signed with a key revoked as compromised". New OB-49. The case where both keys are compromised is stated as a limit.
+**Status:** Point 1: Owner decision: open question 17. The doc states the limit plainly (a third party cannot see the issuer's store, and an acknowledgement's time is written by its signer) and recommends that a third party count an acknowledgement at full strength only with a mailbox `stored` time of its own deposit. Point 2: Fixed (f72b2a8e). New subsection "Countersigns for every record": the holder acknowledges declines as well as versions, and a demand, request, decline or acknowledgement sent "deposit first" has a third-party time through its deposit proof. A record with no countersign shows as "signed with a key revoked as compromised". New OB-49. The case where both keys are compromised is stated as a limit. **Point 1 decided 2026-11-26, owner:** open question 17 accepted as recommended. A third party counts an acknowledgement at full strength only with a third-party `stored` time.
 
 ### P13 — major — E1 changes the type that three other crates already read, and the draft does not list them
 
@@ -765,7 +765,7 @@ host (the deploy should fail clearly or fall back).
 **Fix:** Edit both texts, and ask the owner about the holder's "not received"
 half in question 3.
 
-**Status:** Question 1: Fixed (f72b2a8e). The reason is rewritten: a demand that reached the issuer or its mailbox before expiry must still be answered in its notice, and the lower limit is the open mailbox's longest hold. Question 13: Fixed (f72b2a8e): with no mailbox host the deploy fails with a clear error and does not fall back. Question 3: Owner decision: open question 3. It now lists options A (the draft), B (the overview's reading) and C (A plus the reviewer's signed "not received" half), with the reviewer's point on the risk to the holder. Recommendation: A now, and decide C together with the agreements document's open question 15, which the owner placed with M08G.
+**Status:** Question 1: Fixed (f72b2a8e). The reason is rewritten: a demand that reached the issuer or its mailbox before expiry must still be answered in its notice, and the lower limit is the open mailbox's longest hold. Question 13: Fixed (f72b2a8e): with no mailbox host the deploy fails with a clear error and does not fall back. Question 3: Owner decision: open question 3. It now lists options A (the draft), B (the overview's reading) and C (A plus the reviewer's signed "not received" half), with the reviewer's point on the risk to the holder. Recommendation: A now, and decide C together with the agreements document's open question 15, which the owner placed with M08G. **Decided 2026-11-26, owner:** question 3 accepted as recommended: option A in M08E, and option C is decided in M08G with the agreements document's open question 15. Question 13 is reversed by the owner: `obligation` is not required to have a mailbox, and a deploy without one succeeds with a warning. The "deploy fails" fix above no longer holds; see the owner decisions note at the end.
 
 ### P22 — minor — Some differences from the overview and the agreements document are not in `## Deviations`
 
@@ -1757,3 +1757,32 @@ the check found:
 New OB rows: OB-64 and OB-65 (E3), OB-66 (E4). Two deviation rows are
 under "Added in review round 5".
 
+## Owner decisions, 2026-11-26
+
+Recorded by Claude Opus 5.5 (Claude Code). The owner's words: "I agree to the 4 recommendations. Plus for 13, the mailbox criteria provides limited benefit anyways. The issuer can later drop the mailbox, mailbox owner could drop the receiver, etc. so I am ok to not enforce mailbox, or maybe just a warning."
+
+**Accepted as recommended.**
+
+- Question 3: option A in M08E. Option C (a signed "not received" half) is decided in M08G, together with the agreements document's open question 15. (P21)
+- Question 16: the node splits automatically inside the limits and declines above them with `split-limit`. (P11)
+- Question 17: a third party counts an acknowledgement at full strength only with a third-party `stored` time. (P12 point 1)
+- Question 18: the narrow cancel rule. (P7)
+
+Each is marked "Decided 2026-11-26, owner" in the change doc, and every "pending open question N" mark is removed from the design text, the OB rows and the deviations.
+
+**Question 13 reversed.** `obligation` may run without a mailbox. What changed in the change doc:
+
+- **Where it runs:** the operator chooses the mailbox at deploy, as for any public service. The deploy no longer fails without one.
+- **New section "An issuer or holder with no mailbox":** every call goes direct; a demand waits in the holder's own outbox and arrives only when both nodes are online at the same time; the "no answer" evidence has strength "none" for a third party; acknowledgements have no third-party time, so by question 17 a third party never counts them at full strength; a demand that went direct has no countersign. It also covers a holder with no mailbox, and an issuer that drops its mailbox later.
+- **A code fact this found:** the proxy outbox ends a call to a receiver with no mailbox after its attempt budget, about 10 hours (54 attempts, backoff capped at 15 minutes). Without a change, a demand to an issuer offline for longer would be lost. The send path gains a "retry until" `enqueue` option (E2): retry until `answer_by_secs` for a demand, 30 days for other records. A retry past the receiver's dedup window may run twice, which is harmless because every wire method is idempotent.
+- **Warning (recommendation):** both places. `roymctl svc deploy` and `app deploy` warn for any public service that lists `mailbox_methods` and has no mailbox (a generic rule). The holder's Hub warns on the issuer's EEPs and on the demand screen, from a new `receiver_mailbox` field of the deposit status read. A warning on the issuer's own wallet, and one before accepting an `eep-issue`, are left out: they need a read of a service record's mailbox that no guest has today. Backlog.
+- **"No answer" table and OB-23:** two new levels, "received by the issuer's node, no proof" and "could not reach the issuer" (not counted against the issuer).
+- **OB rows:** OB-17 is scoped to an issuer with a mailbox. OB-23 gains the two levels. New OB-67 (deploy warning), OB-68 (retry until `answer_by_secs`), OB-69 (Hub warning), OB-70 (a proof made before the mailbox was dropped still verifies).
+- **States:** no new state. A demand to an issuer with no mailbox never reaches `deposited` or `call-failed`.
+- **VX-15 does not hold as written.** It holds only for an issuer with a mailbox. This is in `## Deviations` under "Added by the owner's decisions, 2026-11-26", with three more rows (VX-49 evidence, the acknowledgement rule, the outbox attempt budget).
+- **New open question 19:** two ways to give back some evidence without a mailbox (a deposit to any mailbox only for a timestamp; a signed "received" receipt in the direct reply). Recommendation: neither in M08E.
+
+**For the owner to look at again.**
+
+- A redemption demand to an issuer with no mailbox works only when both nodes are online at the same time before the 7-day notice ends. Two phones may never overlap. Redemption inside a conversation still works.
+- "Stored, never collected" reads the same whether the issuer dropped its mailbox or the mailbox operator dropped the issuer's queue.
