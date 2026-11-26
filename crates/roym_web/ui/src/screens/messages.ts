@@ -1,3 +1,4 @@
+import { canRetry, messageStateWord } from "../chat/message_state";
 import { messageLang, messageText } from "../chat/message_text";
 import { errText, field, refiller, text } from "../dom";
 import { currentLanguage, messageId, t } from "../i18n/i18n";
@@ -18,6 +19,7 @@ import { buildDealTerms } from "./quote_terms";
 import { attachSizeLine } from "./quote_size";
 import type { MessagesInitialState, RequestPreFill } from "../navigation";
 import { pollComposer } from "../widgets/composer";
+import { widgetPrompt } from "../widgets/view";
 import { renderWidget } from "../widgets/render";
 import { WIDGET_ANSWER_CONTENT_TYPE, WIDGET_CONTENT_TYPE, type WidgetView } from "../widgets/view";
 import {
@@ -31,9 +33,6 @@ import {
 /// feed waits until they are gone, so it never throws away typed text. An
 /// element inside the thread that holds the person's input belongs here.
 const OPEN_WORK = ".quote-form, .decline-dialog, .delete-dialog, .accept-mt-box";
-
-import { canRetry, messageStateWord, STATE_LABELS } from "../chat/message_state";
-export { canRetry, messageStateWord, STATE_LABELS };
 
 interface ConversationRow {
   id: string;
@@ -431,6 +430,7 @@ async function renderThread(
           redraw.now,
           widgetMap,
           () => langList.value(),
+          (id) => messages.find((x) => x.id === id)?.restored === true,
         ),
       );
     }
@@ -554,6 +554,7 @@ export function messageElement(
   refresh: () => Promise<void>,
   widgetMap?: Map<string, WidgetView>,
   languages?: () => string[],
+  isRestored?: (messageId: string) => boolean,
 ): HTMLElement {
   const wrap = document.createElement("div");
   wrap.className = `message message-${m.direction}`;
@@ -605,17 +606,9 @@ export function messageElement(
   } else if (m.content_type === WIDGET_CONTENT_TYPE) {
     const view = widgetMap?.get(m.id);
     if (view) {
-      wrap.appendChild(renderWidget(view, { conversation: convId, refresh, languages }));
+      wrap.appendChild(renderWidget(view, { conversation: convId, refresh, languages, isRestored }));
     } else {
-      let promptText = m.body ?? t("messages-no-body");
-      try {
-        const parsed = JSON.parse(m.body ?? "{}");
-        if (parsed.definition?.prompt) {
-          promptText = parsed.definition.prompt;
-        }
-      } catch {
-        // Fall back to m.body if JSON parsing fails.
-      }
+      const promptText = widgetPrompt(m.body) ?? t("messages-no-body");
       const nodes = messageText(promptText, m.languages ?? [], "span", {
         translatable: m.direction === "incoming",
       });

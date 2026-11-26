@@ -1,4 +1,4 @@
-import { WIDGET_ANSWER_CONTENT_TYPE, WIDGET_CONTENT_TYPE } from "../widgets/view";
+import { WIDGET_ANSWER_CONTENT_TYPE, WIDGET_CONTENT_TYPE, widgetPrompt } from "../widgets/view";
 
 /// One row of `conversation.search`'s `matches`: a stored message row. Only
 /// the fields the result list reads are named here.
@@ -40,19 +40,13 @@ export function searchHits(matches: SearchMatch[], query: string): SearchHit[] {
       continue;
     }
     if (m.content_type === WIDGET_CONTENT_TYPE) {
-      try {
-        const parsed = JSON.parse(m.body);
-        const prompt = parsed?.widget?.prompt;
-        if (typeof prompt !== "string" || !prompt) {
-          continue;
-        }
+      const prompt = widgetPrompt(m.body);
+      if (prompt) {
         hits.push({
           conversation: m.conversation,
           snippet: snippetAround(prompt, query),
           languages: m.languages,
         });
-      } catch {
-        continue;
       }
       continue;
     }

@@ -8,7 +8,7 @@ import {
   renderThreadMessages,
   type GroupMessageRow,
 } from "./groups";
-import type { WidgetView } from "../widgets/view";
+import { pollDefinition, type WidgetView } from "../widgets/view";
 import { stubRpc } from "../testing/stub-rpc";
 import { readerReads } from "../testing/translation";
 import { setTargetsForTest } from "../translation/translation";
@@ -754,7 +754,7 @@ describe("widget messages in groups thread", () => {
       threadList,
       [msg("m-w-missing", "application/vnd.roym.widget+json", JSON.stringify({
         widget_version: 1,
-        definition: { prompt: "Custom group prompt" },
+        widget: pollDefinition("Custom group prompt", ["A", "B"]),
       }))],
       nameOf,
       () => {},
@@ -764,6 +764,57 @@ describe("widget messages in groups thread", () => {
 
     expect(threadList.querySelector(".widget-refused")).toBeNull();
     expect(threadList.textContent).toContain("Custom group prompt");
+  });
+
+  it("an own failed group widget row has exactly one state word and one Retry button", () => {
+    const threadList = document.createElement("div");
+    const m = msg("m-w-fail", "application/vnd.roym.widget+json", JSON.stringify({
+      widget_version: 1,
+      widget: pollDefinition("Group Question", ["A", "B"]),
+    }));
+    m.direction = "outgoing";
+    m.state = "failed";
+
+    renderThreadMessages(
+      threadList,
+      [m],
+      nameOf,
+      () => {},
+      () => {},
+      new Map(),
+    );
+
+    const statuses = threadList.querySelectorAll(".status-failed");
+    expect(statuses).toHaveLength(1);
+
+    const retries = threadList.querySelectorAll(".retry-button");
+    expect(retries).toHaveLength(1);
+  });
+
+  it("a restored failed group widget row has exactly one state word and zero Retry buttons", () => {
+    const threadList = document.createElement("div");
+    const m = msg("m-w-res", "application/vnd.roym.widget+json", JSON.stringify({
+      widget_version: 1,
+      widget: pollDefinition("Group Question", ["A", "B"]),
+    }));
+    m.direction = "outgoing";
+    m.state = "failed";
+    m.restored = true;
+
+    renderThreadMessages(
+      threadList,
+      [m],
+      nameOf,
+      () => {},
+      () => {},
+      new Map(),
+    );
+
+    const statuses = threadList.querySelectorAll(".status-failed");
+    expect(statuses).toHaveLength(1);
+
+    const retries = threadList.querySelectorAll(".retry-button");
+    expect(retries).toHaveLength(0);
   });
 
   it("a group widget row shows the sender and has a delete button", () => {
@@ -920,7 +971,7 @@ describe("widget messages in groups thread", () => {
             body_encoding: "utf8",
             body: JSON.stringify({
               widget_version: 1,
-              definition: { prompt: "Prompt on groups widget list failure" },
+              widget: pollDefinition("Prompt on groups widget list failure", ["A", "B"]),
             }),
             state: "delivered",
           },

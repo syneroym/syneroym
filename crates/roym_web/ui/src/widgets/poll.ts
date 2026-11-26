@@ -2,7 +2,7 @@ import { messageLang, messageText } from "../chat/message_text";
 import { errText } from "../dom";
 import { t } from "../i18n/i18n";
 import { call } from "../rpc";
-import { stateAndRetry, widgetHeading } from "./render";
+import { stateAndRetry, widgetHeading } from "./parts";
 import type { WidgetRenderOptions, WidgetView } from "./view";
 
 export function renderPoll(view: WidgetView, opts: WidgetRenderOptions): HTMLElement {
@@ -97,12 +97,9 @@ export function renderPoll(view: WidgetView, opts: WidgetRenderOptions): HTMLEle
 
   card.appendChild(optionsDiv);
 
-  if (view.direction === "outgoing") {
-    stateAndRetry(card, view.state, view.last_error, view.widget_id, "widget", opts.refresh);
-  }
-
   if (ownAnswer) {
-    stateAndRetry(card, ownAnswer.state, ownAnswer.last_error, ownAnswer.message_id, "answer", opts.refresh);
+    const isRestored = opts.isRestored?.(ownAnswer.message_id) ?? false;
+    stateAndRetry(card, ownAnswer.state, ownAnswer.last_error, ownAnswer.message_id, "answer", opts.refresh, isRestored);
   }
 
   return card;

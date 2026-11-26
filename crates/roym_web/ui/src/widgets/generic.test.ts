@@ -202,7 +202,7 @@ describe("renderGenericWidget", () => {
     });
   });
 
-  it("draws state word and retry button for own widget or own answer with state failed", async () => {
+  it("draws state word and retry button for own answer with state failed, but not for widget (row owns it)", async () => {
     const view = makeGenericView({
       direction: "outgoing",
       state: "failed",
@@ -230,22 +230,43 @@ describe("renderGenericWidget", () => {
     const refresh = vi.fn();
     const el = renderGenericWidget(view, { conversation: "c1", refresh });
 
-    expect(el.querySelector(".widget-state")?.textContent).toBe("failed");
-    expect(el.querySelector(".widget-error")?.textContent).toBe("widget failed to send");
+    // Widget state/retry is on the row, not the card
+    expect(el.querySelector(".widget-state")).toBeNull();
+    expect(el.querySelector(".retry-widget")).toBeNull();
 
     expect(el.querySelector(".answer-state")?.textContent).toBe("failed");
     expect(el.querySelector(".answer-error")?.textContent).toBe("answer write error");
 
     const retryBtns = el.querySelectorAll<HTMLButtonElement>(".retry-message");
-    expect(retryBtns).toHaveLength(2);
+    expect(retryBtns).toHaveLength(1);
 
-    retryBtns[0].click(); // retry widget
+    retryBtns[0].click(); // retry answer
     await vi.waitFor(() => expect(calls).toHaveLength(1));
-    expect(calls[0].params).toEqual({ message_id: "w-gen-1" });
+    expect(calls[0].params).toEqual({ message_id: "ans-gen-1" });
+  });
 
-    retryBtns[1].click(); // retry answer
-    await vi.waitFor(() => expect(calls).toHaveLength(2));
-    expect(calls[1].params).toEqual({ message_id: "ans-gen-1" });
+  it("suppresses retry button for restored failed own answer", () => {
+    const view = makeGenericView({
+      answers: [
+        {
+          message_id: "ans-gen-restored",
+          author: "did:key:bob",
+          direction: "outgoing",
+          sender_timestamp_ms: 1100,
+          languages: ["en"],
+          data: { f_text: "Val" },
+          state: "failed",
+          last_error: "answer write error",
+        },
+      ],
+    });
+    const el = renderGenericWidget(view, {
+      conversation: "c1",
+      isRestored: (id) => id === "ans-gen-restored",
+    });
+
+    expect(el.querySelector(".answer-state")?.textContent).toBe("failed");
+    expect(el.querySelector(".retry-answer")).toBeNull();
   });
 
   it("renders the answers list under the form", () => {

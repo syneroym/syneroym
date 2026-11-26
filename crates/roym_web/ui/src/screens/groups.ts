@@ -9,7 +9,12 @@ import { sortByName } from "../names";
 import { renderRefusedCard } from "../cards/refused";
 import { pollComposer } from "../widgets/composer";
 import { renderWidget } from "../widgets/render";
-import { WIDGET_ANSWER_CONTENT_TYPE, WIDGET_CONTENT_TYPE, type WidgetView } from "../widgets/view";
+import {
+  WIDGET_ANSWER_CONTENT_TYPE,
+  WIDGET_CONTENT_TYPE,
+  widgetPrompt,
+  type WidgetView,
+} from "../widgets/view";
 import {
   MEMBERSHIP_EVENT_CONTENT_TYPE,
   deliveryWords,
@@ -72,6 +77,7 @@ export interface GroupMessageRow {
   last_error?: string;
   deleted_at_secs?: number;
   languages?: string[];
+  restored?: boolean;
 }
 
 export function parseProfileName(body?: string): string | null {
@@ -112,6 +118,7 @@ export function renderMessageRow(
   widgetView?: WidgetView,
   reloadThread?: () => Promise<void>,
   languages?: () => string[],
+  isRestored?: (messageId: string) => boolean,
 ): HTMLElement {
   const row = document.createElement("div");
   row.className = `message-row message-${msg.direction}`;
@@ -129,21 +136,17 @@ export function renderMessageRow(
         refresh: reloadThread,
         nameOf,
         languages,
+        isRestored,
       }),
     );
-  } else if (msg.body_encoding === "utf8") {
-    let textBody = msg.body ?? "";
-    if (msg.content_type === WIDGET_CONTENT_TYPE) {
-      try {
-        const parsed = JSON.parse(msg.body ?? "{}");
-        if (parsed.definition?.prompt) {
-          textBody = parsed.definition.prompt;
-        }
-      } catch {
-        // Fall back to msg.body if JSON parsing fails.
-      }
-    }
+  } else if (msg.content_type === WIDGET_CONTENT_TYPE) {
+    const textBody = widgetPrompt(msg.body) ?? t("messages-no-body");
     const nodes = messageText(textBody, msg.languages ?? [], "div", {
+      translatable: msg.direction === "incoming",
+    });
+    row.append(...nodes);
+  } else if (msg.body_encoding === "utf8") {
+    const nodes = messageText(msg.body ?? "", msg.languages ?? [], "div", {
       translatable: msg.direction === "incoming",
     });
     row.append(...nodes);
@@ -229,12 +232,13 @@ export function renderThreadMessages(
     }
 
     if (m.content_type === WIDGET_CONTENT_TYPE) {
+      const isRestored = (id: string) => messages.find((x) => x.id === id)?.restored === true;
       if (m.deleted_at_secs) {
         threadList.appendChild(renderMessageRow(m, nameOf, onDelete, onRetry));
       } else {
         const view = widgetMap?.get(m.id);
         threadList.appendChild(
-          renderMessageRow(m, nameOf, onDelete, onRetry, view, reloadThread, languages),
+          renderMessageRow(m, nameOf, onDelete, onRetry, view, reloadThread, languages, isRestored),
         );
       }
       continue;

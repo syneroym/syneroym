@@ -3,12 +3,11 @@ import HINDI from "../i18n/hi.ftl?raw";
 import { activate, activateWith, t } from "../i18n/i18n";
 import {
   type CardRow,
-  canRetry,
+  type MessageState,
   computeNewestQuoteMap,
   computeNewestRequestMap,
   isQuoteSuperseded,
   messageElement,
-  messageStateWord,
   openQuoteForm,
   readQuoteForm,
   refusalText,
@@ -16,7 +15,8 @@ import {
   renderMessages,
   stateHint,
 } from "./messages.js";
-import type { WidgetView } from "../widgets/view";
+import { canRetry, messageStateWord } from "../chat/message_state";
+import { pollDefinition, type WidgetView } from "../widgets/view";
 import { stubRpc } from "../testing/stub-rpc";
 
 describe("newestRequestMap and quote superseded notice", () => {
@@ -896,13 +896,15 @@ describe("widget messages in messages thread", () => {
     id,
     conversation: "conv-1",
     author: "did:key:alice",
-    direction: "incoming" as const,
+    direction: "incoming" as "incoming" | "outgoing",
     sender_timestamp_ms: 1000,
     content_type: contentType,
     body_encoding: "utf8" as const,
     body: body ?? "",
     languages: ["en"],
-    state: "delivered" as const,
+    state: "delivered" as MessageState,
+    last_error: undefined as string | undefined,
+    restored: undefined as boolean | undefined,
     stored_at_secs: 1,
   });
 
@@ -978,7 +980,7 @@ describe("widget messages in messages thread", () => {
   it("a widget missing from the map keeps the widget prompt text", () => {
     const msg = baseMessage("msg-w-missing", "application/vnd.roym.widget+json", JSON.stringify({
       widget_version: 1,
-      definition: { prompt: "Custom widget prompt" },
+      widget: pollDefinition("Custom widget prompt", ["Option 1", "Option 2"]),
     }));
     const el = messageElement(
       msg,
@@ -994,6 +996,63 @@ describe("widget messages in messages thread", () => {
 
     expect(el.querySelector(".widget-refused")).toBeNull();
     expect(el.textContent).toContain("Custom widget prompt");
+  });
+
+  it("an own failed widget row has exactly one state word and one Retry button", () => {
+    const msg = baseMessage("msg-w-failed", "application/vnd.roym.widget+json", JSON.stringify({
+      widget_version: 1,
+      widget: pollDefinition("Question", ["A", "B"]),
+    }));
+    msg.direction = "outgoing";
+    msg.state = "failed";
+    msg.last_error = "send error";
+
+    const el = messageElement(
+      msg,
+      new Map(),
+      [],
+      new Map(),
+      new Map(),
+      "conv-1",
+      "did:key:me",
+      async () => {},
+      new Map(),
+    );
+
+    const stateWords = el.querySelectorAll(".message-state");
+    expect(stateWords).toHaveLength(1);
+    expect(stateWords[0].textContent).toBe("failed");
+
+    const retryBtns = el.querySelectorAll(".retry-message");
+    expect(retryBtns).toHaveLength(1);
+  });
+
+  it("a restored failed widget row has exactly one state word and zero Retry buttons", () => {
+    const msg = baseMessage("msg-w-restored", "application/vnd.roym.widget+json", JSON.stringify({
+      widget_version: 1,
+      widget: pollDefinition("Question", ["A", "B"]),
+    }));
+    msg.direction = "outgoing";
+    msg.state = "failed";
+    msg.restored = true;
+
+    const el = messageElement(
+      msg,
+      new Map(),
+      [],
+      new Map(),
+      new Map(),
+      "conv-1",
+      "did:key:me",
+      async () => {},
+      new Map(),
+    );
+
+    const stateWords = el.querySelectorAll(".message-state");
+    expect(stateWords).toHaveLength(1);
+
+    const retryBtns = el.querySelectorAll(".retry-message");
+    expect(retryBtns).toHaveLength(0);
   });
 
   it("a widget row has a delete button and retains message state", () => {
@@ -1138,7 +1197,7 @@ describe("widget messages in messages thread", () => {
             body_encoding: "utf8",
             body: JSON.stringify({
               widget_version: 1,
-              definition: { prompt: "Prompt when list fails" },
+              widget: pollDefinition("Prompt when list fails", ["Option 1", "Option 2"]),
             }),
             state: "delivered",
           },

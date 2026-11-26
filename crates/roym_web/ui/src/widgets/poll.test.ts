@@ -251,37 +251,15 @@ describe("renderPoll", () => {
     expect(textSpan?.getAttribute("lang")).toBe("hi");
   });
 
-  it("draws state word and retry button when an own poll has state failed", async () => {
+  it("does not draw widget-level state word or retry button on card (row owns it)", () => {
     const view = makePollView({
       direction: "outgoing",
       state: "failed",
       last_error: "network timeout",
     });
-    const calls: { method: string; params: unknown }[] = [];
-    stubRpc({
-      "conversation.retry": (params) => {
-        calls.push({ method: "conversation.retry", params });
-        return Promise.resolve({ ok: true });
-      },
-    });
-    const refresh = vi.fn();
-    const el = renderPoll(view, { conversation: "c1", refresh });
-
-    const stateWord = el.querySelector(".widget-state");
-    expect(stateWord?.textContent).toBe("failed");
-    const errorSpan = el.querySelector(".widget-error");
-    expect(errorSpan?.textContent).toBe("network timeout");
-
-    const retryBtn = el.querySelector<HTMLButtonElement>(".retry-widget");
-    expect(retryBtn).not.toBeNull();
-    retryBtn?.click();
-
-    await vi.waitFor(() => expect(refresh).toHaveBeenCalled());
-    expect(calls).toHaveLength(1);
-    expect(calls[0]).toEqual({
-      method: "conversation.retry",
-      params: { message_id: "w1" },
-    });
+    const el = renderPoll(view, { conversation: "c1" });
+    expect(el.querySelector(".widget-state")).toBeNull();
+    expect(el.querySelector(".retry-widget")).toBeNull();
   });
 
   it("draws state word and retry button when an own answer has state failed", async () => {
@@ -324,5 +302,30 @@ describe("renderPoll", () => {
       method: "conversation.retry",
       params: { message_id: "ans-fail-1" },
     });
+  });
+
+  it("suppresses retry button for restored failed own answer", () => {
+    const view = makePollView({
+      answers: [
+        {
+          message_id: "ans-restored-1",
+          author: "did:key:bob",
+          direction: "outgoing",
+          sender_timestamp_ms: 1200,
+          languages: ["en"],
+          data: { option: "o1" },
+          state: "failed",
+          last_error: "peer unavailable",
+        },
+      ],
+    });
+    const el = renderPoll(view, {
+      conversation: "c1",
+      isRestored: (id) => id === "ans-restored-1",
+    });
+
+    const stateWord = el.querySelector(".answer-state");
+    expect(stateWord?.textContent).toBe("failed");
+    expect(el.querySelector(".retry-answer")).toBeNull();
   });
 });

@@ -4,7 +4,7 @@ import { widgetFieldLabelId } from "../extensions/registry";
 import { formatDateTime, formatDuration, formatNumber } from "../i18n/format";
 import { codeWord, t } from "../i18n/i18n";
 import { call } from "../rpc";
-import { stateAndRetry, widgetHeading } from "./render";
+import { stateAndRetry, widgetHeading } from "./parts";
 import type { DefinedField, WidgetDefinition, WidgetRenderOptions, WidgetView } from "./view";
 
 function fieldLabel(def: WidgetDefinition, f: DefinedField, isKnown: boolean): string {
@@ -126,12 +126,9 @@ export function renderGenericWidget(view: WidgetView, opts: WidgetRenderOptions)
 
   const ownAnswer = view.answers.find((a) => a.direction === "outgoing");
 
-  if (view.direction === "outgoing") {
-    stateAndRetry(card, view.state, view.last_error, view.widget_id, "widget", opts.refresh);
-  }
-
   if (ownAnswer) {
-    stateAndRetry(card, ownAnswer.state, ownAnswer.last_error, ownAnswer.message_id, "answer", opts.refresh);
+    const isRestored = opts.isRestored?.(ownAnswer.message_id) ?? false;
+    stateAndRetry(card, ownAnswer.state, ownAnswer.last_error, ownAnswer.message_id, "answer", opts.refresh, isRestored);
   }
 
   // Answers section

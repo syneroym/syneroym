@@ -13,7 +13,6 @@ export function messageStateWord(state: StoredState | string): string {
 }
 
 export function canRetry(m: {
-  direction?: string;
   state: StoredState | string;
   restored?: boolean;
   deleted_at_secs?: number | null;
