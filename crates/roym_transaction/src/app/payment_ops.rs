@@ -258,7 +258,14 @@ pub(crate) async fn acknowledge<H: AppHost>(
     host: &H,
     input: PaymentAckInput,
 ) -> Reply<HalfRecordedOutput> {
-    let now = clock::now_secs();
+    acknowledge_at(host, input, clock::now_secs()).await
+}
+
+pub(crate) async fn acknowledge_at<H: AppHost>(
+    host: &H,
+    input: PaymentAckInput,
+    now: u64,
+) -> Reply<HalfRecordedOutput> {
     let (principal, owner) = resolve_principal_and_owner(host, now).await?;
 
     let agr: AgreementRow = match get_row(host, AGREEMENTS, &input.agreement).await {

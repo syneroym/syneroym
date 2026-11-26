@@ -543,3 +543,113 @@ fn widget_data_validation() {
     assert!(widget::parse_widget_data("[1]").is_err());
     assert!(widget::parse_widget_data("not-json").is_err());
 }
+
+fn parse_agreement(args: &[&str]) -> Result<AgreementCommands, clap::Error> {
+    let mut full = vec!["roymctl"];
+    full.extend_from_slice(args);
+    Wrapper::<AgreementCommands>::try_parse_from(full).map(|w| w.command)
+}
+
+fn parse_eventlog(args: &[&str]) -> Result<EventlogCommands, clap::Error> {
+    let mut full = vec!["roymctl"];
+    full.extend_from_slice(args);
+    Wrapper::<EventlogCommands>::try_parse_from(full).map(|w| w.command)
+}
+
+fn parse_defaults(args: &[&str]) -> Result<DefaultsCommands, clap::Error> {
+    let mut full = vec!["roymctl"];
+    full.extend_from_slice(args);
+    Wrapper::<DefaultsCommands>::try_parse_from(full).map(|w| w.command)
+}
+
+#[derive(Parser)]
+struct StatementWrapper {
+    #[command(flatten)]
+    args: StatementArgs,
+}
+
+fn parse_statement(args: &[&str]) -> Result<StatementArgs, clap::Error> {
+    let mut full = vec!["roymctl"];
+    full.extend_from_slice(args);
+    StatementWrapper::try_parse_from(full).map(|w| w.args)
+}
+
+#[test]
+fn agreement_close_reads_its_flags() {
+    let cmd = parse_agreement(&[
+        "close",
+        "--agreement",
+        "rec_agr1",
+        "--close-as",
+        "giver",
+        "--commitment",
+        "c1",
+        "--commitment",
+        "c2",
+    ])
+    .unwrap();
+    let AgreementCommands::Close { agreement, close_as, commitments, .. } = cmd else {
+        panic!("expected agreement close");
+    };
+    assert_eq!(agreement, "rec_agr1");
+    assert_eq!(close_as, "giver");
+    assert_eq!(commitments, vec!["c1", "c2"]);
+}
+
+#[test]
+fn eventlog_list_reads_its_flags() {
+    let cmd = parse_eventlog(&["list", "--limit", "10", "--after-secs", "100", "--after-id", "e1"])
+        .unwrap();
+    let EventlogCommands::List { limit, after_secs, after_id, .. } = cmd else {
+        panic!("expected eventlog list");
+    };
+    assert_eq!(limit, Some(10));
+    assert_eq!(after_secs, Some(100));
+    assert_eq!(after_id.as_deref(), Some("e1"));
+}
+
+#[test]
+fn eventlog_rebuild_reads_its_flags() {
+    let cmd = parse_eventlog(&["rebuild"]).unwrap();
+    assert!(matches!(cmd, EventlogCommands::Rebuild { .. }));
+}
+
+#[test]
+fn statement_reads_its_flags() {
+    let args = parse_statement(&["--from", "2026-01-01", "--to", "2026-01-31"]).unwrap();
+    assert_eq!(args.from, "2026-01-01");
+    assert_eq!(args.to, "2026-01-31");
+}
+
+#[test]
+fn defaults_get_reads_its_flags() {
+    let cmd = parse_defaults(&["get"]).unwrap();
+    assert!(matches!(cmd, DefaultsCommands::Get { .. }));
+}
+
+#[test]
+fn defaults_set_reads_its_flags() {
+    let cmd = parse_defaults(&[
+        "set",
+        "--cancellation",
+        "canc terms",
+        "--refund",
+        "ref terms",
+        "--dispute",
+        "disp terms",
+        "--lang",
+        "en",
+        "--quote-valid-hours",
+        "24",
+    ])
+    .unwrap();
+    let DefaultsCommands::Set { cancellation, refund, dispute, lang, quote_valid_hours, .. } = cmd
+    else {
+        panic!("expected defaults set");
+    };
+    assert_eq!(cancellation, "canc terms");
+    assert_eq!(refund, "ref terms");
+    assert_eq!(dispute, "disp terms");
+    assert_eq!(lang, "en");
+    assert_eq!(quote_valid_hours, 24);
+}

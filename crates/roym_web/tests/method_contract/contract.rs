@@ -17,7 +17,7 @@ use syneroym_roym_transaction::api as transaction_api;
 use syneroym_roym_web::api as web_api;
 
 use super::{
-    fixtures::env,
+    fixtures::{enrol_signing, env, open_conv, peer_did},
     helpers::{Harness, HttpDriver, harness},
     trust_fixtures,
 };
@@ -80,7 +80,7 @@ fn every_scheduling_method_has_typed_input_and_output() {
 #[test]
 fn every_transaction_method_has_typed_input_and_output() {
     let table = transaction_api::method_table();
-    assert_eq!(table.len(), 47);
+    assert_eq!(table.len(), 55);
     assert_service_table(
         services::TRANSACTION,
         &table,

@@ -59,6 +59,19 @@ pub enum AgreementCommands {
         #[arg(long)]
         host: Option<String>,
     },
+    /// Close an agreement by signing settlement halves for commitments.
+    Close {
+        #[arg(long)]
+        agreement: String,
+        #[arg(long = "close-as", alias = "as-role")]
+        close_as: String,
+        #[arg(long = "commitment", action = clap::ArgAction::Append, required = true)]
+        commitments: Vec<String>,
+        #[arg(long, default_value = DEFAULT_GATEWAY_URL)]
+        gateway_url: String,
+        #[arg(long)]
+        host: Option<String>,
+    },
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -218,6 +231,14 @@ pub(super) async fn handle_agreement(
         AgreementCommands::Progress { agreement, gateway_url, host } => {
             let params = json!({ "agreement": agreement });
             call_and_print(ctx, gateway_url, host.as_deref(), "agreement.progress", params).await
+        }
+        AgreementCommands::Close { agreement, close_as, commitments, gateway_url, host } => {
+            let params = json!({
+                "agreement": agreement,
+                "as": close_as,
+                "commitments": commitments,
+            });
+            call_and_print(ctx, gateway_url, host.as_deref(), "agreement.close", params).await
         }
     }
 }

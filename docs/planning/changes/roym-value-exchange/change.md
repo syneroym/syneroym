@@ -10,6 +10,7 @@ living-docs-touched:
   - docs/planning/deferred-backlog.md
 demo:
   - crates/substrate/tests/e2e/demo/50-roym-deal.spec.ts
+  - none: C6a is node-side; C6b delivers Story 50 in browser Hub
 ---
 # Roym Value Exchange
 
@@ -159,7 +160,7 @@ These are overview criteria. Each module change document refines them into tests
 | VX-10 | A booking reserves its slot under the slot owner's single-writer fence, through the scheduling extension's reserve hook, also when the slot owner is not the quote author. If the reserve fails, the agreement is not formed. | |
 | VX-11 | A party can show a quote or an agreement with chosen fields hidden (for example the price), and the signatures still verify. Neither record carries the hidden terms in plain form. | |
 | VX-12 | Reputation shows which party failed which commitment, not only that a deal failed. | |
-| VX-55 | Each party can settle, in one action, every commitment of an agreement that it gives (a claim) or receives (a confirmation). Closing is optional. A commitment that nobody confirms ends `ended-unconfirmed` at the end of its track, and the agreement still counts as a recorded deal. Evidence shows that commitment as unconfirmed, not as failed. | |
+| VX-55 | Each party can settle, in one action, every commitment of an agreement that it gives (a claim) or receives (a confirmation). Closing is optional. A commitment that nobody confirms ends `ended-unconfirmed` at the end of its track, and the agreement still counts as a recorded deal. Evidence shows that commitment as unconfirmed, not as failed. | Through AG-46. Service: `crates/roym_transaction/src/app/tests/close.rs`; Parity: `crates/roym_web/tests/dual_build_parity/statement.rs` (scenarios 271-273); Substrate: `crates/substrate/tests/roym_statement_e2e.rs`. |
 | **EEPs between two parties** | | |
 | VX-13 | A participant with no published offering cannot issue an EEP. | |
 | VX-14 | An EEP's face value is in a currency that appears in the issuer's own offerings, in integer minor units. | |
@@ -202,8 +203,8 @@ These are overview criteria. Each module change document refines them into tests
 | VX-52 | An agreement records its home exchange: the source exchange of the intent, not a relaying one. Both opinions of the deal are paired there, also when one party sends its opinion through a friend exchange. | |
 | VX-53 | A deal with no home exchange publishes no opinions. Each author can still show its own opinion on request. | |
 | **Event log, statement, analytics** | | |
-| VX-45 | Every agreement and EEP event a participant takes part in is appended to its event log. Nothing in the log can block a deal. | |
-| VX-46 | A participant exports a statement for a period from the event log: every commitment given and received, its resource kind and its declared value. | |
+| VX-45 | Every agreement and EEP event a participant takes part in is appended to its event log. Nothing in the log can block a deal. | Through AG-27, AG-28. Unit: `crates/roym_core/src/eventlog/tests.rs`; Service: `crates/roym_transaction/src/app/tests/eventlog.rs`, `crates/roym_transaction/src/app/tests/eventlog_reads.rs`; Parity: `crates/roym_web/tests/dual_build_parity/statement.rs` (scenarios 267-269). |
+| VX-46 | A participant exports a statement for a period from the event log: every commitment given and received, its resource kind and its declared value. | Through AG-29, AG-30. Unit: `crates/roym_core/src/statement/tests.rs`; Service: `crates/roym_transaction/src/app/tests/statement.rs`; Parity: `crates/roym_web/tests/dual_build_parity/statement.rs` (scenario 270); Substrate: `crates/substrate/tests/roym_statement_e2e.rs`. |
 | VX-47 | An exchange shares an aggregate only when it covers at least a minimum number of participants. | |
 | VX-48 | Suggestions for one participant are computed on that participant's node, never on the exchange. | |
 | **Mailbox** | | |
@@ -767,6 +768,8 @@ change doc refines each row below through its `AG-*` rows.
   M08D. The instant cap is checked again by the writer under its fence, so
   the one-place race named in the plan remains possible and is also in the
   backlog.
+
+- **VX-45, VX-46, VX-55 (M08C C6a):** C6a implements the node-side event log derive step, event log query, statement export, and agreement closing on the node. VX-45's "agreement signed" event is named `agreement-formed`; EEP events are deferred to M08E. VX-46 is satisfied through the statement export rules defined in AG-29. Hub screens for mixed quote builder, agreement actions, and statement export land in C6b.
 
 ## Close-out
 

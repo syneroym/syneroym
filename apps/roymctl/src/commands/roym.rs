@@ -15,6 +15,7 @@ pub mod directory;
 pub mod find;
 pub mod group;
 pub mod signing;
+pub mod statement;
 pub mod step;
 pub mod transaction;
 pub mod trust;
@@ -31,6 +32,7 @@ pub use backup::{
 };
 pub use directory::{DirectoryCommands, MemberCommands};
 pub use group::GroupCommands;
+pub use statement::{DefaultsCommands, EventlogCommands, StatementArgs};
 pub use step::StepCommands;
 #[cfg(test)]
 pub(crate) use step::parse_step_data;

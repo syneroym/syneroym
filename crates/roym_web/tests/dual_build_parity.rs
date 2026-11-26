@@ -61,6 +61,8 @@ mod profile;
 mod scheduling;
 #[path = "dual_build_parity/search_scripts.rs"]
 mod search_scripts;
+#[path = "dual_build_parity/statement.rs"]
+mod statement;
 #[path = "dual_build_parity/step.rs"]
 mod step;
 #[path = "dual_build_parity/transaction.rs"]

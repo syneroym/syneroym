@@ -22,6 +22,11 @@
         "record_count": "number",
         "schema_version": "number"
       },
+      "deal_defaults": {
+        "digest": "string",
+        "record_count": "number",
+        "schema_version": "number"
+      },
       "disclosures": {
         "digest": "string",
         "record_count": "number",
@@ -628,6 +633,7 @@
         }
       }
     ],
+    "deal_defaults": [],
     "disclosures": [
       {
         "id": "string",
