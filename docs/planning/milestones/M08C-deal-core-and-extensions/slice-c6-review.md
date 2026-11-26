@@ -807,7 +807,7 @@ Counts: **0 blocker, 5 major, 5 minor.**
 
 ### Findings
 
-#### R1 — The derive step turns read errors into missing facts, so a statement can lose a note or get a wrong time for good (major)
+#### [x] R1 — The derive step turns read errors into missing facts, so a statement can lose a note or get a wrong time for good (major)
 
 *Where:* `crates/roym_transaction/src/app/eventlog_ops/gather.rs:108`
 (`if let Ok(Some(sr))`), `:149` and `:199` (`.ok()??`), `:230`
@@ -843,9 +843,9 @@ the fact is missing (`complete: false`). Add a service test with
 `fail_read` on `disclosures` and one on `agreement_progress`, each
 followed by a clean sync, that checks the note and the time.
 
-*Status:* Open.
+*Status:* Fixed (89301a1c). Proof: with the old swallow-error line in `load_note_from_disclosures` restored, `fail_read_disclosures_defers_derive_and_recovers_clean_sync` fails at "entry must not be created when disclosure read fails"; restored. Both new read-error tests pass.
 
-#### R2 — The statement uses the row's `agreed_at_secs` and other guesses, so the two parties' statements can differ (major)
+#### [x] R2 — The statement uses the row's `agreed_at_secs` and other guesses, so the two parties' statements can differ (major)
 
 *Where:* `crates/roym_core/src/statement.rs:189` (row `agreed_at_secs`
 fallback), `:247` (`open_at_end` fallback `.or(agr.agreed_at_secs)`),
@@ -881,9 +881,9 @@ commitment is not found, instead of inventing fields. Add a unit test
 with an agreement that has `agreed_at_secs` set but no formed entry, and
 check it is not in `open_at_end`.
 
-*Status:* Open.
+*Status:* Fixed (89301a1c). Proof: with the formed holdback removed, `settled_commitment_held_back_while_formed_cannot_be_made` fails at `d.entries.is_empty()`; restored. `agreement_without_formed_entry_is_not_in_open_at_end` and `entry_with_unknown_agreement_or_commitment_is_skipped` pass.
 
-#### R3 — The C6a decisions are not in the change docs' Deviations, and the test columns are not filled (major)
+#### [x] R3 — The C6a decisions are not in the change docs' Deviations, and the test columns are not filled (major)
 
 *Where:* `docs/planning/changes/roym-agreements/change.md:1510` to
 `:1516` (the new block "Rules and differences in C6a");
@@ -925,9 +925,9 @@ VX-46 notes to the value-exchange doc. Fill the test columns of AG-27 to
 AG-30, AG-33, AG-46, AG-48 (C6a parts) and VX-45, VX-46, VX-55 with the
 test file names.
 
-*Status:* Open.
+*Status:* Fixed (855b4713). The C6a block now holds only plan section 9's differences; the AG-30 and AG-33 test names point at tests that exist.
 
-#### R4 — The living docs give wrong method inputs and wrong facts (major)
+#### [x] R4 — The living docs give wrong method inputs and wrong facts (major)
 
 *Where:* `docs/developer-guide.md:2721` to `:2725`;
 `docs/TERMINOLOGY.md:97` to `:99`; `docs/system-architecture.md:1264`;
@@ -972,9 +972,9 @@ architecture line back to "once every commitment reaches a final state"
 and add one sentence that `agreement.close` signs one settlement half per
 listed commitment, and use the real record name in the requirements line.
 
-*Status:* Open.
+*Status:* Fixed (9307da76).
 
-#### R5 — The plan's time measurements and the seven-component size report are missing (major)
+#### [x] R5 — The plan's time measurements and the seven-component size report are missing (major)
 
 *Where:* plan section 10 (C6a exit criteria), 7.8 and 7.9;
 `docs/planning/milestones/M08C-deal-core-and-extensions/status.md:25`;
@@ -1007,9 +1007,9 @@ agreements for one export, prints both times, and fails only well above
 the stop rules. Record the numbers and the seven component sizes in
 status.md and task.md section 1.
 
-*Status:* Open.
+*Status:* Fixed (0a1423f3, 855b4713). Scenario 277 prints 18 ms native / 20 ms WASM for the sync over 50 agreements and 195 ms native / 297 ms WASM for the export over 1,000; both are within the stop rules.
 
-#### R6 — A not-formed agreement never gets a complete marker, so it is derived again on every sync (minor)
+#### [x] R6 — A not-formed agreement never gets a complete marker, so it is derived again on every sync (minor)
 
 *Where:* `crates/roym_transaction/src/app/eventlog_ops/gather.rs:41` to
 `:42`; `crates/roym_core/src/eventlog.rs:138` to `:143`;
@@ -1039,9 +1039,9 @@ to pass the counterparty half for a not-formed input and assert
 `complete: true`, and change the service test to build a not-formed row
 with only the counterparty half and check the marker is complete.
 
-*Status:* Open.
+*Status:* Fixed (89301a1c). Proof: with the old `agreed` condition and without the not-formed early return, `writer_derives_agreement_not_formed` fails at `marker.complete`; restored. The unit test now passes the counterparty half and asserts `complete`.
 
-#### R7 — The import writes the saved deal terms before it checks the bundle, and fails after its writes when the derive fails (minor)
+#### [x] R7 — The import writes the saved deal terms before it checks the bundle, and fails after its writes when the derive fails (minor)
 
 *Where:* `crates/roym_transaction/src/app/backup.rs:123` and `:191`;
 `crates/roym_transaction/src/app/backup/defaults.rs:19`.
@@ -1066,9 +1066,9 @@ the other checks, before any write) and a write step after
 log it and return `log_entries_made: 0`, as `sync_direct` ignores it (the
 next sync repairs). Read the row in the one shape that `export` writes.
 
-*Status:* Open.
+*Status:* Fixed (89301a1c). The import validates the saved terms before any write, writes them after the cards, and returns `log_entries_made: 0` when the rebuild fails. `fail_write_event_log_does_not_fail_sync_and_recovers_next_sync` reads the row directly and passes.
 
-#### R8 — Several tests prove less than their names (minor)
+#### [x] R8 — Several tests prove less than their names (minor)
 
 *Where:* `crates/roym_transaction/src/app/tests/eventlog.rs:414`;
 `crates/substrate/tests/roym_statement_e2e.rs:188`;
@@ -1107,9 +1107,9 @@ both settlements and `agreement.close`, and clear the read log only
 before the first call. Add the counterparty cases for the agreement ends
 and the three failure ends.
 
-*Status:* Open.
+*Status:* Fixed (1d703ff1, 292cc2c6). The named tests now read `event_log` with `get_row`, run a full deal, cover the money row and total, the corrected acknowledgement, the not-formed marker and the counterparty ends. The driver test reads the row from the data layer.
 
-#### R9 — status.md test counts do not match what the tests print (minor)
+#### [x] R9 — status.md test counts do not match what the tests print (minor)
 
 *Where:* `docs/planning/milestones/M08C-deal-core-and-extensions/status.md:25`.
 
@@ -1126,9 +1126,9 @@ what ran, and the numbers prove nothing.
 *Fix:* Rerun and copy the numbers with the command that printed each one,
 as the C4 rows do.
 
-*Status:* Open.
+*Status:* Fixed (status.md C6 row, in this commit). Counts from the commands in the row: roym-core 548, roym-transaction 285, roymctl 229, method_contract 40, statement parity 11, roym_statement_e2e 2.
 
-#### R10 — Small rule and duplication points in the new code (minor)
+#### [x] R10 — Small rule and duplication points in the new code (minor)
 
 *Where:* `crates/roym_core/src/eventlog.rs:148`, `:187`, `:235`, `:289`
 (four copies of the `EventLogEntry` literal), `:221` (`unreachable!()`);
@@ -1161,4 +1161,4 @@ DID, used by both files. Remove the `allow`. Move the `use` to the top.
 In `roymctl`, keep one exhaustive `match` (the lifecycle arms call their
 handlers and return).
 
-*Status:* Open.
+*Status:* Fixed (89301a1c, 49c5946e). One `entry` builder and one `failure_event` map the entries; `owner_role_and_counterparty` is shared; the `allow` and the end-of-file `use` are gone; `roymctl` has one exhaustive match.
