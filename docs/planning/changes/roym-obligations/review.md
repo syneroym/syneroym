@@ -874,3 +874,426 @@ open question N".
 New OB rows: OB-37 to OB-51, appended; no id was renumbered. Open
 question 1 has a new reason, and questions 7 and 13 have more text.
 
+
+## Doc review round 2 (fixes check) — Claude Sonnet 5.5 (Claude Code), 2026-11-26
+
+Checked `change.md` at `f2f3ffde` on `claude/m08e-obligations-change-doc-62dcfb`
+(fixes in `f72b2a8e`, statuses in `f2f3ffde`). The round 1 text of this file
+on that branch matches what I wrote (`782ace05` was cherry-picked as
+`4478aa4b` with no change). This round checks the fixes of P1 to P24, and
+reads the text the fixes added. Code facts are from the same checkout and
+from the cached `hpke-0.15.1` and `rand_core-0.10.1` source.
+
+**Summary:** P1 to P24 are all handled. 20 are confirmed fixed in the text.
+4 depend on an owner decision that the text records and applies as a
+recommendation: P7 (question 18), P11 (question 16), P12 point 1 (question
+17) and P21 question 3. None of the 24 is wrong. The new text creates 13 new
+findings, P25 to P37: 0 blocker, 4 major, 9 minor.
+
+**Descriptions of the open questions.** Question 3 is described correctly:
+A is the draft, B is the overview's VX-17 wording, C is A plus the signed
+"not received" half. The agreements document's question 15 does exist and
+the owner placed it with M08G on 2026-11-20 (agreements change.md:1184-1188).
+Question 16 is described correctly: the overview says only that the issuer
+signs every split. Question 17 is described correctly, with one limit in
+P32. Question 18 describes the race correctly, but its recommended rule is
+wider than the race (P30).
+
+What was checked and found correct:
+
+- **P1.** Fixed. Step 4 now runs `verify_message` (`check_signature` and
+  `check_sender` with the stored time as "now", change.md:601). OB-6 has one
+  proof per refusal reason. Step 6 adds the 24-hour rule. See P29 for one
+  sentence in "What it does not show".
+- **P2.** Fixed. Nothing releases an unconfirmed claim at the quote's expiry
+  (change.md:445-447). The drive waits 30 days. `claim-confirm` on a freed
+  round takes a new round or answers `eep-claimed`. OB-39 covers both. See P25
+  and P31 for gaps the fix opens.
+- **P3.** Fixed, and the route is sound. Keeping `out:`/`sent:` only for the
+  gap before `enqueue` is right. The WIT says the guest never sees the result
+  ([proxy.wit:124-129](../../../../crates/wit_interfaces/wit/proxy/proxy.wit#L124)),
+  so a status read keyed by the idempotency key is the smallest change. The
+  router keeps one proof per deposit, which fits `seal` making a new deposit
+  id each time. Copying the proof into `obligation`'s own data puts it in the
+  backup. Stating that E2 is the largest part is honest. See P34 for the task
+  mapping.
+- **P4.** Fixed. `key:<agreement>:<commitment_id>:<generation>`
+  (change.md:439, 723) copies the scheduling `Key` row. OB-20 has both cases.
+- **P5.** Fixed. `EepIssueTerms` holds `expires_in_secs`, version 1 computes
+  `expires_at_secs` from its own signing time, and the "matches" rule compares
+  the life (change.md:309, 321, 344). OB-37 and OB-14 test it.
+- **P6.** Fixed. The `eep-return` track end has a 7-day resolution window, and
+  its `tick` moves it only when no version is held (change.md:364-365). OB-21
+  checks the commitment's state. See P35 for one unclear sentence.
+- **P7.** The race is closed, pending question 18. The drafter's route is
+  sound for the case it names, and the reasons given against my three options
+  are right. See P30: the rule is wider than the race.
+- **P8.** Fixed. `resolve(G)` is a function with an order (change.md:453-471).
+  Mixes decide by the worst case, and an unissued change EEP counts as "not
+  claimed". OB-21 tests every combination of up to three commitments.
+- **P9.** Fixed. The issuer's own tick resolves a confirmed claim when the
+  writer's snapshots stop (change.md:475, OB-40), and the states table lists
+  it as a way out (:766).
+- **P10.** Fixed, and the change from my proposal is right. "Answer in the
+  call's own reply" reaches only a direct caller. On the mailbox path nothing
+  comes back, and that is acceptable for a caller that is not a holder. The
+  node-wide limit of 100 an hour is the right shape: a fresh caller DID costs
+  nothing, so only a limit that ignores the caller bounds the work. It counts
+  only the junk calls, so it cannot block a real holder's known EEP. See P26
+  and P34 for gaps.
+- **P11.** Recorded as question 16 and applied as a recommendation, with a
+  deviation row and OB-44. See P33 for the limit values.
+- **P12.** Point 2 is fixed: the new "Countersigns for every record"
+  subsection covers declines and, through deposit proofs, demands and
+  requests. Point 1 is stated plainly (change.md:682) and is question 17. See
+  P28 and P32.
+- **P13.** Fixed. Every reader and writer of `revoked_keys` is listed in a
+  table (change.md:647-658), both key forms are kept, and `check_key(master,
+  key)` over a map by master closes the wrong-anchor hole (:666, OB-50). I
+  checked the list against `auth/service.rs:292`, `mailbox/caller.rs:105`,
+  `revocation.rs:25`, `client.rs:553` and `supervisor.wit:243`. Nothing is
+  missing.
+- **P14.** Fixed (change.md:345, OB-14).
+- **P15.** Fixed, and doing both the table row and the Hub wording is right
+  (change.md:620, 624). `DepositProof` has `eep_version` and `sender`, step 7
+  checks the `delivered` receipt, and the deposit's time-to-live is set.
+- **P16.** Fixed, and the route is sound. The signed `Bundle` manifest holds
+  one digest per section (`SectionDigest`,
+  [backup.rs:54](../../../../crates/roym_core/src/backup.rs#L54)), so a time
+  written inside `obligation`'s own section is covered by the person's
+  signature. Rules 3 and 4 are as proposed (change.md:688-696). The lost
+  claim rows are named (:704).
+- **P17.** Fixed (48 KiB per call, OB-48). See P37.
+- **P18.** Fixed (change.md:903).
+- **P19.** Fixed (change.md:418, OB-19).
+- **P20.** Fixed, and the route is sound. The reserved `endorsement` is on the
+  request, and the old holder signs the request, so the field is its consent.
+  `transferred` is reserved and refused with `cause-not-supported`
+  (change.md:272-275, 860-868). The "Left for M08H" table matches. The
+  one-line change to `M08E-eeps/task.md` stays correct.
+- **P21.** Question 1 and question 13 are fixed. Question 3 is rewritten as
+  options A, B and C, with the recommendation moved to M08G's decision.
+- **P22.** Fixed. All seven rows are in `## Deviations` (change.md:1186-1202),
+  and the close-out names the agreements document.
+- **P23.** Fixed, and the route is sound. Building the whole wire table in E3
+  is better than moving OB-31. See P34 for two follow-ups. All 51 OB rows
+  appear in exactly one slice of the task list.
+- **P24.** Fixed. The row count is 20 (change.md:741), `eep-terms-mismatch` is
+  added, and the terms are defined. **The pushback is right in its result.**
+  `Kem::derive_keypair` gives a recipient key pair from key material, not an
+  ephemeral key. The public `Kem` trait has only `encap` and `encap_with_rng`
+  (`hpke-0.15.1/src/kem.rs:133-155`). `encap_with_eph` and `encap_det` exist
+  only inside `cfg(test)` and `kat` code (`kat_tests.rs:29-37`). So a seeded
+  random source is the only public route, and it fits
+  `single_shot_seal_with_rng(.., &mut impl CryptoRng)` (`single_shot.rs:138-144`)
+  from `rand_core` 0.10. `hkdf` 0.12 and `sha2` 0.10 are already direct
+  dependencies of `mailbox_format`. One detail is wrong: see P36.
+
+### P25 — major — A confirmed claim cannot be released when the deal ends `not-formed`
+
+**Where:** change.md:437 (`claim-release`), 739 (Release row), 443; agreements
+change.md:750 ("Release after confirm").
+
+**Problem:** The agreements document says that in the writer's decision step 4
+a failed confirm releases "every other reservation of this agreement, also the
+ones already confirmed", and that `release` "must free a reservation in any
+state, confirmed too". The new text says `claim-release` frees a claim "only
+while … the claim is not confirmed", with one exception: `cancelled: true`,
+which `transaction` sends for an `eep-return` that "ended `cancelled`"
+(change.md:739). A `not-formed` deal has no commitments, so that flag is never
+set. Take a writer that is the issuer, with an `eep-return` and a slot
+reservation. The claim is taken and confirmed. The slot confirm is refused
+(EX-22). The writer stores a `not-formed` snapshot and releases every
+reservation, but `claim-release` refuses the confirmed claim. The holder's
+version stays `claimed` for ever: nothing resolves it, because no agreement
+formed and no `eep-return` exists. A later agreement that returns the same
+version gets `eep-claimed`.
+
+**Fix:** Let `claim-release` free a confirmed claim when `transaction` says the
+deal ended `not-formed` or `expired` (for example one flag `deal_ended: true`),
+and keep the rule "no `ver:<id>:<v+1>`". Add a service test: confirm a claim,
+fail the next confirm, check that the version is free and can be claimed again.
+
+**Status:** Open
+
+### P26 — major — Catch-up and `not-holder` need a version that a demand and a split request do not carry
+
+**Where:** change.md:396-402 (automatic checks), 690 (catch-up: "in a demand, a
+split request or an acknowledgement"), 913 (`obligation.demand` input
+`{ demand }`), 823-835 (`EepDemandPayload`), 860-866 (split request).
+
+**Problem:** Catch-up rule 1 needs the version w "verifies, with `issuer_did`
+equal to this node's person". An acknowledgement call carries `versions:
+[envelope]`, so it can show w. A demand carries only `eep_record`, a record id,
+and the `obligation.demand` input is `{ demand }`. So a demand cannot show w. The
+text for `not-holder` says "by the version the demand carries" (change.md:401),
+which also has nothing to read. There is a second problem with the order.
+`eep-unknown` is the first check and answers "error only, no record". After a
+known restore, an EEP made after the backup is wholly unknown, and that is the
+common loss. The holder's demand gets an error, and catch-up never runs.
+Catch-up is defined only for a version "newer than the issuer's latest stored
+version of that EEP", which is empty here. So a holder cannot redeem an EEP that
+the restored issuer lost. This was already so in round 1; the new first-two-checks
+rule makes it final.
+
+**Fix:** Make the input `{ demand, version }` and `{ request, version }`, where
+`version` is the latest issuer-signed version the holder holds. Run the checks in
+this order: (1) verify the demand and the version together; (2) with a known
+restore, an unknown EEP or a newer version goes to catch-up first; (3) only
+then `eep-unknown` and `not-holder` as error only. Say that catch-up also
+accepts the case where the issuer has no version of that EEP. Add OB-29 cases:
+an EEP created after the backup, shown in a demand.
+
+**Status:** Open
+
+### P27 — major — The issuer's service cannot see the time the mailbox stored a demand
+
+**Where:** change.md:405 (`eep-expired`: "'Reached' is the `stored` time when the
+demand came from the issuer's mailbox"), 407 (`demand-late`), 410, OB-11.
+
+**Problem:** A guest sees only `invocation.caller()`, which answers `internal`,
+`verified(did)` or `anonymous`
+([invocation.wit:14-33](../../../../crates/wit_interfaces/wit/invocation/invocation.wit#L14)).
+Nothing tells it that the call came from a mailbox, or when the mailbox stored
+it. The mailbox change (`D-C6-6`) gives the caller no time either. So
+`obligation.demand` cannot compute "reached" for a mailbox demand. It can only
+use the time of the call, which is the pull time. Then a demand that was
+stored on day 6 of a 7-day EEP and collected on day 8 is declined with
+`eep-expired`, against the rule that it "must still be answered in its notice"
+(change.md:410). The same gap breaks `demand-late`.
+
+**Fix:** Pick one: (a) add the stored time (and a flag "from a mailbox") to the
+caller context, as one more E2 host feature, covered by a test; or (b) say that
+`obligation` uses the demand's own signed `issued_at_secs`, which step 6 of the
+deposit check already ties to within 24 hours of the stored time, and say that
+a demand is "reached" at `issued_at_secs` for both codes. Option (b) needs no
+host feature, but a holder could back-date by up to 24 hours. State that limit.
+Add an OB-11 case with a controllable clock.
+
+**Status:** Open
+
+### P28 — major — The deposit proof check is written only for a demand, but it is also used as the countersign of every other record
+
+**Where:** change.md:677-678 (countersign table), 596-604 (the check), 583-584
+(`eep_version`).
+
+**Problem:** To fix P12 point 2, the draft says a deposit proof is the
+countersign of "any record the signer sent … with deposit first: demands,
+split and holdings requests, declines, acknowledgements". The check has steps
+that only fit a demand:
+
+- Step 1 needs `P.destination` to equal the `issuer_address` of an issuer-signed
+  version. A decline is sent to the holder, and an acknowledgement goes to the
+  issuer. Only the second fits. A decline's destination is the holder's
+  obligation address (`reply_to`), which no version names.
+- Step 5 needs the method `obligation.demand` with a byte-identical `demand`.
+  A decline travels in `obligation.deliver { records }`, and an
+  acknowledgement in `obligation.acknowledge { acknowledgements }`.
+- Step 6 needs `D.answer_by_secs`, which only a demand has.
+
+So the countersign by deposit proof, and the "third-party time" of question 17,
+cannot be checked as written for four of the five record types.
+
+**Fix:** State a general check: "P proves that a mailbox stored a message that
+carries record R, sent to destination X at time T". X is the issuer's address
+for demands, split requests, holdings requests and acknowledgements, and the
+`reply_to` of the answered request for declines and delivered versions. The method
+is the one that record type uses (a small table). The 24-hour rule applies to
+every record that has a signed time. Keep steps 1 to 4 and 7 as they are. Move
+step 5 and 6 into the per-type table. Add one valid and one changed proof per
+record type to OB-6 or OB-49.
+
+**Status:** Open
+
+### P29 — minor — The proof check fails every earlier proof after a routine instance revocation
+
+**Where:** change.md:608 ("a revoked sender instance makes the proof fail"),
+655 (`revoke-instance` writes `retired`, `effective_from_secs` = now).
+
+**Problem:** The text says a verifier checks the sender master's anchor and a
+revoked sender instance "makes the proof fail". It uses no time. But the new
+rule says a `retired` key is valid for records signed before `effective_from_secs`,
+and `revoke-instance` now writes exactly that. After any redeploy that revokes
+the holder's `obligation` instance, every earlier proof (and so every "no
+answer" evidence) would fail. That throws away the evidence this design builds.
+
+**Fix:** Use the same rule as for records: the sender's instance key is valid
+for a message whose send time is before `effective_from_secs` when the reason
+is `retired`. For `compromised`, the stored receipt itself is the third-party
+time and is enough when it is before `effective_from_secs`. Add a case to OB-6.
+
+**Status:** Open
+
+### P30 — minor — The cancel rule of question 18 is wider than the race it fixes
+
+**Where:** change.md:477, 945, 1066, 1151-1153, OB-41, deviation row at :1199.
+
+**Problem:** The race exists only when the issuer is the counterparty and gives
+nothing else, so that it closes at the first snapshot (change.md:477, 1151:
+"gives nothing else"). With another commitment in `G`, the issuer does not
+close until `G` is final, so a cancel before that releases the claim and is safe.
+But the rule, the question's recommendation, OB-41 and the deviation row all
+refuse `agreement.cancel` whenever the counterparty receives an `eep-return`.
+That includes the common redemption in which the holder writes the quote ("I
+give ₹300 EEP, you give 2 kg of wheat") and the issuer accepts. The holder can
+never cancel, even while the issuer has done nothing. The rejected-options line
+(:1066) says the other options "took away 'cannot deliver'", and this rule does
+the same for the holder in this case.
+
+**Fix:** Narrow the rule to: refuse `agreement.cancel` with
+`eep-return-to-counterparty` only when the counterparty receives an
+`eep-return` and the issuer gives no other commitment (`G` is empty). Change
+the rule text, OB-41 (add a case with a non-empty `G` that cancels) and the
+deviation row. Question 18 is the owner's to decide, so the owner should see
+the narrower rule as an option.
+
+**Status:** Open
+
+### P31 — minor — A `failed` `eep-return` signed by the issuer reads as the holder's failure
+
+**Where:** change.md:331, 339, 447, 1195; agreements document (VX-12: the
+snapshot names every failed commitment, and the agreement names its giver).
+
+**Problem:** When a late countersign finds the version taken by another claim,
+the issuer signs a `commitment-failure` and the `eep-return` ends `failed`. The
+giver of an `eep-return` is the holder. Reputation (M08G) reads a failed
+commitment as the giver's. Here the cause is on the issuer's side: its own
+drive released the claim, or it lost a row. A holder who did nothing wrong gets
+a failed commitment in its evidence.
+
+**Fix:** Say that the evidence of this failure is attributed by the signer: the
+failure record is signed by the receiver, and M08G must not count it against the
+giver. Or give the end its own name (for example `claim-lost`) so a reader can
+tell it from the giver's `failed`. Add a sentence to "Left for M08H" or to the
+M08G task that readers attribute by signer.
+
+**Status:** Open
+
+### P32 — minor — `revoke_key` defaults to `effective_from = now` for `compromised`
+
+**Where:** change.md:654 (the `revoke_key` row), 682, 1147 (question 17's
+reason).
+
+**Problem:** For a `compromised` key, `effective_from_secs` is the earliest time
+that records of the key can no longer be trusted without a countersign. Setting
+it to "now" by default means that everything signed from the real compromise
+until today still counts if it has a countersign. Question 17's reason says the
+mailbox `stored` time is "the only time in the design that the forger cannot
+write". That is true, but the forger can deposit a forged record at a mailbox
+at any time between the compromise and `effective_from`. A default of "now"
+makes that window as long as possible.
+
+**Fix:** Make the time a required argument when the reason is `compromised` (no
+default). Say in the Hub text and in `roymctl` help that the person should give
+the earliest time it suspects. Add one sentence to question 17's reason that
+the protection is only as good as `effective_from_secs`.
+
+**Status:** Open
+
+### P33 — minor — The split limits are not defined per currency, and OB-25 now disagrees
+
+**Where:** change.md:513-514 (limits), 136 (OB-25), 161 (OB-44), 1142.
+
+**Problem:** "At least 100 minor units (for example ₹1)" is one number for
+every currency. A currency has 0, 2 or 3 minor digits
+(`money::currency_minor_exponent`), so 100 minor units is 100 yen, ₹1 or 0.1
+dinar. The words "or the whole face value when that is less" are unclear: a
+part cannot be the whole value. OB-25 still says "each at least 1 minor unit",
+while OB-44 declines under 100. A test cannot satisfy both.
+
+**Fix:** Define the smallest part as `10^max(exponent-2, 0)` minor units (one
+major unit of a 2-digit currency) or as a table per currency, and say what
+happens when the face value is less than twice the smallest part (the split is
+refused with `split-limit`). Change OB-25 to "each at least the smallest part
+of OB-44", or say OB-25 is the validator and OB-44 is the policy.
+
+**Status:** Open
+
+### P34 — minor — Task mapping and test rows
+
+**Where:** change.md:1159-1161 (E2, E3, E4), 159 (OB-42), 165 (OB-48), 797
+(demand states).
+
+**Problem:**
+
+- OB-51 is in E2, but it tests `obligation` "with a fake proxy", and the service
+  is built in E3. E2 can test the host function only.
+- E3 builds the wire table with all five entries but only the `acknowledge` and
+  `deliver` handlers. The text does not say what `demand`, `split` and
+  `holdings` answer until E4, so OB-31 is not fully testable in E3.
+- OB-42 says "sign nothing and store nothing" and also "counts such calls".
+  A counter is a stored row. Say "no record and no row except one counter per
+  hour".
+- OB-48 holds three separate rules (the size, 60 an hour per caller, one
+  holdings answer an hour). Split it.
+- The demand diagram (change.md:776-783) does not show the new `call-failed`
+  state, although the table does.
+- The 100-an-hour limit counts only unknown-EEP and non-holder calls. A real
+  holder of a closed or claimed EEP can still make the node sign a decline for
+  each demand (up to 60 calls of 16 records an hour, per caller, and callers
+  are free). Say whether a per-holder limit applies.
+
+**Fix:** Move OB-51's service test to E3 (keep a unit test of the host function
+in E2). Add "an unbuilt method answers `not-built` until E4". Edit OB-42,
+OB-48 and the diagram. Add the per-holder limit or say why it is not needed.
+
+**Status:** Open
+
+### P35 — minor — "Track end plus 7 days" is used for two different things
+
+**Where:** change.md:364, 475, 766, 1198, OB-40.
+
+**Problem:** Line 364 says the `eep-return`'s own track end already includes a
+7-day resolution window. Line 475 says the issuer's own tick runs "at the
+`eep-return`'s own track end plus 7 days". A reader cannot tell whether this is
+7 days or 14 days after the other commitments end. The states table (:766) and
+OB-40 repeat the phrase.
+
+**Fix:** Name two constants, for example `RESOLUTION_WINDOW_SECS` (7 days, in the
+track end) and `ISSUER_TICK_GRACE_SECS` (the extra time before the issuer
+resolves alone), and use the names in the text and in OB-40.
+
+**Status:** Open
+
+### P36 — minor — E2 details for the seeded generator
+
+**Where:** change.md:576, 1159; the status of P24 above.
+
+**Problem:** The fix status says "the only API that takes an ephemeral key is
+`hpke`'s `danger` module". That is not right. `danger::streaming_enc` builds
+encryption contexts from a given AEAD key and nonce
+(`hpke-0.15.1/src/danger.rs`). It takes no ephemeral key. No public `hpke` API
+does (see P24 above). The conclusion stays the same. The E2 task also needs:
+
+- `mailbox_format` gains a direct dependency on `rand_core` 0.10 (it is already
+  in `Cargo.lock`, so "no new crate" is right, but it is a new line in the
+  crate's `Cargo.toml`, with `default-features = false` and the major.minor
+  rule of `check-dep-versions`).
+- The generator implements `TryRng<Error = Infallible>` and `TryCryptoRng`. The
+  `Rng` and `CryptoRng` traits that `hpke` asks for follow from blanket
+  implementations (`rand_core-0.10.1/src/lib.rs:49-97`, `:249`).
+- A known-answer test: the same seed, key and plaintext give the same sealed
+  bytes, and a different seed gives different bytes that open to the same
+  plaintext.
+
+**Fix:** Correct the sentence and add the three items to the E2 task.
+
+**Status:** Open
+
+### P37 — minor — The 48 KiB limit must be measured on the escaped request
+
+**Where:** change.md:905, 903, OB-48.
+
+**Problem:** A Roym request reaches the mailbox as the one string argument of
+`invoke` (the wake manifest shows the shape: `[ "{\"method\":…}" ]`). The
+envelopes inside it are JSON with many quotes, and each quote is escaped when
+the request is a string value. That adds about 10 to 20 percent. 48 KiB of
+request becomes about 55 to 58 KiB of message, plus the sender certificate, the
+signature and the HPKE overhead of 48 bytes. This is under 64 KiB but with
+little room.
+
+**Fix:** State that the 48 KiB is the size of the request string as sent, not of
+the unescaped records, and let E3 measure the real margin (the draft already
+plans to measure one `eep` version).
+
+**Status:** Open
