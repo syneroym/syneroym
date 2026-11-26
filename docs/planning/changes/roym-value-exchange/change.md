@@ -10,6 +10,7 @@ living-docs-touched:
   - docs/planning/deferred-backlog.md
 demo:
   - crates/substrate/tests/e2e/demo/50-roym-deal.spec.ts
+  - none: C6a is node-side; C6b delivers Story 50 in browser Hub
 ---
 # Roym Value Exchange
 
@@ -767,6 +768,8 @@ change doc refines each row below through its `AG-*` rows.
   M08D. The instant cap is checked again by the writer under its fence, so
   the one-place race named in the plan remains possible and is also in the
   backlog.
+
+- **VX-45, VX-46, VX-55 (M08C C6a):** C6a implements the node-side event log derive step, event log query, statement export, and agreement closing on the node. Hub screens for mixed quote builder, agreement actions, and statement export land in C6b.
 
 ## Close-out
 

@@ -14,6 +14,7 @@ living-docs-touched:
 demo:
   - crates/substrate/tests/e2e/demo/50-roym-deal.spec.ts
   - none: background driver has no new user-visible screens or commands; covered by two-node e2e tests (C3c1)
+  - none: C6a is node-side; C6b delivers Story 50 in browser Hub
 ---
 # Roym agreements
 
@@ -1505,6 +1506,14 @@ The owner answered that plan's questions Q1 to Q8 on 2026-11-23; the rows below 
 - **The `answer:` row keeps the quote sequence (C3c2).** The plan's row held the state, the quote id and `formed_as`. A retry after a crash must sign the same quote, and the id is derived from the sequence, so the row also stores it. The `answering` state is resumed with the stored id, sequence and `formed_as`, and no second term evaluation.
 - **Two Hub reasons are added (C3c2).** `answer-in-progress` says another answer holds the fence, instead of the wrong `confirm-first`. `accept-failed` is the stable code for a refusal with no code, so the row never stores an English message. The cap sentence now names the limit (`{ $cap }`).
 - **The listing form refuses `instant` with no deal texts (C3c2).** Such an offering could never be agreed as listed. The form answers the same "fill the three texts or leave all empty" message. The Hub also shows each tap text in the language it shows, and signs only that language and whether it was a machine translation.
+
+**Rules and differences in C6a (2026-11-26).**
+
+- **CLI `--close-as` parameter on `agreement close`.** `roym transaction agreement close` uses `--close-as` (with `--as-role` alias) instead of `--as` because `--as` is a global flag on `roymctl` (`run_as`), and clap forbids child subcommands from redefining a global option name. The RPC wire parameter is unchanged (`"as": "giver" | "receiver"`).
+- **Settling all commitments automatically closes agreement in parity scenario 267.** `scenario_267` produces 4 event log entries (`agreement-formed`, two `commitment-settled`, and `agreement-closed`) because settling all commitments on an agreement immediately transitions the agreement to `closed`, deriving the final `agreement-closed` event log entry.
+- **Statement totals group by currency, direction, and resource kind in parity scenario 270.** `scenario_270` produces two statement totals rows (one for given goods and one for received currency).
+- **`SCHEMA_VERSION` is 9 in `roym_transaction`.** Bumped from 8 to 9 to include the `deal_defaults` backup section for saved deal terms.
+- **Fixture helper naming.** In test fixtures, `setup_barter_fixture`, `BarterFixture`, and `exchange_barter_fulfilments` were generalized to `setup_mixed_fixture`, `MixedFixture`, and `exchange_mixed_fulfilments` to adhere to the project terminology rule that forbids the word "barter".
 
 ## Close-out
 
