@@ -1982,3 +1982,108 @@ Fast-forwarded to the review commit `15ea0f32`. All four findings are fixed in
 
 OB ids are unchanged: OB-57, OB-65, OB-67, OB-69 and OB-70 are changed in
 place, each with a "(Changed in review round 6, Pn.)" note. No new OB row.
+
+## Doc review round 7 (fixes check) — Claude Sonnet 5.5 (Claude Code), 2026-11-26
+
+Checked `change.md` at `e8baf3bb` on `claude/m08e-obligations-change-doc-62dcfb`,
+directly on top of my round 6 commit `15ea0f32`. My branch was fast-forwarded to
+it first. This round checks P44 to P47 against the code and reads only the text
+that the fixes changed.
+
+**Summary:** P44 to P47 are confirmed fixed. The changed text creates 1 new
+minor finding, P48. So this file has one open item.
+
+- **P44.** Confirmed fixed, and the claim that nothing else depends on the
+  refusal holds.
+  - The refusal is `check_mailbox_methods`, called from
+    `validate_plan_member_settings`
+    ([compiler.rs:138-150](../../../../crates/app_orchestration/src/compiler.rs#L138)).
+    That function runs in `compile` (`compiler.rs:52`) and in the supervisor's
+    `submit` ([submit.rs:340](../../../../crates/app_supervisor/src/service/verbs/submit.rs#L340)).
+    These are its only two callers, so removing the refusal there covers both
+    paths, as the status says.
+  - The plan's `mailbox_methods` is read in four places: the compiler (the check
+    itself and the copy into the plan), `refuse_reserved_mailbox_methods` (it
+    checks only names), and the SDK mapper
+    ([mapper.rs:402-406](../../../../crates/sdk/src/mapper.rs#L402)). The mapper
+    sends the methods only inside `MailboxCredentials`, and it builds those only
+    when a mailbox key exists for the service. A key is made only when the service
+    has a mailbox (`member_mailbox`, `None => Ok(None)`,
+    [certify.rs:207-208](../../../../crates/sdk/src/deploy/certify.rs#L207), and the
+    insert at `:296`). So a listed method with no mailbox never reaches the
+    substrate, and it has no effect, as the new text says. If an operator adds a
+    mailbox in a later redeploy, the methods start to count, which is right.
+  - `roymctl app deploy` applies the mailbox options to the manifest before
+    `compile` (`apply_mailbox_overrides`,
+    [deploy.rs:646](../../../../apps/roymctl/src/commands/app/deploy.rs#L646)), so a
+    deploy that gives a mailbox is not affected. `svc deploy` keeps its own
+    refusal ([deploy.rs:105](../../../../apps/roymctl/src/commands/svc/deploy.rs#L105),
+    tested at `svc/tests.rs:643`). The one test that expects the compiler's
+    refusal is `mailbox_methods_without_a_mailbox_are_refused`
+    (`compiler/tests/member_settings.rs:137-141`), and OB-67 says it changes. No
+    `.toml` manifest in the repository lists `mailbox_methods` today, so no
+    existing manifest changes meaning.
+  - The deviation from `D-C6-5` is under "Added in review round 6", the facts
+    table has the new row, and E3 names the removal of the refusal and of its
+    test. One small point: the supervisor's `submit` gets no warning, only
+    `roymctl app deploy` does. That is acceptable, because the warning is for
+    the operator, and a client that skips `roymctl` is outside what the draft
+    designs.
+- **P45.** Confirmed fixed. The slot is the first 2 bytes of
+  HMAC-SHA256(node salt, caller DID) modulo 4,096. Two bytes give 65,536 values,
+  which divide evenly by 4,096, so the slots are not biased. The salt is secret
+  and kept in `obligation`'s data, so a caller cannot aim at another caller's
+  slot, and the draft is right that a plain hash would let an attacker lock out
+  one holder with 60 calls. A new caller is never refused for being new, which
+  was the harm of P45. There are at most 4,096 rows per bucket. The figure "about
+  245,000 calls an hour" is 4,096 × 60. It is a lower bound: an attacker cannot
+  choose slots, so random callers need more calls to fill every slot with 60
+  (about 1.5 times as many, by the usual count for filling every bin). The order
+  of magnitude is right, so the text may keep it. OB-57 (two callers sharing a
+  slot, with a test salt) and OB-65 (a new caller accepted after 10,000) test it.
+- **P46.** Confirmed fixed. "The first row that applies, from the top, sets the
+  level", and row 4 now ends "and no later direct delivery". A case with a
+  `stored` receipt, an `expired` one and a later direct delivery now falls to
+  row 5, "received by the issuer's node, no proof". The text is right about the
+  code: `unregister` writes `Expired` for each queued message
+  ([queue.rs:138-148](../../../../crates/mailbox/src/store/queue.rs#L138)), and
+  `judge` turns a receipt that does not verify into `retry`
+  ([poll.rs:108-121](../../../../crates/router/src/proxy/mailbox/poll.rs#L108)), so
+  the outbox goes back to direct attempts. The added limit is correct and honest:
+  a holder can show a third party only the deposit proof, and nothing that the
+  issuer holds can correct that. OB-70 tests both outcomes (online in time, and
+  the issuer kept offline).
+- **P47.** Confirmed fixed. `receiver_mailbox` has three values: the mailbox DID,
+  `none` (a valid record that names no mailbox) and `unknown` (no valid record
+  was read, for example a failed lookup or an expired record). The warning shows
+  only after `none`. OB-69 has one case per value and the sequence `none` then
+  `unknown`, and the E2 task has the router test that a failed lookup gives
+  `unknown`. See P48.
+- **The five rows changed in place** (OB-57, OB-65, OB-67, OB-69 and OB-70).
+  Acceptable, for the same reason as OB-59 in round 4: each keeps its id and its
+  rule, each carries "(Changed in review round 6, Pn.)", and no test names them
+  yet. The two rows that are mostly new text (OB-65 and OB-67) still test the
+  same rule as before.
+
+### P48 — minor — "The last call that read a record" needs a stored value
+
+**Where:** change.md, OB-69 ("A later call with `unknown` leaves the shown state
+as it was") and the Hub bullet under "Where the warning appears" ("the warning
+shows only when the last call that read a record got `none`").
+
+**Problem:** The warning depends on the last known value of an issuer's
+`receiver_mailbox`. But the deposit status read keeps its rows only for the life
+of the outbox row plus 14 days (change.md, "The send path"). After that, nothing
+holds the value. A holder that has made no call to that issuer for a month, or
+whose last calls all gave `unknown`, would lose the warning without any change in
+the issuer. Nothing says where "the shown state" is kept, or when it is written.
+`obligation.drive` already copies each new proof from the status read into its
+own data, so it is the natural place.
+
+**Fix:** Say that `obligation.drive` writes the value to a row for the issuer
+(`mailbox_of:<issuer>`, the latest `none` or DID, with the time) whenever a status
+read gives a value other than `unknown`, and that the Hub reads that row. Add the
+case "no call for longer than the status rows are kept; the warning stays" to
+OB-69.
+
+**Status:** Open
