@@ -190,7 +190,10 @@ fn build_rows(
             .unwrap_or(0);
 
         let description = comm.map(|c| c.description.clone()).unwrap_or_else(|| {
-            LocalText::plain(syneroym_text_lang::LangTag::parse("en").unwrap(), "")
+            LocalText::plain(
+                syneroym_text_lang::LangTag::parse("en").expect("valid default lang"),
+                "",
+            )
         });
 
         let resource_kind = entry

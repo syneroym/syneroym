@@ -175,6 +175,18 @@ pub enum TransactionCommands {
         #[command(subcommand)]
         command: super::agreement::FulfilmentCommands,
     },
+    /// View or rebuild the agreement event log.
+    Eventlog {
+        #[command(subcommand)]
+        command: super::statement::EventlogCommands,
+    },
+    /// Export agreement statement for a date range.
+    Statement(super::statement::StatementArgs),
+    /// Saved deal terms and defaults.
+    Defaults {
+        #[command(subcommand)]
+        command: super::statement::DefaultsCommands,
+    },
 }
 
 struct EnquiryParamsArgs<'a> {
@@ -554,12 +566,50 @@ async fn handle_thread(
     Ok(())
 }
 
+async fn handle_lifecycle_commands(
+    command: &TransactionCommands,
+    dir: &Path,
+    run_as: Option<&str>,
+    ucan_path: Option<&Path>,
+) -> Result<bool> {
+    match command {
+        TransactionCommands::Agreement { command } => {
+            super::agreement::handle_agreement(command, dir, run_as, ucan_path).await?;
+            Ok(true)
+        }
+        TransactionCommands::Payment { command } => {
+            super::agreement::handle_payment(command, dir, run_as, ucan_path).await?;
+            Ok(true)
+        }
+        TransactionCommands::Fulfilment { command } => {
+            super::agreement::handle_fulfilment(command, dir, run_as, ucan_path).await?;
+            Ok(true)
+        }
+        TransactionCommands::Eventlog { command } => {
+            super::statement::handle_eventlog(command, dir, run_as, ucan_path).await?;
+            Ok(true)
+        }
+        TransactionCommands::Statement(args) => {
+            super::statement::handle_statement(args, dir, run_as, ucan_path).await?;
+            Ok(true)
+        }
+        TransactionCommands::Defaults { command } => {
+            super::statement::handle_defaults(command, dir, run_as, ucan_path).await?;
+            Ok(true)
+        }
+        _ => Ok(false),
+    }
+}
+
 pub(super) async fn handle_transaction(
     command: &TransactionCommands,
     dir: &Path,
     run_as: Option<&str>,
     ucan_path: Option<&Path>,
 ) -> Result<()> {
+    if handle_lifecycle_commands(command, dir, run_as, ucan_path).await? {
+        return Ok(());
+    }
     let ctx = RpcCtx { run_as, ucan_path, dir };
     match command {
         TransactionCommands::Enquiry {
@@ -640,15 +690,7 @@ pub(super) async fn handle_transaction(
         TransactionCommands::Thread { conversation, gateway_url, host } => {
             handle_thread(conversation, gateway_url, host.as_deref(), ctx).await?;
         }
-        TransactionCommands::Agreement { command } => {
-            super::agreement::handle_agreement(command, dir, run_as, ucan_path).await?;
-        }
-        TransactionCommands::Payment { command } => {
-            super::agreement::handle_payment(command, dir, run_as, ucan_path).await?;
-        }
-        TransactionCommands::Fulfilment { command } => {
-            super::agreement::handle_fulfilment(command, dir, run_as, ucan_path).await?;
-        }
+        _ => unreachable!(),
     }
     Ok(())
 }
