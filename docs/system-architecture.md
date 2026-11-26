@@ -1261,7 +1261,7 @@ Money moves outside Roym. Roym records what each side says and cannot confirm th
 The rules of the agreement:
 
 - **Against interest.** A statement that goes against the interest of the person who signs it moves the track to final (`acknowledged` or `fulfilled`) at once: the quote author's payment half, and the counterparty's fulfilment half. A statement in favor of the signer only makes the track `claimed`. A track that is final does not change again. A repeated statement changes nothing.
-- **Closed.** The agreement reaches `closed` once every commitment reaches a final state (`acknowledged`, `fulfilled`, `ended-unconfirmed`, `failed`, or `cancelled`), or when closed via `agreement.close`.
+- **Closed.** The agreement reaches `closed` once every commitment reaches a final state (`acknowledged`, `fulfilled`, `ended-unconfirmed`, `failed`, or `cancelled`). `agreement.close` signs one settlement half per listed commitment.
 - **Track window.** Each track stays open for 30 days after the later of the commitment's schedule window and the agreement time. With no schedule window, it is 30 days after the agreement opens. After that, a track that is `promised`, `payment-requested`, or `claimed` becomes `ended-unconfirmed` (recording `claimed: true` if the giver claimed, `claimed: false` otherwise).
 - **Cancel.** Only the quote author can cancel, with `agreement.cancel` and a reason. It is possible only while all commitments are open (`promised` or `payment-requested`). A counterparty asks in the conversation. A cancel frees claimed seats and holds.
 

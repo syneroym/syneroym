@@ -96,7 +96,7 @@ neighbourhood.
 | **Author translation** | An alternative translation signed by the author inside the record envelope (up to 4 translations per record). The original text always binds. | Machine translation (MT), which is unsigned software output. |
 | **Event log** | An append-only local log derived on each participant node recording lifecycle milestones of deals and commitments (`agreement-formed`, `commitment-settled`, `commitment-failed`, etc.). Derived purely from held signed records and progress snapshots; nothing on the deal path reads from it. | An accounting ledger or database audit table. |
 | **Statement** | An exportable financial summary of settled commitments over a date range (`statement.export`), grouping declared values into totals by currency, direction (given vs. received), and resource kind. | An invoice or payment receipt. |
-| **Saved deal terms** | Default deal terms configured by a participant on their node (`cancellation_terms`, `refund_terms`, `dispute_path`, `payment_timing`, `currency`, `quote_valid_secs`) that pre-fill new quote terms. | An agreement template or contractual agreement. |
+| **Saved deal terms** | Default deal terms configured by a participant on their node (`cancellation_terms`, `refund_terms`, `dispute_path`, `quote_valid_secs`) that pre-fill new quote terms. | An agreement template or contractual agreement. |
 
 ## Key phrasings
 

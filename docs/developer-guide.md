@@ -2716,13 +2716,13 @@ Every receipt half, payment record, fulfilment receipt and progress snapshot mus
 
 ### 6.9. Event log, statements and deal defaults
 
-Each participant node keeps a derived append-only `event_log` recording significant milestones in agreement lifecycles (`agreement-formed`, `commitment-settled`, `commitment-failed`, `commitment-ended-unconfirmed`, `commitment-cancelled`, `agreement-closed`, `agreement-cancelled`, `agreement-not-formed`). The log is derived purely from signed records and progress snapshots, and nothing on the deal path reads from it.
+Each participant node keeps a derived append-only `event_log` recording significant milestones in agreement lifecycles (`agreement-formed`, `commitment-settled`, `commitment-failed`, `commitment-ended-unconfirmed`, `commitment-cancelled`, `agreement-closed`, `agreement-cancelled`, `agreement-not-formed`). The log is derived purely from signed records and progress snapshots, and nothing on the deal path reads from it. The service keeps the log rows in the `event_log` collection, one derive marker per agreement in `event_log_state`, and the saved deal terms in the `deal_defaults` collection.
 
-- `eventlog.list`: Scans the event log filtered by optional `agreement`, `conversation`, `event`, and timestamp ranges (`from_occurred_at_secs`, `to_occurred_at_secs`).
-- `eventlog.rebuild`: Re-derives the complete event log across all held agreements, resetting the watermark and repairing any gaps.
-- `statement.export`: Exports a financial statement across settled commitments, grouping declared values into totals by currency, direction (given vs. received), and resource kind (`currency`, `goods-or-service`, `service-in-slot`). Takes `from_occurred_at_secs`, `to_occurred_at_secs`, and optional `currency`. Also includes the EEPs section (`{"status": "not-available"}`).
-- `agreement.close`: Signs and records closing halves for open commitments on an agreement. Takes `{agreement, as: "giver" | "receiver", commitments: [...]}`. Repeated calls return stored records.
-- `deal.defaults-get` / `deal.defaults-set`: Stores and retrieves node-wide saved deal terms (`cancellation_terms`, `refund_terms`, `dispute_path`, `payment_timing`, `currency`, `quote_valid_secs`).
+- `eventlog.list`: Scans the event log with optional pagination `{after?: {recorded_at_secs, id}, limit?}` and `deny_unknown_fields`. Returns `{entries, next?}`, where `next` names the cursor for the next page.
+- `eventlog.rebuild`: Re-derives the complete event log across all held agreements, ignoring the per-agreement markers and creating only missing rows.
+- `statement.export`: Exports a financial statement across settled commitments, grouping declared values into totals by currency, direction (given vs. received), and resource kind (`currency`, `goods-or-service`, `service-in-slot`). Takes `{from_secs, to_secs}` with `deny_unknown_fields` (no currency filter). Also includes the EEPs section (`{"status": "not-available"}`).
+- `agreement.close`: Signs and records closing halves for open commitments on an agreement. Takes `{agreement, as: "giver" | "receiver", commitments: [...]}`. Repeated calls for a receiver close return `records: []` and all ids `skipped` with reason `final`, while claims return stored records.
+- `deal.defaults-get` / `deal.defaults-set`: Stores and retrieves node-wide saved deal terms (`cancellation_terms`, `refund_terms`, `dispute_path`, `quote_valid_secs`).
 
 ### 6.10. Errors and unknown fields
 
