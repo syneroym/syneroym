@@ -79,7 +79,7 @@ describe("Accept refused for an extension this device does not have", () => {
     button.click();
     await vi.waitFor(() =>
       expect(wrap.querySelector(".accept-quote-error")?.textContent).toBe(
-        "This deal needs a part of Roym that this device does not have. Update Roym, then accept.",
+        "This deal needs a part of Roym that this device does not have. Update Roym, then agree.",
       ),
     );
     expect(button.disabled).toBe(false);
@@ -90,7 +90,7 @@ describe("Accept refused for an extension this device does not have", () => {
     const wrap = drawn(quoteCard());
     wrap.querySelector<HTMLButtonElement>(".accept-quote-button")!.click();
     await vi.waitFor(() =>
-      expect(wrap.querySelector(".accept-quote-error")?.textContent).toContain("Could not accept"),
+      expect(wrap.querySelector(".accept-quote-error")?.textContent).toContain("Could not agree"),
     );
   });
 });

@@ -92,7 +92,7 @@ describe("the import line when booked slots could not be restored", () => {
   it("says which file to import again, only when a slot failed", async () => {
     const failed = { imported: true, reservations_restored: 0, reservations_failed: [{ agreement: "a", commitment_id: "c1", reason: "slot-unavailable" }] };
     expect(await transactionLine(failed)).toBe(
-      "Imported: bundle record(s). Some booked slots could not be restored. Import the Scheduling file, then import the Requests, quotes, and agreements file again.",
+      "Imported: bundle record(s). Some booked slots could not be restored. Import the Scheduling file, then import the Requests, offers, and agreements file again.",
     );
     expect(await transactionLine({ imported: true, reservations_restored: 2, reservations_failed: [] })).toBe(
       "Imported: bundle record(s).",
