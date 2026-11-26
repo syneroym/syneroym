@@ -19,9 +19,13 @@ import { buildDealTerms } from "./quote_terms";
 import { attachSizeLine } from "./quote_size";
 import type { MessagesInitialState, RequestPreFill } from "../navigation";
 import { pollComposer } from "../widgets/composer";
-import { widgetPrompt } from "../widgets/view";
 import { renderWidget } from "../widgets/render";
-import { WIDGET_ANSWER_CONTENT_TYPE, WIDGET_CONTENT_TYPE, type WidgetView } from "../widgets/view";
+import {
+  WIDGET_ANSWER_CONTENT_TYPE,
+  WIDGET_CONTENT_TYPE,
+  widgetPrompt,
+  type WidgetView,
+} from "../widgets/view";
 import {
   computeNewestQuoteMap,
   computeNewestRequestMap,
