@@ -1385,3 +1385,406 @@ case with the fixed code, and it passes there.
 **Counts of round 4:** R18 verified fixed. No new findings. All 20
 findings are closed (R3 by owner decision). **0 open.** No blocker or
 major.
+
+## Code review round 1 — Claude Opus 5.5, 2026-11-26
+
+This is the first code review of **part C4b** (widgets in the Hub): plan
+section 6.2, D-C4-10, D-C4-11, sections 7.5, 7.6, 7.10, 8 and 9. PR #384
+(draft), branch `feat/m08c-c4b-widgets-hub` at `c11e214f`, main checkout
+(not a worktree), `git pull` up to date. Diff: `git diff
+origin/main...HEAD` (28 files, TypeScript and docs only; C4a is on `main`
+as `933fb399`). The code was written by Gemini 3.8 Flash. The rounds
+above are of part C4a; all 20 of their findings are closed, so there was
+no open item to check again. New findings continue at R21.
+
+**CI.** `gh pr checks 384` on `c11e214f` ([run 45676987583](https://github.com/syneroym/syneroym/actions/runs/45676987583)):
+every job passed: "Lints, licenses & checks" (with the Hub unit tests),
+Playwright E2E and the six test shards. Benchmarks and Code Coverage were
+skipped, as usual for a PR. So CI is proof that the suite passes. It is
+not proof that the group Playwright case tests the node (R22).
+
+**Tests I ran** (targeted only; no Rust crate changed, so no
+`build:roym`): Hub unit tests with `TZ=UTC npx vitest run`: 56 files, 675
+passed, the same as status.md. `src/widgets`: 31 tests, the same as
+status.md. Three probe tests, each written in `src/widgets/`, run, and
+deleted again (`git status` clean after each):
+
+- `t("widget-poll-count", { count })` in Hindi for 0, 1 and 2 gives
+  `"1 वोट"`, `"1 वोट"`, `"2 वोट"` (R21). `Intl.PluralRules("hi")`
+  gives `one` for 0.
+- `renderGenericWidget` with a choice whose author text is
+  `messages-retry-button`, and a field labelled `Pick`, answered with that
+  choice: the answer list reads `"bPick Retry"`, and `console.error` got
+  `missing message "Pick"` (R23).
+
+### Checked and found correct
+
+- **Files and split (D-C4-10).** Every new Hub part is in
+  `crates/roym_web/ui/src/widgets/` (`view.ts`, `poll.ts`, `generic.ts`,
+  `render.ts`, `composer.ts`); the screens only wire them. No Rust file,
+  WIT, wire format or method changed, so no wire change needs a
+  deviation and both builds are untouched.
+- **`pollDefinition`** builds the same body as `poll_definition` (codes
+  `o1`, …, field `option`, `required: true`, no `label`).
+- **`renderWidget`** picks `renderPoll` only for `semantic: "poll"` with
+  exactly one required `choice` field; a `refused` view draws
+  `widget-too-large` for that code and `widget-refused` with the code
+  otherwise; an own refused, poll or generic widget in `failed` draws its
+  state word and a retry button that calls `conversation.retry` with
+  `widget_id` (P10). It ignores `complete` (P11).
+- **The poll card.** The heading from the catalog for a known type, else
+  `widget-unknown-heading`; `ext-not-checked` when `checked` is false; the
+  prompt through `messageText` with `translatable` only for an incoming
+  widget; `widget-votes-visible`; one button per choice with its count,
+  the choice text as `textContent` with `lang`; "You chose" from the own
+  newest answer; a tap sends `{ [fieldName]: code }` with the field name
+  from the definition (P7); a tap on the current choice makes no call; the
+  own answer's state word and retry (P2).
+- **The composer.** 2 to 12 options, blank and repeated options keep
+  "Send poll" off with a reason, `widget.send` with the composer's
+  language list, the form closes and the thread redraws on success.
+- **Wiring.** `messages.ts` calls `widget.list` only when the loaded
+  history holds a non-deleted widget, with exactly those ids (P4), after
+  `conversation.history`; a deleted widget is drawn as "message deleted";
+  an answer draws no bubble. `groups.ts` does the same, and the composer
+  restructuring there is the same as on `main` for a removed member and a
+  restored group. `message_search.ts` draws a widget hit from its prompt
+  and skips answer hits; `conversation.search` returns `MessageView`,
+  which carries `content_type`, so the branch is reached.
+- **Hindi messages.** All 18 messages of plan section 7.10 exist in
+  `en.ftl` and `hi.ftl`, with the plan's ids. "draws a poll in Hindi"
+  finds no English word.
+- **Hook point (ML-26).** `generic.test.ts` has the three cases (no
+  engine, exact `translation.translate` params, `-32020`), and the free
+  text of an incoming answer goes through `messageText`.
+- **Story 20.** Three new steps on two real nodes, the question carries
+  `RUN_TAG`, each wait uses `DELIVERY_WAIT_MS`; listed in the extensions
+  change doc's `demo:`; demo.md has the three steps.
+- **Backlog rows** "A person cannot take back a vote", "A poll does not
+  show who voted for what", "Only the poll widget can be composed in the
+  Hub" are added; the Hub's 200-message limit is folded into the
+  `widget.list` row; "Widget labels do not come from the catalog yet" is
+  moved to "Recently resolved".
+- **Sizes.** No `roym_*` Rust crate changed and `web` does not embed the
+  Hub bundle, so no component size report is due.
+
+**Counts of round 1 (C4b):** 0 blocker, 3 major (R21, R22, R23), 7 minor
+(R24 to R30). **10 open.**
+
+### R21 — A new poll in Hindi shows "1 वोट" for every option (major)
+
+*Where:* [hi.ftl:834](../../../../crates/roym_web/ui/src/i18n/hi.ftl#L834)
+to `:838` at `c11e214f`;
+[hindi-screens.test.ts:748](../../../../crates/roym_web/ui/src/i18n/hindi-screens.test.ts#L748).
+
+*Problem:* the variant is `[one] 1 वोट`, with the digit written in the
+text. Fluent picks the variant by `Intl.PluralRules`, and in Hindi the
+category `one` holds both 0 and 1. So a count of 0 is shown as "1 वोट".
+The English `[one] 1 vote` is correct, because English `one` is only 1.
+The Hindi test draws counts 2 and 1 only, so it cannot see this.
+
+*Failure case:* a Hindi reader opens a poll nobody has voted in. Every
+option says "1 वोट". After one vote, both the voted option and the empty
+one say "1 वोट". The counts on screen are false in exactly the case every
+poll starts in.
+
+*Fix:* write the number from the variable in Hindi:
+`widget-poll-count = { $count } वोट` (the Hindi noun does not change).
+In English, write `[one] { $count } vote` too, so no variant hard-codes a
+digit. Add a Hindi test that draws counts 0, 1 and 2 and checks
+`"0 वोट"`, `"1 वोट"` and `"2 वोट"`. Check every other plural message
+in `hi.ftl` for a hard-coded `1` under `[one]` (a `git grep -n
+"\[one\] 1" crates/roym_web/ui/src/i18n/hi.ftl`). The owner reviews the
+changed message.
+
+*Status:* Open
+
+### R22 — The group Playwright case mocks the node, so no group poll is ever sent from the Hub (major)
+
+*Where:* [roym-groups.spec.ts:152](../../../../crates/substrate/tests/e2e/tests/roym-groups.spec.ts#L152)
+to the end of the case at `c11e214f` (the `page.route('**/rpc', …)` at
+`:165`, the history body at `:196`).
+
+*Problem:* the case answers `widget.send`, `widget.answer`,
+`conversation.history` and `widget.list` itself, with `page.route`. The
+node never receives a widget or a vote. The vote count `1` it checks is
+written in the mock (`counts: voteSent ? [...] : []`). The mocked history
+row is not a real row either: it has `sender` instead of `author`, no
+`direction`, `state` or `conversation`, and a body
+(`{extension: 'poll@1', schema: 'poll', data: {...}}`) that is not the
+widget body format. Every other case in the file uses the real node. So
+the case tests only Hub drawing, which the unit tests already cover, and
+its name "a poll in a group counts the owner's vote" claims what it does
+not test. Plan section 7.6 and the C4b exit criterion ("`roym-groups.spec.ts`'s
+poll case … pass") rely on it; status.md reports it as proof. The change
+doc's deviations do not mention the mock.
+
+*Failure case:* a Hub change that sends the wrong `conversation` for a
+group widget (for example `m.conversation` lost in `renderThreadMessages`),
+or a node refusal of `widget.send` in a group, leaves this case green. The
+case also passes if `widget.list` is never called with the group id.
+
+*Fix:* remove the `page.route` mock. Send the poll with the real composer
+in the group the earlier case created, vote with the real button, and
+wait for the real count. A group with only the owner refuses
+`conversation.send` with "nobody to deliver to"
+(`sending with no other member …`); if `widget.send` is refused the same
+way, either add a member as the other cases do or say so in the plan's
+Deviations and test the visible refusal instead. If a real group poll
+cannot run in this harness, rename the case to what it tests, move it to
+the unit tests, and record in the extensions change doc that the group
+poll is proved by `roym_widget_e2e` and parity scenario 263 only.
+
+*Status:* Open
+
+### R23 — The generic card passes author text where the catalog expects message ids (major)
+
+*Where:* [generic.ts:215](../../../../crates/roym_web/ui/src/widgets/generic.ts#L215)
+to `:223` and `:261` to `:268` at `c11e214f`.
+
+*Problem:* `fieldView` reads `labelIds` as message ids and calls
+`t(id)` on each (`codeWord` → `lookupText`). `renderGenericWidget` fills
+that map with display text instead: the field label already drawn by
+`fieldLabel` (the catalog text, or the author's `label`) and each choice's
+author `text`. So `t()` is called on the author's own words. When the
+words are not a message id, `t()` logs `missing message "…"` and returns
+them, so the screen looks right by accident. When the words are a message
+id, the Hub shows its own catalog sentence instead of the author's text.
+This breaks the D-C4-10 rule that every value from data is drawn as
+`textContent`, and it lets a peer put any Hub sentence into its widget.
+
+*Failure case:* probe above: a choice with text `messages-retry-button`,
+answered, is listed as "Retry". A peer could label a choice with the id of
+a Hub warning or notice, and the answer list shows that trusted Hub
+sentence. Every answer to an unknown widget also writes one
+`console.error` per label and choice.
+
+*Fix:* do not pass author text through `fieldView`. Draw the non-text
+answer values in `generic.ts` with the author label and the author choice
+text as `textContent` (with `lang`), and use `fieldView` only for its
+value formatting, or give `fieldView` an option that takes display text
+instead of ids. For a known type, keep the catalog id
+(`widgetFieldLabelId`) in the map, not its text. Add a test with a choice
+text that is a real message id, and a test that `console.error` is not
+called when the answer list is drawn.
+
+*Status:* Open
+
+### R24 — A generic answer is sent with no language, so every free-text answer says "Language not stated" (minor)
+
+*Where:* [generic.ts:125](../../../../crates/roym_web/ui/src/widgets/generic.ts#L125)
+to `:129` at `c11e214f`.
+
+*Problem:* `widget.answer` takes `languages` (D-C4-6), and the
+widget-answer hook point draws each free-text value with
+`messageText(value, answer.languages, …)` (D-C4-11). The Hub never sends
+`languages`, so every answer made in the Hub has an empty list. The hook
+point then draws "Language not stated" under each text answer, gives the
+value no `lang`, and asks for a translation with no source language. The
+hook-point tests use a fixture with `languages: ["en"]`, so they do not
+see it. `WidgetRenderOptions` has no language list to pass.
+
+*Failure case:* Alice answers an unknown widget's text field in Hindi in
+the Hub. Bob's Hub shows her answer with "Language not stated" and no
+`lang`, and a translation request with `source: null`.
+
+*Fix:* add `languages: () => string[]` to `WidgetRenderOptions`, pass the
+composer's language list from `messages.ts` and `groups.ts` (as the poll
+composer gets it), and send it with every `widget.answer` (generic and
+poll). Add a test that checks the `languages` param of the call.
+
+*Status:* Open
+
+### R25 — A refused vote, a failed `widget.list` and a double tap fail without a word (minor)
+
+*Where:* [poll.ts:80](../../../../crates/roym_web/ui/src/widgets/poll.ts#L80)
+to `:95`; [messages.ts:420](../../../../crates/roym_web/ui/src/screens/messages.ts#L420);
+[groups.ts:731](../../../../crates/roym_web/ui/src/screens/groups.ts#L731)
+at `c11e214f`.
+
+*Problem:* when `widget.answer` throws, the poll card only enables the
+button again. It shows no error, though `widget-answer-failed` exists and
+the generic card uses it. When `widget.list` throws, both screens swallow
+the error (`// non-fatal`), and every widget in the thread is drawn as
+"This widget cannot be shown: widget-refused", which says the widget is
+bad, not that the call failed. While one vote call runs, the other option
+buttons stay enabled, so two fast taps send two votes. Plan section 7.11
+("Silent failures") says a failure carries its code to the person.
+
+*Failure case:* a removed group member still sees the old poll and taps
+an option; `widget.answer` is refused with the removed-member notice and
+nothing on screen changes. A node that is restarting fails `widget.list`
+once, and every poll in the thread says it cannot be shown.
+
+*Fix:* in the poll card, draw `widget-answer-failed` with `errText(err)`
+and disable every option button while a call runs. In both screens, on a
+`widget.list` error draw one thread-level error (with `errText`) and keep
+each widget's own text, instead of a per-card `widget-refused`. Add a
+test for each.
+
+*Status:* Open
+
+### R26 — A widget card drops the parts of a message row: delete, sender and the restored-row rule (minor)
+
+*Where:* [messages.ts:605](../../../../crates/roym_web/ui/src/screens/messages.ts#L605)
+to `:623` (the early `return wrap`); [groups.ts:202](../../../../crates/roym_web/ui/src/screens/groups.ts#L202)
+to `:231`; the retry blocks in `render.ts`, `poll.ts` and `generic.ts`
+at `c11e214f`.
+
+*Problem:* a widget message no longer goes through the normal row code.
+So (1) it has no delete button, in a 1:1 chat or a group, although every
+other message has one and the plan's P4 handling ("drawn as message
+deleted") assumes a widget can be deleted; (2) in a group, the card shows
+no sender name and no time, so members cannot see who asked; (3) the
+retry button ignores `canRetry`'s rule that a restored row is never
+offered for sending again, because `WidgetView` and `AnswerView` carry no
+`restored` flag. None of this is in the plan or the Deviations.
+
+*Failure case:* Alice sends a poll with a typo and cannot delete it from
+the Hub. In a family group, the poll card does not say which member sent
+it. After a restore, an own failed poll shows "Retry", the service
+refuses, and the button only enables again.
+
+*Fix:* draw the widget card inside the normal row (keep the author line,
+time and delete action of `messageElement` and `renderMessageRow`), and
+take the retry decision from the history row (`canRetry(m)`) for the
+widget. For an own answer, hide retry when the answer's history row is
+restored, or record in the Deviations why it is shown. Add tests: a
+widget row has a delete button; a group widget shows the sender.
+
+*Status:* Open
+
+### R27 — The state-and-retry block is written three times, and widgets import from a screen (minor)
+
+*Where:* [render.ts:23](../../../../crates/roym_web/ui/src/widgets/render.ts#L23)
+to `:51`, [poll.ts:102](../../../../crates/roym_web/ui/src/widgets/poll.ts#L102)
+to `:160`, [generic.ts:142](../../../../crates/roym_web/ui/src/widgets/generic.ts#L142)
+to `:200`; the `defaultView` objects in `messages.ts:606` and
+`groups.ts:205`; the heading and "not checked" blocks in `poll.ts:18`
+to `:31` and `generic.ts:28` to `:41` at `c11e214f`.
+
+*Problem:* the same state word, error line and retry button is written
+five times (own widget three times, own answer twice), the fallback
+`WidgetView` twice, the heading block twice. The two widget content types
+are written as string literals eight times in the screens and widgets,
+next to `MEMBERSHIP_EVENT_CONTENT_TYPE`, which is a constant. All three
+widget renderers import `messageStateWord` from `screens/messages.ts`,
+which imports `widgets/render.ts`, so the modules import each other. The
+AGENTS.md rule "Look for an existing helper before writing a new one"
+asks for one helper; `cargo dupes` does not read TypeScript, so no gate
+sees this.
+
+*Failure case:* R26's restored-row rule, or a change to the retry
+behaviour, must be made in five places; one is easily missed.
+
+*Fix:* one `stateAndRetry(state, lastError, messageId, refresh)` helper
+and one `widgetHeading(view)` helper in `widgets/`, a
+`missingWidgetView(m)` in `view.ts`, and `WIDGET_CONTENT_TYPE` /
+`WIDGET_ANSWER_CONTENT_TYPE` constants in `view.ts`. Move
+`messageStateWord` (and `canRetry`) to a small module that both the
+screens and the widgets import.
+
+*Status:* Open
+
+### R28 — Two test names carry planning ids (minor)
+
+*Where:* [render.test.ts:71](../../../../crates/roym_web/ui/src/widgets/render.test.ts#L71)
+("… when complete is false (P11)") and
+[generic.test.ts:251](../../../../crates/roym_web/ui/src/widgets/generic.test.ts#L251)
+("widget-answer hook point (ML-26)") at `c11e214f`.
+
+*Problem:* AGENTS.md: no review finding id or planning-doc id in a test
+name. `P11` is a plan review finding; `ML-26` is a change-doc
+requirement id. The CI grep checks comments, not test names, so it passed.
+
+*Failure case:* when the review file and the change doc are archived,
+the names point at nothing.
+
+*Fix:* "renders normally when `complete` is false" and "the
+widget-answer translate action". Check every new test name with the
+grep of the comment convention.
+
+*Status:* Open
+
+### R29 — Living docs, change docs and the backlog miss what plan section 9 asks, and some new lines are false (minor)
+
+*Where:* at `c11e214f`:
+[roym-multilingual change.md:133](../../changes/roym-multilingual/change.md#L133),
+`:136`, `:615`, `:616`, `:644`;
+[roym-extensions change.md:85](../../changes/roym-extensions/change.md#L85)
+to `:88`, `:292`, `:293`;
+[system-requirements-spec.md:1409](../../../../docs/system-requirements-spec.md#L1409);
+[traceability-matrix.md:58](../../traceability-matrix.md#L58);
+[task.md](task.md) (no C4b line);
+[deferred-backlog.md:746](../../deferred-backlog.md#L746).
+
+*Problem:* plan section 9 lists these for C4b; they are not done or are
+wrong:
+
+1. ML-26's test column still says "Four hook points" and "Later: widget
+   answer (M08C C4)"; ML-28's still says "Later: widget labels (M08C
+   C4)". The M08B deviations at `:615` and `:616` still say the widget
+   parts are open. None names the new Hub tests.
+2. The new multilingual deviation (`:644`) lists
+   `widget-poll-votes-notice` and `widget-retry-answer`, which do not
+   exist, misses `widget-votes-visible`, `widget-answer-send`,
+   `widget-unknown-heading` and `widget-answer-failed`, and lists 16 ids
+   for "all 18".
+3. EX-10, EX-11 and EX-13 name no Hub test (plan section 3 names
+   `widgets/*.test.ts`, `generic.test.ts`, `catalog.test.ts`,
+   `hindi-screens.test.ts`).
+4. The extensions deviation `:293` says the generic card lists answers
+   "with author addresses and timestamps"; it shows no time. `poll@1` is
+   not a notation the code or the manifests use (`poll`, version 1). The
+   two D-C4-10 and D-C4-11 items restate the plan; the real differences
+   (R22's mock, R26's missing delete, the hidden `display: none` answer
+   row instead of no row) are not recorded.
+5. Requirements `:1409` still says owners send "interactive forms,
+   booking widgets"; the plan asks to say what is built. The traceability
+   row names only node tests for widgets.
+6. task.md has no C4 result line for the Hub part (plan section 9).
+7. The plan's new backlog row "Poll options and widget labels are not
+   offered to machine translation" (D-C4-11) is missing.
+8. The "Recently resolved" row says the resolution is the Hub words
+   (`widget-poll-question`, …). The row was about widget labels from the
+   manifest; those are `ext-poll-widget-single` and
+   `ext-poll-widget-single-option`.
+
+*Failure case:* a reader of ML-26 thinks the widget hook point is not
+built; a reader of the multilingual deviation looks for messages that do
+not exist; nobody finds the deferral of poll option translation.
+
+*Fix:* make each change above. Name the real test files in ML-26, ML-28,
+EX-10, EX-11 and EX-13 (check each name with `git grep`). Replace the
+restating items with the real differences.
+
+*Status:* Open
+
+### R30 — The thread wiring has no test, and status.md claims more than it shows (minor)
+
+*Where:* [messages.test.ts](../../../../crates/roym_web/ui/src/screens/messages.test.ts)
+and [groups.test.ts](../../../../crates/roym_web/ui/src/screens/groups.test.ts)
+(new cases), [status.md](status.md) C4b row, at `c11e214f`.
+
+*Problem:* the new screen tests call `messageElement` and
+`renderThreadMessages` with a ready map. No test drives `fillThread` or
+`reloadThread`, so nothing checks that `widget.list` gets the
+conversation id and exactly the non-deleted widget ids, or that no call
+is made when the page has no widget (D-C4-10). Exporting `messageElement`
+was done only for these tests. The C4b row of status.md says "all 40
+break-and-verify mutation tests verified", with no list and for 41 new
+tests; it lists no Hindi ids for owner review, while the rows before it
+do; and it gives no CI run.
+
+*Failure case:* `fillThread` sends a deleted widget's id, or calls
+`widget.list` on every redraw of a thread with no widget, and every test
+stays green.
+
+*Fix:* add one test per screen through `renderMessages` /
+`renderGroups` with `stubRpc`: a history with a widget, a deleted widget
+and a text message; assert one `widget.list` call with
+`{conversation, widget_ids: [<the live widget>]}`; and a history with no
+widget makes no call. In status.md, drop the mutation claim or list what
+was mutated, list the 18 Hindi ids for the owner, and give the CI run.
+
+*Status:* Open
