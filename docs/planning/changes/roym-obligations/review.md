@@ -1717,4 +1717,43 @@ current bucket (one bucket back is enough), in a bounded number per run, as
 `transaction.drive` bounds its work. Add one case to OB-57: a row from an old
 bucket is gone after the next drive.
 
-**Status:** Open
+**Status:** Fixed (0500d51f). Agreed, as proposed, plus one more bound. `obligation.drive` deletes every counter row of a bucket older than the current one, at most 500 rows per run (OB-64, with the old-bucket case). Deleting old buckets alone still lets one hour hold a row per fresh caller DID, so a bucket holds at most 10,000 caller-DID rows, and a new caller in a full bucket gets the rate-limit error and makes no row (OB-65). Counters live in their own collection, `counters`.
+
+## Fix session round 5 — Claude Opus 5.5 (Claude Code), 2026-11-26
+
+The fix is in `0500d51f` on `claude/m08e-obligations-change-doc-62dcfb`, which
+fast-forwarded to the round 5 review commit `0d241311` first. P43 is fixed,
+with one extra bound (a cap of caller-DID rows per bucket). Every finding
+P1 to P43 is closed, except the four that wait for the owner (questions 3,
+16, 17, 18). No open question changed.
+
+**The check of every row type.** A new section, "Rows that grow, and their
+cleanup", lists every row type with what bounds it or what removes it. What
+the check found:
+
+- **Counter rows:** had no cleanup (P43). Now deleted by bucket, and capped
+  per bucket for caller DIDs. A holdings request from someone who holds no
+  live EEP of this issuer now makes no counter row.
+- **`out:`/`sent:` rows:** had no cleanup. Now deleted 1 day after `sent:`
+  exists, because the proxy outbox owns the retries.
+- **Issuer-side demand rows:** had no cleanup. Now deleted 30 days after a
+  final state. The holder keeps the evidence.
+- **Coded decline rows:** capped per day, but kept for ever, so they grew
+  with time. Now deleted 30 days after the demand's `answer_by_secs`. A
+  person's decline is kept.
+- **`eep_log`:** append-only, and coded declines would have added up to 5
+  entries per EEP version per day for ever. Coded declines, and the demands
+  they answer, now make no log entry. This is a deviation from VX-45,
+  recorded.
+- **Bounded already, kept:** versions and forks (only the issuer's own
+  signatures, splits limited); claim, free, confirmed and key rows (only
+  agreements this node signs; they are the fence); split `req:` rows (one
+  per version); restore rows; the holder's held, ack and demand rows and
+  proofs (only accepted records, one open demand per version); limit
+  settings; the router's deposit status rows (outbox lifetime plus 14 days).
+- **Junk wire calls and junk deliveries:** make no row beyond the counters
+  (OB-42, OB-43).
+
+New OB rows: OB-64 and OB-65 (E3), OB-66 (E4). Two deviation rows are
+under "Added in review round 5".
+
