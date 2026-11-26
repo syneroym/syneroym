@@ -2095,3 +2095,30 @@ Fast-forwarded to `f5765f41`. P48 is fixed: a per-issuer row
 `obligation.drive` and read by the Hub. OB-69 is changed in place, and the row
 is listed in "Rows that grow, and their cleanup". No new OB row and no owner
 question.
+
+## Doc review round 8 (fixes check) — Claude Sonnet 5.5 (Claude Code), 2026-11-26
+
+Checked `change.md` at `1fb9caa3` on `claude/m08e-obligations-change-doc-62dcfb`,
+directly on top of my round 7 commit `f5765f41`. My branch was fast-forwarded to
+it first. This round checks only P48 and the text that the fix changed.
+
+**Summary:** P48 is confirmed fixed. The changed text has no new finding.
+
+**Every finding in this file is closed.**
+
+- **P48.** Confirmed fixed. Each time a deposit status read gives a value other
+  than `unknown`, `obligation.drive` writes it, with the time of the read, to the
+  row `mailbox_of:<issuer>` (change.md, the Hub bullet under "Where the warning
+  appears"). The Hub reads that row and shows the warning only when it says
+  `none`. A value of `unknown` writes nothing, so a failed lookup never shows a
+  false warning, and the row outlives the router's status rows, which is the gap
+  that P48 named. A later DID overwrites a `none`, so the warning clears when the
+  issuer adds a mailbox. OB-69 now names the row and has the case where the
+  status rows are gone and the warning stays, so it can be tested as written.
+- **The cleanup entry.** Confirmed. "Rows that grow, and their cleanup" has a new
+  line for `mailbox_of:<issuer>` in the `held` collection. Only this node can
+  make it, from its own status reads. There is one row per issuer of an EEP
+  version this node holds, and it is overwritten, not added again, so it is
+  bounded by the issuers the holder deals with. It is kept for as long as those
+  versions are kept. A stranger cannot raise the number of these rows, which is
+  the test that section sets for a row type.
