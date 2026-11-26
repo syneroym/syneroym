@@ -252,20 +252,22 @@ async fn the_driver_logs_with_no_hub() {
     let y_sign_msg = y_sign["message_id"].as_str().unwrap();
     assert!(wait_delivered(&node_y, y_sign_msg).await, "fulfilment card delivered");
 
-    // Without calling transaction.sync on node_x, verify the driver wakes up and
-    // logs commitment-settled
+    // Without calling transaction.sync or eventlog.list on node_x,
+    // verify the driver wakes up and writes commitment-settled directly to the
+    // event_log table
+    let entry_id = format!("{quote_rec_id}:c1:commitment-settled");
     let settled_logged = wait_until(Duration::from_secs(30), || async {
-        let el = node_x.rpc_ok("eventlog.list", json!({})).await;
-        let entries = el["entries"].as_array();
-        entries.is_some_and(|list| {
-            list.iter().any(|e| {
-                e["event"] == "commitment-settled"
-                    && e["commitment_id"] == "c1"
-                    && e["agreement"] == quote_rec_id
-            })
+        let row = node_x.get_service_row("transaction", "event_log", &entry_id);
+        row.is_some_and(|e| {
+            e["event"] == "commitment-settled"
+                && e["commitment_id"] == "c1"
+                && e["agreement"] == quote_rec_id
         })
     })
     .await;
 
-    assert!(settled_logged, "driver logged commitment-settled without manual transaction.sync");
+    assert!(
+        settled_logged,
+        "driver logged commitment-settled directly to data layer without manual transaction.sync"
+    );
 }
