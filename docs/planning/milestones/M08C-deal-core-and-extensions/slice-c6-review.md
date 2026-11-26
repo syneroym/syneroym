@@ -29,7 +29,7 @@ reviews raised, and I read the code that the plan's design stands on:
 `router.rs`, the test host, `deal/transition.rs`, `progress.rs`, and the
 Hub's `messages.ts`, `quote_terms.ts` and `money.ts`.
 
-**Summary: 14 findings: 0 blocker, 3 major, 11 minor. 14 open.**
+**Summary: 14 findings: 0 blocker, 3 major, 11 minor. 0 open (14 fixed).**
 
 ### What was checked and found correct
 
@@ -132,7 +132,7 @@ The owner has not answered section 2.1. My view of each, for the record:
 
 ### Findings
 
-#### [ ] P1 — Only the quote author's node moves a commitment, so the other node's log, statement, panel and tests all wait for the other node (major)
+#### [x] P1 — Only the quote author's node moves a commitment, so the other node's log, statement, panel and tests all wait for the other node (major)
 
 *Where:* point 5 of section 2.2 ("The writer moves the commitment in
 `progress_ops::transition_at` … called from the local methods"), D-C6-3
@@ -204,9 +204,9 @@ lesson. `agreement.close` answers with two record ids. She opens
    the counterparty's statement before and after the author's snapshot is
    filed.
 
-*Status:* Open.
+*Status:* Fixed (c8601f11).
 
-#### [ ] P2 — "A repeated `agreement.close` returns the same records" is false after the first call has made the commitments final (major)
+#### [x] P2 — "A repeated `agreement.close` returns the same records" is false after the first call has made the commitments final (major)
 
 *Where:* D-C6-6 ("A commitment that is already final is put in `skipped` …
 So a repeated call returns the same records (AG-13)"; the check
@@ -265,9 +265,9 @@ a network error (the reply was lost), and Bob taps again. He gets
 4. Record AG-46's sentence "returns the same records" as a deviation
    (section 9), with the reason.
 
-*Status:* Open.
+*Status:* Fixed (c8601f11).
 
-#### [ ] P3 — The plan does not say what the author's service row is worth by default, so every ordinary offer would show a false difference (major)
+#### [x] P3 — The plan does not say what the author's service row is worth by default, so every ordinary offer would show a false difference (major)
 
 *Where:* D-C6-9 (the rows, "declared value"), D-C6-10 (the totals block),
 "How this is shown to an end user" (C6b), Q10, Playwright D1/D4, the `sendQuote`
@@ -307,9 +307,9 @@ receive ₹500 more than you give".
 3. Add a Hub unit test (`quote_form.test.ts`): a form with only scope and
    amount builds equal totals and the card shows no difference line.
 
-*Status:* Open.
+*Status:* Fixed (c8601f11).
 
-#### [ ] P4 — The derive step may pick a changed half or a local time for two of the times it calls "the same on both nodes" (minor)
+#### [x] P4 — The derive step may pick a changed half or a local time for two of the times it calls "the same on both nodes" (minor)
 
 *Where:* D-C6-3 (the table: `agreement-formed`, `commitment-settled`),
 D-C6-4, the `SettlingHalf` and `FormedFact` inputs.
@@ -350,9 +350,9 @@ snapshot's `halves` for that commitment and role. Add two unit cases: a
 corrected acknowledgement does not move `occurred_at_secs`; a row whose
 `agreed_at_secs` differs from the half's time uses the half's time.
 
-*Status:* Open.
+*Status:* Fixed (c8601f11).
 
-#### [ ] P5 — `open_at_end` uses the times that D-C6-4 says may differ between the two nodes (minor)
+#### [x] P5 — `open_at_end` uses the times that D-C6-4 says may differ between the two nodes (minor)
 
 *Where:* D-C6-4 ("The statement uses only the two times that are equal, so
 both parties' statements still match"), D-C6-7 (`open_at_end`: "no final
@@ -380,9 +380,9 @@ the node holds *any* final entry for it, whatever its time. (b) is simpler to
 explain and matches the agreements doc ("agreed, not final at `to_secs`") for
 the common case. Pick one and add the test case.
 
-*Status:* Open.
+*Status:* Fixed (c8601f11).
 
-#### [ ] P6 — A statement total above 2^53 reaches the Hub as a wrong number (minor)
+#### [x] P6 — A statement total above 2^53 reaches the Hub as a wrong number (minor)
 
 *Where:* D-C6-7 (`totals`, `statement-total-overflow` at 9.2 × 10^18), point 15
 of section 2.2, D-C6-10, D-C6-14 ("Download JSON").
@@ -408,9 +408,9 @@ text ("above 2^63"), and the unit test. Then no consumer needs `BigInt` for
 the statement. Say in D-C6-14 that the Hub still computes its own totals from
 the rows with `BigInt` only where it draws a quote (D-C6-10), not here.
 
-*Status:* Open.
+*Status:* Fixed (c8601f11).
 
-#### [ ] P7 — `eventlog.list` does not run the derive step, so it is empty right after a local settlement (minor)
+#### [x] P7 — `eventlog.list` does not run the derive step, so it is empty right after a local settlement (minor)
 
 *Where:* D-C6-3 ("Where it runs"), D-C6-5, parity 267, the user bullet for
 `roymctl roym transaction statement`.
@@ -433,9 +433,9 @@ step reads `event_log_state`, never `event_log`. Say so in D-C6-5, and add a
 service case: settle, `eventlog.list` with no sync, entry present (on the
 quote author's node; see P1 for the other node).
 
-*Status:* Open.
+*Status:* Fixed (c8601f11).
 
-#### [ ] P8 — The derive step must not write its marker after a failed create (minor)
+#### [x] P8 — The derive step must not write its marker after a failed create (minor)
 
 *Where:* D-C6-3 ("It writes the marker after the creates … A refused create
 is a repeat and is not counted"), 7.4 (`fail_write` on `event_log`).
@@ -460,9 +460,9 @@ or "repeat"; on an error, write no marker (or `complete: false`). Change the
 7.4 test: after the `fail_write` is removed, the next ordinary sync makes the
 entry.
 
-*Status:* Open.
+*Status:* Fixed (c8601f11).
 
-#### [ ] P9 — Backup: a `roym_core` constant, five hard-coded schema versions, and no check on the imported defaults (minor)
+#### [x] P9 — Backup: a `roym_core` constant, five hard-coded schema versions, and no check on the imported defaults (minor)
 
 *Where:* Q4 and Q5, D-C6-16, section 4 (`transaction.export`/`import`), step
 7, section 6 step 8 (the test list).
@@ -507,9 +507,9 @@ entry.
 check for `deal_defaults` rows, and the shape file to steps 7 and 9, and to
 the "Deviations" list for Q5 if the bump stays.
 
-*Status:* Open.
+*Status:* Fixed (c8601f11).
 
-#### [ ] P10 — The CSV: dates in UTC for a statement chosen in local days, and the formula guard covers only two columns (minor)
+#### [x] P10 — The CSV: dates in UTC for a statement chosen in local days, and the formula guard covers only two columns (minor)
 
 *Where:* D-C6-14 (period picker, CSV columns, "CSV formula guard"), Playwright
 D5.
@@ -537,9 +537,9 @@ or add both a UTC and a local column; apply the formula guard to every cell
 of the string columns, and test `counterparty_name`; say "original text" for
 `description`.
 
-*Status:* Open.
+*Status:* Fixed (c8601f11).
 
-#### [ ] P11 — Step 11 moves test code that says "barter" into a file where the plan says no code may say it (minor)
+#### [x] P11 — Step 11 moves test code that says "barter" into a file where the plan says no code may say it (minor)
 
 *Where:* The "Name" paragraph at the top ("No code, message or doc may say
 'barter'"), step 11 ("move `setup_barter_fixture` … to `roym_flow.rs`").
@@ -557,9 +557,9 @@ payment method (a test value, not a claim about the product).
 the rule covers product names and text a person reads, and keep the
 `barter-tokens` test value, or rename it; the plan must say which.
 
-*Status:* Open.
+*Status:* Fixed (c8601f11).
 
-#### [ ] P12 — The plan says every refusal has `data.code`, but the code in `transaction` uses three shapes (minor)
+#### [x] P12 — The plan says every refusal has `data.code`, but the code in `transaction` uses three shapes (minor)
 
 *Where:* 7.11 ("every new refusal has a code in `data.code`"), D-C6-6,
 D-C6-7, D-C6-16.
@@ -580,9 +580,9 @@ from both. An implementer will pick one at random.
 `data` is `{"code": "<same>"}` for every new refusal; the Hub reads
 `data.code`. Add one contract test per new refusal that checks both.
 
-*Status:* Open.
+*Status:* Fixed (c8601f11).
 
-#### [ ] P13 — The `reads()` log in the test host: `query_raw` is `unimplemented!()` there (minor)
+#### [x] P13 — The `reads()` log in the test host: `query_raw` is `unimplemented!()` there (minor)
 
 *Where:* Step 1 ("a `reads` log … filled by `get`, `query` and `query_raw`"),
 point 9.
@@ -599,9 +599,9 @@ plan's wording ("every read") is wider.
 `unimplemented!()`. In the test comment (not the plan), say what the test
 proves: no call through the host's read functions names `event_log`.
 
-*Status:* Open.
+*Status:* Fixed (c8601f11).
 
-#### [ ] P14 — New Hub forms are not in the thread's "open work" list, so a redraw can drop what the person typed (minor)
+#### [x] P14 — New Hub forms are not in the thread's "open work" list, so a redraw can drop what the person typed (minor)
 
 *Where:* D-C6-13 (the note form, the close list), D-C6-9, D-C6-12, step 4 of
 C6b.
@@ -627,4 +627,4 @@ the note form and the close list a class (for example `.settle-dialog`,
 `thread_redraw.test.ts` style: a redraw does not replace an open settle
 dialog.
 
-*Status:* Open.
+*Status:* Fixed (c8601f11).
