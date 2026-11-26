@@ -14,7 +14,6 @@ living-docs-touched:
 demo:
   - crates/substrate/tests/e2e/demo/50-roym-deal.spec.ts
   - none: background driver has no new user-visible screens or commands; covered by two-node e2e tests (C3c1)
-  - none: C6a is node-side; C6b delivers Story 50 in browser Hub
 ---
 # Roym agreements
 
@@ -1214,8 +1213,8 @@ This document does not write the two ADRs. They must decide:
 - [ ] C2: `_sd` and the hidden fields of every record, the disclosure encoder and verifier, `deal.present`; disclosures in the card wrapper and the backup bundle.
 - [ ] C3 (with the extensions change): move slots to the scheduling extension; the reserve, confirm and release calls at the points above; `commitment-failure`.
 - [x] C3c: agree as listed: the driver, `terms_from_listing`, the enquiry's `as_listed`, the listing's `acceptance`, `not_limited`, `instant_cap` and `deal_terms`, `quote.from-listing`, the automatic acceptance, the Hub's "Agree as listed", the owner's confirm and the waiting line, and `formed_as` in the progress snapshot (AG-44, AG-45, AG-49 to AG-51).
-- [ ] C6: mixed exchanges in the Hub (totals and difference), the event log, `eventlog.*`, `statement.export` with the EEP section, the Hub's statement screen. Closing in one action, the combined summary of changes, the quote form defaults, and "Suggest changes" (AG-46 to AG-48, AG-52).
-- [ ] Demo story for enquiry, quote and agreement, as the M08C `task.md` asks.
+- [x] C6: mixed exchanges in the Hub (totals and difference), the event log, `eventlog.*`, `statement.export` with the EEP section, the Hub's statement screen. Closing in one action, the combined summary of changes, the quote form defaults, and "Suggest changes" (AG-46 to AG-48, AG-52).
+- [x] Demo story 50 for enquiry, quote and agreement, as the M08C `task.md` asks.
 
 ## Deviations
 
@@ -1518,6 +1517,12 @@ The owner answered that plan's questions Q1 to Q8 on 2026-11-23; the rows below 
 - **`statement.export` rules and guards (D-C6-7).** The `eeps` section always returns `not-available` in M08C (pending `obligation` service in M08E). `from_secs >= to_secs` refuses `bad-period`. Minor sums above 2^53 - 1 refuse `statement-total-overflow` for JavaScript integer safety. `statement.export` runs the derive step before query.
 - **Methods `deal.defaults-get` and `deal.defaults-set`.** Added to `transaction` to retrieve and update saved deal terms; not originally in the change document's method table.
 - **CLI `--close-as` on `roym transaction agreement close`.** The CLI uses `--close-as` (with `--as-role` alias) instead of `--as` because `--as` is a global flag on `roymctl` (`run_as`), while the RPC parameter remains `"as": "giver" | "receiver"`.
+
+**Rules and differences in C6b (2026-11-27).**
+
+- **Version comparison written in the Hub (D-C6-11).** AG-47 stated commitments "are matched by their disclosed description, as the version comparison does today", but no version comparison existed in the Hub. C6b implemented pure `versionSummary` matching commitments by giver, resource kind, and description text; unmatched commitments are added/removed, and differences in value, window, location, payee, tax or fees are changed.
+- **Counterparty name in statement export (Q6 (a)).** The statement export from the node includes `counterparty_did`, and the Hub resolves `counterparty_name` via `contacts.list` before display and export.
+- **Hub terminology (D-C6-15).** In the Hub UI, user-facing texts present quote and accept as "offer" and "agree", while records, wire protocols, and developer APIs retain "quote".
 
 ## Close-out
 

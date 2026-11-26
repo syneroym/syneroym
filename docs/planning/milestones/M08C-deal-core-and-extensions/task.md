@@ -376,6 +376,8 @@ The owner moved C5 out on 2026-11-15 (section 6, question 3). It was: an extensi
 - Hub words: "Offer" and "Agree" where it says "Quote" and "Accept" today. A quote card gets "Suggest changes", which starts a message in the conversation that names that quote version. The author answers with a new version, as today. New Hindi messages: the owner reviews them before the merge.
 - Criteria: AG-23 (Hub part), AG-27 to AG-30, AG-46 to AG-48, AG-52; VX-55, VX-56.
 - Demo: finishes story 50.
+- **C6a result ([PR #396](https://github.com/syneroym/syneroym/pull/396)):** the `event_log` collection, the derive step on sync, `eventlog.list` and `eventlog.rebuild`; `statement.export` with EEP section; `agreement.close`; saved deal terms (`deal.defaults-get`, `deal.defaults-set`); backup export/import schema version 9; two-node test `roym_statement_e2e`.
+- **C6b result (PR link in [status.md](status.md)):** the Hub quote builder for arbitrary mixed commitments, live totals and difference display, version comparison summary, counterparty suggest changes, agreement panel settlement dialogs and close list, statement screen with CSV/JSON exports, and Hindi vocabulary transition from quote/accept to offer/agree; demo story 50 finished.
 
 Change docs: roym-agreements, roym-value-exchange (VX-2, VX-7, VX-45, VX-46).
 
