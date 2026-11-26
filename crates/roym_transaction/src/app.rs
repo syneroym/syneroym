@@ -7,6 +7,7 @@ pub mod decline_ops;
 pub mod disclosures;
 pub mod drive;
 pub mod enquiry_ops;
+pub mod eventlog_ops;
 mod extension_rules;
 pub mod fulfilment_ops;
 pub mod hooks;
@@ -17,6 +18,7 @@ pub mod present_ops;
 pub mod progress;
 pub mod progress_ops;
 pub mod quote_ops;
+pub(crate) mod refusal;
 pub mod step_ops;
 pub mod sync;
 pub mod thread;
@@ -73,6 +75,9 @@ pub(crate) const PAYMENTS: &str = "payments";
 pub(crate) const FULFILMENTS: &str = "fulfilments";
 pub(crate) const STEPS: &str = "steps";
 pub(crate) const DISCLOSURES: &str = "disclosures";
+pub(crate) const EVENT_LOG: &str = "event_log";
+pub(crate) const EVENT_LOG_STATE: &str = "event_log_state";
+pub(crate) const DEAL_DEFAULTS: &str = "deal_defaults";
 pub(crate) const DRIVE_STATE: &str = "drive_state";
 pub(crate) const DRIVE_PENDING: &str = "drive_pending";
 pub(crate) const AS_LISTED: &str = "as_listed";
@@ -421,6 +426,14 @@ pub(crate) async fn ensure_collections<H: AppHost>(host: &H) -> Result<(), Strin
     ensure_coll(host, DRIVE_STATE, &[]).await?;
     ensure_coll(host, DRIVE_PENDING, &[]).await?;
     ensure_coll(host, AS_LISTED, &[]).await?;
+    ensure_coll(
+        host,
+        EVENT_LOG,
+        &[idx("recorded_at_secs", IndexType::Numeric), idx("agreement", IndexType::String)],
+    )
+    .await?;
+    ensure_coll(host, EVENT_LOG_STATE, &[]).await?;
+    ensure_coll(host, DEAL_DEFAULTS, &[]).await?;
     Ok(())
 }
 

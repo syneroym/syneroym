@@ -14,6 +14,8 @@ pub mod decide;
 pub mod decline;
 pub mod disclosure;
 pub mod drive;
+pub mod eventlog;
+pub mod eventlog_reads;
 pub mod extension;
 pub mod hooks;
 pub mod hooks_fake;
