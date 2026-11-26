@@ -1070,7 +1070,7 @@ a demand is "reached" at `issued_at_secs` for both codes. Option (b) needs no
 host feature, but a holder could back-date by up to 24 hours. State that limit.
 Add an OB-11 case with a controllable clock.
 
-**Status:** Fixed (2e402ac1) with option (a), and a pushback on option (b). The code supports (a): the mailbox's `claim` answer already gives the puller `deposited_at_secs` for each message (`ClaimAnswer` in `crates/mailbox/src/store/claim.rs`), so E2 only passes it on as `from-mailbox: option<stored-at-secs>` in the delivery caller context. Option (b) does not hold as stated: on the issuer's node the only bound on a demand's signed `issued_at_secs` is the open check's time-to-live plus skew (8 days), not 24 hours. The 24-hour rule is in the third-party proof check, which the issuer does not run. A deviation from `D-C6-6` is added. New OB-54.
+**Status:** Fixed (2e402ac1) with option (a), and a pushback on option (b). The code supports (a): the mailbox's `claim` answer already gives the puller `deposited_at_secs` for each message (`ClaimAnswer` in `crates/mailbox/src/store/claim.rs`), so E2 only passes it on as `from-mailbox: option<stored-at-secs>` in the delivery caller context. Option (b) does not hold as stated: on the issuer's node the only bound on a demand's signed `issued_at_secs` is the open check's time-to-live plus skew (8 days), not 24 hours. The 24-hour rule is in the third-party proof check, which the issuer does not run. A deviation from `D-C6-6` is added. New OB-54. Round 3 correction (f9f65008): the type is `ClaimedMessage` in `crates/core/src/mailbox.rs`, not `ClaimAnswer`. And the bound on a demand's own time is its `answer_by_secs` (about 7 days), not the open check's 8 days, which bounds the sealed message's send time. The conclusion (use the mailbox's time) stands; the text is corrected.
 
 ### P28 — major — The deposit proof check is written only for a demand, but it is also used as the countersign of every other record
 
@@ -1237,7 +1237,7 @@ of OB-44", or say OB-25 is the validator and OB-44 is the policy.
 in E2). Add "an unbuilt method answers `not-built` until E4". Edit OB-42,
 OB-48 and the diagram. Add the per-holder limit or say why it is not needed.
 
-**Status:** Fixed (2e402ac1). Agreed on all six. OB-51 is split: a host-function test in E2 and the service test in E3. Until E4, `demand`, `split` and `holdings` answer `not-built` (new OB-60). OB-42 says "no record and no row, except one counter per hour". OB-48 is split into OB-48 (size), OB-57 (60 an hour per caller) and OB-58 (one holdings answer an hour). The diagram shows `call-failed`. For the per-holder limit: a coded decline is signed once per (EEP, version, code), and a later demand gets the stored one again (new OB-59). So a holder of a closed or claimed EEP cannot make the node sign without limit, and no separate per-holder limit is needed.
+**Status:** Fixed (2e402ac1). Agreed on all six. OB-51 is split: a host-function test in E2 and the service test in E3. Until E4, `demand`, `split` and `holdings` answer `not-built` (new OB-60). OB-42 says "no record and no row, except one counter per hour". OB-48 is split into OB-48 (size), OB-57 (60 an hour per caller) and OB-58 (one holdings answer an hour). The diagram shows `call-failed`. For the per-holder limit: a coded decline is signed once per (EEP, version, code), and a later demand gets the stored one again (new OB-59). So a holder of a closed or claimed EEP cannot make the node sign without limit, and no separate per-holder limit is needed. Round 3 (f9f65008): the sixth point's answer (one stored decline per code) was unsound, see P39. It is replaced by one signed decline per demand, with a cap of 5 per (EEP, version) per day.
 
 ### P35 — minor — "Track end plus 7 days" is used for two different things
 
@@ -1253,7 +1253,7 @@ OB-40 repeat the phrase.
 track end) and `ISSUER_TICK_GRACE_SECS` (the extra time before the issuer
 resolves alone), and use the names in the text and in OB-40.
 
-**Status:** Fixed (2e402ac1). Agreed. Two names: `RESOLUTION_WINDOW_SECS` (7 days, inside the `eep-return` track end) and `ISSUER_TICK_GRACE_SECS` (7 more days before the issuer resolves alone). The text, OB-40 and the states table use them, and the issuer's own tick says the track end already holds the resolution window.
+**Status:** Fixed (2e402ac1). Agreed. Two names: `RESOLUTION_WINDOW_SECS` (7 days, inside the `eep-return` track end) and `ISSUER_TICK_GRACE_SECS` (7 more days before the issuer resolves alone). The text, OB-40 and the states table use them, and the issuer's own tick says the track end already holds the resolution window. Round 3 (f9f65008): the two leftovers (the states table and the round 1 deviation row) now use the constant names, see P40.
 
 ### P36 — minor — E2 details for the seeded generator
 
@@ -1464,7 +1464,7 @@ claim, then confirm takes it back, and passes.
 
 I recommend the first. It matches what this document already says in line 462.
 
-**Status:** Open
+**Status:** Fixed (f9f65008) with the first option, as recommended. Release at once only on certain ends (`not-formed`, `declined`, `cancelled`, a cancelled `eep-return`). For a claim taken as the counterparty, `expired` releases only after the quote's expiry plus 30 days, the same bound as the drive's safety net. The text adds why this rarely holds the version that long: a writer that files the acceptance after the expiry sends a `not-formed` snapshot with `quote-expired`, which is a certain end. The `why: deal-ended` input, the states table and the round 1 deviation row say the same, and there is a new deviation row against the agreements document's `expired`. New OB-62, with a competing claim between the expiry and the late half.
 
 ### P39 — major — A decline signed once per (EEP, version, code) is sent again for a different demand, and it no longer answers that demand
 
@@ -1499,7 +1499,7 @@ EEP and version (after a transfer in M08H) would be skipped as well.
 Change OB-59 to match, with a test that a second demand gets a decline whose
 `answers` names it, and that the N+1th gets an error only.
 
-**Status:** Open
+**Status:** Fixed (f9f65008) with the first option. Every demand that hits a coded decline gets its own signed decline, whose `answers` names it and whose time is the time of this answer. A stored decline is never sent for another demand. At most 5 coded declines are signed per (EEP, version) per day; past that, the direct reply carries an error and nothing is signed. The cap is per (EEP, version), whatever the holder, so it also holds in M08H. OB-59 is rewritten in place with the two tests (a second demand gets a decline naming it; the sixth gets an error only). I kept the OB id, because the row's rule is the same one, corrected; its text marks the change.
 
 ### P40 — minor — Wording and leftovers
 
@@ -1529,7 +1529,7 @@ table row for `eep-decline` and `eep` versions), 794 (the states table), 1234
 
 **Fix:** Edit the five places.
 
-**Status:** Open
+**Status:** Fixed (f9f65008). All five places: the stored-time paragraph now gives the bound as `answer_by_secs` (about 7 days), with the reason that the open check bounds the sealed message, not the demand; the rule, OB-41, the open question and the deviation row say "no commitment other than `eep-return` commitments", and OB-41 tests the two-way set-off; the `eep` version is removed from the deposit proof table, because its countersign is the holder's acknowledgement; the states table and the round 1 deviation row use `RESOLUTION_WINDOW_SECS` and `ISSUER_TICK_GRACE_SECS`, and the states table lists both `why` values as ends of a confirmed claim.
 
 ### P41 — minor — The stored-time feature needs a named host change and test host
 
@@ -1550,4 +1550,24 @@ the feature in one phrase.
 add the shim, `admit` and `TestHost` to the E2 task. OB-54's "fake mailbox
 caller context" then has a concrete place.
 
-**Status:** Open
+**Status:** Fixed (f9f65008). Agreed, with the proposed shape: a new function `delivery: func() -> option<delivery-info>` in the `invocation` interface, with `delivery-info { mailbox, stored-at-secs }`, so `caller()` and every existing guest stay unchanged. The guest reads it with `roym_core::admit::delivery(host)`. The E2 task lists the WIT, the puller, the dual-build shim's `AppInvocation`, `admit` and a setter on the shared `TestHost`. New OB-63.
+
+## Fix session round 3 — Claude Opus 5.5 (Claude Code), 2026-11-26
+
+Fixes are in `f9f65008` on `claude/m08e-obligations-change-doc-62dcfb`,
+which fast-forwarded to the round 3 review commit `271b04e9` first.
+P38 to P41 are fixed, and so are the open parts of P34 and P35. Their
+statuses (and P27's, for its two slips) have a "Round 3" note. Every
+finding P1 to P41 is now closed in the text, except the four that wait
+for the owner: P7 (question 18), P11 (question 16), P12 point 1
+(question 17) and P21 question 3.
+
+Fixed as proposed: P38 (first option), P39 (first option), P40 and
+P41. One choice to note: OB-59 keeps its id and is rewritten in place,
+because the row's rule is the same rule, corrected, and its text says
+so. All other new rows are appended: OB-62 and OB-63.
+
+Open questions: no new one, and none changed in substance. Question 18's
+rule now says "no commitment other than `eep-return` commitments", which
+is the same narrow rule in clearer words and names the two-way set-off.
+
