@@ -20,6 +20,7 @@ export const ALLOWED_LATIN: ReadonlyArray<{ text: string; why: string }> = [
   { text: "INR", why: "the default currency code of quotes and listings" },
   { text: "roymctl roym backup create", why: "a command that the backup help shows" },
   { text: "JSON", why: "the name of a data format that a person pastes" },
+  { text: "CSV", why: "the name of a data format for tabular export" },
   { text: "HTTP", why: "the protocol name in a line about a failed request" },
   { text: "did:key:...", why: "the start of an identifier, shown as an example of the format" },
   { text: "am", why: "`Intl` writes the 12-hour mark of a Hindi time in Latin letters" },

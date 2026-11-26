@@ -22,6 +22,7 @@ import { setTabOpener, type TabKey, type TabOpener, type TabStateMap } from "./n
 import { renderProfile } from "./screens/profile";
 import { renderSafety } from "./screens/safety";
 import { renderSetup } from "./screens/setup";
+import { renderStatement } from "./screens/statement";
 import { renderSynOrg } from "./screens/synorg";
 import { pendingEnrolment } from "./session/enrolment";
 import { startTranslation } from "./translation/translation";
@@ -158,6 +159,7 @@ async function renderTabs(container: HTMLElement, did: string) {
     memberships: renderMemberships,
     synorg: renderSynOrg,
     safety: renderSafety,
+    statement: renderStatement,
     backup: renderBackup,
     components: (host) => renderHome(host, did),
   };
@@ -187,6 +189,7 @@ async function renderTabs(container: HTMLElement, did: string) {
     [t("tab-memberships"), "memberships"],
     [t("tab-synorg"), "synorg"],
     [t("tab-safety"), "safety"],
+    [t("tab-statement"), "statement"],
     [t("tab-backup"), "backup"],
     [t("tab-components"), "components"],
   ];

@@ -205,6 +205,7 @@ tab-directory = डायरेक्टरी
 tab-memberships = सदस्यता
 tab-synorg = SynOrg
 tab-safety = सुरक्षा
+tab-statement = विवरण
 tab-backup = बैकअप
 tab-components = कंपोनेंट
 login-title = साइन इन
@@ -948,4 +949,28 @@ deal-close-not-started = अभी शुरू नहीं हुआ
 deal-close-sign-button = हस्ताक्षर करें
 deal-unconfirmed-claimed = देने वाले का कहना है कि उसने सौंप दिया; प्राप्तकर्ता ने पुष्टि नहीं की।
 deal-unconfirmed-unrecorded = किसी ने कुछ भी दर्ज नहीं किया।
+
+# --- statement (M08C C6b) ---
+statement-title = विवरण
+statement-period-this-month = इस महीने
+statement-period-last-month = पिछले महीने
+statement-period-this-year = इस साल
+statement-from-label = से:
+statement-to-label = तक:
+statement-show = दिखाएं
+statement-error-period = आरंभ तिथि समाप्ति तिथि से पहले होनी चाहिए
+statement-fetch-failed = विवरण निर्यात नहीं किया जा सका: { $detail }
+statement-download-csv = CSV डाउनलोड करें
+statement-download-json = JSON डाउनलोड करें
+statement-no-rows = इस अवधि में कोई निपटान की गई प्रतिबद्धता नहीं है।
+statement-direction-given = दिया गया
+statement-direction-received = प्राप्त हुआ
+statement-open-heading = अवधि के अंत में खुले
+statement-open-none = अवधि के अंत में कोई खुली प्रतिबद्धता नहीं है।
+statement-totals-heading = कुल योग
+statement-totals-none = इस अवधि में कोई कुल योग नहीं है।
+statement-kind-goods-or-service = वस्तु या सेवा
+statement-eep-not-available = इस नोड पर उपलब्ध नहीं है
+statement-eep-unavailable = पढ़ा नहीं जा सका: { $reason }
+statement-eep-available = उपलब्ध
 

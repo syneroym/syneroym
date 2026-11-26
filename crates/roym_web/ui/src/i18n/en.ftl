@@ -214,6 +214,7 @@ tab-directory = Directory
 tab-memberships = Memberships
 tab-synorg = SynOrg
 tab-safety = Safety
+tab-statement = Statement
 tab-backup = Backup
 tab-components = Components
 login-title = Sign in
@@ -975,4 +976,28 @@ deal-close-not-started = Not started yet
 deal-close-sign-button = Sign
 deal-unconfirmed-claimed = The giver says it delivered; the receiver did not confirm.
 deal-unconfirmed-unrecorded = Nobody recorded anything.
+
+# --- statement (M08C C6b) ---
+statement-title = Statement
+statement-period-this-month = This month
+statement-period-last-month = Last month
+statement-period-this-year = This year
+statement-from-label = From:
+statement-to-label = To:
+statement-show = Show
+statement-error-period = Start date must be before end date
+statement-fetch-failed = Could not export statement: { $detail }
+statement-download-csv = Download CSV
+statement-download-json = Download JSON
+statement-no-rows = No settled commitments in this period.
+statement-direction-given = Given
+statement-direction-received = Received
+statement-open-heading = Open at end of period
+statement-open-none = No commitments open at end of period.
+statement-totals-heading = Totals
+statement-totals-none = No totals in this period.
+statement-kind-goods-or-service = Goods or service
+statement-eep-not-available = Not available on this node
+statement-eep-unavailable = Could not be read: { $reason }
+statement-eep-available = Available
 
