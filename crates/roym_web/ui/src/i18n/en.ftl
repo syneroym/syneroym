@@ -856,7 +856,7 @@ ext-scheduling-step-started = Work started
 
 widget-poll-count =
     { $count ->
-        [one] 1 vote
+        [one] { $count } vote
        *[other] { $count } votes
     }
 widget-poll-your-choice = You chose: { $choice }

@@ -792,6 +792,12 @@ describe("translation, in Hindi", () => {
     expect(english(host)).toEqual([]);
   });
 
+  it("formats poll vote counts correctly in Hindi for 0, 1, and 2 votes", () => {
+    expect(t("widget-poll-count", { count: 0 })).toBe("0 वोट");
+    expect(t("widget-poll-count", { count: 1 })).toBe("1 वोट");
+    expect(t("widget-poll-count", { count: 2 })).toBe("2 वोट");
+  });
+
   it("draws the translate action, the machine note and the warning before acceptance", async () => {
     const wrap = await machineQuote();
     expect(wrap.querySelector(".record-text-translate")).not.toBeNull();

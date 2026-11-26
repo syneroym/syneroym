@@ -831,11 +831,7 @@ ext-scheduling-step-started = काम शुरू हुआ
 
 ## Widgets
 
-widget-poll-count =
-    { $count ->
-        [one] 1 वोट
-       *[other] { $count } वोट
-    }
+widget-poll-count = { $count } वोट
 widget-poll-your-choice = आपकी पसंद: { $choice }
 widget-votes-visible = इस चैट में हर कोई हर वोट देख सकता है।
 widget-answer-send = जवाब भेजें
