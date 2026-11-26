@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '../fixtures';
-import { loginWithDelegatedKey, pollCount, rpcCall, sendPoll, votePoll } from '../hub-helpers';
+import { loginWithDelegatedKey, rpcCall } from '../hub-helpers';
 import { readE2EPorts } from '../ports';
 
 test.describe.configure({ mode: 'serial' });
@@ -149,8 +149,8 @@ test.describe('Roym Hub: group chat', () => {
     await expect(page.locator('.conversation-items')).toContainText('Street Garden');
   });
 
-  test("a poll in a group counts the owner's vote", async ({ page }) => {
-    const ownerDid = await signIn(page);
+  test('sending a poll with no other member says there is nobody to deliver to', async ({ page }) => {
+    await signIn(page);
     await openGroups(page);
 
     const groupItem = page.locator('.conversation-items .conversation-item', { hasText: 'Street Garden' }).first();
@@ -159,113 +159,24 @@ test.describe('Roym Hub: group chat', () => {
     const question = `Which day works for you? (${Date.now().toString(36)})`;
     const options = ['Saturday', 'Sunday'];
 
-    let pollSent = false;
-    let voteSent = false;
+    const form = page.locator('.poll-composer-form');
+    const isVisible = await form.isVisible().catch(() => false);
+    if (!isVisible) {
+      await page.locator('.toggle-poll-button').click();
+      await expect(form).toBeVisible({ timeout: 15_000 });
+    }
 
-    await page.route('**/rpc', async (route) => {
-      const { method, id, params } = route.request().postDataJSON() as { method: string; id: number; params: any };
-      if (method === 'widget.send') {
-        pollSent = true;
-        return route.fulfill({
-          contentType: 'application/json',
-          body: JSON.stringify({ jsonrpc: '2.0', id, result: { message_id: 'm-grp-poll-1' } }),
-        });
-      }
-      if (method === 'widget.answer') {
-        voteSent = true;
-        return route.fulfill({
-          contentType: 'application/json',
-          body: JSON.stringify({ jsonrpc: '2.0', id, result: { message_id: 'm-grp-vote-1' } }),
-        });
-      }
-      if (method === 'conversation.history' && pollSent) {
-        return route.fulfill({
-          contentType: 'application/json',
-          body: JSON.stringify({
-            jsonrpc: '2.0',
-            id,
-            result: {
-              messages: [
-                {
-                  id: 'm-grp-poll-1',
-                  sender: ownerDid,
-                  sender_timestamp_ms: Date.now(),
-                  content_type: 'application/vnd.roym.widget+json',
-                  languages: ['en'],
-                  body: JSON.stringify({
-                    extension: 'poll@1',
-                    schema: 'poll',
-                    data: {
-                      prompt: question,
-                      options,
-                    },
-                  }),
-                },
-              ],
-            },
-          }),
-        });
-      }
-      if (method === 'widget.list' && pollSent) {
-        return route.fulfill({
-          contentType: 'application/json',
-          body: JSON.stringify({
-            jsonrpc: '2.0',
-            id,
-            result: {
-              widgets: [
-                {
-                  widget_id: 'm-grp-poll-1',
-                  author: ownerDid,
-                  direction: 'outgoing',
-                  sender_timestamp_ms: Date.now(),
-                  languages: ['en'],
-                  definition: {
-                    extension: { id: 'poll', version: 1 },
-                    type: 'poll/single',
-                    semantic: 'poll',
-                    prompt: question,
-                    fields: [
-                      {
-                        name: 'option',
-                        type: 'choice',
-                        required: true,
-                        choices: [
-                          { code: 'o1', text: 'Saturday' },
-                          { code: 'o2', text: 'Sunday' },
-                        ],
-                      },
-                    ],
-                  },
-                  checked: true,
-                  counts: voteSent ? [{ field: 'option', choice: 'o2', count: 1 }] : [],
-                  answers: voteSent
-                    ? [
-                        {
-                          message_id: 'm-grp-vote-1',
-                          author: ownerDid,
-                          direction: 'outgoing',
-                          sender_timestamp_ms: Date.now(),
-                          languages: ['en'],
-                          data: { option: 'o2' },
-                          state: 'delivered',
-                        },
-                      ]
-                    : [],
-                  ignored_answers: 0,
-                  state: 'delivered',
-                },
-              ],
-              complete: true,
-            },
-          }),
-        });
-      }
-      return route.fallback();
-    });
+    await form.locator('.widget-poll-question-input').fill(question);
+    for (let i = 0; i < options.length; i++) {
+      await form.locator('.widget-poll-option-input').nth(i).fill(options[i]);
+    }
 
-    await sendPoll(page, question, options);
-    await votePoll(page, question, 'Sunday');
-    await expect(pollCount(page, question, 'Sunday')).toHaveText('1 vote', { timeout: 15_000 });
+    const sendBtn = form.locator('.widget-poll-send-btn');
+    await expect(sendBtn).toBeEnabled({ timeout: 15_000 });
+    await sendBtn.click();
+
+    const hint = form.locator('.poll-composer-hint');
+    await expect(hint).toContainText('nowhere to deliver', { timeout: 15_000 });
+    await expect(form).toBeVisible();
   });
 });
