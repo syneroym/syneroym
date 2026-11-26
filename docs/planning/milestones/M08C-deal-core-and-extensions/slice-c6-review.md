@@ -1162,3 +1162,135 @@ In `roymctl`, keep one exhaustive `match` (the lifecycle arms call their
 handlers and return).
 
 *Status:* Fixed (89301a1c, 49c5946e). One `entry` builder and one `failure_event` map the entries; `owner_role_and_counterparty` is shared; the `allow` and the end-of-file `use` are gone; `roymctl` has one exhaustive match.
+
+## Code review round 2 — Claude Opus 5.5, 2026-11-26
+
+This round checks the fixes for R1 to R10. Branch
+`feat/m08e-c6-barter-statement` at `23f10662`, main checkout (not a
+worktree), `git pull` up to date. Fix commits, written by Gemini 3.8
+Flash: `89301a1c`, `1d703ff1`, `49c5946e`, `0a1423f3`, `292cc2c6`,
+`9307da76`, `855b4713` and `23f10662`. I read `git diff
+02d5730a..23f10662` (29 files).
+
+**CI.** `gh pr checks 396` on `23f10662` ([run 45848714549](https://github.com/syneroym/syneroym/actions/runs/45848714549)):
+every job passed: "Lints, licenses & checks", Playwright E2E, the CLA
+check and all six test shards. Benchmarks and Code Coverage were skipped,
+as usual for a PR. So CI is proof that the full suite passes.
+
+**Tests I ran** (targeted only):
+
+- `cargo nextest run -p syneroym-roym-core -p syneroym-roym-transaction
+  -p roymctl`: 1,062 passed (548 + 285 + 229, the numbers in status.md).
+- `mise run build:roym` (built), then `cargo nextest run -p
+  syneroym-roym-web --test dual_build_parity statement`: 11 passed
+  (scenarios 267 to 277, none skipped); `--test method_contract`: 40
+  passed.
+- `cargo nextest run -p syneroym-substrate --test roym_statement_e2e`:
+  2 passed.
+- One probe for R1: I put the old line back in
+  `load_note_from_disclosures` (`.await.ok().flatten()` in place of
+  `.await?`). Then `fail_read_disclosures_defers_derive_and_recovers_clean_sync`
+  fails at `eventlog.rs:517`. I restored the file (`git status` clean).
+
+### Round 1 findings
+
+- **R1 — fixed.** Every read in `gather.rs` now returns its error with
+  `?`, and a snapshot envelope that does not parse is an error too. An
+  error stops `derive_agreement` before it writes the marker, so the next
+  sync derives again. The currency path no longer falls back to the first
+  half; with no matching half the entry waits (`complete: false`). Two
+  service tests cover a failed read of `disclosures` and of
+  `agreement_progress`, each followed by a clean sync that checks the note
+  or the time. My probe above shows the first test fails with the old
+  line.
+- **R2 — fixed.** `AgreementSource` has no `agreed_at_secs` any more.
+  `build_rows` skips an entry whose agreement, commitment or formed entry
+  is not found, and `open_at_end` lists only agreements with a formed
+  entry. The derive step holds back `commitment-settled` while the
+  formed entry cannot be made. The only values taken from the terms are
+  resource kind, kind, declared value and direction, which are signed and
+  the same on both nodes. The build now uses two maps and is linear in
+  the number of entries.
+- **R3 — fixed.** The C6a block in the agreements change doc now lists
+  Q4, Q5, Q6, D-C6-3, D-C6-4, D-C6-6, D-C6-7, the two `deal.defaults-*`
+  methods and the CLI flag. The notes that were not differences are gone.
+  The test columns of AG-27 to AG-30, AG-33, AG-46 and AG-48 and of VX-45,
+  VX-46 and VX-55 name test files and tests that exist. I checked the
+  refusal codes named there (`bad-period`, `statement-total-overflow`,
+  `bad-commitment-list`, `agreement-not-open`) against the code.
+- **R4 — fixed.** The developer guide now gives the real inputs of
+  `eventlog.list` (`after`, `limit`) and `statement.export` (`from_secs`,
+  `to_secs`, no currency filter), the real repeat rule of
+  `agreement.close` (it matches `close_at` and `sign_one_commitment`), and
+  the four fields of `DealDefaults`. TERMINOLOGY has the same four fields.
+  The architecture line no longer says an agreement is "closed via
+  `agreement.close`". The requirements line names
+  `FulfilmentReceiptPayload`, which exists in `roym_core::fulfilment`.
+- **R5 — fixed.** Scenario 277 measures one sync of a conversation with 50
+  closed agreements and one export over 1,000 agreements on both builds,
+  and status.md and task.md section 1 record the times (20 ms and 297 ms
+  on WASM) and all seven component sizes. The scenario seeds a complete
+  marker for every agreement, so it measures the marker path. That is
+  what plan section 9 asks ("one read of `event_log_state` per
+  agreement"). The first derive with no markers (after an import or
+  `eventlog.rebuild`) is not measured; the plan does not ask for it.
+- **R6 — fixed.** `agreed` is now set only for an agreed, closed or
+  cancelled row or when the author's half is held, and `derive_formed`
+  returns early for a not-formed agreement. So a not-formed agreement gets
+  a complete marker. The unit test passes the counterparty half and
+  asserts `complete`; `writer_derives_agreement_not_formed` checks the
+  marker.
+- **R7 — fixed.** `validate_defaults_section` runs before any write and
+  requires the `payload` field (the one shape that `export` writes).
+  `write_defaults_section` runs after the cards. A failed rebuild no
+  longer fails the import; it returns `log_entries_made: 0`. See R11 for
+  how the error is reported.
+- **R8 — fixed.** The fail-write test and the driver test read the
+  `event_log` row directly (`get_row`, and a new
+  `RoymNode::get_service_row` that opens the service's encrypted
+  `state.db`), so neither runs the derive itself. The read test now runs
+  a full deal on two fixtures (`quote.set`, `agreement.accept`,
+  `transaction.sync`, both settlements and `agreement.close`) and clears
+  the read log only before the first call. The money test has a currency
+  commitment and checks its row and total. A service test files two
+  receiver acknowledgements, the second with `supersedes`, and checks the
+  time and note of the first. The counterparty test covers the three
+  agreement ends and the three failure ends.
+- **R9 — fixed.** The counts in the C6 row (548, 285, 229, 40, 11, 2) match
+  what the commands print in my run above.
+- **R10 — fixed.** One `entry` builder and one `failure_event` map; no
+  `unreachable!()` is left in `eventlog.rs` or in `roymctl`'s
+  `transaction.rs`; `owner_role_and_counterparty` is shared by
+  `gather.rs` and `statement_ops.rs`; the `allow(dead_code)` and the
+  end-of-file `use` are gone. No added Rust line names a milestone,
+  slice, plan section or finding.
+
+### New findings
+
+#### R11 — The import prints the rebuild error with `eprintln!` (minor)
+
+*Where:* `crates/roym_transaction/src/app/backup.rs:197`.
+
+*Problem:* When `rebuild_at` fails after an import, the code writes the
+error with `eprintln!`. No other Roym service prints to stderr, and the
+`AppHost` trait has no log call. In the native build the line goes
+straight to the substrate's stderr, outside `tracing`, so the log level
+and format do not apply. In the WASM build it depends on how the host
+wires the guest's stderr. `sync_direct` ignores the same derive error
+with no output (`sync.rs:163`).
+
+*Failure case:* A node imports a bundle while one data-layer read fails.
+The import returns `log_entries_made: 0` and an unformatted line appears
+in the substrate's stderr, also when the operator set the log level to
+`error` only. Nothing breaks, but the service now has two ways to report
+the same ignored error.
+
+*Fix:* Drop the print and ignore the error as `sync_direct` does (the
+next sync repairs the log), for example
+`.map_or(0, |r| r.made)`. If the owner wants the error seen, add a log
+call to the host interface in its own change, and use it in both places.
+
+*Status:* Open.
+
+**Counts of round 2:** R1 to R10 verified fixed. One new finding, R11
+(minor). **1 open:** 0 blocker, 0 major, 1 minor.
