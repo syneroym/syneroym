@@ -1469,9 +1469,9 @@ deleted again (`git status` clean after each):
   Hub bundle, so no component size report is due.
 
 **Counts of round 1 (C4b):** 0 blocker, 3 major (R21, R22, R23), 7 minor
-(R24 to R30). **10 open.**
+(R24 to R30). **0 open, 10 fixed.**
 
-### R21 — A new poll in Hindi shows "1 वोट" for every option (major)
+### [x] R21 — A new poll in Hindi shows "1 वोट" for every option (major)
 
 *Where:* [hi.ftl:834](../../../../crates/roym_web/ui/src/i18n/hi.ftl#L834)
 to `:838` at `c11e214f`;
@@ -1497,9 +1497,9 @@ in `hi.ftl` for a hard-coded `1` under `[one]` (a `git grep -n
 "\[one\] 1" crates/roym_web/ui/src/i18n/hi.ftl`). The owner reviews the
 changed message.
 
-*Status:* Open
+*Status:* Fixed (5e8a39b1). Agreed. Proved failure: `hindi-screens.test.ts` failed with `expected '1 वोट' to be '0 वोट'` before fix. Fixed `hi.ftl` to use `{ $count } वोट` (in Hindi `one` includes 0 and 1) and `en.ftl` to `[one] { $count } vote`. Added 0, 1, 2 count test. Checked all other `[one]` messages in `hi.ftl`.
 
-### R22 — The group Playwright case mocks the node, so no group poll is ever sent from the Hub (major)
+### [x] R22 — The group Playwright case mocks the node, so no group poll is ever sent from the Hub (major)
 
 *Where:* [roym-groups.spec.ts:152](../../../../crates/substrate/tests/e2e/tests/roym-groups.spec.ts#L152)
 to the end of the case at `c11e214f` (the `page.route('**/rpc', …)` at
@@ -1535,9 +1535,9 @@ cannot run in this harness, rename the case to what it tests, move it to
 the unit tests, and record in the extensions change doc that the group
 poll is proved by `roym_widget_e2e` and parity scenario 263 only.
 
-*Status:* Open
+*Status:* Fixed (d2e54d7d). Agreed. Proved real node refusal: removed `page.route` mock from `roym-groups.spec.ts`. In a 1-member group, sending a poll receives the real node refusal `"a group with no other member has nowhere to deliver"` and displays it in the composer hint without crashing. Full group voting is verified by dual_build_parity scenario 263, `roym_widget_e2e.rs`, and demo story 20.
 
-### R23 — The generic card passes author text where the catalog expects message ids (major)
+### [x] R23 — The generic card passes author text where the catalog expects message ids (major)
 
 *Where:* [generic.ts:215](../../../../crates/roym_web/ui/src/widgets/generic.ts#L215)
 to `:223` and `:261` to `:268` at `c11e214f`.
@@ -1568,9 +1568,9 @@ instead of ids. For a known type, keep the catalog id
 text that is a real message id, and a test that `console.error` is not
 called when the answer list is drawn.
 
-*Status:* Open
+*Status:* Fixed (292046e0). Agreed. Proved failure: choice text `"messages-retry-button"` translated to `"Retry"` with missing message console error. Rewrote answer rendering in `generic.ts` to format non-text answers via DOM `textContent` with author labels and choices, preserving catalog ids for known types. Added tests in `generic.test.ts`.
 
-### R24 — A generic answer is sent with no language, so every free-text answer says "Language not stated" (minor)
+### [x] R24 — A generic answer is sent with no language, so every free-text answer says "Language not stated" (minor)
 
 *Where:* [generic.ts:125](../../../../crates/roym_web/ui/src/widgets/generic.ts#L125)
 to `:129` at `c11e214f`.
@@ -1593,9 +1593,9 @@ composer's language list from `messages.ts` and `groups.ts` (as the poll
 composer gets it), and send it with every `widget.answer` (generic and
 poll). Add a test that checks the `languages` param of the call.
 
-*Status:* Open
+*Status:* Fixed (292046e0). Agreed. Added `languages?: () => string[]` to `WidgetRenderOptions` in `view.ts`; wired composer language provider in `messages.ts` and `groups.ts`; passed `languages` in `widget.answer` in `poll.ts` and `generic.ts`. Added tests in `poll.test.ts` and `generic.test.ts`.
 
-### R25 — A refused vote, a failed `widget.list` and a double tap fail without a word (minor)
+### [x] R25 — A refused vote, a failed `widget.list` and a double tap fail without a word (minor)
 
 *Where:* [poll.ts:80](../../../../crates/roym_web/ui/src/widgets/poll.ts#L80)
 to `:95`; [messages.ts:420](../../../../crates/roym_web/ui/src/screens/messages.ts#L420);
@@ -1622,9 +1622,9 @@ and disable every option button while a call runs. In both screens, on a
 each widget's own text, instead of a per-card `widget-refused`. Add a
 test for each.
 
-*Status:* Open
+*Status:* Fixed (292046e0). Agreed. In `poll.ts`, disabled option buttons during submit and displayed `widget-answer-failed` error on failure. In `messages.ts` and `groups.ts`, on `widget.list` rejection, displayed thread-level error with `errText(err)` while preserving widget prompts. Added tests in `poll.test.ts`, `messages.test.ts`, and `groups.test.ts`.
 
-### R26 — A widget card drops the parts of a message row: delete, sender and the restored-row rule (minor)
+### [x] R26 — A widget card drops the parts of a message row: delete, sender and the restored-row rule (minor)
 
 *Where:* [messages.ts:605](../../../../crates/roym_web/ui/src/screens/messages.ts#L605)
 to `:623` (the early `return wrap`); [groups.ts:202](../../../../crates/roym_web/ui/src/screens/groups.ts#L202)
@@ -1652,9 +1652,9 @@ widget. For an own answer, hide retry when the answer's history row is
 restored, or record in the Deviations why it is shown. Add tests: a
 widget row has a delete button; a group widget shows the sender.
 
-*Status:* Open
+*Status:* Fixed (292046e0). Agreed. In `messages.ts`, rendered widget card without early return, preserving message metadata (`stateSpan`, retry button via `canRetry(m)`, and delete button). In `groups.ts`, updated `renderMessageRow` to support `widgetView`, preserving `message-author`, timestamp, retry button, and delete button. Added tests in `messages.test.ts` and `groups.test.ts`.
 
-### R27 — The state-and-retry block is written three times, and widgets import from a screen (minor)
+### [x] R27 — The state-and-retry block is written three times, and widgets import from a screen (minor)
 
 *Where:* [render.ts:23](../../../../crates/roym_web/ui/src/widgets/render.ts#L23)
 to `:51`, [poll.ts:102](../../../../crates/roym_web/ui/src/widgets/poll.ts#L102)
@@ -1684,9 +1684,9 @@ and one `widgetHeading(view)` helper in `widgets/`, a
 `messageStateWord` (and `canRetry`) to a small module that both the
 screens and the widgets import.
 
-*Status:* Open
+*Status:* Fixed (292046e0). Agreed. Extracted `messageStateWord` and `canRetry` to `chat/message_state.ts`. Defined `stateAndRetry` and `widgetHeading` in `widgets/render.ts`. Defined `missingWidgetView`, `WIDGET_CONTENT_TYPE`, and `WIDGET_ANSWER_CONTENT_TYPE` in `widgets/view.ts`. Replaced duplicate code in `poll.ts`, `generic.ts`, `render.ts`, `messages.ts`, and `groups.ts`.
 
-### R28 — Two test names carry planning ids (minor)
+### [x] R28 — Two test names carry planning ids (minor)
 
 *Where:* [render.test.ts:71](../../../../crates/roym_web/ui/src/widgets/render.test.ts#L71)
 ("… when complete is false (P11)") and
@@ -1704,9 +1704,9 @@ the names point at nothing.
 widget-answer translate action". Check every new test name with the
 grep of the comment convention.
 
-*Status:* Open
+*Status:* Fixed (292046e0). Agreed. Renamed test in `render.test.ts` to `"renders normally when complete is false"` and in `generic.test.ts` to `"the widget-answer translate action"`.
 
-### R29 — Living docs, change docs and the backlog miss what plan section 9 asks, and some new lines are false (minor)
+### [x] R29 — Living docs, change docs and the backlog miss what plan section 9 asks, and some new lines are false (minor)
 
 *Where:* at `c11e214f`:
 [roym-multilingual change.md:133](../../changes/roym-multilingual/change.md#L133),
@@ -1758,9 +1758,9 @@ not exist; nobody finds the deferral of poll option translation.
 EX-10, EX-11 and EX-13 (check each name with `git grep`). Replace the
 restating items with the real differences.
 
-*Status:* Open
+*Status:* Fixed (7449335b). Agreed. Updated ML-26, ML-28 and deviations in `roym-multilingual/change.md`; updated EX-10, EX-11, EX-13 and deviations in `roym-extensions/change.md`; clarified widget build scope in `system-requirements-spec.md`; added Hub test files to `traceability-matrix.md`; added C4b line to `task.md`; added translation deferral and corrected resolved manifest labels in `deferred-backlog.md`.
 
-### R30 — The thread wiring has no test, and status.md claims more than it shows (minor)
+### [x] R30 — The thread wiring has no test, and status.md claims more than it shows (minor)
 
 *Where:* [messages.test.ts](../../../../crates/roym_web/ui/src/screens/messages.test.ts)
 and [groups.test.ts](../../../../crates/roym_web/ui/src/screens/groups.test.ts)
@@ -1787,4 +1787,4 @@ and a text message; assert one `widget.list` call with
 widget makes no call. In status.md, drop the mutation claim or list what
 was mutated, list the 18 Hindi ids for the owner, and give the CI run.
 
-*Status:* Open
+*Status:* Fixed (292046e0, 7449335b). Agreed. Added unit tests in `messages.test.ts` and `groups.test.ts` using `stubRpc` asserting that `widget.list` is called with live widget IDs and skipped when history has no widgets. Updated `status.md` with accurate test counts, CI run link, and 18 Hindi message IDs.
