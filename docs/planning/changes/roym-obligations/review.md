@@ -1888,7 +1888,7 @@ facts table as a code fact, to the E3 task, and as a deviation from the service
 mailbox change (`D-C6-5`). OB-67 then tests the compiler: an app with
 `mailbox_methods` and no mailbox compiles with one warning.
 
-**Status:** Open
+**Status:** Fixed. Agreed, checked in the code. The refusal is in `check_mailbox_methods`, called from `validate_plan_member_settings`, which runs in both `compile` and the supervisor's `submit`. `roymctl app deploy` applies `--mailbox` to the manifest before `compile`, so only a deploy with no mailbox at all fails. Nothing else depends on the refusal: the SDK mapper sends the methods only inside `MailboxCredentials`, which exist only with a mailbox key (`mapper.rs:402-406`), and no Roym manifest lists `mailbox_methods` today. The one test that expects the refusal (`compiler/tests/member_settings.rs`) changes. E3 removes the refusal from `validate_plan_member_settings` (both paths), and `app deploy` warns. `roymctl svc deploy` keeps "--mailbox-method needs --mailbox": there the operator types the methods for one service, so it is a usage error, and Roym is not deployed that way. So I chose "removed" with a warning in `app deploy`, not a compiler warning, because `compile` has no warning channel. New facts row, E3 task, OB-67 rewritten (compiler, plan check, `app deploy`), and a deviation from `D-C6-5` under "Added in review round 6".
 
 ### P45 — major — The cap of caller rows lets 10,000 false callers block every new caller for an hour
 
@@ -1914,7 +1914,7 @@ caller is ever refused for being new, and the storage is bounded without a
 cap on callers. Change OB-65 to test that a full table still answers a new
 caller, and OB-57 for a shared slot.
 
-**Status:** Open
+**Status:** Fixed, as proposed, with one addition. 4,096 slots per hour bucket. The slot is a keyed hash, HMAC-SHA256 with a 32-byte node salt that `obligation` keeps in its data, so a caller cannot choose another caller's slot. With a plain hash an attacker could pick DIDs that land in one victim's slot and lock that holder out with 60 calls. With the salt, blocking one honest caller needs every slot full, about 245,000 calls an hour, which the doc names as a flood that no per-caller limit stops. OB-57 tests a shared slot, OB-65 tests that a new caller is accepted after 10,000 callers, and the rows table says at most 4,096 rows per bucket.
 
 ### P46 — minor — A mailbox that the issuer drops does not leave a demand "never collected"
 
@@ -1943,7 +1943,7 @@ precedence: a later successful direct delivery replaces "stored, never
 collected" by the row for a direct delivery (row 5). Add this case to OB-70
 (deposit, drop the mailbox, bring both nodes online, check the level).
 
-**Status:** Open
+**Status:** Fixed. Agreed, checked in the code: `unregister` (`crates/mailbox/src/store/queue.rs`) writes `Expired` for each queued message, and `judge` (`crates/router/src/proxy/mailbox/poll.rs`) answers "retry" when `verify_signed` refuses it, so the outbox goes back to direct attempts, and "retry until" keeps the call alive to `answer_by_secs`. The "drops its mailbox" paragraph now says this. The "No answer" table has an order: the first row that applies, from the top, sets the level, and row 4 now says "and no later direct delivery". So a direct delivery after an `expired` receipt reads "received by the issuer's node, no proof". I added one limit: a holder can show a third party only the deposit proof and hide the direct delivery, and nothing the issuer holds corrects that. OB-70 covers both outcomes (online in time, and the issuer kept offline).
 
 ### P47 — minor — `receiver_mailbox` cannot tell "no mailbox" from "record not read"
 
@@ -1960,4 +1960,25 @@ record. OB-69 tests only the case "none".
 read and names no mailbox), and "unknown" (no record was read). The warning shows
 only for "none". Add the case "unknown shows no warning" to OB-69.
 
-**Status:** Open
+**Status:** Fixed, as proposed. `receiver_mailbox` is the mailbox DID, `none` (a valid record read, naming no mailbox) or `unknown` (no valid record read). The warning shows only after a `none`, and an `unknown` leaves the shown state unchanged. OB-69 tests each value and `none` then `unknown`, and E2 gains a router test that a failed lookup gives `unknown`.
+
+## Fix session round 6 — Claude Opus 5.5 (Claude Code), 2026-11-26
+
+Fast-forwarded to the review commit `15ea0f32`. All four findings are fixed in
+`change.md`. No owner question is new.
+
+- **P44:** checked in the code. The compiler and the supervisor's plan check
+  share the refusal. E3 removes it; `app deploy` warns; `svc deploy` keeps its
+  own usage refusal. Nothing at runtime depends on it. New facts row, E3 task,
+  OB-67 rewritten, deviation from `D-C6-5`.
+- **P45:** a fixed table of 4,096 slots per hour bucket, chosen by a salted
+  HMAC of the caller DID, so a caller cannot aim at another caller's slot.
+  OB-57 and OB-65 rewritten.
+- **P46:** checked in the code. A dropped mailbox gives `Expired`, the sender
+  goes back to direct attempts, and "retry until" can still deliver. The "No
+  answer" table now has an order of rows, and OB-70 covers both outcomes.
+- **P47:** `receiver_mailbox` has three values (DID, `none`, `unknown`); the
+  warning shows only after `none`. OB-69 rewritten.
+
+OB ids are unchanged: OB-57, OB-65, OB-67, OB-69 and OB-70 are changed in
+place, each with a "(Changed in review round 6, Pn.)" note. No new OB row.
