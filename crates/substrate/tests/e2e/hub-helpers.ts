@@ -418,3 +418,46 @@ export async function chooseHubLanguage(page: Page, tag: string) {
   await page.locator('.language-picker').selectOption(tag);
   await expect(page.locator('html')).toHaveAttribute('lang', tag, { timeout: 15_000 });
 }
+
+/** Send a single-choice poll into the active conversation via the poll composer. */
+export async function sendPoll(page: Page, question: string, options: string[]) {
+  const form = page.locator('.poll-composer-form');
+  const isVisible = await form.isVisible().catch(() => false);
+  if (!isVisible) {
+    await page.locator('.toggle-poll-button').click();
+    await expect(form).toBeVisible({ timeout: 15_000 });
+  }
+
+  await form.locator('.widget-poll-question-input').fill(question);
+
+  let currentCount = await form.locator('.widget-poll-option-input').count();
+  while (currentCount < options.length) {
+    await form.locator('.widget-poll-add-option').click();
+    currentCount = await form.locator('.widget-poll-option-input').count();
+  }
+
+  for (let i = 0; i < options.length; i++) {
+    await form.locator('.widget-poll-option-input').nth(i).fill(options[i]);
+  }
+
+  const sendBtn = form.locator('.widget-poll-send-btn');
+  await expect(sendBtn).toBeEnabled({ timeout: 15_000 });
+  await sendBtn.click();
+  await expect(form).toBeHidden({ timeout: 15_000 });
+}
+
+/** Vote for an option in a poll widget card. */
+export async function votePoll(page: Page, question: string, option: string) {
+  const card = page.locator('.widget-card').filter({ hasText: question });
+  await expect(card).toBeVisible({ timeout: 15_000 });
+  const optBtn = card.locator('.widget-poll-option-btn').filter({ hasText: option });
+  await optBtn.click();
+  await expect(card.locator('.widget-poll-your-choice')).toContainText(option, { timeout: 15_000 });
+}
+
+/** Return the Locator for an option's vote count in a poll widget card. */
+export function pollCount(page: Page, question: string, option: string): Locator {
+  const card = page.locator('.widget-card').filter({ hasText: question });
+  const optBtn = card.locator('.widget-poll-option-btn').filter({ hasText: option });
+  return optBtn.locator('.poll-option-count');
+}

@@ -1251,8 +1251,11 @@ After that:
 1. In bob's Hub, open **Messages** again. **Expect:** the message is there. Reply to it.
 2. In alice's Hub, open **Messages** again. **Expect:** bob's reply is there, and
    alice's own message now shows "delivered".
+3. In alice's Hub, open the poll composer, fill in a question and two options, and send the poll.
+4. In bob's Hub, the poll card appears. Bob votes for an option.
+5. In alice's Hub, the poll card updates to show Bob's vote counted ("1 vote").
 
-**Say:** "Direct, signed messages. No central chat server."
+**Say:** "Direct, signed messages and interactive widgets. No central chat server."
 
 The script is `crates/substrate/tests/e2e/demo/20-roym-chat.spec.ts`. It is the
 reference for the clicks.

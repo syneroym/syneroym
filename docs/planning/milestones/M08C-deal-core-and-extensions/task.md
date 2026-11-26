@@ -337,6 +337,7 @@ Change docs: roym-agreements, roym-value-exchange (VX-54), roym-extensions (EX-1
 - With C1 to C4, the card table has twelve types in the early design. As decided in C4a under Q2 (b), widgets and widget answers travel as ordinary chat messages of content types `application/vnd.roym.widget+json` and `application/vnd.roym.widget-answer+json`, not deal cards, so the card table remains at ten types: `enquiry`, `quote`, `agreement-receipt`, `agreement-progress`, `payment-request`, `payment-acknowledgement`, `fulfilment-receipt`, `deal-decline` (C1), `step` (C3a), and `commitment-failure` (C3b).
 - Criteria: EX-10, EX-11 (inline only), EX-12, EX-13; ML-26 (widget answer), ML-28 (widget labels).
 - Demo: extend story 20 with a poll in the chat (the plan confirms).
+- Result: C4a built in `feat/m08c-c4-widgets` (merged to `main` as `933fb399`); C4b built in `feat/m08c-c4b-widgets-hub` (PR #384: Hub poll card, generic card, poll composer, translation hook point, 18 Hindi messages, demo story 20).
 
 Change docs: roym-extensions, roym-multilingual (ML-26, ML-28).
 

@@ -24,6 +24,8 @@ import { stubRpc } from "../testing/stub-rpc";
 import { fakeEngine, readerReads, unavailableEngine } from "../testing/translation";
 import { setTargetsForTest } from "../translation/translation";
 import { renderCardActions } from "../screens/messages";
+import { renderPoll } from "../widgets/poll";
+import type { WidgetView } from "../widgets/view";
 import { activate, t } from "./i18n";
 
 // Draws each screen in Hindi with a fake `/rpc` and fails when an English
@@ -742,6 +744,59 @@ describe("translation, in Hindi", () => {
     );
     return wrap;
   }
+
+  it("draws a poll in Hindi", () => {
+    const view: WidgetView = {
+      widget_id: "m-poll-hi",
+      author: PEER,
+      direction: "incoming",
+      sender_timestamp_ms: NOW * 1000,
+      definition: {
+        extension: { id: "poll", version: 1 },
+        type: "poll/single",
+        semantic: "poll",
+        prompt: "Zq-question",
+        fields: [
+          {
+            name: "option",
+            type: "choice",
+            required: true,
+            choices: [
+              { code: "o1", text: "Zq-first" },
+              { code: "o2", text: "Zq-second" },
+            ],
+          },
+        ],
+      },
+      checked: true,
+      counts: [
+        { field: "option", choice: "o1", count: 2 },
+        { field: "option", choice: "o2", count: 1 },
+      ],
+      answers: [
+        {
+          message_id: "m-ans-1",
+          author: PEER,
+          direction: "incoming",
+          sender_timestamp_ms: NOW * 1000,
+          languages: ["en"],
+          data: { option: "o1" },
+          state: "delivered",
+        },
+      ],
+      ignored_answers: 0,
+      state: "delivered",
+    };
+
+    const host = renderPoll(view, { conversation: "c1" });
+    expect(english(host)).toEqual([]);
+  });
+
+  it("formats poll vote counts correctly in Hindi for 0, 1, and 2 votes", () => {
+    expect(t("widget-poll-count", { count: 0 })).toBe("0 वोट");
+    expect(t("widget-poll-count", { count: 1 })).toBe("1 वोट");
+    expect(t("widget-poll-count", { count: 2 })).toBe("2 वोट");
+  });
 
   it("draws the translate action, the machine note and the warning before acceptance", async () => {
     const wrap = await machineQuote();

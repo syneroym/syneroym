@@ -774,6 +774,14 @@ the verified plain form.
   neutral block naming the type and saying this client does not understand it.
   Never as an empty card, and never as a guess at what it might have meant.
 
+### Interactive widgets
+
+A conversation may contain interactive widgets such as single-choice polls (`poll@1`) or generic declarative widgets. Widgets and answers travel as chat messages with content types `application/vnd.roym.widget+json` and `application/vnd.roym.widget-answer+json`, not as deal cards or signed records:
+
+- **Polls:** The Hub provides a poll composer to create single-choice polls with 2 to 12 options. In 1:1 and group threads, the poll card renders the prompt, choices, aggregated vote counts, and the viewer's own choice. Tapping a different choice records an updated vote via `widget.answer`.
+- **Generic widgets:** Non-poll widgets render through a generic card layout displaying declared fields and recent answers with translation hook points for free text.
+- **Answer aggregation:** The latest valid answer per author counts toward vote totals. Individual answer messages are summarized in the parent widget card and hidden from the thread list.
+
 ### Search
 
 For the first release (D1):

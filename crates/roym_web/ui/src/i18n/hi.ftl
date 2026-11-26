@@ -829,6 +829,27 @@ ext-scheduling-slot-listing-id = लिस्टिंग कोड:
 ext-scheduling-slot-slot-id = स्लॉट कोड:
 ext-scheduling-step-started = काम शुरू हुआ
 
+## Widgets
+
+widget-poll-count = { $count } वोट
+widget-poll-your-choice = आपकी पसंद: { $choice }
+widget-votes-visible = इस चैट में हर कोई हर वोट देख सकता है।
+widget-answer-send = जवाब भेजें
+widget-answers-heading = जवाब
+widget-unknown-heading = यह ऐप इस विजेट को नहीं जानता: { $type }
+widget-refused = यह विजेट दिखाया नहीं जा सकता: { $reason }
+widget-too-large = यह विजेट इस ऐप के लिए बहुत बड़ा है।
+widget-answer-failed = जवाब भेजा नहीं जा सका: { $detail }
+widget-poll-button = पोल
+widget-poll-question = सवाल
+widget-poll-option = विकल्प { $n }
+widget-poll-add-option = विकल्प जोड़ें
+widget-poll-remove-option = विकल्प हटाएँ
+widget-poll-send = पोल भेजें
+widget-poll-needs-two = पोल में कम से कम दो विकल्प होने चाहिए।
+widget-poll-options-differ = विकल्प अलग-अलग होने चाहिए।
+widget-send-failed = पोल भेजा नहीं जा सका: { $detail }
+
 # --- agree as listed, the owner's side ---
 listing-as-listed-heading = सूची के अनुसार सहमति
 listing-acceptance = स्वीकृति

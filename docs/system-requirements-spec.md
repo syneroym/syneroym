@@ -1406,7 +1406,7 @@ Roym is the only SynApp built so far. It combines directory discovery, catalog l
 - **Lead Engagement:** Listing owners receive requests and reply by sending interactive quote Action Cards into the conversation.
   > **Envisioned.** Not built yet. Network-wide live feed of public requests. Today listing owners receive requests sent directly to them by counterparties.
   >
-  > Listing owners browse a live feed of local requests. They reply by sending interactive forms, booking widgets, or quotes into the conversation.
+  > Listing owners browse a live feed of local requests. They reply by sending quotes, or interactive widgets (such as single-choice polls or generic widget cards), into the conversation.
 - **Service Delivery & Billing:** Listing owners deliver services and send payment request cards into chat.
   > **Envisioned.** Not built yet. Automated debt-clearing ledgers and integrated external payment gateways. Today payment requests identify accepted settlement methods, and payments settle out-of-band.
   >

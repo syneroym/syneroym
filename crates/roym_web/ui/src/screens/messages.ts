@@ -1,6 +1,7 @@
+import { canRetry, messageStateWord } from "../chat/message_state";
 import { messageLang, messageText } from "../chat/message_text";
 import { errText, field, refiller, text } from "../dom";
-import { codeWord, currentLanguage, messageId, t } from "../i18n/i18n";
+import { currentLanguage, messageId, t } from "../i18n/i18n";
 import { languageList } from "../i18n/language_list";
 import { languageName, textLangSelect } from "../i18n/text_lang";
 import { onFeed } from "../events";
@@ -17,6 +18,14 @@ import { categoryPicker } from "../taxonomy/category_picker";
 import { buildDealTerms } from "./quote_terms";
 import { attachSizeLine } from "./quote_size";
 import type { MessagesInitialState, RequestPreFill } from "../navigation";
+import { pollComposer } from "../widgets/composer";
+import { renderWidget } from "../widgets/render";
+import {
+  WIDGET_ANSWER_CONTENT_TYPE,
+  WIDGET_CONTENT_TYPE,
+  widgetPrompt,
+  type WidgetView,
+} from "../widgets/view";
 import {
   computeNewestQuoteMap,
   computeNewestRequestMap,
@@ -28,21 +37,6 @@ import {
 /// feed waits until they are gone, so it never throws away typed text. An
 /// element inside the thread that holds the person's input belongs here.
 const OPEN_WORK = ".quote-form, .decline-dialog, .delete-dialog, .accept-mt-box";
-
-/// Message id for each message state, shown as a word. A `Map`, so a state
-/// from another node can never hit an inherited property.
-const STATE_LABELS = new Map<string, string>([
-  ["pending", messageId("messages-state-pending")],
-  ["deposited", messageId("messages-state-deposited")],
-  ["delivered", messageId("messages-state-delivered")],
-  ["failed", messageId("messages-state-failed")],
-]);
-
-/// The word for a message state; a state this table does not know is shown
-/// as it came, never inferred.
-export function messageStateWord(state: string): string {
-  return codeWord(STATE_LABELS, state);
-}
 
 interface ConversationRow {
   id: string;
@@ -357,8 +351,15 @@ async function renderThread(
   const langField = document.createElement("div");
   langField.className = "field";
   langField.append(text("span", t("messages-languages-label")), langList.root);
-  composeRow.append(composeInput, sendBtn, composeErr, langField);
-  pane.appendChild(composeRow);
+
+  const pollComp = pollComposer({
+    conversation: conv.id,
+    languages: () => langList.value(),
+    onSent: () => redraw.now(),
+  });
+
+  composeRow.append(composeInput, sendBtn, pollComp.button, composeErr, langField);
+  pane.append(composeRow, pollComp.form);
 
   const fillThread = async (into: DocumentFragment) => {
     const cardMap = new Map<string, CardRow>();
@@ -392,12 +393,49 @@ async function renderThread(
       return;
     }
 
+    const widgetIds = messages
+      .filter((m) => m.content_type === WIDGET_CONTENT_TYPE && m.deleted_at_secs == null)
+      .map((m) => m.id);
+    const widgetMap = new Map<string, WidgetView>();
+    let widgetListError: string | null = null;
+    if (widgetIds.length > 0) {
+      try {
+        const res = await call<{ widgets: WidgetView[] }>("widget.list", {
+          conversation: conv.id,
+          widget_ids: widgetIds,
+        });
+        if (res?.widgets) {
+          for (const w of res.widgets) {
+            widgetMap.set(w.widget_id, w);
+          }
+        }
+      } catch (err) {
+        widgetListError = errText(err);
+      }
+    }
+
+    if (widgetListError) {
+      into.appendChild(text("p", widgetListError, "widget-list-error error-text"));
+    }
+
     for (const m of messages) {
       if (m.content_type === "application/vnd.roym.card+json" && cardMap.get(m.id)?.repeat) {
         continue;
       }
       into.appendChild(
-        messageElement(m, cardMap, allCards, newestRequestMap, newestQuoteMap, conv.id, myDid, redraw.now),
+        messageElement(
+          m,
+          cardMap,
+          allCards,
+          newestRequestMap,
+          newestQuoteMap,
+          conv.id,
+          myDid,
+          redraw.now,
+          widgetMap,
+          () => langList.value(),
+          (id) => messages.find((x) => x.id === id)?.restored === true,
+        ),
       );
     }
   };
@@ -502,11 +540,6 @@ export function stateHint(state: MessageState): string | null {
     : null;
 }
 
-/** Only a failed message of the user's own history can be sent again. */
-export function canRetry(m: { state: MessageState; deleted_at_secs?: number; restored?: boolean }): boolean {
-  return m.state === "failed" && m.deleted_at_secs == null && !m.restored;
-}
-
 export function refusalText(reason: string): string {
   if (reason === "rate-limited") {
     return t("messages-refused-rate-limited");
@@ -514,7 +547,7 @@ export function refusalText(reason: string): string {
   return t("messages-refused-other", { reason });
 }
 
-function messageElement(
+export function messageElement(
   m: MessageRow,
   cardMap: Map<string, CardRow>,
   allCards: CardRow[],
@@ -523,10 +556,18 @@ function messageElement(
   convId: string,
   myDid: string,
   refresh: () => Promise<void>,
+  widgetMap?: Map<string, WidgetView>,
+  languages?: () => string[],
+  isRestored?: (messageId: string) => boolean,
 ): HTMLElement {
   const wrap = document.createElement("div");
   wrap.className = `message message-${m.direction}`;
   wrap.dataset.state = m.state;
+
+  if (m.content_type === WIDGET_ANSWER_CONTENT_TYPE) {
+    wrap.style.display = "none";
+    return wrap;
+  }
 
   if (m.content_type === "application/vnd.roym.card+json") {
     const cardRow = cardMap.get(m.id);
@@ -566,6 +607,17 @@ function messageElement(
     }
   } else if (m.deleted_at_secs != null) {
     wrap.appendChild(text("span", t("messages-message-deleted"), "message-body deleted"));
+  } else if (m.content_type === WIDGET_CONTENT_TYPE) {
+    const view = widgetMap?.get(m.id);
+    if (view) {
+      wrap.appendChild(renderWidget(view, { conversation: convId, refresh, languages, isRestored }));
+    } else {
+      const promptText = widgetPrompt(m.body) ?? t("messages-no-body");
+      const nodes = messageText(promptText, m.languages ?? [], "span", {
+        translatable: m.direction === "incoming",
+      });
+      wrap.append(...nodes);
+    }
   } else if (m.body_encoding === "utf8") {
     const nodes = messageText(m.body ?? t("messages-no-body"), m.languages ?? [], "span", {
       translatable: m.direction === "incoming",

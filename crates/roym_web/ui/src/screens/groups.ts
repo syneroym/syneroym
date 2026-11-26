@@ -1,3 +1,4 @@
+import { canRetry } from "../chat/message_state";
 import { messageText } from "../chat/message_text";
 import { errText, field, refiller, text } from "../dom";
 import { onFeed } from "../events";
@@ -6,6 +7,14 @@ import { currentLanguage, formatLocale, t } from "../i18n/i18n";
 import { languageList } from "../i18n/language_list";
 import { sortByName } from "../names";
 import { renderRefusedCard } from "../cards/refused";
+import { pollComposer } from "../widgets/composer";
+import { renderWidget } from "../widgets/render";
+import {
+  WIDGET_ANSWER_CONTENT_TYPE,
+  WIDGET_CONTENT_TYPE,
+  widgetPrompt,
+  type WidgetView,
+} from "../widgets/view";
 import {
   MEMBERSHIP_EVENT_CONTENT_TYPE,
   deliveryWords,
@@ -68,6 +77,7 @@ export interface GroupMessageRow {
   last_error?: string;
   deleted_at_secs?: number;
   languages?: string[];
+  restored?: boolean;
 }
 
 export function parseProfileName(body?: string): string | null {
@@ -105,6 +115,10 @@ export function renderMessageRow(
   nameOf: (addr: string) => string,
   onDelete?: (id: string) => void,
   onRetry?: (msg: GroupMessageRow) => void,
+  widgetView?: WidgetView,
+  reloadThread?: () => Promise<void>,
+  languages?: () => string[],
+  isRestored?: (messageId: string) => boolean,
 ): HTMLElement {
   const row = document.createElement("div");
   row.className = `message-row message-${msg.direction}`;
@@ -115,7 +129,23 @@ export function renderMessageRow(
   }
   const authorName = nameOf(msg.author);
   row.appendChild(text("div", authorName, "message-author"));
-  if (msg.body_encoding === "utf8") {
+  if (widgetView) {
+    row.appendChild(
+      renderWidget(widgetView, {
+        conversation: msg.conversation,
+        refresh: reloadThread,
+        nameOf,
+        languages,
+        isRestored,
+      }),
+    );
+  } else if (msg.content_type === WIDGET_CONTENT_TYPE) {
+    const textBody = widgetPrompt(msg.body) ?? t("messages-no-body");
+    const nodes = messageText(textBody, msg.languages ?? [], "div", {
+      translatable: msg.direction === "incoming",
+    });
+    row.append(...nodes);
+  } else if (msg.body_encoding === "utf8") {
     const nodes = messageText(msg.body ?? "", msg.languages ?? [], "div", {
       translatable: msg.direction === "incoming",
     });
@@ -131,7 +161,7 @@ export function renderMessageRow(
 
   if (msg.direction === "outgoing") {
     meta.appendChild(text("span", deliveryWords(msg.state), `message-status status-${msg.state}`));
-    if (msg.state === "failed" && onRetry) {
+    if (canRetry(msg) && onRetry) {
       const retryBtn = text("button", t("group-retry-button"), "button-small retry-button") as HTMLButtonElement;
       retryBtn.onclick = () => onRetry(msg);
       meta.appendChild(retryBtn);
@@ -154,14 +184,25 @@ export function renderThreadMessages(
   nameOf: (addr: string) => string,
   onDelete: (id: string) => void,
   onRetry: (msg: GroupMessageRow) => void,
+  widgetMap?: Map<string, WidgetView>,
+  reloadThread?: () => Promise<void>,
+  languages?: () => string[],
+  widgetListError?: string | null,
 ) {
   threadList.replaceChildren();
+  if (widgetListError) {
+    threadList.appendChild(text("p", widgetListError, "widget-list-error error-text"));
+  }
   let lastProfileName: string | null = null;
   let hasPendingOrFailedOwn = false;
 
   for (const m of messages) {
     if (m.direction === "outgoing" && (m.state === "pending" || m.state === "failed")) {
       hasPendingOrFailedOwn = true;
+    }
+
+    if (m.content_type === WIDGET_ANSWER_CONTENT_TYPE) {
+      continue;
     }
 
     if (m.content_type === MEMBERSHIP_EVENT_CONTENT_TYPE) {
@@ -187,6 +228,19 @@ export function renderThreadMessages(
 
     if (m.content_type === "application/vnd.roym.card+json") {
       threadList.appendChild(renderRefusedCard("card", 1, t("group-cards-not-allowed")));
+      continue;
+    }
+
+    if (m.content_type === WIDGET_CONTENT_TYPE) {
+      const isRestored = (id: string) => messages.find((x) => x.id === id)?.restored === true;
+      if (m.deleted_at_secs) {
+        threadList.appendChild(renderMessageRow(m, nameOf, onDelete, onRetry));
+      } else {
+        const view = widgetMap?.get(m.id);
+        threadList.appendChild(
+          renderMessageRow(m, nameOf, onDelete, onRetry, view, reloadThread, languages, isRestored),
+        );
+      }
       continue;
     }
 
@@ -415,6 +469,7 @@ export async function renderGroups(container: HTMLElement) {
     // Composer
     const composerBox = document.createElement("div");
     composerBox.className = "composer-box";
+    let groupLanguages: () => string[] = () => [currentLanguage()];
 
     if (info.restored_only) {
       composerBox.appendChild(text("p", t("group-restored-notice"), "notice-box"));
@@ -440,6 +495,7 @@ export async function renderGroups(container: HTMLElement) {
         },
         t("group-languages-label"),
       );
+      groupLanguages = () => langList.value();
 
       const doSend = async () => {
         const body = sendInput.value.trim();
@@ -469,9 +525,20 @@ export async function renderGroups(container: HTMLElement) {
       const langField = document.createElement("div");
       langField.className = "field";
       langField.append(text("span", t("group-languages-label")), langList.root);
-      composerBox.append(sendInput, sendBtn, sendErr, langField);
+
+      const pollComp = pollComposer({
+        conversation: gid,
+        languages: () => langList.value(),
+        onSent: reloadThread,
+      });
+
+      composerBox.append(sendInput, sendBtn, pollComp.button, sendErr, langField);
+      threadCol.appendChild(composerBox);
+      threadCol.appendChild(pollComp.form);
     }
-    threadCol.appendChild(composerBox);
+    if (info.restored_only || !info.is_member) {
+      threadCol.appendChild(composerBox);
+    }
 
     // Info Panel
     const infoPanel = document.createElement("div");
@@ -661,6 +728,28 @@ export async function renderGroups(container: HTMLElement) {
         });
         if (seq !== currentSelectionSeq) return;
         const msgs = hist.messages || [];
+
+        const widgetIds = msgs
+          .filter((m) => m.content_type === WIDGET_CONTENT_TYPE && !m.deleted_at_secs)
+          .map((m) => m.id);
+        const widgetMap = new Map<string, WidgetView>();
+        let widgetListError: string | null = null;
+        if (widgetIds.length > 0) {
+          try {
+            const res = await call<{ widgets: WidgetView[] }>("widget.list", {
+              conversation: gid,
+              widget_ids: widgetIds,
+            });
+            if (res?.widgets) {
+              for (const w of res.widgets) {
+                widgetMap.set(w.widget_id, w);
+              }
+            }
+          } catch (err) {
+            widgetListError = errText(err);
+          }
+        }
+
         renderThreadMessages(
           threadList,
           msgs,
@@ -685,6 +774,10 @@ export async function renderGroups(container: HTMLElement) {
               }
             }
           },
+          widgetMap,
+          reloadThread,
+          groupLanguages,
+          widgetListError,
         );
       } catch (err) {
         if (err instanceof RpcError && err.type === "NotSignedIn") {
