@@ -217,6 +217,17 @@ impl AgreementRow {
         }
     }
 
+    pub(crate) fn owner_role_and_counterparty<'a>(
+        &'a self,
+        owner_did: &str,
+    ) -> (DealRole, &'a str) {
+        if owner_did == self.quote_author_did {
+            (DealRole::QuoteAuthor, &self.counterparty_did)
+        } else {
+            (DealRole::Counterparty, &self.quote_author_did)
+        }
+    }
+
     pub(crate) fn set_half(&mut self, role: DealRole, half: ReceiptHalf) {
         match role {
             DealRole::Counterparty => self.counterparty = Some(half),

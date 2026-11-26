@@ -8,7 +8,6 @@ use syneroym_roym_core::{
     eventlog::EventLogEntry,
     paging, signing,
     statement::{AgreementSource, Statement, StatementError, build},
-    transaction::DealRole,
 };
 
 use crate::app::{
@@ -50,22 +49,12 @@ pub async fn export_at<H: AppHost>(
     let agr_sources: Vec<AgreementSource<'_>> = agr_rows
         .iter()
         .map(|row| {
-            let owner_role = if owner_did == row.quote_author_did {
-                DealRole::QuoteAuthor
-            } else {
-                DealRole::Counterparty
-            };
-            let counterparty_did = if owner_role == DealRole::QuoteAuthor {
-                &row.counterparty_did
-            } else {
-                &row.quote_author_did
-            };
+            let (owner_role, counterparty_did) = row.owner_role_and_counterparty(&owner_did);
             AgreementSource {
                 agreement: &row.quote_record_id,
                 counterparty_did,
                 owner_role,
                 terms: &row.terms,
-                agreed_at_secs: row.agreed_at_secs,
             }
         })
         .collect();

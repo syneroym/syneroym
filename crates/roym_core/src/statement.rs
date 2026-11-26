@@ -1,6 +1,6 @@
 //! Agreement statement export types and pure build logic.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use serde::{Deserialize, Serialize};
 
@@ -129,7 +129,6 @@ pub struct AgreementSource<'a> {
     pub counterparty_did: &'a str,
     pub owner_role: DealRole,
     pub terms: &'a DealTerms,
-    pub agreed_at_secs: Option<u64>,
 }
 
 pub fn build(
@@ -144,8 +143,37 @@ pub fn build(
         return Err(StatementError::BadPeriod);
     }
 
-    let rows = build_rows(from_secs, to_secs, entries, agreements);
-    let open_at_end = build_open_at_end(to_secs, entries, agreements);
+    let mut agreements_map: HashMap<&str, &AgreementSource<'_>> =
+        HashMap::with_capacity(agreements.len());
+    for agr in agreements {
+        agreements_map.insert(agr.agreement, agr);
+    }
+
+    let mut formed_times: HashMap<&str, u64> = HashMap::new();
+    let mut comm_status: HashMap<(&str, &str), (Option<u64>, bool)> = HashMap::new();
+
+    for entry in entries {
+        if entry.event == LogEvent::AgreementFormed {
+            formed_times.insert(entry.agreement.as_str(), entry.occurred_at_secs);
+        }
+        if let Some(comm_id) = entry.commitment_id.as_deref() {
+            let status =
+                comm_status.entry((entry.agreement.as_str(), comm_id)).or_insert((None, false));
+            if entry.event == LogEvent::CommitmentSettled {
+                status.0 = Some(entry.occurred_at_secs);
+            } else if matches!(
+                entry.event,
+                LogEvent::CommitmentFailed
+                    | LogEvent::CommitmentCancelled
+                    | LogEvent::CommitmentEndedUnconfirmed
+            ) {
+                status.1 = true;
+            }
+        }
+    }
+
+    let rows = build_rows(from_secs, to_secs, entries, &agreements_map, &formed_times);
+    let open_at_end = build_open_at_end(to_secs, agreements, &formed_times, &comm_status);
     let totals = build_totals(&rows)?;
 
     Ok(Statement {
@@ -165,7 +193,8 @@ fn build_rows(
     from_secs: u64,
     to_secs: u64,
     entries: &[EventLogEntry],
-    agreements: &[AgreementSource<'_>],
+    agreements_map: &HashMap<&str, &AgreementSource<'_>>,
+    formed_times: &HashMap<&str, u64>,
 ) -> Vec<StatementRow> {
     let mut rows = Vec::new();
 
@@ -177,51 +206,36 @@ fn build_rows(
             continue;
         }
 
-        let agr = agreements.iter().find(|a| a.agreement == entry.agreement);
+        let Some(agr) = agreements_map.get(entry.agreement.as_str()) else {
+            continue;
+        };
         let comm_id = entry.commitment_id.as_deref().unwrap_or_default();
-        let comm =
-            agr.and_then(|a| a.terms.commitments.iter().find(|c| c.commitment_id == comm_id));
+        let Some(comm) = agr.terms.commitments.iter().find(|c| c.commitment_id == comm_id) else {
+            continue;
+        };
 
-        let agreed_at_secs = entries
-            .iter()
-            .find(|e| e.agreement == entry.agreement && e.event == LogEvent::AgreementFormed)
-            .map(|e| e.occurred_at_secs)
-            .or_else(|| agr.and_then(|a| a.agreed_at_secs))
-            .unwrap_or(0);
+        let Some(&agreed_at_secs) = formed_times.get(entry.agreement.as_str()) else {
+            continue;
+        };
 
-        let description = comm.map(|c| c.description.clone()).unwrap_or_else(|| {
-            LocalText::plain(
-                syneroym_text_lang::LangTag::parse("en").expect("valid default lang"),
-                "",
-            )
+        let resource_kind = entry.resource_kind.unwrap_or(comm.resource_kind);
+        let commitment_kind = entry.commitment_kind.unwrap_or(comm.kind);
+        let declared_value_minor = entry.declared_value_minor.unwrap_or(comm.declared_value_minor);
+        let direction = entry.direction.unwrap_or_else(|| {
+            if agr.owner_role == comm.giver { Direction::Given } else { Direction::Received }
         });
-
-        let resource_kind = entry
-            .resource_kind
-            .or_else(|| comm.map(|c| c.resource_kind))
-            .unwrap_or(ResourceKind::GoodsOrService);
-
-        let commitment_kind = entry
-            .commitment_kind
-            .or_else(|| comm.map(|c| c.kind))
-            .unwrap_or(CommitmentKind::Fulfilment);
-
-        let declared_value_minor = entry
-            .declared_value_minor
-            .or_else(|| comm.map(|c| c.declared_value_minor))
-            .unwrap_or(0);
 
         rows.push(StatementRow {
             agreement: entry.agreement.clone(),
             commitment_id: comm_id.to_string(),
             agreed_at_secs,
             settled_at_secs: entry.occurred_at_secs,
-            direction: entry.direction.unwrap_or(Direction::Received),
+            direction,
             counterparty_did: entry.counterparty_did.clone(),
             counterparty_name: None,
             resource_kind,
             commitment_kind,
-            description,
+            description: comm.description.clone(),
             currency: entry.currency.clone(),
             declared_value_minor,
             settlement_note: entry.settlement_note.clone(),
@@ -234,19 +248,14 @@ fn build_rows(
 
 fn build_open_at_end(
     to_secs: u64,
-    entries: &[EventLogEntry],
     agreements: &[AgreementSource<'_>],
+    formed_times: &HashMap<&str, u64>,
+    comm_status: &HashMap<(&str, &str), (Option<u64>, bool)>,
 ) -> Vec<StatementOpenRow> {
     let mut open = Vec::new();
 
     for agr in agreements {
-        let formed_time = entries
-            .iter()
-            .find(|e| e.agreement == agr.agreement && e.event == LogEvent::AgreementFormed)
-            .map(|e| e.occurred_at_secs)
-            .or(agr.agreed_at_secs);
-
-        let Some(agreed_at_secs) = formed_time else {
+        let Some(&agreed_at_secs) = formed_times.get(agr.agreement) else {
             continue;
         };
         if agreed_at_secs >= to_secs {
@@ -254,28 +263,15 @@ fn build_open_at_end(
         }
 
         for comm in &agr.terms.commitments {
-            let settled_before_to = entries.iter().any(|e| {
-                e.agreement == agr.agreement
-                    && e.commitment_id.as_deref() == Some(&comm.commitment_id)
-                    && e.event == LogEvent::CommitmentSettled
-                    && e.occurred_at_secs < to_secs
-            });
-            if settled_before_to {
-                continue;
-            }
-
-            let has_final_entry = entries.iter().any(|e| {
-                e.agreement == agr.agreement
-                    && e.commitment_id.as_deref() == Some(&comm.commitment_id)
-                    && matches!(
-                        e.event,
-                        LogEvent::CommitmentFailed
-                            | LogEvent::CommitmentCancelled
-                            | LogEvent::CommitmentEndedUnconfirmed
-                    )
-            });
-            if has_final_entry {
-                continue;
+            if let Some((settled_time, has_final)) =
+                comm_status.get(&(agr.agreement, comm.commitment_id.as_str()))
+            {
+                if settled_time.is_some_and(|st| st < to_secs) {
+                    continue;
+                }
+                if *has_final {
+                    continue;
+                }
             }
 
             let direction =

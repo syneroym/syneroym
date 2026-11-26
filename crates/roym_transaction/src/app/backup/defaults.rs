@@ -11,18 +11,26 @@ use crate::app::{
     refusal::refusal,
 };
 
-pub(crate) async fn import_defaults_section<H: AppHost>(
-    host: &H,
+pub(crate) fn validate_defaults_section(
     defaults_rows: &[Value],
-) -> Result<(), Response> {
+) -> Result<Option<DealDefaults>, Response> {
+    let mut defaults = None;
     for r in defaults_rows {
-        let payload = r.get("payload").cloned().unwrap_or_else(|| r.clone());
-        let defaults: DealDefaults =
-            serde_json::from_value(payload).map_err(|_| refusal("bad-deal-defaults"))?;
-        defaults_ops::validate_defaults(&defaults)?;
-        put_row(host, DEAL_DEFAULTS, DEFAULT_ROW_ID, &defaults)
-            .await
-            .map_err(Response::internal_error)?;
+        let payload = r.get("payload").ok_or_else(|| refusal("bad-deal-defaults"))?;
+        let parsed: DealDefaults =
+            serde_json::from_value(payload.clone()).map_err(|_| refusal("bad-deal-defaults"))?;
+        defaults_ops::validate_defaults(&parsed)?;
+        defaults = Some(parsed);
+    }
+    Ok(defaults)
+}
+
+pub(crate) async fn write_defaults_section<H: AppHost>(
+    host: &H,
+    defaults: Option<&DealDefaults>,
+) -> Result<(), Response> {
+    if let Some(d) = defaults {
+        put_row(host, DEAL_DEFAULTS, DEFAULT_ROW_ID, d).await.map_err(Response::internal_error)?;
     }
     Ok(())
 }

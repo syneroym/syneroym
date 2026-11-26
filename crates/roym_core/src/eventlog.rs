@@ -3,7 +3,9 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    deal::{CommitmentKind, DealTerms, LocalText, ResourceKind, transition::CommitmentState},
+    deal::{
+        Commitment, CommitmentKind, DealTerms, LocalText, ResourceKind, transition::CommitmentState,
+    },
     progress::{AgreementState, CommitmentProgress},
     transaction::DealRole,
 };
@@ -123,11 +125,12 @@ pub fn derive(input: &DeriveInput<'_>) -> Derived {
     let mut entries = Vec::new();
     let mut complete = true;
 
-    if !derive_formed(input, &mut entries) {
+    let formed_ok = derive_formed(input, &mut entries);
+    if !formed_ok {
         complete = false;
     }
 
-    if !derive_commitments(input, &mut entries) {
+    if !derive_commitments(input, &mut entries, formed_ok) {
         complete = false;
     }
 
@@ -139,34 +142,31 @@ pub fn derive(input: &DeriveInput<'_>) -> Derived {
 }
 
 fn derive_formed(input: &DeriveInput<'_>, entries: &mut Vec<EventLogEntry>) -> bool {
+    if input.state == Some(AgreementState::NotFormed) {
+        return true;
+    }
     let Some(ref formed) = input.agreed else {
         return true;
     };
     let Some(occurred_at_secs) = formed.quote_author_issued_at_secs else {
         return false;
     };
-    entries.push(EventLogEntry {
-        id: format!("{}:-:{}", input.agreement, LogEvent::AgreementFormed.as_str()),
+    entries.push(entry(
+        input,
+        LogEvent::AgreementFormed,
+        None,
         occurred_at_secs,
-        recorded_at_secs: 0,
-        event: LogEvent::AgreementFormed,
-        agreement: input.agreement.to_string(),
-        conversation: input.conversation.to_string(),
-        counterparty_did: input.counterparty_did.to_string(),
-        commitment_id: None,
-        direction: None,
-        resource_kind: None,
-        commitment_kind: None,
-        final_state: None,
-        currency: input.terms.currency.clone(),
-        declared_value_minor: None,
-        settlement_note: None,
-        records: formed.receipt_halves.to_vec(),
-    });
+        formed.receipt_halves.to_vec(),
+        None,
+    ));
     true
 }
 
-fn derive_commitments(input: &DeriveInput<'_>, entries: &mut Vec<EventLogEntry>) -> bool {
+fn derive_commitments(
+    input: &DeriveInput<'_>,
+    entries: &mut Vec<EventLogEntry>,
+    formed_ok: bool,
+) -> bool {
     let mut all_complete = true;
     for comm in &input.terms.commitments {
         let progress = input.commitments.iter().find(|c| c.commitment_id == comm.commitment_id);
@@ -174,39 +174,25 @@ fn derive_commitments(input: &DeriveInput<'_>, entries: &mut Vec<EventLogEntry>)
             continue;
         };
 
-        let direction =
-            if input.owner_role == comm.giver { Direction::Given } else { Direction::Received };
-
         match progress.state {
             CommitmentState::Fulfilled | CommitmentState::Acknowledged => {
+                if !formed_ok {
+                    all_complete = false;
+                    continue;
+                }
                 let settling_info =
                     input.settling.iter().find(|s| s.commitment_id == comm.commitment_id);
                 if let Some(settling_info) = settling_info
                     && let Some(occurred_at_secs) = settling_info.settling_issued_at_secs
                 {
-                    entries.push(EventLogEntry {
-                        id: format!(
-                            "{}:{}:{}",
-                            input.agreement,
-                            comm.commitment_id,
-                            LogEvent::CommitmentSettled.as_str()
-                        ),
+                    entries.push(entry(
+                        input,
+                        LogEvent::CommitmentSettled,
+                        Some((comm, progress)),
                         occurred_at_secs,
-                        recorded_at_secs: 0,
-                        event: LogEvent::CommitmentSettled,
-                        agreement: input.agreement.to_string(),
-                        conversation: input.conversation.to_string(),
-                        counterparty_did: input.counterparty_did.to_string(),
-                        commitment_id: Some(comm.commitment_id.clone()),
-                        direction: Some(direction),
-                        resource_kind: Some(comm.resource_kind),
-                        commitment_kind: Some(comm.kind),
-                        final_state: Some(progress.state),
-                        currency: input.terms.currency.clone(),
-                        declared_value_minor: Some(comm.declared_value_minor),
-                        settlement_note: settling_info.settlement_note.cloned(),
-                        records: settling_info.records.to_vec(),
-                    });
+                        settling_info.records.to_vec(),
+                        settling_info.settlement_note.cloned(),
+                    ));
                 } else {
                     all_complete = false;
                 }
@@ -214,11 +200,8 @@ fn derive_commitments(input: &DeriveInput<'_>, entries: &mut Vec<EventLogEntry>)
             CommitmentState::Failed
             | CommitmentState::EndedUnconfirmed
             | CommitmentState::Cancelled => {
-                let event = match progress.state {
-                    CommitmentState::Failed => LogEvent::CommitmentFailed,
-                    CommitmentState::EndedUnconfirmed => LogEvent::CommitmentEndedUnconfirmed,
-                    CommitmentState::Cancelled => LogEvent::CommitmentCancelled,
-                    _ => unreachable!(),
+                let Some(event) = failure_event(progress.state) else {
+                    continue;
                 };
 
                 let earliest_snap = input
@@ -232,29 +215,14 @@ fn derive_commitments(input: &DeriveInput<'_>, entries: &mut Vec<EventLogEntry>)
                     .min_by_key(|snap| snap.seq);
 
                 if let Some(snap) = earliest_snap {
-                    entries.push(EventLogEntry {
-                        id: format!(
-                            "{}:{}:{}",
-                            input.agreement,
-                            comm.commitment_id,
-                            event.as_str()
-                        ),
-                        occurred_at_secs: snap.issued_at_secs,
-                        recorded_at_secs: 0,
+                    entries.push(entry(
+                        input,
                         event,
-                        agreement: input.agreement.to_string(),
-                        conversation: input.conversation.to_string(),
-                        counterparty_did: input.counterparty_did.to_string(),
-                        commitment_id: Some(comm.commitment_id.clone()),
-                        direction: Some(direction),
-                        resource_kind: Some(comm.resource_kind),
-                        commitment_kind: Some(comm.kind),
-                        final_state: Some(progress.state),
-                        currency: input.terms.currency.clone(),
-                        declared_value_minor: Some(comm.declared_value_minor),
-                        settlement_note: None,
-                        records: vec![snap.record_id.to_string()],
-                    });
+                        Some((comm, progress)),
+                        snap.issued_at_secs,
+                        vec![snap.record_id.to_string()],
+                        None,
+                    ));
                 } else {
                     all_complete = false;
                 }
@@ -286,26 +254,80 @@ fn derive_terminal(input: &DeriveInput<'_>, entries: &mut Vec<EventLogEntry>) ->
         input.snapshots.iter().filter(|snap| snap.state == state).min_by_key(|snap| snap.seq);
 
     if let Some(snap) = earliest_snap {
-        entries.push(EventLogEntry {
-            id: format!("{}:-:{}", input.agreement, event.as_str()),
-            occurred_at_secs: snap.issued_at_secs,
-            recorded_at_secs: 0,
+        entries.push(entry(
+            input,
             event,
-            agreement: input.agreement.to_string(),
-            conversation: input.conversation.to_string(),
-            counterparty_did: input.counterparty_did.to_string(),
-            commitment_id: None,
-            direction: None,
-            resource_kind: None,
-            commitment_kind: None,
-            final_state: None,
-            currency: input.terms.currency.clone(),
-            declared_value_minor: None,
-            settlement_note: None,
-            records: vec![snap.record_id.to_string()],
-        });
+            None,
+            snap.issued_at_secs,
+            vec![snap.record_id.to_string()],
+            None,
+        ));
         true
     } else {
         false
+    }
+}
+
+fn failure_event(state: CommitmentState) -> Option<LogEvent> {
+    match state {
+        CommitmentState::Failed => Some(LogEvent::CommitmentFailed),
+        CommitmentState::EndedUnconfirmed => Some(LogEvent::CommitmentEndedUnconfirmed),
+        CommitmentState::Cancelled => Some(LogEvent::CommitmentCancelled),
+        _ => None,
+    }
+}
+
+fn entry(
+    input: &DeriveInput<'_>,
+    event: LogEvent,
+    commitment: Option<(&Commitment, &CommitmentProgress)>,
+    occurred_at_secs: u64,
+    records: Vec<String>,
+    settlement_note: Option<LocalText>,
+) -> EventLogEntry {
+    let (
+        commitment_id,
+        direction,
+        resource_kind,
+        commitment_kind,
+        final_state,
+        declared_value_minor,
+    ) = if let Some((comm, progress)) = commitment {
+        let dir =
+            if input.owner_role == comm.giver { Direction::Given } else { Direction::Received };
+        (
+            Some(comm.commitment_id.clone()),
+            Some(dir),
+            Some(comm.resource_kind),
+            Some(comm.kind),
+            Some(progress.state),
+            Some(comm.declared_value_minor),
+        )
+    } else {
+        (None, None, None, None, None, None)
+    };
+
+    let id = match commitment_id.as_deref() {
+        Some(cid) => format!("{}:{}:{}", input.agreement, cid, event.as_str()),
+        None => format!("{}:-:{}", input.agreement, event.as_str()),
+    };
+
+    EventLogEntry {
+        id,
+        occurred_at_secs,
+        recorded_at_secs: 0,
+        event,
+        agreement: input.agreement.to_string(),
+        conversation: input.conversation.to_string(),
+        counterparty_did: input.counterparty_did.to_string(),
+        commitment_id,
+        direction,
+        resource_kind,
+        commitment_kind,
+        final_state,
+        currency: input.terms.currency.clone(),
+        declared_value_minor,
+        settlement_note,
+        records,
     }
 }

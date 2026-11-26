@@ -13,6 +13,7 @@ mod tests;
 
 use std::collections::{BTreeMap, HashMap};
 
+use header::validate_bundle_header;
 use serde::Serialize;
 use serde_json::{Value, json};
 use syneroym_app_host::AppHost;
@@ -120,7 +121,7 @@ pub(crate) async fn import<H: AppHost>(
     let agr_rows = bundle.sections.get(SECTION_AGREEMENTS).cloned().unwrap_or_default();
     let card_rows = bundle.sections.get(SECTION_CARDS).cloned().unwrap_or_default();
     let defaults_rows = bundle.sections.get(SECTION_DEAL_DEFAULTS).cloned().unwrap_or_default();
-    defaults::import_defaults_section(host, &defaults_rows).await?;
+    let validated_defaults = defaults::validate_defaults_section(&defaults_rows)?;
 
     let verified_requests = match verify_imported_enquiries(req_rows, &owner, now) {
         Ok(v) => v,
@@ -187,17 +188,23 @@ pub(crate) async fn import<H: AppHost>(
     )
     .await?;
 
+    defaults::write_defaults_section(host, validated_defaults.as_ref()).await?;
+
     let restored = reservations::reserve_again(host, &verified_agreements, &owner, now).await;
-    let rebuild_res = eventlog_ops::rebuild_at(host, now).await?;
+    let log_entries_made = match eventlog_ops::rebuild_at(host, now).await {
+        Ok(rebuild_res) => rebuild_res.made,
+        Err(e) => {
+            eprintln!("failed to rebuild event log after import: {e:?}");
+            0
+        }
+    };
     Ok(TransactionImportOutput {
         imported: true,
         reservations_restored: restored.restored,
         reservations_failed: restored.failed,
-        log_entries_made: rebuild_res.made,
+        log_entries_made,
     })
 }
-
-use header::validate_bundle_header;
 
 async fn import_negotiation_sections<H: AppHost>(
     host: &H,
