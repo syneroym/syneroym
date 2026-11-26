@@ -191,13 +191,7 @@ pub(crate) async fn import<H: AppHost>(
     defaults::write_defaults_section(host, validated_defaults.as_ref()).await?;
 
     let restored = reservations::reserve_again(host, &verified_agreements, &owner, now).await;
-    let log_entries_made = match eventlog_ops::rebuild_at(host, now).await {
-        Ok(rebuild_res) => rebuild_res.made,
-        Err(e) => {
-            eprintln!("failed to rebuild event log after import: {e:?}");
-            0
-        }
-    };
+    let log_entries_made = eventlog_ops::rebuild_at(host, now).await.map_or(0, |r| r.made);
     Ok(TransactionImportOutput {
         imported: true,
         reservations_restored: restored.restored,
