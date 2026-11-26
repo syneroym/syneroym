@@ -1,3 +1,4 @@
+import { download } from "../download";
 import { errText, text } from "../dom";
 import { t } from "../i18n/i18n";
 import { call } from "../rpc";
@@ -94,12 +95,7 @@ function bundleRow(b: (typeof BUNDLES)[number]): HTMLElement {
     try {
       const bundle = await call(b.exportMethod);
       const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: "application/json" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = b.file;
-      a.click();
-      URL.revokeObjectURL(url);
+      download(b.file, blob);
     } catch (err) {
       status.textContent = t("backup-export-failed", { detail: errText(err) });
     }

@@ -65,10 +65,11 @@ export function toMinorUnits(input: string, exponent = 2): number | undefined {
 
 /// Integer minor units as an exact decimal string, e.g. 3550, 2 -> "35.50".
 /// A string keeps every digit of a large amount, which a float would not.
-export function minorToDecimal(minor: number, exp: number): `${number}` {
-  if (exp === 0) return `${minor}`;
+export function minorToDecimal(minor: number | bigint, exp: number): `${number}` {
+  if (exp === 0) return `${minor}` as `${number}`;
   const sign = minor < 0 ? "-" : "";
-  const abs = Math.abs(minor).toString().padStart(exp + 1, "0");
+  const absVal = typeof minor === "bigint" ? (minor < 0n ? -minor : minor) : Math.abs(minor);
+  const abs = absVal.toString().padStart(exp + 1, "0");
   return `${sign}${abs.slice(0, -exp)}.${abs.slice(-exp)}` as `${number}`;
 }
 
@@ -77,18 +78,20 @@ export function minorToDecimal(minor: number, exp: number): `${number}` {
 /// The exponent is the Rust-pinned one, so the digits never change with
 /// the browser's currency data. A code `Intl` rejects (one from another
 /// node) is shown as `<amount> <code>`.
-export function formatMinor(minor: number, currency: string): string {
+export function formatMinor(minor: number, currency: string): string;
+export function formatMinor(minor: bigint, currency: string): string;
+export function formatMinor(minor: number | bigint, currency: string): string {
   const code = currency.trim().toUpperCase();
   const exp = currencyMinorExponent(code) ?? 2;
-  const decimal = minorToDecimal(Math.round(minor), exp);
+  const decimal = minorToDecimal(typeof minor === "bigint" ? minor : Math.round(minor), exp);
   const digits = { minimumFractionDigits: exp, maximumFractionDigits: exp };
   try {
     return cached(
       `money|${code}|${exp}`,
       (locale) => new Intl.NumberFormat(locale, { style: "currency", currency: code, ...digits }),
-    ).format(decimal);
+    ).format(decimal as unknown as number);
   } catch (error) {
     if (!(error instanceof RangeError)) throw error;
-    return `${new Intl.NumberFormat(formatLocale(), digits).format(decimal)} ${code}`;
+    return `${new Intl.NumberFormat(formatLocale(), digits).format(decimal as unknown as number)} ${code}`;
   }
 }
