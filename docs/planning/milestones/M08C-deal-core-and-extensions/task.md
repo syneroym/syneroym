@@ -192,6 +192,25 @@ No unexpected components, deal schemas, or external dependencies are linked. On 
 
 Stop-rule measurement for `widget.list`: 28 ms native / 54 ms WASM (< 200 ms limit), measured on 200 `widget_ids` in a chat with 1,000 messages (scenario 266). Command: `cargo nextest run -p syneroym-roym-web --test dual_build_parity scenario_266 --no-capture`.
 
+**C6a sizes** (release `wasm32-wasip2`, one `target/` folder, 2026-11-26; before: the C4a table's after column, after: the C6a code), in bytes:
+
+| Component | before | after | Change | Limit |
+| --- | --- | --- | --- | --- |
+| `transaction` | 2,714,637 | 2,877,309 | +162,672 (+5.99%) | +15% (407,195); owner approved limit Q9 |
+| `catalog` | 960,590 | 960,590 | 0 | +40 KB |
+| `conversation` | 984,691 | 985,469 | +778 | +40 KB |
+| `directory` | 1,504,433 | 1,504,433 | 0 | +40 KB |
+| `profile` | 772,748 | 772,748 | 0 | +40 KB |
+| `scheduling` | 715,723 | 715,723 | 0 | +40 KB |
+| `web` | 311,242 | 311,314 | +72 | +40 KB |
+
+Every component is within its limit. `transaction` grew with the event log derive step, event log query, statement export, agreement.close, saved deal terms (`deal_defaults`), and backup export/import handling. Under owner decision Q9, `transaction` is allowed up to +15% because the +40 KB limit cannot fit the event log type, statement type, and derive step.
+
+Stop-rule timing measurements:
+- `transaction.sync` over 50 agreements: 18 ms native / 20 ms WASM (< 200 ms limit).
+- `statement.export` over 1,000 agreements: 195 ms native / 297 ms WASM (< 2,000 ms limit).
+Measured via dual-build parity scenario 277 (`cargo nextest run -p syneroym-roym-web --test dual_build_parity scenario_277 --no-capture`).
+
 **Parity runs need a fresh WASM build.** The dual-build parity harness loads pre-built `wasm32-wasip2` components. Every slice that changes a `roym_*` crate runs `mise run build:roym` before it trusts a parity run.
 
 ## 2. Facts checked in the code for this plan
