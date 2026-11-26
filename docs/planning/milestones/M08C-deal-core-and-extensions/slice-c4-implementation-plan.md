@@ -1638,13 +1638,22 @@ C4a:
 
 C4b:
 
-- [ ] Every C4b row of section 3 names a test that exists and passes.
-- [ ] The three hook-point cases for the widget answer pass.
-- [ ] `roym-groups.spec.ts`'s poll case and story 20 pass (`mise run
-  demo`).
-- [ ] The owner reviewed the Hindi messages.
-- [ ] Living docs, multilingual deviations, demo.md, status.md;
-  `mise run verify` with no `--skip`.
+- [x] Every C4b row of section 3 names a test that exists and passes. (EX-10:
+  `widgets/render.test.ts`, `poll.test.ts`, `generic.test.ts`; EX-11:
+  `widgets/generic.test.ts`; EX-12: `widgets/poll.test.ts`,
+  `roym-groups.spec.ts`, demo story 20; EX-13: `catalog.test.ts`,
+  `hindi-screens.test.ts`; ML-26: `widgets/generic.test.ts`; ML-28:
+  `widgets/poll.test.ts`, `hindi-screens.test.ts`, `catalog.test.ts`).
+- [x] The three hook-point cases for the widget answer pass
+  (`crates/roym_web/ui/src/widgets/generic.test.ts`: no-engine, exact-params,
+  and unavailable).
+- [x] `roym-groups.spec.ts`'s poll case and story 20 pass (`mise run demo` /
+  Playwright E2E passed in CI run 45751287834 on `fe9d97ec` and `13dea377`).
+- [ ] The owner reviewed the Hindi messages. Open: 18 messages in `hi.ftl`
+  ready for owner review (recorded in status.md C4b row).
+- [x] Living docs, multilingual deviations, demo.md, status.md; `mise run
+  verify` with no `--skip`. (Full green CI run 45751287834 on PR #384; only
+  *.md files changed since; all xtask checks pass).
 
 ## 11. What C4 does not do
 

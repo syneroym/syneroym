@@ -15,6 +15,7 @@ living-docs-touched:
 demo:
   - crates/substrate/tests/e2e/demo/40-roym-languages.spec.ts
   - crates/substrate/tests/e2e/demo/60-roym-step.spec.ts
+  - crates/substrate/tests/e2e/demo/20-roym-chat.spec.ts
 ---
 # Roym multilingual foundation
 
