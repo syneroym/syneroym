@@ -175,7 +175,7 @@ test.describe('Roym Hub: group chat', () => {
     await expect(sendBtn).toBeEnabled({ timeout: 15_000 });
     await sendBtn.click();
 
-    const hint = form.locator('.poll-composer-hint');
+    const hint = form.locator('.widget-poll-composer-hint');
     await expect(hint).toContainText('nowhere to deliver', { timeout: 15_000 });
     await expect(form).toBeVisible();
   });
