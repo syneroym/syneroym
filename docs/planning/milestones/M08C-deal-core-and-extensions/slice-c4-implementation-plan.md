@@ -1649,8 +1649,7 @@ C4b:
   and unavailable).
 - [x] `roym-groups.spec.ts`'s poll case and story 20 pass (`mise run demo` /
   Playwright E2E passed in CI run 45751287834 on `fe9d97ec` and `13dea377`).
-- [ ] The owner reviewed the Hindi messages. Open: 18 messages in `hi.ftl`
-  ready for owner review (recorded in status.md C4b row).
+- [x] The owner reviewed the Hindi messages (2026-11-26).
 - [x] Living docs, multilingual deviations, demo.md, status.md; `mise run
   verify` with no `--skip`. (Full green CI run 45751287834 on PR #384; only
   *.md files changed since; all xtask checks pass).
