@@ -25,6 +25,8 @@ use syneroym_signed_record::disclosure;
 pub mod data_layer;
 pub mod sd;
 pub mod stubs;
+#[cfg(test)]
+mod tests;
 
 pub use stubs::{DummyReader, DummyWriter};
 
@@ -62,6 +64,7 @@ pub struct TestHostInner {
     pub(crate) caller_origin: Mutex<Option<CallerOrigin>>,
     pub(crate) query_pages: Mutex<VecDeque<QueryResult>>,
     pub(crate) queries: Mutex<Vec<(String, QueryOptions)>>,
+    pub(crate) reads: Mutex<Vec<(String, String)>>,
     pub(crate) proxy_response: Mutex<Option<Result<String, ProxyError>>>,
     pub(crate) last_call: Mutex<Option<RecordedCall>>,
     pub(crate) now_secs: Mutex<u64>,
@@ -123,6 +126,10 @@ impl TestHost {
 
     pub fn queries(&self) -> Vec<(String, QueryOptions)> {
         self.queries.lock().unwrap().clone()
+    }
+
+    pub fn reads(&self) -> Vec<(String, String)> {
+        self.reads.lock().unwrap().clone()
     }
 
     pub fn last_call(&self) -> Option<RecordedCall> {
