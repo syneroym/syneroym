@@ -26,6 +26,25 @@ async fn deal_pings_and_empty(h: &Harness) {
     assert_shape("agreement_ping", &ping_a);
     let ping_d = rpc(h, "deal.ping", json!({})).await;
     assert_shape("deal_ping", &ping_d);
+    let ping_el = rpc(h, "eventlog.ping", json!({})).await;
+    assert_shape("eventlog_ping", &ping_el);
+    let ping_st = rpc(h, "statement.ping", json!({})).await;
+    assert_shape("statement_ping", &ping_st);
+
+    let defs_get = rpc(h, "deal.defaults-get", json!({})).await;
+    assert_shape("deal_defaults_get", &defs_get);
+    let defs_set = rpc(
+        h,
+        "deal.defaults-set",
+        json!({
+            "cancellation_terms": { "lang": "en", "text": "Cancellations accepted with notice." },
+            "refund_terms": { "lang": "en", "text": "Refunds within 14 days." },
+            "dispute_path": { "lang": "en", "text": "Contact first." },
+            "quote_valid_secs": 259200,
+        }),
+    )
+    .await;
+    assert_shape("deal_defaults_set", &defs_set);
 
     let r_empty = rpc(h, "enquiry.list", json!({})).await;
     assert_shape("enquiry_list_empty", &r_empty);
@@ -427,6 +446,32 @@ async fn sync_backup_shapes() {
 
     let imp = rpc(&h, "transaction.import", json!({ "bundle": exp })).await;
     assert_shape("transaction_import", &imp);
+
+    let close_res = rpc(
+        &h,
+        "agreement.close",
+        json!({
+            "agreement": agr, "as": "receiver", "commitments": ["c2"]
+        }),
+    )
+    .await;
+    assert_shape("agreement_close", &close_res);
+
+    let el_list = rpc(&h, "eventlog.list", json!({})).await;
+    assert_shape("eventlog_list", &el_list);
+
+    let el_rebuild = rpc(&h, "eventlog.rebuild", json!({})).await;
+    assert_shape("eventlog_rebuild", &el_rebuild);
+
+    let st_exp = rpc(
+        &h,
+        "statement.export",
+        json!({
+            "from_secs": 0, "to_secs": 2_000_000_000
+        }),
+    )
+    .await;
+    assert_shape("statement_export", &st_exp);
 
     let status_missing =
         rpc_err(&h, "deal.as-listed-status", json!({ "listing_id": "lst_nonexistent" })).await;

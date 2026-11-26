@@ -1,0 +1,11 @@
+{
+  "records": [
+    {
+      "commitment_id": "string",
+      "message_id": "string",
+      "record_id": "string",
+      "state": "pending"
+    }
+  ],
+  "skipped": []
+}

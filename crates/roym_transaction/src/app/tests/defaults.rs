@@ -40,14 +40,15 @@ fn sample_defaults() -> DealDefaults {
 async fn set_and_get_deal_defaults() {
     let fix = fixture();
 
-    let initial = defaults_ops::get(&fix.host).await.expect("initial get succeeds");
+    let initial = defaults_ops::get(&fix.host, NoParams {}).await.expect("initial get succeeds");
     assert!(initial.is_none());
 
     let def = sample_defaults();
     let set_out = defaults_ops::set(&fix.host, def.clone()).await.expect("set succeeds");
     assert_eq!(set_out, def);
 
-    let retrieved = defaults_ops::get(&fix.host).await.expect("retrieved get succeeds");
+    let retrieved =
+        defaults_ops::get(&fix.host, NoParams {}).await.expect("retrieved get succeeds");
     assert_eq!(retrieved, Some(def));
 }
 
@@ -110,7 +111,7 @@ async fn deal_defaults_survive_backup_round_trip() {
         backup::import(&fix2.host, ImportInput { bundle }).await.expect("import succeeds");
     assert!(import_out.imported);
 
-    let restored = defaults_ops::get(&fix2.host).await.expect("get on host 2");
+    let restored = defaults_ops::get(&fix2.host, NoParams {}).await.expect("get on host 2");
     assert_eq!(restored, Some(def));
 }
 

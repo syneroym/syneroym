@@ -179,7 +179,10 @@ fn compute_next(entries: &[EventLogEntry], limit: usize) -> Option<EventLogCurso
     }
 }
 
-pub async fn rebuild<H: AppHost>(host: &H) -> Result<EventLogRebuildOutput, Response> {
+pub async fn rebuild<H: AppHost>(
+    host: &H,
+    _input: syneroym_roym_core::method::NoParams,
+) -> Result<EventLogRebuildOutput, Response> {
     rebuild_at(host, clock::now_secs()).await
 }
 

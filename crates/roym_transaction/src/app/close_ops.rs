@@ -13,7 +13,7 @@ use syneroym_roym_core::{
 };
 
 use crate::app::{
-    AGREEMENTS, AgreementRow, AppHost, SendState,
+    AGREEMENTS, AgreementRow, AppHost, SendState, ensure_collections,
     fulfilment_ops::{self, FulfilmentSignInput},
     get_row, parties,
     payment_ops::{self, PaymentAckInput},
@@ -203,6 +203,7 @@ pub async fn close_at<H: AppHost>(
     input: AgreementCloseInput,
     now: u64,
 ) -> Reply<AgreementCloseOutput> {
+    ensure_collections(host).await.map_err(Response::internal_error)?;
     validate_commitment_list(&input.commitments)?;
 
     let agr: AgreementRow = match get_row(host, AGREEMENTS, &input.agreement).await {

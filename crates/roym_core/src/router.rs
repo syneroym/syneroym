@@ -42,6 +42,8 @@ const ROUTES: &[(&str, Service, MethodAuth)] = &[
     ("fulfilment.", TRANSACTION, MethodAuth::Owner),
     ("step.", TRANSACTION, MethodAuth::Owner),
     ("deal.", TRANSACTION, MethodAuth::Owner),
+    ("eventlog.", TRANSACTION, MethodAuth::Owner),
+    ("statement.", TRANSACTION, MethodAuth::Owner),
     // The certificate verbs (`transaction.signing-status` /
     // `transaction.install-signing-certificate`) reach the transaction
     // service through its own name, and `transaction.sync` / `.thread` /
