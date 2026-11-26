@@ -37,6 +37,7 @@ pub mod router;
 pub mod safety;
 pub mod services;
 pub mod signing;
+pub mod statement;
 pub mod step;
 pub mod taxonomy;
 #[cfg(any(test, feature = "test-host"))]
