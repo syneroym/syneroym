@@ -861,11 +861,12 @@ agreement.close { agreement, as: "giver" | "receiver", commitments: [commitment_
   call made the commitments final; so a repeated close of all commitments
   gives `records: []` and `skipped: [...]`. A repeated claim (giver half)
   returns stored records.
-- **Refusal response shape.** Every new refusal in `transaction` returns
-  the code as the message and carries `{"code": "<same>"}` in `data` (for
-  example `no-such-commitment`, `not-your-side`, `bad-commitment-list`,
-  `agreement-not-open`, `bad-period`, `statement-total-overflow`). The Hub
-  reads `data.code`.
+- **Refusal response shape.** Every new refusal in `transaction` uses the
+  two-call form `Response::invalid_params(code).with_data(json!({"code": code}))`
+  (for example `no-such-commitment`, `not-your-side`, `bad-commitment-list`,
+  `agreement-not-open`, `bad-period`, `statement-total-overflow`,
+  `bad-deal-defaults`). The code is both the error message and the value of
+  `data.code`; the Hub reads `data.code`.
 - If one signature fails (for example `NotEnrolled`), the call stops and
   returns that error. The halves already made stay. A retry makes only
   the missing ones. The Hub says so.
@@ -1141,7 +1142,10 @@ DealDefaults { cancellation_terms: LocalText, refund_terms: LocalText,
 
 - One row, id `defaults`, in `deal_defaults`. The texts follow the deal
   text rules (`check_text`, 2,048 bytes each, AG-39's one set of
-  languages); `quote_valid_secs` from 300 to 90 days, as `quote.set`.
+  languages); `quote_valid_secs` from 300 to 90 days, as `quote.set`. If
+  validation of `deal_defaults` fails on any text or `quote_valid_secs`,
+  both `deal.defaults-set` and `transaction.import` refuse with code
+  `bad-deal-defaults` (`Response::invalid_params("bad-deal-defaults").with_data(json!({"code": "bad-deal-defaults"}))`).
 - The quote form's "More terms" has "Save as my defaults".
 - The listing editor fills its empty deal texts from them (point 17).
 - They never reach the as-listed path: that path reads only the signed
@@ -1202,10 +1206,11 @@ New `app/statement_ops.rs`. Service test `tests/statement.rs`.
   add to `each_new_section_passes_check_integrity_on_its_own`.
 - New `app/defaults_ops.rs` and `app/backup/defaults.rs`.
 - `backup.rs`: the section in the export list and the import; validate imported
-  defaults with `check_text`; the derive step at the end of the import;
-  `SCHEMA_VERSION` 9 with one line in its comment. Keep `backup.rs` under 800
-  lines by putting the new code in `backup/defaults.rs`; if it still crosses,
-  move `validate_bundle_header` (`backup.rs:191`) to `backup/header.rs`.
+  defaults with `check_text`; if validation fails, both `deal.defaults-set`
+  and the import refuse with code `bad-deal-defaults`; the derive step at the end
+  of the import; `SCHEMA_VERSION` 9 with one line in its comment. Keep `backup.rs`
+  under 800 lines by putting the new code in `backup/defaults.rs`; if it still
+  crosses, move `validate_bundle_header` (`backup.rs:191`) to `backup/header.rs`.
 - Update `dual_build_parity/transaction_cards.rs:348` to `:352` assertions for
   `schema_version` 9.
 - Method shapes and Hub type for `TransactionImportOutput.log_entries_made`.
@@ -1215,8 +1220,9 @@ New `app/statement_ops.rs`. Service test `tests/statement.rs`.
 #### Step 8 — The method table and the router
 
 `api.rs`: the eight new rows. `router.rs`: the two prefixes. Every new
-refusal returns `refusal_with_data` with the code string as the message and
-`data` as `{"code": "<same>"}`. Method contract tests in
+refusal uses the two-call form
+`Response::invalid_params(code).with_data(json!({"code": code}))` (or a helper
+in `app/refusal.rs`). Method contract tests in
 `crates/roym_web/tests/method_contract/`: update count from 47 to 55
 (`contract.rs:83`), add shape rows (`shapes_transaction.rs`), and add one
 contract test per new refusal checking that the returned error message and
@@ -1512,9 +1518,9 @@ read: { $reason }". Plus the changed texts of D-C6-15.
   ignored on purpose, and its test checks the sync passes and the next one
   repairs; every Hub action shows its failure and a retry.
 - **Errors classed by text** (C1 R3, C3c R24): every new refusal in
-  `transaction` uses `refusal_with_data` where `data` is `{"code": "<same>"}`
-  and the message equals that code string; the Hub reads `data.code`.
-  Contract tests check both fields for every new refusal.
+  `transaction` uses `Response::invalid_params(code).with_data(json!({"code": code}))`
+  where the message equals the code string and `data.code` equals that code string;
+  the Hub reads `data.code`. Contract tests check both fields for every new refusal.
 - **Hub state that does not match the service** (C1 R38, C2 R2): the
   panel redraws from `agreement.get`; the totals come from the signed
   terms.
