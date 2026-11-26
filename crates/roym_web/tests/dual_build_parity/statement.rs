@@ -1,4 +1,5 @@
 use serde_json::json;
+use syneroym_data_db::host_store::RecordWriteValue;
 use syneroym_signed_record::Envelope as SignedEnvelope;
 
 use super::{
@@ -508,4 +509,266 @@ async fn scenario_276_export_import_defaults_survive_and_log_rebuilt_parity() {
     let (def_w, def_n) = both_rpc(&h2, "deal.defaults-get", json!({})).await;
     assert_eq!(def_w, def_n);
     assert_eq!(def_w["result"], defaults);
+}
+
+fn timing_agreement_row(
+    agr_id: &str,
+    conv_id: &str,
+    owner_did: &str,
+    peer_did: &str,
+    i: usize,
+    now: u64,
+) -> RecordWriteValue {
+    let agr_row = json!({
+        "quote_record_id": agr_id,
+        "formed_as": null,
+        "quote_id": format!("q_time_{i}"),
+        "conversation": conv_id,
+        "counterparty_did": peer_did,
+        "quote_author_did": owner_did,
+        "terms": {
+            "currency": "EUR",
+            "commitments": [
+                {
+                    "commitment_id": "c1",
+                    "giver": "quote-author",
+                    "resource_kind": "goods-or-service",
+                    "kind": "fulfilment",
+                    "after": [],
+                    "description": { "lang": "en", "text": "Lesson" },
+                    "declared_value_minor": 5000
+                },
+                {
+                    "commitment_id": "c2",
+                    "giver": "counterparty",
+                    "resource_kind": "currency",
+                    "kind": "currency",
+                    "after": [],
+                    "description": { "lang": "en", "text": "Payment" },
+                    "declared_value_minor": 5000,
+                    "payee": owner_did,
+                    "payment_methods": ["cash"]
+                }
+            ],
+            "scope": { "lang": "en", "text": "Lesson" },
+            "cancellation_terms": { "lang": "en", "text": "none" },
+            "refund_terms": { "lang": "en", "text": "none" },
+            "dispute_path": { "lang": "en", "text": "none" },
+            "quote_expires_at_secs": now + 3600
+        },
+        "agreed_at_secs": now,
+        "state": "closed",
+        "seq": 2,
+        "commitments": [
+            {
+                "commitment_id": "c1",
+                "state": "fulfilled",
+                "halves": ["h_c1"]
+            },
+            {
+                "commitment_id": "c2",
+                "state": "acknowledged",
+                "halves": ["h_c2"]
+            }
+        ],
+        "updated_at_secs": now + 50
+    });
+    RecordWriteValue { id: agr_id.to_string(), payload: serde_json::to_vec(&agr_row).unwrap() }
+}
+
+fn timing_log_entries(
+    agr_id: &str,
+    conv_id: &str,
+    peer_did: &str,
+    now: u64,
+) -> [RecordWriteValue; 4] {
+    let entry_formed = json!({
+        "id": format!("{agr_id}:-:agreement-formed"),
+        "occurred_at_secs": now,
+        "recorded_at_secs": now,
+        "event": "agreement-formed",
+        "agreement": agr_id,
+        "conversation": conv_id,
+        "counterparty_did": peer_did,
+        "currency": "EUR",
+        "records": ["r_formed"]
+    });
+
+    let entry_c1 = json!({
+        "id": format!("{agr_id}:c1:commitment-settled"),
+        "occurred_at_secs": now + 20,
+        "recorded_at_secs": now + 20,
+        "event": "commitment-settled",
+        "agreement": agr_id,
+        "conversation": conv_id,
+        "counterparty_did": peer_did,
+        "commitment_id": "c1",
+        "direction": "given",
+        "resource_kind": "goods-or-service",
+        "commitment_kind": "fulfilment",
+        "final_state": "fulfilled",
+        "currency": "EUR",
+        "declared_value_minor": 5000,
+        "records": ["h_c1"]
+    });
+
+    let entry_c2 = json!({
+        "id": format!("{agr_id}:c2:commitment-settled"),
+        "occurred_at_secs": now + 30,
+        "recorded_at_secs": now + 30,
+        "event": "commitment-settled",
+        "agreement": agr_id,
+        "conversation": conv_id,
+        "counterparty_did": peer_did,
+        "commitment_id": "c2",
+        "direction": "received",
+        "resource_kind": "currency",
+        "commitment_kind": "currency",
+        "final_state": "acknowledged",
+        "currency": "EUR",
+        "declared_value_minor": 5000,
+        "records": ["h_c2"]
+    });
+
+    let entry_closed = json!({
+        "id": format!("{agr_id}:-:agreement-closed"),
+        "occurred_at_secs": now + 50,
+        "recorded_at_secs": now + 50,
+        "event": "agreement-closed",
+        "agreement": agr_id,
+        "conversation": conv_id,
+        "counterparty_did": peer_did,
+        "currency": "EUR",
+        "records": ["r_closed"]
+    });
+
+    [
+        RecordWriteValue {
+            id: format!("{agr_id}:-:agreement-formed"),
+            payload: serde_json::to_vec(&entry_formed).unwrap(),
+        },
+        RecordWriteValue {
+            id: format!("{agr_id}:c1:commitment-settled"),
+            payload: serde_json::to_vec(&entry_c1).unwrap(),
+        },
+        RecordWriteValue {
+            id: format!("{agr_id}:c2:commitment-settled"),
+            payload: serde_json::to_vec(&entry_c2).unwrap(),
+        },
+        RecordWriteValue {
+            id: format!("{agr_id}:-:agreement-closed"),
+            payload: serde_json::to_vec(&entry_closed).unwrap(),
+        },
+    ]
+}
+
+async fn seed_timing_agreements(
+    h: &Harness,
+    wasm: bool,
+    conv: &str,
+    owner_did: &str,
+    peer_did: &str,
+    sync_count: usize,
+    export_count: usize,
+) {
+    let (storage, ks) =
+        if wasm { (&h.wasm_storage, &h.wasm_ks) } else { (&h.native_storage, &h.native_ks) };
+    let db =
+        storage.open_service_db(&super::helpers::did_for_service("transaction"), ks).await.unwrap();
+
+    let now = 1_000_000u64;
+
+    let mut agr_writes = Vec::with_capacity(export_count);
+    let mut marker_writes = Vec::with_capacity(export_count);
+    let mut log_writes = Vec::with_capacity(export_count * 4);
+
+    for i in 1..=export_count {
+        let agr_id = format!("rec_timing_agr_{i}");
+        let conv_id = if i <= sync_count { conv } else { "conv_other" };
+
+        agr_writes.push(timing_agreement_row(&agr_id, conv_id, owner_did, peer_did, i, now));
+        marker_writes.push(RecordWriteValue {
+            id: agr_id.clone(),
+            payload: serde_json::to_vec(&json!({
+                "agreement": agr_id,
+                "seq": 2,
+                "state": "closed",
+                "complete": true
+            }))
+            .unwrap(),
+        });
+        log_writes.extend(timing_log_entries(&agr_id, conv_id, peer_did, now));
+    }
+
+    for chunk in agr_writes.chunks(100) {
+        db.create("agreements", chunk, "seed", None).await.unwrap();
+    }
+    for chunk in marker_writes.chunks(100) {
+        db.create("event_log_state", chunk, "seed", None).await.unwrap();
+    }
+    for chunk in log_writes.chunks(100) {
+        db.create("event_log", chunk, "seed", None).await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn scenario_277_derive_and_statement_export_timing_parity() {
+    let h = harness().await;
+    enrol_signing(&h, "conversation").await;
+    enrol_signing(&h, "transaction").await;
+    let conv = open_conv(&h, &peer_did()).await;
+
+    both_rpc(&h, "eventlog.list", json!({})).await;
+
+    seed_timing_agreements(&h, true, &conv, &owner_did(), &peer_did(), 50, 1000).await;
+    seed_timing_agreements(&h, false, &conv, &owner_did(), &peer_did(), 50, 1000).await;
+
+    let t_sync_n = std::time::Instant::now();
+    let sync_n =
+        one_rpc(&h, false, "transaction.sync", json!({ "conversation": conv, "full": true })).await;
+    let sync_n_ms = t_sync_n.elapsed().as_millis();
+
+    let t_sync_w = std::time::Instant::now();
+    let sync_w =
+        one_rpc(&h, true, "transaction.sync", json!({ "conversation": conv, "full": true })).await;
+    let sync_w_ms = t_sync_w.elapsed().as_millis();
+
+    assert!(sync_w["result"]["scanned"].is_number());
+    assert!(sync_n["result"]["scanned"].is_number());
+
+    let t_exp_n = std::time::Instant::now();
+    let exp_n = one_rpc(
+        &h,
+        false,
+        "statement.export",
+        json!({ "from_secs": 900_000, "to_secs": 1_100_000 }),
+    )
+    .await;
+    let exp_n_ms = t_exp_n.elapsed().as_millis();
+
+    let t_exp_w = std::time::Instant::now();
+    let exp_w = one_rpc(
+        &h,
+        true,
+        "statement.export",
+        json!({ "from_secs": 900_000, "to_secs": 1_100_000 }),
+    )
+    .await;
+    let exp_w_ms = t_exp_w.elapsed().as_millis();
+
+    println!(
+        "STOP_RULE_MEASUREMENT: transaction.sync 50 agreements {}ms native / {}ms wasm (< 200ms \
+         limit)",
+        sync_n_ms, sync_w_ms
+    );
+    println!(
+        "STOP_RULE_MEASUREMENT: statement.export 1000 agreements {}ms native / {}ms wasm (< \
+         2000ms limit)",
+        exp_n_ms, exp_w_ms
+    );
+
+    assert_eq!(exp_w["result"]["rows"].as_array().unwrap().len(), 2000);
+    assert_eq!(exp_n["result"]["rows"].as_array().unwrap().len(), 2000);
+    assert!(sync_w_ms < 1000, "WASM sync took {sync_w_ms}ms (>= 1000ms limit)");
+    assert!(exp_w_ms < 10000, "WASM export took {exp_w_ms}ms (>= 10000ms limit)");
 }
