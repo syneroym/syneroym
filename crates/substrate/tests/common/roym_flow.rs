@@ -7,11 +7,11 @@
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use syneroym_identity::Identity;
+use syneroym_identity::{Identity, substrate};
 use syneroym_roym_core::transaction::DEFAULT_DATA_USE_NOTICE;
 use syneroym_sdk::SyneroymClient;
 
-use super::roym::{RoymNode as Node, wait_delivered, wait_until};
+use super::roym::{RoymNode as Node, fast_conversation_role, wait_delivered, wait_until};
 
 pub const DIRECTORY_INTERFACE: &str = "syneroym-roym:directory/api@0.1.0";
 
@@ -430,4 +430,113 @@ pub async fn seat_is_taken(node: &Node, agreement: &str) -> bool {
         row["payload"]["agreement"] == agreement
             && !rows.iter().any(|other| other["id"] == format!("free:{reservation}"))
     })
+}
+
+pub struct MixedFixture {
+    pub _dir_x: tempfile::TempDir,
+    pub _dir_y: tempfile::TempDir,
+    pub node_x: Node,
+    pub node_y: Node,
+    pub conv_x: String,
+    pub conv_y: String,
+    pub req_x: String,
+    pub owner_y_did: String,
+}
+
+pub async fn setup_mixed_fixture() -> MixedFixture {
+    let dir_x = tempfile::tempdir().unwrap();
+    let dir_y = tempfile::tempdir().unwrap();
+    let owner_x = Identity::generate().unwrap();
+    let owner_y = Identity::generate().unwrap();
+    let owner_y_did = substrate::derive_did_key(&owner_y.public_key());
+
+    let mut node_x = Node::boot(
+        "node-x",
+        dir_x.path().to_path_buf(),
+        None,
+        Identity::from_bytes(&owner_x.to_bytes()),
+        fast_conversation_role(3600),
+    )
+    .await;
+    let shared_registry = node_x.registry_url.clone();
+    node_x.full_bring_up().await;
+
+    let mut node_y = Node::boot(
+        "node-y",
+        dir_y.path().to_path_buf(),
+        Some(shared_registry.clone()),
+        Identity::from_bytes(&owner_y.to_bytes()),
+        fast_conversation_role(3600),
+    )
+    .await;
+    node_y.full_bring_up().await;
+
+    let x_conv_did = node_x.dids["conversation"].clone();
+    let y_conv_did = node_y.dids["conversation"].clone();
+
+    node_x
+        .rpc_ok(
+            "profile.set",
+            json!({ "display_name": "X", "conversation_address": x_conv_did, "lang": "en" }),
+        )
+        .await;
+    node_y
+        .rpc_ok(
+            "profile.set",
+            json!({ "display_name": "Y", "conversation_address": y_conv_did, "lang": "en" }),
+        )
+        .await;
+
+    let (conv_x, _) =
+        open_request_conv(&node_x, &y_conv_did, "Exchange skills and materials", &["gardening"])
+            .await;
+    let conv_y = quote_author_conv_for(&node_y, &x_conv_did).await;
+    let req_x = request_record_on_quote_author(&node_y, &conv_y).await;
+
+    MixedFixture {
+        _dir_x: dir_x,
+        _dir_y: dir_y,
+        node_x,
+        node_y,
+        conv_x,
+        conv_y,
+        req_x,
+        owner_y_did,
+    }
+}
+
+pub async fn exchange_mixed_fulfilments(
+    node_x: &Node,
+    node_y: &Node,
+    conv_x: &str,
+    conv_y: &str,
+    quote_rec_id: &str,
+) {
+    let y_f1 = node_y
+        .rpc_ok("fulfilment.sign", json!({ "agreement": quote_rec_id, "commitment_id": "c1" }))
+        .await;
+    let y_f1_msg = y_f1["message_id"].as_str().unwrap();
+    assert!(wait_delivered(node_y, y_f1_msg).await, "Y c1 fulfilment delivered");
+
+    node_x.rpc_ok("transaction.sync", json!({ "conversation": conv_x })).await;
+    let x_f1_rc = node_x
+        .rpc_ok("fulfilment.sign", json!({ "agreement": quote_rec_id, "commitment_id": "c1" }))
+        .await;
+    let x_f1_msg = x_f1_rc["message_id"].as_str().unwrap();
+    assert!(wait_delivered(node_x, x_f1_msg).await, "X c1 receiver half delivered");
+
+    node_y.rpc_ok("transaction.sync", json!({ "conversation": conv_y })).await;
+
+    let x_f2 = node_x
+        .rpc_ok("fulfilment.sign", json!({ "agreement": quote_rec_id, "commitment_id": "c2" }))
+        .await;
+    let x_f2_msg = x_f2["message_id"].as_str().unwrap();
+    assert!(wait_delivered(node_x, x_f2_msg).await, "X c2 fulfilment delivered");
+
+    node_y.rpc_ok("transaction.sync", json!({ "conversation": conv_y })).await;
+    let y_f2_rc = node_y
+        .rpc_ok("fulfilment.sign", json!({ "agreement": quote_rec_id, "commitment_id": "c2" }))
+        .await;
+    let y_f2_msg = y_f2_rc["message_id"].as_str().unwrap();
+    assert!(wait_delivered(node_y, y_f2_msg).await, "Y c2 receiver half delivered");
 }
