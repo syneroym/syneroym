@@ -846,7 +846,7 @@ the demand acceptance in E3 and say so.
 
 **Fix:** Edit the lines.
 
-**Status:** Fixed (f72b2a8e), with a change to one point. The split row count is 20. `eep-terms-mismatch` is added. Fence, derive step, catch-up and outstanding are defined in Terms. The first task is marked E0. On the generator: the facts are right, but `Kem::derive_keypair` does not help, because `single_shot_seal_with_rng` takes a random source, not a key pair, and the only API that takes an ephemeral key is `hpke`'s `danger` module, which says its API is unstable. So E2 writes a small `rand_core` 0.10 generator that expands the seed with HKDF-SHA256, with no new crate.
+**Status:** Fixed (f72b2a8e), with a change to one point. The split row count is 20. `eep-terms-mismatch` is added. Fence, derive step, catch-up and outstanding are defined in Terms. The first task is marked E0. On the generator: the facts are right, but `Kem::derive_keypair` does not help, because `single_shot_seal_with_rng` takes a random source, not a key pair, and the only API that takes an ephemeral key is `hpke`'s `danger` module, which says its API is unstable. (Corrected in round 2, P36: the `danger` module takes no ephemeral key either; no public `hpke` API does. The conclusion stays.) So E2 writes a small `rand_core` 0.10 generator that expands the seed with HKDF-SHA256, with no new crate.
 
 ## Fix session round 1 — Claude Opus 5.5 (Claude Code), 2026-11-26
 
@@ -1014,7 +1014,7 @@ deal ended `not-formed` or `expired` (for example one flag `deal_ended: true`),
 and keep the rule "no `ver:<id>:<v+1>`". Add a service test: confirm a claim,
 fail the next confirm, check that the version is free and can be claimed again.
 
-**Status:** Open
+**Status:** Fixed (2e402ac1), with a change to the proposal: one input `why` (`deal-ended` or `commitment-cancelled`) replaces round 1's `cancelled: true`, instead of adding a second flag. `deal-ended` frees a confirmed round, as the agreements document's "release after confirm" requires; the rule "no `ver:<id>:<v+1>`" stays, and the drive's safety net still frees only an unconfirmed round. New OB-52 (confirm, fail the next confirm, claim again).
 
 ### P26 — major — Catch-up and `not-holder` need a version that a demand and a split request do not carry
 
@@ -1044,7 +1044,7 @@ then `eep-unknown` and `not-holder` as error only. Say that catch-up also
 accepts the case where the issuer has no version of that EEP. Add OB-29 cases:
 an EEP created after the backup, shown in a demand.
 
-**Status:** Open
+**Status:** Fixed (2e402ac1). Agreed, as proposed. `obligation.demand` takes `{ demand, version }` and `obligation.split` takes `{ request, version }`. The node verifies the demand and the version together, runs catch-up first when it has a known restore, and only then `eep-unknown` and `not-holder`. Catch-up also accepts an EEP with no record at all. New OB-53.
 
 ### P27 — major — The issuer's service cannot see the time the mailbox stored a demand
 
@@ -1070,7 +1070,7 @@ a demand is "reached" at `issued_at_secs` for both codes. Option (b) needs no
 host feature, but a holder could back-date by up to 24 hours. State that limit.
 Add an OB-11 case with a controllable clock.
 
-**Status:** Open
+**Status:** Fixed (2e402ac1) with option (a), and a pushback on option (b). The code supports (a): the mailbox's `claim` answer already gives the puller `deposited_at_secs` for each message (`ClaimAnswer` in `crates/mailbox/src/store/claim.rs`), so E2 only passes it on as `from-mailbox: option<stored-at-secs>` in the delivery caller context. Option (b) does not hold as stated: on the issuer's node the only bound on a demand's signed `issued_at_secs` is the open check's time-to-live plus skew (8 days), not 24 hours. The 24-hour rule is in the third-party proof check, which the issuer does not run. A deviation from `D-C6-6` is added. New OB-54.
 
 ### P28 — major — The deposit proof check is written only for a demand, but it is also used as the countersign of every other record
 
@@ -1103,7 +1103,7 @@ every record that has a signed time. Keep steps 1 to 4 and 7 as they are. Move
 step 5 and 6 into the per-type table. Add one valid and one changed proof per
 record type to OB-6 or OB-49.
 
-**Status:** Open
+**Status:** Fixed (2e402ac1). Agreed. The check is now written for any record R: steps 1 to 4 and 7 stay, step 1 binds the destination through `P.binding` (renamed from `eep_version`), and steps 5 and 6 read R's row of a new table that gives, for each of the five record types, its signer, its destination and what binds it, and its method and place. For a decline or a delivered version, the destination is the `reply_to` of the holder-signed request it answers. The 24-hour rule applies to every type, and `answer_by_secs` only to a demand. New OB-55.
 
 ### P29 — minor — The proof check fails every earlier proof after a routine instance revocation
 
@@ -1122,7 +1122,7 @@ for a message whose send time is before `effective_from_secs` when the reason
 is `retired`. For `compromised`, the stored receipt itself is the third-party
 time and is enough when it is before `effective_from_secs`. Add a case to OB-6.
 
-**Status:** Open
+**Status:** Fixed (2e402ac1). Agreed. The sender instance key uses the same time rule as records: `retired` is valid for a send time before `effective_from_secs`, and `compromised` only when the third-party `stored` time is before it. A routine `revoke-instance` writes `retired`, so it keeps earlier proofs. New OB-56.
 
 ### P30 — minor — The cancel rule of question 18 is wider than the race it fixes
 
@@ -1147,7 +1147,7 @@ the rule text, OB-41 (add a case with a non-empty `G` that cancels) and the
 deviation row. Question 18 is the owner's to decide, so the owner should see
 the narrower rule as an option.
 
-**Status:** Open
+**Status:** Fixed (2e402ac1). The recommendation is narrowed, and it is still the owner's call (open question 18). The rule applies only when the counterparty receives an `eep-return` and gives no other commitment. Reason it is safe: a counterparty issuer that gives something else closes only after the writer's snapshot shows that commitment final, and by then cancel is already refused (`commitment-moved`). Question 18 now shows both the narrow rule (recommended) and round 1's wide rule as options. OB-41 has both cases, and the deviation row is narrowed.
 
 ### P31 — minor — A `failed` `eep-return` signed by the issuer reads as the holder's failure
 
@@ -1167,7 +1167,7 @@ giver. Or give the end its own name (for example `claim-lost`) so a reader can
 tell it from the giver's `failed`. Add a sentence to "Left for M08H" or to the
 M08G task that readers attribute by signer.
 
-**Status:** Open
+**Status:** Fixed (2e402ac1) with the first option. A failure is attributed to the signer of its `commitment-failure`, not to the commitment's giver, and reason `eep-claimed` is only ever signed by the receiver. I did not add a `claim-lost` state: it would need its own rows in every transition table and its own `other-failed` behaviour, while the signer and the reason already tell the cases apart. The rule is a deviation from VX-12's reading, and the close-out passes it to the M08G reputation change document.
 
 ### P32 — minor — `revoke_key` defaults to `effective_from = now` for `compromised`
 
@@ -1188,7 +1188,7 @@ default). Say in the Hub text and in `roymctl` help that the person should give
 the earliest time it suspects. Add one sentence to question 17's reason that
 the protection is only as good as `effective_from_secs`.
 
-**Status:** Open
+**Status:** Fixed (2e402ac1). Agreed. For `compromised`, `effective_from_secs` is required with no default, and the Hub and `roymctl` ask for the earliest suspected time; `retired` defaults to now. Open question 17's reason and the countersign section now say the protection is only as good as `effective_from_secs`. New OB-61.
 
 ### P33 — minor — The split limits are not defined per currency, and OB-25 now disagrees
 
@@ -1207,7 +1207,7 @@ happens when the face value is less than twice the smallest part (the split is
 refused with `split-limit`). Change OB-25 to "each at least the smallest part
 of OB-44", or say OB-25 is the validator and OB-44 is the policy.
 
-**Status:** Open
+**Status:** Fixed (2e402ac1), with a change to the proposal: the formula `10^max(exponent-2, 0)` gives 1 paisa for INR (exponent 2), which is not the "one major unit" the proposal means. The smallest part is one major unit of the currency, `10^exponent` minor units (₹1, ¥1, 1 dinar), and a face value under twice that cannot be split. OB-25 says it holds the validator's rules, and OB-44 holds the policy limits with one test per exponent (0, 2, 3). Open question 16 uses the same words.
 
 ### P34 — minor — Task mapping and test rows
 
@@ -1237,7 +1237,7 @@ of OB-44", or say OB-25 is the validator and OB-44 is the policy.
 in E2). Add "an unbuilt method answers `not-built` until E4". Edit OB-42,
 OB-48 and the diagram. Add the per-holder limit or say why it is not needed.
 
-**Status:** Open
+**Status:** Fixed (2e402ac1). Agreed on all six. OB-51 is split: a host-function test in E2 and the service test in E3. Until E4, `demand`, `split` and `holdings` answer `not-built` (new OB-60). OB-42 says "no record and no row, except one counter per hour". OB-48 is split into OB-48 (size), OB-57 (60 an hour per caller) and OB-58 (one holdings answer an hour). The diagram shows `call-failed`. For the per-holder limit: a coded decline is signed once per (EEP, version, code), and a later demand gets the stored one again (new OB-59). So a holder of a closed or claimed EEP cannot make the node sign without limit, and no separate per-holder limit is needed.
 
 ### P35 — minor — "Track end plus 7 days" is used for two different things
 
@@ -1253,7 +1253,7 @@ OB-40 repeat the phrase.
 track end) and `ISSUER_TICK_GRACE_SECS` (the extra time before the issuer
 resolves alone), and use the names in the text and in OB-40.
 
-**Status:** Open
+**Status:** Fixed (2e402ac1). Agreed. Two names: `RESOLUTION_WINDOW_SECS` (7 days, inside the `eep-return` track end) and `ISSUER_TICK_GRACE_SECS` (7 more days before the issuer resolves alone). The text, OB-40 and the states table use them, and the issuer's own tick says the track end already holds the resolution window.
 
 ### P36 — minor — E2 details for the seeded generator
 
@@ -1278,7 +1278,7 @@ does (see P24 above). The conclusion stays the same. The E2 task also needs:
 
 **Fix:** Correct the sentence and add the three items to the E2 task.
 
-**Status:** Open
+**Status:** Fixed (2e402ac1). Agreed: my round 1 sentence about the `danger` module was wrong, and P24's status now says so. The doc now says no public `hpke` API takes an ephemeral key (`Kem` has only `encap` and `encap_with_rng`; deterministic encapsulation is test code only), and the E2 task lists the three items: a direct `rand_core = "0.10"` dependency of `mailbox_format` with `default-features = false`, a generator that implements `TryRng<Error = Infallible>` and `TryCryptoRng`, and the known-answer test.
 
 ### P37 — minor — The 48 KiB limit must be measured on the escaped request
 
@@ -1296,4 +1296,32 @@ little room.
 the unescaped records, and let E3 measure the real margin (the draft already
 plans to measure one `eep` version).
 
-**Status:** Open
+**Status:** Fixed (2e402ac1). Agreed. The 48 KiB is the size of the request string as sent (the escaped argument of `invoke`), and the text says what the escaping and the sealed message add. E3 measures the margin. OB-48 says the same.
+
+## Fix session round 2 — Claude Opus 5.5 (Claude Code), 2026-11-26
+
+Fixes are in `2e402ac1` on `claude/m08e-obligations-change-doc-62dcfb`,
+which fast-forwarded to the round 2 review commit `de9bd0f4` first.
+All 13 findings, P25 to P37, are fixed. Each was checked against the
+code; P27 led to a new fact: the mailbox's `claim` answer already holds
+`deposited_at_secs`.
+
+Fixed differently from the proposal, with the reason in the item's
+status: P25 (one `why` input instead of a second flag), P27 (option (a);
+option (b)'s 24-hour bound does not hold on the issuer's node, where only
+the 8-day open check bounds a demand's time), P31 (attribution by
+signer, no `claim-lost` state) and P33 (the proposed formula gives 1
+paisa for INR; the smallest part is one major unit, `10^exponent` minor
+units). P36 also corrects my round 1 status of P24.
+
+Open questions: question 18 is narrowed (P30): the recommended rule now
+refuses cancel only when the counterparty receives an `eep-return` and
+gives nothing else, and round 1's wider rule is shown as the other
+option. Question 16 uses the per-currency smallest part (P33). Question
+17's reason says the protection is only as good as
+`effective_from_secs` (P32). No new open question. Questions 3, 16, 17
+and 18 still wait for the owner.
+
+New OB rows: OB-52 to OB-61, appended; no id was renumbered. New
+deviations are under "Added in review round 2".
+
