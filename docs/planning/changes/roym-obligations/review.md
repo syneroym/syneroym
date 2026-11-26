@@ -1786,3 +1786,178 @@ Each is marked "Decided 2026-11-26, owner" in the change doc, and every "pending
 
 - A redemption demand to an issuer with no mailbox works only when both nodes are online at the same time before the 7-day notice ends. Two phones may never overlap. Redemption inside a conversation still works.
 - "Stored, never collected" reads the same whether the issuer dropped its mailbox or the mailbox operator dropped the issuer's queue.
+
+## Doc review round 6 — Claude Sonnet 5.5 (Claude Code), 2026-11-26
+
+Checked `change.md` at `82ad0464` on `claude/m08e-obligations-change-doc-62dcfb`
+(P43 fix in `0500d51f`, its status in `215bb668`, owner decisions in
+`82ad0464`). My branch was fast-forwarded to that tip first. This round checks
+P43 and the whole-document check of rows that grow, the four owner decisions
+(questions 3, 16, 17, 18), and the reversal of question 13 through the whole
+document. I did not re-decide any of them.
+
+**Summary:** P43 is confirmed fixed, with one side effect (P45). The four
+decisions are marked and applied. The reversal of question 13 is followed
+through most of the document and is correct against the proxy outbox code, but
+it leaves 4 new findings, P44 to P47: 0 blocker, 2 major, 2 minor. So this file
+has open items.
+
+What was checked and found correct:
+
+- **P43 and the check of every row type.** Confirmed. The new section "Rows that
+  grow, and their cleanup" (change.md:807-826) lists every row type with who can
+  make it and what bounds or removes it. Counter rows are deleted by bucket
+  (OB-64). Old `out:`/`sent:` pairs, issuer-side demand rows and coded decline
+  rows are deleted (OB-66). Fence rows (`ver:`, `claim:`, `free:`, `confirmed:`,
+  `key:`) are kept on purpose, with the reason that deleting them would reopen
+  the race. I went through the doc for a row type that is missing: the router's
+  deposit status rows, the restore rows, the holder's rows and limit settings are
+  all listed, and the `eep_log` is bounded because coded declines make no entry
+  (a deviation from VX-45, recorded under "Added in review round 5"). I found no
+  missing row type. See P45 for a side effect of the cap in OB-65.
+- **Questions 3, 16, 17 and 18.** Each is marked "Decided 2026-11-26, owner:
+  as recommended" (question 3 gives option A for M08E and sends option C to
+  M08G with the agreements document's question 15). I searched the whole file
+  for "pending": the word is left only as the state name `pending` in the
+  deposit status read (change.md:226, 583). The marks "pending open question N"
+  are gone from the design text, OB-41 and OB-44, and the deviations. The reason
+  lines of questions 17 and 18 still say "so the owner decides", followed by the
+  decided line. That reads as history and is fine.
+- **The outbox claim, checked against the code.** Correct. The default attempt
+  budget is 54 (`default_supervisor_queue_max_attempts`,
+  [roles.rs:130](../../../../crates/core/src/config/roles.rs#L130)), the backoff
+  starts at 100 ms, doubles, and stops at 900 s (`:137`). The doubling reaches the
+  ceiling after 14 steps (about 27 minutes in all), and the other 40 attempts
+  wait 15 minutes each, so the total is about 10.5 hours: "about 10 hours" is
+  right. A call to a receiver with no mailbox ends then, and only a call to a
+  receiver with a mailbox can reach the row age limit of 30 days
+  (`MAX_ROW_AGE_MS`,
+  [proxy_outbox.rs:55](../../../../crates/router/src/proxy_outbox.rs#L55);
+  `settle_pending`,
+  [outbox_forwarding.rs:133-138](../../../../crates/router/src/proxy/outbox_forwarding.rs#L133)).
+  The receiver's dedup window is the retry window plus one visibility timeout
+  (`DedupConfig::derive`,
+  [dedup.rs:127-134](../../../../crates/async_queue/src/dedup.rs#L127)), so a
+  retry past it can run twice. The doc's answer, that every wire method is
+  idempotent by its own key, holds for each method: `demand` stores by record
+  id, `decline:<demand>` exists, `acknowledge` and `deliver` are keyed by record
+  ids, and a repeated holdings answer only sends the same records again.
+- **"Retry until" and the new levels.** The option is a real need (without it a
+  demand to an issuer offline for more than 10 hours is lost) and is placed in E2.
+  The two new "No answer" levels are right, and "could not reach the issuer" is
+  never counted against the issuer, in the table, in OB-23 and in the Hub text.
+  OB-17 is scoped to an issuer with a mailbox, and OB-68 covers the other case.
+  OB-23, OB-68 and OB-70 can be tested as written. OB-67 and OB-69 cannot: see
+  P44 and P47.
+- **Question 17 with no mailbox.** Correct. A holder's acknowledgement goes to the
+  issuer's mailbox. So an issuer with no mailbox gives no third-party time for any
+  of its holders' acknowledgements, and a holder with no mailbox does not change
+  this. The "A holder with no mailbox" paragraph says the issuer's declines
+  wait in the issuer's outbox, and that the holder's acknowledgement of a decline
+  still counts, which is right if the issuer has a mailbox.
+- **The VX-15 deviation rows.** Four rows are under "Added by the owner's
+  decisions" (VX-15, VX-49 evidence, the acknowledgement rule, the outbox
+  attempt budget). Together with the facts rows (change.md:226-227) they cover
+  every change the reversal makes in the design text.
+
+### P44 — major — "Deploying with no mailbox succeeds" is false today, and the change it needs is not listed
+
+**Where:** change.md:188 (OB-67), 701 (the deploy warning), 1007, 1278 (E3), and
+the facts row at :227; `crates/app_orchestration/src/compiler.rs:174-177`.
+
+**Problem:** OB-67 says deploying `obligation` with no mailbox succeeds and only
+prints a warning. But the manifest compiler refuses exactly this: "A service
+lists `mailbox_methods` only with a mailbox" (`check_mailbox_methods`, which
+pushes the error `'<name>' lists mailbox_methods but has no mailbox`,
+[compiler.rs:167-177](../../../../crates/app_orchestration/src/compiler.rs#L167)).
+The design needs `obligation` to list `syneroym-roym:obligation/api@0.1.0#invoke`
+in `mailbox_methods` (change.md:1007), and the manifest `roym.toml` is static,
+with the mailbox chosen only at deploy (service mailbox change, K-3). So the
+first deploy of the Roym app without a mailbox fails at the compile step, with
+this error. The rule comes from `D-C6-5` ("only with a mailbox"). The facts row
+at :227 cites K-3, `D-C7-6`, `D-C5-2` and `D-C6-10` as if a public service
+without a mailbox already works, and says nothing about this check. E3 lists "the
+deploy warning" but not the change of the compiler. The `roymctl svc deploy
+--mailbox-method` path and the SDK mapper (`crates/sdk/src/mapper.rs:404`) must
+be checked for the same rule.
+
+**Fix:** Say plainly that the compiler's error becomes a warning (or is removed)
+for a service that lists `mailbox_methods` and has no mailbox, and that the
+substrate and `svc deploy` paths are checked for the same rule. Add it to the
+facts table as a code fact, to the E3 task, and as a deviation from the service
+mailbox change (`D-C6-5`). OB-67 then tests the compiler: an app with
+`mailbox_methods` and no mailbox compiles with one warning.
+
+**Status:** Open
+
+### P45 — major — The cap of caller rows lets 10,000 false callers block every new caller for an hour
+
+**Where:** change.md:813 (counter rows), OB-65 (change.md, "Added in review round
+5").
+
+**Problem:** The fix for P43 says that inside one hour bucket at most 10,000
+caller-DID counter rows exist, and "a call from a caller with no row in a full
+bucket gets the rate-limit error and makes no row". The caller DID costs
+nothing: any key can certify itself as a master (service mailbox change,
+`D-C5-22`), and every call through a mailbox arrives with such a verified DID.
+An attacker who makes 10,000 calls from 10,000 fresh DIDs (about 3 a second)
+fills the bucket. For the rest of the hour, every caller that has no row yet is
+refused. That is every holder who contacts this node for the first time, which
+is the case VX-15 exists for ("a holder who never talked to the issuer"). The
+cost to the attacker is low, and the harm repeats each hour.
+
+**Fix:** Do not refuse a new caller because the bucket is full. Use a counter
+table of fixed size instead of one row per caller: for example 4,096 slots per
+bucket, with the slot chosen by a hash of the caller DID. Two callers may then
+share a slot, which makes the 60-call limit slightly stricter for them, but no
+caller is ever refused for being new, and the storage is bounded without a
+cap on callers. Change OB-65 to test that a full table still answers a new
+caller, and OB-57 for a shared slot.
+
+**Status:** Open
+
+### P46 — minor — A mailbox that the issuer drops does not leave a demand "never collected"
+
+**Where:** change.md:697 ("When the issuer drops its mailbox later"), OB-70, the
+"No answer" table (rows 4 and 5).
+
+**Problem:** The text says a demand still waiting in the dropped mailbox "is
+never collected", so the level reads "stored, never collected". In the code, an
+`unregister` turns every message of the queue into an `Expired` receipt
+(`unregister`,
+[queue.rs:126-150](../../../../crates/mailbox/src/store/queue.rs#L126)). The
+sender's router treats an `Expired` receipt as one that does not verify
+(`judge`,
+[poll.rs:108-121](../../../../crates/router/src/proxy/mailbox/poll.rs#L108): the
+`verify_signed` error becomes `retry`), and the outbox then goes back to direct
+attempts. The issuer's record now names no mailbox, and "retry until" keeps the
+call alive until `answer_by_secs`. So the same demand can be delivered directly
+when both nodes are online. The holder then has a `stored` receipt, an `expired`
+one, and a successful direct call. The table has no rule for this mix: row 4
+("stored … or an `expired` one") would still read "never collected", and row 5
+says a direct delivery has strength "none". The first is wrong, because the
+issuer did receive it.
+
+**Fix:** Say what the router does after an `Expired` receipt, and add the order of
+precedence: a later successful direct delivery replaces "stored, never
+collected" by the row for a direct delivery (row 5). Add this case to OB-70
+(deposit, drop the mailbox, bring both nodes online, check the level).
+
+**Status:** Open
+
+### P47 — minor — `receiver_mailbox` cannot tell "no mailbox" from "record not read"
+
+**Where:** change.md:583 ("`receiver_mailbox`, or none"), 702, OB-69.
+
+**Problem:** The warning "this issuer has no mailbox" is shown when the
+`receiver_mailbox` of the last call is none. A call can fail before the router
+reads the issuer's service record (the record cannot be fetched, or it is
+expired). The status read has no mailbox then, too. The holder's Hub would tell
+the holder that an issuer has no mailbox when the router only could not find the
+record. OB-69 tests only the case "none".
+
+**Fix:** Give the field three values: the mailbox DID, "none" (a record that was
+read and names no mailbox), and "unknown" (no record was read). The warning shows
+only for "none". Add the case "unknown shows no warning" to OB-69.
+
+**Status:** Open
