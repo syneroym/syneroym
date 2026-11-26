@@ -585,6 +585,7 @@ Target notation: `M05`, `M07`, `M10+`, `Phase 6` = a sequenced milestone/phase; 
 | **No code system for `Area::Named.code`** | It is not decided whether a PIN code or the Local Government Directory code is the right one. | TBD | `crates/roym_core/src/area.rs` |
 | **Native digits are not a user option** | The Hub shows Latin digits in every language. Users were not asked yet. | TBD | `crates/roym_web/ui/src/i18n/format.ts` |
 | **String catalogs exist only for English and Hindi** | Adding a language is a data change only: a new `.ftl` file and taxonomy labels, with a check of the text by someone who reads the language. | TBD | `crates/roym_web/ui/src/i18n/` |
+| **Poll options and widget labels are not offered to machine translation** | Poll options, question text, and widget schema labels do not invoke machine translation in the Hub; only free-text string answers in generic cards provide an ML-26 translation hook. | TBD | [roym-multilingual](./changes/roym-multilingual/change.md) (ML-26, D-C4-11) |
 
 
 ## 11. Roym Directory (search, discovery, and what M06C C6 left open)
@@ -743,7 +744,7 @@ Live `TODO`/`FIXME` markers that encode a real deferral. Remove both the code ma
 
 ## Recently resolved
 
-| **Widget labels do not come from the catalog yet** | Resolved in M08C C4b: widget field, option and action labels come from the Fluent catalog (`widget-poll-question`, `widget-poll-option`, `widget-poll-send`, etc.). |
+| **Widget labels do not come from the catalog yet** | Resolved in M08C C4b: extension manifest labels come from the catalog (`ext-poll-widget-single` and `ext-poll-widget-single-option`), and Hub widget UI messages are localized in `en.ftl` and `hi.ftl`. |
 | **C3c2's component sizes are not recorded** | Resolved in M08C C3c2: final release `wasm32-wasip2` sizes recorded in `task.md` section 1; `transaction` +12.92%, `catalog` +7.15%, `directory` +37,513 bytes, all within limits. |
 | **A card is filed only when a client calls `transaction.sync`** | Resolved in M08C C3c1: node-local wake on `transaction` drives conversations in the background (`transaction.drive`), filing cards without client `transaction.sync`. [ADR-0031](../decisions/0031-node-local-wake.md). |
 
