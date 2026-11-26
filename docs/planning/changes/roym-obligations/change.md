@@ -180,6 +180,10 @@ Kinds of test, as in the agreements document:
 | **Added in review round 3** | | |
 | OB-62 | When the issuer is the counterparty and the deal reads `expired` on its node, its claim is not released before the quote's expiry plus 30 days. A countersigned half signed before the expiry and filed after it keeps the version locked, also when another agreement tries to claim the same version in between (that agreement gets `eep-claimed`). A `not-formed` snapshot from the writer releases at once. | Service with a controllable clock: accept, move past the expiry, try a competing claim, file the late countersign. |
 | OB-63 | `invocation.delivery()` answers the mailbox and the stored time for a call delivered from a mailbox, and none for every other call. | Substrate unit test of the puller and the shim; service test through `TestHost`. |
+| **Added in review round 5** | | |
+| OB-64 | `obligation.drive` deletes every counter row of a bucket older than the current one, at most 500 rows per run. A row from an old bucket is gone after the next drive. | Service with a controllable clock. |
+| OB-65 | Inside one hour bucket, at most 10,000 caller-DID counter rows exist. A call from a new caller in a full bucket gets the rate-limit error and makes no row. | Service. |
+| OB-66 | `obligation.drive` deletes an `out:`/`sent:` pair 1 day after `sent:` exists, an issuer-side demand row 30 days after its final state, and a coded decline row 30 days after its demand's `answer_by_secs`. A person's decline, an EEP version and a fence row are never deleted. A coded decline makes no `eep_log` entry. | Service with a controllable clock. |
 
 ## Design
 
@@ -554,7 +558,7 @@ A request over a limit is declined with `split-limit`, which names the limit. Wi
 - After `expires_at_secs`, the issuer's duty ends. The node refuses claims and splits, and declines demands with `eep-expired`.
 - A claim taken before the expiry still resolves after it, by [Resolving a return](#resolving-a-return).
 - A demand signed before the expiry and not answered in its notice stays as evidence with the holder, also after the expiry.
-- Neither node deletes EEP records in M08E. The overview allows the issuer to delete them after expiry. Keeping them is cheaper than a pruning rule, and the statement reads them. Pruning is a backlog item.
+- Neither node deletes EEP versions, or the fence rows of an EEP, in M08E (other rows have a cleanup: see [Rows that grow, and their cleanup](#rows-that-grow-and-their-cleanup)). The overview allows the issuer to delete them after expiry. Keeping them is cheaper than a pruning rule, and the statement reads them. Pruning is a backlog item.
 - `obligation.drive` appends an `eep-expired` log entry once for each EEP whose expiry has passed with no live claim.
 
 ### Per-issuer limit and the stated total
@@ -765,6 +769,27 @@ A fork is two versions with the same `(eep_id, version)`, both signed by the iss
 - **Claims are claim rounds**, as the scheduling extension's seats are. Row `claim:<eep_id>:<version>:<round>` holds the claim, with its owner (an agreement and commitment, or a split request), its quote expiry and its state. Row `free:<eep_id>:<version>:<round>` releases it. No row is ever deleted. To claim, the node reads the highest round. If that round has a `free` row, or no round exists, it creates the next round. Of two claims that race, the unique insert lets only one succeed. Row `key:<agreement>:<commitment_id>:<generation>` names the round for one commitment. The newest generation is in force, and each new round for the same pair adds a generation, as the scheduling extension's `Key` rows do. So a repeated claim finds its round, and a claim after a release takes a new one.
 - **All the issuer's rows are in one collection, `eeps`.** A `create` covers one collection of one service, so this is what lets a split store its claim, its closing version and its parts in one write.
 
+### Rows that grow, and their cleanup
+
+Every row type of `obligation` is listed here, with what bounds it or what removes it. A row whose number a stranger can raise for free must have a cleanup. A fence row (a version, a claim round, a key generation) is never deleted while its EEP lives, because deleting it would reopen the race it closes. Pruning EEPs that ended is a backlog item (see [Expiry](#expiry)).
+
+| Rows | Collection | Who can make one | Bound or cleanup |
+| --- | --- | --- | --- |
+| `count:<key>:<bucket>` (the limits) | `counters`, its own collection | any verified caller (key = caller DID); the node itself (key `junk`); holders of known EEP versions (keys `decline:<eep_id>:<version>`, `holdings:<holder>`) | `obligation.drive` deletes every counter row whose bucket is older than the current bucket of its kind, at most 500 rows per run, as `transaction.drive` bounds its work (OB-64). Inside one bucket, at most 10,000 caller-DID rows exist: a call from a caller with no row in a full bucket gets the rate-limit error and makes no row (OB-65). A holdings request from a signer that holds no live EEP of this issuer gets an error only and makes no row. |
+| `ver:`, `fork:` | `eeps` | only the issuer's own signatures | bounded by the EEPs the issuer issued and split, and splits are limited (64 live EEPs of one issuer per holder). Kept: they are the records. |
+| `claim:`, `free:`, `confirmed:`, `key:…:<generation>` | `eeps` | only `transaction` on this node, for agreements this node signs | bounded by the agreements the issuer itself signs that return the version. Kept while the EEP lives: they are the fence. |
+| `req:` (split requests) | `eeps` | the holder of a live version, once per version (the split's claim makes a second split of that version fail) | bounded by the versions. Kept with the EEP. |
+| issuer-side demand rows | `eeps` | the holder of a known EEP version that passes the automatic checks | at most one open per (EEP, version). `obligation.drive` deletes a demand row 30 days after it reaches a final state. The holder keeps the signed evidence; the issuer keeps its log entry. |
+| `decline:` | `eeps` | a person's decline, or a coded decline for the holder of a known EEP version | coded declines are capped at 5 per (EEP, version) per day bucket (OB-59). `obligation.drive` deletes a coded decline row 30 days after its demand's `answer_by_secs`: the holder holds the signed decline, which is the evidence. A person's decline row is kept: one per demand the person answered. |
+| `out:`, `sent:` | `eeps` and `held` | only this node, one per record it signs to send | `obligation.drive` deletes an `out:` row and its `sent:` row 1 day after `sent:` exists. The proxy outbox owns the retries from then on. A demand row keeps the idempotency key that the deposit status read needs. |
+| `restore:` | `eeps` | the owner's own restore | one per restore. Kept. |
+| `held:`, `ack:` | `held` | an issuer's `deliver` or an `eep` card, only when it answers a request this node sent or extends a chain it holds (OB-43); junk is dropped and makes no row | bounded by the EEPs this node really holds. Kept. |
+| holder-side demand rows and their deposit proofs | `held` | only this node's person | at most one open demand per (EEP, version) (OB-47). One proof per deposit, and the proxy outbox makes few deposits per call (its retry schedule). Kept: they are the holder's evidence. |
+| junk wire calls (unknown EEP, non-holder) | none | anyone | no row, only the counters above (OB-42). |
+| limit settings | `settings` | only this node's person | owner action. Kept. |
+| `eep_log` entries | `eep_log` | derived from the rows above | only ever created, as the agreements document decided for its log. Bounded because every entry comes from a row that is itself bounded: coded declines, and the demands they answer, make no log entry (see [The event log](#the-event-log)). |
+| deposit status rows in the router | the router's outbox store | this node's own queued calls | kept for the life of the outbox row plus 14 days (see [The send path](#the-send-path)). |
+
 ### Write order and crash recovery
 
 Two rules from the agreements document hold for every step here:
@@ -945,7 +970,7 @@ Every other method is local-only (`-32013` from another node).
 - **Mailbox eligibility.** The manifest lists `syneroym-roym:obligation/api@0.1.0#invoke` in `mailbox_methods`. Eligibility cannot be narrower than `invoke`, so the admission table is the real gate. A deferred call to a local-only method is refused with `-32013`, and the mailbox closes it with an unsigned `rejected(call_failed)`.
 - **Every wire method is idempotent and returns `{}`.** The idempotency key names one logical answer, not one set of bytes. For `demand`, `split` and `holdings`, it is the `record_id` of the request. For `acknowledge`, a hash of the sorted `record_id`s it acknowledges. For `deliver`, the `record_id` of the request it answers (a demand, a split request or a holdings request) plus the part number when the answer is sent as several calls, or, for an `eep` version sent on its own, that version's `record_id`. So a second holdings request after a second data loss gets a second answer, even when the records are the same. The answer, if any, comes back as a call to the other side's `obligation.deliver`.
 - **Limits** (first values to tune):
-  - **How limits count.** Every "per hour" and "per day" limit in this document (OB-42, OB-57, OB-58, OB-59) uses a fixed bucket, `floor(now / 3600)` or `floor(now / 86400)`, counted on the receiving node's own clock, with one counter row per key and bucket (for example `count:<key>:<bucket>`). It is not a rolling window, which would need a list of times per key. At a bucket edge, up to twice the limit can pass in a short time; this is accepted, because the limits bound work, not exact rates.
+  - **How limits count.** Every "per hour" and "per day" limit in this document (OB-42, OB-57, OB-58, OB-59) uses a fixed bucket, `floor(now / 3600)` or `floor(now / 86400)`, counted on the receiving node's own clock, with one counter row per key and bucket (for example `count:<key>:<bucket>`, in the collection `counters`). `obligation.drive` deletes rows of old buckets (see [Rows that grow, and their cleanup](#rows-that-grow-and-their-cleanup)). It is not a rolling window, which would need a list of times per key. At a bucket edge, up to twice the limit can pass in a short time; this is accepted, because the limits bound work, not exact rates.
   - A call's request is at most 48 KiB, measured as the request string as sent: the one string argument of `invoke`, with every quote of the envelopes inside it escaped, not the size of the records. The escaping adds about 10 to 20 percent to the records, and the sealed message adds the sender certificate, the signature and the 48 bytes of HPKE, so 48 KiB leaves a small margin under 64 KiB. E3 measures the real margin. A larger set of records (for example a split's 17 versions) goes as several calls. E3 measures one `eep` version with its certificate and writes the number here.
   - Each caller may make at most 60 wire calls an hour. Over the limit, the call is refused with a rate-limit error, and the sender retries later.
   - Calls that name an unknown EEP or are signed by a non-holder are answered with an error only, sign nothing, store nothing, and count against a limit of 100 an hour for the whole node, whatever the caller (OB-42). A fresh caller DID or a fresh signing key costs an attacker nothing, so only a node-wide limit bounds this.
@@ -1004,7 +1029,7 @@ The agreements document's card table has twelve types once the extensions' `widg
 
 `obligation` keeps its own log, as the agreements document decided ("The `obligation` service keeps its own log of EEP events").
 
-Collection `eep_log`. Entries are only ever created. Each entry's row id is derived from the event, so creating it twice is refused, and a repeat is a no-op. Every call that writes a record runs the same derive step as `eeplog.rebuild`, so a crash between a write and its entry is repaired on the next call.
+Collection `eep_log`. Entries are only ever created. A coded decline, and a demand that gets one, make no entry: they are capped but repeat, and the holder holds the signed record. `demand-received` is logged only for a demand the issuer stored, and `demand-declined` only for a person's decline. Each entry's row id is derived from the event, so creating it twice is refused, and a repeat is a no-op. Every call that writes a record runs the same derive step as `eeplog.rebuild`, so a crash between a write and its entry is repaired on the next call.
 
 ```text
 EepLogEntry {
@@ -1202,8 +1227,8 @@ Each has a recommendation and a reason. The owner decides.
 - [ ] E0 (this document): owner review of this draft and the open questions.
 - [ ] E1: revocation entries with `effective_from_secs` and a reason; every reader and writer of `revoked_keys`; `check_key(master, key)`; the time rule and the countersign rule in `signed_record`; the host function that reads an anchor's entries (OB-1 to OB-4, OB-50, OB-61).
 - [ ] E2: the signed `stored` receipt; the seeded random source for `hpke` (a small `rand_core` 0.10 generator over HKDF-SHA256 that implements `TryRng` and `TryCryptoRng`, a direct `rand_core = "0.10"` dependency of `mailbox_format` with `default-features = false`, and a known-answer test); sealing from a seed; the deposit proof and `verify_message`; the "deposit first" `enqueue` option and the deposit status read; the mailbox's stored time through a new `invocation.delivery()` function (the WIT, the puller, the dual-build shim's `AppInvocation`, `roym_core::admit::delivery`, and a setter on the shared `TestHost` so that Roym service tests can fake it) (OB-63, OB-5, OB-6, OB-55, OB-56, the host-function test of OB-51). This is the largest part of E2.
-- [ ] E3: the `obligation` service, deployed `public` with a mailbox: the EEP record, issue, acknowledgements, expiry, `eep-issue`, the `eep` card, the wallet screen. The wire table with all five entries, and the handlers of `acknowledge` and `deliver`; `demand`, `split` and `holdings` answer `not-built` until E4 (OB-7 to OB-16, OB-31, OB-36 to OB-38, OB-43, OB-48, the service test of OB-51, OB-57, OB-60).
-- [ ] E4: the handlers of `demand`, `split` and `holdings`; declines, the claim, `eep-return`, resolving a return, partial redemption, set-off, split, the restore rule, forks, holdings requests, the per-issuer limit, the stated total, the event log and the statement part (OB-17 to OB-30, OB-32 to OB-35, OB-39 to OB-42, OB-44 to OB-47, OB-49, OB-52 to OB-54, OB-58, OB-59, OB-62).
+- [ ] E3: the `obligation` service, deployed `public` with a mailbox: the EEP record, issue, acknowledgements, expiry, `eep-issue`, the `eep` card, the wallet screen. The wire table with all five entries, and the handlers of `acknowledge` and `deliver`; `demand`, `split` and `holdings` answer `not-built` until E4 (OB-7 to OB-16, OB-31, OB-36 to OB-38, OB-43, OB-48, the service test of OB-51, OB-57, OB-60, OB-64, OB-65).
+- [ ] E4: the handlers of `demand`, `split` and `holdings`; declines, the claim, `eep-return`, resolving a return, partial redemption, set-off, split, the restore rule, forks, holdings requests, the per-issuer limit, the stated total, the event log and the statement part (OB-17 to OB-30, OB-32 to OB-35, OB-39 to OB-42, OB-44 to OB-47, OB-49, OB-52 to OB-54, OB-58, OB-59, OB-62, OB-66).
 - [ ] E5: close-out, and a demo story for issue and redemption.
 
 ## Deviations
@@ -1242,6 +1267,11 @@ Added in review round 2:
 
 - **Service mailbox change, `D-C6-6`: the delivery caller context carries the sender's master and no other data.** A new `invocation.delivery()` function also gives the mailbox and the stored time of the message, so that the issuer can tell when a demand reached its mailbox. `caller()` is unchanged.
 - **Agreements, VX-12: "which party failed which commitment", read through the commitment's giver.** A `failed` `eep-return` with reason `eep-claimed` is the receiver's failure: a failure is attributed to the signer of its `commitment-failure`.
+Added in review round 5:
+
+- **Overview, VX-45 and the event log list ("EEP … declined"): every EEP event is logged.** A coded decline, and the demand it answers, make no log entry, so the log stays bounded. A person's decline is logged. Coded declines are capped and repeat, and the holder holds each signed one.
+- **Overview, "after expiry the issuer may delete its records", and this document's "no node deletes EEP records".** EEP versions and fence rows are still never deleted. Counter rows, `out:`/`sent:` pairs, issuer-side demand rows and coded decline rows are deleted by `obligation.drive` (see [Rows that grow, and their cleanup](#rows-that-grow-and-their-cleanup)).
+
 Added in review round 3:
 
 - **Agreements, "Deal and agreement": `expired` is an end, and release happens when the deal ends `expired`.** For a claim taken as the counterparty, `expired` releases only 30 days after the quote's expiry, because a late countersigned half can still form the agreement.
