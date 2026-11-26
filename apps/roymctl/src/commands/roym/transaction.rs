@@ -566,39 +566,29 @@ async fn handle_thread(
     Ok(())
 }
 
-async fn handle_lifecycle_commands(
-    command: &TransactionCommands,
-    dir: &Path,
-    run_as: Option<&str>,
-    ucan_path: Option<&Path>,
-) -> Result<bool> {
-    match command {
-        TransactionCommands::Agreement { command } => {
-            super::agreement::handle_agreement(command, dir, run_as, ucan_path).await?;
-            Ok(true)
-        }
-        TransactionCommands::Payment { command } => {
-            super::agreement::handle_payment(command, dir, run_as, ucan_path).await?;
-            Ok(true)
-        }
-        TransactionCommands::Fulfilment { command } => {
-            super::agreement::handle_fulfilment(command, dir, run_as, ucan_path).await?;
-            Ok(true)
-        }
-        TransactionCommands::Eventlog { command } => {
-            super::statement::handle_eventlog(command, dir, run_as, ucan_path).await?;
-            Ok(true)
-        }
-        TransactionCommands::Statement(args) => {
-            super::statement::handle_statement(args, dir, run_as, ucan_path).await?;
-            Ok(true)
-        }
-        TransactionCommands::Defaults { command } => {
-            super::statement::handle_defaults(command, dir, run_as, ucan_path).await?;
-            Ok(true)
-        }
-        _ => Ok(false),
-    }
+async fn handle_quote_command(args: &QuoteArgs, ctx: RpcCtx<'_>) -> Result<()> {
+    let params = build_quote_params(
+        &args.enquiry,
+        &args.scope,
+        &args.lang,
+        &args.currency,
+        &args.amount,
+        &args.payee,
+        args.tax.as_deref(),
+        args.fees.as_deref(),
+        &args.methods,
+        &args.timing,
+        args.schedule.as_deref(),
+        &args.where_,
+        args.address.as_deref(),
+        &args.cancellation_file,
+        &args.refund_file,
+        &args.dispute,
+        args.expires_hours,
+        args.listing_id.as_deref(),
+        args.slot.as_deref(),
+    )?;
+    call_and_print(ctx, &args.gateway_url, args.host.as_deref(), "quote.set", params).await
 }
 
 pub(super) async fn handle_transaction(
@@ -607,11 +597,25 @@ pub(super) async fn handle_transaction(
     run_as: Option<&str>,
     ucan_path: Option<&Path>,
 ) -> Result<()> {
-    if handle_lifecycle_commands(command, dir, run_as, ucan_path).await? {
-        return Ok(());
-    }
-    let ctx = RpcCtx { run_as, ucan_path, dir };
     match command {
+        TransactionCommands::Agreement { command } => {
+            super::agreement::handle_agreement(command, dir, run_as, ucan_path).await?;
+        }
+        TransactionCommands::Payment { command } => {
+            super::agreement::handle_payment(command, dir, run_as, ucan_path).await?;
+        }
+        TransactionCommands::Fulfilment { command } => {
+            super::agreement::handle_fulfilment(command, dir, run_as, ucan_path).await?;
+        }
+        TransactionCommands::Eventlog { command } => {
+            super::statement::handle_eventlog(command, dir, run_as, ucan_path).await?;
+        }
+        TransactionCommands::Statement(args) => {
+            super::statement::handle_statement(args, dir, run_as, ucan_path).await?;
+        }
+        TransactionCommands::Defaults { command } => {
+            super::statement::handle_defaults(command, dir, run_as, ucan_path).await?;
+        }
         TransactionCommands::Enquiry {
             conversation,
             description,
@@ -628,6 +632,7 @@ pub(super) async fn handle_transaction(
             gateway_url,
             host,
         } => {
+            let ctx = RpcCtx { run_as, ucan_path, dir };
             handle_enquiry(
                 conversation,
                 description.as_deref(),
@@ -648,49 +653,32 @@ pub(super) async fn handle_transaction(
             .await?;
         }
         TransactionCommands::Quote(args) => {
-            let params = build_quote_params(
-                &args.enquiry,
-                &args.scope,
-                &args.lang,
-                &args.currency,
-                &args.amount,
-                &args.payee,
-                args.tax.as_deref(),
-                args.fees.as_deref(),
-                &args.methods,
-                &args.timing,
-                args.schedule.as_deref(),
-                &args.where_,
-                args.address.as_deref(),
-                &args.cancellation_file,
-                &args.refund_file,
-                &args.dispute,
-                args.expires_hours,
-                args.listing_id.as_deref(),
-                args.slot.as_deref(),
-            )?;
-            call_and_print(ctx, &args.gateway_url, args.host.as_deref(), "quote.set", params)
-                .await?;
+            let ctx = RpcCtx { run_as, ucan_path, dir };
+            handle_quote_command(args, ctx).await?;
         }
         TransactionCommands::Accept { quote, gateway_url, host } => {
+            let ctx = RpcCtx { run_as, ucan_path, dir };
             let params = json!({ "quote_record_id": quote });
             call_and_print(ctx, gateway_url, host.as_deref(), "agreement.accept", params).await?;
         }
         TransactionCommands::FromListing { enquiry, gateway_url, host } => {
+            let ctx = RpcCtx { run_as, ucan_path, dir };
             let params = json!({ "enquiry_record_id": enquiry });
             call_and_print(ctx, gateway_url, host.as_deref(), "quote.from-listing", params).await?;
         }
         TransactionCommands::Decline { quote, note, gateway_url, host } => {
+            let ctx = RpcCtx { run_as, ucan_path, dir };
             handle_decline(quote, note.as_deref(), gateway_url, host.as_deref(), ctx).await?;
         }
         TransactionCommands::Sync { conversation, full, gateway_url, host } => {
+            let ctx = RpcCtx { run_as, ucan_path, dir };
             let params = json!({ "conversation": conversation, "full": full });
             call_and_print(ctx, gateway_url, host.as_deref(), "transaction.sync", params).await?;
         }
         TransactionCommands::Thread { conversation, gateway_url, host } => {
+            let ctx = RpcCtx { run_as, ucan_path, dir };
             handle_thread(conversation, gateway_url, host.as_deref(), ctx).await?;
         }
-        _ => unreachable!(),
     }
     Ok(())
 }
