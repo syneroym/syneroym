@@ -674,7 +674,7 @@ describe("Group messages with a translation engine", () => {
 
 describe("widget messages in groups thread", () => {
   const nameOf = (addr: string) => addr;
-  const msg = (id: string, contentType: string): GroupMessageRow => ({
+  const msg = (id: string, contentType: string, body?: string): GroupMessageRow => ({
     id,
     conversation: "grp-1",
     author: "did:key:zAlice",
@@ -682,7 +682,7 @@ describe("widget messages in groups thread", () => {
     sender_timestamp_ms: 1000,
     content_type: contentType,
     body_encoding: "utf8",
-    body: "",
+    body: body ?? "",
     state: "delivered",
   });
 
@@ -724,7 +724,7 @@ describe("widget messages in groups thread", () => {
     renderThreadMessages(
       threadList,
       [msg("m-w1", "application/vnd.roym.widget+json")],
-      nameOf,
+      () => "Alice",
       () => {},
       () => {},
       widgetMap,
@@ -748,20 +748,197 @@ describe("widget messages in groups thread", () => {
     expect(threadList.children).toHaveLength(0);
   });
 
-  it("a widget missing from the map draws widget-refused in the group thread", () => {
+  it("a widget missing from the map keeps the widget prompt in the group thread", () => {
     const threadList = document.createElement("div");
     renderThreadMessages(
       threadList,
-      [msg("m-w-missing", "application/vnd.roym.widget+json")],
+      [msg("m-w-missing", "application/vnd.roym.widget+json", JSON.stringify({
+        widget_version: 1,
+        definition: { prompt: "Custom group prompt" },
+      }))],
       nameOf,
       () => {},
       () => {},
       new Map(),
     );
 
-    const card = threadList.querySelector(".widget-refused");
-    expect(card).not.toBeNull();
-    const reason = threadList.querySelector(".refused-notice");
-    expect(reason?.textContent).toContain("This widget cannot be shown: widget-refused");
+    expect(threadList.querySelector(".widget-refused")).toBeNull();
+    expect(threadList.textContent).toContain("Custom group prompt");
+  });
+
+  it("a group widget row shows the sender and has a delete button", () => {
+    const threadList = document.createElement("div");
+    const widgetView: WidgetView = {
+      widget_id: "m-w1",
+      author: "did:key:alice",
+      direction: "incoming",
+      sender_timestamp_ms: 1000,
+      definition: {
+        extension: { id: "poll", version: 1 },
+        type: "poll/single",
+        semantic: "poll",
+        prompt: "Group lunch?",
+        fields: [
+          {
+            name: "option",
+            type: "choice",
+            required: true,
+            choices: [
+              { code: "o1", text: "Pizza" },
+            ],
+          },
+        ],
+      },
+      checked: true,
+      counts: [],
+      answers: [],
+      ignored_answers: 0,
+      state: "delivered",
+    };
+    const widgetMap = new Map<string, WidgetView>([["m-w1", widgetView]]);
+
+    renderThreadMessages(
+      threadList,
+      [msg("m-w1", "application/vnd.roym.widget+json")],
+      () => "Alice",
+      () => {},
+      () => {},
+      widgetMap,
+    );
+
+    const row = threadList.querySelector(".message-row");
+    expect(row).not.toBeNull();
+    expect(row?.querySelector(".message-author")?.textContent).toBe("Alice");
+    expect(row?.querySelector(".delete-button")).not.toBeNull();
+  });
+
+  it("reloadThread calls widget.list only for non-deleted widgets and skips when no widgets exist", async () => {
+    const calls: { method: string; params: unknown }[] = [];
+    stubRpc({
+      "conversation.list": () => ({
+        conversations: [
+          {
+            id: "grp-1",
+            kind: "group",
+            message_count: 2,
+            group: { name: "Team Group", admission: { state: "shown" } },
+          },
+        ],
+      }),
+      "group.info": () => ({
+        id: "grp-1",
+        name: "Team Group",
+        owner_address: "did:key:zAlice",
+        is_owner: true,
+        is_member: true,
+        restored_only: false,
+        key_epoch: 1,
+        key_stored_at_ms: 1000,
+        members: [{ address: "did:key:zAlice", is_owner: true }],
+      }),
+      "conversation.transcript-digest": () => ({ digest: "abcdef123456" }),
+      "contacts.list": () => [],
+      "conversation.history": () => ({
+        messages: [
+          {
+            id: "m-w-live",
+            conversation: "grp-1",
+            author: "did:key:zAlice",
+            direction: "incoming",
+            sender_timestamp_ms: 1000,
+            content_type: "application/vnd.roym.widget+json",
+            body_encoding: "utf8",
+            body: '{"widget_version":1,"definition":{"prompt":"Live group poll"}}',
+            state: "delivered",
+            deleted_at_secs: null,
+          },
+          {
+            id: "m-w-del",
+            conversation: "grp-1",
+            author: "did:key:zAlice",
+            direction: "incoming",
+            sender_timestamp_ms: 1100,
+            content_type: "application/vnd.roym.widget+json",
+            body_encoding: "utf8",
+            body: "",
+            state: "delivered",
+            deleted_at_secs: 12345,
+          },
+        ],
+      }),
+      "widget.list": (params) => {
+        calls.push({ method: "widget.list", params });
+        return { widgets: [], complete: true };
+      },
+    });
+
+    const host = document.createElement("div");
+    await renderGroups(host);
+
+    const widgetListCalls = calls.filter((c) => c.method === "widget.list");
+    expect(widgetListCalls).toHaveLength(1);
+    expect(widgetListCalls[0].params).toEqual({
+      conversation: "grp-1",
+      widget_ids: ["m-w-live"],
+    });
+  });
+
+  it("on widget.list error in reloadThread, draws a thread-level error and keeps the widget's prompt", async () => {
+    stubRpc({
+      "conversation.list": () => ({
+        conversations: [
+          {
+            id: "grp-1",
+            kind: "group",
+            message_count: 1,
+            group: { name: "Team Group", admission: { state: "shown" } },
+          },
+        ],
+      }),
+      "group.info": () => ({
+        id: "grp-1",
+        name: "Team Group",
+        owner_address: "did:key:zAlice",
+        is_owner: true,
+        is_member: true,
+        restored_only: false,
+        key_epoch: 1,
+        key_stored_at_ms: 1000,
+        members: [{ address: "did:key:zAlice", is_owner: true }],
+      }),
+      "conversation.transcript-digest": () => ({ digest: "abcdef123456" }),
+      "contacts.list": () => [],
+      "conversation.history": () => ({
+        messages: [
+          {
+            id: "m-w-live",
+            conversation: "grp-1",
+            author: "did:key:zAlice",
+            direction: "incoming",
+            sender_timestamp_ms: 1000,
+            content_type: "application/vnd.roym.widget+json",
+            body_encoding: "utf8",
+            body: JSON.stringify({
+              widget_version: 1,
+              definition: { prompt: "Prompt on groups widget list failure" },
+            }),
+            state: "delivered",
+          },
+        ],
+      }),
+      "widget.list": () => {
+        throw new Error("groups widget list error");
+      },
+    });
+
+    const host = document.createElement("div");
+    await renderGroups(host);
+
+    const threadErr = host.querySelector(".widget-list-error");
+    expect(threadErr).not.toBeNull();
+    expect(threadErr?.textContent).toContain("groups widget list error");
+
+    expect(host.querySelector(".widget-refused")).toBeNull();
+    expect(host.textContent).toContain("Prompt on groups widget list failure");
   });
 });

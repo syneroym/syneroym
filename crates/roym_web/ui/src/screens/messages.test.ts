@@ -975,8 +975,11 @@ describe("widget messages in messages thread", () => {
     expect(el.querySelector(".widget-card")).toBeNull();
   });
 
-  it("a widget missing from the map draws widget-refused", () => {
-    const msg = baseMessage("msg-w-missing", "application/vnd.roym.widget+json");
+  it("a widget missing from the map keeps the widget prompt text", () => {
+    const msg = baseMessage("msg-w-missing", "application/vnd.roym.widget+json", JSON.stringify({
+      widget_version: 1,
+      definition: { prompt: "Custom widget prompt" },
+    }));
     const el = messageElement(
       msg,
       new Map(),
@@ -989,9 +992,171 @@ describe("widget messages in messages thread", () => {
       new Map(),
     );
 
-    const card = el.querySelector(".widget-refused");
-    expect(card).not.toBeNull();
-    const reason = el.querySelector(".refused-notice");
-    expect(reason?.textContent).toContain("This widget cannot be shown: widget-refused");
+    expect(el.querySelector(".widget-refused")).toBeNull();
+    expect(el.textContent).toContain("Custom widget prompt");
+  });
+
+  it("a widget row has a delete button and retains message state", () => {
+    const msg = baseMessage("msg-w-del", "application/vnd.roym.widget+json");
+    const el = messageElement(
+      msg,
+      new Map(),
+      [],
+      new Map(),
+      new Map(),
+      "conv-1",
+      "did:key:me",
+      async () => {},
+      new Map(),
+    );
+    expect(el.querySelector(".delete-message")).not.toBeNull();
+    expect(el.querySelector(".message-state")).not.toBeNull();
+  });
+
+  it("fillThread calls widget.list only for non-deleted widgets and skips when no widgets exist", async () => {
+    const calls: { method: string; params: unknown }[] = [];
+    stubRpc({
+      "session.whoami": () => ({ did: "did:key:me" }),
+      "profile.get": () => ({ profile: null }),
+      "conversation.list": () => ({
+        conversations: [{ id: "conv-1", peer_address: "peer-1", message_count: 3 }],
+      }),
+      "transaction.sync": () => ({}),
+      "transaction.thread": () => ({ cards: [] }),
+      "conversation.history": () => ({
+        messages: [
+          {
+            id: "msg-live",
+            conversation: "conv-1",
+            author: "peer-1",
+            direction: "incoming",
+            sender_timestamp_ms: 1000,
+            content_type: "application/vnd.roym.widget+json",
+            body_encoding: "utf8",
+            body: '{"widget_version":1,"definition":{"prompt":"A live poll"}}',
+            state: "delivered",
+            deleted_at_secs: null,
+          },
+          {
+            id: "msg-deleted",
+            conversation: "conv-1",
+            author: "peer-1",
+            direction: "incoming",
+            sender_timestamp_ms: 1100,
+            content_type: "application/vnd.roym.widget+json",
+            body_encoding: "utf8",
+            body: "",
+            state: "delivered",
+            deleted_at_secs: 12345,
+          },
+          {
+            id: "msg-txt",
+            conversation: "conv-1",
+            author: "peer-1",
+            direction: "incoming",
+            sender_timestamp_ms: 1200,
+            content_type: "text/plain",
+            body_encoding: "utf8",
+            body: "hello",
+            state: "delivered",
+          },
+        ],
+      }),
+      "widget.list": (params) => {
+        calls.push({ method: "widget.list", params });
+        return { widgets: [], complete: true };
+      },
+    });
+
+    const host = document.createElement("div");
+    await renderMessages(host);
+
+    const widgetListCalls = calls.filter((c) => c.method === "widget.list");
+    expect(widgetListCalls).toHaveLength(1);
+    expect(widgetListCalls[0].params).toEqual({
+      conversation: "conv-1",
+      widget_ids: ["msg-live"],
+    });
+  });
+
+  it("fillThread makes no widget.list call when history has no widgets", async () => {
+    const calls: { method: string; params: unknown }[] = [];
+    stubRpc({
+      "session.whoami": () => ({ did: "did:key:me" }),
+      "profile.get": () => ({ profile: null }),
+      "conversation.list": () => ({
+        conversations: [{ id: "conv-1", peer_address: "peer-1", message_count: 1 }],
+      }),
+      "transaction.sync": () => ({}),
+      "transaction.thread": () => ({ cards: [] }),
+      "conversation.history": () => ({
+        messages: [
+          {
+            id: "msg-txt",
+            conversation: "conv-1",
+            author: "peer-1",
+            direction: "incoming",
+            sender_timestamp_ms: 1200,
+            content_type: "text/plain",
+            body_encoding: "utf8",
+            body: "hello",
+            state: "delivered",
+          },
+        ],
+      }),
+      "widget.list": (params) => {
+        calls.push({ method: "widget.list", params });
+        return { widgets: [], complete: true };
+      },
+    });
+
+    const host = document.createElement("div");
+    await renderMessages(host);
+
+    const widgetListCalls = calls.filter((c) => c.method === "widget.list");
+    expect(widgetListCalls).toHaveLength(0);
+  });
+
+  it("on widget.list error in fillThread, draws a thread-level error and keeps the widget's prompt", async () => {
+    stubRpc({
+      "session.whoami": () => ({ did: "did:key:me" }),
+      "profile.get": () => ({ profile: null }),
+      "conversation.list": () => ({
+        conversations: [{ id: "conv-1", peer_address: "peer-1", message_count: 1 }],
+      }),
+      "transaction.sync": () => ({}),
+      "transaction.thread": () => ({ cards: [] }),
+      "conversation.history": () => ({
+        messages: [
+          {
+            id: "msg-live",
+            conversation: "conv-1",
+            author: "peer-1",
+            direction: "incoming",
+            sender_timestamp_ms: 1000,
+            content_type: "application/vnd.roym.widget+json",
+            body_encoding: "utf8",
+            body: JSON.stringify({
+              widget_version: 1,
+              definition: { prompt: "Prompt when list fails" },
+            }),
+            state: "delivered",
+          },
+        ],
+      }),
+      "widget.list": () => {
+        throw new Error("node restarting");
+      },
+    });
+
+    const host = document.createElement("div");
+    await renderMessages(host);
+
+    const threadErr = host.querySelector(".widget-list-error");
+    expect(threadErr).not.toBeNull();
+    expect(threadErr?.textContent).toContain("node restarting");
+
+    expect(host.querySelector(".widget-refused")).toBeNull();
+    expect(host.textContent).toContain("Prompt when list fails");
   });
 });

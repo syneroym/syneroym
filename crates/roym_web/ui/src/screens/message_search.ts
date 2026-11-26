@@ -1,3 +1,5 @@
+import { WIDGET_ANSWER_CONTENT_TYPE, WIDGET_CONTENT_TYPE } from "../widgets/view";
+
 /// One row of `conversation.search`'s `matches`: a stored message row. Only
 /// the fields the result list reads are named here.
 export interface SearchMatch {
@@ -34,10 +36,10 @@ export function searchHits(matches: SearchMatch[], query: string): SearchHit[] {
   const hits: SearchHit[] = [];
   for (const m of matches) {
     if (!m.body) continue;
-    if (m.content_type === "application/vnd.roym.widget-answer+json") {
+    if (m.content_type === WIDGET_ANSWER_CONTENT_TYPE) {
       continue;
     }
-    if (m.content_type === "application/vnd.roym.widget+json") {
+    if (m.content_type === WIDGET_CONTENT_TYPE) {
       try {
         const parsed = JSON.parse(m.body);
         const prompt = parsed?.widget?.prompt;

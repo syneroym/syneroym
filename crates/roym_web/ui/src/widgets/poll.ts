@@ -1,8 +1,8 @@
 import { messageLang, messageText } from "../chat/message_text";
-import { widgetNameId, widgetType } from "../extensions/registry";
-import { codeWord, t } from "../i18n/i18n";
+import { errText } from "../dom";
+import { t } from "../i18n/i18n";
 import { call } from "../rpc";
-import { messageStateWord } from "../screens/messages";
+import { stateAndRetry, widgetHeading } from "./render";
 import type { WidgetRenderOptions, WidgetView } from "./view";
 
 export function renderPoll(view: WidgetView, opts: WidgetRenderOptions): HTMLElement {
@@ -15,20 +15,7 @@ export function renderPoll(view: WidgetView, opts: WidgetRenderOptions): HTMLEle
     return card;
   }
 
-  const isKnown = view.checked || widgetType(def.extension, def.type) !== undefined;
-  const title = document.createElement("h3");
-  title.className = "widget-heading";
-  title.textContent = isKnown
-    ? codeWord(new Map([[def.type, widgetNameId(def.extension.id, def.type)]]), def.type)
-    : t("widget-unknown-heading", { type: def.type });
-  card.appendChild(title);
-
-  if (!view.checked) {
-    const notChecked = document.createElement("p");
-    notChecked.className = "widget-not-checked field-view-not-checked";
-    notChecked.textContent = t("ext-not-checked");
-    card.appendChild(notChecked);
-  }
+  widgetHeading(card, view);
 
   const incoming = view.direction === "incoming";
   const promptNodes = messageText(def.prompt, view.languages ?? [], "p", { translatable: incoming });
@@ -81,16 +68,27 @@ export function renderPoll(view: WidgetView, opts: WidgetRenderOptions): HTMLEle
       if (c.code === ownChoiceCode) {
         return;
       }
-      btn.disabled = true;
+      const allBtns = optionsDiv.querySelectorAll<HTMLButtonElement>(".widget-poll-option-btn");
+      allBtns.forEach((b) => (b.disabled = true));
       try {
         await call("widget.answer", {
           conversation: opts.conversation,
           widget_id: view.widget_id,
           data: { [fieldName]: c.code },
+          languages: opts.languages ? opts.languages() : [],
         });
+        const errP = card.querySelector(".widget-answer-error");
+        errP?.remove();
         await opts.refresh?.();
-      } catch {
-        btn.disabled = false;
+      } catch (err) {
+        allBtns.forEach((b) => (b.disabled = false));
+        let errP = card.querySelector<HTMLParagraphElement>(".widget-answer-error");
+        if (!errP) {
+          errP = document.createElement("p");
+          errP.className = "widget-answer-error error-text";
+          card.appendChild(errP);
+        }
+        errP.textContent = t("widget-answer-failed", { detail: errText(err) });
       }
     };
 
@@ -99,64 +97,12 @@ export function renderPoll(view: WidgetView, opts: WidgetRenderOptions): HTMLEle
 
   card.appendChild(optionsDiv);
 
-  if (view.direction === "outgoing" && view.state !== "delivered") {
-    const widgetStateSpan = document.createElement("span");
-    widgetStateSpan.className = `message-state widget-state state-${view.state}`;
-    widgetStateSpan.textContent = messageStateWord(view.state);
-    card.appendChild(widgetStateSpan);
-
-    if (view.state === "failed") {
-      if (view.last_error) {
-        const widgetErr = document.createElement("span");
-        widgetErr.className = "message-error widget-error";
-        widgetErr.textContent = view.last_error;
-        card.appendChild(widgetErr);
-      }
-      const retryWidgetBtn = document.createElement("button");
-      retryWidgetBtn.type = "button";
-      retryWidgetBtn.className = "button retry-message retry-widget";
-      retryWidgetBtn.textContent = t("messages-retry-button");
-      retryWidgetBtn.onclick = async () => {
-        retryWidgetBtn.disabled = true;
-        try {
-          await call("conversation.retry", { message_id: view.widget_id });
-          await opts.refresh?.();
-        } catch {
-          retryWidgetBtn.disabled = false;
-        }
-      };
-      card.appendChild(retryWidgetBtn);
-    }
+  if (view.direction === "outgoing") {
+    stateAndRetry(card, view.state, view.last_error, view.widget_id, "widget", opts.refresh);
   }
 
-  if (ownAnswer && ownAnswer.state !== "delivered") {
-    const ansStateSpan = document.createElement("span");
-    ansStateSpan.className = `message-state answer-state state-${ownAnswer.state}`;
-    ansStateSpan.textContent = messageStateWord(ownAnswer.state);
-    card.appendChild(ansStateSpan);
-
-    if (ownAnswer.state === "failed") {
-      if (ownAnswer.last_error) {
-        const ansErr = document.createElement("span");
-        ansErr.className = "message-error answer-error";
-        ansErr.textContent = ownAnswer.last_error;
-        card.appendChild(ansErr);
-      }
-      const retryAnsBtn = document.createElement("button");
-      retryAnsBtn.type = "button";
-      retryAnsBtn.className = "button retry-message retry-answer";
-      retryAnsBtn.textContent = t("messages-retry-button");
-      retryAnsBtn.onclick = async () => {
-        retryAnsBtn.disabled = true;
-        try {
-          await call("conversation.retry", { message_id: ownAnswer.message_id });
-          await opts.refresh?.();
-        } catch {
-          retryAnsBtn.disabled = false;
-        }
-      };
-      card.appendChild(retryAnsBtn);
-    }
+  if (ownAnswer) {
+    stateAndRetry(card, ownAnswer.state, ownAnswer.last_error, ownAnswer.message_id, "answer", opts.refresh);
   }
 
   return card;

@@ -65,10 +65,40 @@ export interface WidgetListOutput {
   complete: boolean;
 }
 
+export const WIDGET_CONTENT_TYPE = "application/vnd.roym.widget+json";
+export const WIDGET_ANSWER_CONTENT_TYPE = "application/vnd.roym.widget-answer+json";
+
 export interface WidgetRenderOptions {
   conversation: string;
   refresh?: () => Promise<void> | void;
   nameOf?: (addr: string) => string;
+  languages?: () => string[];
+}
+
+export function missingWidgetView(m: {
+  id: string;
+  author: string;
+  direction: Direction;
+  sender_timestamp_ms: number;
+  languages?: string[];
+  state: StoredState;
+  last_error?: string | null;
+}): WidgetView {
+  return {
+    widget_id: m.id,
+    author: m.author,
+    direction: m.direction,
+    sender_timestamp_ms: m.sender_timestamp_ms,
+    languages: m.languages ?? [],
+    definition: undefined,
+    refused: "widget-refused",
+    checked: false,
+    counts: [],
+    answers: [],
+    ignored_answers: 0,
+    state: m.state,
+    last_error: m.last_error,
+  };
 }
 
 export function pollDefinition(question: string, options: string[]): WidgetDefinition {

@@ -169,6 +169,35 @@ describe("renderGenericWidget", () => {
           f_text: "John Doe",
           f_num: 42,
         }),
+        languages: [],
+      },
+    });
+  });
+
+  it("passes composer languages to widget.answer", async () => {
+    const view = makeGenericView();
+    const calls: { method: string; params: unknown }[] = [];
+    stubRpc({
+      "widget.answer": (params) => {
+        calls.push({ method: "widget.answer", params });
+        return Promise.resolve({ ok: true });
+      },
+    });
+    const el = renderGenericWidget(view, {
+      conversation: "c-123",
+      languages: () => ["hi", "en"],
+    });
+    const submitBtn = el.querySelector<HTMLButtonElement>(".widget-answer-submit")!;
+    submitBtn.click();
+
+    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    expect(calls[0]).toEqual({
+      method: "widget.answer",
+      params: {
+        conversation: "c-123",
+        widget_id: "w-gen-1",
+        data: expect.any(Object),
+        languages: ["hi", "en"],
       },
     });
   });
@@ -248,7 +277,33 @@ describe("renderGenericWidget", () => {
     expect(textLine?.textContent).toContain("Your name: Hello there");
   });
 
-  describe("widget-answer hook point (ML-26)", () => {
+  it("renders author choice text literally as textContent and does not call console.error even if choice text is a message id", () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const view = makeGenericView({
+      answers: [
+        {
+          message_id: "ans-2",
+          author: "did:key:carol",
+          direction: "incoming",
+          sender_timestamp_ms: 2000,
+          languages: ["en"],
+          data: {
+            f_choice: "c1",
+          },
+          state: "delivered",
+        },
+      ],
+    });
+    view.definition!.fields.find((f) => f.name === "f_choice")!.choices![0].text = "messages-retry-button";
+
+    const el = renderGenericWidget(view, { conversation: "c1" });
+    const answersSection = el.querySelector(".widget-answers-section");
+    expect(answersSection?.textContent).toContain("messages-retry-button");
+    expect(answersSection?.textContent).not.toContain("Retry");
+    expect(errorSpy).not.toHaveBeenCalled();
+  });
+
+  describe("the widget-answer translate action", () => {
     it("a node with no engine draws no translate action and makes no call", () => {
       readerReads([]);
       setTargetsForTest([]);

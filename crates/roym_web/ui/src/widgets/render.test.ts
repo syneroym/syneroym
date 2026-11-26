@@ -68,7 +68,7 @@ describe("renderWidget", () => {
     );
   });
 
-  it("renders normally and without error when complete is false (P11)", () => {
+  it("renders normally when complete is false", () => {
     // The Hub ignores complete: false and renders the counts it has
     const incompleteView = makeBaseView({
       counts: [

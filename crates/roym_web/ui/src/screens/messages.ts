@@ -1,6 +1,6 @@
 import { messageLang, messageText } from "../chat/message_text";
 import { errText, field, refiller, text } from "../dom";
-import { codeWord, currentLanguage, messageId, t } from "../i18n/i18n";
+import { currentLanguage, messageId, t } from "../i18n/i18n";
 import { languageList } from "../i18n/language_list";
 import { languageName, textLangSelect } from "../i18n/text_lang";
 import { onFeed } from "../events";
@@ -19,7 +19,7 @@ import { attachSizeLine } from "./quote_size";
 import type { MessagesInitialState, RequestPreFill } from "../navigation";
 import { pollComposer } from "../widgets/composer";
 import { renderWidget } from "../widgets/render";
-import type { WidgetView } from "../widgets/view";
+import { WIDGET_ANSWER_CONTENT_TYPE, WIDGET_CONTENT_TYPE, type WidgetView } from "../widgets/view";
 import {
   computeNewestQuoteMap,
   computeNewestRequestMap,
@@ -32,20 +32,8 @@ import {
 /// element inside the thread that holds the person's input belongs here.
 const OPEN_WORK = ".quote-form, .decline-dialog, .delete-dialog, .accept-mt-box";
 
-/// Message id for each message state, shown as a word. A `Map`, so a state
-/// from another node can never hit an inherited property.
-const STATE_LABELS = new Map<string, string>([
-  ["pending", messageId("messages-state-pending")],
-  ["deposited", messageId("messages-state-deposited")],
-  ["delivered", messageId("messages-state-delivered")],
-  ["failed", messageId("messages-state-failed")],
-]);
-
-/// The word for a message state; a state this table does not know is shown
-/// as it came, never inferred.
-export function messageStateWord(state: string): string {
-  return codeWord(STATE_LABELS, state);
-}
+import { canRetry, messageStateWord, STATE_LABELS } from "../chat/message_state";
+export { canRetry, messageStateWord, STATE_LABELS };
 
 interface ConversationRow {
   id: string;
@@ -403,9 +391,10 @@ async function renderThread(
     }
 
     const widgetIds = messages
-      .filter((m) => m.content_type === "application/vnd.roym.widget+json" && m.deleted_at_secs == null)
+      .filter((m) => m.content_type === WIDGET_CONTENT_TYPE && m.deleted_at_secs == null)
       .map((m) => m.id);
     const widgetMap = new Map<string, WidgetView>();
+    let widgetListError: string | null = null;
     if (widgetIds.length > 0) {
       try {
         const res = await call<{ widgets: WidgetView[] }>("widget.list", {
@@ -417,9 +406,13 @@ async function renderThread(
             widgetMap.set(w.widget_id, w);
           }
         }
-      } catch {
-        // non-fatal
+      } catch (err) {
+        widgetListError = errText(err);
       }
+    }
+
+    if (widgetListError) {
+      into.appendChild(text("p", widgetListError, "widget-list-error error-text"));
     }
 
     for (const m of messages) {
@@ -427,7 +420,18 @@ async function renderThread(
         continue;
       }
       into.appendChild(
-        messageElement(m, cardMap, allCards, newestRequestMap, newestQuoteMap, conv.id, myDid, redraw.now, widgetMap),
+        messageElement(
+          m,
+          cardMap,
+          allCards,
+          newestRequestMap,
+          newestQuoteMap,
+          conv.id,
+          myDid,
+          redraw.now,
+          widgetMap,
+          () => langList.value(),
+        ),
       );
     }
   };
@@ -532,11 +536,6 @@ export function stateHint(state: MessageState): string | null {
     : null;
 }
 
-/** Only a failed message of the user's own history can be sent again. */
-export function canRetry(m: { state: MessageState; deleted_at_secs?: number; restored?: boolean }): boolean {
-  return m.state === "failed" && m.deleted_at_secs == null && !m.restored;
-}
-
 export function refusalText(reason: string): string {
   if (reason === "rate-limited") {
     return t("messages-refused-rate-limited");
@@ -554,12 +553,13 @@ export function messageElement(
   myDid: string,
   refresh: () => Promise<void>,
   widgetMap?: Map<string, WidgetView>,
+  languages?: () => string[],
 ): HTMLElement {
   const wrap = document.createElement("div");
   wrap.className = `message message-${m.direction}`;
   wrap.dataset.state = m.state;
 
-  if (m.content_type === "application/vnd.roym.widget-answer+json") {
+  if (m.content_type === WIDGET_ANSWER_CONTENT_TYPE) {
     wrap.style.display = "none";
     return wrap;
   }
@@ -602,25 +602,25 @@ export function messageElement(
     }
   } else if (m.deleted_at_secs != null) {
     wrap.appendChild(text("span", t("messages-message-deleted"), "message-body deleted"));
-  } else if (m.content_type === "application/vnd.roym.widget+json") {
-    const defaultView: WidgetView = {
-      widget_id: m.id,
-      author: m.author,
-      direction: m.direction,
-      sender_timestamp_ms: m.sender_timestamp_ms,
-      languages: m.languages ?? [],
-      definition: undefined,
-      refused: "widget-refused",
-      checked: false,
-      counts: [],
-      answers: [],
-      ignored_answers: 0,
-      state: m.state,
-      last_error: m.last_error,
-    };
-    const view = widgetMap?.get(m.id) ?? defaultView;
-    wrap.appendChild(renderWidget(view, { conversation: convId, refresh }));
-    return wrap;
+  } else if (m.content_type === WIDGET_CONTENT_TYPE) {
+    const view = widgetMap?.get(m.id);
+    if (view) {
+      wrap.appendChild(renderWidget(view, { conversation: convId, refresh, languages }));
+    } else {
+      let promptText = m.body ?? t("messages-no-body");
+      try {
+        const parsed = JSON.parse(m.body ?? "{}");
+        if (parsed.definition?.prompt) {
+          promptText = parsed.definition.prompt;
+        }
+      } catch {
+        // Fall back to m.body if JSON parsing fails.
+      }
+      const nodes = messageText(promptText, m.languages ?? [], "span", {
+        translatable: m.direction === "incoming",
+      });
+      wrap.append(...nodes);
+    }
   } else if (m.body_encoding === "utf8") {
     const nodes = messageText(m.body ?? t("messages-no-body"), m.languages ?? [], "span", {
       translatable: m.direction === "incoming",

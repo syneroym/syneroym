@@ -143,8 +143,64 @@ describe("renderPoll", () => {
         conversation: "conv-99",
         widget_id: "w1",
         data: { custom_vote: "o2" },
+        languages: [],
       },
     });
+  });
+
+  it("passes composer languages to widget.answer", async () => {
+    const view = makePollView();
+    const calls: { method: string; params: unknown }[] = [];
+    stubRpc({
+      "widget.answer": (params) => {
+        calls.push({ method: "widget.answer", params });
+        return Promise.resolve({ ok: true });
+      },
+    });
+    const el = renderPoll(view, {
+      conversation: "conv-99",
+      languages: () => ["hi", "en"],
+    });
+    const buttons = el.querySelectorAll<HTMLButtonElement>(".widget-poll-option-btn");
+    buttons[0].click();
+
+    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    expect(calls[0]).toEqual({
+      method: "widget.answer",
+      params: {
+        conversation: "conv-99",
+        widget_id: "w1",
+        data: { option: "o1" },
+        languages: ["hi", "en"],
+      },
+    });
+  });
+
+  it("disables all option buttons while call runs, and displays error when answer is refused", async () => {
+    let rejectCall: ((err: Error) => void) | null = null;
+    stubRpc({
+      "widget.answer": () =>
+        new Promise((_, reject) => {
+          rejectCall = reject;
+        }),
+    });
+    const view = makePollView();
+    const el = renderPoll(view, { conversation: "conv-99" });
+    const buttons = el.querySelectorAll<HTMLButtonElement>(".widget-poll-option-btn");
+    expect(buttons[0].disabled).toBe(false);
+    expect(buttons[1].disabled).toBe(false);
+
+    buttons[0].click();
+    expect(buttons[0].disabled).toBe(true);
+    expect(buttons[1].disabled).toBe(true);
+
+    rejectCall!(new Error("vote refused by node"));
+    await vi.waitFor(() => expect(buttons[0].disabled).toBe(false));
+    expect(buttons[1].disabled).toBe(false);
+
+    const errP = el.querySelector(".widget-answer-error");
+    expect(errP).not.toBeNull();
+    expect(errP?.textContent).toContain("vote refused by node");
   });
 
   it("a tap on the current choice makes no call", async () => {

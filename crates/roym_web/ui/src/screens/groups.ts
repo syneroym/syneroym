@@ -1,3 +1,4 @@
+import { canRetry } from "../chat/message_state";
 import { messageText } from "../chat/message_text";
 import { errText, field, refiller, text } from "../dom";
 import { onFeed } from "../events";
@@ -8,7 +9,7 @@ import { sortByName } from "../names";
 import { renderRefusedCard } from "../cards/refused";
 import { pollComposer } from "../widgets/composer";
 import { renderWidget } from "../widgets/render";
-import type { WidgetView } from "../widgets/view";
+import { WIDGET_ANSWER_CONTENT_TYPE, WIDGET_CONTENT_TYPE, type WidgetView } from "../widgets/view";
 import {
   MEMBERSHIP_EVENT_CONTENT_TYPE,
   deliveryWords,
@@ -108,6 +109,9 @@ export function renderMessageRow(
   nameOf: (addr: string) => string,
   onDelete?: (id: string) => void,
   onRetry?: (msg: GroupMessageRow) => void,
+  widgetView?: WidgetView,
+  reloadThread?: () => Promise<void>,
+  languages?: () => string[],
 ): HTMLElement {
   const row = document.createElement("div");
   row.className = `message-row message-${msg.direction}`;
@@ -118,8 +122,28 @@ export function renderMessageRow(
   }
   const authorName = nameOf(msg.author);
   row.appendChild(text("div", authorName, "message-author"));
-  if (msg.body_encoding === "utf8") {
-    const nodes = messageText(msg.body ?? "", msg.languages ?? [], "div", {
+  if (widgetView) {
+    row.appendChild(
+      renderWidget(widgetView, {
+        conversation: msg.conversation,
+        refresh: reloadThread,
+        nameOf,
+        languages,
+      }),
+    );
+  } else if (msg.body_encoding === "utf8") {
+    let textBody = msg.body ?? "";
+    if (msg.content_type === WIDGET_CONTENT_TYPE) {
+      try {
+        const parsed = JSON.parse(msg.body ?? "{}");
+        if (parsed.definition?.prompt) {
+          textBody = parsed.definition.prompt;
+        }
+      } catch {
+        // Fall back to msg.body if JSON parsing fails.
+      }
+    }
+    const nodes = messageText(textBody, msg.languages ?? [], "div", {
       translatable: msg.direction === "incoming",
     });
     row.append(...nodes);
@@ -134,7 +158,7 @@ export function renderMessageRow(
 
   if (msg.direction === "outgoing") {
     meta.appendChild(text("span", deliveryWords(msg.state), `message-status status-${msg.state}`));
-    if (msg.state === "failed" && onRetry) {
+    if (canRetry(msg) && onRetry) {
       const retryBtn = text("button", t("group-retry-button"), "button-small retry-button") as HTMLButtonElement;
       retryBtn.onclick = () => onRetry(msg);
       meta.appendChild(retryBtn);
@@ -159,8 +183,13 @@ export function renderThreadMessages(
   onRetry: (msg: GroupMessageRow) => void,
   widgetMap?: Map<string, WidgetView>,
   reloadThread?: () => Promise<void>,
+  languages?: () => string[],
+  widgetListError?: string | null,
 ) {
   threadList.replaceChildren();
+  if (widgetListError) {
+    threadList.appendChild(text("p", widgetListError, "widget-list-error error-text"));
+  }
   let lastProfileName: string | null = null;
   let hasPendingOrFailedOwn = false;
 
@@ -169,7 +198,7 @@ export function renderThreadMessages(
       hasPendingOrFailedOwn = true;
     }
 
-    if (m.content_type === "application/vnd.roym.widget-answer+json") {
+    if (m.content_type === WIDGET_ANSWER_CONTENT_TYPE) {
       continue;
     }
 
@@ -199,32 +228,13 @@ export function renderThreadMessages(
       continue;
     }
 
-    if (m.content_type === "application/vnd.roym.widget+json") {
+    if (m.content_type === WIDGET_CONTENT_TYPE) {
       if (m.deleted_at_secs) {
         threadList.appendChild(renderMessageRow(m, nameOf, onDelete, onRetry));
       } else {
-        const defaultView: WidgetView = {
-          widget_id: m.id,
-          author: m.author,
-          direction: m.direction,
-          sender_timestamp_ms: m.sender_timestamp_ms,
-          languages: m.languages ?? [],
-          definition: undefined,
-          refused: "widget-refused",
-          checked: false,
-          counts: [],
-          answers: [],
-          ignored_answers: 0,
-          state: m.state,
-          last_error: m.last_error,
-        };
-        const view = widgetMap?.get(m.id) ?? defaultView;
+        const view = widgetMap?.get(m.id);
         threadList.appendChild(
-          renderWidget(view, {
-            conversation: m.conversation,
-            refresh: reloadThread,
-            nameOf,
-          }),
+          renderMessageRow(m, nameOf, onDelete, onRetry, view, reloadThread, languages),
         );
       }
       continue;
@@ -455,6 +465,7 @@ export async function renderGroups(container: HTMLElement) {
     // Composer
     const composerBox = document.createElement("div");
     composerBox.className = "composer-box";
+    let groupLanguages: () => string[] = () => [currentLanguage()];
 
     if (info.restored_only) {
       composerBox.appendChild(text("p", t("group-restored-notice"), "notice-box"));
@@ -480,6 +491,7 @@ export async function renderGroups(container: HTMLElement) {
         },
         t("group-languages-label"),
       );
+      groupLanguages = () => langList.value();
 
       const doSend = async () => {
         const body = sendInput.value.trim();
@@ -714,9 +726,10 @@ export async function renderGroups(container: HTMLElement) {
         const msgs = hist.messages || [];
 
         const widgetIds = msgs
-          .filter((m) => m.content_type === "application/vnd.roym.widget+json" && !m.deleted_at_secs)
+          .filter((m) => m.content_type === WIDGET_CONTENT_TYPE && !m.deleted_at_secs)
           .map((m) => m.id);
         const widgetMap = new Map<string, WidgetView>();
+        let widgetListError: string | null = null;
         if (widgetIds.length > 0) {
           try {
             const res = await call<{ widgets: WidgetView[] }>("widget.list", {
@@ -728,8 +741,8 @@ export async function renderGroups(container: HTMLElement) {
                 widgetMap.set(w.widget_id, w);
               }
             }
-          } catch {
-            // non-fatal
+          } catch (err) {
+            widgetListError = errText(err);
           }
         }
 
@@ -759,6 +772,8 @@ export async function renderGroups(container: HTMLElement) {
           },
           widgetMap,
           reloadThread,
+          groupLanguages,
+          widgetListError,
         );
       } catch (err) {
         if (err instanceof RpcError && err.type === "NotSignedIn") {

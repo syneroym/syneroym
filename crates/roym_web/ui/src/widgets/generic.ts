@@ -1,12 +1,11 @@
-import { fieldView } from "../cards/fields";
-import { messageText } from "../chat/message_text";
+import { messageLang, messageText } from "../chat/message_text";
 import { errText, labelled } from "../dom";
-import { widgetFieldLabelId, widgetNameId, widgetType } from "../extensions/registry";
-import type { DefinedField, WidgetDefinition, WidgetRenderOptions, WidgetView } from "./view";
+import { widgetFieldLabelId } from "../extensions/registry";
+import { formatDateTime, formatDuration, formatNumber } from "../i18n/format";
 import { codeWord, t } from "../i18n/i18n";
 import { call } from "../rpc";
-import { messageStateWord } from "../screens/messages";
-import type { FieldDef, SchemaDef } from "../extensions/registry";
+import { stateAndRetry, widgetHeading } from "./render";
+import type { DefinedField, WidgetDefinition, WidgetRenderOptions, WidgetView } from "./view";
 
 function fieldLabel(def: WidgetDefinition, f: DefinedField, isKnown: boolean): string {
   if (isKnown) {
@@ -25,20 +24,7 @@ export function renderGenericWidget(view: WidgetView, opts: WidgetRenderOptions)
     return card;
   }
 
-  const isKnown = view.checked || widgetType(def.extension, def.type) !== undefined;
-  const title = document.createElement("h3");
-  title.className = "widget-heading";
-  title.textContent = isKnown
-    ? codeWord(new Map([[def.type, widgetNameId(def.extension.id, def.type)]]), def.type)
-    : t("widget-unknown-heading", { type: def.type });
-  card.appendChild(title);
-
-  if (!view.checked) {
-    const notChecked = document.createElement("p");
-    notChecked.className = "widget-not-checked field-view-not-checked";
-    notChecked.textContent = t("ext-not-checked");
-    card.appendChild(notChecked);
-  }
+  const { isKnown } = widgetHeading(card, view);
 
   const incoming = view.direction === "incoming";
   const promptNodes = messageText(def.prompt, view.languages ?? [], "p", { translatable: incoming });
@@ -126,6 +112,7 @@ export function renderGenericWidget(view: WidgetView, opts: WidgetRenderOptions)
         conversation: opts.conversation,
         widget_id: view.widget_id,
         data,
+        languages: opts.languages ? opts.languages() : [],
       });
       await opts.refresh?.();
     } catch (err) {
@@ -139,64 +126,12 @@ export function renderGenericWidget(view: WidgetView, opts: WidgetRenderOptions)
 
   const ownAnswer = view.answers.find((a) => a.direction === "outgoing");
 
-  if (view.direction === "outgoing" && view.state !== "delivered") {
-    const widgetStateSpan = document.createElement("span");
-    widgetStateSpan.className = `message-state widget-state state-${view.state}`;
-    widgetStateSpan.textContent = messageStateWord(view.state);
-    card.appendChild(widgetStateSpan);
-
-    if (view.state === "failed") {
-      if (view.last_error) {
-        const widgetErr = document.createElement("span");
-        widgetErr.className = "message-error widget-error";
-        widgetErr.textContent = view.last_error;
-        card.appendChild(widgetErr);
-      }
-      const retryWidgetBtn = document.createElement("button");
-      retryWidgetBtn.type = "button";
-      retryWidgetBtn.className = "button retry-message retry-widget";
-      retryWidgetBtn.textContent = t("messages-retry-button");
-      retryWidgetBtn.onclick = async () => {
-        retryWidgetBtn.disabled = true;
-        try {
-          await call("conversation.retry", { message_id: view.widget_id });
-          await opts.refresh?.();
-        } catch {
-          retryWidgetBtn.disabled = false;
-        }
-      };
-      card.appendChild(retryWidgetBtn);
-    }
+  if (view.direction === "outgoing") {
+    stateAndRetry(card, view.state, view.last_error, view.widget_id, "widget", opts.refresh);
   }
 
-  if (ownAnswer && ownAnswer.state !== "delivered") {
-    const ansStateSpan = document.createElement("span");
-    ansStateSpan.className = `message-state answer-state state-${ownAnswer.state}`;
-    ansStateSpan.textContent = messageStateWord(ownAnswer.state);
-    card.appendChild(ansStateSpan);
-
-    if (ownAnswer.state === "failed") {
-      if (ownAnswer.last_error) {
-        const ansErr = document.createElement("span");
-        ansErr.className = "message-error answer-error";
-        ansErr.textContent = ownAnswer.last_error;
-        card.appendChild(ansErr);
-      }
-      const retryAnsBtn = document.createElement("button");
-      retryAnsBtn.type = "button";
-      retryAnsBtn.className = "button retry-message retry-answer";
-      retryAnsBtn.textContent = t("messages-retry-button");
-      retryAnsBtn.onclick = async () => {
-        retryAnsBtn.disabled = true;
-        try {
-          await call("conversation.retry", { message_id: ownAnswer.message_id });
-          await opts.refresh?.();
-        } catch {
-          retryAnsBtn.disabled = false;
-        }
-      };
-      card.appendChild(retryAnsBtn);
-    }
+  if (ownAnswer) {
+    stateAndRetry(card, ownAnswer.state, ownAnswer.last_error, ownAnswer.message_id, "answer", opts.refresh);
   }
 
   // Answers section
@@ -212,28 +147,7 @@ export function renderGenericWidget(view: WidgetView, opts: WidgetRenderOptions)
     const list = document.createElement("ul");
     list.className = "widget-answers-list";
 
-    const labelIds = new Map<string, string>();
-    for (const f of def.fields) {
-      labelIds.set(f.name, fieldLabel(def, f, isKnown));
-      if (f.choices) {
-        for (const c of f.choices) {
-          labelIds.set(`${f.name}:${c.code}`, c.text);
-        }
-      }
-    }
-
-    const nonTextFields: FieldDef[] = def.fields
-      .filter((f) => f.type !== "text" && f.type !== "long-text")
-      .map((f) => ({
-        name: f.name,
-        type: f.type,
-        required: f.required,
-        max_len: f.max_len,
-        min: f.min,
-        max: f.max,
-        choices: f.choices?.map((c) => c.code),
-      }));
-
+    const nonTextFields = def.fields.filter((f) => f.type !== "text" && f.type !== "long-text");
     const textFields = def.fields.filter((f) => f.type === "text" || f.type === "long-text");
 
     for (const ans of view.answers) {
@@ -246,26 +160,33 @@ export function renderGenericWidget(view: WidgetView, opts: WidgetRenderOptions)
       authorSpan.textContent = authorName;
       li.appendChild(authorSpan);
 
-      const nonTextData: Record<string, unknown> = {};
       for (const f of nonTextFields) {
         if (ans.data[f.name] !== undefined) {
-          nonTextData[f.name] = ans.data[f.name];
-        }
-      }
+          const val = ans.data[f.name];
+          const p = document.createElement("p");
+          p.className = `field-view-line field-view-${f.type}`;
+          const lbl = fieldLabel(def, f, isKnown);
 
-      if (nonTextFields.length > 0 && Object.keys(nonTextData).length > 0) {
-        const schema: SchemaDef = {
-          schema: def.type,
-          fields: nonTextFields,
-        };
-        li.appendChild(
-          fieldView({
-            ext: def.extension,
-            schema,
-            data: nonTextData,
-            labelIds,
-          }),
-        );
+          let valNode: Node;
+          if (f.type === "choice") {
+            const choice = f.choices?.find((c) => c.code === val);
+            const span = document.createElement("span");
+            span.textContent = choice ? choice.text : String(val);
+            span.setAttribute("lang", messageLang(view.languages ?? []));
+            valNode = span;
+          } else if (f.type === "number") {
+            valNode = document.createTextNode(typeof val === "number" ? formatNumber(val) : String(val));
+          } else if (f.type === "date-time") {
+            valNode = document.createTextNode(typeof val === "number" ? formatDateTime(val) : String(val));
+          } else if (f.type === "duration") {
+            valNode = document.createTextNode(typeof val === "number" ? formatDuration(val) : String(val));
+          } else {
+            valNode = document.createTextNode(String(val));
+          }
+
+          labelled(p, lbl, valNode);
+          li.appendChild(p);
+        }
       }
 
       for (const tf of textFields) {
@@ -273,7 +194,7 @@ export function renderGenericWidget(view: WidgetView, opts: WidgetRenderOptions)
           const val = String(ans.data[tf.name]);
           const p = document.createElement("p");
           p.className = `answer-text-line answer-${tf.type}`;
-          const lbl = labelIds.get(tf.name) ?? tf.name;
+          const lbl = fieldLabel(def, tf, isKnown);
           const labelSpan = document.createElement("span");
           labelSpan.className = "answer-field-label";
           labelSpan.textContent = `${lbl}: `;
