@@ -19,6 +19,7 @@ pub mod directory;
 pub mod disclosure;
 pub mod dual_build;
 pub mod envelope;
+pub mod eventlog;
 pub mod extension;
 pub mod fulfilment;
 pub mod lang;
