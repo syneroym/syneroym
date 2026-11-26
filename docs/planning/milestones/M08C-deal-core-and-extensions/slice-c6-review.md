@@ -1243,8 +1243,8 @@ as usual for a PR. So CI is proof that the full suite passes.
 - **R7 — fixed.** `validate_defaults_section` runs before any write and
   requires the `payload` field (the one shape that `export` writes).
   `write_defaults_section` runs after the cards. A failed rebuild no
-  longer fails the import; it returns `log_entries_made: 0`. See R11 for
-  how the error is reported.
+  longer fails the import; it returns `log_entries_made: 0`, and R11
+  removes the stderr print.
 - **R8 — fixed.** The fail-write test and the driver test read the
   `event_log` row directly (`get_row`, and a new
   `RoymNode::get_service_row` that opens the service's encrypted
@@ -1290,7 +1290,8 @@ next sync repairs the log), for example
 `.map_or(0, |r| r.made)`. If the owner wants the error seen, add a log
 call to the host interface in its own change, and use it in both places.
 
-*Status:* Open.
+*Status:* Fixed (168c9d1f). The import now ignores the rebuild error with
+`map_or(0, |r| r.made)`, as `sync_direct` does; no stderr write remains.
 
-**Counts of round 2:** R1 to R10 verified fixed. One new finding, R11
-(minor). **1 open:** 0 blocker, 0 major, 1 minor.
+**Counts of round 2:** R1 to R10 verified fixed. R11 fixed in `168c9d1f`.
+**0 open.**
