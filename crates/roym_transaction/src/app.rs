@@ -2,6 +2,7 @@
 
 pub mod agreement_ops;
 pub mod backup;
+pub mod close_ops;
 pub mod decide;
 pub mod decline_ops;
 pub mod disclosures;
