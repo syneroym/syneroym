@@ -29,7 +29,7 @@ reviews raised, and I read the code that the plan's design stands on:
 `router.rs`, the test host, `deal/transition.rs`, `progress.rs`, and the
 Hub's `messages.ts`, `quote_terms.ts` and `money.ts`.
 
-**Summary: 15 findings: 0 blocker, 3 major, 12 minor. 1 open (P15), 14 fixed. Closure check completed 2026-11-26; P15 found in the second closure check.**
+**Summary: 15 findings: 0 blocker, 3 major, 12 minor. 0 open (15 fixed). Closure check completed 2026-11-26; P15 found in the second closure check and fixed in 87763d94.**
 
 ### What was checked and found correct
 
@@ -660,7 +660,7 @@ in step 4 and in the Hub test list. P12 is closed in substance (the shape and
 a contract test per refusal are named), but the fix brought in the finding
 below.
 
-#### [ ] P15 — The P12 fix names a helper that does not exist and a refusal code the plan never defines (minor)
+#### [x] P15 — The P12 fix names a helper that does not exist and a refusal code the plan never defines (minor)
 
 *Where:* Step 8 and 7.11 (`refusal_with_data`), 7.3 (`bad-deal-defaults`),
 D-C6-6, D-C6-16.
@@ -686,4 +686,4 @@ file (for example `app/refusal.rs`) as part of step 8. Add `bad-deal-defaults`
 to D-C6-6's code list and say in D-C6-16 and step 7 that both
 `deal.defaults-set` and the import use it.
 
-*Status:* Open.
+*Status:* Fixed (87763d94). Verified: D-C6-6, D-C6-16, step 7, step 8 and 7.11 now name the real two-call form (or a helper in `app/refusal.rs`), and `bad-deal-defaults` is in D-C6-6's list and used by both `deal.defaults-set` and the import.
