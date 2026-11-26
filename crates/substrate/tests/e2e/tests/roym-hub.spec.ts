@@ -859,7 +859,7 @@ test.describe('Roym Hub', () => {
     const quoteCard = page.locator('.card-quote');
     await expect(quoteCard).toContainText('Scope: Replace brake cable and adjust pads');
     await expect(quoteCard).toContainText('Total: €45.00');
-    await expect(quoteCard).toContainText('Payee, as agreed in this quote: Y Repairs');
+    await expect(quoteCard).toContainText('Payee, as agreed in this offer: Y Repairs');
     await expect(quoteCard).toContainText('Expires:');
     await expect(quoteCard.locator('.quote-expiry time')).toHaveAttribute('datetime', /^\d{4}-\d{2}-\d{2}T/);
     await expect(quoteCard).toContainText('Cancellation terms: 24 hours notice required for full refund');
@@ -868,7 +868,7 @@ test.describe('Roym Hub', () => {
     const receiptCard = page.locator('.card-agreement-receipt');
     await expect(receiptCard).toContainText('Scope: Replace brake cable and adjust pads');
     await expect(receiptCard).toContainText('Total: €45.00');
-    await expect(receiptCard).toContainText('Payee, as agreed in this quote: Y Repairs');
+    await expect(receiptCard).toContainText('Payee, as agreed in this offer: Y Repairs');
     await expect(receiptCard).toContainText('Both parties have signed these terms.');
     await expect(receiptCard).toContainText('Cancellation terms: 24 hours notice required for full refund');
     await expect(receiptCard).toContainText('Dispute path: Small claims court or informal mediation');
@@ -1114,7 +1114,7 @@ test.describe('Roym Hub', () => {
 
     await expect(quoteCard).toContainText('Scope: Rebuild wooden front fence');
     await expect(quoteCard).toContainText('Total: €1,200.00');
-    await expect(quoteCard).toContainText('Payee, as agreed in this quote: Timber Crafts Ltd');
+    await expect(quoteCard).toContainText('Payee, as agreed in this offer: Timber Crafts Ltd');
     await expect(quoteCard).toContainText('Cancellation terms: Strict 48h cancellation');
 
     // The date is in the Hub language's own format, which Node and Chromium
@@ -1123,7 +1123,7 @@ test.describe('Roym Hub', () => {
     await expect(quoteCard.locator('.quote-expiry')).toContainText('Expires: ');
     await expect(quoteCard.locator('.quote-expiry')).toContainText('2020');
     await expect(quoteCard.locator('.quote-expiry')).toContainText('(expired)');
-    await expect(quoteCard.locator('.quote-expired-notice')).toContainText('This quote expired on ');
+    await expect(quoteCard.locator('.quote-expired-notice')).toContainText('This offer expired on ');
     await expect(quoteCard.locator('.quote-expired-notice')).toContainText('2020');
     await expect(quoteCard.locator('.quote-expired-notice')).toContainText('Ask for a new one.');
 

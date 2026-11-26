@@ -38,6 +38,9 @@ import {
   type SessionKeyBundle,
 } from "./session/login";
 
+import { renderAgreementPanel, renderAgreementPanelView } from "./deals/agreement_panel";
+import { renderVersionSummary, versionSummary } from "./deals/version_summary";
+
 declare global {
   interface Window {
     RoymRegistry?: {
@@ -54,6 +57,13 @@ declare global {
       openDeclineDialog: typeof openDeclineDialog;
       renderCardActions: typeof renderCardActions;
     };
+    RoymDeals?: {
+      renderAgreementPanel: typeof renderAgreementPanel;
+      renderAgreementPanelView: typeof renderAgreementPanelView;
+      versionSummary: typeof versionSummary;
+      renderVersionSummary: typeof renderVersionSummary;
+      renderStatement: typeof renderStatement;
+    };
   }
 }
 
@@ -65,6 +75,13 @@ window.RoymMessages = {
   openQuoteForm,
   openDeclineDialog,
   renderCardActions,
+};
+window.RoymDeals = {
+  renderAgreementPanel,
+  renderAgreementPanelView,
+  versionSummary,
+  renderVersionSummary,
+  renderStatement,
 };
 
 async function main() {

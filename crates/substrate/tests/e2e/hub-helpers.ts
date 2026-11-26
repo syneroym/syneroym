@@ -461,3 +461,77 @@ export function pollCount(page: Page, question: string, option: string): Locator
   const optBtn = card.locator('.widget-poll-option-btn').filter({ hasText: option });
   return optBtn.locator('.poll-option-count');
 }
+
+/**
+ * Add a commitment line to the open quote form. Clicks `.deal-add-line` and fills
+ * the newly added commitment row fields.
+ */
+export async function addCommitment(
+  page: Page,
+  commitment: {
+    giver?: 'me' | 'them';
+    kind?: 'service' | 'goods' | 'money';
+    description?: string;
+    value?: string;
+    location?: string;
+  },
+) {
+  const form = page.locator('.quote-form');
+  await form.locator('.deal-add-line').click();
+  const row = form.locator('.quote-commitment-row').last();
+  if (commitment.giver) {
+    await row
+      .locator('.quote-row-giver-select')
+      .selectOption(commitment.giver === 'me' ? 'quote-author' : 'counterparty');
+  }
+  if (commitment.kind) {
+    await row.locator('.quote-row-kind-select').selectOption(commitment.kind);
+  }
+  if (commitment.description) {
+    await row.locator('.quote-row-desc-input').fill(commitment.description);
+  }
+  if (commitment.value) {
+    await row.locator('.quote-row-value-input').fill(commitment.value);
+  }
+  if (commitment.location) {
+    await row.locator('.quote-where-select').selectOption(commitment.location);
+  }
+}
+
+/**
+ * Locates the agreement panel in the thread under the newest card of the agreement.
+ */
+export async function openAgreementPanel(page: Page, agreementIdOrTag?: string): Promise<Locator> {
+  let panel = page.locator('.agreement-panel');
+  if (agreementIdOrTag) {
+    const specific = page.locator(`.agreement-panel-${agreementIdOrTag}`);
+    if ((await specific.count()) > 0) {
+      panel = specific;
+    } else {
+      panel = page.locator('.agreement-panel', { hasText: agreementIdOrTag });
+    }
+  }
+  await expect(panel.first()).toBeVisible({ timeout: 15_000 });
+  return panel.first();
+}
+
+/**
+ * Settle a commitment in the agreement panel: clicks `.deal-action-${action}-button`,
+ * fills the settlement note if provided, and confirms.
+ */
+export async function settle(
+  page: Page,
+  action: 'delivered' | 'paid' | 'received',
+  note?: string,
+) {
+  const btn = page.locator(`.deal-action-${action}-button`).first();
+  await btn.click();
+  const dialog = page.locator('.settle-dialog').first();
+  await expect(dialog).toBeVisible();
+  if (note) {
+    await dialog.locator('.settlement_note').fill(note);
+  }
+  await dialog.locator('.settle-confirm-button').click();
+  await expect(dialog).toHaveCount(0, { timeout: 15_000 });
+}
+

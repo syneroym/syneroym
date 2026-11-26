@@ -1,9 +1,9 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import { readDemoEnv } from '../demo-nodes';
 import {
-  askFromHit, conversationWith, ensureOwnSynOrg, fetchAgreement, findListingHit,
-  loginWithDelegatedKey, openConversation, openMessages, publishListing,
-  sendQuote, sendRequest, sendRequestFromForm, threadMessage,
+  addCommitment, askFromHit, conversationWith, ensureOwnSynOrg, fetchAgreement, findListingHit,
+  loginWithDelegatedKey, openAgreementPanel, openConversation, openMessages, publishListing,
+  sendQuote, sendRequest, sendRequestFromForm, settle, threadMessage,
 } from '../hub-helpers';
 import { DELIVERY_WAIT_MS, newSession, requireEnv, step } from './steps';
 
@@ -91,7 +91,7 @@ test('Roym deal story: Alice and Bob form an agreement and decline a quote with 
       await expect(quote.locator('.quote-commitment').nth(1)).toContainText('You give:');
       await expect(quote).toContainText('₹100');
 
-      await quote.getByRole('button', { name: 'Accept' }).click();
+      await quote.locator('.accept-quote-button').click();
       await expect(page.locator('.accept-mt-box')).toHaveCount(0);
       await expect(runReceiptCard(page, runTag).first()).toBeVisible({ timeout: 15_000 });
     });
@@ -251,6 +251,134 @@ test('Roym deal story: Alice agrees as listed and both Hubs see the agreement', 
           timeout: DELIVERY_WAIT_MS,
         })
         .toBe(2);
+    });
+  } finally {
+    await bobSession.close();
+  }
+});
+
+test('Roym deal story: Bob offers a lesson for wheat and money, Alice agrees, both settle, and Alice downloads her statement', async ({ browser, page }, testInfo) => {
+  const env = readDemoEnv();
+  const need = (key: string) => requireEnv(env, key, SCRIPT);
+  const alice = { hub: need('ALICE_HUB_URL'), key: need('ALICE_KEY'), did: need('ALICE_DID'), addr: need('ALICE_ADDR') };
+  const bob = {
+    hub: need('BOB_HUB_URL'), key: need('BOB_KEY'), did: need('BOB_DID'), addr: need('BOB_ADDR'),
+    directoryDid: need('BOB_DIRECTORY_DID'),
+  };
+
+  const runTag = Date.now().toString(36);
+  const listingTitle = `Hindi lesson & wheat (${runTag})`;
+  let listingId = '';
+  const enquiryText = `Mixed exchange deal (${runTag})`;
+  const quoteScope = `Mixed exchange deal (${runTag})`;
+
+  const bobSession = await newSession(browser, testInfo);
+  const bobPage = await bobSession.newPage();
+
+  try {
+    await step(page, "Alice's screen: sign in", async () => {
+      await page.goto(alice.hub);
+      await page.waitForLoadState('networkidle');
+      await loginWithDelegatedKey(page, alice.key);
+    });
+
+    await step(bobPage, "Bob's screen: sign in", async () => {
+      await bobPage.goto(bob.hub);
+      await bobPage.waitForLoadState('networkidle');
+      await loginWithDelegatedKey(bobPage, bob.key);
+    });
+
+    await step(bobPage, "Bob's screen: publish a listing for Hindi lessons", async () => {
+      await ensureOwnSynOrg(bobPage, bob.directoryDid, 'language-lessons', 'en');
+      listingId = await publishListing(
+        bobPage, listingTitle, 'language-lessons', bob.directoryDid, 'en', undefined, bob.addr,
+      );
+    });
+
+    await step(page, "Alice's screen: find Bob's listing in the directory and tap Ask", async () => {
+      const hit = await findListingHit(page, bob.directoryDid, 'language-lessons', listingId, listingTitle, 'en');
+      await askFromHit(page, hit, listingId, 'language-lessons');
+    });
+
+    await step(page, "Alice's screen: send Bob an enquiry from the pre-filled form", async () => {
+      await sendRequestFromForm(page, enquiryText);
+    });
+
+    await step(bobPage, "Bob's screen: send an offer giving a lesson for a sack of wheat plus ₹100", async () => {
+      await openMessages(bobPage);
+      await openConversation(bobPage, alice.addr);
+      const enquiry = threadMessage(bobPage, enquiryText);
+      await expect(enquiry).toBeVisible({ timeout: DELIVERY_WAIT_MS });
+      await enquiry.locator('.quote-request-button').click();
+      const form = bobPage.locator('.quote-form');
+      await expect(form).toBeVisible();
+      await form.locator('.quote-scope-input').fill(quoteScope);
+      await form.locator('.quote-give-input').fill('One lesson, one hour');
+      await form.locator('.quote-row-value-input').first().fill('300');
+      await form.locator('.quote-where-select').selectOption('at-giver');
+
+      await addCommitment(bobPage, {
+        giver: 'them',
+        kind: 'goods',
+        description: 'One sack of wheat',
+        value: '200',
+      });
+
+      await form.locator('.quote-currency-input').fill('INR');
+      await form.locator('.quote-amount-input').fill('100');
+      await form.locator('.quote-payee-input').fill(bob.did);
+
+      await form.locator('.submit-quote-button').click();
+      await expect(form).toHaveCount(0, { timeout: 15_000 });
+    });
+
+    await step(page, "Alice's screen: quote shows totals and Alice agrees", async () => {
+      await page.bringToFront();
+      const quote = threadMessage(page, quoteScope);
+      await expect(quote).toBeVisible({ timeout: DELIVERY_WAIT_MS });
+      await expect(quote.locator('.quote-total-give')).toContainText('₹300.00');
+      await expect(quote.locator('.quote-total-receive')).toContainText('₹300.00');
+
+      await quote.locator('.accept-quote-button').click();
+      await expect(runReceiptCard(page, runTag).first()).toBeVisible({ timeout: DELIVERY_WAIT_MS });
+    });
+
+    await step(bobPage, "Bob's screen: agreement is confirmed and receipt is visible", async () => {
+      await bobPage.bringToFront();
+      await expect(runReceiptCard(bobPage, runTag).first()).toBeVisible({ timeout: DELIVERY_WAIT_MS });
+    });
+
+    await step(bobPage, "Bob's screen: settle delivered lesson", async () => {
+      await openAgreementPanel(bobPage, runTag);
+      await settle(bobPage, 'delivered', 'Taught lesson');
+    });
+
+    await step(page, "Alice's screen: settle delivered wheat and paid money", async () => {
+      await page.bringToFront();
+      await openAgreementPanel(page, runTag);
+      await settle(page, 'delivered', 'Delivered wheat to porch');
+      await settle(page, 'paid');
+    });
+
+    await step(page, "Alice's screen: view and download statement", async () => {
+      await page.getByRole('button', { name: 'Statement', exact: true }).click();
+      const statementScreen = page.locator('.statement-screen');
+      await expect(statementScreen).toBeVisible({ timeout: 15_000 });
+
+      await statementScreen.locator('.statement-show-button').click();
+      await expect(statementScreen.locator('.statement-results')).toBeVisible({ timeout: DELIVERY_WAIT_MS });
+
+      const [csvDownload] = await Promise.all([
+        page.waitForEvent('download'),
+        statementScreen.locator('.statement-download-csv').click(),
+      ]);
+      expect(csvDownload.suggestedFilename()).toBe('statement.csv');
+
+      const [jsonDownload] = await Promise.all([
+        page.waitForEvent('download'),
+        statementScreen.locator('.statement-download-json').click(),
+      ]);
+      expect(jsonDownload.suggestedFilename()).toBe('statement.json');
     });
   } finally {
     await bobSession.close();

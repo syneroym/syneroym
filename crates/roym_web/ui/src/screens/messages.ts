@@ -86,6 +86,7 @@ export interface CardRow {
     terms?: {
       lang?: string;
       quote_expires_at_secs?: number;
+      [key: string]: unknown;
     };
     quote_expires_at_secs?: number;
     [key: string]: unknown;

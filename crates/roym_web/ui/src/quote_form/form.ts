@@ -227,7 +227,7 @@ export function openQuoteForm(
 
   const addRowBtn = document.createElement("button");
   addRowBtn.type = "button";
-  addRowBtn.className = "button quote-add-row-button";
+  addRowBtn.className = "button quote-add-row-button deal-add-line";
   addRowBtn.textContent = t("deal-add-line");
 
   const renderRow = (initialData: Partial<CommitmentRowFields>, isFirstAuthor: boolean, isFirstMoney: boolean) => {
@@ -281,7 +281,7 @@ export function openQuoteForm(
           : String(rawDesc ?? "");
 
       const w = c.window as { earliest_secs?: number; latest_secs?: number } | undefined;
-      const loc = c.location as { where?: import("../../listings/editor").ServiceLocationKind; address?: string } | undefined;
+      const loc = c.location as { where?: import("../listings/editor").ServiceLocationKind; address?: string } | undefined;
 
       renderRow(
         {
@@ -291,8 +291,10 @@ export function openQuoteForm(
           declaredValueMinor: Number(c.declared_value_minor ?? 0),
           where: loc?.where,
           address: loc?.address,
-          windowFromSecs: w?.earliest_secs,
-          windowToSecs: w?.latest_secs,
+          window:
+            w?.earliest_secs !== undefined && w?.latest_secs !== undefined
+              ? { earliest_secs: w.earliest_secs, latest_secs: w.latest_secs }
+              : undefined,
           payee: typeof c.payee === "string" ? c.payee : undefined,
           taxMinor: Number(c.tax_minor ?? 0),
           feesMinor: Number(c.fees_minor ?? 0),

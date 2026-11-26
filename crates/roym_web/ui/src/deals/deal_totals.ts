@@ -6,6 +6,8 @@ export interface DealTotalsCommitment {
   [key: string]: unknown;
 }
 
+export type Commitment = DealTotalsCommitment;
+
 /**
  * Pure calculation of deal totals and difference.
  * difference = receive - give

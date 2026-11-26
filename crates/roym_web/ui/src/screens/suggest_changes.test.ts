@@ -81,8 +81,8 @@ describe("suggest changes and send new version", () => {
 
   it("send new version is available for author and opens prefilled quote form", () => {
     stubRpc({
-      "deal.defaults-get": null,
-      "quote.measure": { bytes: 500, limit: 1024, fits: true, mailbox_fits: true, details: [] },
+      "deal.defaults-get": () => null,
+      "quote.measure": () => ({ bytes: 500, limit: 1024, fits: true, mailbox_fits: true, details: [] }),
     });
 
     const wrap = document.createElement("div");

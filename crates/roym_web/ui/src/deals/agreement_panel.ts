@@ -59,7 +59,7 @@ function commitmentDescription(c: AgreementViewCommitment, currency: string): st
     return c.description;
   }
   if (c.kind === "currency" && c.declared_value_minor !== undefined) {
-    return formatMinor(c.declared_value_minor, currency);
+    return formatMinor(BigInt(c.declared_value_minor), currency);
   }
   return "";
 }
@@ -105,7 +105,7 @@ export function renderAgreementPanelView(
     const valSpan = document.createElement("span");
     valSpan.className = "agreement-commitment-value";
     valSpan.textContent =
-      c.declared_value_minor !== undefined ? formatMinor(c.declared_value_minor, currency) : "";
+      c.declared_value_minor !== undefined ? formatMinor(BigInt(c.declared_value_minor), currency) : "";
 
     const stateSpan = document.createElement("span");
     stateSpan.className = `agreement-commitment-state state-${state}`;
@@ -169,7 +169,7 @@ export function renderAgreementPanelView(
           dialog.className = "settle-dialog";
 
           const noteInput = document.createElement("input");
-          noteInput.className = "settle-note-input";
+          noteInput.className = "settle-note-input settlement_note";
           noteInput.placeholder = t("deal-settle-note-placeholder");
 
           const confirmBtn = document.createElement("button");

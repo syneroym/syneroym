@@ -301,10 +301,12 @@ describe("agreement panel", () => {
     const msg = {
       id: "m_receipt_1",
       conversation: "conv_1",
+      author: "did:key:alice_author",
       direction: "incoming" as const,
       content_type: "application/vnd.roym.card+json",
       state: "delivered" as const,
       sender_timestamp_ms: 1000,
+      body_encoding: "utf8" as const,
     };
 
     const el = messageElement(
