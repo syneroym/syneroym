@@ -27,6 +27,7 @@ import {
   isQuoteSuperseded,
   newestVersionMap,
 } from "./thread_enquiry";
+import { renderVersionSummary, versionSummary, type DealTerms, type Role } from "../deals/version_summary";
 
 /// Things the person has started inside a thread. A redraw from the event
 /// feed waits until they are gone, so it never throws away typed text. An
@@ -572,15 +573,47 @@ export function messageElement(
     }
     if (cardRow) {
       if (cardRow.known && cardRow.verified) {
-        wrap.appendChild(
-          renderCard({
-            type: cardRow.card_type,
-            version: cardRow.version,
-            data: cardRow.data,
-            agreement_payee: cardRow.agreement_payee,
-            agreement_payment_methods: cardRow.agreement_payment_methods,
-          }),
-        );
+        const quoteData =
+          cardRow.card_type === "quote"
+            ? {
+                ...(cardRow.data as Record<string, unknown> | undefined),
+                version_number: cardRow.version_count,
+                role: !myDid || cardRow.data?.counterparty_did === myDid ? "counterparty" : "quote-author",
+              }
+            : cardRow.data;
+        const cardEl = renderCard({
+          type: cardRow.card_type,
+          version: cardRow.version,
+          data: quoteData,
+          agreement_payee: cardRow.agreement_payee,
+          agreement_payment_methods: cardRow.agreement_payment_methods,
+        });
+        wrap.appendChild(cardEl);
+
+        const quoteId = (cardRow.data as Record<string, unknown> | undefined)?.quote_id as string | undefined;
+        const isNewest = !newestQuoteMap || !quoteId || !cardRow.record_id || newestQuoteMap.get(quoteId) === cardRow.record_id;
+        if (cardRow.card_type === "quote" && isNewest && (cardRow.version_count ?? 1) > 1 && quoteId) {
+          const role = ((quoteData as Record<string, unknown>)?.role ?? "counterparty") as Role;
+          void (async () => {
+            try {
+              const hist = await call<{ versions: Array<{ record_id: string; terms: DealTerms }> }>(
+                "quote.history",
+                { quote_id: quoteId },
+              );
+              if (hist?.versions && hist.versions.length > 1) {
+                const first = hist.versions[0].terms;
+                const latest = hist.versions[hist.versions.length - 1].terms;
+                const summary = versionSummary(first, latest, role);
+                const summaryEl = renderVersionSummary(summary);
+                if (!wrap.querySelector(".quote-changes-summary")) {
+                  wrap.insertBefore(summaryEl, cardEl);
+                }
+              }
+            } catch {
+              // ignore
+            }
+          })();
+        }
       } else if (cardRow.known && !cardRow.verified) {
         wrap.appendChild(renderRefusedCard(cardRow.card_type, cardRow.version, cardRow.reason));
       } else {
@@ -796,6 +829,7 @@ export function renderCardActions(
   // not when deal is agreed, declined, expired, or not-formed
   if (card.card_type === "quote" && card.verified) {
     const forMe = !!myDid && card.data?.counterparty_did === myDid;
+    const isAuthor = !!myDid && (card.issuer === myDid || card.data?.quote_author_did === myDid);
     const nowSecs = Math.floor(Date.now() / 1000);
     const expSecs = card.data?.terms?.quote_expires_at_secs ?? card.data?.quote_expires_at_secs;
     const isExpired = card.expired || (expSecs !== undefined && nowSecs > expSecs);
@@ -858,7 +892,30 @@ export function renderCardActions(
       const declineBtn = text("button", t("messages-decline-button"), "button decline-quote-button") as HTMLButtonElement;
       declineBtn.onclick = () => openDeclineDialog(wrap, card, refresh);
 
-      actionsDiv.append(acceptBtn, declineBtn, acceptErr);
+      const suggestBtn = text("button", t("deal-suggest-changes"), "button quote-suggest-changes-button") as HTMLButtonElement;
+      suggestBtn.onclick = () => {
+        const composeInput =
+          document.querySelector<HTMLInputElement>(".compose-input") ||
+          wrap.closest(".chat-pane")?.querySelector<HTMLInputElement>(".compose-input");
+        if (composeInput) {
+          const versionNumber = card.version_count ?? 1;
+          const prefix = t("deal-suggest-prefix", { n: String(versionNumber) });
+          composeInput.value = prefix.endsWith(" ") ? prefix : `${prefix} `;
+          composeInput.focus();
+          composeInput.scrollIntoView?.({ behavior: "smooth", block: "center" });
+        }
+      };
+
+      actionsDiv.append(acceptBtn, declineBtn, suggestBtn, acceptErr);
+      wrap.appendChild(actionsDiv);
+    } else if (isAuthor && isNewest && !isEndedOrAgreed) {
+      const actionsDiv = document.createElement("div");
+      actionsDiv.className = "quote-actions";
+
+      const newVersionBtn = text("button", t("deal-send-new-version"), "button quote-new-version-button") as HTMLButtonElement;
+      newVersionBtn.onclick = () => openQuoteForm(wrap, card, convId, refresh);
+
+      actionsDiv.appendChild(newVersionBtn);
       wrap.appendChild(actionsDiv);
     }
   }

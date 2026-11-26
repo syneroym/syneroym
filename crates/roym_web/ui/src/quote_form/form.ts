@@ -124,7 +124,7 @@ export function readQuoteForm(form: HTMLElement): QuoteFormResult {
 
 export function openQuoteForm(
   anchor: HTMLElement,
-  reqCard: { record_id?: string; data?: Record<string, unknown> },
+  reqCard: { record_id?: string; card_type?: string; data?: Record<string, unknown> },
   convId: string,
   refresh: () => Promise<void>,
   preFill?: { terms?: Record<string, unknown> },
@@ -133,6 +133,10 @@ export function openQuoteForm(
   if (existing) {
     existing.remove();
     return;
+  }
+
+  if (!preFill && reqCard.data?.terms) {
+    preFill = { terms: reqCard.data.terms as Record<string, unknown> };
   }
 
   const form = document.createElement("div");
@@ -257,9 +261,51 @@ export function openQuoteForm(
     onRowChange();
   };
 
-  // Fresh form: Row 0 author service, Row 1 counterparty money
-  renderRow({ giver: "quote-author", kind: "service" }, true, false);
-  renderRow({ giver: "counterparty", kind: "money", payee: initialValues.payee }, false, true);
+  // If pre-filled commitments exist, populate them; otherwise render the fresh 2 rows
+  const preCommitments = preFill?.terms?.commitments as Array<Record<string, unknown>> | undefined;
+  if (preCommitments && Array.isArray(preCommitments) && preCommitments.length > 0) {
+    let seenAuthor = false;
+    let seenMoney = false;
+    for (const c of preCommitments) {
+      const isAuthor = c.giver === "quote-author";
+      const isMoney = c.kind === "currency" || c.resource_kind === "currency";
+      const isFirstAuthor = isAuthor && !seenAuthor;
+      const isFirstMoney = isMoney && !seenMoney;
+      if (isFirstAuthor) seenAuthor = true;
+      if (isFirstMoney) seenMoney = true;
+
+      const rawDesc = c.description;
+      const desc =
+        typeof rawDesc === "object" && rawDesc !== null && "text" in rawDesc
+          ? String((rawDesc as { text: unknown }).text ?? "")
+          : String(rawDesc ?? "");
+
+      const w = c.window as { earliest_secs?: number; latest_secs?: number } | undefined;
+      const loc = c.location as { where?: import("../../listings/editor").ServiceLocationKind; address?: string } | undefined;
+
+      renderRow(
+        {
+          giver: isAuthor ? "quote-author" : "counterparty",
+          kind: isMoney ? "money" : (c.resource_kind === "goods" ? "goods" : "service"),
+          description: desc,
+          declaredValueMinor: Number(c.declared_value_minor ?? 0),
+          where: loc?.where,
+          address: loc?.address,
+          windowFromSecs: w?.earliest_secs,
+          windowToSecs: w?.latest_secs,
+          payee: typeof c.payee === "string" ? c.payee : undefined,
+          taxMinor: Number(c.tax_minor ?? 0),
+          feesMinor: Number(c.fees_minor ?? 0),
+        },
+        isFirstAuthor,
+        isFirstMoney,
+      );
+    }
+  } else {
+    // Fresh form: Row 0 author service, Row 1 counterparty money
+    renderRow({ giver: "quote-author", kind: "service" }, true, false);
+    renderRow({ giver: "counterparty", kind: "money", payee: initialValues.payee }, false, true);
+  }
 
   // More terms collapsible section
   const moreTerms = document.createElement("details");
@@ -363,8 +409,16 @@ export function openQuoteForm(
 
     submitBtn.disabled = true;
     try {
+      const enquiryRecordId = ((reqCard as Record<string, unknown>).card_type === "quote"
+        ? (((reqCard.data as Record<string, unknown>)?.request_record_id as string) ?? reqCard.record_id)
+        : reqCard.record_id) ?? "";
+      const quoteId = (reqCard as Record<string, unknown>).card_type === "quote"
+        ? ((reqCard.data as Record<string, unknown>)?.quote_id as string | undefined)
+        : undefined;
+
       await call("quote.set", {
-        enquiry_record_id: reqCard.record_id,
+        enquiry_record_id: enquiryRecordId,
+        ...(quoteId ? { quote_id: quoteId } : {}),
         expires_in_secs,
         terms,
       });

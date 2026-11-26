@@ -1,3 +1,5 @@
+import { t } from "../i18n/i18n";
+
 export type Role = "quote-author" | "counterparty";
 
 export interface Commitment {
@@ -124,3 +126,52 @@ export function versionSummary(
     theirs: computeSideChange(firstTheirs, latestTheirs),
   };
 }
+
+export function renderVersionSummary(summary: VersionSummary): HTMLElement {
+  const container = document.createElement("div");
+  container.className = "quote-changes-summary";
+
+  const heading = document.createElement("h4");
+  heading.className = "quote-changes-heading";
+  heading.textContent = t("deal-changes-heading");
+  container.appendChild(heading);
+
+  const renderSide = (side: SideChange, sideClass: string) => {
+    const sideDiv = document.createElement("div");
+    sideDiv.className = `quote-changes-side ${sideClass}`;
+
+    for (const c of side.added) {
+      const p = document.createElement("p");
+      p.className = "quote-change-item quote-change-added";
+      const desc = descriptionText(c);
+      p.textContent = t("deal-changes-added", { description: desc });
+      sideDiv.appendChild(p);
+    }
+
+    for (const c of side.removed) {
+      const p = document.createElement("p");
+      p.className = "quote-change-item quote-change-removed";
+      const desc = descriptionText(c);
+      p.textContent = t("deal-changes-removed", { description: desc });
+      sideDiv.appendChild(p);
+    }
+
+    for (const ch of side.changed) {
+      const p = document.createElement("p");
+      p.className = "quote-change-item quote-change-changed";
+      const desc = descriptionText(ch.after);
+      p.textContent = t("deal-changes-changed", { description: desc });
+      sideDiv.appendChild(p);
+    }
+
+    if (sideDiv.children.length > 0) {
+      container.appendChild(sideDiv);
+    }
+  };
+
+  renderSide(summary.mine, "quote-changes-mine");
+  renderSide(summary.theirs, "quote-changes-theirs");
+
+  return container;
+}
+
