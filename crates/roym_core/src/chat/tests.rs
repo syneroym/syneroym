@@ -482,7 +482,10 @@ fn an_origin_signed_for_one_master_but_naming_another_issuer_fails() {
         )),
         forward_count: None,
     };
-    assert!(matches!(check_origin(&body, &[], at), OriginCheck::Failed { .. }));
+    let OriginCheck::Failed { reason } = check_origin(&body, &[], at) else {
+        panic!("expected the origin check to fail");
+    };
+    assert!(reason.starts_with("delegation is invalid"), "{reason}");
 }
 
 #[test]
@@ -490,7 +493,10 @@ fn an_origin_with_a_certificate_of_another_scope_is_refused() {
     let s = signer_with(SCOPE_SERVICE_INSTANCE, 3_600);
     let at = s.cert_issued_at + 10;
     let body = signed_body(&s, "hello", &[], at);
-    assert!(matches!(check_origin(&body, &[], at), OriginCheck::Failed { .. }));
+    let OriginCheck::Failed { reason } = check_origin(&body, &[], at) else {
+        panic!("expected the origin check to fail");
+    };
+    assert!(reason.starts_with("delegation is invalid"), "{reason}");
 }
 
 #[test]

@@ -224,12 +224,26 @@ async fn scenario_283_search_reads_the_chat_text_only_parity() {
     );
 
     // The cap applies to real hits only: a chat body ahead of the cut must
-    // not hide a later plain message.
+    // not hide a later plain message. A newer chat body must also not hide
+    // an older plain message that holds the same word: without the host
+    // rule, the body's JSON would match too.
     let (mut w, mut n) =
         both_rpc(&h, "conversation.search", json!({ "query": "Market", "limit": 2 })).await;
     containers_match(&mut w, &mut n);
     assert_eq!(w, n);
     assert_eq!(w["result"]["matches"].as_array().unwrap().len(), 2);
+
+    both_rpc(&h, "conversation.send", json!({ "conversation": conv, "body": "I signed the form" }))
+        .await;
+    send_signed(&h, &conv, "Please note this").await;
+    let (mut w, mut n) =
+        both_rpc(&h, "conversation.search", json!({ "query": "signed", "limit": 1 })).await;
+    containers_match(&mut w, &mut n);
+    assert_eq!(w, n);
+    let matches = w["result"]["matches"].as_array().unwrap();
+    assert_eq!(matches.len(), 1);
+    assert_eq!(matches[0]["body"], "I signed the form");
+    assert_eq!(matches[0]["content_type"], "text/plain");
 }
 
 #[tokio::test]
@@ -245,13 +259,15 @@ async fn scenario_284_settings_travel_in_the_bundle_parity() {
     assert_eq!(settings[0]["id"], "forward");
     assert_eq!(settings[0]["payload"]["default_mode"], "signed");
 
-    // The node chooses another default, then the bundle restores the first.
-    both_rpc(&h, "conversation.settings", json!({ "default_mode": "not-forwardable" })).await;
-    let (iw, in_) = both_rpc(&h, "conversation.import", json!({ "bundle": exp_w["result"] })).await;
+    // A fresh node gets the choice back from the bundle and does not ask
+    // again.
+    let restored = harness().await;
+    let (iw, in_) =
+        both_rpc(&restored, "conversation.import", json!({ "bundle": exp_w["result"] })).await;
     assert_eq!(iw, in_);
     assert!(!is_err(&iw, -32602), "import failed: {iw}");
 
-    let (w, n) = both_rpc(&h, "conversation.settings", json!({})).await;
+    let (w, n) = both_rpc(&restored, "conversation.settings", json!({})).await;
     assert_eq!(w, n);
     assert_eq!(w["result"]["default_mode"], "signed");
     assert_eq!(w["result"]["asked"], true);
@@ -436,6 +452,30 @@ async fn scenario_287_forward_refuses_every_other_message_parity() {
     for (wasm, id) in [(true, del_w), (false, del_n)] {
         let r = refusal(&h, wasm, id, &target).await;
         assert_eq!(r["error"]["data"]["code"], "message-deleted", "{r}");
+    }
+
+    // A chat body stored through the host with a broken origin is refused at
+    // the origin check, not at the content-type step.
+    let (bw, bn) = send_signed(&h, &conv, "Market opens at 9").await;
+    for (wasm, id) in [
+        (true, bw["result"]["message_id"].as_str().unwrap()),
+        (false, bn["result"]["message_id"].as_str().unwrap()),
+    ] {
+        let mut body = raw_body(&h, wasm, id).await;
+        body["text"] = json!("Market opens at 10");
+        let stack = if wasm { &h.wasm_conversation } else { &h.native_conversation };
+        let stored = stack
+            .send(
+                &conv_service(),
+                &conv,
+                ROYM_MESSAGE_CONTENT_TYPE,
+                vec!["en".to_string()],
+                body.to_string().into_bytes(),
+            )
+            .await
+            .unwrap();
+        let r = refusal(&h, wasm, &stored, &target).await;
+        assert_eq!(r["error"]["data"]["code"], "origin-not-checked", "{r}");
     }
 
     for wasm in [true, false] {
