@@ -40,6 +40,8 @@ deal-you-give = आप देते हैं: { $amount }
 deal-you-receive = आप प्राप्त करते हैं: { $amount }
 deal-diff-you-give-more = आप प्राप्त करने से { $amount } अधिक देते हैं
 deal-diff-you-receive-more = आप देने से { $amount } अधिक प्राप्त करते हैं
+deal-error-window-required = समय सीमा के लिए दोनों तारीखें आवश्यक हैं
+deal-error-window-order = आरंभ तिथि समाप्ति तिथि के बाद नहीं होनी चाहिए
 `;
 
 describe("quote form", () => {
@@ -333,9 +335,24 @@ describe("quote form", () => {
     fromInput.dispatchEvent(new Event("input"));
     let res = readQuoteForm(form);
     expect("error" in res).toBe(true);
+    if ("error" in res && "message" in res.error) {
+      expect(res.error.message).toBe("Both dates are required for the time window");
+    }
+
+    // From date after to date -> order error
+    fromInput.value = "2026-11-30";
+    toInput.value = "2026-11-28";
+    fromInput.dispatchEvent(new Event("input"));
+    res = readQuoteForm(form);
+    expect("error" in res).toBe(true);
+    if ("error" in res && "message" in res.error) {
+      expect(res.error.message).toBe("The start date must not be after the end date");
+    }
 
     // Both provided on same day -> window spans from start of day to 23:59:59
+    fromInput.value = "2026-11-28";
     toInput.value = "2026-11-28";
+    fromInput.dispatchEvent(new Event("input"));
     toInput.dispatchEvent(new Event("input"));
     res = readQuoteForm(form);
     expect("terms" in res).toBe(true);

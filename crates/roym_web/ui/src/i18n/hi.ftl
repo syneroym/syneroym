@@ -929,6 +929,7 @@ deal-from-secs-placeholder = से
 deal-to-secs-placeholder = तक
 deal-error-value-required = प्रत्येक प्रतिबद्धता के लिए मूल्य आवश्यक है
 deal-error-window-required = समय सीमा के लिए दोनों तारीखें आवश्यक हैं
+deal-error-window-order = आरंभ तिथि समाप्ति तिथि के बाद नहीं होनी चाहिए
 deal-version = संस्करण { $n }
 deal-changes-heading = संस्करण 1 के बाद से बदलाव
 deal-changes-side-give = आप देते हैं: { $before } → { $after }

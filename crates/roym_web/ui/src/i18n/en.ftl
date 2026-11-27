@@ -956,6 +956,7 @@ deal-from-secs-placeholder = From
 deal-to-secs-placeholder = To
 deal-error-value-required = Value is required for each commitment
 deal-error-window-required = Both dates are required for the time window
+deal-error-window-order = The start date must not be after the end date
 deal-version = Version { $n }
 deal-changes-heading = Changes since version 1
 deal-changes-side-give = You give: { $before } → { $after }

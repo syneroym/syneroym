@@ -51,10 +51,10 @@ describe("quote defaults fill order", () => {
       payment: {
         currency: "USD",
         amount_minor: 4500,
-        timing: "before-work" as const,
         payee: "did:key:zListingPayee",
       },
       deal_terms: {
+        payment_timing: "before-work" as const,
         cancellation_terms: "Listing cancellation",
         refund_terms: "Listing refund",
         dispute_path: "Listing dispute",

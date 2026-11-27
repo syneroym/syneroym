@@ -17,7 +17,6 @@ export interface ListingLike {
   payment?: {
     currency?: string;
     amount_minor?: number;
-    timing?: "before-work" | "after-work";
     payee?: string;
     [key: string]: unknown;
   };
@@ -78,10 +77,7 @@ export function fillQuoteForm(
   const currency = payment?.currency?.trim() || "INR";
   const amountMinor = payment?.amount_minor;
 
-  const timing =
-    dealTerms?.payment_timing ||
-    payment?.timing ||
-    "after-work";
+  const timing = dealTerms?.payment_timing || "after-work";
 
   const where: ServiceLocationKind =
     listing?.location?.where || "at-receiver";

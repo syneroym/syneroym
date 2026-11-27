@@ -148,8 +148,11 @@ function readWindowData(fromInput: HTMLInputElement, toInput: HTMLInputElement):
   }
   const fromD = parseDateInput(fromVal);
   const toD = parseDateInput(toVal);
-  if (!fromD || !toD || fromD.getTime() > toD.getTime()) {
+  if (!fromD || !toD) {
     return { error: t("deal-error-window-required") };
+  }
+  if (fromD.getTime() > toD.getTime()) {
+    return { error: t("deal-error-window-order") };
   }
   const earliest_secs = Math.floor(fromD.getTime() / 1000);
   const nextDay = new Date(toD.getFullYear(), toD.getMonth(), toD.getDate() + 1, 0, 0, 0, 0);
