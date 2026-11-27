@@ -2099,7 +2099,7 @@ function this branch adds is over 100 lines. The two left,
 
 ### New findings
 
-#### R27 — Wrong message for "From" after "To", and one alias left (minor)
+#### [x] R27 — Wrong message for "From" after "To", and one alias left (minor)
 
 *Where:* `crates/roym_web/ui/src/quote_form/rows.ts:151` to `:153`;
 `crates/roym_web/ui/src/quote_form/defaults.ts:20` and `:83`.
@@ -2121,7 +2121,6 @@ field, but there is none.
 Hindi, and use it when `fromD > toD`. Remove `timing` from the
 `payment` type and from the fill.
 
-*Status:* Open.
+*Status:* Fixed (8dbe9797). Added `deal-error-window-order` ("The start date must not be after the end date" / "आरंभ तिथि समाप्ति तिथि के बाद नहीं होनी चाहिए") in `en.ftl` and `hi.ftl`, and returned it in `readWindowData` when `fromD > toD`. Removed `payment.timing` from `ListingLike` and `fillQuoteForm`. Added unit tests in `quote_form.test.ts` and `quote_defaults.test.ts`. Proof: setting From to 30 Nov and To to 28 Nov triggers `deal-error-window-order`, distinguishing it from `deal-error-window-required`.
 
-**Counts of round 3 (part C6b):** R12, R24, R25 and R26 verified fixed.
-One new finding, R27 (minor). **1 open:** 0 blocker, 0 major, 1 minor.
+**Counts of round 3 (part C6b):** R12, R24, R25, R26 and R27 verified fixed. **0 open.**
