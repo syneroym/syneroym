@@ -1299,10 +1299,15 @@ test.describe('Roym Hub', () => {
     await sendMessage(page, `please trim the ${word} hedge`);
 
     // Switch the thread away, so the click below has something to change.
+    // A feed redraw can overtake the click's own draw and leave the old
+    // thread in place; retrying the open is enough for this search case.
     const otherDid = 'did:key:z6MkhubE2ePeerAddressNeverAnswers0000000000040b';
-    await page.locator('.open-conversation input').fill(otherDid);
-    await page.getByRole('button', { name: 'Open conversation' }).click();
-    await expect(heading).toHaveText(otherDid, { timeout: 15_000 });
+    const openBtn = page.getByRole('button', { name: 'Open conversation' });
+    await expect(async () => {
+      await page.locator('.open-conversation input').fill(otherDid);
+      await openBtn.click();
+      await expect(heading).toHaveText(otherDid, { timeout: 5_000 });
+    }).toPass({ timeout: 30_000 });
 
     await page.locator('.message-search-input').fill(word);
     await page.getByRole('button', { name: 'Search', exact: true }).click();
