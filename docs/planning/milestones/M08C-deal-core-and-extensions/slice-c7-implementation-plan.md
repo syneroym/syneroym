@@ -4,56 +4,171 @@
 owner, who answers the questions in section 2.1. You do not have the
 planning conversation. This plan is meant to stand alone.*
 
-**Status: plan written, 2026-11-25, by Claude Opus 5.5. Not reviewed yet.
-The owner has not answered section 2.1 yet.**
+**Status: plan written, 2026-11-25, by Claude Opus 5.5. Plan reviewed,
+2026-11-27, on `main` at `89d1dd23`, by Claude Sonnet 5.5 (section
+"Review on main 89d1dd23" below). The owner has not answered section 2.1
+yet.**
+
+## Review on main 89d1dd23
+
+*Reviewer: Claude Sonnet 5.5, 2026-11-27. The plan author was Claude
+Opus 5.5.* The reviewer rebased the plan branch on `origin/main`
+(`89d1dd23`, which holds C4a #383, C4b #384, C6a #396 and C6b #397), read
+ADR-0030, the forwarding change doc, task.md, the C4 and C6 plans and
+reviews, and the merged code, and checked every `file:line` in this plan.
+The plan body below is already corrected. This section lists what changed
+and why. Section 2.1 keeps its question numbers: Q1 is removed because the
+merges answered it, and a new Q11 is added.
+
+### Corrections of facts
+
+| # | What was wrong or old | What it is now | Where fixed |
+| --- | --- | --- | --- |
+| K1 | "C4 is not merged." | C4a and C4b are merged. So are C6a and C6b. The C4 rule in task.md section 4 no longer blocks C7. | Q1 removed; Dependencies; 2.2 point 1; Step 0 |
+| K2 | `send_body` was "planned" on the C4 branch. | `send_body(host, conversation: String, content_type: &str, languages: Vec<String>, body: Vec<u8>, check_reserved: F)` is on `main` at `messages.rs:299`. `widget.send` and `widget.answer` call it (`widget.rs:53`, `:97`). The name and the arguments fit D-C7-5. One change: `send_body` runs the group checks inside itself, so a signing call placed before it signs for a group the person left. D-C7-5 now splits it. | 2.2 point 1; D-C7-5 |
+| K3 | Line numbers of `messages.rs`. | `send` `:263`, the reserved-type closure `:278` to `:294`, `send_body` `:299`, `history_item_to_view` `:344`, `history` `:395`, `changes` `:420`, `search` `:513`, `transcript_digest` `:552`. The `MessageView` literals are at `:349` and `:372`. | 2.2, section 4, 6 |
+| K4 | Body of widgets: "C4 may have added a body envelope". | A widget body is `{v, widget_type, …}` under its own content types `application/vnd.roym.widget+json` and `…widget-answer+json` (`roym_core/src/widget.rs:15`). It has no `forward_mode`. The chat body of D-C7-1 is a separate type. It does not reuse the widget body. Its `v` field follows the same habit. D-C7-13 holds: a widget stays not forwardable (`forward` refuses at step 3). | D-C7-13 |
+| K5 | `roym_transaction/src/app.rs:307` holds `resolve_principal_and_owner`. | It is at `app.rs:327`. 12 call sites in 10 files use it. C4 and C6 did not move or copy it. A sixth mapping of the same errors appeared in `as_listed_ops/answer.rs:728` (C3c). The other four copies are at `listing_ops.rs:172`, `credential_ops.rs:46`, `backup.rs:313` and `profile_ops.rs:268`. D-C7-11 now keeps the name and the signature and moves the body to `roym_core::signing`; `transaction` re-exports it, so the 12 call sites do not change. | 2.2 point 3; D-C7-11 |
+| K6 | `SendInput {` literals only in tests. | `roym_transaction/src/app.rs:645` builds a `SendInput` in production code (it sends cards). It needs the new field too. Test literals: `method/tests.rs:504`, `:513`. | Step 1 |
+| K7 | Highest parity scenario is below 260. | Highest is **277** (C6). C7 uses **278** to **286** for scenarios A to I. | 7.3 |
+| K8 | `conversation` has 24 methods; C4 will make 27. | It has **27** (`method_contract/contract.rs:39`). C7 adds 2 (`forward`, `settings`) and the count becomes **29**. | D-C7-4; Step 2 |
+| K9 | `RECORD_TYPES` ends at `step`. | It has 15 entries and ends at `commitment-failure` (`record.rs:18`). `message-origin` is the 16th. `record/tests/wire_words.rs` does not list record types; `record/tests.rs:5` loops over `RECORD_TYPES`, so no word list needs the new type. | D-C7-3 |
+| K10 | `SCHEMA_VERSION` is at `app.rs:31`. | It is at `app.rs:32` and is still **4**. 4 to 5 stands. | D-C7-9 |
+| K11 | Highest Hub Playwright case is 42 on `roym-hub.spec.ts`. | The highest number is 42, and it is in `roym-hub-remote.spec.ts:11`. `roym-hub.spec.ts` ends at 41. `roym-deal.spec.ts` (C6b) numbers its own cases 1 to 5. The next free number is **43**. | 6, 7.6 |
+| K12 | Demo story 20 "has two nodes?" | Yes: Alice and Bob (`20-roym-setup.sh:51`, `:52`). C4 added poll steps to it. Stories are 10, 20, 30, 40, 50, 60. C7 extends story 20 and adds no story. | Q7 |
+| K13 | `sha2` is not in `roym_core`; `bytes_to_hex` is at `backup.rs:232`. | `sha2` is still not in `roym_core/Cargo.toml` (workspace line `Cargo.toml:164`, `0.10`). `bytes_to_hex` is at `backup.rs:233`. | D-C7-2 |
+| K14 | File sizes: `messages.rs` 537, `conversation.rs` 371, `messages.ts` 1,174, `groups.ts` 727. | `messages.rs` **559**, `roym_core/src/conversation.rs` 371, `roym_core/src/lib.rs` 47, `roym_transaction/src/app.rs` 762, `messages.ts` **1,113**, `groups.ts` **820**. Hub code in `ui/src/chat/` stays the rule. `app.rs` of `transaction` shrinks by about 30 lines. | 2.2 point 7; 6 |
+| K15 | Hub anchors. | `OPEN_WORK` `messages.ts:38`; `MessageRow` `:51`; `renderThread` `:298`; the send handler `:334`; `messageElement` `:715`; `openDeleteDialog` `:1074`; `groups.ts` `doSend` `:500`, `renderThreadMessages` `:181`; tab table `main.ts:172`. Both screens now also have a poll composer (`pollComposer`) beside the text composer. | D-C7-10 |
+| K16 | Living-doc anchors. | Integrated spec: "Messaging" `:693`, "What is encrypted" `:579`, "Records and what each one proves" `:471`. Developer guide: `conversation.send` block `:2571`, widgets paragraph just after it. Requirements `:291` is still right. `sync.rs` card filter `:264`. `signing.rs` tests `:257`. | 9 |
+| K17 | Backlog: add a row "default forward mode per conversation". | That row already exists (section 5, from the C0 ADR). C7 must not add it again. Rows about key revocation exist ("Issuer-key revocation is not checked on any membership record", "A listing hit is never checked against a revocation list"). C7 extends them with `message-origin`. | 8 |
+| K18 | Component sizes: `conversation` "813,818, so about 122 KB". | Measured on `main` `89d1dd23` (section "Sizes now" below): `conversation` is **985,469** bytes. C4a already used the +22% owner exception. A fresh +15% is 147,820 bytes (ceiling 1,133,289). See Q11. | 7.7; Q11 |
+
+### Problems found in the design
+
+| # | Problem | Fix | Where |
+| --- | --- | --- | --- |
+| D1 | **The search filter of D-C7-8 loses real hits.** The host search takes `(query, conversation, limit)` and has no offset (`conversation.wit:280`). It orders newest first and cuts at `limit` (at most 500, `store/search.rs:14`) *before* the filter runs. A Roym message body is JSON. The host indexes all of it (`is_searchable_content_type` accepts every `+json`). A query like "text", "signed" or "origin" matches every Hub message, and any 3-letter query hits the random-looking origin string by chance. The host fills `limit` with false matches. The filter then drops them, and the real matches behind them never come back. The plan accepted "fewer rows than `limit`". The real result is "zero rows although a real hit exists". The index also grows: each `signed` message adds about 1 KB of origin text to the trigram index. A second copy of the host's search rule in `roym_core` must also be kept in step with the host. | New Q4 recommendation: the host indexes only the `text` string of a `+json` body that has one (6 call sites). Then the filter, `text_matches` and the ICU link into `conversation` are not needed. If the owner says no, Q4 (a) needs an over-fetch loop and states the loss. | Q4; D-C7-8; step 1 |
+| D2 | **A short DID of 16 characters can be forged.** Every `did:key:h…` starts with the same 12 characters (the ed25519 prefix `0xed01` in z-base-32), so the first 16 characters hold only about 19 bits of the key. A person can grind a DID with the same 16 characters in seconds. Q9 (a) would show that string for an author who is not in the contacts. | Show the last 12 characters of the DID, with the whole DID in a tooltip. | Q9; D-C7-10 |
+| D3 | The author name rule has no case for the reader's own DID. Bob forwards Alice's message, Alice reads it: "First written by did:key:… (not in your contacts)" is wrong. | The node tells the Hub (`origin.is_you`). The Hub shows "you". | D-C7-6; Q9 |
+| D4 | Item 16 says every `text/plain` message shows a "Not forwardable" note, with "the author did not allow it". An old message, a `roymctl` message or a card has no author choice at all. The note would be false, and it would appear on every old message. A card, a widget and a system row must show nothing. | A small tag, only on a `text/plain` row and on a chat body of mode `not-forwardable`. Two texts: "Not forwardable (the author chose this)" and "Cannot be forwarded (no signed origin)". Never on cards, widgets or system rows. | 4 item 16; D-C7-10; 7.5 |
+| D5 | `forward_count` as `u32`: a changed client can send `99999999999`. The whole body then fails to parse, and the Hub shows raw JSON. Also, a person can raise the count of their own message by forwarding their own forward again and again. | Read the count as `u64` and clamp it to 1,000. If the source is the forwarder's own forward, the new count is the old count (the forwarder is already counted). | D-C7-1; D-C7-7 |
+| D6 | D-C7-5 signs before the group checks of `send_body`, and tells the implementer to "move that check into a small shared helper". | Split `send_body` into `check_target` (group state and the reserved type) and `deliver` (send and read back). `send_with_mode` calls `check_target`, then signs, then `deliver`. `widget.*` and `forward` keep calling `send_body`, which is now the two calls in a row. | D-C7-5 |
+| D7 | Size. C4a spent +170,873 bytes on `conversation`. 85,474 of them are the `api::dispatch` state machine for three methods (task.md, C4a sizes). C7a adds 3 methods in this plan, plus the record check (ed25519, delegation chain and JCS canonical form are linked into `conversation` for the first time), plus `search_key` with its ICU data. That can pass +15% (147,820 bytes). | (1) One settings method instead of two. (2) The new dispatch arms use `Box::pin`. (3) Q4 host rule, so no ICU link. (4) A size probe after step 1 and after step 2, not only at the end. (5) New Q11 asks for the limit now. | D-C7-4; Steps 1, 2; Q11 |
+| D8 | The forward line for a sender who is not a contact: in a group most senders are not contacts. A changed client that drops the count is then shown as the author's own message. | Accepted and written down (it is only a hint, like the count). The display of an honest forward is not affected, because it carries the count. | D-C7-6 |
+| D9 | "An origin must be signed as a person" suggests that a delegation makes the author a known person. It does not. Anyone can make a master key and a certificate. The check proves "the holder of DID X wrote this text", not "a human you know". | The text of D-C7-3 says so. The real protection is the name rule (Q9): a name appears only from the reader's own contacts. | D-C7-3; Q9 |
+| D10 | Deleting a message does not delete what others forwarded. Item 17 adds a sentence to the delete dialog but says only that "the origin stays". | The sentence also says that copies already forwarded stay. | 4 item 17 |
+| D11 | Clock skew. The verifier refuses an origin dated more than 300 s in the future, and a certificate issued more than 300 s ahead (`verify.rs:185`; `delegation.rs:231`, not changeable by `VerifyOptions`). A reader whose clock is 6 minutes behind sees "origin could not be checked" until its clock catches up. Because the check runs at every read, it heals by itself. | Keep 300 s. Put the reason in `origin_error` ("dated in the future"). The Hub shows the generic note and the reason as a tooltip. A test pins the heal. | D-C7-3; 7.1 |
+| D12 | No revocation list is passed to the verifier, so every origin has `revocation_status` "unknown". A stolen conversation signing key signs valid origins as the person, with no end. This is the same as for every other Roym record. | Write it into the existing backlog rows. The Hub never says "verified" about the person, only "origin checked". | 8 |
+| D13 | The demo of Q7 (a) needs more than "Bob creates a group": Bob has Alice only as an incoming chat, and `group.add-member` needs a contact or an address. Alice's node must admit the group. No browser test in the repository forms a two-node group (`roym-groups.spec.ts` is one node). | New Q7 option (c): forward in the same chat. The three-node group case stays in the Rust e2e. | Q7; 7.6 |
+| D14 | A `signed` message is about 1.2 KB bigger. A sealed mailbox message holds a body of about 13 KiB (`card.rs:40`); a bigger one waits for the receiver to be online. So a `signed` text over about 11.5 KiB no longer reaches an offline peer. The host limit (`max_body_bytes`, 262,144 by default) is for the whole body, and the host refuses an oversize body with `-32004`. | Record it. Step 4 measures it. No new error code is needed. | 4 item 3; D-C7-5 |
+| D15 | C7a is too big for one PR. C3c, C4 and C6 each split node and Hub into two PRs, and the reviews were easier. C7a has five new Rust files, three methods, backup, three-node e2e, four Hub files, 22 Hindi keys, a changed first-send path in every Playwright spec, and the demo. | New Q2 (c): C7a node, C7b Hub and demo, C7c signed records. This plan now uses these names. | Q2; 6 |
+| D16 | `conversation.forward` did not say what happens to the signing certificate of the forwarder: it needs none, and a forward never signs. This is right and is now stated. A forward needs a checked origin, so it works even if the forwarder has no certificate. | Stated in D-C7-7. | D-C7-7 |
+
+### Sizes now (measured on `main` `89d1dd23`)
+
+Release `wasm32-wasip2`, one build folder (`target-c7/` in the worktree, not
+committed), `cargo component build --release --target wasm32-wasip2`
+for each of the seven crates, in bytes:
+
+| Component | Bytes | Last recorded in task.md |
+| --- | --- | --- |
+| `conversation` | 985,469 | 985,469 (C6a) |
+| `transaction` | 2,870,685 | 2,877,309 (C6a) |
+| `catalog` | 960,590 | 960,590 |
+| `directory` | 1,504,433 | 1,504,433 |
+| `profile` | 772,748 | 772,748 |
+| `scheduling` | 715,723 | 715,723 |
+| `web` | 311,314 | 311,314 |
+
+`transaction` is 6,624 bytes smaller than the C6a record. The reviewer did
+not find the reason. The other six match the record. Step 0 measures again
+and uses its own numbers.
+
+### Owner questions changed
+
+- **Q1 removed.** C4 is merged.
+- **Q2** gets a third option: three PRs (recommended).
+- **Q4** has a new recommendation (host indexes the `text` field only).
+- **Q5** now names one settings method.
+- **Q6** keeps option (a). It now has a cost estimate (not a measurement) and a note that the Hub repeats the check.
+- **Q7** gets a third option: forward in the same chat.
+- **Q9** changes the short-name rule and adds "you".
+- **Q11 is new:** the size limit of `conversation`.
+- Q3, Q8 and Q10 keep their options. Their line numbers are updated.
+
+### Order now (the rule that applies)
+
+C4, C6a and C6b are merged. The rule in task.md section 4, "C7 not beside
+C4", no longer blocks anything. No open or planned slice in M08C edits the
+same files. The only other open work is the docs worktrees of M08E
+(obligations), which change no code. So **C7a can start from `main` now.**
+While a C7 PR is open, no other change may edit these files, because every
+one of them is in a C7 PR:
+
+- `crates/roym_conversation/src/api.rs` and `app/messages.rs`;
+- `crates/roym_core/src/lib.rs`, `record.rs`, `conversation.rs`,
+  `signing.rs` and `method/conversation.rs`;
+- `crates/roym_web/ui/src/screens/messages.ts`, `groups.ts`, `profile.ts`,
+  `i18n/en.ftl`, `i18n/hi.ftl`, and the Playwright files `hub-helpers.ts`
+  and `demo/20-roym-chat.spec.ts`;
+- the parity scenario numbers (from 278) and the Hub case number (from 43).
+
+C7a, C7b and C7c run one after the other, as the C4a and C4b pair did.
+C8 (close-out) waits for all three. M08D and later slices, and the M08E
+obligations module, start after C7a merges or rebase on it, because
+`roym_transaction/src/app.rs` and `roym_core/src/lib.rs` are shared. A
+Hub-only fix that touches none of the files above (as the Engage fix did)
+may run beside C7.
 
 **Size and PRs.** [task.md](task.md) sizes C7 as M. Checked against the
-code, the forward of signed records (FW-7) is a second, separate piece of
-work: it has its own content type, three sources in the Hub (a quote card,
-a directory hit, a profile) and its own checks for three record types. So
-this plan splits C7 in two (Q2). Each part is one PR that passes
-`mise run verify`:
+code and the C3c, C4 and C6 pairs, it is three PRs (Q2 (c)). Each is one
+PR that passes `mise run verify`:
 
-- **C7a — Forward mode, origin and forward of a text message (M).** The
-  `forward_mode` in each message the Hub sends, the default-mode setting,
-  the `message-origin` record, the check at read time,
-  `conversation.forward`, and in the Hub the composer control, the
-  first-message question, the forward action, the display rules and the
-  group notice; the demo step. Criteria FW-1 to FW-6, FW-8 to FW-15.
-- **C7b — Forward of signed records (S).** A `listing`, `profile` or
+- **C7a — Node: forward mode, origin, forward (M).** The chat body, the
+  `message-origin` record, the check at read time, `conversation.send` with
+  a mode, `conversation.forward`, `conversation.settings`, backup, the
+  signing helper move, the host search rule (if Q4 (a)), and the tests
+  (unit, parity, three-node e2e) and measurements. No Hub change. Criteria
+  FW-1 to FW-6, FW-8, FW-9, FW-13 to FW-15 on the node side.
+- **C7b — Hub and demo (M).** The composer control, the first-message
+  question, the default on the Profile tab, the forward action and picker,
+  the display rules, the group notice, the Hindi messages, the Playwright
+  case and the story 20 step. Criteria FW-3 to FW-5, FW-10 to FW-13 as
+  the person sees them.
+- **C7c — Forward of signed records (S).** A `listing`, `profile` or
   `quote` travels as itself in a record-forward body. Criterion FW-7.
 
+If the owner picks Q2 (a) (two PRs), C7a and C7b below are one PR.
+
 Branch: `feat/m08a-c7-msg-forwarding` (this branch; it holds the plan
-commit; the owner chose the name). C7b gets its own branch, cut from `main`
-after C7a merges.
+commit; the owner chose the name). C7b and C7c get their own branches, cut
+from `main` after the earlier part merges.
 
 **Base.** Every file path and line number below was checked on `main` at
-`aa25961b` (2026-11-25), unless it names the C4 branch. Links are relative
-to this folder.
+`89d1dd23` (2026-11-27). Links are relative to this folder.
 
 **Dependencies.**
 
 - C0 (the ADR) is done: [ADR-0030](../../../decisions/0030-signed-message-origins.md),
   accepted 2026-11-16 ([status.md](status.md), row C0).
-- C2 is merged (C2a PR #370, C2b PR #371). C7b's forwarded quote needs it.
-- **C4 is not merged.** [task.md](task.md) section 4: "C7 changes
-  `conversation` and the Hub chat, like C4. So C7 and C4 must not run at
-  the same time." C4 is being built now on `feat/m08c-c4-widgets`. Its plan
-  is on that branch, not on `main`. C4 moves the body of
-  `conversation.send` into a new function `send_body`, reserves two more
-  content types, adds three `conversation` methods, and changes
-  `messageElement`, `fillThread`, the group composer and story 20. These
-  are the same places C7a changes. This plan is written so that **the C7a
-  code starts after C4 merges** (Q1). Section 2.2, point 1 lists each place
-  where C7a builds on C4.
+- C2 is merged (C2a PR #370, C2b PR #371). C7c's forwarded quote needs it.
+- C4 is merged (C4a PR #383, C4b PR #384). C4 moved the body of
+  `conversation.send` into `send_body` (`messages.rs:299`), reserved the
+  two widget content types, added `widget.send`, `widget.answer` and
+  `widget.list`, and changed the Hub chat and story 20. C7a builds on
+  these. Section 2.2, point 1 lists each place.
+- C6a and C6b are merged (#396, #397). They changed `transaction`, the Hub
+  deal screens and `messages.ts` (the quote form). No C6 code conflicts
+  with C7.
 
 ## 0. Read first, and the rules
 
 - `AGENTS.md`. The rules this slice touches most:
   - functions at most 100 lines; match arms at most about 10 lines;
   - production `.rs` files at most 800 lines, so new code goes in new
-    sibling files (`crates/roym_conversation/src/app/messages.rs` is 537
-    lines; `crates/roym_core/src/conversation.rs` is 371);
+    sibling files (`crates/roym_conversation/src/app/messages.rs` is 559
+    lines; `crates/roym_core/src/conversation.rs` is 371;
+    `crates/roym_transaction/src/app.rs` is 762 and gets shorter);
   - module layout: `foo.rs` beside `foo/`, never `mod.rs`;
   - comments say why, never which plan, slice or review finding;
   - import rules: types by `use`, functions through their parent module;
@@ -68,10 +183,12 @@ to this folder.
   only what the ADR leaves to "the C7 plan": the body format, where the
   default is stored, and the display name of an author.
 - [task.md](task.md) section 3 (C7) and section 1 (the component size rule).
-- The C4 plan on branch `feat/m08c-c4-widgets`
-  (`slice-c4-implementation-plan.md`), point 14: a widget and a widget
-  answer carry no forward mode, so they are not forwardable. "The C7 plan
-  decides whether that stays." It stays (D-C7-13).
+- [The C4 plan](slice-c4-implementation-plan.md), point 14: a widget and a
+  widget answer carry no forward mode, so they are not forwardable. "The C7
+  plan decides whether that stays." It stays (D-C7-13). Read the C4 and C6
+  review files too ([C4](slice-c4-review.md), [C6](slice-c6-review.md)): the
+  findings there on stale line numbers, hard-coded counts and the parity
+  harness apply here.
 
 ### Terms used in this plan
 
@@ -108,17 +225,21 @@ message, offers "Forward" only on checked `signed` messages, and shows
 "Forwarded. First written by … on …. Forwarded N times." A message sent
 without a mode (another client, `roymctl`, the client guide) is sent as
 `text/plain`, exactly as today, and counts as `not-forwardable` (ADR-0030,
-decision 3). C7b then lets a person forward an offering, a profile or a
-quote as the signed record itself.
+decision 3). C7c then lets a person forward an offering, a profile or a
+quote as the signed record itself. C7a is the node part, C7b is the Hub
+part, C7c the records part (see "Size and PRs").
 
 ## How this is shown to an end user
 
-C7a:
+C7a has nothing a person can see: it is the node part, used by the Hub in
+C7b and by any client through the raw methods. Developers see it work with
+the commands below. C7b finishes the visible story:
 
 - The first time a person sends a message, the Hub asks one question:
   "Can others forward your messages with your name?" It explains the two
-  answers in plain words. The person picks one, or skips. Skip means "not
-  forwardable".
+  answers in plain words, and says that a signed message proves who wrote
+  it and when, not to whom it was sent. The person picks one, or skips.
+  Skip, or closing the question, means "not forwardable".
 - Next to the send button, the person sees the mode for this message,
   "Signed" or "Not forwardable", and can change it for this one message.
   Their default is on the Profile tab.
@@ -128,11 +249,15 @@ C7a:
   other person sees: "Forwarded. First written by Alice on 25 Nov 2026.
   Forwarded 1 time." From 5 forwards on it says "Forwarded many times".
 - On a message that is not forwardable, there is no "Forward" button, and
-  a short note says the author did not allow it. If a changed app forwards
-  it anyway, the receiver sees it as the forwarder's own words, with the
-  note "origin could not be checked".
+  a small tag says why: "Not forwardable" when the author chose it, or
+  "Cannot be forwarded (no signed origin)" for an older message or a
+  message from another client. If a changed app forwards it anyway, the
+  receiver sees it as the forwarder's own words, with the note "origin
+  could not be checked".
+- When the author reads a forward of their own message, it says "First
+  written by you".
 
-C7b:
+C7c:
 
 - On a quote card, an offering in the directory, or a contact's profile,
   the person sees "Forward". The receiver sees the offering, profile or
@@ -148,8 +273,8 @@ How a developer can see it work:
   group with Carol. Carol's node reports a checked origin that names Alice,
   and `forward_count` 1. `conversation.forward` refuses a not-forwardable
   message.
-- `mise run demo` (C7a): story 20 shows Bob's forward in a group on
-  Alice's screen, with the line "Forwarded. First written by Alice …".
+- `mise run demo` (C7b): story 20 shows Bob's forward on Alice's screen,
+  with the line "Forwarded. First written by you …" (Q7).
 
 ## 2. Points for the owner
 
@@ -157,26 +282,25 @@ How a developer can see it work:
 
 Each question has options and a recommendation, marked **(recommended)**.
 
-#### Q1. When does the C7a code start?
+#### Q1. (Removed)
 
-C4 changes the same functions (section 2.2, point 1).
+It asked when the C7a code starts. C4 is merged, so the answer is "now"
+(section "Order now"). The other questions keep their numbers.
 
-- (a) **(recommended)** After C4 merges. This branch then rebases on
-  `main`, and the implementer re-checks the line numbers that section 2.2,
-  point 1 names. This is the rule of task.md section 4.
-- (b) Beside C4, with a merge plan for `messages.rs`, `api.rs`,
-  `messages.ts`, `groups.ts`, the `method_contract` count, scenario 73 and
-  story 20. Each of these conflicts, and C4's `send_body` is the place
-  where the C7a send belongs.
+#### Q2. How many PRs?
 
-#### Q2. One PR or two?
-
-- (a) **(recommended)** Two: C7a (FW-1 to FW-6, FW-8 to FW-15) and C7b
-  (FW-7). C7b shares no code with C7a except the conversation picker of
-  the forward button. It touches the quote check (`roym_core::transaction`),
-  the profile check (`roym_profile`) and the directory screen, which C7a
-  does not.
+- (a) Two: C7a (everything for a text message, node and Hub) and C7c
+  (FW-7, signed records). C7c shares no code with C7a except the
+  conversation picker of the forward button. It touches the quote check
+  (`roym_core::transaction`), the profile check (`roym_profile`) and the
+  directory screen, which C7a does not. This was the first plan.
 - (b) One PR, size L.
+- (c) **(recommended)** Three: C7a (node), C7b (Hub and demo), C7c (signed
+  records). C3c, C4 and C6 each shipped as a node PR and a Hub PR, and
+  both were reviewed in fewer rounds that way. The node part is complete
+  and tested without the Hub (parity, three-node test, measurements). The
+  Hub part then starts from a known node. Cost: one more PR and one more
+  rebase. The Hub steps (5 and 6) are already separate in section 6.
 
 #### Q3. The chat body: which messages use it?
 
@@ -188,7 +312,7 @@ cannot ride in a `text/plain` body, so a new content type is needed.
   one, so every Hub message has the mark (FW-1 and FW-13 say "marked"). A
   call with no mode is sent as `text/plain`, exactly as today. That keeps
   `roymctl roym group send`, the client guide (developer guide §6,
-  `conversation.send` at line 2558), story 30 and every test that sends
+  `conversation.send` at line 2571), story 30 and every test that sends
   with no mode unchanged. Such a message counts as `not-forwardable`
   (ADR-0030, decision 3).
 - (b) Only `signed` messages use the chat body. A `not-forwardable`
@@ -206,22 +330,41 @@ The host indexes the whole body of a `+json` content type
 (`is_searchable_content_type`, `crates/conversation/src/store/message.rs:36`;
 the index call at `:134`). For a chat body, it would index the JSON keys
 and the origin envelope. A search for "text", "signed" or "message" would
-then match every Hub message.
+then match every Hub message. A 3-letter query would also hit the random
+origin string by chance. Each `signed` message adds about 1 KB to the
+trigram index.
 
-- (a) **(recommended)** `conversation.search` keeps a chat-body match only
-  if the inner text matches the query by the host's own rule (D-C7-8). The
-  check is pure Rust in `roym_core`, built from
+The host search is `search(query, conversation, limit)`
+(`conversation.wit:280`, `host_impl.rs:411`). It has no offset. It orders
+newest first and cuts at `limit`, at most 500 (`store/search.rs:14`),
+before the Roym service sees a row. A filter in `roym_core` after
+that call cannot give back a real hit that the host left out.
+
+- (a) **(recommended)** A host change, small and general: the host indexes
+  only the top-level string field `text` of a `+json` body that has one,
+  and the whole body otherwise, as today. Widget bodies have no `text`
+  field and do not change. A function `indexable_text(content_type, body)`
+  replaces the `is_searchable_content_type` test at its six call sites
+  (`store/message.rs:134`, `:187`, `:326`; `group.rs:424`;
+  `store/backup.rs:439`; `store/text_index.rs:80`). The interface
+  (`conversation.wit`) does not change; the change doc's sentence "the
+  substrate conversation capability does not change" is corrected in
+  Deviations. Tests: the host's search tests for a chat body (a word of
+  the text is found; `signed`, `origin` and a DID fragment are not).
+  `conversation.search` then needs no filter, and `conversation` links no
+  ICU data. This needs the owner's yes, because it edits `crates/conversation`.
+- (b) Keep the filter of the first plan (D-C7-8 as written), and ask the
+  host for the cap of 500 rows, then keep `limit` real ones. The cap and
+  the missing offset remain, so a common word can still lose older hits.
+  It links
   `syneroym_text_lang::query_terms` (`crates/text_lang/src/search_key.rs:145`)
-  and `fts::index_keys` (`crates/text_lang/src/fts.rs:30`). This links
-  `search_key` (with its ICU data) into the `conversation` component for
-  the first time. Step 1 measures the size first. **Stop rule:** if
-  `conversation` grows by more than 60 KB from this alone, stop and ask the
-  owner (then (b) or (c)).
-- (b) Accept the false matches, and record a backlog row. The Hub's
-  snippet is still the inner text (D-C7-6).
-- (c) A host change: the host indexes only a named JSON field of a body.
-  The change doc says "the substrate conversation capability does not
-  change", so this needs the owner.
+  and `fts::index_keys` (`crates/text_lang/src/fts.rs:30`), with their ICU
+  data, into `conversation` for the first time, and it keeps a second copy
+  of the host's search rule in step with the host. **Stop rule:** if `conversation` grows by
+  more than 60 KB from this alone, stop and ask the owner.
+- (c) Accept the false matches and the lost hits, and record a backlog
+  row. The Hub's snippet is still the inner text (D-C7-6). Not
+  recommended: a search for a common word can return nothing.
 
 #### Q5. Where is the default mode stored?
 
@@ -230,11 +373,13 @@ setting is stored."
 
 - (a) **(recommended)** In `conversation`: a new collection
   `conversation_settings` with one row `forward`:
-  `{ "default_mode": "signed" | "not-forwardable", "asked": bool }`. Two new
-  local methods read and write it (D-C7-4). It is in the `conversation`
+  `{ "default_mode": "signed" | "not-forwardable", "asked": bool }`. One new
+  local method reads and writes it (D-C7-4; one method, not two, because
+  each new dispatch arm costs about 28 KB in the `conversation`
+  component, see Q11). It is in the `conversation`
   backup bundle as a new section `settings`, so a restore keeps the choice
   and the Hub does not ask again. `SCHEMA_VERSION` 4 → 5
-  (`crates/roym_conversation/src/app.rs:31`). The service that signs the
+  (`crates/roym_conversation/src/app.rs:32`). The service that signs the
   origin keeps the setting, and every client of the node sees the same
   answer.
 - (b) In the browser (`localStorage`). Lost on another device or browser,
@@ -249,9 +394,15 @@ setting is stored."
   with a pure function (D-C7-6). There is no new stored state, so nothing
   can go stale, and a restored message is checked the same way. Cost: two
   ed25519 checks (certificate and record) per chat body that carries an
-  origin. **Stop rule:** if a `conversation.history` page of 200 `signed`
-  messages takes more than 500 ms in the WASM build (the epoch deadline is
-  5 s), stop and ask (then (b)).
+  origin. The reviewer estimates 30 to 60 ms for a page of 200 on the WASM
+  build, from the C6 timing of `transaction.sync` over 50 agreements
+  (20 ms on WASM, each agreement with several signed records). This is an
+  estimate, not a measurement. The Hub reads a full page (200 messages) at
+  every thread redraw, so the cost repeats. **Stop rule:** if a
+  `conversation.history` page of 200 `signed` messages takes more than
+  500 ms in the WASM build (the epoch deadline is 5 s), stop and ask (then
+  (b)). Step 4 prints the number. A first cheap saving, if it is needed:
+  do not re-check the sender's own outgoing rows.
 - (b) At arrival, in `on_message`
   (`crates/roym_conversation/src/app/inbox.rs:136`), with the result stored
   in a new collection. It needs a write per message, a row for the
@@ -261,16 +412,27 @@ setting is stored."
 
 Story 20 (`crates/substrate/tests/e2e/demo/20-roym-chat.spec.ts`) has two
 nodes, Alice and Bob (`demo/20-roym-setup.sh:51`, `:52`). A forward needs a
-second chat.
+chat to go to. C4 added poll steps at the end of the story. Bob has Alice
+only as an incoming chat today: Alice added Bob as a contact, Bob did not
+add Alice. No browser test forms a two-node group (`roym-groups.spec.ts`
+runs on one node).
 
-- (a) **(recommended)** At her first message, Alice answers the question
-  with "Signed". Bob creates a group "Market" with Alice and forwards her
-  message there. Alice's screen shows it in the group: "Forwarded. First
-  written by Alice on …. Forwarded 1 time." The story needs no third node.
-  The steps come after C4's poll steps.
+- (a) Alice answers the question with "Signed" at her first message. Bob
+  adds Alice as a contact, creates a group "Market", adds Alice, and
+  forwards her message there. Alice's node must admit the group. Alice's
+  screen shows it in the group. No third node. This adds about five steps
+  and is the first browser test of a two-node group, so it is the likeliest
+  step of the story to be flaky.
 - (b) Add a third node (Carol) to the demo setup and forward to her. More
   natural, but the demo setup, its environment file and every story start
   get slower.
+- (c) **(recommended)** Alice answers with "Signed" at her first message.
+  Bob forwards her message into the same chat (FW-9 allows the same chat).
+  Alice's screen shows: "Forwarded. First written by you. Forwarded 1
+  time." It adds two steps and uses no group. It shows the display rule,
+  the forward picker and the count, but not a third person. The group case
+  stays in the three-node Rust test (section 7.4). If the owner wants the
+  group in the demo, pick (a).
 
 #### Q8. Attachments (FW-8)
 
@@ -291,77 +453,140 @@ no attach action.
 
 ADR-0030 leaves "the display name of an author" to this plan.
 
-- (a) **(recommended)** The contact name, if the author's DID is in the
-  reader's contacts. Otherwise the first 16 characters of the DID and
-  "(not in your contacts)". The name never comes from the forward itself,
-  so a forwarder cannot choose what the reader sees.
-- (b) Always the DID.
+- (a) **(recommended)** "you" if the author's DID is the reader's own DID
+  (the node says so: `origin.is_you`). Else the contact name, if the
+  author's DID is in the reader's contacts. Else the last 12 characters of
+  the DID with a leading "…" and "(not in your contacts)", and the whole
+  DID in a tooltip. The name never comes from the forward itself, so a
+  forwarder cannot choose what the reader sees. The first plan showed the
+  first 16 characters. Every `did:key:h…` begins with the same 12
+  characters (the ed25519 prefix `0xed01`, in z-base-32), so those 16
+  characters hold only about 19 bits of the key, and someone can make a DID
+  with the same start in seconds. The last 12 characters hold 60 bits.
+  Note for the Hub text: the origin proves that the holder of that DID
+  wrote the text. It does not prove that the holder is a person the reader
+  knows.
+- (b) Always the whole DID.
 
 #### Q10. Where is the default in the Hub?
 
-The Hub has no Settings tab (`crates/roym_web/ui/src/main.ts:180` to `:191`).
+The Hub has no Settings tab (the tab table, `crates/roym_web/ui/src/main.ts:172` to `:186`).
 
 - (a) **(recommended)** A section "Forwarding of my messages" on the Profile
   tab (`crates/roym_web/ui/src/screens/profile.ts`, 109 lines). It is a
   setting of the person.
 - (b) A new Settings tab.
 
+#### Q11. The size limit of `conversation` (new)
+
+The rule (task.md section 1): a component with new record code may grow
+by 15% of its size before the slice. `conversation` is 985,469 bytes on
+`main` (measured, "Sizes now"), so +15% is 147,820 bytes (ceiling
+1,133,289). C4a used the owner's one-time +22% exception, and the owner
+said that it was "in force for C4a". C4a grew `conversation` by 170,873
+bytes. 85,474 of them are the `api::dispatch` state machine for three new
+methods, about 28 KB each. C7a adds two methods (`forward`, `settings`),
+links the record check (ed25519, delegation chain and JCS canonical form,
+which `conversation` does not link today) and the chat code. The reviewer
+estimates +100 to +180 KB. It may pass the limit.
+
+- (a) **(recommended)** Keep +15%. Measure after step 1 and after step 2,
+  not only at the end. Reduce the size first, in this order: one settings
+  method (D-C7-4), `Box::pin` on the new dispatch arms, the host search
+  rule of Q4 (a) (no ICU data). If the build is still over 147,820 bytes,
+  stop and ask the owner.
+- (b) Approve +22% now (a ceiling of 1,202,272 bytes). No early stop, but it
+  invites more growth, and C4a took the same exception.
+
 ### 2.2 Points found while reading
 
-1. **Where C7a builds on C4** (Q1). On the C4 branch, the body of
-   `conversation.send` from `messages.rs:273` moves into
-   `send_body(host, conversation, content_type, languages, body, check_reserved)`.
-   The C7a send with a mode and `conversation.forward` both call
-   `send_body`. Then the group checks (`restored`, `is_member`) and their
-   order (parity scenarios 207 and 208 pin it) stay in one place. C4 also
-   reserves `application/vnd.roym.widget+json` and
-   `application/vnd.roym.widget-answer+json`; C7a adds
-   `ROYM_MESSAGE_CONTENT_TYPE` to the same reserved list. C4 raises the
-   `conversation` method count in
-   `crates/roym_web/tests/method_contract/contract.rs:39` from 24 to 27,
-   adds its verbs to scenario 73
-   (`crates/roym_web/tests/dual_build_parity/wire_origin.rs`), uses parity
-   numbers 260 to 265, and adds three steps to story 20. C7a takes the next
-   free numbers. Where C4's merged code differs from this, the implementer
-   follows C4's code and writes the difference into section 5 of this plan.
+1. **Where C7a builds on C4** (merged). The body of `conversation.send`
+   is now `send_body(host, conversation: String, content_type: &str,
+   languages: Vec<String>, body: Vec<u8>, check_reserved: F)`
+   (`messages.rs:299`). It runs the group checks (`restored`, `is_member`)
+   and the reserved-type check, calls `AppConversation::send`, and reads
+   the message back. `widget.send` and `widget.answer` call it with
+   `|_, _| None` (`widget.rs:53`, `:97`). `send` passes a closure that
+   refuses six content types (`messages.rs:278` to `:294`): membership
+   event, deletion request, group profile, widget, widget answer, and the
+   card type inside a group. C7a adds `ROYM_MESSAGE_CONTENT_TYPE` to that
+   closure. Parity scenario 207 pins the card refusal in a group.
+   `group_lifecycle.rs:249` pins the notice for a send to a restored
+   group. C4 raised the `conversation` method count to 27
+   (`crates/roym_web/tests/method_contract/contract.rs:39`), added its
+   verbs to scenario 73
+   (`crates/roym_web/tests/dual_build_parity/wire_origin.rs:67`), used
+   parity numbers 260 to 266, and C6 used 267 to 277. C7a takes 278 and up.
+   One change to C4's code is needed: the group checks must run before the
+   signing call, so `send_body` is split in two (D-C7-5).
 2. **The requirements spec says Roym supports attachments.**
    `docs/system-requirements-spec.md:291`: "The system supports one-to-one
    text, attachments, private group chat …". The code has none (Q8). The
    C7a close-out corrects the sentence, because FW-8 depends on it.
 3. **The signing refusal words have several copies.** The function
    `resolve_principal_and_owner` exists in `roym_transaction`
-   (`crates/roym_transaction/src/app.rs:307`, with a `data.code` on each
-   refusal) and, without `data.code`, in `roym_catalog`
-   (`crates/roym_catalog/src/app/listing_ops.rs:159`). `roym_profile`,
-   `roym_directory` and `roym_core::backup` (`backup.rs:313`) map the same
-   errors on their own. ADR-0030, decision 7, asks for "the same words as
-   every other signing verb". C7a moves the `transaction` copy (the one
-   with codes) into `roym_core::signing`, and uses it from `transaction`
-   and `conversation`. The other copies stay; a backlog row records them
-   (section 8).
+   (`crates/roym_transaction/src/app.rs:327`, with a `data.code` on each
+   refusal; 12 call sites in 10 files) and, without `data.code`, in
+   `roym_catalog` (`crates/roym_catalog/src/app/listing_ops.rs:159`).
+   `roym_profile` (`profile_ops.rs:268`), `roym_directory`
+   (`credential_ops.rs:46`), `roym_core::backup` (`backup.rs:313`) and
+   `transaction`'s `as_listed_ops/answer.rs:728` map the same errors on
+   their own. ADR-0030, decision 7, asks for "the same words as every
+   other signing verb". C7a moves the body of the `transaction` copy (the
+   one with codes) into `roym_core::signing`, keeps its name and
+   signature, and re-exports it from `transaction`'s `app.rs`, so the 12
+   call sites do not change. `conversation` calls it too. The other copies
+   stay; a backlog row records them (section 8).
 4. **`roym_conversation` has no unit tests**, and the `AppConversation` of
    `TestHost` is a stub (`crates/roym_core/src/testing/stubs.rs:169`). So
    C7a puts every rule it can into pure functions in `roym_core`
    (unit-tested), and tests the service through the parity harness (both
    builds) and the three-node test.
 5. **The parity harness pins the signing clock ahead of wall-clock time**
-   (`crates/roym_web/tests/dual_build_parity/fixtures.rs:67`,
-   `helpers.rs:1029`). A check at read time uses `clock::now_secs()` with
-   `VerifyOptions::new(now)`, which refuses a record dated more than 300 s
-   in the future (`crates/signed_record/src/verify.rs:91`, `:184`). Step 3
-   confirms that the pinned clock is within 300 s of "now". If not, the
-   service passes the pinned clock to the view; `forward_view` takes
-   `now_secs` as a parameter for that reason.
+   (`crates/roym_web/tests/dual_build_parity/fixtures.rs:68`,
+   `helpers.rs:1034`: `RecordClock::Fixed(wall_now + 240)`). A check at
+   read time uses `clock::now_secs()` with `VerifyOptions::new(now)`,
+   which refuses a record dated more than 300 s in the future
+   (`crates/signed_record/src/verify.rs:91`, `:185`). 240 s is inside 300 s
+   and time only moves forward, so the pinned clock passes. Step 3
+   confirms it with the first forward scenario. `forward_view` still takes
+   `now_secs` as a parameter, so a unit test can set any clock.
+   **A real node:** a reader whose clock is more than 300 s behind the
+   author's sees "origin could not be checked" until its clock catches up.
+   The certificate has its own 300 s rule (`delegation.rs:231`) that a
+   caller cannot change. The check runs at every read and stores no
+   verdict, so it heals by itself. A unit test pins this.
 6. **An origin must still check after its certificate expires.** The
    verifier checks that the record was signed inside the certificate's
    window, not that the window is still open (`verify.rs:206`; test at
-   `verify.rs:463`). So a forward of an old message still checks. A unit
-   test pins this for `message-origin` (section 7.1).
-7. **`messages.ts` is 1,174 lines and `groups.ts` 727.** TS files are not
+   `verify.rs:463`; `verify_chain_at` checks scope, master DID and
+   `issued_at`, not `expires_at`). So a forward of an old message still
+   checks. A unit test pins this for `message-origin` (section 7.1). No
+   revocation list is passed to the verifier either, so `revocation_status`
+   is "unknown" (as for every Roym record; backlog, section 8).
+7. **`messages.ts` is 1,113 lines and `groups.ts` 820.** TS files are not
    checked by `check-file-lengths` (it reads only `*.rs`,
    `xtask/src/file_lengths.rs:398`), but an earlier review asked that
    `messages.ts` not grow (C1 R15). New Hub code goes into
-   `crates/roym_web/ui/src/chat/`, which holds `message_text.ts` today.
+   `crates/roym_web/ui/src/chat/`, which holds `message_text.ts` and
+   `message_state.ts` today (`widgets/` shows the same habit).
+8. **A forward needs no signing certificate.** `conversation.forward`
+   copies the origin of the source. It signs nothing, so it works for a
+   person who has not enrolled signing on `conversation`. Only a `signed`
+   send needs the certificate.
+9. **What a checked origin proves.** "Signed as a person" is a form check
+   (a delegation is present and names the issuer). Anyone can make a master
+   key and a certificate. A checked origin proves that the holder of the
+   author DID wrote the text at the stated time. It does not prove that the
+   holder is someone the reader knows. The reader's contacts decide the
+   name (Q9).
+10. **A signed message gives a smaller room for text.** The origin adds
+    about 1.2 KB. A sealed mailbox message holds a body of about 13 KiB
+    (`card.rs:40`), so a signed text over about 11.5 KiB waits for the
+    receiver to be online. The host limit of 262,144 bytes (a config value,
+    `store.rs:92`) is for the whole body, so a signed text near that limit
+    is refused by the host with `-32004` after the service signed it. Step
+    4 measures both sizes.
 
 ## 3. What C7 meets
 
@@ -370,19 +595,19 @@ Its Deviations (from ADR-0030) win over its main text.
 
 | Criterion | Part | How | Main test |
 | --- | --- | --- | --- |
-| FW-1 | C7a | A mode in every Hub message; an origin for `signed`; the payload as the Deviations say (no `author`, no `sent_at_secs`; `languages`) | `chat` unit tests; parity B, C |
-| FW-2 | C7a | `conversation.forward` checks mode and origin itself; the Hub hides the action | parity G; `roym_forward_e2e` step 5 |
-| FW-3 | C7a | Check at read; Hub line with name and date | `forward_view` unit tests; Hub unit test; story 20 |
-| FW-4 | C7a | Failed check: the forwarder's own words plus a note; no author | `chat` unit tests; Hub unit test |
-| FW-5 | C7a | Count ≥ 5 shows "Forwarded many times" | Hub unit test |
+| FW-1 | C7a | A mode in every message sent with a mode (the Hub always names one); an origin for `signed`; the payload as the Deviations say (no `author`, no `sent_at_secs`; `languages`) | `chat` unit tests; parity B, C |
+| FW-2 | C7a, C7b | `conversation.forward` checks mode and origin itself (C7a); the Hub hides the action (C7b) | parity G; `roym_forward_e2e` step 5; Hub unit test |
+| FW-3 | C7a, C7b | Check at read (C7a); Hub line with name and date (C7b) | `forward_view` unit tests; Hub unit test; story 20 |
+| FW-4 | C7a, C7b | Failed check: no author in the view (C7a); the forwarder's own words plus a note (C7b) | `chat` unit tests; Hub unit test |
+| FW-5 | C7a, C7b | The view carries `many_forwards` for a count of 5 or more (C7a); the Hub shows "Forwarded many times" (C7b) | `chat` unit test; Hub unit test |
 | FW-6 | C7a | Any change of text, languages or content type breaks the hash | `chat` unit tests |
-| FW-7 | C7b | A record-forward body; `listing`, `profile`, `quote` only | C7b tests (section 6.2) |
+| FW-7 | C7c | A record-forward body; `listing`, `profile`, `quote` only | C7c tests (section 6.3) |
 | FW-8 | C7a | A blob-hash list in the hash input, always empty (Q8) | `chat` unit test; Deviation row |
 | FW-9 | C7a | Forward to a one-to-one chat or a group, one method | `roym_forward_e2e` steps 3, 4 |
-| FW-10 | C7a | First-message question; settings text | Hub unit test; Hub case; story 20 |
-| FW-11 | C7a | Group composer notice; no group rule | Hub unit test |
-| FW-12 | C7a | Composer mode control; one change does not change the default | Hub unit test |
-| FW-13 | C7a | No forward action and a reason; a forged forward has no checked origin | Hub unit test; `chat` unit tests |
+| FW-10 | C7b | First-message question; settings text | Hub unit test; Hub case; story 20 |
+| FW-11 | C7b | Group composer notice; no group rule | Hub unit test |
+| FW-12 | C7a, C7b | The default is stored and read (C7a); composer mode control, one change does not change the default (C7b) | parity A; Hub unit test |
+| FW-13 | C7a, C7b | A forged forward has no checked origin (C7a); no forward action and a reason (C7b) | `chat` unit tests; Hub unit test |
 | FW-14 | C7a | The mode is in the body, under the sender's message signature | parity B (raw body holds the mode); D-C7-1 |
 | FW-15 | C7a | A forward copies the author's mode and origin; the forwarder's default is not read | parity F |
 
@@ -397,10 +622,12 @@ Its Deviations (from ADR-0030) win over its main text.
 2. **New record type** `message-origin` version 1, inside a chat body.
    Signed as the person by the `conversation` service key, with the
    certificate in the envelope's `delegation` field (ADR-0030, decision 11).
-3. **Body size:** a `signed` chat body is about 1 KB larger than its text
-   (ADR estimate: about 940 bytes for the origin). C7a measures it
-   (step 4). A short message still fits the mailbox estimate used for cards
-   (`MAILBOX_CARD_BODY_BYTES` = 13 KiB, `crates/roym_core/src/card.rs:40`).
+3. **Body size:** a `signed` chat body is about 1.2 KB larger than its text
+   (ADR estimate: about 940 bytes for the origin, plus the JSON around it).
+   C7a measures it (step 4). A short message still fits the mailbox
+   estimate used for cards (`MAILBOX_CARD_BODY_BYTES` = 13 KiB,
+   `crates/roym_core/src/card.rs:40`). A signed text over about 11.5 KiB
+   does not (section 2.2, point 10).
 
 Nothing else on the wire changes: `text/plain` messages, cards, group
 system messages, deletion requests and the conversation envelope
@@ -413,18 +640,22 @@ system messages, deletion requests and the conversation envelope
    `"text/plain"`, else `-32602` on field `content_type`. With no
    `forward_mode`, nothing changes.
 5. `conversation.send` refuses `content_type`
-   `"application/vnd.roym.message+json"` as reserved, like the card type
-   (`messages.rs:287` to `:299`).
-6. New methods `conversation.forward`, `conversation.settings` and
-   `conversation.set-settings` (D-C7-4, D-C7-7). The `conversation` method
-   table grows by 3.
+   `"application/vnd.roym.message+json"` as reserved, like the widget types
+   (the closure at `messages.rs:278` to `:294`). A body over the host's
+   limit (`max_body_bytes`, 262,144 by default, a config value) is refused
+   by the host with `-32004`, as today. A `signed` text reaches it about
+   1.2 KB sooner.
+6. New methods `conversation.forward` and `conversation.settings`
+   (D-C7-4, D-C7-7). The `conversation` method table grows from 27 to 29.
 7. `MessageView` (`crates/roym_core/src/conversation.rs:141`) gains
    `forward: Option<ForwardView>`. It is set only for a chat body, and left
    out of the JSON when `None`. **For a chat body, `body` is the inner
    text**, not the raw JSON (D-C7-6). `content_type` stays the wire content
    type.
-8. `conversation.search` drops a chat-body match whose inner text does not
-   match the query (Q4 (a)). So it can return fewer rows than `limit`.
+8. `conversation.search`: with Q4 (a), the host indexes only the `text`
+   field of a chat body, so nothing changes in the method. With Q4 (b), the
+   method drops a chat-body match whose inner text does not match the
+   query, and can return fewer rows than `limit`.
 9. The `conversation` backup bundle gets a section `settings`;
    `SCHEMA_VERSION` 4 → 5. A bundle of version 4 is refused on import, as
    for every schema change.
@@ -433,8 +664,8 @@ system messages, deletion requests and the conversation envelope
 11. A `signed` send with no usable certificate is refused with `-32602` and
     `data.code` `signing-not-enrolled`, `signing-certificate-expired`,
     `signing-certificate-stale` or `signing-no-owner`: the words
-    `transaction` uses today (`crates/roym_transaction/src/app.rs:307` to
-    `:337`). The refusals of `transaction` do not change: the function
+    `transaction` uses today (`crates/roym_transaction/src/app.rs:327` to
+    `:357`). The refusals of `transaction` do not change: the function
     moves, its words stay.
 
 ### Visible behaviour changes (Hub)
@@ -444,20 +675,26 @@ system messages, deletion requests and the conversation envelope
 13. A first-message dialog, once per person (per node).
 14. Profile tab: a section with the default mode.
 15. On each chat-body message: a "Signed" tag, a "Forward" button (checked
-    `signed` only) or a "Not forwardable" note; the forwarded line; the
+    `signed` only) or a "Not forwardable" tag; the forwarded line; the
     "origin could not be checked" note.
 16. A `text/plain` message (another client, or a message from before C7)
-    shows the "Not forwardable" note too. Before C7 it showed no note.
+    shows a small tag "Cannot be forwarded (no signed origin)". It does
+    not say that the author chose this, because the author chose nothing.
+    The tag is drawn only on a `text/plain` row and on a chat body of
+    mode `not-forwardable`. A card, a widget, a widget answer and a system
+    row show no tag. Before C7 no row showed one.
 17. The delete dialog of a `signed` message adds one sentence: the signed
-    origin stays with everyone who has the message (ADR-0030, decision 12:
-    "It cannot be taken back").
+    origin stays with everyone who has the message, and copies that others
+    already forwarded stay too (ADR-0030, decision 12: "It cannot be taken
+    back").
 18. Search results show the inner text of a chat body (D-C7-6).
 
 ### Stays the same
 
-- The substrate conversation capability, its WIT and its host search.
+- The substrate conversation capability and its WIT. (The host's indexing
+  rule gets one case if Q4 (a) is chosen; its interface stays.)
 - `transaction` filing: it reads only card messages
-  (`crates/roym_transaction/src/app/sync.rs:263`).
+  (`crates/roym_transaction/src/app/sync.rs:264`).
 - Events: `conversation.message` events carry ids only
   (`crates/conversation/src/lib.rs:184`).
 - `conversation.retry` resends the stored body unchanged. A retried
@@ -492,6 +729,8 @@ pub const MAX_ORIGIN_BYTES: usize = 8 * 1024;
 /// "Forwarded many times" from this count on. The view carries it, so the
 /// Hub does not keep its own copy of the number.
 pub const MANY_FORWARDS: u32 = 5;
+/// A larger count in a body is read as this.
+pub const MAX_FORWARD_COUNT: u64 = 1_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -509,7 +748,7 @@ pub struct ChatBody {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub forward_count: Option<u32>,
+    pub forward_count: Option<u64>,
 }
 
 pub enum ChatBodyError { Malformed(String), Unsupported(String) }
@@ -527,7 +766,12 @@ Rules in `ChatBody::parse`:
 - `content_type != "text/plain"` → `Unsupported`.
 - An unknown `forward_mode` string reads as `NotForwardable`. A later mode
   never makes a message forwardable on this build.
-- `forward_count == Some(0)` reads as `None`.
+- `forward_count == Some(0)` reads as `None`. A count is read as `u64`
+  and clamped to `MAX_FORWARD_COUNT` (1,000). A number too big for `u64`
+  reads as the clamp value, and the body stays readable. (With a `u32`
+  field, a changed client could send `99999999999` and make the whole body
+  unreadable.) The count is only a hint (change doc), so a clamp loses
+  nothing.
 
 Rules applied later, in the check (D-C7-3) and the view (D-C7-6):
 
@@ -564,7 +808,7 @@ content_hash = "sha256:" + lowercase hex of SHA-256(input)
   (canonical form, 0 to 3, checked by `syneroym_text_lang::check_tag_list`
   in `send`, `messages.rs:263`). C7 always passes an empty blob list (Q8).
 - Hex through the existing `roym_core::backup::bytes_to_hex`
-  (`crates/roym_core/src/backup.rs:232`). SHA-256 through the `sha2`
+  (`crates/roym_core/src/backup.rs:233`). SHA-256 through the `sha2`
   crate: `roym_core` gains `sha2.workspace = true` (workspace version
   `0.10`, root `Cargo.toml:164`). Every Roym component already links
   `sha2` through `syneroym-signed-record` (`envelope.rs:227`), so the size
@@ -600,9 +844,9 @@ pub enum OriginCheck {
 ```
 
 - `record.rs`: add the constant, and `("message-origin", 1)` to
-  `RECORD_TYPES` (`record.rs:18`). If the wire-word test
-  (`crates/roym_core/src/record/tests/wire_words.rs`) lists record types,
-  it gets the new word.
+  `RECORD_TYPES` (`record.rs:18`, 15 entries today, 16 after). The test
+  `record/tests.rs:5` loops over the list, so it needs no change.
+  `wire_words.rs` lists no record types.
 - `origin_draft`: `version` 1, `record_type` `message-origin`, `subject`
   `""` (ADR-0030, decision 6; `signed_record/src/envelope.rs:61` checks
   only the maximum subject length), `expires_at_secs` `None`, `supersedes`
@@ -615,7 +859,11 @@ pub enum OriginCheck {
   `expires_at_secs` is set; the envelope has no `delegation` (an origin
   signed by a service key alone names no person, so "an origin must be
   signed as a person"). The verdict's `issuer` is then the person's master
-  DID.
+  DID. This is a form check. Anyone can make a master key and a
+  certificate, so a checked origin proves only that the holder of the
+  author DID wrote the text (section 2.2, point 9). The name rule of Q9
+  decides what the reader sees. `verify_message_origin` passes no
+  revocation list (backlog, section 8).
 - `check_origin`: `Absent` when the body is `NotForwardable` or has no
   origin; `Failed { "origin too large" }` over `MAX_ORIGIN_BYTES`; else
   `verify_message_origin`, then compare the payload's `content_type` with
@@ -637,7 +885,7 @@ pub struct ForwardSettings { pub default_mode: ForwardMode, pub asked: bool }
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct SetSettingsInput {
+pub struct SettingsInput {
     pub default_mode: Option<ForwardMode>,
     pub asked: Option<bool>,
 }
@@ -650,12 +898,14 @@ pub const SETTINGS: &str = "conversation_settings";
 const FORWARD_ROW: &str = "forward";
 ```
 
-- `conversation.settings` (`NoParams => ForwardSettings`): no row reads as
-  the default. A storage error is `-32603`, never "the default".
-- `conversation.set-settings` (`SetSettingsInput => ForwardSettings`):
-  merges the given fields into the row, writes it and returns it.
-  `asked: false` is refused (`-32602`, field `asked`): the Hub asks only
-  once (ADR-0030, decision 5).
+- `conversation.settings` (`SettingsInput => ForwardSettings`), one method
+  for read and write. With no field set it only reads: no row reads as the
+  default, and a storage error is `-32603`, never "the default". With a
+  field set it merges the given fields into the row, writes it and returns
+  it. `asked: false` is refused (`-32602`, field `asked`): the Hub asks
+  only once (ADR-0030, decision 5). The first plan had a second method,
+  `conversation.set-settings`. One method saves one dispatch arm in the
+  component (Q11).
 
 The service never reads the setting when it sends (Q3 (a)). The Hub reads
 it and passes the mode. The node keeps the setting for the Hub.
@@ -671,7 +921,9 @@ New file `crates/roym_conversation/src/app/chat_send.rs`:
 pub(crate) async fn send_with_mode(host, input, mode) -> Reply<SendOutput>
   if input.content_type is Some(ct) and ct != "text/plain":
       -32602, field content_type
-  (languages are checked in send before this, messages.rs:263)
+  (languages are checked in send before this, messages.rs:264)
+  messages::check_target(host, &conversation, ROYM_MESSAGE_CONTENT_TYPE, |_, _| None)?
+      // group state only; no signing for a group the person left
   origin = None
   if mode == Signed:
       payload = MessageOriginPayload {
@@ -681,17 +933,27 @@ pub(crate) async fn send_with_mode(host, input, mode) -> Reply<SendOutput>
       origin = Some(AppSigning::sign_record(host, chat::origin_draft(&payload), principal)
                     .await.map_err(internal_error)?)
   body = ChatBody { v: 1, "text/plain", text, mode, origin, forward_count: None }
-  send_body(host, conversation, ROYM_MESSAGE_CONTENT_TYPE, languages, body.to_bytes(), ..)
+  messages::deliver(host, conversation, ROYM_MESSAGE_CONTENT_TYPE, languages, body.to_bytes())
 ```
 
 - `messages::send` calls `send_with_mode` when `forward_mode` is `Some`,
   and keeps its path unchanged when it is `None`.
 - The group checks must run **before** the signing call, so a send to a
-  group the person left signs nothing. If C4's `send_body` runs them only
-  inside itself, `send_with_mode` first calls
-  `AppConversation::group_info` the same way `send` does today
-  (`messages.rs:273` to `:285`), and the implementer moves that check into
-  a small shared helper rather than copying it.
+  group the person left signs nothing. C4's `send_body` (`messages.rs:299`)
+  runs them inside itself, after the body is made. So split it in two:
+  `check_target(host, conversation, content_type, check_reserved) ->
+  Result<bool /* is_group */, Response>` (the `group_info` match and the
+  reserved check, lines `:310` to `:326` today) and `deliver(host,
+  conversation, content_type, languages, body) -> Reply<SendOutput>` (the
+  send and the read-back, lines `:328` to `:341`). `send_body` becomes the
+  two calls in a row, so `send`, `widget.send`, `widget.answer` and
+  `conversation.forward` keep their behaviour and their order of checks.
+  The chat type is sent with `|_, _| None`, because `send_with_mode` is its
+  one sanctioned sender (a raw `send` of it is refused by the closure of
+  `send`).
+- The new arms of `api::dispatch` (`forward`, `settings`) use `Box::pin`
+  so the async state machine of `dispatch` does not grow by their futures
+  (task.md C4a sizes: three methods cost 85,474 bytes there, Q11).
 - A signing failure sends nothing. There is no fallback to
   `not-forwardable` (ADR-0030, decision 7).
 
@@ -721,12 +983,19 @@ pub struct ForwardView {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct OriginView { pub author_did: String, pub written_at_secs: u64, pub record_id: String }
+pub struct OriginView {
+    pub author_did: String,
+    pub written_at_secs: u64,
+    pub record_id: String,
+    /// The author is the reader. The Hub then says "you" (Q9).
+    pub is_you: bool,
+}
 
 pub fn forward_view(
     body: &ChatBody,
     languages: &[String],
     sender_person_did: Option<&str>,
+    reader_did: Option<&str>,
     now_secs: u64,
 ) -> ForwardView;
 
@@ -748,24 +1017,33 @@ Rules of `forward_view` (each row is a unit test, section 7.1):
 The last row is FW-4: the Hub shows the message as the sender's own words,
 with the note. `origin` is `None`, so no author name can be drawn. The
 fourth row covers a forward that a changed client sent with no count: it
-still names its author.
+still names its author. The fifth row is a known gap: in a group, most
+senders are not the reader's contacts, so a changed client that drops the
+count from a forward is shown as if the sender wrote it (with a checked
+origin that names the author). An honest forward always carries the count.
+The count and this row are hints, as the change doc says; the origin is
+the proof.
 
 Service part, new file `crates/roym_conversation/src/app/view.rs`:
 
 - `pub(crate) async fn message_views<H: AppHost>(host: &H, rows: Vec<Message>) -> Vec<MessageView>`.
   For a row whose `content_type` is `ROYM_MESSAGE_CONTENT_TYPE` and that is
   not deleted: parse the body. On success, `view.body = Some(text)` and
-  `view.forward = Some(forward_view(..))`. On an error, keep the raw body
-  and set `view.forward = Some(unreadable_view("message body could not be read"))`.
+  `view.forward = Some(forward_view(..))`. On an error, set `view.body =
+  None` (the Hub then draws its "no body" text, never the raw JSON of a
+  body that a changed client made) and `view.forward =
+  Some(unreadable_view("message body could not be read"))`.
 - `sender_person_did`: for an outgoing row, `signing::owner_did(host)`
   (`crates/roym_core/src/signing.rs:240`); for an incoming row, the
-  `contacts_map` (`crates/roym_conversation/src/app.rs:143`). Each is read
+  `contacts_map` (`crates/roym_conversation/src/app.rs:144`). Each is read
   **once per page**, and only if the page holds a chat body.
+- `reader_did`: the same `signing::owner_did(host)`, from the same read.
 - `now_secs`: `clock::now_secs()`.
-- `history` (`messages.rs:373`), `changes` (`:398`) and `search` (`:491`)
-  build their rows through `message_views`. `history_item_to_view`
-  (`messages.rs:322`) keeps its two literal rows for membership and
-  group-name events, with `forward: None`.
+- `history` (`messages.rs:395`) and `search` (`:513`) build their rows
+  through `message_views`. `changes` (`:420`) does too. (The Hub calls only
+  `history` and `search` today; `changes` is for other clients.)
+  `history_item_to_view` (`messages.rs:344`) keeps its two literal rows for
+  membership and group-name events, with `forward: None`.
 
 ### D-C7-7. `conversation.forward`
 
@@ -797,9 +1075,16 @@ Steps, in this order. Each refusal is `-32602` with the `data.code` named:
 6. `check_origin` is not `Checked` → `origin-not-checked`, with the reason
    in the message.
 7. Build `ChatBody { v: 1, content_type, text, Signed, origin: <the same
-   string, byte for byte>, forward_count: Some(old.unwrap_or(0).saturating_add(1)) }`.
-8. `send_body(host, input.conversation, ROYM_MESSAGE_CONTENT_TYPE, source.languages, body, ..)`.
-   The group checks of the target run there.
+   string, byte for byte>, forward_count: Some(new_count) }`. The count
+   rule: `old` is the source's count (0 if none). If the source is an
+   outgoing message of this person and `old >= 1`, it is their own forward,
+   and `new_count = old` (the forwarder is already counted; without this
+   rule a person raises the count by forwarding their own forward again
+   and again). Otherwise `new_count = old.saturating_add(1)`, clamped to
+   `MAX_FORWARD_COUNT`.
+8. `send_body(host, input.conversation, ROYM_MESSAGE_CONTENT_TYPE, source.languages, body, |_, _| None)`.
+   The group checks of the target run there. (The reserved-type closure
+   lets the chat type through, as in D-C7-5.)
 
 - The forwarder's own default is never read (FW-15).
 - The source may be in any chat, and the target may be the same chat
@@ -808,11 +1093,36 @@ Steps, in this order. Each refusal is `-32602` with the `data.code` named:
   body and the languages.
 - Nothing is signed with the forwarder's person key. The forwarder's own
   message signature covers the forward, as for any message (ADR-0030,
-  decision 8).
+  decision 8). So a forward works for a person who has no signing
+  certificate on `conversation`.
+- A forward is a copy that lives on its own. Deleting the source message,
+  here or on the author's node, does not delete forwards that were already
+  sent (the delete dialog says so, section 4, item 17).
+- There is no limit on how often or to how many chats a person forwards
+  (change doc, non-goals).
 
-### D-C7-8. Search (Q4 (a))
+### D-C7-8. Search (Q4)
 
-In `roym_core::chat`:
+**With Q4 (a) (recommended), the host does the work.** In
+`crates/conversation`, a function `indexable_text(content_type: &str, body:
+&[u8]) -> Option<Cow<str>>` replaces the `is_searchable_content_type` test
+at its six call sites (`store/message.rs:134`, `:187`, `:326`;
+`group.rs:424`; `store/backup.rs:439`; `store/text_index.rs:80`). Rule:
+
+- a content type that is not text or JSON: `None`, as today;
+- a `+json` type (or `application/json`) whose body is a JSON object with
+  a top-level string field `text`: that string only;
+- any other text or JSON body: the whole body, as today.
+
+`conversation.search` is unchanged: a hit is a message whose text matches,
+and `MessageView.body` is the inner text (D-C7-6). No filter, no
+`text_matches`, no ICU data in the `conversation` component. Tests, in the
+host crate: a chat body is found by a word of its text, not by `signed`,
+`forward_mode` or a fragment of the origin; a widget body is found as
+before; a restored chat body is indexed by the same rule (the index is
+rebuilt from `indexable_text`).
+
+**With Q4 (b), the Roym service filters.** In `roym_core::chat`:
 
 ```rust
 /// True when `text` matches `query` by the host's own search rule.
@@ -829,21 +1139,26 @@ every short term s: some word w of keys.words (split on ' ') starts with s
 This is the rule of the two FTS5 tables (`fts.rs:56`): the trigram table
 finds a long term anywhere in the joined key, and the word table with
 `prefix = '1 2'` finds a short term as a word prefix. In `messages::search`,
-after the host call, a chat-body match is kept only if
-`chat::text_matches(inner_text, &query)`. The method's doc comment says
-that `matches` may hold fewer rows than `limit`.
+the service asks the host for 500 rows (the cap, `store/search.rs:14`) and
+keeps a chat-body match only if `chat::text_matches(inner_text, &query)`,
+up to `limit`. The host orders newest first and has no offset, so a common
+word can still lose older hits, and `matches` may hold fewer rows than
+`limit`. The method's doc comment says so.
 
 ### D-C7-9. Backup
 
-`crates/roym_conversation/src/app/backup.rs` (`:19`, `:66`): add
-`SECTION_SETTINGS = "settings"` and `(SECTION_SETTINGS, SETTINGS)` to
-`collect_sections`. Import: the section may hold zero rows, or one row with
-id `forward`. Any other id, or a payload that does not parse as
-`ForwardSettings`, refuses the import (`-32602`, the row id in the
-message). Chat bodies travel in `conversation_history` unchanged, and are
-checked again at read after a restore.
+`crates/roym_conversation/src/app/backup.rs` (`:19`, `:20`, and the
+`collect_sections` call in `export`): add `SECTION_SETTINGS = "settings"`
+and `(SECTION_SETTINGS, SETTINGS)` to `collect_sections`. Import: the
+section may hold zero rows, or one row with id `forward`. Any other id, or
+a payload that does not parse as `ForwardSettings`, refuses the import
+(`-32602`, the row id in the message). `import` is about 85 lines and
+already has an arm for each section; the new arm goes into a helper
+(`import_settings`), as the admissions arm does, so the function stays
+under 100 lines. Chat bodies travel in `conversation_history` unchanged,
+and are checked again at read after a restore.
 
-`SCHEMA_VERSION` 4 → 5 (`crates/roym_conversation/src/app.rs:31`). Its doc
+`SCHEMA_VERSION` 4 → 5 (`crates/roym_conversation/src/app.rs:32`). Its doc
 comment gains a "why" line: the settings section.
 
 ### D-C7-10. Hub
@@ -858,14 +1173,23 @@ New files in `crates/roym_web/ui/src/chat/`:
 - `first_message.ts`: `askOnce(anchor): Promise<ForwardMode>`. If
   `settings.asked` is true, it returns the default at once. Otherwise it
   draws a dialog (class `forward-mode-dialog`) with the two choices and
-  "Skip", and the text of ADR-0030, decision 12, in plain words. It saves
-  `{ default_mode, asked: true }` (skip saves `asked: true` only) and
-  returns the mode for this send.
+  "Skip", and the text of ADR-0030, decision 12, in plain words, with the
+  sentence that a signed message proves who wrote it and when, not to whom
+  it was sent. It saves `{ default_mode, asked: true }` (skip saves
+  `asked: true` only) and returns the mode for this send. Closing the
+  dialog counts as Skip. No choice is drawn as selected, so a quick click
+  on "Send" cannot pick `signed`.
 - `forward_view.ts`: `forwardLine(view, contacts)`, `forwardActions(m, refresh)`
   and the notes. The line is "Forwarded. First written by {name} on
   {date}. Forwarded {count} time(s)." or "… Forwarded many times." when
-  `many_forwards` (FW-5). `{name}` by Q9 (a). `{date}` from
-  `written_at_secs`, through the Hub's date format (`i18n/format.ts`).
+  `many_forwards` (FW-5). `{name}` by Q9 (a): "you", the contact name, or
+  "…" and the last 12 characters of the DID with "(not in your contacts)"
+  and the whole DID in a tooltip. `{date}` from `written_at_secs`
+  (the author's own clock, so the line says "written", not "sent"),
+  through the Hub's date format (`i18n/format.ts`). The tags of section 4,
+  item 16 are drawn here too: only on a `text/plain` row and on a chat body
+  of mode `not-forwardable`; never on a card, a widget, a widget answer or
+  a system row.
 - `forward_picker.ts`: a list of the person's chats from
   `conversation.list` (direct and groups, not hidden). "Forward" calls
   `conversation.forward`. The picker has the class `forward-picker`.
@@ -873,15 +1197,16 @@ New files in `crates/roym_web/ui/src/chat/`:
 Changes to existing files:
 
 - `screens/messages.ts`: add `.forward-mode-dialog, .forward-picker` to
-  `OPEN_WORK` (`:30`), so a feed redraw waits for them. In `renderThread`
-  (`:304`) and its send handler (`:341`): `askOnce` before the send, then
-  `forward_mode` from the mode control. `MessageRow` (`:55`) gains
-  `forward?: ForwardView`. `messageElement` (`:517`) calls `forwardLine`
-  and `forwardActions` for a row with `forward`, and the "Not forwardable"
-  note for a `text/plain` row.
-- `screens/groups.ts`: the group composer (`doSend`, `:444`) does the same
-  with `inGroup = true`. Its message rows (`renderThreadMessages`, `:151`)
-  use the same helpers.
+  `OPEN_WORK` (`:38`), so a feed redraw waits for them. In `renderThread`
+  (`:298`) and its send handler (`:334`): `askOnce` before the send, then
+  `forward_mode` from the mode control. `MessageRow` (`:51`) gains
+  `forward?: ForwardView`. `messageElement` (`:715`) calls `forwardLine`
+  and `forwardActions` for a row with `forward`, and the tag for a
+  `text/plain` row. The poll composer beside the text composer
+  (`pollComposer`) sends no mode and needs no dialog.
+- `screens/groups.ts`: the group composer (`doSend`, `:500`) does the same
+  with `inGroup = true`. Its message rows (`renderThreadMessages`, `:181`;
+  `renderMessageRow`, `:113`) use the same helpers.
 - A refused `signed` send with `data.code` `signing-not-enrolled`,
   `signing-certificate-expired` or `signing-certificate-stale` shows two
   buttons: "Send as not forwardable" (sends again with that mode) and
@@ -889,24 +1214,29 @@ Changes to existing files:
   changes the mode on its own (ADR-0030, decision 7).
 - `screens/profile.ts`: the section "Forwarding of my messages", with the
   default and the explanation (FW-10, Q10 (a)).
-- The delete dialog (`openDeleteDialog`, `messages.ts:1135`) adds the
+- The delete dialog (`openDeleteDialog`, `messages.ts:1074`) adds the
   sentence of section 4, item 17, for a `signed` message.
 
 ### D-C7-11. One signing refusal helper
 
-Move `resolve_principal_and_owner` from
-`crates/roym_transaction/src/app.rs:307` to `crates/roym_core/src/signing.rs`
+Move the body of `resolve_principal_and_owner` from
+`crates/roym_transaction/src/app.rs:327` to `crates/roym_core/src/signing.rs`
 as:
 
 ```rust
-pub async fn resolve_person_principal<H: AppHost>(host: &H, now: u64)
+pub async fn resolve_principal_and_owner<H: AppHost>(host: &H, now: u64)
     -> Result<(Principal, String), Response>
 ```
 
-Its words and `data.code` values do not change. Every caller in
-`roym_transaction` switches to it (find them with
-`git grep -n resolve_principal_and_owner crates/roym_transaction`).
-`roym_conversation` calls it in D-C7-5.
+The name and the signature stay, so `transaction` keeps its 12 call sites
+(`git grep -n resolve_principal_and_owner crates/roym_transaction`) and
+only re-exports the function in `app.rs`: `pub(crate) use
+syneroym_roym_core::signing::resolve_principal_and_owner;`. Its words and
+`data.code` values do not change. Remove the imports that the move leaves
+unused in `app.rs` (`CertificateError`, `Principal`, `json!`, if no other
+code there uses them). `roym_conversation` calls it in D-C7-5. The first
+plan renamed it and switched every call site; that touches 10 files and
+makes the PR conflict with any other `transaction` change.
 
 ### D-C7-12. No `roymctl` change
 
@@ -917,39 +1247,54 @@ documents the raw methods instead.
 
 ### D-C7-13. Widgets stay not forwardable
 
-A `widget` or `widget-answer` message (C4) has no forward mode, so
-`conversation.forward` refuses it at step 3 of D-C7-7. Whether a vote is
-provable is the C4 plan's question (ADR-0030, Consequences), not C7's.
+A `widget` or `widget-answer` message (C4) has its own content type and
+body (`roym_core/src/widget.rs:15`) and no forward mode, so
+`conversation.forward` refuses it at step 3 of D-C7-7. This was checked
+against the merged widget code: the widget body has no field that a mode
+or an origin could use, and a forward of a poll would make a second poll
+with its own votes. The C4 decision on votes is final: an answer is an
+ordinary chat message, authenticated by the chat's message signature, with
+no master-DID signature (backlog, "Recently resolved"). So a vote is not
+provable outside the chat. The Hub shows no forward action and no tag on a
+widget.
 
 ## 6. Step-by-step changes
 
-### 6.1 C7a
+### 6.1 C7a — Node
 
-Each step builds, and its tests pass, before the next one starts.
+Steps 0 to 4 and step 7 (node close-out). Each step builds, and its tests
+pass, before the next one starts. The steps keep their numbers when the
+owner picks Q2 (a) (steps 5 and 6 then join this PR).
 
-#### Step 0 — Rebase on C4
+#### Step 0 — Start from `main`
 
-After C4 merges (Q1 (a)): rebase this branch on `main`. Re-check the places
-in section 2.2, point 1, and update section 5 of this plan where C4's code
-differs. Record the component sizes on that `main` commit (one `target/`
-folder, `mise run build:roym`) as the "before" column.
+Cut the C7a branch from `main` (this branch holds only the plan). Measure
+the component sizes on that commit (one `target/` folder,
+`mise run build:roym`) as the "before" column. The reviewer's numbers on
+`89d1dd23` are in "Sizes now"; use your own if `main` has moved. Re-check
+any line number of this plan that a later merge moved.
 
 #### Step 1 — Pure chat code in `roym_core`
 
 - `crates/roym_core/Cargo.toml`: `sha2.workspace = true`.
-- `src/chat.rs` and `src/chat/tests.rs`: D-C7-1, D-C7-2, D-C7-3, the pure
-  part of D-C7-6, and D-C7-8. `src/lib.rs`: `pub mod chat;`.
+- `src/chat.rs` and `src/chat/tests.rs`: D-C7-1, D-C7-2, D-C7-3 and the
+  pure part of D-C7-6 (and D-C7-8, only if Q4 (b)). `src/lib.rs`:
+  `pub mod chat;`.
 - `src/record.rs`: the record type.
 - `src/conversation.rs`: `MessageView.forward`, and the struct literals at
   `conversation.rs:248`, `conversation/group/tests.rs:7`,
-  `crates/roym_conversation/src/app/messages.rs:327` and `:350`.
+  `crates/roym_conversation/src/app/messages.rs:349` and `:372`.
 - `src/method/conversation.rs`: `SendInput.forward_mode`, `ForwardInput`,
-  `ForwardSettings`, `SetSettingsInput`. Update the `SendInput` literals in
-  tests (`git grep -n "SendInput {"`).
-- `src/signing.rs`: D-C7-11, and switch `roym_transaction` to it.
-- **Size probe** (Q4 stop rule): a throwaway build of the `conversation`
-  component with a call to `chat::text_matches` in `search`. Report the
-  size change. Over 60 KB: stop and ask. Do not commit the probe.
+  `ForwardSettings`, `SettingsInput`. Update every `SendInput` literal
+  (`git grep -n "SendInput {"`): `method/tests.rs:504` and `:513`, and the
+  production literal in `crates/roym_transaction/src/app.rs:645`, which
+  sends cards.
+- `src/signing.rs`: D-C7-11, and the re-export in `roym_transaction`.
+- **Size probe** (Q11): build the `conversation` component with a call to
+  `chat::check_origin` in `message_views` (a stub is enough) and report the
+  size change. This is the first time `conversation` links the record
+  check. If Q4 (b): also a call to `chat::text_matches` in `search`; over
+  60 KB from that alone, stop and ask. Do not commit the probe.
 
 Tests: section 7.1. `cargo nextest run -p syneroym-roym-core` and
 `-p syneroym-roym-transaction`.
@@ -958,17 +1303,22 @@ Tests: section 7.1. `cargo nextest run -p syneroym-roym-core` and
 
 - `src/app.rs`: `SETTINGS`, `SCHEMA_VERSION` 5.
 - `src/app/settings.rs`: D-C7-4.
-- `src/app/chat_send.rs`: D-C7-5.
+- `src/app/chat_send.rs`: D-C7-5, with `check_target` and `deliver` split
+  out of `send_body` in `messages.rs`.
 - `src/app/view.rs`: the service part of D-C7-6.
 - `src/app/messages.rs`: the reserved type; `send` calls `send_with_mode`;
-  `history`, `changes` and `search` go through `view.rs`; the D-C7-8 filter.
+  `history`, `changes` and `search` go through `view.rs`; with Q4 (b), the
+  filter.
 - `src/app/backup.rs`: D-C7-9.
-- `src/api.rs`: rows for `conversation.settings` and
-  `conversation.set-settings`.
-- `crates/roym_web/tests/method_contract/contract.rs:39`: the count (C4's
-  value + 2).
-- Scenario 73 (`dual_build_parity/wire_origin.rs`): add the two verbs.
+- `src/api.rs`: the row for `conversation.settings`.
+- With Q4 (a): the host rule of D-C7-8, in `crates/conversation`, with its
+  tests.
+- `crates/roym_web/tests/method_contract/contract.rs:39`: the count (27 → 28
+  after this step; 29 after step 3).
+- Scenario 73 (`dual_build_parity/wire_origin.rs:67`): add the verb.
 - Method shapes: run with `UPDATE_METHOD_SHAPES=1` and read the diff.
+- **Measure `conversation` again** (Q11). Over +15% (147,820 bytes over the
+  "before" size): stop and ask.
 
 Tests: parity A to E and I (section 7.3). Run `mise run build:roym` first,
 then the **whole** parity binary.
@@ -993,7 +1343,20 @@ Tests: parity F to H.
   ask the owner** (ADR-0030, decision 11). Both numbers go into the change
   doc's Deviations.
 - It measures one `conversation.history` page of 200 `signed` messages on
-  the WASM build (Q6 stop rule: 500 ms).
+  the WASM build (Q6 stop rule: 500 ms) and prints the number.
+
+#### Step 7a — Close-out of C7a
+
+Component sizes (section 7.7) into [task.md](task.md) section 1; the
+change doc's Deviations (section 9) for the node part; backlog (section 8);
+the living docs that the node part changes (section 9: developer guide,
+integrated spec "Records", terminology, requirements); the `status.md`
+row; `mise run verify` with no `--skip` (in a worktree: `cargo xtask
+verify` with `CARGO_TARGET_DIR`).
+
+### 6.2 C7b — Hub and demo
+
+Starts from `main` after C7a merges. Steps 5, 6 and 7b.
 
 #### Step 5 — Hub
 
@@ -1002,38 +1365,49 @@ D-C7-10, with the Hub unit tests of section 7.5. Run
 
 #### Step 6 — Playwright and the demo
 
+Every send through the Hub composer now meets the first-message dialog.
+There are 7 `sendMessage(` calls (story 20, story 40, `roym-hub.spec.ts`),
+the group send in `tests/roym-groups.spec.ts:93`, and the compose box in
+`tests/roym-deal.spec.ts` (`:291`, `:358`). Run the whole Playwright suite,
+not only the new case.
+
 - `crates/substrate/tests/e2e/hub-helpers.ts`: `sendMessage` (`:211`)
   answers the first-message dialog with "Skip" when it is shown. Then every
   existing caller (`demo/20-roym-chat.spec.ts`,
   `demo/40-roym-languages.spec.ts`, `tests/roym-hub.spec.ts`) keeps
   working. A new helper `chooseForwardMode(page, mode)` answers it on
-  purpose. The group send helper that `tests/roym-groups.spec.ts` uses does
-  the same.
-- `tests/roym-hub.spec.ts`: a new case (the next free number; 42 is the
-  highest on `main`) for the dialog, the composer control and the Profile
-  setting, on one node.
+  purpose. `tests/roym-groups.spec.ts:93` and the cases of
+  `tests/roym-deal.spec.ts` that use the compose box answer it the same
+  way.
+- `tests/roym-hub.spec.ts`: a new case, number **43** (42 is the highest
+  number on `main`, in `roym-hub-remote.spec.ts`), for the dialog, the
+  composer control and the Profile setting, on one node.
 - Story 20 (Q7): section 7.6.
 - `mise run demo`, then `mise run test:e2e`, with the output redirected
   (AGENTS.md, Context Budget).
 
-#### Step 7 — Sizes, docs and close-out of C7a
+#### Step 7b — Close-out of C7b
 
-Component sizes (section 7.7) into [task.md](task.md) section 1; the
-change doc's Deviations (section 9); backlog (section 8); living docs
-(section 9); the `status.md` row with the Hindi keys; `mise run verify`
-with no `--skip` (in a worktree: `cargo xtask verify` with
-`CARGO_TARGET_DIR`).
+The Hindi keys for the owner (section 7.8) in the `status.md` row; the
+change doc's `demo:` list; the Hub parts of the living docs; `mise run
+verify` with no `--skip`.
 
-### 6.2 C7b — Forward of signed records
+### 6.3 C7c — Forward of signed records
 
-An outline only. C7b checks these points in the code again after C7a
-merges, on its own branch, and adds a short section to this plan.
+An outline only. C7c checks these points in the code again after C7b
+merges, on its own branch, and adds a short section to this plan. Points to
+check first: (1) since C2, the hidden fields of a quote are digests, so
+confirm that `verify_quote` and `QuotePayload::validate` accept an envelope
+that is shown with no disclosures, and what the Hub's quote card draws for
+it (C6b changed the card); (2) the new method is a third dispatch arm in
+`conversation` (Q11): measure the size first; (3) the new content type is
+added to the reserved closure in `send`.
 
 - New content type `application/vnd.roym.record-forward+json`, body
   `{ "v": 1, "record_type": "listing" | "profile" | "quote", "envelope": "<envelope JSON>" }`.
   It ignores the forward mode and carries no origin (ADR-0030, decision 10).
   Reserved in `conversation.send`. Allowed in groups: it is not the card
-  type, so `transaction` never files it (`sync.rs:263`).
+  type, so `transaction` never files it (`sync.rs:264`).
 - New `conversation.forward-record` (`{ conversation, record_type, envelope }`):
   checks the envelope with the matching pure function, refuses any other
   record type, and sends. The envelope is at most 160 KiB (the card body
@@ -1044,8 +1418,8 @@ merges, on its own branch, and adds a short section to this plan.
 - Checks: `listing::verify_envelope` (`crates/roym_core/src/listing.rs:622`)
   and `transaction::verify_quote` (`crates/roym_core/src/transaction.rs:458`)
   exist. The profile check lives in `roym_profile`
-  (`crates/roym_profile/src/app/contacts.rs:117`); C7b moves it into
-  `roym_core` first.
+  (`process_profile_envelope`, `crates/roym_profile/src/app/contacts.rs:105`
+  to `:125`); C7c moves it into `roym_core` first.
 - Hub: "Forward" on a quote card (with the warning that it shows both
   parties), on a directory hit (the envelope from `runEnvelope`,
   `screens/directory.ts:454`) and on a contact's profile. The receiver's
@@ -1068,6 +1442,7 @@ Body:
 - `an_origin_on_a_not_forwardable_body_is_ignored`
 - `an_origin_over_the_size_limit_fails_as_too_large`
 - `a_forward_count_of_zero_reads_as_none`
+- `a_huge_forward_count_is_clamped_and_the_body_stays_readable`
 - `unknown_fields_in_a_chat_body_are_ignored`
 
 Hash:
@@ -1093,6 +1468,13 @@ lifetime is checked against it:
 - `an_origin_for_other_text_fails_the_hash` (FW-6)
 - `an_origin_for_other_languages_fails`
 - `a_tampered_origin_signature_fails` (FW-4)
+- `an_origin_dated_far_in_the_future_fails_and_checks_once_the_clock_catches_up`
+  (section 2.2, point 5)
+- `an_origin_signed_for_one_master_but_naming_another_issuer_fails` (the
+  certificate names a different master than the envelope's `issuer`)
+- `an_origin_with_a_certificate_of_another_scope_is_refused`
+- `an_origin_that_is_another_record_of_the_same_person_is_refused` (a
+  `profile` envelope put in the origin field)
 - `a_changed_text_with_the_old_origin_is_not_forwardable` (FW-13: the body
   a changed client would send)
 
@@ -1102,19 +1484,31 @@ View (`forward_view`): one test per row of the table in D-C7-6, and:
 - `many_forwards_starts_at_five` (FW-5)
 - `a_failed_origin_never_names_an_author` (FW-4)
 - `an_unreadable_body_is_not_forwardable`
+- `the_author_reading_a_forward_of_their_own_message_sees_is_you`
+- `a_forward_view_row_for_an_unknown_sender_keeps_the_origin_but_not_the_forwarded_line`
+  (the known gap of D-C7-6)
 
-Search (`text_matches`):
+Forward count (a pure `next_forward_count(old, source_is_own_forward)` in
+`chat`, used by `conversation.forward`):
 
-- `text_matches_a_long_term_inside_a_word`
-- `text_matches_a_short_term_as_a_word_prefix`
-- `text_does_not_match_a_word_that_is_only_in_the_json` (`forward_mode`,
-  `signed`)
-- `text_matches_devanagari_like_the_host` (one case from the host's search
-  tests in `crates/conversation/src/host_impl/tests.rs`)
+- `forwarding_a_received_message_adds_one`
+- `forwarding_your_own_forward_keeps_the_count`
+- `the_count_never_passes_the_clamp`
 
-Signing helper (in the `signing::tests` module, `signing.rs:256`):
+Search. With Q4 (a), the tests are in the host crate
+(`crates/conversation/src/store/tests.rs` and the host search tests):
+`a_chat_body_is_found_by_a_word_of_its_text`,
+`a_chat_body_is_not_found_by_signed_or_forward_mode_or_an_origin_fragment`,
+`a_widget_body_is_still_found_by_its_whole_text`,
+`a_restored_chat_body_is_indexed_by_the_same_rule`. With Q4 (b), the tests
+are for `text_matches` in `chat`: a long term inside a word, a short term
+as a word prefix, no match for a word that is only in the JSON
+(`forward_mode`, `signed`), and one Devanagari case from the host's search
+tests (`crates/conversation/src/host_impl/tests.rs`).
 
-- `resolve_person_principal_refuses_each_certificate_state_with_its_code`:
+Signing helper (in the `signing::tests` module, `signing.rs:257`):
+
+- `resolve_principal_and_owner_refuses_each_certificate_state_with_its_code`:
   `TestHost` with `set_signing_id` and no `CERTIFICATES` row, then an
   expired certificate, then a stale one, then no owner.
 
@@ -1125,12 +1519,14 @@ are tested through 7.3 and 7.4.
 
 ### 7.3 Parity (both builds agree): new file `dual_build_parity/forward.rs`
 
-Scenario numbers: the next free numbers after C4 (C4 takes 260 to 265).
-Each scenario calls `enrol_signing(&h, "conversation")`
+Scenario numbers: 278 to 288 (the highest on `main` is 277, C6). Re-check
+before you start; C4 used 260 to 266 and C6 267 to 277. Each scenario
+calls `enrol_signing(&h, "conversation")`
 (`dual_build_parity/fixtures.rs:59`) first, unless it tests the refusal.
 
-- A. `conversation.settings` on a fresh node returns the default;
-  `set-settings` changes it; `asked: false` is refused.
+- A. `conversation.settings` with no field on a fresh node returns the
+  default; with fields it changes them and returns the row; `asked: false`
+  is refused.
 - B. `send` with `signed`: the history row has `forward.mode` `signed`,
   `forwardable: true`, `origin.author_did` = the owner DID, and `body` =
   the text. The raw stored body (read with the host's `get_message`) holds
@@ -1146,9 +1542,15 @@ Each scenario calls `enrol_signing(&h, "conversation")`
 - G. `forward` refusals: a `text/plain` message, C's message, a deleted
   message, an unknown id. Each has its `data.code`.
 - H. Search: a word of B's text finds it; `forward_mode` and `signed` do
-  not (Q4 (a)).
+  not (Q4 (a)), and a word that matches many real messages returns the
+  newest `limit` of the real ones, not fewer (the lost-hit case of D1).
 - I. Backup: export after A, import into a wiped node: the settings row is
   back. A bundle with a second settings row id is refused.
+- J. `send` with `signed` into a group that the person was removed from, and
+  into a restored group: refused with the group notice, and the signing
+  call was never made (the order of `check_target` and the signing).
+- K. `forward` of a message that the same node sent as a forward: the count
+  stays; `forward` into the same conversation works (FW-9).
 
 The two builds share the owner identity and the pinned clock, so they
 should sign the same bytes. Normalize the origin with `strip_volatile` only
@@ -1169,7 +1571,11 @@ On `boot_trio` (Alice, Bob, Carol), WASM build:
    group, FW-15).
 5. Alice sends a `not-forwardable` message. Bob's `forward` of it is
    refused with `not-forwardable` (FW-2).
-6. The size measurement and the history timing of step 4.
+6. Bob forwards his own forward into the chat with Alice: the count stays 1,
+   and Alice's view says `is_you` for the origin.
+7. The size measurement and the history timing of step 4. Also one `signed`
+   message of 11 KiB of text: print its body size, and whether it reaches
+   an offline peer through the mailbox (section 2.2, point 10).
 
 A forged forward (changed text with the old origin) cannot be sent through
 `conversation.send`, because the chat content type is reserved. The view is
@@ -1181,17 +1587,22 @@ cover it on the receiving side.
 New files `chat/forward_view.test.ts`, `chat/forward_mode.test.ts`,
 `chat/first_message.test.ts` and `chat/forward_picker.test.ts`:
 
-- the forwarded line with a contact name, with an unknown DID ("(not in
-  your contacts)"), and with count 1, 4 and 5 (FW-3, FW-5, Q9);
+- the forwarded line with a contact name, with "you" (`is_you`), with an
+  unknown DID (the last 12 characters, "(not in your contacts)", and the
+  whole DID in the tooltip; never the first 16), and with count 1, 4 and 5
+  (FW-3, FW-5, Q9);
 - a failed origin: no author name anywhere in the element, and the note
   (FW-4);
-- no "Forward" button when `forwardable` is false, and the note says why
-  (FW-13); a `text/plain` row gets the note too;
+- no "Forward" button when `forwardable` is false, and the tag says why
+  (FW-13); a `text/plain` row gets the "no signed origin" tag; a card, a
+  widget, a widget answer and a system row get no tag; an unreadable body
+  shows the "no body" text and never raw JSON;
 - the mode control starts at the default, changes for one send, and is
   back at the default after it; the saved default is unchanged (FW-12);
 - the group notice shows only for `signed` in a group (FW-11);
 - the first-message dialog: shown when `asked` is false; each choice saves
-  `asked: true`; skip keeps `not-forwardable`; not shown again (FW-10);
+  `asked: true`; skip and closing keep `not-forwardable`; nothing is
+  pre-selected; not shown again (FW-10);
 - a refused `signed` send shows the two buttons and does not resend on its
   own (ADR-0030, decision 7).
 
@@ -1201,16 +1612,17 @@ expected params, and add one assertion each that `forward_mode` is sent.
 
 ### 7.6 Playwright and the demo
 
-- A Hub case (the next free number) in `tests/roym-hub.spec.ts`: dialog,
-  composer, Profile default.
-- Story 20, after C4's poll steps (Q7 (a)):
+- A Hub case, number 43, in `tests/roym-hub.spec.ts`: dialog, composer,
+  Profile default.
+- Story 20, after C4's poll steps (Q7 (c), the recommendation; for Q7 (a)
+  Bob first adds Alice as a contact, creates "Market", adds Alice, and
+  forwards there):
   1. "Alice's screen: she chooses that her messages can be forwarded with
      her name": at her first send, `chooseForwardMode(page, 'signed')`.
      This is part of today's step "send Bob a message".
-  2. "Bob's screen: he forwards Alice's message to a new group with
-     Alice": create the group "Market", then forward.
-  3. "Alice's screen: the group shows 'Forwarded. First written by
-     Alice …'". Wait `DELIVERY_WAIT_MS`.
+  2. "Bob's screen: he forwards Alice's message back to the chat".
+  3. "Alice's screen: it shows 'Forwarded. First written by you.
+     Forwarded 1 time.'". Wait `DELIVERY_WAIT_MS`.
 - `crates/substrate/tests/e2e/demo/20-roym-chat.spec.ts` goes into the
   change doc's `demo:` list.
 
@@ -1218,10 +1630,13 @@ expected params, and add one assertion each that `forward_mode` is sent.
 
 Release `wasm32-wasip2`, one `target/` folder, before (step 0) and after.
 `conversation` gets new record code, so its limit is +15% of its "before"
-size (on `aa25961b` it is 813,818 bytes in the C3c2 table, so about
-122 KB; C4 changes the base). `transaction` changes only by the moved
-helper: +40 KB limit. The other components link `roym_core` but call none
-of the new code: +40 KB limit each. Over a limit: stop and tell the owner.
+size. On `main` `89d1dd23` that is 985,469 bytes, so **147,820 bytes**
+(ceiling 1,133,289), unless the owner answers Q11 (b). `transaction`
+changes only by the moved helper: +40 KB limit (2,870,685 bytes before).
+The other components link `roym_core` but call none of the new code: +40 KB
+limit each (`catalog` 960,590; `directory` 1,504,433; `profile` 772,748;
+`scheduling` 715,723; `web` 311,314). Over a limit: stop and tell the
+owner. Measure `conversation` at steps 1 and 2 as well as at the end.
 
 ### 7.8 Hindi text
 
@@ -1230,9 +1645,11 @@ lists them for the owner's review. Expected keys (names may change):
 `forward-mode-label`, `forward-mode-signed`, `forward-mode-not-forwardable`,
 `forward-mode-group-notice`, `forward-first-title`,
 `forward-first-signed-explain`, `forward-first-not-forwardable-explain`,
-`forward-first-skip`, `forward-settings-heading`, `forward-settings-explain`,
+`forward-first-to-whom-note`, `forward-first-skip`,
+`forward-settings-heading`, `forward-settings-explain`,
 `forward-button`, `forward-picker-title`, `forward-sent`, `forward-line`,
-`forward-line-many`, `forward-not-in-contacts`, `forward-not-forwardable-note`,
+`forward-line-many`, `forward-author-you`, `forward-not-in-contacts`,
+`forward-tag-not-forwardable`, `forward-tag-no-origin`,
 `forward-origin-not-checked`, `forward-signed-tag`,
 `forward-send-not-forwardable`, `forward-renew-signing`,
 `messages-delete-signed-note`. The tests `i18n/hindi-screens.test.ts` and
@@ -1246,27 +1663,32 @@ lists them for the owner's review. Expected keys (names may change):
 
 ### 7.10 Size and time risks
 
-- The ICU data of `search_key` in `conversation` (Q4 stop rule, step 1).
+- The size of `conversation` (Q11, steps 1 and 2): the record check and two
+  dispatch arms, and with Q4 (b) the ICU data of `search_key`.
 - The origin size (ADR-0030 stop rule, step 4).
-- The read-time check (Q6 stop rule, step 4).
+- The read-time check (Q6 stop rule, step 4). The Hub repeats it at each
+  redraw.
 - `messages.ts` keeps its length: new code is in `chat/`.
 
 ### 7.11 How C7 avoids the kinds of findings in earlier reviews
 
-- Every line number above was read on `aa25961b`. Step 0 reads the
-  C4-touched ones again (C4 P1, C3c P8).
-- Callers of changed types: the `MessageView` literals, `SendInput` (Hub;
-  `roymctl` tests at `apps/roymctl/src/commands/roym/tests.rs:384`;
-  parity) and `resolve_principal_and_owner` (all of `roym_transaction`).
-  `git grep` each before step 1 ends (C3c P3, C2 P2).
+- Every line number above was read on `89d1dd23`. Step 0 reads the ones
+  that a later merge moved again (C4 P1, C3c P8).
+- Callers of changed types: the `MessageView` literals (4), `SendInput`
+  (`method/tests.rs`, parity, and the production literal in
+  `roym_transaction/src/app.rs:645`; `roymctl` builds JSON, not the type)
+  and `resolve_principal_and_owner` (12 call sites, kept by the
+  re-export). `git grep` each before step 1 ends (C3c P3, C2 P2).
 - Hard-coded counts: the `conversation` contract count, scenario 73, the
   method shapes (C4 P5, C3b R1).
 - Every free field has a limit checked before it is parsed: origin 8 KiB,
-  languages 3, text by the store limit of 262,144 bytes
-  (`crates/conversation/src/store.rs:92`) (C3a P4, C2 P5).
+  languages 3, text by the host limit `max_body_bytes`, 262,144 by default
+  (`crates/conversation/src/store.rs:92`), forward count clamped to 1,000
+  (C3a P4, C2 P5).
 - The signer is compared with what is expected: the origin must be signed
-  as a person (delegation present), and the display name comes only from
-  the checked `issuer` (C2 R14, R25).
+  as a person (delegation present, a form check), and the display name
+  comes only from the reader's contacts or the checked `issuer` (C2 R14,
+  R25).
 - The signing refusals are planned and tested (C3b P5, C2 R5).
 - A storage error is never read as "no row" (C2 R22).
 - New Hindi keys are listed (C1 R15).
@@ -1278,15 +1700,33 @@ Rows to add to [deferred-backlog.md](../../deferred-backlog.md) in C7a
 
 - **Roym chat has no attachments, so the origin's blob-hash list is always
   empty.** FW-8 is met in the format only (Q8). Target: TBD.
-- **Four places map the signing errors without a `data.code`:**
-  `roym_catalog`, `roym_profile`, `roym_directory` and `roym_core::backup`
-  (section 2.2, point 3). Section 10 (Product surfaces). Target: TBD.
-- **A default forward mode per conversation, and a group owner's limit on
-  `signed` messages** (change doc, open questions; ADR-0030,
-  Consequences). Target: TBD.
-- If the owner answers Q4 (b): **search matches the JSON keys of a chat
-  body.** Target: TBD.
-- Update the row "More demo stories" (§13): C7 extends story 20.
+- **Five places map the signing errors in their own words:**
+  `roym_catalog` (`listing_ops.rs:159`, no `data.code`), `roym_profile`
+  (`profile_ops.rs:268`), `roym_directory` (`credential_ops.rs:46`),
+  `roym_core::backup` (`backup.rs:313`) and `transaction`'s
+  `as_listed_ops/answer.rs:728`. The words of the `transaction` helper now
+  live in `roym_core::signing` (section 2.2, point 3). Section 10 (Product
+  surfaces). Target: TBD.
+- **A `signed` text over about 11.5 KiB does not fit a sealed mailbox
+  message, so it waits for the receiver to be online** (section 2.2,
+  point 10). Target: TBD.
+- If the owner answers Q4 (c): **search matches the JSON keys of a chat
+  body, and can lose real hits.** Target: TBD.
+- Update the row "More demo stories" (§13): C7 extends story 20, and the
+  forward is shown in the same chat (Q7 (c)). If Q7 (c) is chosen, add: a
+  two-node group is not shown in any browser story or test.
+
+Rows that exist already and must **not** be added again: "The forward mode
+has one default per person: no default per conversation, and no group owner
+limit" and "The forward action offers only three Roym record types" (both
+in section 5, from the C0 ADR).
+
+Rows to **extend** (add `message-origin` to the sentence, same target): the
+two key-revocation rows, "Issuer-key revocation is not checked on any
+membership record" and "A listing hit is never checked against a
+revocation list". A checked origin has `revocation_status` "unknown" too,
+so a stolen conversation signing key signs valid origins as the person
+with no end, until a revocation source is wired (section 2.2, point 6).
 
 ## 9. Living docs and the change doc at close-out
 
@@ -1296,54 +1736,71 @@ there):
 
 - the chat body content type and format (Q3), and that a message sent with
   no mode stays `text/plain`;
+- the sentence "the substrate conversation capability does not change":
+  with Q4 (a) its indexing rule gets one case (a `+json` body with a `text`
+  field is indexed by that field); its interface does not change;
+- the forward count: read as a number up to 1,000, and a person's forward
+  of their own forward does not raise it (D-C7-7);
+- one `conversation.settings` method for the default mode and the
+  first-message flag (D-C7-4);
 - the inner content and its hash layout (D-C7-2), the `sha256:` hex form;
 - FW-8 met in the format only (Q8);
 - where the setting lives (Q5), and the first-message flag on the node;
 - the check at read time (Q6);
-- the display name rule (Q9);
+- the display name rule (Q9): "you", the contact name, or the last 12
+  characters of the DID; and that the delete dialog says forwards stay;
+- the tags for a message that cannot be forwarded (section 4, item 16);
 - the measured origin and body sizes (step 4);
-- the split into C7a and C7b (Q2), until C7b merges.
+- the split into C7a, C7b and C7c (Q2), until C7c merges.
 
-Also in the change doc: tick the C7a lines of `## Tasks`. `status: done`
+Also in the change doc: tick the lines of `## Tasks` that each PR finishes. `status: done`
 and `living-docs-touched` wait for C8 (task.md section 3, C8).
 
-Living docs (C7a):
+Living docs (C7a for the node facts, C7b for what the person sees):
 
-- `docs/roym-integrated-experience-spec.md`: "Messaging" (`:690`) — the
+- `docs/roym-integrated-experience-spec.md`: "Messaging" (`:693`) — the
   chat body and the forward; "What is encrypted, and who can see what"
-  (`:576`) — what a `signed` message gives up (ADR-0030, decision 12);
-  "Records and what each one proves" (`:468`) — `message-origin`.
+  (`:579`) — what a `signed` message gives up (ADR-0030, decision 12);
+  "Records and what each one proves" (`:471`) — `message-origin`.
 - `docs/TERMINOLOGY.md`: forward mode, origin (`message-origin`), forward,
   forward count.
 - `docs/developer-guide.md` §6 "Build a Roym client": `forward_mode` on
   `conversation.send`, `conversation.forward`, `conversation.settings`,
-  and the `forward` field of a message (near line 2566). The tagged code
-  blocks run in story 30, so a new tagged block must run there too.
+  and the `forward` field of a message (the `conversation.send` block is at
+  line 2571; the widgets paragraph follows it). The tagged code blocks run
+  in story 30, so a new tagged block must run there too.
 - `docs/system-requirements-spec.md:291`: remove "attachments"; add the
-  forward with a signed origin.
+  forward with a signed origin. (Line 695 also says "attachments", for a
+  request; it is about the request form, not chat. Leave it.)
 - `docs/planning/traceability-matrix.md`: the messaging row gains the
   forward and its tests.
 - [task.md](task.md): the C7a result line and the size table.
 
 ## 10. Exit criteria
 
-C7a is done when all of these hold:
+C7a (node) is done when all of these hold:
 
 - [ ] Every C7a criterion in section 3 names a test that exists on the
       branch, and the test passes.
 - [ ] The `roym_core` `chat` unit tests, the whole parity binary (after
-      `mise run build:roym`), `roym_forward_e2e`, the Hub unit tests, the
-      new Hub case and story 20 pass.
+      `mise run build:roym`) and `roym_forward_e2e` pass. With Q4 (a), the
+      host search tests pass too.
 - [ ] The origin of a short text message is under 2 KiB, measured and
       recorded, or the owner answered the stop.
 - [ ] A history page of 200 `signed` messages takes under 500 ms in the
-      WASM build, or the owner answered the stop.
-- [ ] Component sizes are in task.md section 1, each within its limit.
-- [ ] Deviations, backlog rows, living docs and the `status.md` row (with
-      the Hindi keys) are done.
+      WASM build, or the owner answered the stop. The number is recorded.
+- [ ] Component sizes are in task.md section 1, each within its limit (for
+      `conversation`, +15% of the "before" size, or the owner's answer to
+      Q11).
+- [ ] Deviations, backlog rows, living docs and the `status.md` row are
+      done for the node part.
 - [ ] `mise run verify` with no `--skip` passes.
 
-C7b is done when FW-7 has its tests, and its sizes, docs and verify pass.
+C7b (Hub and demo) is done when the Hub unit tests, the new Hub case, the
+whole Playwright suite and story 20 pass; the Hindi keys are in the
+`status.md` row; and `mise run verify` with no `--skip` passes.
+
+C7c is done when FW-7 has its tests, and its sizes, docs and verify pass.
 
 ## 11. What C7 does not do
 
@@ -1359,6 +1816,9 @@ C7b is done when FW-7 has its tests, and its sizes, docs and verify pass.
   (ADR-0030, decision 10; agreements doc, open question 11).
 - No forward of widgets, widget answers (D-C7-13), cards other than a
   quote, or system messages.
+- No proof of which conversation or which receiver a signed message was
+  written for (ADR-0030, decision 12), and no revocation check of origins
+  (section 8).
 - No new `roymctl` command (D-C7-12).
-- No change to the substrate conversation capability, its WIT or the host
-  search, unless the owner picks Q4 (c).
+- No change to the substrate conversation capability or its WIT. The
+  host's indexing rule gets one case if the owner picks Q4 (a).
