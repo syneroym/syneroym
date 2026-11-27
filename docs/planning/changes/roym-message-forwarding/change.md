@@ -25,7 +25,7 @@ Terms used here:
 - **Forward mode:** the sender's choice for one message: `signed` or `not-forwardable`. The default mode is a setting of the person.
 - **Hub:** the Roym web UI. **Client:** any program that uses Roym's methods.
 
-This is a Roym feature. The substrate conversation capability does not change.
+This is a Roym feature. The substrate conversation capability's interface does not change; its search index gets one new case for a chat body (see [Deviations](#deviations)).
 
 **This change needs an ADR before it is built.** A signed origin makes a message provable to strangers. That is a real loss of deniability (see [Privacy cost](#privacy-cost)). The owner chose the direction: the sender picks the forward mode, so only messages the sender chose to sign lose deniability. The ADR records this choice and the default mode. The choice is the same in a group as in a one-to-one chat. The ADR is [ADR-0030](../../../decisions/0030-signed-message-origins.md) (accepted 2026-11-16).
 
@@ -200,6 +200,18 @@ From [ADR-0030](../../../decisions/0030-signed-message-origins.md) (2026-11-16).
 - **Forwarded records (FW-7).** A record travels as itself, in a forward body of its own content type, never as a deal card. It ignores the forward mode. In M08C the forward action offers only `listing`, `profile` and `quote`. A forwarded quote shows only its visible fields (agreements doc, open question 11), and the Hub warns that it shows both parties of the deal.
 - **Size.** The certificate travels inside each origin, as in every Roym record. The ADR estimates about 940 bytes for a short text message. C7 measures a real one and stops to ask the owner if it is over 2 KiB.
 - **The first message.** The Hub asks once. The person may skip, and the shipped default (`not-forwardable`) applies.
+- **The chat body and the mode (Q3).** A message sent with a forward mode is `application/vnd.roym.message+json`: `chat_version` 1, `content_type` `text/plain`, `text`, `forward_mode`, optional `origin`, and optional `forward_count`. A message sent with no mode stays `text/plain` and is not forwardable.
+- **The conversation capability's indexing rule (Q4 (a)).** Its interface does not change. A JSON body with a top-level string `text` is indexed by that field only; every other body is indexed as before. The `search` WIT doc comment says so.
+- **The forward count.** A stored count is read as a number up to 1,000; a bigger number, a negative number or a fraction is not a count. A person's forward of their own forward does not raise it.
+- **One `conversation.settings` method.** It holds the default mode and the first-message flag for the person, not a table per conversation.
+- **The inner content and its hash.** The origin names `text/plain`, the 0 to 3 language tags, and a `sha256:` lowercase hex hash. The hash layout is the domain string `roym-message-origin-v1`, then `u32be` length prefixes for the content type, the tag list, the body, and the blob list.
+- **Attachments (FW-8) are met in the format only.** The hash layout has a blob list, empty today. No message carries an attachment in this change.
+- **Where the setting lives (Q5).** The default mode and the first-message flag are one row on the person's own node, in the `conversation` service's `settings` collection (schema version 5), and they travel in a backup bundle.
+- **The check at read time (Q6).** `conversation.history`, `conversation.changes` and `conversation.search` check each chat body's origin again and return the view. The send path does not check its own origin.
+- **The author's name and the delete note (Q9).** The Hub shows "you", the reader's contact name, or the last 12 characters of the DID with "not in your contacts". It never takes a name from the message. The delete dialog of a `signed` message says the origin and the forwards stay.
+- **Tags for a message that cannot be forwarded (section 4, item 16).** A `not-forwardable` body shows "Not forwardable", a plain message shows no origin, and a `signed` body whose origin fails shows "origin could not be checked".
+- **The measured origin and body sizes (step 4).** They are recorded under "Different from the plan": an 848-byte origin, a 1,037-byte body, and 100 and 164 ms for a 200-message history page.
+- **The split into C7a and C7b (Q2).** This change doc covers C7a, the text message. C7b, the forward of signed records, follows in its own PR.
 
 ### Different from the plan
 
@@ -213,8 +225,6 @@ From [ADR-0030](../../../decisions/0030-signed-message-origins.md) (2026-11-16).
 - **The chat picker labels a chat by name, peer DID, or address.** A direct chat whose peer is not a contact has no name, so it shows the conversation address the person already uses elsewhere.
 - **The browser case checks the composer control and the Profile default, not the first-message question.** The Playwright Hub runs on one shared node, and other cases send on it before this one, so the question is already answered there. The question is covered by its Hub unit test (`chat/first_message.test.ts`) and by story 20 on fresh nodes, which answers it with "Signed" at Alice's first send.
 - **Measured sizes and read time.** On the three-node test: a short signed text ("Market opens at 9", one `en` tag) has an 848-byte origin and a 1,037-byte chat body; an 11 KiB signed text has a 12,278-byte body, under the 13,312-byte mailbox estimate; a `conversation.history` page of 200 signed messages took 100 ms and 164 ms on two runs on the WASM build. The owner's limits are 2 KiB for an origin and 500 ms for the page.
-
-
 
 ## Close-out
 

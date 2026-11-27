@@ -607,12 +607,14 @@ Three consequences to state plainly in the product:
    changes are visible DAG events precisely so the owner cannot add a reader
    without the group seeing it. The group's UI should say who the owner is.
 4. **A `signed` message gives up deniability, on purpose.** Its origin is
-   signed with the author's master DID and travels in the body, so any member
-   can show that record to anyone, even if their client hides the forward
-   action. The origin proves who wrote the text and when. It does not prove who
-   received it, and it does not cover a copy that someone changed. A
-   `not-forwardable` message carries no origin and keeps today's deniability.
-   The sender chooses per message; there is no group rule.
+   signed as the author: by the `conversation` service key, with the person's
+   delegation certificate, so it names the person's master DID. It travels in
+   the body, so any member can show that record to anyone, even if their
+   client hides the forward action. The origin proves who wrote the text and
+   when. It does not prove who received it, and it does not cover a copy that
+   someone changed. A `not-forwardable` message carries no origin and keeps
+   today's deniability. The sender chooses per message; there is no group
+   rule.
 
 **Recovering from a compromise.** If a member's device is compromised, the owner
 rekeys and the attacker loses access from the next epoch. That recovery depends
@@ -732,11 +734,12 @@ Syneroym.
 
 **Forwarding a message.** Every message the Hub sends carries a **forward mode**
 in its body: `signed` or `not-forwardable`. A `signed` message also carries a
-`message-origin` record, signed with the author's master DID. It names the
-author, the send time and a hash of the text, not the text itself. Any node can
-check it without any key material. A `not-forwardable` message carries no
-origin. A message from another client with no mode is treated as
-`not-forwardable`.
+`message-origin` record, signed as the author: by the `conversation` service
+key, with the person's delegation certificate, so it names the person's master
+DID. It names the author, the send time and a hash of the text, not the text
+itself. Any node can check it without any key material. A `not-forwardable`
+message carries no origin. A message from another client with no mode is
+treated as `not-forwardable`.
 
 A person sets a default mode. The composer shows the mode in use and lets the
 person change it for one message; the default stays. In a group, a `signed`
