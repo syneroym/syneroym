@@ -34,6 +34,10 @@ const CHAT_CONTENT_TYPE = "application/vnd.roym.message+json";
 /** Marks where the author's name element goes inside a translated line. */
 const AUTHOR_MARKER = "\u0001";
 
+function shortDid(did: string): string {
+  return `…${did.slice(-12)}`;
+}
+
 function authorName(origin: OriginView, contacts?: Map<string, string>): HTMLElement {
   const name = document.createElement("span");
   name.className = "forward-author";
@@ -41,14 +45,14 @@ function authorName(origin: OriginView, contacts?: Map<string, string>): HTMLEle
     name.textContent = t("forward-author-you");
     return name;
   }
-  const known = contacts?.get(origin.author_did);
-  if (known) {
-    name.textContent = known;
+  if (contacts?.has(origin.author_did)) {
+    const known = contacts.get(origin.author_did)?.trim();
+    name.textContent = known ? known : shortDid(origin.author_did);
     name.title = origin.author_did;
     return name;
   }
   name.textContent = t("forward-not-in-contacts", {
-    short: `…${origin.author_did.slice(-12)}`,
+    short: origin.author_did.slice(-12),
   });
   name.title = origin.author_did;
   return name;

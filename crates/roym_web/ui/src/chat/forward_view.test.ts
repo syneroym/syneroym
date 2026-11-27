@@ -48,9 +48,17 @@ describe("the forwarded line", () => {
     const origin = view().origin!;
     const line = forwardLine(view());
     const name = line?.querySelector<HTMLElement>(".forward-author");
-    expect(name?.textContent).toContain(origin.author_did.slice(-12));
-    expect(name?.textContent).toContain("(not in your contacts)");
+    expect(name?.textContent).toBe(`…${origin.author_did.slice(-12)} (not in your contacts)`);
     expect(name?.textContent).not.toContain(origin.author_did.slice(0, 16));
+    expect(name?.title).toBe(origin.author_did);
+  });
+
+  it("shows the short DID for a contact with no display name", () => {
+    const origin = view().origin!;
+    const contacts = new Map([[origin.author_did, ""]]);
+    const name = forwardLine(view(), contacts)?.querySelector<HTMLElement>(".forward-author");
+    expect(name?.textContent).toBe(`…${origin.author_did.slice(-12)}`);
+    expect(name?.textContent).not.toContain("(not in your contacts)");
     expect(name?.title).toBe(origin.author_did);
   });
 
