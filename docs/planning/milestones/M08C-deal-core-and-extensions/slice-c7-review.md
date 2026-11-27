@@ -176,7 +176,9 @@ count rule, and line 28 tells them the host was not touched.
 that the capability's interface does not change but its indexing rule gets
 one case. Remove the extra empty lines.
 
-*Status:* Fixed (f29cc186, 0c36eb66).
+*Status:* Open. Reopened in round 2: the new bullets in f29cc186 and
+0c36eb66 cover every item, but two of them state the facts wrongly (see
+round 2, R1).
 
 ### R2 — The name of an unknown author starts with two "…" (minor)
 
@@ -383,3 +385,146 @@ and asserts `data.code` `origin-not-checked`. (4) Assert the reason text.
   `send_with_mode` computes it again.
 - `answerFirstMessage` and `chooseForwardMode` in `hub-helpers.ts` repeat
   the same choice-to-label code.
+
+## Code review round 2 — Claude Opus 5.5, 2026-11-27
+
+This round checks the fixes of round 1 on branch
+`feat/m08a-c7-msg-forwarding` at `a9fe65ff`, main checkout (not a
+worktree), `git pull` up to date. The fix commits are `884bef7c`,
+`a09e4552`, `9dcbc663`, `67162b1c`, `f29cc186`, `5d0d9c8a`, `77ed9e4f`,
+`0c36eb66` and `a9fe65ff` (`git log 8d368da9..a9fe65ff`). I read each one
+against the item it fixes, then read the fix commits for new problems.
+
+**CI.** `gh pr checks 399` on `a9fe65ff` (run 46044099402): **red**.
+"Lints, licenses & checks" passed. "Playwright E2E" failed in "Pre-build
+e2e binaries and components", and Test 2/6, 4/6, 5/6 and 6/6 failed in
+"Run Build & Test". The job log shows the cause:
+`src/screens/groups.test.ts(1164,21): error TS2339: Property 'body' does
+not exist on type '{ history: number; deleted: number; }'`, then
+`[build:roym-ui] ERROR task failed` (R11). The run on `8d368da9` (the code
+of round 1) passed, so the round-1 code was green and the fixes broke the
+build. The status.md row cites that older run as proof for the fixes; it
+is not.
+
+**Tests I ran** (targeted only): `npx tsc --noEmit -p .` in
+`crates/roym_web/ui`: the same TS2339 error. `TZ=UTC npx vitest run
+src/screens/groups.test.ts src/chat/forward_view.test.ts`: 2 files, 40
+passed. Vitest does not type-check, so it passes while the build fails. I
+did not build the roym WASM, so I did not run the parity scenarios again.
+
+### Round 1 items
+
+- **R1 — reopened.** The twelve new bullets cover every item of plan
+  section 9, line 28 now says the interface does not change and the index
+  gets one case, and the empty lines are gone. But two bullets state the
+  facts wrongly, and plan section 9 asks for the plan's numbers:
+  1. [change.md:205](../../changes/roym-message-forwarding/change.md#L205):
+     "a bigger number, a negative number or a fraction is not a count".
+     The code (`chat.rs`, `read_count`) and D-C7-1 read a number above
+     1,000 (also one above `u64::MAX`) **as 1,000**. Only zero, a
+     negative number and a fraction read as no count.
+  2. [change.md:209](../../changes/roym-message-forwarding/change.md#L209):
+     "the `conversation` service's `settings` collection". The collection
+     is `conversation_settings` (`app.rs`, `SETTINGS`); `settings` is the
+     name of the backup bundle section.
+  3. [change.md:207](../../changes/roym-message-forwarding/change.md#L207)
+     (smaller): the hash layout leaves out that each tag has its own
+     `u32be` length prefix after the tag count, and that the blob list is a
+     `u32be` count followed by the raw 32 bytes of each hash.
+
+  *Fix:* say that a count above 1,000 is read as 1,000, and that zero, a
+  negative number or a fraction is read as no count; name the collection
+  `conversation_settings` and the bundle section `settings`; write the
+  layout as D-C7-2 does.
+- **R2 — Fixed (a09e4552), verified.** `short` is now the bare last 12
+  characters; the message keeps the "…". The test compares the whole text.
+- **R3 — Fixed (a09e4552), verified.** `authorName` tests `has()`, and an
+  empty or blank name shows the short DID without "(not in your contacts)".
+  A test covers it. The change doc's Q9 bullet says the same.
+- **R4 — Fixed (9dcbc663), verified for `kind` events.** A `conversation.*`
+  event now sets a pending reload while `threadList` holds
+  `.forward-picker`; a `MutationObserver` runs it when the picker goes;
+  `reloadGroupList` does not reselect the group while the picker is open.
+  The new test passes. See R12 for two gaps left.
+- **R5 — Fixed (9dcbc663), verified.** A `signed` group message now opens
+  a delete dialog with `messages-delete-signed-note` and a confirm button;
+  other messages delete as before. A test covers it. See R12.
+- **R6 — Fixed (9dcbc663, 77ed9e4f), but its test breaks the build.** The
+  trimmed `body` is now sent, also for "Send as not forwardable". The test
+  in `77ed9e4f` is the cause of R11.
+- **R7 — Fixed (884bef7c), verified.** `chat_send.rs`, `forward.rs` and
+  `view.rs` import `chat` and call `chat::content_hash`,
+  `chat::origin_draft`, `chat::check_origin`, `chat::next_forward_count`,
+  `chat::forward_view` and `chat::unreadable_view`.
+- **R8 — Fixed (5d0d9c8a), verified by reading.** The block is
+  `bash roym-client=forward`, uses `$CONV` from the earlier block, checks
+  each answer with `jq -e`, and `30-roym-client.sh` runs it with
+  `run_block forward`. The story nodes enrol signing in
+  `20-roym-setup.sh`, so the `signed` send can work. Not run by me; CI
+  must show it (Playwright E2E did not get that far, R11).
+- **R9 — Fixed (f29cc186), verified.** Both places now say the origin is
+  signed by the `conversation` service key with the person's delegation
+  certificate, so it names the master DID.
+- **R10 — Fixed (67162b1c), verified by reading.** (1) Scenario 284
+  imports into a fresh `harness()` and reads the settings there. (2)
+  Scenario 283 adds a `limit: 1` search for `signed` that a newer chat body
+  would win without the host rule. (3) Scenario 287 stores a chat body with
+  changed text through the host on both builds and asserts
+  `origin-not-checked`. (4) The two unit tests assert the reason prefix
+  `delegation is invalid`.
+
+### Counts
+
+Round 2: blocker 1 (R11), major 0, minor 1 (R12), plus R1 reopened
+(major). **3 open** (R1, R11, R12).
+
+### R11 — CI is red: a new group test does not type-check (blocker)
+
+*Where:* [groups.test.ts:1151](../../../../crates/roym_web/ui/src/screens/groups.test.ts#L1151)
+and `:1164`, at `a9fe65ff` (from `77ed9e4f`).
+
+*Problem:* The test declares `const counters = { history: 0, deleted: 0 }`
+and then reads `counters.body`. `stubGroupNode` writes `counters.body`, but
+the test's own type has no `body`, so `tsc` refuses the file. The Hub build
+(`build:roym-ui`) runs `tsc`, and every CI job that builds the Hub stops
+there: Playwright E2E and four of the six test shards.
+
+*Failure case:* CI run 46044099402 on `a9fe65ff`: TS2339 at
+`groups.test.ts(1164,21)`, `[build:roym-ui] ERROR task failed`. Reproduced
+with `npx tsc --noEmit -p .`. Vitest alone passes, which is why the fix
+session did not see it.
+
+*Fix:* Type the counters with the optional field
+(`const counters: { history: number; deleted: number; body?: string } =
+{ history: 0, deleted: 0 };`, or the type `stubGroupNode` takes). Run
+`npm run build` (it runs `tsc`) as well as Vitest before pushing, and
+update the status.md row with the CI run of the fixed head.
+
+*Status:* Open.
+
+### R12 — In a group, the new delete dialog and a "reload" event still lose open work (minor)
+
+*Where:* [groups.ts:896](../../../../crates/roym_web/ui/src/screens/groups.ts#L896)
+to `:902` (`activeGroupLater`), `:911` to `:914` (the `reload` event) and
+`:211` to `:238` (`openGroupDeleteDialog`), at `a9fe65ff`.
+
+*Problem:* The R4 fix keeps only `.forward-picker`. Two cases remain:
+1. The new delete dialog of R5 is put inside the message row, in
+   `threadList`. A `conversation.*` event for the group still redraws
+   `threadList` at once when no picker is open, so the dialog is removed
+   before the person confirms. `messages.ts` keeps `.delete-dialog` open
+   through `OPEN_WORK`.
+2. A feed `reload` event (sent when the event stream reconnects,
+   `events.ts:88`, `:98`) still calls `activeGroupReload()` directly, so
+   it removes an open picker or dialog.
+
+*Failure case:* Alice opens the delete dialog of a signed message in a busy
+group. A member sends a message. The dialog disappears; she clicks Delete
+again, and it can happen again.
+
+*Fix:* Use one check for "open work" in the group thread
+(`.forward-picker, .delete-dialog`, as `OPEN_WORK` does in `messages.ts`),
+in `activeGroupLater`, in the `MutationObserver` and on the `reload` path.
+Extend the new picker test to the delete dialog.
+
+*Status:* Open.
