@@ -348,7 +348,7 @@ export async function sendQuote(
   await form.locator('.quote-currency-input').fill(quote.currency);
   await form.locator('.quote-amount-input').fill(quote.amount);
   await form.locator('.quote-payee-input').fill(quote.payee);
-  await form.locator('.quote-where-select').selectOption('at-giver');
+  await form.locator('.quote-where-select').first().selectOption('at-giver');
   await expect(form.locator('.quote-size-line')).toBeVisible();
   await expect(form.locator('.quote-size-line')).toContainText('of 96 KiB');
   await form.locator('.submit-quote-button').click();
@@ -504,15 +504,40 @@ export async function addCommitment(
 export async function openAgreementPanel(page: Page, agreementIdOrTag?: string): Promise<Locator> {
   let panel = page.locator('.agreement-panel');
   if (agreementIdOrTag) {
-    const specific = page.locator(`.agreement-panel-${agreementIdOrTag}`);
-    if ((await specific.count()) > 0) {
-      panel = specific;
+    const byClass = page.locator(`.agreement-panel-${agreementIdOrTag}`);
+    const byScope = page.locator(`.agreement-panel[data-scope*="${agreementIdOrTag}"]`);
+    const byText = page.locator('.agreement-panel', { hasText: agreementIdOrTag });
+    if ((await byClass.count()) > 0) {
+      panel = byClass;
+    } else if ((await byScope.count()) > 0) {
+      panel = byScope;
+    } else if ((await byText.count()) > 0) {
+      panel = byText;
     } else {
-      panel = page.locator('.agreement-panel', { hasText: agreementIdOrTag });
+      const msgWithTag = threadMessage(page, agreementIdOrTag);
+      if ((await msgWithTag.count()) > 0 && (await msgWithTag.locator('.agreement-panel').count()) > 0) {
+        panel = msgWithTag.locator('.agreement-panel');
+      } else {
+        panel = page.locator('.agreement-panel');
+      }
     }
   }
-  await expect(panel.first()).toBeVisible({ timeout: 15_000 });
-  return panel.first();
+  await expect(panel.last().locator('.agreement-commitments-list')).toBeVisible({ timeout: 15_000 });
+  return panel.last();
+}
+
+/**
+ * Close all open commitments for one side via "I gave everything" or "I received everything".
+ */
+export async function closeEverything(scope: Page | Locator, asSide: 'giver' | 'receiver') {
+  const cls = asSide === 'receiver' ? '.deal-close-receive-button' : '.deal-close-give-button';
+  const btn = scope.locator(cls).last();
+  await btn.click();
+  const page = 'page' in scope ? scope.page() : scope;
+  const list = page.locator('.close-list').last();
+  await expect(list).toBeVisible({ timeout: 15_000 });
+  await list.locator('.deal-close-sign-button').click();
+  await expect(list).toHaveCount(0, { timeout: 15_000 });
 }
 
 /**
@@ -520,13 +545,14 @@ export async function openAgreementPanel(page: Page, agreementIdOrTag?: string):
  * fills the settlement note if provided, and confirms.
  */
 export async function settle(
-  page: Page,
+  scope: Page | Locator,
   action: 'delivered' | 'paid' | 'received',
   note?: string,
 ) {
-  const btn = page.locator(`.deal-action-${action}-button`).first();
+  const btn = scope.locator(`.deal-action-${action}-button`).last();
   await btn.click();
-  const dialog = page.locator('.settle-dialog').first();
+  const page = 'page' in scope ? scope.page() : scope;
+  const dialog = page.locator('.settle-dialog').last();
   await expect(dialog).toBeVisible();
   if (note) {
     await dialog.locator('.settlement_note').fill(note);

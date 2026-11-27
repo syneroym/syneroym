@@ -1,7 +1,8 @@
+import fs from 'node:fs';
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import { readDemoEnv } from '../demo-nodes';
 import {
-  addCommitment, askFromHit, conversationWith, ensureOwnSynOrg, fetchAgreement, findListingHit,
+  addCommitment, askFromHit, closeEverything, conversationWith, ensureOwnSynOrg, fetchAgreement, findListingHit,
   loginWithDelegatedKey, openAgreementPanel, openConversation, openMessages, publishListing,
   sendQuote, sendRequest, sendRequestFromForm, settle, threadMessage,
 } from '../hub-helpers';
@@ -314,14 +315,14 @@ test('Roym deal story: Bob offers a lesson for wheat and money, Alice agrees, bo
       await expect(form).toBeVisible();
       await form.locator('.quote-scope-input').fill(quoteScope);
       await form.locator('.quote-give-input').fill('One lesson, one hour');
-      await form.locator('.quote-row-value-input').first().fill('300');
+      await form.locator('.quote-row-value-input').first().fill('600');
       await form.locator('.quote-where-select').selectOption('at-giver');
 
       await addCommitment(bobPage, {
         giver: 'them',
         kind: 'goods',
         description: 'One sack of wheat',
-        value: '200',
+        value: '400',
       });
 
       await form.locator('.quote-currency-input').fill('INR');
@@ -336,8 +337,9 @@ test('Roym deal story: Bob offers a lesson for wheat and money, Alice agrees, bo
       await page.bringToFront();
       const quote = threadMessage(page, quoteScope);
       await expect(quote).toBeVisible({ timeout: DELIVERY_WAIT_MS });
-      await expect(quote.locator('.quote-total-give')).toContainText('₹300.00');
-      await expect(quote.locator('.quote-total-receive')).toContainText('₹300.00');
+      await expect(quote.locator('.quote-total-give')).toContainText('₹500.00');
+      await expect(quote.locator('.quote-total-receive')).toContainText('₹600.00');
+      await expect(quote.locator('.quote-total-diff')).toContainText('₹100.00 more than you give');
 
       await quote.locator('.accept-quote-button').click();
       await expect(runReceiptCard(page, runTag).first()).toBeVisible({ timeout: DELIVERY_WAIT_MS });
@@ -348,19 +350,30 @@ test('Roym deal story: Bob offers a lesson for wheat and money, Alice agrees, bo
       await expect(runReceiptCard(bobPage, runTag).first()).toBeVisible({ timeout: DELIVERY_WAIT_MS });
     });
 
-    await step(bobPage, "Bob's screen: settle delivered lesson", async () => {
-      await openAgreementPanel(bobPage, runTag);
-      await settle(bobPage, 'delivered', 'Taught lesson');
+    await step(page, "Alice's screen: confirm receipt of the lesson", async () => {
+      await page.bringToFront();
+      await expect(runReceiptCard(page, runTag)).toHaveCount(2, { timeout: DELIVERY_WAIT_MS });
+      const panel = await openAgreementPanel(page, runTag);
+      await settle(panel, 'received');
     });
 
-    await step(page, "Alice's screen: settle delivered wheat and paid money", async () => {
-      await page.bringToFront();
-      await openAgreementPanel(page, runTag);
-      await settle(page, 'delivered', 'Delivered wheat to porch');
-      await settle(page, 'paid');
+    await step(bobPage, "Bob's screen: receive everything and close the deal", async () => {
+      await bobPage.bringToFront();
+      const panel = await openAgreementPanel(bobPage, runTag);
+      await closeEverything(panel, 'receiver');
+    });
+
+    await step(bobPage, "Bob's screen: deal panel shows closed", async () => {
+      await bobPage.bringToFront();
+      const panel = await openAgreementPanel(bobPage, runTag);
+      await expect(panel.locator('.state-fulfilled, .state-acknowledged')).toHaveCount(3, { timeout: DELIVERY_WAIT_MS });
     });
 
     await step(page, "Alice's screen: view and download statement", async () => {
+      await page.bringToFront();
+      const panel = await openAgreementPanel(page, runTag);
+      await expect(panel.locator('.state-fulfilled, .state-acknowledged')).toHaveCount(3, { timeout: DELIVERY_WAIT_MS });
+
       await page.getByRole('button', { name: 'Statement', exact: true }).click();
       const statementScreen = page.locator('.statement-screen');
       await expect(statementScreen).toBeVisible({ timeout: 15_000 });
@@ -373,6 +386,12 @@ test('Roym deal story: Bob offers a lesson for wheat and money, Alice agrees, bo
         statementScreen.locator('.statement-download-csv').click(),
       ]);
       expect(csvDownload.suggestedFilename()).toBe('statement.csv');
+      const csvPath = await csvDownload.path();
+      expect(csvPath).toBeTruthy();
+      const csvContent = fs.readFileSync(csvPath!, 'utf-8');
+      expect(csvContent).toContain('One lesson, one hour');
+      expect(csvContent).toContain('One sack of wheat');
+      expect(csvContent).toContain('INR');
 
       const [jsonDownload] = await Promise.all([
         page.waitForEvent('download'),

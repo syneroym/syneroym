@@ -205,8 +205,8 @@ test('Roym languages story: Alice, in Hindi, finds an English listing and accept
       await page.bringToFront();
       const quote = threadMessage(page, quoteScope);
       await expect(quote).toBeVisible({ timeout: DELIVERY_WAIT_MS });
-      await expect(quote.locator('.quote-total')).toHaveText(
-        `${hubMessage('hi', 'terms-total').split('{')[0]}${rupees}`,
+      await expect(quote.locator('.quote-total-give')).toHaveText(
+        `${hubMessage('hi', 'deal-you-give').split('{')[0]}${rupees}`,
       );
       await expect(quote.locator('.quote-scope [lang]')).toHaveAttribute('lang', 'en');
     });
