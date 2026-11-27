@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '../fixtures';
-import { loginWithDelegatedKey, rpcCall } from '../hub-helpers';
+import { chooseForwardMode, loginWithDelegatedKey, rpcCall } from '../hub-helpers';
 import { readE2EPorts } from '../ports';
 
 test.describe.configure({ mode: 'serial' });
@@ -100,6 +100,7 @@ test.describe('Roym Hub: group chat', () => {
     const composerInput = page.locator('.composer-box input');
     await composerInput.fill('message to nobody');
     await page.getByRole('button', { name: 'Send', exact: true }).click();
+    await chooseForwardMode(page, 'skip');
 
     const composerErr = page.locator('.composer-box .composer-error');
     await expect(composerErr).toContainText('nowhere to deliver', { timeout: 15_000 });

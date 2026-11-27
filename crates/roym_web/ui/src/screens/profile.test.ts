@@ -2,6 +2,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { activate } from "../i18n/i18n";
 import { stubRpc } from "../testing/stub-rpc";
 import { renderProfile } from "./profile";
+import { resetForwardSettingsCache } from "../chat/forward_mode";
+afterEach(() => {
+  resetForwardSettingsCache();
+});
 
 describe("profile screen", () => {
   afterEach(async () => {

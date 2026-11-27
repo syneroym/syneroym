@@ -12,9 +12,13 @@ import { pollDefinition, type WidgetView } from "../widgets/view";
 import { stubRpc } from "../testing/stub-rpc";
 import { readerReads } from "../testing/translation";
 import { setTargetsForTest } from "../translation/translation";
+import { resetForwardSettingsCache } from "../chat/forward_mode";
 
 afterEach(() => {
   vi.unstubAllGlobals();
+});
+afterEach(() => {
+  resetForwardSettingsCache();
 });
 
 describe("Groups screen rendering", () => {

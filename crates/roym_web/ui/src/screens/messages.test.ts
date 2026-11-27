@@ -17,6 +17,10 @@ import { canRetry, messageStateWord } from "../chat/message_state";
 import { pollDefinition, type WidgetView } from "../widgets/view";
 import { RpcError } from "../rpc";
 import { stubRpc } from "../testing/stub-rpc";
+import { resetForwardSettingsCache } from "../chat/forward_mode";
+afterEach(() => {
+  resetForwardSettingsCache();
+});
 
 describe("newestRequestMap and quote superseded notice", () => {
   const reqV1: CardRow = {

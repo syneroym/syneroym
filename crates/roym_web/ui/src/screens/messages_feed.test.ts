@@ -5,6 +5,7 @@ import { FakeFeedSource } from "../testing/fake-event-source";
 import { fakeEngine, readerReads } from "../testing/translation";
 import { setTargetsForTest } from "../translation/translation";
 import { renderMessages } from "./messages.js";
+import { resetForwardSettingsCache } from "../chat/forward_mode";
 
 const CONV = "conv-1";
 const ME = "did:key:me";
@@ -121,6 +122,9 @@ afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+});
+afterEach(() => {
+  resetForwardSettingsCache();
 });
 
 describe("Event feed integration in messages screen", () => {

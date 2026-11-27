@@ -13,19 +13,42 @@ export interface ForwardSettings {
 /** The shipped default, used only while the node is unreachable. */
 const DEFAULT: ForwardSettings = { default_mode: "not-forwardable", asked: false };
 
+// One read per page. Every thread draw and the first-message question ask
+// for the same row, and a redraw must not add a round trip that lets a feed
+// event overtake the thread it is drawing.
+let cached: ForwardSettings | null = null;
+let pending: Promise<ForwardSettings> | null = null;
+
+/** Forget the cached row. A test calls this between its cases. */
+export function resetForwardSettingsCache() {
+  cached = null;
+  pending = null;
+}
+
 export async function loadForwardSettings(): Promise<ForwardSettings> {
-  try {
-    return await call<ForwardSettings>("conversation.settings", {});
-  } catch {
-    return { ...DEFAULT };
-  }
+  if (cached) return cached;
+  if (pending) return pending;
+  pending = call<ForwardSettings>("conversation.settings", {})
+    .then((row) => {
+      cached = row;
+      pending = null;
+      return row;
+    })
+    .catch(() => {
+      pending = null;
+      return { ...DEFAULT };
+    });
+  return pending;
 }
 
 export async function saveForwardSettings(patch: {
   default_mode?: ForwardMode;
   asked?: boolean;
 }): Promise<ForwardSettings> {
-  return call<ForwardSettings>("conversation.settings", patch);
+  const row = await call<ForwardSettings>("conversation.settings", patch);
+  cached = row;
+  pending = null;
+  return row;
 }
 
 export interface ModeControl {

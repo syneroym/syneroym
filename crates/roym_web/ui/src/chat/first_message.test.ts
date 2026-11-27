@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { activate } from "../i18n/i18n";
 import { stubRpc } from "../testing/stub-rpc";
 import { askOnce } from "./first_message";
-import type { ForwardMode } from "./forward_mode";
+import { resetForwardSettingsCache, type ForwardMode } from "./forward_mode";
 
 interface Saved {
   default_mode?: ForwardMode;
@@ -30,6 +30,7 @@ function settingsNode(initial: { default_mode: ForwardMode; asked: boolean }) {
 describe("the first-message question", () => {
   afterEach(async () => {
     vi.unstubAllGlobals();
+    resetForwardSettingsCache();
     await activate("en");
   });
 
