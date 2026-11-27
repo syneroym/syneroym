@@ -1,5 +1,7 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MEMBERSHIP_EVENT_CONTENT_TYPE } from "../groups/words";
+import { _resetForTest, startFeed } from "../events";
+import { FakeFeedSource } from "../testing/fake-event-source";
 import { t } from "../i18n/i18n";
 import { RpcError } from "../rpc";
 import {
@@ -1002,5 +1004,139 @@ describe("widget messages in groups thread", () => {
 
     expect(host.querySelector(".widget-refused")).toBeNull();
     expect(host.textContent).toContain("Prompt on groups widget list failure");
+  });
+});
+
+describe("Groups screen feed and forward work", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.stubGlobal("EventSource", FakeFeedSource);
+    _resetForTest();
+  });
+
+  afterEach(() => {
+    document.body.replaceChildren();
+    vi.useRealTimers();
+  });
+
+  function signedRow(id: string): GroupMessageRow {
+    return {
+      id,
+      conversation: "grp-1",
+      author: "did:key:zAlice",
+      direction: "incoming",
+      sender_timestamp_ms: 1000,
+      content_type: "application/vnd.roym.message+json",
+      body_encoding: "utf8",
+      body: "Hello",
+      state: "delivered",
+      forward: {
+        mode: "signed",
+        forwardable: true,
+        origin: {
+          author_did: "did:key:zAlice",
+          written_at_secs: 1,
+          record_id: "rec-1",
+          is_you: false,
+        },
+        forward_count: 0,
+        many_forwards: false,
+        forwarded: false,
+      },
+    };
+  }
+
+  function stubGroupNode(messages: GroupMessageRow[], counters: { history: number; deleted: number }) {
+    stubRpc({
+      "conversation.list": () => ({
+        conversations: [
+          {
+            id: "grp-1",
+            kind: "group",
+            message_count: messages.length,
+            peer_address: "grp-1",
+            group: { name: "Team Group", admission: { state: "shown" } },
+          },
+        ],
+      }),
+      "group.info": () => ({
+        id: "grp-1",
+        conversation_id: "grp-1",
+        name: "Team Group",
+        owner_address: "did:key:zAlice",
+        is_owner: false,
+        is_member: true,
+        restored_only: false,
+        epoch: 1,
+        key_epoch: 1,
+        key_stored_at_ms: 0,
+        can_read_new_messages: true,
+        members: [{ address: "did:key:zAlice", is_owner: true }],
+      }),
+      "conversation.transcript-digest": () => ({ digest: "abcdef123456" }),
+      "contacts.list": () => [],
+      "conversation.settings": () => ({ default_mode: "not-forwardable", asked: true }),
+      "conversation.history": () => {
+        counters.history++;
+        return { messages };
+      },
+      "conversation.delete-message": () => {
+        counters.deleted++;
+        return {};
+      },
+    });
+  }
+
+  it("a feed event leaves an open forward picker", async () => {
+    const counters = { history: 0, deleted: 0 };
+    stubGroupNode([signedRow("msg-1")], counters);
+    startFeed();
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    await renderGroups(host);
+
+    const forwardBtn = host.querySelector<HTMLButtonElement>(".forward-button")!;
+    forwardBtn.click();
+    await vi.advanceTimersByTimeAsync(0);
+    const picker = host.querySelector(".forward-picker");
+    expect(picker).not.toBeNull();
+    const historyCalls = counters.history;
+
+    FakeFeedSource.instance!.emit(
+      "change",
+      JSON.stringify({ kind: "conversation.message", subject: "grp-1", item: "msg-new" }),
+      "cursor-new",
+    );
+    await vi.advanceTimersByTimeAsync(150);
+
+    expect(host.querySelector(".forward-picker")).toBe(picker);
+    expect(counters.history).toBe(historyCalls);
+
+    host.querySelector<HTMLButtonElement>(".forward-picker-close")!.click();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(host.querySelector(".forward-picker")).toBeNull();
+    expect(counters.history).toBe(historyCalls + 1);
+  });
+
+  it("a signed group message asks before deleting and says the origin stays", async () => {
+    const counters = { history: 0, deleted: 0 };
+    stubGroupNode([signedRow("msg-1")], counters);
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    await renderGroups(host);
+
+    host.querySelector<HTMLButtonElement>(".delete-button")!.click();
+    await vi.advanceTimersByTimeAsync(0);
+
+    const note = host.querySelector(".delete-signed-note");
+    expect(note?.textContent).toBe(t("messages-delete-signed-note"));
+    expect(counters.deleted).toBe(0);
+
+    host.querySelector<HTMLButtonElement>(".confirm-delete")!.click();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(counters.deleted).toBe(1);
+    expect(host.querySelector(".delete-dialog")).toBeNull();
   });
 });

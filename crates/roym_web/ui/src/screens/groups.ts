@@ -130,7 +130,7 @@ export function renderSessionEnded(container: HTMLElement) {
 export function renderMessageRow(
   msg: GroupMessageRow,
   nameOf: (addr: string) => string,
-  onDelete?: (id: string) => void,
+  onDelete?: (msg: GroupMessageRow, anchor: HTMLElement) => void,
   onRetry?: (msg: GroupMessageRow) => void,
   widgetView?: WidgetView,
   reloadThread?: () => Promise<void>,
@@ -195,7 +195,7 @@ export function renderMessageRow(
 
   if (onDelete) {
     const delBtn = text("button", t("group-delete-button"), "button-small delete-button") as HTMLButtonElement;
-    delBtn.onclick = () => onDelete(msg.id);
+    delBtn.onclick = () => onDelete(msg, row);
     meta.appendChild(delBtn);
   }
 
@@ -208,11 +208,41 @@ export function renderMessageRow(
   return row;
 }
 
+function openGroupDeleteDialog(
+  anchor: HTMLElement,
+  msg: GroupMessageRow,
+  refresh: () => Promise<void>,
+) {
+  anchor.querySelector(".delete-dialog")?.remove();
+
+  const dialog = document.createElement("div");
+  dialog.className = "delete-dialog";
+  dialog.appendChild(text("p", t("messages-delete-signed-note"), "delete-signed-note"));
+
+  const confirmBtn = text("button", t("messages-delete-confirm"), "button confirm-delete") as HTMLButtonElement;
+  const cancelBtn = text("button", t("common-cancel"), "button cancel-delete") as HTMLButtonElement;
+  const err = text("p", "", "delete-error");
+  cancelBtn.onclick = () => dialog.remove();
+  confirmBtn.onclick = async () => {
+    confirmBtn.disabled = true;
+    try {
+      await call("conversation.delete-message", { message_id: msg.id, ask_peer: true });
+      dialog.remove();
+      await refresh();
+    } catch (e) {
+      err.textContent = t("messages-delete-failed", { detail: errText(e) });
+      confirmBtn.disabled = false;
+    }
+  };
+  dialog.append(confirmBtn, cancelBtn, err);
+  anchor.appendChild(dialog);
+}
+
 export function renderThreadMessages(
   threadList: HTMLElement,
   messages: GroupMessageRow[],
   nameOf: (addr: string) => string,
-  onDelete: (id: string) => void,
+  onDelete: (msg: GroupMessageRow, anchor: HTMLElement) => void,
   onRetry: (msg: GroupMessageRow) => void,
   widgetMap?: Map<string, WidgetView>,
   reloadThread?: () => Promise<void>,
@@ -425,17 +455,19 @@ export async function renderGroups(container: HTMLElement) {
     if (rows.length === 0) {
       activeGroupId = null;
       activeGroupReload = null;
+      activeGroupLater = null;
       rightPane.replaceChildren();
       return;
     }
     const targetId = selectedId && rows.some((r) => r.id === selectedId) ? selectedId : rows[0]?.id;
-    if (targetId) {
+    if (targetId && !rightPane.querySelector(".forward-picker")) {
       await selectGroup(targetId);
     }
   }
 
   let activeGroupId: string | null = null;
   let activeGroupReload: (() => Promise<void>) | null = null;
+  let activeGroupLater: (() => Promise<void>) | null = null;
   let currentSelectionSeq = 0;
 
   async function selectGroup(gid: string) {
@@ -533,10 +565,10 @@ export async function renderGroups(container: HTMLElement) {
         void renderSetup(container, () => renderGroups(container));
       };
 
-      const send = async (forwardMode: ForwardMode) => {
+      const send = async (forwardMode: ForwardMode, body: string) => {
         await call("conversation.send", {
           conversation: gid,
-          body: sendInput.value,
+          body,
           languages: langList.value(),
           forward_mode: forwardMode,
         });
@@ -553,7 +585,7 @@ export async function renderGroups(container: HTMLElement) {
         try {
           const chosen = await askOnce(composerBox);
           if (chosen) mode.setDefault(chosen);
-          await send(chosen ?? mode.value());
+          await send(chosen ?? mode.value(), body);
         } catch (err) {
           if (err instanceof RpcError && err.type === "NotSignedIn") {
             renderSessionEnded(container);
@@ -564,7 +596,7 @@ export async function renderGroups(container: HTMLElement) {
             err,
             () => {
               sendErr.textContent = "";
-              void send("not-forwardable").catch((e) => {
+              void send("not-forwardable", body).catch((e) => {
                 sendErr.textContent = errText(e);
               });
             },
@@ -776,8 +808,11 @@ export async function renderGroups(container: HTMLElement) {
     if (seq !== currentSelectionSeq) return;
     rightPane.replaceChildren(threadCol, infoPanel);
 
+    let pendingThreadReload = false;
+
     async function reloadThread() {
       if (seq !== currentSelectionSeq) return;
+      pendingThreadReload = false;
       try {
         const hist = await call<{ messages: GroupMessageRow[] }>("conversation.history", {
           conversation: gid,
@@ -810,9 +845,16 @@ export async function renderGroups(container: HTMLElement) {
           threadList,
           msgs,
           nameOf,
-          async (msgId) => {
+          async (msg, anchor) => {
+            if (msg.forward?.mode === "signed") {
+              openGroupDeleteDialog(anchor, msg, reloadThread);
+              return;
+            }
             try {
-              await call("conversation.delete-message", { message_id: msgId, ask_peer: true });
+              await call("conversation.delete-message", {
+                message_id: msg.id,
+                ask_peer: true,
+              });
               await reloadThread();
             } catch (err) {
               if (err instanceof RpcError && err.type === "NotSignedIn") {
@@ -843,8 +885,21 @@ export async function renderGroups(container: HTMLElement) {
       }
     }
 
+    new MutationObserver(() => {
+      if (pendingThreadReload && !threadList.querySelector(".forward-picker")) {
+        void reloadThread();
+      }
+    }).observe(threadList, { childList: true, subtree: true });
+
     activeGroupId = gid;
     activeGroupReload = reloadThread;
+    activeGroupLater = async () => {
+      if (threadList.querySelector(".forward-picker")) {
+        pendingThreadReload = true;
+        return;
+      }
+      await reloadThread();
+    };
     await reloadThread();
   }
 
@@ -861,8 +916,8 @@ export async function renderGroups(container: HTMLElement) {
       return;
     }
     if ("kind" in event) {
-      if (activeGroupId && event.subject === activeGroupId && activeGroupReload) {
-        await activeGroupReload();
+      if (activeGroupId && event.subject === activeGroupId && activeGroupLater) {
+        await activeGroupLater();
       }
       const hasConv =
         event.kind.startsWith("conversation.") ||
