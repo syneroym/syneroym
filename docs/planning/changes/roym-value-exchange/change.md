@@ -769,7 +769,6 @@ change doc refines each row below through its `AG-*` rows.
   backlog.
 
 - **VX-45, VX-46, VX-55 (M08C C6a):** C6a implements the node-side event log derive step, event log query, statement export, and agreement closing on the node. VX-45's "agreement signed" event is named `agreement-formed`; EEP events are deferred to M08E. VX-46 is satisfied through the statement export rules defined in AG-29. Hub screens for mixed quote builder, agreement actions, and statement export land in C6b.
-- **VX-2, VX-7, VX-55, VX-56 (M08C C6b):** C6b implements the Hub quote builder for arbitrary mixed commitments, live totals and difference display, version comparison summary, counterparty suggest changes, agreement panel settlement dialogs and close list, and statement screen with CSV/JSON exports.
 
 ## Close-out
 

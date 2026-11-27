@@ -1307,7 +1307,7 @@ Alice finds Bob's listing and asks for lessons. Bob answers with an offer. Alice
 Automated: `crates/substrate/tests/e2e/demo/50-roym-deal.spec.ts` (run with `mise run demo`). The three cases:
 1. Formation and decline: Alice asks for lessons, Bob makes an offer giving one lesson for ₹100, Alice agrees. Alice then asks for advanced lessons, Bob offers, and Alice declines with a note.
 2. Agree as listed: Bob publishes an instant offering with its own terms, Alice agrees as listed from the directory, and the agreement forms at once.
-3. Mixed exchange, settlements and statement: Bob offers a lesson for a sack of wheat plus ₹100, Alice sees the live totals and agrees, both settle in the Hub (Bob delivers lesson, Alice delivers wheat and pays), and Alice downloads her statement as CSV and JSON.
+3. Mixed exchange, settlements and statement: Bob offers a lesson (₹600) for a sack of wheat (₹400) plus ₹100, Alice sees the live totals and agrees, Alice confirms receipt of the lesson, Bob uses "I received everything" to close his receiver side, both see the agreement closed with all commitments settled, and Alice downloads her statement as CSV and JSON.
 
 In the Hub **Messages** tab: Alice sends an **enquiry** card; Bob sends an **offer**
 card; Alice presses **Agree**. Then show the receipt and agreement panel.

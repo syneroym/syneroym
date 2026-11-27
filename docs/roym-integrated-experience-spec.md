@@ -413,10 +413,13 @@ C15.  Counterparty books a slot, or places an order
           decides; a losing concurrent booking gets a named conflict
 C16.  Both sides see the same progress card, driven by the transaction
         state machine
-C17.  In the Hub, quote and accept are presented as "offer" and "agree".
-        Each party can settle their given and received commitments through
-        the agreement panel (`fulfilment.sign`, `payment.acknowledge`),
-        or close all open commitments in one action (`agreement.close`)
+C17.  Quote author requests payment (not in the Hub); the payment instruction was already
+        fixed in the signed agreement, so the payee cannot be swapped
+        in a later chat message
+        — in the Hub, quote and accept are presented as "offer" and "agree"
+        — each party can settle their given and received commitments through
+          the agreement panel (`fulfilment.sign`, `payment.acknowledge`),
+          or close all open commitments in one action (`agreement.close`)
 C18.  Counterparty pays through the external service or provides agreed goods/services
 C19.  Each side records a payment acknowledgement or fulfilment signature with whatever proof they have
         — this proves both sides said the same thing
