@@ -2578,10 +2578,14 @@ MESSAGE_ID=$(roym conversation.send "{\"conversation\":\"$CONV\",\"body\":\"Hell
 
 **Forward mode, origin and forward.** A send may name `"forward_mode": "signed"` or `"forward_mode": "not-forwardable"`. The message then gets the chat content type `application/vnd.roym.message+json`. A `signed` message also carries a `message-origin` record, signed with the sender's identity; the node needs an installed record-signing certificate for `conversation`, or it refuses with `-32602` and `data.code` `signing-not-enrolled`, `signing-certificate-expired`, `signing-certificate-stale` or `signing-no-owner`. A send with no `forward_mode` stays plain `text/plain`, exactly as before, and counts as not forwardable. With a mode, `content_type` must be absent or `text/plain`.
 
-```bash
-roym conversation.send '{"conversation":"…","body":"Market opens at 9","languages":["en"],"forward_mode":"signed"}'
-roym conversation.forward '{"message_id":"…","conversation":"…"}'
-roym conversation.settings '{}'
+```bash roym-client=forward
+SIGNED_ID=$(roym conversation.send "{\"conversation\":\"$CONV\",\"body\":\"Market opens at 9\",\"languages\":[\"en\"],\"forward_mode\":\"signed\"}" \
+  | jq -r .result.message_id)
+[ -n "$SIGNED_ID" ] && [ "$SIGNED_ID" != null ] || { echo "signed send failed" >&2; false; }
+roym conversation.settings '{}' | jq -e '.result.default_mode and (.result.asked | type == "boolean")' > /dev/null \
+  || { echo "settings failed" >&2; false; }
+roym conversation.forward "{\"message_id\":\"$SIGNED_ID\",\"conversation\":\"$CONV\"}" \
+  | jq -e '.result.message_id != null' > /dev/null || { echo "forward failed" >&2; false; }
 ```
 
 `conversation.forward` copies a checked, signed message into the named conversation and adds one to the forward count. It refuses a missing, deleted, plain, widget or not-forwardable message, and a body whose origin does not check, with `data.code` `message-not-found`, `message-deleted`, `not-forwardable` or `origin-not-checked`. A forward signs nothing, so the forwarder needs no certificate.
