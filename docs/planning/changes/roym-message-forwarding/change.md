@@ -182,7 +182,7 @@ India's IT (Intermediary Guidelines and Digital Media Ethics Code) Rules, 2021, 
 - [x] ADR: signed message origins and the sender's forward mode (option E), the default mode and deniability. [ADR-0030](../../../decisions/0030-signed-message-origins.md).
 - [ ] Write the slice plan (in M08C).
 - [ ] `forward_mode` field in the message body, the default-mode setting, and the composer control.
-- [ ] `message-origin` record type, signing at send for `signed` messages, verification at receive.
+- [x] `message-origin` record type, signing at send for `signed` messages, verification at receive.
 - [ ] Forward method and Hub action, refusing `not-forwardable` messages. Display rules FW-3 to FW-5, FW-13.
 - [ ] Forward of signed records as themselves.
 - [ ] The group composer notice (FW-11). Settings and first-message text (FW-10). Update the integrated spec's privacy section at close-out.
@@ -198,6 +198,15 @@ From [ADR-0030](../../../decisions/0030-signed-message-origins.md) (2026-11-16).
 - **Forwarded records (FW-7).** A record travels as itself, in a forward body of its own content type, never as a deal card. It ignores the forward mode. In M08C the forward action offers only `listing`, `profile` and `quote`. A forwarded quote shows only its visible fields (agreements doc, open question 11), and the Hub warns that it shows both parties of the deal.
 - **Size.** The certificate travels inside each origin, as in every Roym record. The ADR estimates about 940 bytes for a short text message. C7 measures a real one and stops to ask the owner if it is over 2 KiB.
 - **The first message.** The Hub asks once. The person may skip, and the shipped default (`not-forwardable`) applies.
+
+### Different from the plan
+
+- **`origin_draft` returns the host signing draft.** The signing host takes its own `RecordDraft` type on both builds, with the payload as a JSON string, not the signed-record type with a JSON value. The envelope payload and the hash layout are unchanged; the chat tests convert the draft before building a test envelope.
+- **Export creates the settings collection first.** Without that call a fresh node's first export had no `settings` key at all, and the bundle shape then depended on whether the person had ever opened the setting. The section is now present and empty on a fresh node.
+- **The parity refusal for a group uses a restored group, not a removed one.** A group owner is always a member and `group.remove-member` refuses to remove the owner, so the parity harness cannot make its own node a removed non-owner. A restored group reaches the same group check before the signing call, so it proves the order the scenario is for. The three-node test keeps the group case.
+- **The 11 KiB measurement does not assert the mailbox limit.** It prints the body size and whether it is under `MAILBOX_CARD_BODY_BYTES`, as the plan asks; the test does not make an offline mailbox part of this slice.
+- **Measured sizes and read time.** On the three-node test: a short signed text ("Market opens at 9", one `en` tag) has an 848-byte origin and a 1,037-byte chat body; an 11 KiB signed text has a 12,278-byte body, under the 13,312-byte mailbox estimate; a `conversation.history` page of 200 signed messages took 100 ms and 164 ms on two runs on the WASM build. The owner's limits are 2 KiB for an origin and 500 ms for the page.
+
 
 ## Close-out
 
