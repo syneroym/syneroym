@@ -97,6 +97,7 @@ neighbourhood.
 | **Event log** | An append-only local log derived on each participant node recording lifecycle milestones of deals and commitments (`agreement-formed`, `commitment-settled`, `commitment-failed`, etc.). Derived purely from held signed records and progress snapshots; nothing on the deal path reads from it. | An accounting ledger or database audit table. |
 | **Statement** | An exportable financial summary of settled commitments over a date range (`statement.export`), grouping declared values into totals by currency, direction (given vs. received), and resource kind. | An invoice or payment receipt. |
 | **Saved deal terms** | Default deal terms configured by a participant on their node (`cancellation_terms`, `refund_terms`, `dispute_path`, `quote_valid_secs`) that pre-fill new quote terms. | An agreement template or contractual agreement. |
+| **Offer** | The user-facing word used in the Hub for a quote. While records, protocols, method names, and error codes retain "quote", user interfaces present it as an offer, and accepting it as agreeing. | A listing or enquiry. |
 
 ## Key phrasings
 

@@ -8,8 +8,6 @@ import {
   computeNewestRequestMap,
   isQuoteSuperseded,
   messageElement,
-  openQuoteForm,
-  readQuoteForm,
   refusalText,
   renderCardActions,
   renderMessages,
@@ -251,79 +249,6 @@ describe("text that the person signs", () => {
         expect(bytes, `${language}/${id}`).toBeLessThanOrEqual(MAX_BYTES);
       }
     }
-  });
-
-  it("fills the quote terms in the language of the Hub", async () => {
-    await activateWith("hi", { hi: async () => HINDI });
-    const anchor = document.createElement("div");
-    const request = { record_id: "rec_req" } as CardRow;
-    openQuoteForm(anchor, request, "conv1", async () => {});
-    const value = (cls: string) => anchor.querySelector<HTMLInputElement>(cls)?.value;
-    expect(value(".quote-canc-input")).toBe(t("quote-default-cancellation"));
-    expect(value(".quote-ref-input")).toBe(t("quote-default-refund"));
-    expect(value(".quote-disp-input")).toBe(t("quote-default-dispute"));
-    expect(value(".quote-canc-input")).toMatch(/[ऀ-ॿ]/);
-  });
-
-  it("quote form sends lang from its control in terms, starting at UI language", async () => {
-    let sentTerms: Record<string, unknown> | undefined;
-    stubRpc({
-      "quote.set": (params) => {
-        sentTerms = (params as { terms: Record<string, unknown> }).terms;
-        return { quote_id: "q1", record_id: "rec_q1" };
-      },
-    });
-
-    const anchor = document.createElement("div");
-    const request = { record_id: "rec_req" } as CardRow;
-    openQuoteForm(anchor, request, "conv1", async () => {});
-
-    const langSel = anchor.querySelector<HTMLSelectElement>(".quote-text-lang")!;
-    expect(langSel).not.toBeNull();
-    expect(langSel.value).toBe("en");
-
-    // Change to hi
-    langSel.value = "hi";
-
-    anchor.querySelector<HTMLInputElement>(".quote-scope-input")!.value = "Scope of work";
-    anchor.querySelector<HTMLInputElement>(".quote-currency-input")!.value = "EUR";
-    anchor.querySelector<HTMLInputElement>(".quote-amount-input")!.value = "100";
-    anchor.querySelector<HTMLInputElement>(".quote-payee-input")!.value = "Alice";
-
-    const submitBtn = anchor.querySelector<HTMLButtonElement>(".submit-quote-button")!;
-    submitBtn.click();
-
-    await vi.waitFor(() => expect(sentTerms).toBeDefined());
-    expect((sentTerms!.scope as Record<string, unknown>).lang).toBe("hi");
-  });
-
-  it("readQuoteForm gives the terms submit sends", async () => {
-    let sentTerms: Record<string, unknown> | undefined;
-    stubRpc({
-      "quote.set": (params) => {
-        sentTerms = (params as { terms: Record<string, unknown> }).terms;
-        return { quote_id: "q1", record_id: "rec_q1" };
-      },
-    });
-
-    const anchor = document.createElement("div");
-    const request = { record_id: "rec_req" } as CardRow;
-    openQuoteForm(anchor, request, "conv1", async () => {});
-
-    const form = anchor.querySelector<HTMLElement>(".quote-form")!;
-    form.querySelector<HTMLInputElement>(".quote-scope-input")!.value = "Scope of work";
-    form.querySelector<HTMLInputElement>(".quote-currency-input")!.value = "EUR";
-    form.querySelector<HTMLInputElement>(".quote-amount-input")!.value = "100";
-    form.querySelector<HTMLInputElement>(".quote-payee-input")!.value = "Alice";
-
-    const parsed = readQuoteForm(form);
-    expect("terms" in parsed).toBe(true);
-
-    const submitBtn = form.querySelector<HTMLButtonElement>(".submit-quote-button")!;
-    submitBtn.click();
-
-    await vi.waitFor(() => expect(sentTerms).toBeDefined());
-    expect("terms" in parsed && parsed.terms).toEqual(sentTerms);
   });
 });
 

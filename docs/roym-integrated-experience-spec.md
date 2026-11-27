@@ -100,7 +100,7 @@ through shared database access.
 | **Profile & Contacts** | Every participant's substrate | Own profile, contact list, favourites, block list, reports | `profile.get/set`, `contacts.*`, `block.*`, `report.*` |
 | **Catalog** | Listing owner's substrate | Listings, prices, service area | `listing.*` (incl. `verify`, `limits`/`set-limits`), `export`/`import` |
 | **Scheduling** | The substrate of the party that gives a slot | Availability slots and the seat reservations on them. Only `transaction` calls the reservation hooks, and no other node can | `availability.*`, `export`/`import` (the hooks `reservation.prepare`, `.reserve`, `.confirm` and `.release` are local calls with no route from the Hub) |
-| **Transaction** | Quote author's substrate | Requests, quotes, agreements, bookings, orders, receipts. Changes appear on the host event feed (`/_syneroym/events`, ADR-0027) | `request.*`, `quote.*`, `agreement.*`, `receipt.*` |
+| **Transaction** | Quote author's substrate | Requests, quotes/offers, agreements, settlements, event log, statements, receipts. Changes appear on the host event feed (`/_syneroym/events`, ADR-0027) | `request.*`, `quote.*`, `agreement.*`, `receipt.*`, `eventlog.*`, `statement.*`, `deal.*` |
 | **Directory** | SynOrg's substrate, on every installation (deployed everywhere the SynApp is; the column names where the server half *matters*, not where the component lives) — and, on a searcher's own node, that person's list of directories | Member list, published listings, search index, membership credentials, revocations | Server half: `directory.search`, `directory.info`, `directory.publish`, `directory.unpublish`, `member.*`, `credential.*`, `revocation.*`. Client half (local-only, one node's own list of directories and search runs): `directory.add-source`/`remove-source`/`sources`, `directory.find`, `directory.run-envelope` |
 
 Four rules follow from this split:
@@ -413,16 +413,19 @@ C15.  Counterparty books a slot, or places an order
           decides; a losing concurrent booking gets a named conflict
 C16.  Both sides see the same progress card, driven by the transaction
         state machine
-C17.  Quote author requests payment; the payment instruction was already
+C17.  Quote author requests payment (not in the Hub); the payment instruction was already
         fixed in the signed agreement, so the payee cannot be swapped
         in a later chat message
-C18.  Counterparty pays through the external service
-C19.  Each side records a payment acknowledgement with whatever proof
-        they have
+        — in the Hub, quote and accept are presented as "offer" and "agree"
+        — each party can settle their given and received commitments through
+          the agreement panel (`fulfilment.sign`, `payment.acknowledge`),
+          or close all open commitments in one action (`agreement.close`)
+C18.  Counterparty pays through the external service or provides agreed goods/services
+C19.  Each side records a payment acknowledgement or fulfilment signature with whatever proof they have
         — this proves both sides said the same thing
         — it does not prove the money moved; the UI must say so
-C20.  Quote author marks the work complete; both sides sign a fulfilment
-        receipt
+C20.  Commitments reach settled state; either party can export financial statements
+        grouped by currency, direction, and resource kind (`statement.export`)
 C21.  Searcher may recommend the listing owner to a contact, in a private
         conversation
 ```

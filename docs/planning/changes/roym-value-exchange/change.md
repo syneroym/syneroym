@@ -10,7 +10,6 @@ living-docs-touched:
   - docs/planning/deferred-backlog.md
 demo:
   - crates/substrate/tests/e2e/demo/50-roym-deal.spec.ts
-  - none: C6a is node-side; C6b delivers Story 50 in browser Hub
 ---
 # Roym Value Exchange
 
@@ -144,7 +143,7 @@ These are overview criteria. Each module change document refines them into tests
 | --- | --- | --- |
 | **Participants and resources** | | |
 | VX-1 | One identity can publish an offering, publish a want, and give and receive resources in deals, with no role switch. | |
-| VX-2 | Any resource kind can be on either side of an agreement: a service for currency, a service for a service, goods for an EEP, an EEP for an EEP. | |
+| VX-2 | Any resource kind can be on either side of an agreement: a service for currency, a service for a service, goods for an EEP, an EEP for an EEP. | Through AG-2. Unit: `crates/roym_core/src/deal/tests.rs` (`every_giver_can_give_every_built_resource_kind`). Hub: `crates/roym_web/ui/src/quote_form/quote_form.test.ts` (`builds DealTerms with after dependencies for rows on either side`). E2E: `crates/substrate/tests/e2e/tests/roym-deal.spec.ts` (case 1). |
 | **Want-Bid** | | |
 | VX-3 | A want is published to an exchange and found by search. Another participant answers it with a bid. The wanter sees all bids side by side, can ask a bidder for a revised bid, and can accept or reject each one. | |
 | VX-4 | A public want shows only an approximate area. The exact address is shared only inside a conversation, as today. | |
@@ -152,9 +151,9 @@ These are overview criteria. Each module change document refines them into tests
 | VX-5 | An offering found by search gets an enquiry, or is agreed as listed (VX-54). The owner answers an enquiry with a quote. The other side can ask for changes, and the owner answers each with a new version, until one side accepts or rejects. | |
 | VX-54 | A participant agrees to an offering with complete terms in one action. The owner chooses for each offering: **instant** (the owner's node forms the agreement with no action by the owner) or **confirm first** (the owner confirms in one action). Instant is possible only for an offering open to anyone whose availability the owner's node can check (a slot), or that the owner marked as not limited. The owner's node limits how many open instant agreements it holds. The result is the same agreement record as any other deal. | Through AG-44, AG-45, AG-49. Service: `crates/roym_transaction/src/app/tests/as_listed_owner.rs`, `tests/as_listed_accept.rs`; Hub: `as_listed_tap.test.ts`; E2E demo: `crates/substrate/tests/e2e/demo/50-roym-deal.spec.ts`. |
 | VX-6 | Want-Bid and List-Search end in the same agreement record and the same commitment states. | |
-| VX-56 | Before agreeing, each party sees what it gives, what it receives and the difference: on the quote, or, on the as-listed path, on the offering. When a quote has more than one version, each party also sees one combined summary of what changed from the first version to the latest, for each side. | |
+| VX-56 | Before agreeing, each party sees what it gives, what it receives and the difference: on the quote, or, on the as-listed path, on the offering. When a quote has more than one version, each party also sees one combined summary of what changed from the first version to the latest, for each side. | Through AG-23, AG-47. Hub: `crates/roym_web/ui/src/deals/deal_totals.test.ts`, `crates/roym_web/ui/src/cards/templates/quote_totals.test.ts`, `crates/roym_web/ui/src/deals/version_summary.test.ts`. E2E: `crates/substrate/tests/e2e/tests/roym-deal.spec.ts` (cases 1 and 3). |
 | **Agreements** | | |
-| VX-7 | One agreement can hold several commitments, for example a service, ₹300 in currency and ₹200 as a new EEP. Each commitment carries its kind, its two parties and its declared value in the agreement's one currency. | |
+| VX-7 | One agreement can hold several commitments, for example a service, ₹300 in currency and ₹200 as a new EEP. Each commitment carries its kind, its two parties and its declared value in the agreement's one currency. | Through AG-4. Unit: `crates/roym_core/src/deal/tests.rs` (`commitment_count_table`). Hub: `crates/roym_web/ui/src/quote_form/quote_form.test.ts` (`supports adding and removing rows up to 16 rows`). Demo: `crates/substrate/tests/e2e/demo/50-roym-deal.spec.ts`. |
 | VX-8 | Each commitment moves only through the states of its kind, and every kind has a failure end (see the table under Design). An agreement closes when every commitment has reached a final state. | |
 | VX-9 | The quote author is the single writer of the agreement. A second, conflicting change gets a named conflict, never a merge. | |
 | VX-10 | A booking reserves its slot under the slot owner's single-writer fence, through the scheduling extension's reserve hook, also when the slot owner is not the quote author. If the reserve fails, the agreement is not formed. | |
@@ -770,6 +769,8 @@ change doc refines each row below through its `AG-*` rows.
   backlog.
 
 - **VX-45, VX-46, VX-55 (M08C C6a):** C6a implements the node-side event log derive step, event log query, statement export, and agreement closing on the node. VX-45's "agreement signed" event is named `agreement-formed`; EEP events are deferred to M08E. VX-46 is satisfied through the statement export rules defined in AG-29. Hub screens for mixed quote builder, agreement actions, and statement export land in C6b.
+
+- **VX-2, VX-7, VX-55, VX-56 (M08C C6b):** C6b adds the Hub screens: the quote builder for mixed commitments on either side, live totals and difference (AG-23), the combined change summary (AG-47), the one-action close list and settlement dialogs (AG-46), and the statement downloads (AG-29). The test columns of VX-2, VX-7, VX-45, VX-46, VX-55 and VX-56 name the files that prove them.
 
 ## Close-out
 

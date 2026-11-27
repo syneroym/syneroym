@@ -18,6 +18,7 @@ export interface TabStateMap {
   memberships: void;
   synorg: void;
   safety: void;
+  statement: void;
   backup: void;
   components: void;
 }

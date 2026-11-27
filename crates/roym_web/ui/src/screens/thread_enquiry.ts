@@ -61,3 +61,27 @@ export function isQuoteSuperseded(
   }
   return false;
 }
+
+export function cardAgreementId(card: CardRow): string | undefined {
+  const d = card.data as Record<string, unknown> | undefined;
+  if (!d) return undefined;
+  if (typeof d.agreement === "string" && d.agreement) return d.agreement;
+  if (card.card_type === "agreement-receipt" && typeof d.quote_record_id === "string" && d.quote_record_id) {
+    return d.quote_record_id;
+  }
+  return undefined;
+}
+
+export function computeNewestAgreementCardMap(allCards: CardRow[]): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const c of allCards) {
+    if (c.verified && c.message_id) {
+      const agrId = cardAgreementId(c);
+      if (agrId) {
+        map.set(agrId, c.message_id);
+      }
+    }
+  }
+  return map;
+}
+

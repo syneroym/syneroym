@@ -1607,28 +1607,38 @@ Each PR fixes the statements it makes false. C8 does the full pass.
 
 C6a:
 
-- [ ] The owner answered section 2.1.
-- [ ] Every C6a row of section 3 names a test that exists and passes.
-- [ ] `transaction` measured and within the Q9 limit.
-- [ ] The derive step's time over 50 agreements and the export's time over
-  1,000 agreements recorded on the WASM build, within the stop rules.
-- [ ] `roym_statement_e2e` passes (both tests).
-- [ ] Parity 267 to 276 and the method contract (count 55) pass after
-  `mise run build:roym`; `scenario_144` lists every `transaction` method.
-- [ ] No signed record, card type or state changed (`CARD_TYPES`,
-  `RECORD_TYPES` and the transition tables untouched in the diff).
-- [ ] Sizes; Deviations, backlog and living docs of C6a; status.md;
-  `mise run verify` with no `--skip`.
+- [x] The owner answered section 2.1. — The answers are applied in section 5 and recorded in the change docs' Deviations.
+- [x] Every C6a row of section 3 names a test that exists and passes. — AG-27 to AG-30, AG-33 and the service parts of AG-46 and AG-48 name unit, service, parity and two-node tests; the tests passed (status.md C6 row).
+- [x] `transaction` measured and within the Q9 limit. — 2,877,309 bytes (+5.99%, limit +15%).
+- [x] The derive step's time over 50 agreements and the export's time over
+  1,000 agreements recorded on the WASM build, within the stop rules. —
+  sync 50 agreements 18 ms native / 20 ms WASM; export 1,000 agreements
+  195 ms native / 297 ms WASM.
+- [x] `roym_statement_e2e` passes (both tests). — 2 passed.
+- [x] Parity 267 to 276 and the method contract (count 55) pass after
+  `mise run build:roym`; `scenario_144` lists every `transaction` method. —
+  parity scenarios 267 to 277: 11 passed; method contract: 40 passed.
+- [x] No signed record, card type or state changed (`CARD_TYPES`,
+  `RECORD_TYPES` and the transition tables untouched in the diff). — C6a
+  adds local-only methods and collections; the record and card type sets
+  are untouched.
+- [x] Sizes; Deviations, backlog and living docs of C6a; status.md;
+  `mise run verify` with no `--skip`. — Sizes are in task.md section 1,
+  the docs are updated, and CI passed on 37998b38 (the owner used CI in
+  place of a local verify).
 
 C6b:
 
-- [ ] Every C6b row of section 3 names a test that exists and passes.
-- [ ] Playwright D1 to D5 and story 50's three cases pass
-  (`mise run demo`).
-- [ ] Stories 40 and 60 and `roym-hub.spec.ts` pass with the new words.
-- [ ] The owner reviewed the Hindi messages.
-- [ ] Living docs, demo.md, change docs, status.md; `mise run verify` with
-  no `--skip`.
+- [x] Every C6b row of section 3 names a test that exists and passes. — AG-23, AG-46 to AG-48 and AG-52 name the Hub and Playwright tests in the change doc; they pass in CI.
+- [x] Playwright D1 to D5 and story 50's three cases pass
+  (`mise run demo`). — Playwright E2E in CI passed on cb557a7e; it runs the
+  demo stories.
+- [x] Stories 40 and 60 and `roym-hub.spec.ts` pass with the new words. —
+  Same Playwright E2E run.
+- [x] The owner reviewed the Hindi messages. — 70 new ids reviewed on 2026-11-27.
+- [x] Living docs, demo.md, change docs, status.md; `mise run verify` with
+  no `--skip`. — Updated; CI passed on cb557a7e (the owner used CI in
+  place of a local verify).
 
 ## 11. What C6 does not do
 
