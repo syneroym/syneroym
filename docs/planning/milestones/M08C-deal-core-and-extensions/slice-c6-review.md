@@ -2183,3 +2183,34 @@ the old line put back.
 R28 (minor). **1 open:** 0 blocker, 0 major, 1 minor. When R28 is fixed,
 all C6b findings are closed and the slice can be closed with the T7
 template.
+
+## Code review round 5 (part C6b) — Claude Opus 5.5, 2026-11-27
+
+This round checks the fix for R28, the one finding open after round 4.
+Branch `feat/m08c-c6b-deal-screens` at `1bc8b746`, main checkout (not a
+worktree), up to date with `origin`. Fix commits, written by Gemini 3.8
+Flash: `462c5074` (test only) and `1bc8b746` (docs). I read `git diff
+0e957763..1bc8b746` (3 files).
+
+**CI.** Not checked. [Run 45950888022](https://github.com/syneroym/syneroym/actions/runs/45950888022)
+on `1bc8b746` was still running when I wrote this round, and the owner
+asked me not to wait. The last full green run is on `05948800`
+([run 45947559944](https://github.com/syneroym/syneroym/actions/runs/45947559944)).
+Since then only `quote_form.test.ts` and docs changed.
+
+**Tests I ran:** Hub Vitest (`npm test` in `crates/roym_web/ui`): 68
+files, 748 passed. One probe for R28: I put the R27 bug back in
+`readWindowData` (return `deal-error-window-required` when "From" is
+after "To"). Then `quote_form.test.ts` fails at `:344` (1 failed, 9
+passed). I restored the file (`git status` clean).
+
+### Round 4 findings
+
+- **R28 — fixed.** Both checks are now
+  `expect(res).toEqual({ error: { raw: "<message>" } })`, with no
+  condition around them. The probe above shows the test fails with the
+  old line.
+
+**Counts of round 5 (part C6b):** R28 verified fixed. No new findings.
+All C6b findings, R12 to R28, are closed. **0 open.** No blocker or
+major.
