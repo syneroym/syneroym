@@ -40,6 +40,8 @@ import {
 } from "../groups/words";
 import { call, RpcError } from "../rpc";
 
+const GROUP_OPEN_WORK = ".forward-picker, .delete-dialog";
+
 export interface GroupListItem {
   id: string;
   kind?: "direct" | "group";
@@ -454,19 +456,17 @@ export async function renderGroups(container: HTMLElement) {
 
     if (rows.length === 0) {
       activeGroupId = null;
-      activeGroupReload = null;
       activeGroupLater = null;
       rightPane.replaceChildren();
       return;
     }
     const targetId = selectedId && rows.some((r) => r.id === selectedId) ? selectedId : rows[0]?.id;
-    if (targetId && !rightPane.querySelector(".forward-picker")) {
+    if (targetId && !rightPane.querySelector(GROUP_OPEN_WORK)) {
       await selectGroup(targetId);
     }
   }
 
   let activeGroupId: string | null = null;
-  let activeGroupReload: (() => Promise<void>) | null = null;
   let activeGroupLater: (() => Promise<void>) | null = null;
   let currentSelectionSeq = 0;
 
@@ -886,15 +886,14 @@ export async function renderGroups(container: HTMLElement) {
     }
 
     new MutationObserver(() => {
-      if (pendingThreadReload && !threadList.querySelector(".forward-picker")) {
+      if (pendingThreadReload && !threadList.querySelector(GROUP_OPEN_WORK)) {
         void reloadThread();
       }
     }).observe(threadList, { childList: true, subtree: true });
 
     activeGroupId = gid;
-    activeGroupReload = reloadThread;
     activeGroupLater = async () => {
-      if (threadList.querySelector(".forward-picker")) {
+      if (threadList.querySelector(GROUP_OPEN_WORK)) {
         pendingThreadReload = true;
         return;
       }
@@ -909,8 +908,8 @@ export async function renderGroups(container: HTMLElement) {
       return;
     }
     if ("reload" in event && event.reload) {
-      if (activeGroupReload) {
-        await activeGroupReload();
+      if (activeGroupLater) {
+        await activeGroupLater();
       }
       await reloadGroupList(activeGroupId ?? undefined);
       return;

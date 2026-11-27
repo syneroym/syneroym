@@ -1046,10 +1046,9 @@ describe("Groups screen feed and forward work", () => {
     };
   }
 
-  function stubGroupNode(
-    messages: GroupMessageRow[],
-    counters: { history: number; deleted: number; body?: string },
-  ) {
+  type GroupCounters = { history: number; deleted: number; body?: string };
+
+  function stubGroupNode(messages: GroupMessageRow[], counters: GroupCounters) {
     stubRpc({
       "conversation.list": () => ({
         conversations: [
@@ -1095,7 +1094,7 @@ describe("Groups screen feed and forward work", () => {
   }
 
   it("a feed event leaves an open forward picker", async () => {
-    const counters = { history: 0, deleted: 0 };
+    const counters: GroupCounters = { history: 0, deleted: 0 };
     stubGroupNode([signedRow("msg-1")], counters);
     startFeed();
     const host = document.createElement("div");
@@ -1127,7 +1126,7 @@ describe("Groups screen feed and forward work", () => {
   });
 
   it("a signed group message asks before deleting and says the origin stays", async () => {
-    const counters = { history: 0, deleted: 0 };
+    const counters: GroupCounters = { history: 0, deleted: 0 };
     stubGroupNode([signedRow("msg-1")], counters);
     const host = document.createElement("div");
     document.body.appendChild(host);
@@ -1147,8 +1146,66 @@ describe("Groups screen feed and forward work", () => {
     expect(host.querySelector(".delete-dialog")).toBeNull();
   });
 
+  it("a feed event leaves an open group delete dialog", async () => {
+    const counters: GroupCounters = { history: 0, deleted: 0 };
+    stubGroupNode([signedRow("msg-1")], counters);
+    startFeed();
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    await renderGroups(host);
+
+    host.querySelector<HTMLButtonElement>(".delete-button")!.click();
+    await vi.advanceTimersByTimeAsync(0);
+    const dialog = host.querySelector(".delete-dialog");
+    expect(dialog).not.toBeNull();
+    const historyCalls = counters.history;
+
+    FakeFeedSource.instance!.emit(
+      "change",
+      JSON.stringify({ kind: "conversation.message", subject: "grp-1", item: "msg-new" }),
+      "cursor-new",
+    );
+    await vi.advanceTimersByTimeAsync(150);
+
+    expect(host.querySelector(".delete-dialog")).toBe(dialog);
+    expect(counters.history).toBe(historyCalls);
+
+    host.querySelector<HTMLButtonElement>(".cancel-delete")!.click();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(host.querySelector(".delete-dialog")).toBeNull();
+    expect(counters.history).toBe(historyCalls + 1);
+  });
+
+  it("a feed reload leaves an open forward picker", async () => {
+    const counters: GroupCounters = { history: 0, deleted: 0 };
+    stubGroupNode([signedRow("msg-1")], counters);
+    startFeed();
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    await renderGroups(host);
+
+    host.querySelector<HTMLButtonElement>(".forward-button")!.click();
+    await vi.advanceTimersByTimeAsync(0);
+    const picker = host.querySelector(".forward-picker");
+    expect(picker).not.toBeNull();
+    const historyCalls = counters.history;
+
+    FakeFeedSource.instance!.emit("reload", "{}", "cursor-reload");
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(host.querySelector(".forward-picker")).toBe(picker);
+    expect(counters.history).toBe(historyCalls);
+
+    host.querySelector<HTMLButtonElement>(".forward-picker-close")!.click();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(host.querySelector(".forward-picker")).toBeNull();
+    expect(counters.history).toBe(historyCalls + 1);
+  });
+
   it("sends the group text without the spaces around it", async () => {
-    const counters = { history: 0, deleted: 0 };
+    const counters: GroupCounters = { history: 0, deleted: 0 };
     stubGroupNode([], counters);
     const host = document.createElement("div");
     document.body.appendChild(host);
