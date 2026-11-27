@@ -2156,7 +2156,7 @@ files, 748 passed. `tsc --noEmit` and `eslint src`: clean.
 
 ### New findings
 
-#### R28 — The window-message test never checks a message (minor)
+#### [x] R28 — The window-message test never checks a message (minor)
 
 *Where:* `crates/roym_web/ui/src/quote_form/quote_form.test.ts:338` and
 `:348`.
@@ -2177,7 +2177,7 @@ test still passes.
 and the same for the "both dates" case. Check that the test fails with
 the old line put back.
 
-*Status:* Open.
+*Status:* Fixed (462c5074). In quote_form.test.ts, replaced conditional if ("message" in res.error) check with direct assertions expect(res).toEqual({ error: { raw: "Both dates are required for the time window" } }) and expect(res).toEqual({ error: { raw: "The start date must not be after the end date" } }). Proof: restoring the previous bug in rows.ts (returning deal-error-window-required when fromD > toD) caused quote_form.test.ts to fail with: expected { raw: "The start date must not be after the end date" } to deeply equal { raw: "Both dates are required for the time window" }. With the fix restored, all 748 vitest tests pass.
 
 **Counts of round 4 (part C6b):** R27 verified fixed. One new finding,
 R28 (minor). **1 open:** 0 blocker, 0 major, 1 minor. When R28 is fixed,
