@@ -1046,7 +1046,10 @@ describe("Groups screen feed and forward work", () => {
     };
   }
 
-  function stubGroupNode(messages: GroupMessageRow[], counters: { history: number; deleted: number }) {
+  function stubGroupNode(
+    messages: GroupMessageRow[],
+    counters: { history: number; deleted: number; body?: string },
+  ) {
     stubRpc({
       "conversation.list": () => ({
         conversations: [
@@ -1083,6 +1086,10 @@ describe("Groups screen feed and forward work", () => {
       "conversation.delete-message": () => {
         counters.deleted++;
         return {};
+      },
+      "conversation.send": (params) => {
+        counters.body = String(params.body);
+        return { message_id: "msg-sent" };
       },
     });
   }
@@ -1138,5 +1145,22 @@ describe("Groups screen feed and forward work", () => {
 
     expect(counters.deleted).toBe(1);
     expect(host.querySelector(".delete-dialog")).toBeNull();
+  });
+
+  it("sends the group text without the spaces around it", async () => {
+    const counters = { history: 0, deleted: 0 };
+    stubGroupNode([], counters);
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    await renderGroups(host);
+
+    const composer = host.querySelector(".composer-box")!;
+    const input = composer.querySelector<HTMLInputElement>("input")!;
+    const send = composer.querySelector<HTMLButtonElement>("button")!;
+    input.value = "  Market opens at 9\n";
+    send.click();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(counters.body).toBe("Market opens at 9");
   });
 });
