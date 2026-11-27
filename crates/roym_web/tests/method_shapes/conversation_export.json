@@ -11,6 +11,11 @@
         "digest": "string",
         "record_count": "number",
         "schema_version": "number"
+      },
+      "settings": {
+        "digest": "string",
+        "record_count": "number",
+        "schema_version": "number"
       }
     },
     "subject_did": "string"
@@ -33,6 +38,7 @@
           "data": "string"
         }
       }
-    ]
+    ],
+    "settings": []
   }
 }

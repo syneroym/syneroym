@@ -7,9 +7,7 @@ use rusqlite::{Connection, Transaction, params};
 use serde::{Deserialize, Serialize};
 use syneroym_rpc::ConversationExportChunk;
 
-use super::{
-    ConversationStore, StoreError, StoredDagEntry, message::is_searchable_content_type, text_index,
-};
+use super::{ConversationStore, StoreError, StoredDagEntry, message::indexable_text, text_index};
 use crate::{dag::WireEntry, ids::derive_conversation_id};
 
 pub const BACKUP_VERSION: u32 = 1;
@@ -436,11 +434,10 @@ impl ConversationStore {
             // Index for search only when the message is accepted and not deleted.
             if m.deleted_at.is_none()
                 && m.admission == "accepted"
-                && is_searchable_content_type(&m.content_type)
-                && let Ok(body_str) = str::from_utf8(&m.body)
+                && let Some(text) = indexable_text(&m.content_type, &m.body)
             {
                 let rowid = tx.last_insert_rowid();
-                let _ = text_index::sync(tx, rowid, body_str);
+                let _ = text_index::sync(tx, rowid, text.as_ref());
             }
         }
         Ok(count)

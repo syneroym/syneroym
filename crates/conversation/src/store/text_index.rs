@@ -8,7 +8,7 @@ use syneroym_text_lang::{
     fts::{self, TRI_TABLE_OPTIONS, WORD_TABLE_OPTIONS},
 };
 
-use super::message::is_searchable_content_type;
+use super::message::indexable_text;
 
 /// Replace the index rows of `rowid` with the keys of `body`.
 pub(crate) fn sync(conn: &Connection, rowid: i64, body: &str) -> Result<()> {
@@ -77,10 +77,8 @@ pub(crate) fn ensure(conn: &Connection) -> Result<()> {
         let mut list = Vec::new();
         for r in rows {
             let (rowid, ct, body_bytes) = r?;
-            if is_searchable_content_type(&ct)
-                && let Ok(body_str) = str::from_utf8(&body_bytes)
-            {
-                list.push((rowid, body_str.to_string()));
+            if let Some(text) = indexable_text(&ct, &body_bytes) {
+                list.push((rowid, text.into_owned()));
             }
         }
         list

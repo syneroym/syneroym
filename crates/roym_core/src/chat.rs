@@ -10,10 +10,11 @@
 use serde::{Deserialize, Deserializer, Serialize, de};
 use serde_json::{Value, json};
 use sha2::Digest;
+use syneroym_app_host::types::signing::RecordDraft;
 
 use crate::{
     backup::bytes_to_hex,
-    record::{self, Envelope, RecordDraft, VerifyOptions},
+    record::{self, Envelope, VerifyOptions},
     verdict::RecordVerdict,
 };
 
@@ -204,7 +205,8 @@ pub fn origin_draft(payload: &MessageOriginPayload) -> RecordDraft {
             "content_type": payload.content_type,
             "languages": payload.languages,
             "content_hash": payload.content_hash,
-        }),
+        })
+        .to_string(),
         expires_at_secs: None,
         supersedes: None,
     }

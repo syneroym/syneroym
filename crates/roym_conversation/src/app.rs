@@ -1,9 +1,12 @@
 //! Conversation service application logic, target-independent.
 
 pub mod backup;
+pub mod chat_send;
 pub mod group;
 pub mod inbox;
 pub mod messages;
+pub mod settings;
+pub mod view;
 pub mod widget;
 
 use std::collections::HashMap;
@@ -29,9 +32,13 @@ use syneroym_roym_core::{
 
 use crate::api;
 
-pub const SCHEMA_VERSION: u32 = 4;
+/// The backup and storage schema version. Raised to 5 for the settings
+/// section: a version-4 bundle has no place for the person's choice.
+pub const SCHEMA_VERSION: u32 = 5;
 pub const ADMISSIONS: &str = "admissions";
 pub const FIRST_CONTACT_CHARGES: &str = "first_contact_charges";
+/// The person's default forward mode and the first-message flag.
+pub const SETTINGS: &str = "conversation_settings";
 /// Small bookkeeping rows that belong to no conversation, such as when the
 /// old first-contact charges were last pruned.
 pub const CONVERSATION_META: &str = "conversation_meta";
@@ -71,6 +78,10 @@ pub(crate) async fn ensure_meta<H: AppHost>(host: &H) -> Result<(), String> {
 
 pub(crate) async fn ensure_charges<H: AppHost>(host: &H) -> Result<(), String> {
     ensure_coll(host, FIRST_CONTACT_CHARGES, &[idx("at_secs", IndexType::Numeric)]).await
+}
+
+pub(crate) async fn ensure_settings<H: AppHost>(host: &H) -> Result<(), String> {
+    ensure_coll(host, SETTINGS, &[]).await
 }
 
 pub(crate) async fn load_admission_info<H: AppHost>(

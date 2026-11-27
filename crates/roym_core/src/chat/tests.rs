@@ -1,4 +1,5 @@
 use serde_json::json;
+use syneroym_app_host::types::signing::RecordDraft as AppRecordDraft;
 use syneroym_identity::{
     Identity,
     delegation::{DelegationCertificate, SCOPE_RECORD_SIGNING, SCOPE_SERVICE_INSTANCE},
@@ -6,6 +7,18 @@ use syneroym_identity::{
 };
 
 use super::*;
+use crate::record::RecordDraft as EnvelopeDraft;
+
+fn to_envelope_draft(draft: AppRecordDraft) -> EnvelopeDraft {
+    EnvelopeDraft {
+        version: draft.version,
+        record_type: draft.record_type,
+        subject: draft.subject,
+        payload: serde_json::from_str(&draft.payload).unwrap(),
+        expires_at_secs: draft.expires_at_secs,
+        supersedes: draft.supersedes,
+    }
+}
 
 struct Signer {
     service: Identity,
@@ -39,18 +52,23 @@ fn signer() -> Signer {
 impl Signer {
     /// Signed as the person: the envelope names the master DID and carries
     /// the service's delegation certificate.
-    fn sign_as_person(&self, draft: RecordDraft, at: u64) -> String {
-        self.sign(draft, self.master_did.clone(), Some(self.cert_json.clone()), at)
+    fn sign_as_person(&self, draft: AppRecordDraft, at: u64) -> String {
+        self.sign(
+            to_envelope_draft(draft),
+            self.master_did.clone(),
+            Some(self.cert_json.clone()),
+            at,
+        )
     }
 
     /// Signed by the service key alone, with no delegation.
-    fn sign_alone(&self, draft: RecordDraft, at: u64) -> String {
-        self.sign(draft, self.service_did.clone(), None, at)
+    fn sign_alone(&self, draft: AppRecordDraft, at: u64) -> String {
+        self.sign(to_envelope_draft(draft), self.service_did.clone(), None, at)
     }
 
     fn sign(
         &self,
-        draft: RecordDraft,
+        draft: EnvelopeDraft,
         issuer: String,
         delegation: Option<String>,
         at: u64,
@@ -328,7 +346,7 @@ fn an_origin_signed_by_the_service_key_alone_is_refused() {
     ));
 }
 
-fn with_draft(s: &Signer, at: u64, mutate: impl FnOnce(&mut RecordDraft)) -> ChatBody {
+fn with_draft(s: &Signer, at: u64, mutate: impl FnOnce(&mut AppRecordDraft)) -> ChatBody {
     let payload = payload_for("hello", &[]);
     let mut draft = origin_draft(&payload);
     mutate(&mut draft);
@@ -379,7 +397,7 @@ fn an_origin_of_another_record_type_is_refused() {
 fn an_origin_that_is_another_record_of_the_same_person_is_refused() {
     let s = signer();
     let at = s.cert_issued_at + 10;
-    let draft = RecordDraft {
+    let draft = EnvelopeDraft {
         version: 1,
         record_type: "profile".to_string(),
         subject: s.master_did.clone(),
@@ -392,7 +410,7 @@ fn an_origin_that_is_another_record_of_the_same_person_is_refused() {
         content_type: INNER_TEXT_CONTENT_TYPE.to_string(),
         text: "hello".to_string(),
         forward_mode: ForwardMode::Signed,
-        origin: Some(s.sign_as_person(draft, at)),
+        origin: Some(s.sign(draft, s.master_did.clone(), Some(s.cert_json.clone()), at)),
         forward_count: None,
     };
     assert!(matches!(check_origin(&body, &[], at), OriginCheck::Failed { .. }));
@@ -456,7 +474,12 @@ fn an_origin_signed_for_one_master_but_naming_another_issuer_fails() {
         content_type: INNER_TEXT_CONTENT_TYPE.to_string(),
         text: "hello".to_string(),
         forward_mode: ForwardMode::Signed,
-        origin: Some(s.sign(origin_draft(&payload), other_did, Some(s.cert_json.clone()), at)),
+        origin: Some(s.sign(
+            to_envelope_draft(origin_draft(&payload)),
+            other_did,
+            Some(s.cert_json.clone()),
+            at,
+        )),
         forward_count: None,
     };
     assert!(matches!(check_origin(&body, &[], at), OriginCheck::Failed { .. }));
@@ -615,5 +638,8 @@ fn the_origin_draft_payload_matches_the_struct() {
     assert_eq!(draft.subject, "");
     assert_eq!(draft.expires_at_secs, None);
     assert_eq!(draft.supersedes, None);
-    assert_eq!(draft.payload, serde_json::to_value(&payload).unwrap());
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&draft.payload).unwrap(),
+        serde_json::to_value(&payload).unwrap()
+    );
 }

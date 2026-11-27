@@ -5,7 +5,9 @@ use syneroym_roym_core::{
     backup::{Bundle, ImportInput},
     method::{
         MethodInfo, NoParams, PingOutput, Reply,
-        conversation::{ChangesInput, ChangesOutput, SendInput, SendOutput},
+        conversation::{
+            ChangesInput, ChangesOutput, ForwardSettings, SendInput, SendOutput, SettingsInput,
+        },
         widget::{WidgetAnswerInput, WidgetListInput, WidgetListOutput, WidgetSendInput},
     },
     services,
@@ -15,7 +17,7 @@ use syneroym_roym_core::{
     },
 };
 
-use crate::app::{backup, group, messages, widget};
+use crate::app::{backup, group, messages, settings, widget};
 
 async fn ping<H: AppHost>(_host: &H, _: NoParams) -> Reply<PingOutput> {
     Ok(PingOutput { service: services::CONVERSATION.name.to_string() })
@@ -31,6 +33,7 @@ syneroym_roym_core::service_methods! {
     "conversation.delivery-status": messages::delivery_status [messages::MessageIdInput => messages::DeliveryStatusOutput],
     "conversation.outbox": messages::outbox [NoParams => messages::OutboxOutput],
     "conversation.retry": messages::retry [messages::MessageIdInput => messages::RetryOutput],
+    "conversation.settings": settings::settings [SettingsInput => ForwardSettings],
     "conversation.delete-message": messages::delete_message [messages::DeleteMessageInput => messages::DeleteMessageOutput],
     "conversation.search": messages::search [messages::SearchInput => messages::SearchOutput],
     "conversation.transcript-digest": messages::transcript_digest [messages::ConversationRef => messages::TranscriptDigestOutput],
