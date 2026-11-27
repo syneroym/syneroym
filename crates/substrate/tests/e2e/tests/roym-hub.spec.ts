@@ -108,7 +108,7 @@ test.describe('Roym Hub', () => {
     const addr = `conv_c7a_${Date.now().toString(36)}`;
 
     // Start from a known default.
-    await page.getByRole('button', { name: 'Profile' }).click();
+    await page.getByRole('button', { name: 'Profile', exact: true }).click();
     const profileSelect = page.locator('.forward-settings-select');
     await profileSelect.selectOption('not-forwardable');
     await expect(profileSelect).toHaveValue('not-forwardable');
@@ -123,7 +123,7 @@ test.describe('Roym Hub', () => {
     await sendMessage(page, 'one signed message');
     await expect(mode).toHaveValue('not-forwardable');
 
-    await page.getByRole('button', { name: 'Profile' }).click();
+    await page.getByRole('button', { name: 'Profile', exact: true }).click();
     await expect(profileSelect).toHaveValue('not-forwardable');
     await profileSelect.selectOption('signed');
     await expect(profileSelect).toHaveValue('signed');
@@ -134,7 +134,7 @@ test.describe('Roym Hub', () => {
     await expect(mode).toHaveValue('signed');
 
     // Leave the node on the shipped default for the tests that follow.
-    await page.getByRole('button', { name: 'Profile' }).click();
+    await page.getByRole('button', { name: 'Profile', exact: true }).click();
     await profileSelect.selectOption('not-forwardable');
     await expect(profileSelect).toHaveValue('not-forwardable');
   });
