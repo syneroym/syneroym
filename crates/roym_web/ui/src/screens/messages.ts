@@ -1,5 +1,20 @@
 import { canRetry, messageStateWord } from "../chat/message_state";
 import { messageLang, messageText } from "../chat/message_text";
+import { askOnce } from "../chat/first_message";
+import {
+  loadForwardSettings,
+  modeControl,
+  signingRefusalActions,
+  type ForwardMode,
+} from "../chat/forward_mode";
+import {
+  forwardActions,
+  forwardLine,
+  forwardNote,
+  forwardTag,
+  plainTag,
+  type ForwardView,
+} from "../chat/forward_view";
 import { errText, field, refiller, text } from "../dom";
 import { currentLanguage, t } from "../i18n/i18n";
 import { languageList } from "../i18n/language_list";
@@ -7,6 +22,7 @@ import { languageName, textLangSelect } from "../i18n/text_lang";
 import { onFeed } from "../events";
 import { call, refusalCode, RpcError } from "../rpc";
 import { whoami } from "../session/login";
+import { renderSetup } from "./setup";
 import { renderCard } from "../cards/render";
 import { renderRefusedCard } from "../cards/refused";
 import { type SearchMatch, searchHits } from "./message_search";
@@ -35,7 +51,7 @@ import { renderAgreementPanel } from "../deals/agreement_panel";
 /// Things the person has started inside a thread. A redraw from the event
 /// feed waits until they are gone, so it never throws away typed text. An
 /// element inside the thread that holds the person's input belongs here.
-export const OPEN_WORK = ".quote-form, .decline-dialog, .delete-dialog, .accept-mt-box, .settle-dialog, .close-list";
+export const OPEN_WORK = ".quote-form, .decline-dialog, .delete-dialog, .accept-mt-box, .settle-dialog, .close-list, .forward-mode-dialog, .forward-picker";
 
 interface ConversationRow {
   id: string;
@@ -63,6 +79,7 @@ interface MessageRow {
   restored?: boolean;
   deleted_at_secs?: number;
   languages?: string[];
+  forward?: ForwardView;
 }
 
 export interface CardRow {
@@ -116,6 +133,10 @@ export async function renderMessages(
   box.appendChild(text("h2", t("messages-title")));
 
   const myDid = currentDid || (await whoami())?.person_did || "";
+
+  const renewSigning = () => {
+    void renderSetup(container, () => renderMessages(container, myDid));
+  };
 
   const layout = document.createElement("div");
   layout.className = "messages-layout";
@@ -226,7 +247,7 @@ export async function renderMessages(
       row.onclick = () => {
         listItems.querySelectorAll(".conversation-item").forEach((el) => el.classList.remove("selected"));
         row.classList.add("selected");
-        renderThread(threadPane, r, myDid, onThreadActive);
+        renderThread(threadPane, r, myDid, onThreadActive, undefined, renewSigning);
       };
       into.appendChild(row);
     }
@@ -255,6 +276,7 @@ export async function renderMessages(
         myDid,
         onThreadActive,
         target.id === select ? preFill : undefined,
+        renewSigning,
       );
     }
   }
@@ -301,6 +323,7 @@ async function renderThread(
   myDid: string,
   onActive?: (convId: string, fill: () => Promise<void>) => void,
   preFill?: RequestPreFill,
+  renewSigning?: () => void,
 ) {
   pane.replaceChildren();
   pane.appendChild(text("h3", conv.peer_person_did || conv.peer_address));
@@ -316,7 +339,9 @@ async function renderThread(
   composeInput.placeholder = t("messages-compose-placeholder");
   composeInput.className = "compose-input";
   const sendBtn = text("button", t("messages-send-button"), "button") as HTMLButtonElement;
-  const composeErr = text("p", "", "compose-error");
+  const composeErr = text("div", "", "compose-error");
+  const forwardSettings = await loadForwardSettings();
+  const mode = modeControl(forwardSettings.default_mode, false);
 
   const langList = languageList(
     "messages",
@@ -331,20 +356,39 @@ async function renderThread(
   );
 
   sendBtn.onclick = async () => {
+    composeErr.replaceChildren();
     composeErr.textContent = "";
     const body = composeInput.value;
     if (!body.trim()) return;
     sendBtn.disabled = true;
-    try {
+    const send = async (forwardMode: ForwardMode) => {
       await call("conversation.send", {
         conversation: conv.id,
-        body,
+        body: composeInput.value,
         languages: langList.value(),
+        forward_mode: forwardMode,
       });
       composeInput.value = "";
+      mode.reset();
       await redraw.now();
+    };
+    try {
+      const chosen = await askOnce(pane);
+      if (chosen) mode.setDefault(chosen);
+      await send(chosen ?? mode.value());
     } catch (err) {
       composeErr.textContent = t("messages-send-failed", { detail: errText(err) });
+      const actions = signingRefusalActions(
+        err,
+        () => {
+          composeErr.textContent = "";
+          void send("not-forwardable").catch((e) => {
+            composeErr.textContent = t("messages-send-failed", { detail: errText(e) });
+          });
+        },
+        () => renewSigning?.(),
+      );
+      if (actions) composeErr.appendChild(actions);
     }
     sendBtn.disabled = false;
   };
@@ -358,7 +402,7 @@ async function renderThread(
     onSent: () => redraw.now(),
   });
 
-  composeRow.append(composeInput, sendBtn, pollComp.button, composeErr, langField);
+  composeRow.append(composeInput, sendBtn, mode.root, pollComp.button, composeErr, langField);
   pane.append(composeRow, pollComp.form);
 
   const fillThread = async (into: DocumentFragment) => {
@@ -392,6 +436,20 @@ async function renderThread(
     } catch (err) {
       into.appendChild(text("p", t("messages-load-failed", { detail: errText(err) })));
       return;
+    }
+
+    let forwardContacts: Map<string, string> | undefined;
+    if (messages.some((m) => m.forward)) {
+      try {
+        const contacts =
+          await call<Array<{ person_did: string; display_name?: string }>>("contacts.list", {});
+        forwardContacts = new Map();
+        for (const c of contacts) {
+          if (c.person_did) forwardContacts.set(c.person_did, c.display_name || "");
+        }
+      } catch {
+        // A name is a courtesy; the full DID stays in the tooltip.
+      }
     }
 
     const widgetIds = messages
@@ -437,6 +495,7 @@ async function renderThread(
           () => langList.value(),
           (id) => messages.find((x) => x.id === id)?.restored === true,
           newestAgreementCardMap,
+          forwardContacts,
         ),
       );
     }
@@ -725,6 +784,7 @@ export function messageElement(
   languages?: () => string[],
   isRestored?: (messageId: string) => boolean,
   newestAgreementCardMap?: Map<string, string>,
+  forwardContacts?: Map<string, string>,
 ): HTMLElement {
   const wrap = document.createElement("div");
   wrap.className = `message message-${m.direction}`;
@@ -752,6 +812,13 @@ export function messageElement(
     renderMessageBody(wrap, m, convId, refresh, widgetMap, languages, isRestored);
   }
 
+  const line = forwardLine(m.forward, forwardContacts);
+  if (line) wrap.appendChild(line);
+  const note = forwardNote(m.forward);
+  if (note) wrap.appendChild(note);
+  const tag = forwardTag(m) ?? plainTag(m);
+  if (tag) wrap.appendChild(tag);
+
   // The state word is exactly what the API returned -- never inferred, and
   // "delivered" is never shown until the service says so.
   const stateSpan = text("span", messageStateWord(m.state), `message-state state-${m.state}`);
@@ -768,6 +835,8 @@ export function messageElement(
   }
 
   wrap.appendChild(renderMessageActions(wrap, m, refresh));
+  const forward = forwardActions(m, refresh);
+  if (forward) wrap.appendChild(forward);
   return wrap;
 }
 
@@ -1079,6 +1148,9 @@ function openDeleteDialog(anchor: HTMLElement, m: MessageRow, refresh: () => Pro
   dialog.className = "delete-dialog";
   const isSent = m.direction === "outgoing";
   dialog.appendChild(text("p", isSent ? t("messages-delete-note-sent") : t("messages-delete-note-received"), "delete-note"));
+  if (m.forward?.mode === "signed") {
+    dialog.appendChild(text("p", t("messages-delete-signed-note"), "delete-signed-note"));
+  }
 
   let askPeer = isSent;
   if (isSent) {

@@ -1,5 +1,20 @@
 import { canRetry } from "../chat/message_state";
 import { messageText } from "../chat/message_text";
+import { askOnce } from "../chat/first_message";
+import {
+  loadForwardSettings,
+  modeControl,
+  signingRefusalActions,
+  type ForwardMode,
+} from "../chat/forward_mode";
+import {
+  forwardActions,
+  forwardLine,
+  forwardNote,
+  forwardTag,
+  plainTag,
+  type ForwardView,
+} from "../chat/forward_view";
 import { errText, field, refiller, text } from "../dom";
 import { onFeed } from "../events";
 import { formatDateTime, formatTime } from "../i18n/format";
@@ -9,6 +24,7 @@ import { sortByName } from "../names";
 import { renderRefusedCard } from "../cards/refused";
 import { pollComposer } from "../widgets/composer";
 import { renderWidget } from "../widgets/render";
+import { renderSetup } from "./setup";
 import {
   WIDGET_ANSWER_CONTENT_TYPE,
   WIDGET_CONTENT_TYPE,
@@ -78,6 +94,7 @@ export interface GroupMessageRow {
   deleted_at_secs?: number;
   languages?: string[];
   restored?: boolean;
+  forward?: ForwardView;
 }
 
 export function parseProfileName(body?: string): string | null {
@@ -119,6 +136,7 @@ export function renderMessageRow(
   reloadThread?: () => Promise<void>,
   languages?: () => string[],
   isRestored?: (messageId: string) => boolean,
+  contacts?: Map<string, string>,
 ): HTMLElement {
   const row = document.createElement("div");
   row.className = `message-row message-${msg.direction}`;
@@ -154,6 +172,13 @@ export function renderMessageRow(
     row.appendChild(text("div", msg.body ?? "", "message-body"));
   }
 
+  const line = forwardLine(msg.forward, contacts);
+  if (line) row.appendChild(line);
+  const note = forwardNote(msg.forward);
+  if (note) row.appendChild(note);
+  const tag = forwardTag(msg) ?? plainTag(msg);
+  if (tag) row.appendChild(tag);
+
   const meta = document.createElement("div");
   meta.className = "message-meta";
   const dateStr = formatTime(msg.sender_timestamp_ms);
@@ -174,6 +199,11 @@ export function renderMessageRow(
     meta.appendChild(delBtn);
   }
 
+  if (reloadThread) {
+    const forward = forwardActions(msg, reloadThread);
+    if (forward) meta.appendChild(forward);
+  }
+
   row.appendChild(meta);
   return row;
 }
@@ -188,6 +218,7 @@ export function renderThreadMessages(
   reloadThread?: () => Promise<void>,
   languages?: () => string[],
   widgetListError?: string | null,
+  contacts?: Map<string, string>,
 ) {
   threadList.replaceChildren();
   if (widgetListError) {
@@ -234,17 +265,17 @@ export function renderThreadMessages(
     if (m.content_type === WIDGET_CONTENT_TYPE) {
       const isRestored = (id: string) => messages.find((x) => x.id === id)?.restored === true;
       if (m.deleted_at_secs) {
-        threadList.appendChild(renderMessageRow(m, nameOf, onDelete, onRetry));
+        threadList.appendChild(renderMessageRow(m, nameOf, onDelete, onRetry, undefined, undefined, undefined, undefined, contacts));
       } else {
         const view = widgetMap?.get(m.id);
         threadList.appendChild(
-          renderMessageRow(m, nameOf, onDelete, onRetry, view, reloadThread, languages, isRestored),
+          renderMessageRow(m, nameOf, onDelete, onRetry, view, reloadThread, languages, isRestored, contacts),
         );
       }
       continue;
     }
 
-    threadList.appendChild(renderMessageRow(m, nameOf, onDelete, onRetry));
+    threadList.appendChild(renderMessageRow(m, nameOf, onDelete, onRetry, undefined, reloadThread, languages, undefined, contacts));
   }
 
   if (hasPendingOrFailedOwn) {
@@ -496,25 +527,50 @@ export async function renderGroups(container: HTMLElement) {
         t("group-languages-label"),
       );
       groupLanguages = () => langList.value();
+      const forwardSettings = await loadForwardSettings();
+      const mode = modeControl(forwardSettings.default_mode, true);
+      const renewSigning = () => {
+        void renderSetup(container, () => renderGroups(container));
+      };
+
+      const send = async (forwardMode: ForwardMode) => {
+        await call("conversation.send", {
+          conversation: gid,
+          body: sendInput.value,
+          languages: langList.value(),
+          forward_mode: forwardMode,
+        });
+        sendInput.value = "";
+        mode.reset();
+        await reloadThread();
+      };
 
       const doSend = async () => {
         const body = sendInput.value.trim();
         if (!body) return;
+        sendErr.replaceChildren();
         sendErr.textContent = "";
         try {
-          await call("conversation.send", {
-            conversation: gid,
-            body,
-            languages: langList.value(),
-          });
-          sendInput.value = "";
-          await reloadThread();
+          const chosen = await askOnce(composerBox);
+          if (chosen) mode.setDefault(chosen);
+          await send(chosen ?? mode.value());
         } catch (err) {
           if (err instanceof RpcError && err.type === "NotSignedIn") {
             renderSessionEnded(container);
             return;
           }
           sendErr.textContent = errText(err);
+          const actions = signingRefusalActions(
+            err,
+            () => {
+              sendErr.textContent = "";
+              void send("not-forwardable").catch((e) => {
+                sendErr.textContent = errText(e);
+              });
+            },
+            renewSigning,
+          );
+          if (actions) sendErr.appendChild(actions);
         }
       };
 
@@ -532,7 +588,7 @@ export async function renderGroups(container: HTMLElement) {
         onSent: reloadThread,
       });
 
-      composerBox.append(sendInput, sendBtn, pollComp.button, sendErr, langField);
+      composerBox.append(sendInput, sendBtn, mode.root, pollComp.button, sendErr, langField);
       threadCol.appendChild(composerBox);
       threadCol.appendChild(pollComp.form);
     }
@@ -778,6 +834,7 @@ export async function renderGroups(container: HTMLElement) {
           reloadThread,
           groupLanguages,
           widgetListError,
+          contactMap,
         );
       } catch (err) {
         if (err instanceof RpcError && err.type === "NotSignedIn") {

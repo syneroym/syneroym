@@ -70,6 +70,7 @@ function stubNode(
       node.historyCalls++;
       return { messages };
     },
+    "conversation.settings": () => ({ default_mode: "not-forwardable", asked: true }),
     ...extra,
   };
   vi.stubGlobal(
@@ -353,8 +354,10 @@ describe("a feed redraw keeps the other open work", () => {
 describe("what the person sends draws the thread at once", () => {
   it("a sent message shows now, and the open quote form is closed with the redraw", async () => {
     const messages: unknown[] = [REQUEST_MESSAGE];
+    const sends: Array<Record<string, unknown>> = [];
     stubNode(messages, [REQUEST_CARD], {
-      "conversation.send": () => {
+      "conversation.send": (params) => {
+        sends.push(params);
         messages.push(textMessage("msg-mine", "One moment", "outgoing"));
         return {};
       },
@@ -368,6 +371,7 @@ describe("what the person sends draws the thread at once", () => {
     await vi.advanceTimersByTimeAsync(0);
 
     expect(screen.textContent).toContain("One moment");
+    expect(sends[0]?.forward_mode).toBe("not-forwardable");
     expect(screen.querySelector(".quote-form")).toBeNull();
   });
 

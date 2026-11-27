@@ -1,4 +1,5 @@
 import { errText, field } from "../dom";
+import { loadForwardSettings, saveForwardSettings, type ForwardMode } from "../chat/forward_mode";
 import { currentLanguage, t } from "../i18n/i18n";
 import { languageList } from "../i18n/language_list";
 import { textLangSelect } from "../i18n/text_lang";
@@ -84,6 +85,41 @@ export async function renderProfile(container: HTMLElement) {
 
   box.appendChild(form);
 
+  const forwardBox = document.createElement("section");
+  forwardBox.className = "forward-settings";
+  forwardBox.appendChild(textHeading(t("forward-settings-heading")));
+  forwardBox.appendChild(paragraph(t("forward-settings-explain"), "forward-settings-explain"));
+  const forwardSelect = document.createElement("select");
+  forwardSelect.className = "forward-settings-select";
+  for (const [value, label] of [
+    ["signed", t("forward-mode-signed")],
+    ["not-forwardable", t("forward-mode-not-forwardable")],
+  ] as Array<[ForwardMode, string]>) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    forwardSelect.appendChild(option);
+  }
+  const forwardErr = document.createElement("p");
+  forwardErr.className = "forward-settings-error error-text";
+  forwardBox.appendChild(field(t("forward-mode-label"), forwardSelect));
+  forwardBox.appendChild(forwardErr);
+  box.appendChild(forwardBox);
+
+  const settings = await loadForwardSettings();
+  forwardSelect.value = settings.default_mode;
+  forwardSelect.onchange = async () => {
+    forwardErr.textContent = "";
+    try {
+      const saved = await saveForwardSettings({
+        default_mode: forwardSelect.value === "signed" ? "signed" : "not-forwardable",
+      });
+      forwardSelect.value = saved.default_mode;
+    } catch (err) {
+      forwardErr.textContent = t("forward-settings-failed", { detail: errText(err) });
+    }
+  };
+
   try {
     const data = await call<{ envelope: string | null }>("profile.get");
     if (data && data.envelope) {
@@ -106,4 +142,17 @@ export async function renderProfile(container: HTMLElement) {
   }
 
   container.appendChild(box);
+}
+
+function textHeading(value: string): HTMLElement {
+  const el = document.createElement("h3");
+  el.textContent = value;
+  return el;
+}
+
+function paragraph(value: string, className: string): HTMLElement {
+  const el = document.createElement("p");
+  el.textContent = value;
+  el.className = className;
+  return el;
 }

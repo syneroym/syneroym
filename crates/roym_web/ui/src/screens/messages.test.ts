@@ -15,6 +15,7 @@ import {
 } from "./messages.js";
 import { canRetry, messageStateWord } from "../chat/message_state";
 import { pollDefinition, type WidgetView } from "../widgets/view";
+import { RpcError } from "../rpc";
 import { stubRpc } from "../testing/stub-rpc";
 
 describe("newestRequestMap and quote superseded notice", () => {
@@ -365,13 +366,19 @@ describe("request form category picker reset", () => {
   });
 
   it("chat box language list sends languages, keeps rows after send, and allows move up and remove", async () => {
-    type SendParams = { conversation: string; body: string; languages?: string[] };
+    type SendParams = {
+      conversation: string;
+      body: string;
+      languages?: string[];
+      forward_mode?: string;
+    };
     let lastSendParams: SendParams | undefined;
     stubRpc({
       whoami: () => ({ person_did: "did:key:me" }),
       "conversation.list": () => ({
         conversations: [{ id: "conv-1", peer_address: "peer-1", message_count: 0 }],
       }),
+      "conversation.settings": () => ({ default_mode: "not-forwardable", asked: true }),
       "transaction.sync": () => ({}),
       "transaction.thread": () => ({ cards: [] }),
       "conversation.history": () => ({ messages: [] }),
@@ -399,6 +406,7 @@ describe("request form category picker reset", () => {
 
     await vi.waitFor(() => expect(lastSendParams).toBeDefined());
     expect((lastSendParams as SendParams | undefined)?.languages).toEqual(["en"]);
+    expect((lastSendParams as SendParams | undefined)?.forward_mode).toBe("not-forwardable");
     await vi.waitFor(() => expect(sendBtn.disabled).toBe(false));
 
     // After send, list keeps its rows
@@ -1142,5 +1150,48 @@ describe("widget messages in messages thread", () => {
 
     expect(host.querySelector(".widget-refused")).toBeNull();
     expect(host.textContent).toContain("Prompt when list fails");
+  });
+});
+
+describe("a refused signed send", () => {
+  it("offers the two ways out and never changes the mode on its own", async () => {
+    const calls: Array<Record<string, unknown>> = [];
+    stubRpc({
+      whoami: () => ({ person_did: "did:key:me" }),
+      "conversation.list": () => ({
+        conversations: [{ id: "conv-1", peer_address: "peer-1", message_count: 0 }],
+      }),
+      "conversation.settings": () => ({ default_mode: "signed", asked: true }),
+      "transaction.sync": () => ({}),
+      "transaction.thread": () => ({ cards: [] }),
+      "conversation.history": () => ({ messages: [] }),
+      "conversation.send": (params) => {
+        calls.push(params);
+        if (params["forward_mode"] === "signed") {
+          return new RpcError(-32602, "signing-not-enrolled", "Other", {
+            code: "signing-not-enrolled",
+          });
+        }
+        return { message_id: "m_ok" };
+      },
+    });
+
+    const host = document.createElement("div");
+    await renderMessages(host);
+    host.querySelector<HTMLInputElement>(".compose-input")!.value = "Signed words";
+    Array.from(host.querySelectorAll<HTMLButtonElement>("button"))
+      .find((b) => b.textContent === "Send")!
+      .click();
+
+    await vi.waitFor(() =>
+      expect(host.querySelector(".forward-send-not-forwardable")).not.toBeNull(),
+    );
+    expect(host.querySelector(".forward-renew-signing")).not.toBeNull();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]["forward_mode"]).toBe("signed");
+
+    host.querySelector<HTMLButtonElement>(".forward-send-not-forwardable")!.click();
+    await vi.waitFor(() => expect(calls).toHaveLength(2));
+    expect(calls[1]["forward_mode"]).toBe("not-forwardable");
   });
 });

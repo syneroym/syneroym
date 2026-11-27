@@ -357,7 +357,12 @@ describe("Groups screen rendering", () => {
   });
 
   it("group chat box language list sends languages, keeps rows after send, and allows move up and remove", async () => {
-    type SendParams = { conversation: string; body: string; languages?: string[] };
+    type SendParams = {
+      conversation: string;
+      body: string;
+      languages?: string[];
+      forward_mode?: string;
+    };
     let lastSendParams: SendParams | undefined;
     stubRpc({
       "conversation.list": () => ({
@@ -383,6 +388,7 @@ describe("Groups screen rendering", () => {
       }),
       "conversation.transcript-digest": () => ({ digest: "abcdef123456" }),
       "contacts.list": () => [],
+      "conversation.settings": () => ({ default_mode: "not-forwardable", asked: true }),
       "conversation.history": () => ({ messages: [] }),
       "conversation.send": (params) => {
         lastSendParams = params as SendParams;
@@ -408,6 +414,7 @@ describe("Groups screen rendering", () => {
 
     await vi.waitFor(() => expect(lastSendParams).toBeDefined());
     expect((lastSendParams as SendParams | undefined)?.languages).toEqual(["en"]);
+    expect((lastSendParams as SendParams | undefined)?.forward_mode).toBe("not-forwardable");
 
     // After send, list keeps its rows
     rows = host.querySelectorAll(".group-language-row");
