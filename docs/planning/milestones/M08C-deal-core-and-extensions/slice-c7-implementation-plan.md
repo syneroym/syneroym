@@ -1,7 +1,7 @@
 # M08C slice C7 — Message forwarding: implementation plan
 
 *Reader: the developer (or AI) who implements slice C7, and the project
-owner, who answers the questions in section 2.1. You do not have the
+owner, who answered the questions in section 2.1. You do not have the
 planning conversation. This plan is meant to stand alone.*
 
 **Status: plan written, 2026-11-25, by Claude Opus 5.5. Plan reviewed,
@@ -9,7 +9,9 @@ planning conversation. This plan is meant to stand alone.*
 "Review on main 89d1dd23" below). Second review, 2026-11-27, on `main` at
 `89d1dd23`, by Claude Opus 5.5 (section "Second review" below). The owner
 answered Q2 (two PRs, C7a and C7b) and Q4 (the host indexes the `text`
-field) on 2026-11-27. Q3 and Q5 to Q11 are open.**
+field) on 2026-11-27. On the same day the owner accepted the
+recommendation of every other question (Q3, Q5, Q6, Q8 to Q11: (a); Q7:
+(c)). No question is open.**
 
 ## Review on main 89d1dd23
 
@@ -228,6 +230,7 @@ Every other `file:line` that the first review added was read on
 Q3, Q5, Q6, Q7, Q8, Q9 and Q10 are still needed, each has clear options
 and one recommendation, and no recommendation changes. Q11 is still
 needed as the stop rule, but S3 makes an overrun less likely; (a) stays.
+The owner then accepted every recommendation (2026-11-27).
 
 ## 0. Read first, and the rules
 
@@ -345,7 +348,9 @@ How a developer can see it work:
 
 ### 2.1 Questions
 
-Each question has options and a recommendation, marked **(recommended)**.
+All questions are answered. The option the owner chose is marked
+**Chosen by the owner.** The other options stay as the record of what was
+not chosen.
 
 #### Q1. (Removed)
 
@@ -368,12 +373,12 @@ It asked when the C7a code starts. C4 is merged, so the answer is "now"
 - (c) Three: C7a (node), C7b (Hub and demo), C7c (signed records), as C3c,
   C4 and C6 were split. The reviewer first recommended it. Not chosen.
 
-#### Q3. The chat body: which messages use it?
+#### Q3. The chat body: which messages use it? (Answered: (a), 2026-11-27)
 
 ADR-0030 leaves the body format to this plan. A forward mode and an origin
 cannot ride in a `text/plain` body, so a new content type is needed.
 
-- (a) **(recommended)** A message gets the chat body when the caller names
+- (a) **Chosen by the owner.** A message gets the chat body when the caller names
   a mode (`conversation.send` with `forward_mode`). The Hub always names
   one, so every Hub message has the mark (FW-1 and FW-13 say "marked"). A
   call with no mode is sent as `text/plain`, exactly as today. That keeps
@@ -425,12 +430,12 @@ that call cannot give back a real hit that the host left out.
   of `syneroym_text_lang` into `conversation`.
 - (c) Not chosen: accept the false matches and the lost hits.
 
-#### Q5. Where is the default mode stored?
+#### Q5. Where is the default mode stored? (Answered: (a), 2026-11-27)
 
 ADR-0030: "Not decided here, and left to the C7 plan: where the default
 setting is stored."
 
-- (a) **(recommended)** In `conversation`: a new collection
+- (a) **Chosen by the owner.** In `conversation`: a new collection
   `conversation_settings` with one row `forward`:
   `{ "default_mode": "signed" | "not-forwardable", "asked": bool }`. One new
   local method reads and writes it (D-C7-4). It is in the `conversation`
@@ -445,9 +450,9 @@ setting is stored."
   (`crates/roym_profile/src/app.rs:33`). `conversation` never needs it from
   there, so there is no reason for the extra service.
 
-#### Q6. When does a node check an origin?
+#### Q6. When does a node check an origin? (Answered: (a), 2026-11-27)
 
-- (a) **(recommended)** At read time, in `history`, `changes` and `search`,
+- (a) **Chosen by the owner.** At read time, in `history`, `changes` and `search`,
   with a pure function (D-C7-6). There is no new stored state, so nothing
   can go stale, and a restored message is checked the same way. Cost: two
   ed25519 checks (certificate and record) per chat body that carries an
@@ -465,7 +470,7 @@ setting is stored."
   in a new collection. It needs a write per message, a row for the
   person's own sent messages too, and rules for backup and restore.
 
-#### Q7. The demo step
+#### Q7. The demo step (Answered: (c), 2026-11-27)
 
 Story 20 (`crates/substrate/tests/e2e/demo/20-roym-chat.spec.ts`) has two
 nodes, Alice and Bob (`demo/20-roym-setup.sh:51`, `:52`). A forward needs a
@@ -483,15 +488,14 @@ runs on one node).
 - (b) Add a third node (Carol) to the demo setup and forward to her. More
   natural, but the demo setup, its environment file and every story start
   get slower.
-- (c) **(recommended)** Alice answers with "Signed" at her first message.
+- (c) **Chosen by the owner.** Alice answers with "Signed" at her first message.
   Bob forwards her message into the same chat (FW-9 allows the same chat).
   Alice's screen shows: "Forwarded. First written by you on …. Forwarded
   1 time." It adds two steps and uses no group. It shows the display rule,
   the forward picker and the count, but not a third person. The group case
-  stays in the three-node Rust test (section 7.4). If the owner wants the
-  group in the demo, pick (a).
+  stays in the three-node Rust test (section 7.4).
 
-#### Q8. Attachments (FW-8)
+#### Q8. Attachments (FW-8) (Answered: (a), 2026-11-27)
 
 Roym chat has no attachments today. `encode_body` says "Attachments are out
 of scope for the first release, so in practice every stored body takes the
@@ -500,17 +504,17 @@ has no attachment field
 (`crates/wit_interfaces/wit/conversation/conversation.wit:50`). The Hub has
 no attach action.
 
-- (a) **(recommended)** The content hash input has a list of blob hashes
+- (a) **Chosen by the owner.** The content hash input has a list of blob hashes
   (ADR-0030, decision 6), and C7 always writes an empty list. A unit test
   proves that a different blob list gives a different hash. FW-8 is met in
   the format only. A Deviation row and a backlog row record it.
 - (b) Build attachments first. Not in M08C.
 
-#### Q9. The author's name (FW-3)
+#### Q9. The author's name (FW-3) (Answered: (a), 2026-11-27)
 
 ADR-0030 leaves "the display name of an author" to this plan.
 
-- (a) **(recommended)** "you" if the author's DID is the reader's own DID
+- (a) **Chosen by the owner.** "you" if the author's DID is the reader's own DID
   (the node says so: `origin.is_you`). Else the contact name, if the
   author's DID is in the reader's contacts. Else the last 12 characters of
   the DID with a leading "…" and "(not in your contacts)", and the whole
@@ -527,16 +531,16 @@ ADR-0030 leaves "the display name of an author" to this plan.
   knows.
 - (b) Always the whole DID.
 
-#### Q10. Where is the default in the Hub?
+#### Q10. Where is the default in the Hub? (Answered: (a), 2026-11-27)
 
 The Hub has no Settings tab (the tab table, `crates/roym_web/ui/src/main.ts:172` to `:186`).
 
-- (a) **(recommended)** A section "Forwarding of my messages" on the Profile
+- (a) **Chosen by the owner.** A section "Forwarding of my messages" on the Profile
   tab (`crates/roym_web/ui/src/screens/profile.ts`, 109 lines). It is a
   setting of the person.
 - (b) A new Settings tab.
 
-#### Q11. The size limit of `conversation` (new)
+#### Q11. The size limit of `conversation` (Answered: (a), 2026-11-27)
 
 The rule (task.md section 1): a component with new record code may grow
 by 15% of its size before the slice. `conversation` is 985,469 bytes on
@@ -552,7 +556,7 @@ delegation chain (`signing.rs:111`). With the Q4 (a) host rule there is no
 ICU data either. The second review estimates +40 to +90 KB (not
 measured), so the limit is likely to hold.
 
-- (a) **(recommended)** Keep +15%. Measure after step 2 and after step 3,
+- (a) **Chosen by the owner.** Keep +15%. Measure after step 2 and after step 3,
   not only at the end. If the build is over 147,820 bytes, first try a
   type-erased `Box::pin` on the two new dispatch arms (D-C7-5). If it is
   still over, stop and ask the owner.
@@ -1677,9 +1681,7 @@ expected params, and add one assertion each that `forward_mode` is sent.
 
 - A Hub case, number 43, in `tests/roym-hub.spec.ts`: dialog, composer,
   Profile default.
-- Story 20, after C4's poll steps (Q7 (c), the recommendation; for Q7 (a)
-  Bob first adds Alice as a contact, creates "Market", adds Alice, and
-  forwards there):
+- Story 20, after C4's poll steps (Q7 (c)):
   1. "Alice's screen: she chooses that her messages can be forwarded with
      her name": at her first send, `chooseForwardMode(page, 'signed')`.
      This is part of today's step "send Bob a message".
@@ -1695,7 +1697,7 @@ expected params, and add one assertion each that `forward_mode` is sent.
 Release `wasm32-wasip2`, one `target/` folder, before (step 0) and after.
 `conversation` gets new record code, so its limit is +15% of its "before"
 size. On `main` `89d1dd23` that is 985,469 bytes, so **147,820 bytes**
-(ceiling 1,133,289), unless the owner answers Q11 (b). `transaction`
+(ceiling 1,133,289; Q11 (a)). `transaction`
 changes only by the moved helper: +40 KB limit (2,870,685 bytes before).
 The other components link `roym_core` but call none of the new code: +40 KB
 limit each (`catalog` 960,590; `directory` 1,504,433; `profile` 772,748;
@@ -1775,8 +1777,8 @@ Rows to add to [deferred-backlog.md](../../deferred-backlog.md) in C7a
   message, so it waits for the receiver to be online** (section 2.2,
   point 10). Target: TBD.
 - Update the row "More demo stories" (§13): C7 extends story 20, and the
-  forward is shown in the same chat (Q7 (c)). If Q7 (c) is chosen, add: a
-  two-node group is not shown in any browser story or test.
+  forward is shown in the same chat (Q7 (c)). Add: a two-node group is
+  not shown in any browser story or test.
 
 Rows that exist already and must **not** be added again: "The forward mode
 has one default per person: no default per conversation, and no group owner
@@ -1854,8 +1856,7 @@ C7a is done when all of these hold:
 - [ ] A history page of 200 `signed` messages takes under 500 ms in the
       WASM build, or the owner answered the stop. The number is recorded.
 - [ ] Component sizes are in task.md section 1, each within its limit (for
-      `conversation`, +15% of the "before" size, or the owner's answer to
-      Q11).
+      `conversation`, +15% of the "before" size, Q11 (a)).
 - [ ] Deviations, backlog rows, living docs and the `status.md` row (with
       the Hindi keys) are done.
 - [ ] `mise run verify` with no `--skip` passes.
