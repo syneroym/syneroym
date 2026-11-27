@@ -315,6 +315,197 @@ async fn scenario_285_signed_send_to_a_restored_group_signs_nothing_parity() {
     }
 }
 
+async fn raw_body(h: &Harness, wasm: bool, message_id: &str) -> Value {
+    let stack = if wasm { &h.wasm_conversation } else { &h.native_conversation };
+    let msg = stack.get_message(&conv_service(), message_id).await.unwrap();
+    serde_json::from_slice(&msg.body).unwrap()
+}
+
+#[tokio::test]
+async fn scenario_286_forward_copies_the_origin_and_adds_one_parity() {
+    let h = harness().await;
+    enrol_signing(&h, "conversation").await;
+    let source = open_conv(&h, "did:key:zPeer286a").await;
+    let target = open_conv(&h, "did:key:zPeer286b").await;
+    // The forwarder's own default must not apply to the author's content.
+    both_rpc(&h, "conversation.settings", json!({ "default_mode": "not-forwardable" })).await;
+
+    let (sw, sn) = send_signed(&h, &source, "Forward me, please").await;
+    let src_w = sw["result"]["message_id"].as_str().unwrap();
+    let src_n = sn["result"]["message_id"].as_str().unwrap();
+    let origin_w = raw_body(&h, true, src_w).await["origin"].clone();
+    let origin_n = raw_body(&h, false, src_n).await["origin"].clone();
+
+    let fw = one_rpc(
+        &h,
+        true,
+        "conversation.forward",
+        json!({ "message_id": src_w, "conversation": target }),
+    )
+    .await;
+    let fnat = one_rpc(
+        &h,
+        false,
+        "conversation.forward",
+        json!({ "message_id": src_n, "conversation": target }),
+    )
+    .await;
+    assert!(fw["result"]["message_id"].is_string(), "{fw}");
+    assert!(fnat["result"]["message_id"].is_string(), "{fnat}");
+
+    let new_w = fw["result"]["message_id"].as_str().unwrap();
+    let new_n = fnat["result"]["message_id"].as_str().unwrap();
+    let body_w = raw_body(&h, true, new_w).await;
+    let body_n = raw_body(&h, false, new_n).await;
+    assert_eq!(body_w["origin"], origin_w);
+    assert_eq!(body_n["origin"], origin_n);
+    assert_eq!(body_w["forward_count"], 1);
+    assert_eq!(body_n["forward_count"], 1);
+    assert_eq!(body_w["forward_mode"], "signed");
+    assert_eq!(body_w["text"], "Forward me, please");
+
+    let (mut hw, mut hn) = history(&h, &target).await;
+    containers_match(&mut hw, &mut hn);
+    assert_eq!(hw, hn);
+    let row = &hw["result"]["messages"][0];
+    assert_eq!(row["forward"]["mode"], "signed");
+    assert_eq!(row["forward"]["forwardable"], true);
+    assert_eq!(row["forward"]["forwarded"], true);
+    assert_eq!(row["forward"]["forward_count"], 1);
+    assert_eq!(row["forward"]["origin"]["author_did"], h.owner_did);
+}
+
+#[tokio::test]
+async fn scenario_287_forward_refuses_every_other_message_parity() {
+    let h = harness().await;
+    enrol_signing(&h, "conversation").await;
+    let conv = open_conv(&h, "did:key:zPeer287").await;
+    let target = open_conv(&h, "did:key:zPeer287b").await;
+
+    async fn refusal(h: &Harness, wasm: bool, id: &str, target: &str) -> Value {
+        one_rpc(
+            h,
+            wasm,
+            "conversation.forward",
+            json!({ "message_id": id, "conversation": target }),
+        )
+        .await
+    }
+
+    let (pw, pn) =
+        both_rpc(&h, "conversation.send", json!({ "conversation": conv, "body": "plain words" }))
+            .await;
+    let plain_w = pw["result"]["message_id"].as_str().unwrap();
+    let plain_n = pn["result"]["message_id"].as_str().unwrap();
+    for (wasm, id) in [(true, plain_w), (false, plain_n)] {
+        let r = refusal(&h, wasm, id, &target).await;
+        assert_eq!(r["error"]["data"]["code"], "not-forwardable", "{r}");
+    }
+
+    let (nw, nn) = both_rpc(
+        &h,
+        "conversation.send",
+        json!({ "conversation": conv, "body": "not for sharing", "forward_mode": "not-forwardable" }),
+    )
+    .await;
+    let nf_w = nw["result"]["message_id"].as_str().unwrap();
+    let nf_n = nn["result"]["message_id"].as_str().unwrap();
+    for (wasm, id) in [(true, nf_w), (false, nf_n)] {
+        let r = refusal(&h, wasm, id, &target).await;
+        assert_eq!(r["error"]["data"]["code"], "not-forwardable", "{r}");
+    }
+
+    let poll = syneroym_roym_core::widget::poll_definition(
+        "Question?",
+        &["A".to_string(), "B".to_string()],
+    );
+    let (ww, wn) =
+        both_rpc(&h, "widget.send", json!({ "conversation": conv, "widget": poll })).await;
+    let widget_w = ww["result"]["message_id"].as_str().unwrap();
+    let widget_n = wn["result"]["message_id"].as_str().unwrap();
+    for (wasm, id) in [(true, widget_w), (false, widget_n)] {
+        let r = refusal(&h, wasm, id, &target).await;
+        assert_eq!(r["error"]["data"]["code"], "not-forwardable", "{r}");
+    }
+
+    let (sw, sn) = send_signed(&h, &conv, "delete me").await;
+    let del_w = sw["result"]["message_id"].as_str().unwrap();
+    let del_n = sn["result"]["message_id"].as_str().unwrap();
+    one_rpc(&h, true, "conversation.delete-message", json!({ "message_id": del_w })).await;
+    one_rpc(&h, false, "conversation.delete-message", json!({ "message_id": del_n })).await;
+    for (wasm, id) in [(true, del_w), (false, del_n)] {
+        let r = refusal(&h, wasm, id, &target).await;
+        assert_eq!(r["error"]["data"]["code"], "message-deleted", "{r}");
+    }
+
+    for wasm in [true, false] {
+        let r = refusal(&h, wasm, "msg:no-such-message", &target).await;
+        assert_eq!(r["error"]["data"]["code"], "message-not-found", "{r}");
+    }
+}
+
+#[tokio::test]
+async fn scenario_288_forwarding_a_forward_keeps_the_count_parity() {
+    let h = harness().await;
+    enrol_signing(&h, "conversation").await;
+    let source = open_conv(&h, "did:key:zPeer288a").await;
+    let target = open_conv(&h, "did:key:zPeer288b").await;
+
+    let (sw, sn) = send_signed(&h, &source, "One hop").await;
+    let src_w = sw["result"]["message_id"].as_str().unwrap();
+    let src_n = sn["result"]["message_id"].as_str().unwrap();
+
+    let f1w = one_rpc(
+        &h,
+        true,
+        "conversation.forward",
+        json!({ "message_id": src_w, "conversation": target }),
+    )
+    .await;
+    let f1n = one_rpc(
+        &h,
+        false,
+        "conversation.forward",
+        json!({ "message_id": src_n, "conversation": target }),
+    )
+    .await;
+    let hop_w = f1w["result"]["message_id"].as_str().unwrap();
+    let hop_n = f1n["result"]["message_id"].as_str().unwrap();
+
+    // Forward the node's own forward into the same conversation.
+    let f2w = one_rpc(
+        &h,
+        true,
+        "conversation.forward",
+        json!({ "message_id": hop_w, "conversation": target }),
+    )
+    .await;
+    let f2n = one_rpc(
+        &h,
+        false,
+        "conversation.forward",
+        json!({ "message_id": hop_n, "conversation": target }),
+    )
+    .await;
+    assert!(f2w["result"]["message_id"].is_string(), "{f2w}");
+    assert!(f2n["result"]["message_id"].is_string(), "{f2n}");
+    assert_eq!(
+        raw_body(&h, true, f2w["result"]["message_id"].as_str().unwrap()).await["forward_count"],
+        1
+    );
+
+    let (mut hw, mut hn) = history(&h, &target).await;
+    containers_match(&mut hw, &mut hn);
+    assert_eq!(hw, hn);
+    let counts: Vec<i64> = hw["result"]["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["forward"]["forward_count"].as_i64().unwrap())
+        .collect();
+    assert_eq!(counts, vec![1, 1]);
+}
+
 fn resign_bundle(bundle: &mut Bundle, owner: &syneroym_identity::Identity, now_secs: u64) {
     let payload = serde_json::to_value(&bundle.manifest).unwrap();
     let draft = RecordDraft {

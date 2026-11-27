@@ -2,6 +2,7 @@
 
 pub mod backup;
 pub mod chat_send;
+pub mod forward;
 pub mod group;
 pub mod inbox;
 pub mod messages;
