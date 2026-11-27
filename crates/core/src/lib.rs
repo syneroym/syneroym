@@ -12,6 +12,7 @@ pub mod event_bus;
 pub mod host_identity;
 pub mod http_routes;
 pub mod local_registry;
+mod macos_network_compat;
 pub mod mailbox;
 pub mod protocol_utils;
 pub mod record_signer;

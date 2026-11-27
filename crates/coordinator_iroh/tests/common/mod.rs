@@ -13,6 +13,10 @@ use syneroym_coordinator_iroh::CoordinatorIroh;
 use syneroym_core::config::{ServiceRegistryRole, SubstrateConfig};
 use tokio::time;
 
+// Keeps the macOS SystemConfiguration interface-name crash out of every test
+// binary that uses this module.
+syneroym_core::install_macos_network_compat!();
+
 /// Waits until the coordinator's endpoint lists its relay.
 pub async fn wait_for_relay(coord: &CoordinatorIroh, timeout: Duration) -> Result<()> {
     let start = Instant::now();

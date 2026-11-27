@@ -10,6 +10,8 @@ use iroh::{EndpointAddr, SecretKey};
 use syneroym_core::dht_registry::EndpointMechanism;
 use syneroym_sdk::SyneroymClient;
 
+syneroym_core::install_macos_network_compat!();
+
 /// A node id pointed at a local UDP port nothing is listening on: iroh has a
 /// concrete direct address to dial, but every handshake packet it sends goes
 /// unanswered. Without a deadline, `Endpoint::connect` sits in its own

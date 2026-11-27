@@ -16,6 +16,10 @@
 
 #![allow(clippy::cognitive_complexity, dead_code)]
 
+// Keeps the macOS SystemConfiguration interface-name crash out of every test
+// binary that uses this module.
+syneroym_core::install_macos_network_compat!();
+
 mod node;
 
 /// Stand-ins for coordinators and registries, for the home-relay tests.
