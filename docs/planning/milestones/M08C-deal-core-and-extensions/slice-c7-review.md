@@ -176,9 +176,10 @@ count rule, and line 28 tells them the host was not touched.
 that the capability's interface does not change but its indexing rule gets
 one case. Remove the extra empty lines.
 
-*Status:* Open. Reopened in round 2: the new bullets in f29cc186 and
-0c36eb66 cover every item, but two of them state the facts wrongly (see
-round 2, R1).
+*Status:* Fixed (f29cc186, 0c36eb66; reopened on the facts and fixed again
+in c8f0076d). The count above 1,000 now reads as 1,000, the collection is
+named `conversation_settings` with `settings` as the backup section, and the
+hash layout names each tag length prefix and the raw 32-byte blob hashes.
 
 ### R2 — The name of an unknown author starts with two "…" (minor)
 
@@ -476,7 +477,7 @@ did not build the roym WASM, so I did not run the parity scenarios again.
 ### Counts
 
 Round 2: blocker 1 (R11), major 0, minor 1 (R12), plus R1 reopened
-(major). **3 open** (R1, R11, R12).
+(major). **0 open** (R1, R11, R12 all fixed).
 
 ### R11 — CI is red: a new group test does not type-check (blocker)
 
@@ -500,7 +501,9 @@ session did not see it.
 `npm run build` (it runs `tsc`) as well as Vitest before pushing, and
 update the status.md row with the CI run of the fixed head.
 
-*Status:* Open.
+*Status:* Fixed (43c07ccc). Proof: with the old counters literal,
+`npx tsc --noEmit -p .` failed with TS2339. Now `tsc` is clean,
+`npm run build` passes, and Vitest `groups` has 29 passing tests.
 
 ### R12 — In a group, the new delete dialog and a "reload" event still lose open work (minor)
 
@@ -527,4 +530,6 @@ again, and it can happen again.
 in `activeGroupLater`, in the `MutationObserver` and on the `reload` path.
 Extend the new picker test to the delete dialog.
 
-*Status:* Open.
+*Status:* Fixed (43c07ccc). Proof: with the open-work selector narrowed to
+`.forward-picker`, the delete-dialog test failed because the dialog was
+gone; with `activeGroupLater` redrawing at once, both picker tests failed.
