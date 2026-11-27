@@ -88,7 +88,7 @@ and uses its own numbers.
 
 - **Q1 removed.** C4 is merged.
 - **Q2** is answered by the owner (2026-11-27): (a), two PRs.
-- **Q4** has a new recommendation (host indexes the `text` field only).
+- **Q4** is answered by the owner (2026-11-27): (a), the host indexes the `text` field only.
 - **Q5** now names one settings method.
 - **Q6** keeps option (a). It now has a cost estimate (not a measurement) and a note that the Hub repeats the check.
 - **Q7** gets a third option: forward in the same chat.
@@ -316,7 +316,10 @@ cannot ride in a `text/plain` body, so a new content type is needed.
   changes the content type of every message that `roymctl` and the guide
   send.
 
-#### Q4. Search over a chat body
+#### Q4. Search over a chat body (Answered: (a), 2026-11-27)
+
+The owner chose (a). The host change is part of C7a (step 2). Options
+(b) and (c) are kept below only as the record of what was not chosen.
 
 The host indexes the whole body of a `+json` content type
 (`is_searchable_content_type`, `crates/conversation/src/store/message.rs:36`;
@@ -332,7 +335,7 @@ newest first and cuts at `limit`, at most 500 (`store/search.rs:14`),
 before the Roym service sees a row. A filter in `roym_core` after
 that call cannot give back a real hit that the host left out.
 
-- (a) **(recommended)** A host change, small and general: the host indexes
+- (a) **Chosen by the owner.** A host change, small and general: the host indexes
   only the top-level string field `text` of a `+json` body that has one,
   and the whole body otherwise, as today. Widget bodies have no `text`
   field and do not change. A function `indexable_text(content_type, body)`
@@ -1095,7 +1098,7 @@ Steps, in this order. Each refusal is `-32602` with the `data.code` named:
 
 ### D-C7-8. Search (Q4)
 
-**With Q4 (a) (recommended), the host does the work.** In
+**With Q4 (a) (chosen by the owner), the host does the work.** In
 `crates/conversation`, a function `indexable_text(content_type: &str, body:
 &[u8]) -> Option<Cow<str>>` replaces the `is_searchable_content_type` test
 at its six call sites (`store/message.rs:134`, `:187`, `:326`;
@@ -1114,7 +1117,7 @@ host crate: a chat body is found by a word of its text, not by `signed`,
 before; a restored chat body is indexed by the same rule (the index is
 rebuilt from `indexable_text`).
 
-**With Q4 (b), the Roym service filters.** In `roym_core::chat`:
+**With Q4 (b) (not chosen, kept as a record), the Roym service filters.** In `roym_core::chat`:
 
 ```rust
 /// True when `text` matches `query` by the host's own search rule.
