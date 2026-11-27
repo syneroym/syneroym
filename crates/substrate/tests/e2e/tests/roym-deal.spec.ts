@@ -374,15 +374,7 @@ test.describe('Roym deal screens', () => {
             jsonrpc: '2.0',
             id: body.id,
             result: {
-              listing: {
-                listing_id: 'list_woodwork',
-                price: { amount_minor: 50000, currency: 'INR', payee: 'did:key:author' },
-                deal: {
-                  cancellation_terms: { lang: 'en', text: 'Listing cancellation' },
-                  refund_terms: { lang: 'en', text: 'Listing refund' },
-                  dispute_path: { lang: 'en', text: 'Listing dispute' },
-                },
-              },
+              envelope: 'env_woodwork',
             },
           }),
         });
@@ -392,7 +384,22 @@ test.describe('Roym deal screens', () => {
         await route.fulfill({
           status: 200,
           contentType: 'application/json',
-          body: JSON.stringify({ jsonrpc: '2.0', id: body.id, result: { valid: true } }),
+          body: JSON.stringify({
+            jsonrpc: '2.0',
+            id: body.id,
+            result: {
+              verified: true,
+              payload: {
+                listing_id: 'list_woodwork',
+                payment: { amount_minor: 50000, currency: 'INR', payee: 'did:key:author' },
+                deal_terms: {
+                  cancellation_terms: { lang: 'en', text: 'Listing cancellation' },
+                  refund_terms: { lang: 'en', text: 'Listing refund' },
+                  dispute_path: { lang: 'en', text: 'Listing dispute' },
+                },
+              },
+            },
+          }),
         });
         return;
       }

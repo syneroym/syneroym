@@ -282,6 +282,71 @@ function renderStatementEep(statement: Statement): HTMLElement {
   return eepSection;
 }
 
+async function handleStatementShow(
+  fromInput: HTMLInputElement,
+  toInput: HTMLInputElement,
+  errorEl: HTMLElement,
+  resultsEl: HTMLElement,
+) {
+  errorEl.textContent = "";
+  resultsEl.replaceChildren();
+
+  const fromDate = parseDateInput(fromInput.value);
+  const toDate = parseDateInput(toInput.value);
+
+  if (!fromDate || !toDate) {
+    errorEl.textContent = t("statement-error-period");
+    return;
+  }
+
+  if (fromDate.getTime() > toDate.getTime()) {
+    errorEl.textContent = t("statement-error-period");
+    return;
+  }
+
+  const from_secs = Math.floor(fromDate.getTime() / 1000);
+  const toDatePlusOne = new Date(toDate.getFullYear(), toDate.getMonth(), toDate.getDate() + 1, 0, 0, 0, 0);
+  const to_secs = Math.floor(toDatePlusOne.getTime() / 1000);
+
+  let statement: Statement;
+  let contacts: Array<{ person_did: string; display_name?: string }> = [];
+
+  try {
+    const [sRes, cRes] = await Promise.all([
+      call<Statement>("statement.export", { from_secs, to_secs }),
+      call<Array<{ person_did: string; display_name?: string }>>("contacts.list").catch(() => []),
+    ]);
+    statement = sRes;
+    contacts = cRes;
+  } catch (err) {
+    errorEl.textContent = t("statement-fetch-failed", { detail: errText(err) });
+    return;
+  }
+
+  const nameMap = new Map<string, string>();
+  for (const c of contacts) {
+    if (c.display_name) nameMap.set(c.person_did, c.display_name);
+  }
+  for (const row of statement.rows) {
+    if (!row.counterparty_name && nameMap.has(row.counterparty_did)) {
+      row.counterparty_name = nameMap.get(row.counterparty_did);
+    }
+  }
+  for (const row of statement.open_at_end) {
+    if (!row.counterparty_name && nameMap.has(row.counterparty_did)) {
+      row.counterparty_name = nameMap.get(row.counterparty_did);
+    }
+  }
+
+  resultsEl.append(
+    renderStatementDownloads(statement),
+    renderStatementRows(statement),
+    renderStatementOpenAtEnd(statement),
+    renderStatementTotals(statement),
+    renderStatementEep(statement),
+  );
+}
+
 export async function renderStatement(container: HTMLElement): Promise<void> {
   container.replaceChildren();
 
@@ -358,63 +423,5 @@ export async function renderStatement(container: HTMLElement): Promise<void> {
 
   container.appendChild(screen);
 
-  showBtn.onclick = async () => {
-    errorEl.textContent = "";
-    resultsEl.replaceChildren();
-
-    const fromDate = parseDateInput(fromInput.value);
-    const toDate = parseDateInput(toInput.value);
-
-    if (!fromDate || !toDate) {
-      errorEl.textContent = t("statement-error-period");
-      return;
-    }
-
-    if (fromDate.getTime() >= toDate.getTime()) {
-      errorEl.textContent = t("statement-error-period");
-      return;
-    }
-
-    const from_secs = Math.floor(fromDate.getTime() / 1000);
-    const toDatePlusOne = new Date(toDate.getFullYear(), toDate.getMonth(), toDate.getDate() + 1, 0, 0, 0, 0);
-    const to_secs = Math.floor(toDatePlusOne.getTime() / 1000);
-
-    let statement: Statement;
-    let contacts: Array<{ person_did: string; display_name?: string }> = [];
-
-    try {
-      const [sRes, cRes] = await Promise.all([
-        call<Statement>("statement.export", { from_secs, to_secs }),
-        call<Array<{ person_did: string; display_name?: string }>>("contacts.list").catch(() => []),
-      ]);
-      statement = sRes;
-      contacts = cRes;
-    } catch (err) {
-      errorEl.textContent = t("statement-fetch-failed", { detail: errText(err) });
-      return;
-    }
-
-    const nameMap = new Map<string, string>();
-    for (const c of contacts) {
-      if (c.display_name) nameMap.set(c.person_did, c.display_name);
-    }
-    for (const row of statement.rows) {
-      if (!row.counterparty_name && nameMap.has(row.counterparty_did)) {
-        row.counterparty_name = nameMap.get(row.counterparty_did);
-      }
-    }
-    for (const row of statement.open_at_end) {
-      if (!row.counterparty_name && nameMap.has(row.counterparty_did)) {
-        row.counterparty_name = nameMap.get(row.counterparty_did);
-      }
-    }
-
-    resultsEl.append(
-      renderStatementDownloads(statement),
-      renderStatementRows(statement),
-      renderStatementOpenAtEnd(statement),
-      renderStatementTotals(statement),
-      renderStatementEep(statement),
-    );
-  };
+  showBtn.onclick = () => handleStatementShow(fromInput, toInput, errorEl, resultsEl);
 }

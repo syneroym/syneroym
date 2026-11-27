@@ -250,17 +250,20 @@ describe("quote form", () => {
   it("populates from listing and defaults with payee defaulting to myDid", async () => {
     stubRpc({
       "listing.get": () => ({
-        listing: {
+        envelope: "env_test_123",
+      }),
+      "listing.verify": () => ({
+        verified: true,
+        payload: {
           listing_id: "list_1",
-          price: { amount_minor: 75000, currency: "INR", payee: "did:key:bob_custom" },
-          deal: {
+          payment: { amount_minor: 75000, currency: "INR", payee: "did:key:bob_custom" },
+          deal_terms: {
             cancellation_terms: { lang: "en", text: "Listing cancellation" },
             refund_terms: { lang: "en", text: "Listing refund" },
             dispute_path: { lang: "en", text: "Listing dispute" },
           },
         },
       }),
-      "listing.verify": () => ({ valid: true }),
       "deal.defaults-get": () => ({
         quote_valid_secs: 7200,
       }),
@@ -310,5 +313,38 @@ describe("quote form", () => {
 
     const parsedAbc = readQuoteForm(form);
     expect("error" in parsedAbc).toBe(true);
+  });
+
+  it("requires both window dates or neither and computes latest_secs as end of day", () => {
+    const anchor = document.createElement("div");
+    openQuoteForm(anchor, { record_id: "rec_req" }, "conv1", async () => {});
+    const form = anchor.querySelector<HTMLElement>(".quote-form")!;
+    form.querySelector<HTMLInputElement>(".quote-scope-input")!.value = "Lesson";
+    form.querySelector<HTMLInputElement>(".quote-row-value-input")!.value = "100";
+    form.querySelector<HTMLInputElement>(".quote-amount-input")!.value = "100";
+    form.querySelector<HTMLInputElement>(".quote-payee-input")!.value = "did:key:author";
+
+    const fromInput = form.querySelector<HTMLInputElement>(".quote-row-from-input")!;
+    const toInput = form.querySelector<HTMLInputElement>(".quote-row-to-input")!;
+
+    // Only from date provided -> error
+    fromInput.value = "2026-11-28";
+    toInput.value = "";
+    fromInput.dispatchEvent(new Event("input"));
+    let res = readQuoteForm(form);
+    expect("error" in res).toBe(true);
+
+    // Both provided on same day -> window spans from start of day to 23:59:59
+    toInput.value = "2026-11-28";
+    toInput.dispatchEvent(new Event("input"));
+    res = readQuoteForm(form);
+    expect("terms" in res).toBe(true);
+    if ("terms" in res) {
+      const commitments = res.terms.commitments as Array<Record<string, unknown>>;
+      const authorService = commitments.find((c) => c.giver === "quote-author");
+      expect(authorService?.window).toBeDefined();
+      const win = authorService!.window as { earliest_secs: number; latest_secs: number };
+      expect(win.latest_secs - win.earliest_secs).toBe(86399);
+    }
   });
 });

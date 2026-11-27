@@ -549,7 +549,47 @@ export function refusalText(reason: string): string {
   return t("messages-refused-other", { reason });
 }
 
-export function messageElement(
+function attachQuoteHistorySummary(
+  wrap: HTMLElement,
+  cardEl: HTMLElement,
+  cardRow: CardRow,
+  quoteData: unknown,
+  newestQuoteMap?: Map<string, string>,
+) {
+  const quoteId = (cardRow.data as Record<string, unknown> | undefined)?.quote_id as string | undefined;
+  const isNewest = !newestQuoteMap || !quoteId || !cardRow.record_id || newestQuoteMap.get(quoteId) === cardRow.record_id;
+  if (cardRow.card_type === "quote" && isNewest && (cardRow.version_count ?? 1) > 1 && quoteId) {
+    const role = ((quoteData as Record<string, unknown>)?.role ?? "counterparty") as Role;
+    void (async () => {
+      try {
+        const hist = await call<{ versions: Array<{ record_id: string; terms: DealTerms }> }>(
+          "quote.history",
+          { quote_id: quoteId },
+        );
+        if (hist?.versions && hist.versions.length > 1) {
+          const first = hist.versions[0].terms;
+          const latest = hist.versions[hist.versions.length - 1].terms;
+          const curr = (quoteData as Record<string, unknown>)?.terms
+            ? ((quoteData as Record<string, unknown>).terms as { currency?: string }).currency ?? "INR"
+            : "INR";
+          const summary = versionSummary(first, latest, role);
+          const summaryEl = renderVersionSummary(summary, curr);
+          if (!wrap.querySelector(".quote-changes-summary")) {
+            wrap.insertBefore(summaryEl, cardEl);
+          }
+        }
+      } catch (err) {
+        if (!wrap.querySelector(".quote-changes-error")) {
+          const errEl = text("p", t("quote-history-failed", { detail: errText(err) }), "quote-changes-error error-text");
+          wrap.insertBefore(errEl, cardEl);
+        }
+      }
+    })();
+  }
+}
+
+function renderCardMessage(
+  wrap: HTMLElement,
   m: MessageRow,
   cardMap: Map<string, CardRow>,
   allCards: CardRow[],
@@ -558,101 +598,69 @@ export function messageElement(
   convId: string,
   myDid: string,
   refresh: () => Promise<void>,
+  newestAgreementCardMap?: Map<string, string>,
+): void {
+  const cardRow = cardMap.get(m.id);
+  if (cardRow?.repeat) {
+    wrap.style.display = "none";
+    return;
+  }
+  if (!cardRow) {
+    wrap.appendChild(renderRefusedCard("card", 1, t("messages-unfiled-card")));
+    return;
+  }
+  if (cardRow.known && cardRow.verified) {
+    const quoteData =
+      cardRow.card_type === "quote"
+        ? {
+            ...(cardRow.data as Record<string, unknown> | undefined),
+            version_number: cardRow.version_count,
+            role: !myDid || cardRow.data?.counterparty_did === myDid ? "counterparty" : "quote-author",
+          }
+        : cardRow.data;
+    const cardEl = renderCard({
+      type: cardRow.card_type,
+      version: cardRow.version,
+      data: quoteData,
+      agreement_payee: cardRow.agreement_payee,
+      agreement_payment_methods: cardRow.agreement_payment_methods,
+    });
+    wrap.appendChild(cardEl);
+    attachQuoteHistorySummary(wrap, cardEl, cardRow, quoteData, newestQuoteMap);
+  } else if (cardRow.known && !cardRow.verified) {
+    wrap.appendChild(renderRefusedCard(cardRow.card_type, cardRow.version, cardRow.reason));
+  } else {
+    wrap.appendChild(renderCard({ type: cardRow.card_type, version: cardRow.version, data: {} }));
+  }
+
+  // Check if quote answers an earlier version of the request
+  if (isQuoteSuperseded(cardRow, allCards, newestRequestMap)) {
+    const supP = document.createElement("p");
+    supP.className = "quote-superseded-notice";
+    supP.textContent = t("quote-superseded-notice");
+    wrap.appendChild(supP);
+  }
+
+  // Render contextual card action buttons
+  renderCardActions(wrap, cardRow, convId, myDid, refresh, newestQuoteMap);
+
+  // Render agreement panel below newest card of agreement
+  const agrId = cardAgreementId(cardRow);
+  if (agrId && newestAgreementCardMap?.get(agrId) === m.id) {
+    wrap.appendChild(renderAgreementPanel(agrId, myDid, refresh));
+  }
+}
+
+function renderMessageBody(
+  wrap: HTMLElement,
+  m: MessageRow,
+  convId: string,
+  refresh: () => Promise<void>,
   widgetMap?: Map<string, WidgetView>,
   languages?: () => string[],
   isRestored?: (messageId: string) => boolean,
-  newestAgreementCardMap?: Map<string, string>,
-): HTMLElement {
-  const wrap = document.createElement("div");
-  wrap.className = `message message-${m.direction}`;
-  wrap.dataset.state = m.state;
-
-  if (m.content_type === WIDGET_ANSWER_CONTENT_TYPE) {
-    wrap.style.display = "none";
-    return wrap;
-  }
-
-  if (m.content_type === "application/vnd.roym.card+json") {
-    const cardRow = cardMap.get(m.id);
-    if (cardRow?.repeat) {
-      wrap.style.display = "none";
-      return wrap;
-    }
-    if (cardRow) {
-      if (cardRow.known && cardRow.verified) {
-        const quoteData =
-          cardRow.card_type === "quote"
-            ? {
-                ...(cardRow.data as Record<string, unknown> | undefined),
-                version_number: cardRow.version_count,
-                role: !myDid || cardRow.data?.counterparty_did === myDid ? "counterparty" : "quote-author",
-              }
-            : cardRow.data;
-        const cardEl = renderCard({
-          type: cardRow.card_type,
-          version: cardRow.version,
-          data: quoteData,
-          agreement_payee: cardRow.agreement_payee,
-          agreement_payment_methods: cardRow.agreement_payment_methods,
-        });
-        wrap.appendChild(cardEl);
-
-        const quoteId = (cardRow.data as Record<string, unknown> | undefined)?.quote_id as string | undefined;
-        const isNewest = !newestQuoteMap || !quoteId || !cardRow.record_id || newestQuoteMap.get(quoteId) === cardRow.record_id;
-        if (cardRow.card_type === "quote" && isNewest && (cardRow.version_count ?? 1) > 1 && quoteId) {
-          const role = ((quoteData as Record<string, unknown>)?.role ?? "counterparty") as Role;
-          void (async () => {
-            try {
-              const hist = await call<{ versions: Array<{ record_id: string; terms: DealTerms }> }>(
-                "quote.history",
-                { quote_id: quoteId },
-              );
-              if (hist?.versions && hist.versions.length > 1) {
-                const first = hist.versions[0].terms;
-                const latest = hist.versions[hist.versions.length - 1].terms;
-                const curr = (quoteData as Record<string, unknown>)?.terms
-                  ? ((quoteData as Record<string, unknown>).terms as { currency?: string }).currency ?? "INR"
-                  : "INR";
-                const summary = versionSummary(first, latest, role);
-                const summaryEl = renderVersionSummary(summary, curr);
-                if (!wrap.querySelector(".quote-changes-summary")) {
-                  wrap.insertBefore(summaryEl, cardEl);
-                }
-              }
-            } catch (err) {
-              if (!wrap.querySelector(".quote-changes-error")) {
-                const errEl = text("p", t("quote-history-failed", { detail: errText(err) }), "quote-changes-error error-text");
-                wrap.insertBefore(errEl, cardEl);
-              }
-            }
-          })();
-        }
-      } else if (cardRow.known && !cardRow.verified) {
-        wrap.appendChild(renderRefusedCard(cardRow.card_type, cardRow.version, cardRow.reason));
-      } else {
-        wrap.appendChild(renderCard({ type: cardRow.card_type, version: cardRow.version, data: {} }));
-      }
-
-      // Check if quote answers an earlier version of the request
-      if (isQuoteSuperseded(cardRow, allCards, newestRequestMap)) {
-        const supP = document.createElement("p");
-        supP.className = "quote-superseded-notice";
-        supP.textContent = t("quote-superseded-notice");
-        wrap.appendChild(supP);
-      }
-
-      // Render contextual card action buttons
-      renderCardActions(wrap, cardRow, convId, myDid, refresh, newestQuoteMap);
-
-      // Render agreement panel below newest card of agreement
-      const agrId = cardAgreementId(cardRow);
-      if (agrId && newestAgreementCardMap?.get(agrId) === m.id) {
-        wrap.appendChild(renderAgreementPanel(agrId, myDid, refresh));
-      }
-    } else {
-      wrap.appendChild(renderRefusedCard("card", 1, t("messages-unfiled-card")));
-    }
-  } else if (m.deleted_at_secs != null) {
+): void {
+  if (m.deleted_at_secs != null) {
     wrap.appendChild(text("span", t("messages-message-deleted"), "message-body deleted"));
   } else if (m.content_type === WIDGET_CONTENT_TYPE) {
     const view = widgetMap?.get(m.id);
@@ -673,22 +681,9 @@ export function messageElement(
   } else {
     wrap.appendChild(text("span", m.body ?? t("messages-no-body"), "message-body"));
   }
+}
 
-  // The state word is exactly what the API returned -- never inferred, and
-  // "delivered" is never shown until the service says so.
-  const stateSpan = text("span", messageStateWord(m.state), `message-state state-${m.state}`);
-  const hint = stateHint(m.state);
-  if (hint) {
-    stateSpan.title = hint;
-  }
-  wrap.appendChild(stateSpan);
-  if (m.refused) {
-    wrap.appendChild(text("span", refusalText(m.refused), "message-refused"));
-  }
-  if (m.state === "failed" && m.last_error) {
-    wrap.appendChild(text("span", m.last_error, "message-error"));
-  }
-
+function renderMessageActions(wrap: HTMLElement, m: MessageRow, refresh: () => Promise<void>): HTMLElement {
   const actions = document.createElement("div");
   actions.className = "message-actions";
 
@@ -714,7 +709,65 @@ export function messageElement(
     actions.appendChild(deleteBtn);
   }
 
-  wrap.appendChild(actions);
+  return actions;
+}
+
+export function messageElement(
+  m: MessageRow,
+  cardMap: Map<string, CardRow>,
+  allCards: CardRow[],
+  newestRequestMap: Map<string, string>,
+  newestQuoteMap: Map<string, string>,
+  convId: string,
+  myDid: string,
+  refresh: () => Promise<void>,
+  widgetMap?: Map<string, WidgetView>,
+  languages?: () => string[],
+  isRestored?: (messageId: string) => boolean,
+  newestAgreementCardMap?: Map<string, string>,
+): HTMLElement {
+  const wrap = document.createElement("div");
+  wrap.className = `message message-${m.direction}`;
+  wrap.dataset.state = m.state;
+
+  if (m.content_type === WIDGET_ANSWER_CONTENT_TYPE) {
+    wrap.style.display = "none";
+    return wrap;
+  }
+
+  if (m.content_type === "application/vnd.roym.card+json") {
+    renderCardMessage(
+      wrap,
+      m,
+      cardMap,
+      allCards,
+      newestRequestMap,
+      newestQuoteMap,
+      convId,
+      myDid,
+      refresh,
+      newestAgreementCardMap,
+    );
+  } else {
+    renderMessageBody(wrap, m, convId, refresh, widgetMap, languages, isRestored);
+  }
+
+  // The state word is exactly what the API returned -- never inferred, and
+  // "delivered" is never shown until the service says so.
+  const stateSpan = text("span", messageStateWord(m.state), `message-state state-${m.state}`);
+  const hint = stateHint(m.state);
+  if (hint) {
+    stateSpan.title = hint;
+  }
+  wrap.appendChild(stateSpan);
+  if (m.refused) {
+    wrap.appendChild(text("span", refusalText(m.refused), "message-refused"));
+  }
+  if (m.state === "failed" && m.last_error) {
+    wrap.appendChild(text("span", m.last_error, "message-error"));
+  }
+
+  wrap.appendChild(renderMessageActions(wrap, m, refresh));
   return wrap;
 }
 
@@ -816,6 +869,138 @@ function asListedReasonText(reason: string, cap: number): string {
   }
 }
 
+function renderEnquiryActions(
+  wrap: HTMLElement,
+  card: CardRow,
+  convId: string,
+  myDid: string,
+  refresh: () => Promise<void>,
+) {
+  const notIssuedByMe = card.direction === "incoming" || (myDid && card.issuer !== myDid);
+  if (!notIssuedByMe) return;
+
+  const quoteBtn = text("button", t("quote-request-button"), "button quote-request-button") as HTMLButtonElement;
+  quoteBtn.onclick = () => openQuoteForm(wrap, card, convId, refresh, undefined, myDid);
+  wrap.appendChild(quoteBtn);
+
+  const data = card.data as Record<string, unknown> | undefined;
+  if (data?.as_listed) {
+    void agreeAsListedOffer(wrap, card, String(data.listing_id ?? ""), refresh);
+  }
+}
+
+function renderCounterpartyQuoteActions(wrap: HTMLElement, card: CardRow, refresh: () => Promise<void>) {
+  if (card.deal_state === "accepted") {
+    wrap.appendChild(text("p", t("messages-waiting-for-other-side"), "quote-waiting-notice"));
+    return;
+  }
+  const actionsDiv = document.createElement("div");
+  actionsDiv.className = "quote-actions";
+
+  const acceptBtn = text("button", t("messages-accept-button"), "button accept-quote-button") as HTMLButtonElement;
+  const acceptErr = text("p", "", "accept-quote-error");
+
+  const sendAccept = async () => {
+    acceptBtn.disabled = true;
+    acceptErr.textContent = "";
+    const viewed = shownVersion(wrap, card);
+    try {
+      await call("agreement.accept", {
+        quote_record_id: card.record_id,
+        ...(viewed.lang ? { viewed_lang: viewed.lang } : {}),
+        viewed_via_mt: viewed.viaMt,
+      });
+      await refresh();
+    } catch (err) {
+      acceptBtn.disabled = false;
+      const msg = err instanceof RpcError ? err.message : String(err);
+      if (msg.includes("quote-expired") || msg.includes("expired")) {
+        acceptErr.textContent = t("messages-quote-expired");
+      } else if (err instanceof RpcError && refusalCode(err) === "extension-unknown") {
+        acceptErr.textContent = t("messages-accept-extension-unknown");
+      } else {
+        acceptErr.textContent = t("messages-accept-failed", { detail: errText(err) });
+      }
+    }
+  };
+
+  acceptBtn.onclick = () => {
+    if (!shownVersion(wrap, card).viaMt) {
+      void sendAccept();
+      return;
+    }
+    if (actionsDiv.querySelector(".accept-mt-box")) return;
+    actionsDiv.appendChild(mtWarning(card, sendAccept));
+  };
+
+  const declineBtn = text("button", t("messages-decline-button"), "button decline-quote-button") as HTMLButtonElement;
+  declineBtn.onclick = () => openDeclineDialog(wrap, card, refresh);
+
+  const suggestBtn = text("button", t("deal-suggest-changes"), "button quote-suggest-changes-button") as HTMLButtonElement;
+  suggestBtn.onclick = () => {
+    const composeInput =
+      document.querySelector<HTMLInputElement>(".compose-input") ||
+      wrap.closest(".chat-pane")?.querySelector<HTMLInputElement>(".compose-input");
+    if (composeInput) {
+      const versionNumber = card.version_count ?? 1;
+      const prefix = t("deal-suggest-prefix", { n: String(versionNumber) });
+      composeInput.value = prefix.endsWith(" ") ? prefix : `${prefix} `;
+      composeInput.focus();
+      composeInput.scrollIntoView?.({ behavior: "smooth", block: "center" });
+    }
+  };
+
+  actionsDiv.append(acceptBtn, declineBtn, suggestBtn, acceptErr);
+  wrap.appendChild(actionsDiv);
+}
+
+function renderAuthorQuoteActions(
+  wrap: HTMLElement,
+  card: CardRow,
+  convId: string,
+  myDid: string,
+  refresh: () => Promise<void>,
+) {
+  const actionsDiv = document.createElement("div");
+  actionsDiv.className = "quote-actions";
+
+  const newVersionBtn = text("button", t("deal-send-new-version"), "button quote-new-version-button") as HTMLButtonElement;
+  newVersionBtn.onclick = () => openQuoteForm(wrap, card, convId, refresh, undefined, myDid);
+
+  actionsDiv.appendChild(newVersionBtn);
+  wrap.appendChild(actionsDiv);
+}
+
+function renderQuoteActions(
+  wrap: HTMLElement,
+  card: CardRow,
+  convId: string,
+  myDid: string,
+  refresh: () => Promise<void>,
+  newestQuoteMap?: Map<string, string>,
+) {
+  const forMe = !!myDid && card.data?.counterparty_did === myDid;
+  const isAuthor = !!myDid && (card.issuer === myDid || card.data?.quote_author_did === myDid);
+  const nowSecs = Math.floor(Date.now() / 1000);
+  const expSecs = card.data?.terms?.quote_expires_at_secs ?? card.data?.quote_expires_at_secs;
+  const isExpired = card.expired || (expSecs !== undefined && nowSecs > expSecs);
+  const isDeclined = card.declined === true;
+
+  const quoteId = (card.data as Record<string, unknown> | undefined)?.quote_id as string | undefined;
+  const isNewest = !newestQuoteMap || !quoteId || !card.record_id || newestQuoteMap.get(quoteId) === card.record_id;
+
+  const dState = card.deal_state;
+  const isEndedOrAgreed = dState
+    ? ["agreed", "declined", "expired", "not-formed", "closed", "cancelled"].includes(dState)
+    : isExpired || isDeclined;
+
+  if (forMe && isNewest && !isEndedOrAgreed) {
+    renderCounterpartyQuoteActions(wrap, card, refresh);
+  } else if (isAuthor && isNewest && !isEndedOrAgreed) {
+    renderAuthorQuoteActions(wrap, card, convId, myDid, refresh);
+  }
+}
+
 export function renderCardActions(
   wrap: HTMLElement,
   card: CardRow,
@@ -824,119 +1009,11 @@ export function renderCardActions(
   refresh: () => Promise<void>,
   newestQuoteMap?: Map<string, string>,
 ) {
-  // Quote this enquiry: on verified enquiry not issued by me
   if (card.card_type === "enquiry" && card.verified) {
-    const notIssuedByMe = card.direction === "incoming" || (myDid && card.issuer !== myDid);
-    if (notIssuedByMe) {
-      const quoteBtn = text("button", t("quote-request-button"), "button quote-request-button") as HTMLButtonElement;
-      quoteBtn.onclick = () => openQuoteForm(wrap, card, convId, refresh, undefined, myDid);
-      wrap.appendChild(quoteBtn);
-    }
+    renderEnquiryActions(wrap, card, convId, myDid, refresh);
   }
-
-  // Agree as listed: an enquiry with a consent, for one of this node's own
-  // offerings. The status call also tells the reason the driver is waiting.
-  if (card.card_type === "enquiry" && card.verified) {
-    const notIssuedByMe = card.direction === "incoming" || (myDid && card.issuer !== myDid);
-    const data = card.data as Record<string, unknown> | undefined;
-    if (notIssuedByMe && data?.as_listed) {
-      void agreeAsListedOffer(wrap, card, String(data.listing_id ?? ""), refresh);
-    }
-  }
-
-  // Accept / Decline: on verified quote for me, only on newest version of quote_id,
-  // not when deal is agreed, declined, expired, or not-formed
   if (card.card_type === "quote" && card.verified) {
-    const forMe = !!myDid && card.data?.counterparty_did === myDid;
-    const isAuthor = !!myDid && (card.issuer === myDid || card.data?.quote_author_did === myDid);
-    const nowSecs = Math.floor(Date.now() / 1000);
-    const expSecs = card.data?.terms?.quote_expires_at_secs ?? card.data?.quote_expires_at_secs;
-    const isExpired = card.expired || (expSecs !== undefined && nowSecs > expSecs);
-    const isDeclined = card.declined === true;
-
-    const quoteId = (card.data as Record<string, unknown> | undefined)?.quote_id as string | undefined;
-    const isNewest = !newestQuoteMap || !quoteId || !card.record_id || newestQuoteMap.get(quoteId) === card.record_id;
-
-    const dState = card.deal_state;
-    const isEndedOrAgreed = dState
-      ? ["agreed", "declined", "expired", "not-formed", "closed", "cancelled"].includes(dState)
-      : isExpired || isDeclined;
-
-    if (forMe && isNewest && !isEndedOrAgreed) {
-      if (dState === "accepted") {
-        wrap.appendChild(text("p", t("messages-waiting-for-other-side"), "quote-waiting-notice"));
-        return;
-      }
-      const actionsDiv = document.createElement("div");
-      actionsDiv.className = "quote-actions";
-
-      const acceptBtn = text("button", t("messages-accept-button"), "button accept-quote-button") as HTMLButtonElement;
-      const acceptErr = text("p", "", "accept-quote-error");
-
-      const sendAccept = async () => {
-        acceptBtn.disabled = true;
-        acceptErr.textContent = "";
-        const viewed = shownVersion(wrap, card);
-        try {
-          await call("agreement.accept", {
-            quote_record_id: card.record_id,
-            ...(viewed.lang ? { viewed_lang: viewed.lang } : {}),
-            viewed_via_mt: viewed.viaMt,
-          });
-          await refresh();
-        } catch (err) {
-          acceptBtn.disabled = false;
-          const msg = err instanceof RpcError ? err.message : String(err);
-          if (msg.includes("quote-expired") || msg.includes("expired")) {
-            acceptErr.textContent = t("messages-quote-expired");
-          } else if (err instanceof RpcError && refusalCode(err) === "extension-unknown") {
-            acceptErr.textContent = t("messages-accept-extension-unknown");
-          } else {
-            acceptErr.textContent = t("messages-accept-failed", { detail: errText(err) });
-          }
-        }
-      };
-
-      // A machine translation is not what binds: say so, and ask again,
-      // before anything is signed.
-      acceptBtn.onclick = () => {
-        if (!shownVersion(wrap, card).viaMt) {
-          void sendAccept();
-          return;
-        }
-        if (actionsDiv.querySelector(".accept-mt-box")) return;
-        actionsDiv.appendChild(mtWarning(card, sendAccept));
-      };
-
-      const declineBtn = text("button", t("messages-decline-button"), "button decline-quote-button") as HTMLButtonElement;
-      declineBtn.onclick = () => openDeclineDialog(wrap, card, refresh);
-
-      const suggestBtn = text("button", t("deal-suggest-changes"), "button quote-suggest-changes-button") as HTMLButtonElement;
-      suggestBtn.onclick = () => {
-        const composeInput =
-          document.querySelector<HTMLInputElement>(".compose-input") ||
-          wrap.closest(".chat-pane")?.querySelector<HTMLInputElement>(".compose-input");
-        if (composeInput) {
-          const versionNumber = card.version_count ?? 1;
-          const prefix = t("deal-suggest-prefix", { n: String(versionNumber) });
-          composeInput.value = prefix.endsWith(" ") ? prefix : `${prefix} `;
-          composeInput.focus();
-          composeInput.scrollIntoView?.({ behavior: "smooth", block: "center" });
-        }
-      };
-
-      actionsDiv.append(acceptBtn, declineBtn, suggestBtn, acceptErr);
-      wrap.appendChild(actionsDiv);
-    } else if (isAuthor && isNewest && !isEndedOrAgreed) {
-      const actionsDiv = document.createElement("div");
-      actionsDiv.className = "quote-actions";
-
-      const newVersionBtn = text("button", t("deal-send-new-version"), "button quote-new-version-button") as HTMLButtonElement;
-      newVersionBtn.onclick = () => openQuoteForm(wrap, card, convId, refresh, undefined, myDid);
-
-      actionsDiv.appendChild(newVersionBtn);
-      wrap.appendChild(actionsDiv);
-    }
+    renderQuoteActions(wrap, card, convId, myDid, refresh, newestQuoteMap);
   }
 }
 

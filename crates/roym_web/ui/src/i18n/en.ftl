@@ -955,6 +955,7 @@ deal-row-value-hint = What this is worth in { $currency }. Used only for the tot
 deal-from-secs-placeholder = From
 deal-to-secs-placeholder = To
 deal-error-value-required = Value is required for each commitment
+deal-error-window-required = Both dates are required for the time window
 deal-version = Version { $n }
 deal-changes-heading = Changes since version 1
 deal-changes-side-give = You give: { $before } → { $after }

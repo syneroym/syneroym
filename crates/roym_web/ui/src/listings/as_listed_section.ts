@@ -69,32 +69,7 @@ export function asListedSection(isNew = true): {
   dispute.className = "as-listed-dispute";
 
   if (isNew) {
-    void call<{
-      cancellation_terms?: { text?: string } | string;
-      refund_terms?: { text?: string } | string;
-      dispute_path?: { text?: string } | string;
-      quote_valid_secs?: number;
-    } | null>("deal.defaults-get")
-      .then((defaults) => {
-        if (!defaults) return;
-        const getTxt = (v: unknown) => {
-          if (typeof v === "string") return v;
-          if (typeof v === "object" && v !== null && "text" in v) return String((v as { text?: unknown }).text ?? "");
-          return "";
-        };
-        const cTxt = getTxt(defaults.cancellation_terms);
-        if (cTxt && cancellation.value.trim() === "") cancellation.value = cTxt;
-        const rTxt = getTxt(defaults.refund_terms);
-        if (rTxt && refund.value.trim() === "") refund.value = rTxt;
-        const dTxt = getTxt(defaults.dispute_path);
-        if (dTxt && dispute.value.trim() === "") dispute.value = dTxt;
-        if (defaults.quote_valid_secs && quoteValidHours.value.trim() === "") {
-          const hours = Math.floor(defaults.quote_valid_secs / 3600);
-          const clamped = Math.max(1, Math.min(168, hours));
-          quoteValidHours.value = String(clamped);
-        }
-      })
-      .catch(() => {});
+    populateDefaults(cancellation, refund, dispute, quoteValidHours);
   }
 
   element.append(
@@ -124,3 +99,38 @@ export function asListedSection(isNew = true): {
     }),
   };
 }
+
+function populateDefaults(
+  cancellation: HTMLInputElement,
+  refund: HTMLInputElement,
+  dispute: HTMLInputElement,
+  quoteValidHours: HTMLInputElement,
+) {
+  void call<{
+    cancellation_terms?: { text?: string } | string;
+    refund_terms?: { text?: string } | string;
+    dispute_path?: { text?: string } | string;
+    quote_valid_secs?: number;
+  } | null>("deal.defaults-get")
+    .then((defaults) => {
+      if (!defaults) return;
+      const getTxt = (v: unknown) => {
+        if (typeof v === "string") return v;
+        if (typeof v === "object" && v !== null && "text" in v) return String((v as { text?: unknown }).text ?? "");
+        return "";
+      };
+      const cTxt = getTxt(defaults.cancellation_terms);
+      if (cTxt && cancellation.value.trim() === "") cancellation.value = cTxt;
+      const rTxt = getTxt(defaults.refund_terms);
+      if (rTxt && refund.value.trim() === "") refund.value = rTxt;
+      const dTxt = getTxt(defaults.dispute_path);
+      if (dTxt && dispute.value.trim() === "") dispute.value = dTxt;
+      if (defaults.quote_valid_secs && quoteValidHours.value.trim() === "") {
+        const hours = Math.floor(defaults.quote_valid_secs / 3600);
+        const clamped = Math.max(1, Math.min(168, hours));
+        quoteValidHours.value = String(clamped);
+      }
+    })
+    .catch(() => {});
+}
+

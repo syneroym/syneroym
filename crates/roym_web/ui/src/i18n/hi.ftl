@@ -928,6 +928,7 @@ deal-row-value-hint = { $currency } में इसका क्या मू�
 deal-from-secs-placeholder = से
 deal-to-secs-placeholder = तक
 deal-error-value-required = प्रत्येक प्रतिबद्धता के लिए मूल्य आवश्यक है
+deal-error-window-required = समय सीमा के लिए दोनों तारीखें आवश्यक हैं
 deal-version = संस्करण { $n }
 deal-changes-heading = संस्करण 1 के बाद से बदलाव
 deal-changes-side-give = आप देते हैं: { $before } → { $after }

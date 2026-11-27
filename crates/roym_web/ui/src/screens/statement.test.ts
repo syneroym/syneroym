@@ -138,7 +138,7 @@ describe("statement screen", () => {
     expect(toInput.value).toBe(currentRange.toStr);
   });
 
-  it("shows error when start date is after or equal to end date", async () => {
+  it("shows error when start date is after end date", async () => {
     await renderStatement(host);
 
     const fromInput = host.querySelector<HTMLInputElement>(".statement-from-input")!;
@@ -147,12 +147,6 @@ describe("statement screen", () => {
     const errorEl = host.querySelector<HTMLElement>(".statement-error")!;
 
     fromInput.value = "2026-06-01";
-    toInput.value = "2026-05-01";
-    showBtn.click();
-
-    expect(errorEl.textContent).toBe("Start date must be before end date");
-
-    fromInput.value = "2026-05-01";
     toInput.value = "2026-05-01";
     showBtn.click();
 
@@ -318,5 +312,41 @@ describe("statement screen", () => {
 
     // EEP unavailable line
     expect(host.querySelector(".statement-eep-text")?.textContent).toBe("Could not be read: Disabled in config");
+  });
+
+  it("allows fromDate equal to toDate as a valid one-day period", async () => {
+    let capturedExportParams: { from_secs: number; to_secs: number } | undefined;
+    stubRpc({
+      "statement.export": (params) => {
+        capturedExportParams = params as { from_secs: number; to_secs: number };
+        return {
+          owner_did: "did:key:zMe",
+          from_secs: capturedExportParams.from_secs,
+          to_secs: capturedExportParams.to_secs,
+          generated_at_secs: capturedExportParams.to_secs,
+          rows: [],
+          open_at_end: [],
+          totals: [],
+          eeps: { status: "not-available" },
+        };
+      },
+    });
+
+    const host = document.createElement("div");
+    await renderStatement(host);
+    const fromInput = host.querySelector<HTMLInputElement>(".statement-from-input")!;
+    const toInput = host.querySelector<HTMLInputElement>(".statement-to-input")!;
+    fromInput.value = "2026-11-27";
+    toInput.value = "2026-11-27";
+
+    const showBtn = host.querySelector<HTMLButtonElement>(".statement-show-button")!;
+    showBtn.click();
+
+    await vi.waitFor(() => {
+      expect(capturedExportParams).toBeDefined();
+    });
+
+    expect(capturedExportParams!.to_secs - capturedExportParams!.from_secs).toBe(86400);
+    expect(host.querySelector(".statement-error")?.textContent).toBe("");
   });
 });

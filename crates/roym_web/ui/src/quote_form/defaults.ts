@@ -21,22 +21,7 @@ export interface ListingLike {
     payee?: string;
     [key: string]: unknown;
   };
-  price?: {
-    currency?: string;
-    amount_minor?: number;
-    timing?: "before-work" | "after-work";
-    payee?: string;
-    [key: string]: unknown;
-  };
   deal_terms?: {
-    payment_timing?: "before-work" | "after-work";
-    cancellation_terms?: { text?: string } | string;
-    refund_terms?: { text?: string } | string;
-    dispute_path?: { text?: string } | string;
-    quote_valid_secs?: number;
-    [key: string]: unknown;
-  };
-  deal?: {
     payment_timing?: "before-work" | "after-work";
     cancellation_terms?: { text?: string } | string;
     refund_terms?: { text?: string } | string;
@@ -87,8 +72,8 @@ export function fillQuoteForm(
   saved?: SavedDefaultsLike | null,
   builtIn?: BuiltInDefaultsLike | null,
 ): FormValues {
-  const payment = listing?.payment || listing?.price;
-  const dealTerms = listing?.deal_terms || listing?.deal;
+  const payment = listing?.payment;
+  const dealTerms = listing?.deal_terms;
 
   const currency = payment?.currency?.trim() || "INR";
   const amountMinor = payment?.amount_minor;

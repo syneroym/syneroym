@@ -39,32 +39,12 @@ export function formatQuoteError(err: QuoteFormError): string {
   }
 }
 
-export function readQuoteForm(form: HTMLElement): QuoteFormResult {
-  const scopeInput = form.querySelector<HTMLInputElement>(".quote-scope-input");
-  const scope = scopeInput?.value.trim() ?? "";
-  if (!scope) {
-    return { error: { key: "quote-scope-required" } };
-  }
-
-  const currencyInput = form.querySelector<HTMLInputElement>(".quote-currency-input");
-  const currency = (currencyInput?.value.trim() || "INR").toUpperCase();
-  if (!currency) {
-    return { error: { key: "quote-currency-required" } };
-  }
-  if (!CURRENCY_CODES.has(currency)) {
-    return { error: { key: "quote-currency-unknown", args: { currency } } };
-  }
-
-  const timingSelect = form.querySelector<HTMLSelectElement>(".quote-timing-select");
-  const timing = (timingSelect?.value || "after-work") as "before-work" | "after-work";
-
-  const cancInput = form.querySelector<HTMLInputElement>(".quote-canc-input");
-  const refInput = form.querySelector<HTMLInputElement>(".quote-ref-input");
-  const dispInput = form.querySelector<HTMLInputElement>(".quote-disp-input");
-
+function readRawRows(
+  form: HTMLElement,
+  currency: string,
+): { rawRows: CommitmentRowFields[] } | { error: QuoteFormError } {
   const rowEls = form.querySelectorAll<HTMLElement>(".quote-commitment-row");
   const rowHandles: RowHandles[] = formRowHandles.get(form) || [];
-
   const rawRows: CommitmentRowFields[] = [];
 
   for (let i = 0; i < rowEls.length; i++) {
@@ -95,14 +75,20 @@ export function readQuoteForm(form: HTMLElement): QuoteFormResult {
     }
 
     if (!rowData) continue;
-
     if (rowData.error) {
       return { error: { raw: rowData.error } };
     }
-
     rawRows.push(rowData);
   }
 
+  return { rawRows };
+}
+
+function validateCommitmentRows(
+  rawRows: CommitmentRowFields[],
+  scope: string,
+  form: HTMLElement,
+): { rows: CommitmentRowFields[] } | { error: QuoteFormError } {
   const firstMoney = rawRows.find((r) => r.kind === "money");
   const rows: CommitmentRowFields[] = [];
 
@@ -142,6 +128,37 @@ export function readQuoteForm(form: HTMLElement): QuoteFormResult {
     return { error: { key: "quote-amount-required" } };
   }
 
+  return { rows };
+}
+
+export function readQuoteForm(form: HTMLElement): QuoteFormResult {
+  const scopeInput = form.querySelector<HTMLInputElement>(".quote-scope-input");
+  const scope = scopeInput?.value.trim() ?? "";
+  if (!scope) {
+    return { error: { key: "quote-scope-required" } };
+  }
+
+  const currencyInput = form.querySelector<HTMLInputElement>(".quote-currency-input");
+  const currency = (currencyInput?.value.trim() || "INR").toUpperCase();
+  if (!currency) {
+    return { error: { key: "quote-currency-required" } };
+  }
+  if (!CURRENCY_CODES.has(currency)) {
+    return { error: { key: "quote-currency-unknown", args: { currency } } };
+  }
+
+  const timingSelect = form.querySelector<HTMLSelectElement>(".quote-timing-select");
+  const timing = (timingSelect?.value || "after-work") as "before-work" | "after-work";
+
+  const rawRowsRes = readRawRows(form, currency);
+  if ("error" in rawRowsRes) return rawRowsRes;
+
+  const validRowsRes = validateCommitmentRows(rawRowsRes.rawRows, scope, form);
+  if ("error" in validRowsRes) return validRowsRes;
+
+  const cancInput = form.querySelector<HTMLInputElement>(".quote-canc-input");
+  const refInput = form.querySelector<HTMLInputElement>(".quote-ref-input");
+  const dispInput = form.querySelector<HTMLInputElement>(".quote-disp-input");
   const langSelect = form.querySelector<HTMLSelectElement>(".quote-text-lang");
   const lang = langSelect?.value || currentLanguage();
 
@@ -153,7 +170,7 @@ export function readQuoteForm(form: HTMLElement): QuoteFormResult {
       cancellation: cancInput?.value,
       refund: refInput?.value,
       dispute: dispInput?.value,
-      rows,
+      rows: validRowsRes.rows,
     },
     lang,
   );
@@ -316,10 +333,8 @@ async function populateFromListingAndDefaults(
   let listingPayload: ListingLike | null = null;
   if (listingId) {
     try {
-      const getRes = await call<{ listing?: ListingLike; envelope?: string }>("listing.get", { listing_id: listingId });
-      if (getRes && "listing" in getRes && getRes.listing) {
-        listingPayload = getRes.listing;
-      } else if (getRes?.envelope) {
+      const getRes = await call<{ envelope?: string }>("listing.get", { listing_id: listingId });
+      if (getRes?.envelope) {
         const verifyRes = await call<{ verified: boolean; payload?: Record<string, unknown> }>("listing.verify", {
           envelope: getRes.envelope,
         });
@@ -390,55 +405,11 @@ async function populateFromListingAndDefaults(
   elements.onRowChange();
 }
 
-export function openQuoteForm(
-  anchor: HTMLElement,
-  reqCard: { record_id?: string; card_type?: string; data?: Record<string, unknown> },
-  convId: string,
-  refresh: () => Promise<void>,
-  preFill?: { terms?: Record<string, unknown> },
-  myDid?: string,
-): Promise<void> {
-  const existing = anchor.querySelector(".quote-form");
-  if (existing) {
-    existing.remove();
-    return Promise.resolve();
-  }
-
-  if (!preFill && reqCard.data?.terms) {
-    preFill = { terms: reqCard.data.terms as Record<string, unknown> };
-  }
-
-  const form = document.createElement("div");
-  form.className = "quote-form";
-
-  const builtIn = {
-    authorDid: myDid || "",
-    cancellation: t("quote-default-cancellation"),
-    refund: t("quote-default-refund"),
-    dispute: t("quote-default-dispute"),
-  };
-
-  const initialValues = fillQuoteForm(null, null, builtIn);
-  const quoteLang = textLangSelect("quote-text-lang", currentLanguage());
-
-  const scopeInput = document.createElement("input");
-  scopeInput.placeholder = t("quote-scope-placeholder");
-  scopeInput.className = "quote-scope-input";
-  if (preFill?.terms?.scope) {
-    scopeInput.value =
-      typeof preFill.terms.scope === "object" && preFill.terms.scope !== null && "text" in preFill.terms.scope
-        ? String((preFill.terms.scope as { text: unknown }).text ?? "")
-        : String(preFill.terms.scope);
-  }
-
-  const rowsContainer = document.createElement("div");
-  rowsContainer.className = "quote-rows-container";
-
-  const rowHandles: RowHandles[] = [];
-  formRowHandles.set(form, rowHandles);
-
-  const currency = initialValues.currency;
-
+function setupTotalsController(
+  form: HTMLElement,
+  rowHandles: RowHandles[],
+  currency: string,
+) {
   const totalsBlock = document.createElement("div");
   totalsBlock.className = "quote-totals-block";
   const giveP = document.createElement("p");
@@ -480,11 +451,19 @@ export function openQuoteForm(
     updateTotals();
   };
 
-  const addRowBtn = document.createElement("button");
-  addRowBtn.type = "button";
-  addRowBtn.className = "button quote-add-row-button deal-add-line";
-  addRowBtn.textContent = t("deal-add-line");
+  return { totalsBlock, onRowChange, updateTotals };
+}
 
+function setupRowList(
+  form: HTMLElement,
+  rowsContainer: HTMLElement,
+  rowHandles: RowHandles[],
+  currency: string,
+  onRowChange: () => void,
+  addRowBtn: HTMLButtonElement,
+  preFill?: { terms?: Record<string, unknown> },
+  initialValues?: FormValues,
+) {
   const renderRow = (initialData: Partial<CommitmentRowFields>, isFirstAuthor: boolean, isFirstMoney: boolean) => {
     const idx = rowHandles.length;
     const handle = createCommitmentRow(
@@ -559,11 +538,29 @@ export function openQuoteForm(
     }
   } else {
     renderRow({ giver: "quote-author", kind: "service" }, true, false);
-    renderRow({ giver: "counterparty", kind: "money", payee: initialValues.payee }, false, true);
+    renderRow({ giver: "counterparty", kind: "money", payee: initialValues?.payee }, false, true);
   }
+}
 
-  const { moreTerms, cancInput, refInput, dispInput, hoursInput } = buildMoreTermsSection(initialValues, quoteLang);
+function buildScopeInput(preFill?: { terms?: Record<string, unknown> }): HTMLInputElement {
+  const scopeInput = document.createElement("input");
+  scopeInput.placeholder = t("quote-scope-placeholder");
+  scopeInput.className = "quote-scope-input";
+  if (preFill?.terms?.scope) {
+    scopeInput.value =
+      typeof preFill.terms.scope === "object" && preFill.terms.scope !== null && "text" in preFill.terms.scope
+        ? String((preFill.terms.scope as { text: unknown }).text ?? "")
+        : String(preFill.terms.scope);
+  }
+  return scopeInput;
+}
 
+function buildFormActions(
+  form: HTMLElement,
+  reqCard: { record_id?: string; card_type?: string; data?: Record<string, unknown> },
+  hoursInput: HTMLInputElement,
+  refresh: () => Promise<void>,
+) {
   const submitBtn = text("button", t("quote-send-button"), "button submit-quote-button") as HTMLButtonElement;
   const cancelBtn = text("button", t("common-cancel"), "button cancel-quote-button") as HTMLButtonElement;
   const errP = text("p", "", "quote-form-error");
@@ -580,6 +577,58 @@ export function openQuoteForm(
 
   submitBtn.onclick = () =>
     submitQuote(form, reqCard, hoursInput, submitBtn, errP, detachSizeLine, refresh);
+
+  return { submitBtn, cancelBtn, errP };
+}
+
+export function openQuoteForm(
+  anchor: HTMLElement,
+  reqCard: { record_id?: string; card_type?: string; data?: Record<string, unknown> },
+  convId: string,
+  refresh: () => Promise<void>,
+  preFill?: { terms?: Record<string, unknown> },
+  myDid?: string,
+): Promise<void> {
+  const existing = anchor.querySelector(".quote-form");
+  if (existing) {
+    existing.remove();
+    return Promise.resolve();
+  }
+
+  if (!preFill && reqCard.data?.terms) {
+    preFill = { terms: reqCard.data.terms as Record<string, unknown> };
+  }
+
+  const form = document.createElement("div");
+  form.className = "quote-form";
+
+  const builtIn = {
+    authorDid: myDid || "",
+    cancellation: t("quote-default-cancellation"),
+    refund: t("quote-default-refund"),
+    dispute: t("quote-default-dispute"),
+  };
+
+  const initialValues = fillQuoteForm(null, null, builtIn);
+  const quoteLang = textLangSelect("quote-text-lang", currentLanguage());
+  const scopeInput = buildScopeInput(preFill);
+
+  const rowsContainer = document.createElement("div");
+  rowsContainer.className = "quote-rows-container";
+  const rowHandles: RowHandles[] = [];
+  formRowHandles.set(form, rowHandles);
+
+  const { totalsBlock, onRowChange, updateTotals } = setupTotalsController(form, rowHandles, initialValues.currency);
+
+  const addRowBtn = document.createElement("button");
+  addRowBtn.type = "button";
+  addRowBtn.className = "button quote-add-row-button deal-add-line";
+  addRowBtn.textContent = t("deal-add-line");
+
+  setupRowList(form, rowsContainer, rowHandles, initialValues.currency, onRowChange, addRowBtn, preFill, initialValues);
+
+  const { moreTerms, cancInput, refInput, dispInput, hoursInput } = buildMoreTermsSection(initialValues, quoteLang);
+  const { submitBtn, cancelBtn, errP } = buildFormActions(form, reqCard, hoursInput, refresh);
 
   form.append(
     field(t("quote-text-language"), quoteLang),
