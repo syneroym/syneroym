@@ -506,15 +506,18 @@ fn send_input_serializes_without_languages_when_empty() {
         body: "hello".to_string(),
         content_type: None,
         languages: Vec::new(),
+        forward_mode: None,
     };
     let val = serde_json::to_value(&input).unwrap();
     assert!(!val.as_object().unwrap().contains_key("languages"));
+    assert!(!val.as_object().unwrap().contains_key("forward_mode"));
 
     let input_with_lang = SendInput {
         conversation: "conv-1".to_string(),
         body: "hello".to_string(),
         content_type: None,
         languages: vec![LangTag::parse("hi").unwrap()],
+        forward_mode: None,
     };
     let val_with_lang = serde_json::to_value(&input_with_lang).unwrap();
     assert_eq!(val_with_lang["languages"], json!(["hi"]));

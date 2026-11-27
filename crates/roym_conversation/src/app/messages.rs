@@ -364,6 +364,7 @@ fn history_item_to_view(conversation: &str, item: HistoryItem) -> MessageView {
                 visible_seq: 0,
                 verified: true,
                 deleted_at_secs: None,
+                forward: None,
             }
         }
         HistoryItem::GroupName(ev) => {
@@ -387,6 +388,7 @@ fn history_item_to_view(conversation: &str, item: HistoryItem) -> MessageView {
                 visible_seq: 0,
                 verified: true,
                 deleted_at_secs: None,
+                forward: None,
             }
         }
     }

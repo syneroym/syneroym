@@ -33,11 +33,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use syneroym_app_host::{
     AppDataLayer, AppHost,
-    types::{
-        data_layer::{CollectionSchema, IndexDefinition, IndexType, RecordWriteValue},
-        signing::Principal,
-    },
+    types::data_layer::{CollectionSchema, IndexDefinition, IndexType, RecordWriteValue},
 };
+pub(crate) use syneroym_roym_core::signing::resolve_principal_and_owner;
 use syneroym_roym_core::{
     admit,
     card::{self, CARD_CONTENT_TYPE},
@@ -52,7 +50,6 @@ use syneroym_roym_core::{
     progress::{AgreementState, CancelReason, CommitmentProgress, FormedAs},
     record::Envelope,
     services,
-    signing::{self, CertificateError},
     transaction::{DealRole, EVENT_CARD, EVENT_PROGRESS, ReceiptHalf},
 };
 
@@ -322,39 +319,6 @@ pub async fn invoke<H: AppHost>(host: &H, req: Request) -> Response {
         return resp;
     }
     Response::method_not_found(&req.method)
-}
-
-pub(crate) async fn resolve_principal_and_owner<H: AppHost>(
-    host: &H,
-    now: u64,
-) -> Result<(Principal, String), Response> {
-    let owner = match signing::owner_did(host).await {
-        Ok(o) => o,
-        Err(CertificateError::NoOwner) => {
-            return Err(Response::invalid_params("this installation has no recorded owner")
-                .with_data(json!({"code": "signing-no-owner"})));
-        }
-        Err(e) => return Err(Response::internal_error(e.to_string())),
-    };
-    let (principal, _master) = match signing::person_principal(host, now).await {
-        Ok(res) => res,
-        Err(CertificateError::NotEnrolled) => {
-            return Err(Response::invalid_params("signing-not-enrolled")
-                .with_data(json!({"code": "signing-not-enrolled"})));
-        }
-        Err(CertificateError::Expired(t)) => {
-            return Err(Response::invalid_params(format!("signing-certificate-expired at {t}"))
-                .with_data(json!({"code": "signing-certificate-expired"})));
-        }
-        Err(CertificateError::Stale { installed_for, current }) => {
-            return Err(Response::invalid_params(format!(
-                "signing-certificate-stale: {installed_for} vs {current}"
-            ))
-            .with_data(json!({"code": "signing-certificate-stale"})));
-        }
-        Err(e) => return Err(Response::internal_error(e.to_string())),
-    };
-    Ok((principal, owner))
 }
 
 async fn ensure_coll<H: AppHost>(
@@ -647,6 +611,7 @@ pub(crate) async fn send_card_and_file<H: AppHost>(
             body,
             content_type: Some(CARD_CONTENT_TYPE.to_string()),
             languages: Vec::new(),
+            forward_mode: None,
         },
     )
     .await;

@@ -22,6 +22,7 @@ fn make_test_row(id: &str, ts: i64, author: &str) -> MessageView {
         visible_seq: 1,
         verified: true,
         deleted_at_secs: None,
+        forward: None,
     }
 }
 

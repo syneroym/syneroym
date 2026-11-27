@@ -158,6 +158,9 @@ pub struct MessageView {
     pub deleted_at_secs: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub body: Option<String>,
+    /// Set only for a chat body. For such a body, `body` is the inner text.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub forward: Option<crate::chat::ForwardView>,
 }
 
 impl From<&Message> for MessageView {
@@ -183,6 +186,7 @@ impl From<&Message> for MessageView {
             verified: m.verified,
             deleted_at_secs,
             body,
+            forward: None,
         }
     }
 }
@@ -192,6 +196,7 @@ impl MessageView {
     /// author are kept -- the row is the durable deletion record.
     pub fn tombstone(&mut self, now_secs: i64) {
         self.body = None;
+        self.forward = None;
         self.deleted_at_secs = Some(now_secs);
     }
 
@@ -263,6 +268,7 @@ mod tests {
             visible_seq: 1,
             verified: true,
             deleted_at_secs: None,
+            forward: None,
         }
     }
 

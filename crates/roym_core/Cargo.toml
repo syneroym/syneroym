@@ -17,6 +17,7 @@ syneroym-text-lang.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 serde_path_to_error.workspace = true
+sha2.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
