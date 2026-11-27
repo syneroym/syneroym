@@ -1325,3 +1325,548 @@ syneroym-roym-transaction --all-targets -- -D warnings`: clean.
 
 **Counts of round 3:** R11 verified fixed. No new findings. All 11
 findings are closed. **0 open.** No blocker or major.
+
+## Code review round 1 (part C6b) — Claude Opus 5.5, 2026-11-27
+
+This is the first code review of **part C6b** (the deal screens in the
+Hub): plan section 6.2 steps 1 to 8, "Hub changes (C6b)" in section 4,
+D-C6-9 to D-C6-15, and the C6b tests in section 7.6. PR #397 (draft),
+branch `feat/m08c-c6b-deal-screens` at `1433ecf1`, main checkout (not a
+worktree), `git pull` up to date. Part C6a is merged in `main` as
+`04a44689` (#396), so `git diff origin/main...HEAD` (60 files, 9 commits
+from `dccd6ca2` to `1433ecf1`) is all C6b. The code was written by Gemini
+3.8 Flash. Code review rounds 1 to 3 above are about C6a and are closed;
+I read them for earlier mistakes and did not check them again. There was
+no earlier C6b round, so there was no Fixed or Rejected item to check.
+New findings start at R12.
+
+**CI.** `gh pr checks 397` on `1433ecf1` ([run 45883494692](https://github.com/syneroym/syneroym/actions/runs/45883494692)):
+"Lints, licenses & checks", all six test shards and the CLA check
+passed. **Playwright E2E failed** (R12). The run on `c2330328` was
+cancelled. No CI run on this branch has passed Playwright.
+
+**Tests I ran:** the Hub Vitest suite once (`npm test` in
+`crates/roym_web/ui`): **68 files, 741 passed**, the same as the C6b row
+in status.md. Nothing else; I read the CI log for Playwright.
+
+### Checked and found correct
+
+- **No node code changes (focus point 1).** Every file outside
+  `crates/roym_web/ui` and `crates/substrate/tests/e2e` is a doc:
+  `docs/TERMINOLOGY.md`, `docs/demo/demo.md`,
+  `docs/roym-integrated-experience-spec.md`,
+  `docs/planning/traceability-matrix.md`,
+  `docs/planning/deferred-backlog.md`, both change docs, and M08C
+  `status.md` and `task.md`. All are close-out docs that plan section 9
+  names. No Rust, WIT, record, card type or method changes. No wire
+  change.
+- **The renamed messages (focus point 2).** No message id is removed in
+  `en.ftl` or `hi.ftl`, so no code uses a removed id. Both files have the
+  same ids (63 new ids each). Every id has the same placeholders in both
+  files. 39 English texts change, and the same 39 Hindi texts change.
+  Each change is only "quote" to "offer" or "accept" to "agree" in text a
+  person reads, as D-C6-15 asks: the ten ids it names plus the lower-case
+  lines it lists. Ids stay. `listing-model-quote-only` shows "offer-only"
+  for the wire value `quote-only`, which stays. The PR lists the 39
+  changed ids. I did not judge the Hindi wording.
+- **The listing defaults (focus point 2).** The listing editor's currency
+  default is `INR` (`listings.ts:438`, Q8 (a)). The as-listed section
+  fills its empty deal texts from `deal.defaults-get` (point 17), with
+  two problems in R21.
+- **Money in the totals (focus point 3).** `dealTotals` sums
+  `declared_value_minor` as `BigInt` over every commitment, whatever its
+  kind, with `difference = receive - give` (D-C6-10). The quote card, the
+  form and the panel show "You give" and "You receive" from the reader's
+  role, and the difference line only when it is not zero, with the right
+  sign word for each side. `formatMinor` takes a `bigint`, and
+  `minorToDecimal` keeps every digit; there is no rounding in display.
+  The float problems are only in the form's input path (R16).
+- **No unescaped sink (focus point 4).** The diff adds no `innerHTML`,
+  `outerHTML`, `insertAdjacentHTML` or `document.write`. The settlement
+  note, descriptions, counterparty names, the change summary and the
+  statement rows are all set with `textContent` or `text()`. The one
+  `href` is the `blob:` URL of `download.ts`.
+- **The CSV writer (focus point 4).** `statement_csv.ts` has the plan's
+  13 columns in order. RFC 4180 quoting doubles `"` and quotes a field
+  with a comma, quote, CR or LF. Lines end with CRLF. The formula guard
+  (D-C6-14) puts `'` before a cell that starts with `=`, `+`, `-`, `@`,
+  tab or CR, on every text column including `counterparty_name`; the
+  decimal value is not guarded, which is right. Dates carry the local
+  offset. `declared_value` uses `minorToDecimal`.
+- **Statement screen.** `statement.export` with `[from, to)` at local
+  midnight, then `contacts.list` for names (Q6 (a)); the JSON download is
+  the service object with `counterparty_name` filled; the EEP line covers
+  all three forms. The backup screen now uses the shared `download`
+  helper.
+- **Close list (AG-46).** `closeList` leaves out final commitments and
+  lists a commitment whose window starts after now unchecked with "Not
+  started yet". The panel sends `agreement.close {agreement, as,
+  commitments}`, which matches `AgreementCloseInput`. `payment.acknowledge`
+  and `fulfilment.sign` get `{agreement, commitment_id,
+  settlement_note?}`, which match their inputs.
+- **Open work.** `.settle-dialog` and `.close-list` are in `OPEN_WORK`
+  (`messages.ts`), as D-C6-13 asks.
+- **Quote form shape (D-C6-9).** The form moved to `quote_form/`;
+  `messages.ts` is 1,030 lines (was 1,226). It keeps the classes that
+  `sendQuote` uses. Rows: either side, service, goods or money, 1 to 16
+  rows. `buildDealTerms` builds one commitment per row in row order, and
+  the `after` lists follow the timing choice as D-C6-9 says. "More terms"
+  starts closed. The size line is attached.
+- **Ports (focus point 6).** `roym-deal.spec.ts` reads its ports with
+  `readE2EPorts()` in `beforeAll`; story 50 uses `readDemoEnv()`. There is
+  no port literal.
+- **Change doc status (focus point 7).** Both change docs stay
+  `status: draft`. That is right: each one covers later work (the agreements
+  doc C7 and C8 and its open tasks; the value-exchange doc M08D to M08H).
+  Both `demo:` lists name story 50, which exists. The C6 task box in the
+  agreements doc is checked.
+- **Vitest count (focus point 7).** 68 files, 741 passed, as status.md
+  says.
+
+**Counts:** 1 blocker, 5 major, 7 minor. **13 open.**
+
+### Findings
+
+#### R12 — Playwright E2E fails in CI; two deal cases never pass and the demo stories never run (blocker)
+
+*Where:* `crates/substrate/tests/e2e/tests/roym-deal.spec.ts:23` to `:80`
+(D1) and `:239` to `:281` (D3); `crates/substrate/tests/e2e/playwright.config.ts:19`
+(`globalTimeout: 300_000`); `crates/substrate/tests/e2e/demo/50-roym-deal.spec.ts:352`,
+`:358`; status.md C6b row; PR description "How it was tested".
+
+*Problem:* In CI run 45883494692, D1 fails on all three tries
+(`.accept-quote-button` not found, 60 s each) and D3 fails on all three
+tries (`.quote-suggest-changes-button` not found). The cause is the test
+data. `renderCardActions` draws "Agree", "Decline" and "Suggest changes"
+only when `card.verified` is true and `card.data.counterparty_did` equals
+the viewer's DID (`messages.ts:843`, `:844`). Both test cards have no
+`verified` field, and both set `counterparty_did: 'did:key:author'` while
+the viewer is `did:key:viewer`. So the buttons can never appear; the
+cases have never passed anywhere. The three D1 tries use 3 of the 5
+minutes of `globalTimeout`, so the run stops with "38 did not run"
+(`roym-hub.spec.ts` case 26 onwards). `npm test` runs `playwright test
+&& … multihop … && npm run test:demo`, so the multihop specs and **all
+demo stories, story 50 included, never ran in CI**. status.md and the PR
+say "`roym-deal.spec.ts` 5 passed" and that story 50 "passes
+end-to-end"; CI does not show either.
+
+Story 50 Case 3 also looks broken: `openAgreementPanel(page, runTag)`
+looks for `.agreement-panel-<runTag>` (the panel class uses the quote
+record id, `agreement_panel.ts:74`) and then for a panel whose text has
+`runTag`. The panel shows the commitment descriptions ("One lesson, one
+hour", "One sack of wheat", the money), values and states, not the
+scope, so no panel has `runTag` in its text and the step should time out
+after 15 s. CI did not run it, so this is a reading, not a proof.
+
+*Failure case:* The PR is merged on the status.md claim. Main's
+Playwright job is red, and nobody knows whether story 50 works.
+
+*Fix:* In D1 and D3, set `verified: true` and `counterparty_did:
+'did:key:viewer'` on the card row (or pass the matching DID). In
+`openAgreementPanel`, find the panel under the receipt card that has the
+tag (for example `threadMessage(page, runTag)` then the next
+`.agreement-panel`), or take the agreement id from `fetchAgreement`. Run
+`mise run test:e2e` and `mise run demo` until both pass, and copy the
+counts from the run into status.md and the PR.
+
+*Status:* Open.
+
+#### R13 — The quote form never fills from the listing, and the payee never falls back to the author (major)
+
+*Where:* `crates/roym_web/ui/src/quote_form/form.ts:146` (`authorDid: ""`),
+`:152` (`fillQuoteForm(null, null, builtIn)`), `:451` to `:468`;
+`crates/roym_web/ui/src/quote_form/defaults.ts:70`.
+
+*Problem:* AG-48 and D-C6-9 say the form fills from the listing first
+(`listing.get` then `listing.verify`: currency, price, timing, location,
+payee and the deal texts), then from the saved deal terms, then from
+built-in text, and the payee falls back to the author's own DID. The
+pure function `fillQuoteForm` does this, and its unit test passes. But
+`openQuoteForm` calls it with `null` for the listing and the saved terms,
+and with an empty author DID. Nothing in the form reads the enquiry's
+`listing_id` or calls `listing.get`. The saved terms come later, from an
+async `deal.defaults-get`, which writes the three texts and the hours
+**without checking whether the person has already typed in them**. So:
+an offer to an enquiry from a listing starts with `INR`, no price, no
+payee and the built-in texts; the payee field is empty, so "Send offer"
+fails with "payee required" until the author types their own DID. The
+plan's "How this is shown" (first bullet) and story 50 Case 3 (it types
+the currency, the amount and `bob.did` by hand) show this. D4 does not
+catch it: it passes `preFill` straight into `openQuoteForm` and never
+opens the form from a listing (R17). The agreements change doc ticks C6
+"the quote form defaults" as done.
+
+*Failure case:* Bob opens Alice's enquiry for his ₹500 lesson listing,
+types the scope, and taps "Send offer". The form says the payee is
+required. He types his DID, sends, and the offer has the built-in
+cancellation text, not his listing's.
+
+*Fix:* In `openQuoteForm`, when the enquiry card has a `listing_id`,
+call `listing.get` and `listing.verify` (as `as_listed_tap.ts` does),
+call `deal.defaults-get`, and pass both results and the signed-in DID
+(`myDid`, which `renderCardActions` already has) to `fillQuoteForm`
+before the rows are drawn. Fill a field only while it is empty. Change
+D4 to open the form from an enquiry card with a `listing_id` and mocked
+`listing.get`/`listing.verify`, and assert the price, the payee and the
+listing's texts.
+
+*Status:* Open.
+
+#### R14 — On the counterparty's node, a commitment the author settled shows "Waiting" and no "Received" button; a half the counterparty just signed shows no waiting state (major)
+
+*Where:* `crates/roym_web/ui/src/deals/agreement_panel.ts:131` to `:142`;
+tests `crates/roym_web/ui/src/deals/agreement_panel.test.ts:140`,
+`:168`.
+
+*Problem:* The panel shows "Sent. Waiting for the other person's node."
+when the viewer is the counterparty and `p.halves` is not empty. But
+`halves` is filled only by the quote author's node, from both parties'
+halves (`apply_half`, `roym_core/src/progress.rs:330`), and reaches the
+counterparty only inside the author's snapshot. So the check is wrong in
+both directions:
+
+- Bob (author) taps "I delivered" on the lesson. His snapshot has
+  `state: claimed, halves: [bob's half]`. When Alice's node files it,
+  her panel shows "Waiting" for the lesson and **no "Received" button**.
+  D-C6-13 says "A receiver can still settle a claimed commitment." Alice
+  can only use "I received everything".
+- Alice taps "I paid". Her node files her half but does not move its
+  own row (plan point 5), so `halves` stays empty and she sees "I paid"
+  again, not the waiting text. The state that D-C6-13 asks for is never
+  shown.
+
+The two tests pass because they use rows the service never returns: a
+`claimed` commitment with no `halves` (`:140`) and a `promised` one with
+a half (`:168`). Story 50 Case 3 does not tap "Received", so it does not
+show the problem.
+
+*Failure case:* As above: on Alice's Hub, after Bob delivers, she cannot
+confirm that one lesson.
+
+*Fix:* Decide "waiting" from this node's own halves, not from
+`halves`. For each open commitment on the counterparty's node, read this
+node's half for its role (`fulfilment.get` or `payment.get` with
+`{agreement, commitment_id}`, which return the stored halves), and show
+"Waiting" only when this node holds its own half and its `record_id` is
+not yet in `p.halves`. Keep the "Received" button when only the other
+party's half is in `halves`. Change the two tests to service-shaped rows:
+`claimed` with the giver's half in `halves` (receiver still gets
+"Received"), and `promised` with no `halves` plus a mocked own half
+(waiting shown).
+
+*Status:* Open.
+
+#### R15 — "Send a new version" sends the quote's own record id as the enquiry, so `quote.set` refuses it (major)
+
+*Where:* `crates/roym_web/ui/src/quote_form/form.ts:414` to `:416`;
+`crates/roym_web/ui/src/screens/messages.ts:928` (the button).
+
+*Problem:* For a quote card, the form reads
+`data.request_record_id` and, when it is missing, falls back to the
+card's own `record_id`. A quote card's data is the plain view of
+`QuotePayload` (`roym_core/src/transaction.rs:164`): `quote_id`,
+`conversation`, `sequence`, `answers: {kind: "enquiry", record_id}`,
+`counterparty_did`, `terms`. It has no `request_record_id` (that field is
+on `quote.get`'s pointer output, `quote_ops.rs:104`). So the call is
+`quote.set {enquiry_record_id: <quote record id>, quote_id}`, and
+`load_verified_enquiry` answers "no such enquiry"
+(`quote_ops.rs:174`, `:299`). The only test
+(`suggest_changes.test.ts:82`) checks that the form opens, not what it
+sends.
+
+*Failure case:* Alice taps "Suggest changes" and asks for a lower price.
+Bob taps "Send a new version", changes the amount and taps "Send offer".
+The form shows "Offer failed: no such enquiry". D-C6-12's answer path
+does not work.
+
+*Fix:* Read the enquiry id from `data.answers.record_id` when
+`data.answers.kind === "enquiry"`. Add a Vitest case that opens the form
+from a quote card, submits, and asserts `quote.set` gets the enquiry's
+record id and the `quote_id`.
+
+*Status:* Open.
+
+#### R16 — The form's money input uses float maths and silent fallbacks (major)
+
+*Where:* `crates/roym_web/ui/src/quote_form/rows.ts:264` to `:270`;
+`crates/roym_web/ui/src/quote_form/form.ts:217`, `:86` to `:97`.
+
+*Problem:* Focus point 3 asks for integer minor units and no float
+maths.
+
+- `rows.ts:268`: when `toMinorUnits` throws (bad input), the code catches
+  it and uses `Math.round(Number.parseFloat(valStr) * 10 ** exp) || 0`.
+  So "12.345" becomes 1235 (rounded), "-5" becomes -500, "1e3" becomes
+  100000, and "abc" becomes 0. The "money-input-invalid" message that
+  `toMinorUnits` builds is lost. The person sees a total that is not what
+  they typed, with no error.
+- `form.ts:217`: the service row's value follows the money row through
+  `(minor / 10 ** exp).toFixed(exp)`, a float. `minorToDecimal` exists
+  for this.
+- `form.ts:86`: only money rows are checked for a value above 0. A
+  service or goods row with an empty or 0 value is sent, although D-C6-9
+  says the value is required for every commitment. The error key
+  `quote-value-required` exists in `formatQuoteError` (`:33`) but nothing
+  returns it.
+
+*Failure case:* Bob types "12.345" as the wheat's value. The card says
+₹12.35, and the signed terms say 1235. Or he types "abc": the line is
+sent at ₹0 and the totals show a difference he did not intend.
+
+*Fix:* Remove the `parseFloat` fallback. Let `read()` return the
+`MoneyInputError` text, and show it in the form error line. Use
+`minorToDecimal` in `syncAmountToService`. Return
+`{ key: "quote-value-required" }` for a non-money row whose value is
+empty, and add Vitest cases for each of the three inputs above.
+
+*Status:* Open.
+
+#### R17 — The Playwright deal cases and story 50 Case 3 prove less than their names (major)
+
+*Where:* `crates/substrate/tests/e2e/tests/roym-deal.spec.ts` (all five
+cases); `crates/roym_web/ui/src/cards/templates/quote.ts:108`;
+`crates/substrate/tests/e2e/demo/50-roym-deal.spec.ts:339`, `:350` to
+`:385`.
+
+*Problem:*
+
+- **No node and no person.** Every D case renders a card or a panel
+  through `window.RoymRegistry`, `window.RoymMessages` or the new
+  `window.RoymDeals`, with hand-written data, and answers every RPC with
+  `page.route`. No case signs in (`loginWithDelegatedKey` is imported and
+  never used) or uses a real node. So D1 to D5 do not test the Hub's
+  real data path, the shapes `agreement.get` or `statement.export`
+  return, or the thread wiring. R14 and R15 pass through because of this.
+- **D3** puts a ready-made `summary` into the card's data. The quote
+  template draws `data.summary` (`quote.ts:108`), a branch that only this
+  test uses: the real summary is drawn in `messages.ts:602` from
+  `quote.history`. So D3 tests neither `quote.history` nor
+  `versionSummary`. The "three-version quote" has one commitment and no
+  versions.
+- **D4** passes `preFill` into `openQuoteForm` and does not open the form
+  from a listing (R13). It asserts only the scope and `INR`.
+- **D5** checks only the two file names, not one cell of the CSV or the
+  JSON.
+- **Story 50 Case 3** (plan Q10 (a) and "How this is shown"): the plan's
+  deal is "You give ₹500. You receive ₹600. You receive ₹100 more", and
+  then Alice taps "Received", "I gave everything" and confirms the list,
+  each line ends, the agreement shows "closed", and the CSV has one line
+  per commitment. The story uses values that give equal totals (₹300 and
+  ₹300), so the difference line never shows. Bob taps "I delivered",
+  Alice taps "I delivered" and "I paid", and then nobody taps "Received"
+  or a closing action. So no commitment reaches an end, the agreement is
+  not closed, and the statement has no settled row. The story only checks
+  that two files with the right names download.
+
+*Failure case:* The Hub sends a wrong shape to `agreement.close`, or the
+statement CSV loses a column, or the counterparty cannot settle (R14):
+D1 to D5 and story 50 still pass.
+
+*Fix:* Move D1 to D3 to real nodes with the shared harness, as
+`roym-hub.spec.ts` cases that use the gateway do: sign in, send a real
+offer with `sendQuote`/`addCommitment`, agree, settle, and read the
+panel. Remove the `data.summary` branch from `quote.ts` and make D3 send
+three versions so the real summary draws. Make D4 open the form from a
+listing (R13). In D5, read the downloaded CSV and assert the header and
+one row. In story 50 Case 3, use the plan's values (lesson ₹600, wheat
+₹400, money ₹100, so Alice receives ₹100 more), assert the difference
+line, let Alice tap "Received" on the lesson and Bob "I received
+everything", assert "closed" on both panels, and assert one CSV line per
+commitment. Record in the agreements change doc's Deviations why any D
+case stays mocked.
+
+*Status:* Open.
+
+#### R18 — "When" takes raw Unix seconds (minor)
+
+*Where:* `crates/roym_web/ui/src/quote_form/rows.ts:142` to `:152`,
+`:284` to `:290`; `en.ftl:955` ("From (secs)", "To (secs)").
+
+*Problem:* The window fields are `type="number"` inputs for Unix
+seconds. An end user cannot type "next week" as seconds since 1970. The
+only way to build the "Not started yet" case of AG-46 in the Hub is to
+compute such a number. The statement screen already uses local-day date
+inputs (D-C6-14).
+
+*Failure case:* Bob wants the lesson next Tuesday. He types "2" in
+"From (secs)", and the window starts in 1970.
+
+*Fix:* Use `datetime-local` (or `date`) inputs and turn local time into
+seconds, as `statement.ts` does for days. Change the placeholders to the
+plan's "When" words.
+
+*Status:* Open.
+
+#### R19 — The change summary does not say which side changed or what changed (minor)
+
+*Where:* `crates/roym_web/ui/src/deals/version_summary.ts`
+(`renderVersionSummary`); `crates/roym_web/ui/src/screens/messages.ts:602`
+to `:622`.
+
+*Problem:* D-C6-11 and the plan's story say "What changed since the
+first offer" **for each side**, with the totals before and after. The
+drawn summary has one heading and then lines "Added: X", "Removed: X",
+"Changed: X" with no "You give" / "They give" label and no totals.
+"Changed" gives only the new description, not the old and new value. A
+money commitment's description is built as `"<currency> <amount>"`
+(`quote_terms.ts`), so a changed price never shows as "Changed": it
+shows as one money line removed and one added. `quote.history` errors
+are dropped (`// ignore`), and the call runs again on every thread
+redraw.
+
+*Failure case:* Bob lowers his price from ₹500 to ₹400 in version 2.
+Alice reads "Added: INR 400.00" and "Removed: INR 500.00", with no word
+on whose side it is.
+
+*Fix:* Draw a heading per side ("You give" / "They give") with "before →
+after" totals; for `changed`, show the value (and other changed fields)
+before and after. Match money rows by giver, kind and payee, not by the
+built description. Show a short error line when `quote.history` fails.
+
+*Status:* Open.
+
+#### R20 — The agreement panel misses parts of D-C6-13 and hides load errors (minor)
+
+*Where:* `crates/roym_web/ui/src/deals/agreement_panel.ts:54` to `:65`,
+`:190` to `:217`, `:401` to `:409`.
+
+*Problem:* D-C6-13 asks for the description "in the reader's best
+language (`bestVersion`)"; the panel shows the original `text` only. It
+asks that "A sent half shows its send state and a retry, as other cards
+do"; the panel ignores the `state` in `HalfRecordedOutput` and has no
+retry. When `agreement.get` fails, the panel stays empty with no message
+(`// ignore get errors`); plan section 7.11 says every Hub action shows
+its failure and a retry.
+
+*Failure case:* Alice's node cannot reach Bob's when she taps "I paid".
+The dialog closes and nothing says the half was not sent.
+
+*Fix:* Use `bestVersion` for descriptions. After a settle, show the send
+state from the result, with the retry other cards use. Show an error line
+and a "Try again" button when `agreement.get` fails.
+
+*Status:* Open.
+
+#### R21 — The listing editor's fill from saved terms changes a listing's validity and can break its save (minor)
+
+*Where:* `crates/roym_web/ui/src/listings/as_listed_section.ts:71` to `:95`.
+
+*Problem:* The fill replaces the listing's "valid for (hours)" when it
+is empty **or "1"**, so a listing that the owner set to 1 hour on
+purpose is changed. The saved `quote_valid_secs` may be up to 90 days
+(D-C6-16), but a listing allows 1 to 168 hours
+(`listing-error-quote-valid-hours`), so a saved validity of, for
+example, 10 days fills 240 and the listing save is refused. When the
+editor opens an existing listing whose deal text is empty on purpose,
+the fill writes the saved text into it, and the next save changes the
+signed listing.
+
+*Failure case:* Bob's saved terms have a 7-day validity. He creates a
+listing; the hours field shows 168 (fine). With a 10-day validity it
+shows 240, and "Save" fails with "Offer validity must be 1 to 168 hours."
+
+*Fix:* Fill only new listings (not an edit of an existing one), only
+empty fields (drop the `=== "1"` case), and clamp the hours to the
+listing's 1 to 168 range.
+
+*Status:* Open.
+
+#### R22 — The statement's "To" day is left out without telling the person (minor)
+
+*Where:* `crates/roym_web/ui/src/screens/statement.ts:218` to `:228`;
+`en.ftl` `statement-to-label`.
+
+*Problem:* `to_secs` is local midnight at the **start** of the "To" day,
+so `[from, to)` leaves that whole day out. That follows D-C6-14, but the
+label only says "To:". A person who picks 1 to 30 November expects 30
+November to be in. "This month" works because it sets "To" to the first
+of next month, which the person then sees in the field and may "fix".
+
+*Failure case:* Alice picks 1 Nov to 30 Nov. A lesson settled on 30 Nov
+is not in the CSV.
+
+*Fix:* Either add one day to the "To" date before the call (the "To"
+day is in), or change the label to "Up to (not included):". Add a test
+for a row on the "To" day.
+
+*Status:* Open.
+
+#### R23 — Close-out docs over-claim and miss deviations (minor)
+
+*Where:* M08C `status.md` C6b row; `docs/planning/changes/roym-agreements/change.md`
+("Rules and differences in C6b"); `docs/planning/changes/roym-value-exchange/change.md:772`;
+`docs/demo/demo.md` R4 case 3; `docs/roym-integrated-experience-spec.md`
+C17 to C20.
+
+*Problem:*
+
+- status.md and the PR say Playwright "5 passed" and story 50 passes
+  (R12). There is no `mise run verify` result with no `--skip`, which
+  plan step 8 and AGENTS.md ask for.
+- The agreements doc's C6b block has no deviation for what differs from
+  the plan: the listing fill (R13), D1 to D5 run on mocked RPC, the new
+  `window.RoymDeals` test hook in `main.ts`, the story 50 values and
+  steps (R17), and the missing "This will sign:" message of plan 7.10.
+- The value-exchange doc's C6b line (`:772`) is a summary of what was
+  built, not a deviation.
+- `demo.md` case 3 and the experience spec's C17 ("Each party can settle
+  their given and received commitments through the agreement panel")
+  claim more than works today (R14, R15). C17 also drops the payment
+  request step, which still exists outside the Hub.
+
+*Failure case:* A reader of the living docs or of status.md believes the
+counterparty can settle any line in the Hub, and that CI proves it.
+
+*Fix:* After R12 to R17, rerun `mise run verify` with no `--skip` and
+copy its counts. Add the deviations above to the agreements doc (or fix
+the code so they are not needed). Make the value-exchange line a real
+deviation or remove it. Keep the payment request step in C17 with
+"(not in the Hub)", and make demo.md say only what story 50 shows.
+
+*Status:* Open.
+
+#### R24 — Rule and duplication points in the new Hub code (minor)
+
+*Where:* `crates/roym_web/ui/src/quote_form/form.ts:125` (`openQuoteForm`,
+about 345 lines), `:171` and `:63` (`_rowHandles`);
+`crates/roym_web/ui/src/deals/agreement_panel.ts:67`
+(`renderAgreementPanelView`, about 325 lines), `:236` to `:258`;
+`crates/roym_web/ui/src/screens/statement.ts:215` (the "Show" handler,
+about 180 lines); `crates/roym_web/ui/src/cards/templates/quote.ts:270`;
+`crates/roym_web/ui/src/deals/close_list.ts:1`, `:38`;
+`crates/roym_web/ui/src/screens/thread_redraw.test.ts:5`;
+`crates/roym_web/ui/src/i18n/en.ftl` and `hi.ftl` section headers;
+`agreement_panel.ts` comment "Closing actions (AG-46)",
+`quote_form/defaults.ts` doc comment "(AG-48)",
+`agreement_panel.test.ts:198` ("AG-8");
+`crates/substrate/tests/e2e/tests/roym-deal.spec.ts:2`.
+
+*Problem:* AGENTS.md's 100-line function limit says "any function"; the
+three functions above are 180 to 345 lines. The totals block (give,
+receive, difference) is written out three times (quote card, form,
+panel). The form keeps its row handles on the DOM element through
+`as unknown as` casts. `CloseListItem` has two names for each of two
+fields (`notStarted`/`not_started`, `value`/`declared_value_minor`) and
+`CloseSide` has six spellings for two sides. `thread_redraw.test.ts`
+copies the open-work list instead of using `messages.ts`'s
+`OPEN_WORK`, so removing `.settle-dialog` there would not fail the test.
+Comments and a test name cite change-doc criterion ids (AG-8, AG-46,
+AG-48), and the `.ftl` headers cite "M08C C6b"; the comment rule allows
+ADR ids only. `loginWithDelegatedKey` is imported and not used. The PR
+says 62 new ids; there are 63.
+
+*Failure case:* A new field in the totals block is added in two of the
+three copies; the panel then shows different words from the card.
+
+*Fix:* One `renderTotals(totals, currency)` helper used by all three.
+Split the three long functions into named parts (rows, "More terms",
+submit; line, actions, closing; fetch, rows, open, totals, EEP). Keep the
+row handles in a closure or a `WeakMap`. One name per field and two
+`CloseSide` values. Export `OPEN_WORK` and use it in the test. Reword
+the comments and the test name without criterion ids, and drop the
+milestone from the `.ftl` headers. Remove the unused import.
+
+*Status:* Open.
+
+**Counts of round 1 (part C6b):** 13 findings, R12 to R24: 1 blocker
+(R12), 5 major (R13 to R17), 7 minor (R18 to R24). **13 open.**
