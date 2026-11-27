@@ -8,8 +8,7 @@ use serde_json::json;
 use syneroym_app_host::{AppConversation, AppHost, types::conversation::ConversationError};
 use syneroym_roym_core::{
     chat::{
-        CHAT_BODY_VERSION, ChatBody, ForwardMode, OriginCheck, ROYM_MESSAGE_CONTENT_TYPE,
-        check_origin, next_forward_count,
+        self, CHAT_BODY_VERSION, ChatBody, ForwardMode, OriginCheck, ROYM_MESSAGE_CONTENT_TYPE,
     },
     clock,
     envelope::Response,
@@ -47,7 +46,7 @@ pub(crate) async fn forward<H: AppHost>(host: &H, input: ForwardInput) -> Reply<
         return Err(refuse("not-forwardable", "the author did not allow forwarding"));
     }
     let now = clock::now_secs();
-    let check = check_origin(&body, &msg.languages, now);
+    let check = chat::check_origin(&body, &msg.languages, now);
     let OriginCheck::Checked { .. } = &check else {
         let reason = match check {
             OriginCheck::Failed { reason } => reason,
@@ -57,7 +56,7 @@ pub(crate) async fn forward<H: AppHost>(host: &H, input: ForwardInput) -> Reply<
     };
 
     let old = body.forward_count.unwrap_or(0);
-    let new_count = next_forward_count(old, msg.outgoing && old >= 1);
+    let new_count = chat::next_forward_count(old, msg.outgoing && old >= 1);
     let forwarded = ChatBody {
         chat_version: CHAT_BODY_VERSION,
         content_type: body.content_type,

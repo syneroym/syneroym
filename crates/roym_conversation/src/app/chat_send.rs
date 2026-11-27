@@ -7,8 +7,8 @@
 use syneroym_app_host::{AppHost, AppSigning};
 use syneroym_roym_core::{
     chat::{
-        CHAT_BODY_VERSION, ChatBody, ForwardMode, INNER_TEXT_CONTENT_TYPE, MessageOriginPayload,
-        ROYM_MESSAGE_CONTENT_TYPE, content_hash, origin_draft,
+        self, CHAT_BODY_VERSION, ChatBody, ForwardMode, INNER_TEXT_CONTENT_TYPE,
+        MessageOriginPayload, ROYM_MESSAGE_CONTENT_TYPE,
     },
     clock,
     envelope::Response,
@@ -29,11 +29,11 @@ async fn sign_origin<H: AppHost>(
     let payload = MessageOriginPayload {
         content_type: INNER_TEXT_CONTENT_TYPE.to_string(),
         languages: languages.to_vec(),
-        content_hash: content_hash(INNER_TEXT_CONTENT_TYPE, languages, text.as_bytes(), &[]),
+        content_hash: chat::content_hash(INNER_TEXT_CONTENT_TYPE, languages, text.as_bytes(), &[]),
     };
     let now = clock::now_secs();
     let (principal, _owner) = signing::resolve_principal_and_owner(host, now).await?;
-    AppSigning::sign_record(host, origin_draft(&payload), principal)
+    AppSigning::sign_record(host, chat::origin_draft(&payload), principal)
         .await
         .map_err(|e| Response::internal_error(e.to_string()))
 }

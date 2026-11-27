@@ -2,7 +2,7 @@
 
 use syneroym_app_host::AppHost;
 use syneroym_roym_core::{
-    chat::{ChatBody, ROYM_MESSAGE_CONTENT_TYPE, forward_view, unreadable_view},
+    chat::{self, ChatBody, ROYM_MESSAGE_CONTENT_TYPE},
     clock,
     conversation::{BodyEncoding, Direction, MessageView},
     signing,
@@ -26,7 +26,7 @@ pub(crate) async fn add_forward_views<H: AppHost>(host: &H, views: &mut [Message
             (Some(raw), BodyEncoding::Utf8) => raw.as_str(),
             _ => {
                 view.body = None;
-                view.forward = Some(unreadable_view("message body could not be read"));
+                view.forward = Some(chat::unreadable_view("message body could not be read"));
                 continue;
             }
         };
@@ -38,7 +38,7 @@ pub(crate) async fn add_forward_views<H: AppHost>(host: &H, views: &mut [Message
                     contacts.get(&view.author).cloned()
                 };
                 view.body = Some(body.text.clone());
-                view.forward = Some(forward_view(
+                view.forward = Some(chat::forward_view(
                     &body,
                     &view.languages,
                     sender.as_deref(),
@@ -48,7 +48,7 @@ pub(crate) async fn add_forward_views<H: AppHost>(host: &H, views: &mut [Message
             }
             Err(_) => {
                 view.body = None;
-                view.forward = Some(unreadable_view("message body could not be read"));
+                view.forward = Some(chat::unreadable_view("message body could not be read"));
             }
         }
     }
