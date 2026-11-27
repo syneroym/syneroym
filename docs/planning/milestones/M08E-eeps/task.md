@@ -13,7 +13,7 @@ Earnest effort promises (EEPs) between an issuer and one holder: issue, redempti
 ## Change docs
 
 - [roym-value-exchange](../../changes/roym-value-exchange/change.md): EEPs between two parties (`VX-13` to `VX-24`, `VX-49`, `VX-50`).
-- **To write first:** the obligations module change doc (exact EEP record, endorsement, refusal, demand, decline, swap; wire-reachable methods; the proof that a `stored` receipt covers a demand).
+- **To write first:** the obligations module change doc (exact EEP record and its version chain, with the hooks transfer needs; acknowledgement, demand, decline, split; wire-reachable methods; the proof that a `stored` receipt covers a demand). Endorsement, reissue request, refusal, bundles and swaps are added later by [M08H](../M08H-eep-transfer/task.md) slice H0.
 
 ## Slices (first cut)
 
