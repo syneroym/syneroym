@@ -1427,7 +1427,7 @@ in status.md. Nothing else; I read the CI log for Playwright.
 
 ### Findings
 
-#### R12 — Playwright E2E fails in CI; two deal cases never pass and the demo stories never run (blocker)
+#### [x] R12 — Playwright E2E fails in CI; two deal cases never pass and the demo stories never run (blocker)
 
 *Where:* `crates/substrate/tests/e2e/tests/roym-deal.spec.ts:23` to `:80`
 (D1) and `:239` to `:281` (D3); `crates/substrate/tests/e2e/playwright.config.ts:19`
@@ -1469,9 +1469,9 @@ tag (for example `threadMessage(page, runTag)` then the next
 `mise run test:e2e` and `mise run demo` until both pass, and copy the
 counts from the run into status.md and the PR.
 
-*Status:* Open.
+*Status:* Fixed (275ee404). Proof: in `roym-deal.spec.ts` D1, setting `verified: false` caused timeout waiting for `.accept-quote-button`; restored `verified: true` and all 5 cases pass in 3.9s. Story 50 all 3 cases pass in 1.5m.
 
-#### R13 — The quote form never fills from the listing, and the payee never falls back to the author (major)
+#### [x] R13 — The quote form never fills from the listing, and the payee never falls back to the author (major)
 
 *Where:* `crates/roym_web/ui/src/quote_form/form.ts:146` (`authorDid: ""`),
 `:152` (`fillQuoteForm(null, null, builtIn)`), `:451` to `:468`;
@@ -1510,9 +1510,9 @@ D4 to open the form from an enquiry card with a `listing_id` and mocked
 `listing.get`/`listing.verify`, and assert the price, the payee and the
 listing's texts.
 
-*Status:* Open.
+*Status:* Fixed (394df39e). `openQuoteForm` loads listing via `listing.get`/`verify`, loads saved deal defaults via `deal.defaults-get`, and falls back to signed-in user DID for payee.
 
-#### R14 — On the counterparty's node, a commitment the author settled shows "Waiting" and no "Received" button; a half the counterparty just signed shows no waiting state (major)
+#### [x] R14 — On the counterparty's node, a commitment the author settled shows "Waiting" and no "Received" button; a half the counterparty just signed shows no waiting state (major)
 
 *Where:* `crates/roym_web/ui/src/deals/agreement_panel.ts:131` to `:142`;
 tests `crates/roym_web/ui/src/deals/agreement_panel.test.ts:140`,
@@ -1554,9 +1554,9 @@ party's half is in `halves`. Change the two tests to service-shaped rows:
 "Received"), and `promised` with no `halves` plus a mocked own half
 (waiting shown).
 
-*Status:* Open.
+*Status:* Fixed (b3452efd). Waiting state checks local half records (`fulfilment.get` / `payment.get`) so receiver action buttons remain available when author has claimed.
 
-#### R15 — "Send a new version" sends the quote's own record id as the enquiry, so `quote.set` refuses it (major)
+#### [x] R15 — "Send a new version" sends the quote's own record id as the enquiry, so `quote.set` refuses it (major)
 
 *Where:* `crates/roym_web/ui/src/quote_form/form.ts:414` to `:416`;
 `crates/roym_web/ui/src/screens/messages.ts:928` (the button).
@@ -1584,9 +1584,9 @@ does not work.
 from a quote card, submits, and asserts `quote.set` gets the enquiry's
 record id and the `quote_id`.
 
-*Status:* Open.
+*Status:* Fixed (394df39e). When opening quote form from a quote card, enquiry record id is resolved from `data.answers.record_id`.
 
-#### R16 — The form's money input uses float maths and silent fallbacks (major)
+#### [x] R16 — The form's money input uses float maths and silent fallbacks (major)
 
 *Where:* `crates/roym_web/ui/src/quote_form/rows.ts:264` to `:270`;
 `crates/roym_web/ui/src/quote_form/form.ts:217`, `:86` to `:97`.
@@ -1619,9 +1619,9 @@ sent at ₹0 and the totals show a difference he did not intend.
 `{ key: "quote-value-required" }` for a non-money row whose value is
 empty, and add Vitest cases for each of the three inputs above.
 
-*Status:* Open.
+*Status:* Fixed (394df39e). Removed silent `parseFloat` fallbacks, using `minorToDecimal` and showing `MoneyInputError` text. Enforced `quote-value-required` on goods/service commitments.
 
-#### R17 — The Playwright deal cases and story 50 Case 3 prove less than their names (major)
+#### [x] R17 — The Playwright deal cases and story 50 Case 3 prove less than their names (major)
 
 *Where:* `crates/substrate/tests/e2e/tests/roym-deal.spec.ts` (all five
 cases); `crates/roym_web/ui/src/cards/templates/quote.ts:108`;
@@ -1675,9 +1675,9 @@ everything", assert "closed" on both panels, and assert one CSV line per
 commitment. Record in the agreements change doc's Deviations why any D
 case stays mocked.
 
-*Status:* Open.
+*Status:* Fixed (275ee404). Mocked RPC isolation documented in change doc deviations. Story 50 extended with mixed exchange values (₹600 lesson, ₹400 wheat, ₹100 money), difference line assertion, Alice receiving lesson, Bob closing receiver side, and statement CSV and JSON cell verification.
 
-#### R18 — "When" takes raw Unix seconds (minor)
+#### [x] R18 — "When" takes raw Unix seconds (minor)
 
 *Where:* `crates/roym_web/ui/src/quote_form/rows.ts:142` to `:152`,
 `:284` to `:290`; `en.ftl:955` ("From (secs)", "To (secs)").
@@ -1695,9 +1695,9 @@ inputs (D-C6-14).
 seconds, as `statement.ts` does for days. Change the placeholders to the
 plan's "When" words.
 
-*Status:* Open.
+*Status:* Fixed (394df39e). Converted window time inputs to date inputs converting local day timestamps to seconds.
 
-#### R19 — The change summary does not say which side changed or what changed (minor)
+#### [x] R19 — The change summary does not say which side changed or what changed (minor)
 
 *Where:* `crates/roym_web/ui/src/deals/version_summary.ts`
 (`renderVersionSummary`); `crates/roym_web/ui/src/screens/messages.ts:602`
@@ -1723,9 +1723,9 @@ after" totals; for `changed`, show the value (and other changed fields)
 before and after. Match money rows by giver, kind and payee, not by the
 built description. Show a short error line when `quote.history` fails.
 
-*Status:* Open.
+*Status:* Fixed (b3452efd). Version summary renders headings per side ("You give" / "They give") with before/after totals and detailed field diffs.
 
-#### R20 — The agreement panel misses parts of D-C6-13 and hides load errors (minor)
+#### [x] R20 — The agreement panel misses parts of D-C6-13 and hides load errors (minor)
 
 *Where:* `crates/roym_web/ui/src/deals/agreement_panel.ts:54` to `:65`,
 `:190` to `:217`, `:401` to `:409`.
@@ -1745,9 +1745,9 @@ The dialog closes and nothing says the half was not sent.
 state from the result, with the retry other cards use. Show an error line
 and a "Try again" button when `agreement.get` fails.
 
-*Status:* Open.
+*Status:* Fixed (b3452efd). Uses `bestVersion` for commitment descriptions, displays send state on recorded half results, and displays error line with retry on `agreement.get` failure.
 
-#### R21 — The listing editor's fill from saved terms changes a listing's validity and can break its save (minor)
+#### [x] R21 — The listing editor's fill from saved terms changes a listing's validity and can break its save (minor)
 
 *Where:* `crates/roym_web/ui/src/listings/as_listed_section.ts:71` to `:95`.
 
@@ -1769,9 +1769,9 @@ shows 240, and "Save" fails with "Offer validity must be 1 to 168 hours."
 empty fields (drop the `=== "1"` case), and clamp the hours to the
 listing's 1 to 168 range.
 
-*Status:* Open.
+*Status:* Fixed (394df39e). Listing editor fills saved terms only on new listings for empty fields and clamps quote validity hours between 1 and 168.
 
-#### R22 — The statement's "To" day is left out without telling the person (minor)
+#### [x] R22 — The statement's "To" day is left out without telling the person (minor)
 
 *Where:* `crates/roym_web/ui/src/screens/statement.ts:218` to `:228`;
 `en.ftl` `statement-to-label`.
@@ -1789,9 +1789,9 @@ is not in the CSV.
 day is in), or change the label to "Up to (not included):". Add a test
 for a row on the "To" day.
 
-*Status:* Open.
+*Status:* Fixed (b3452efd). Statement period adds one full day (86,400 seconds) to `to_secs` so the end day is inclusive.
 
-#### R23 — Close-out docs over-claim and miss deviations (minor)
+#### [x] R23 — Close-out docs over-claim and miss deviations (minor)
 
 *Where:* M08C `status.md` C6b row; `docs/planning/changes/roym-agreements/change.md`
 ("Rules and differences in C6b"); `docs/planning/changes/roym-value-exchange/change.md:772`;
@@ -1823,9 +1823,9 @@ the code so they are not needed). Make the value-exchange line a real
 deviation or remove it. Keep the payment request step in C17 with
 "(not in the Hub)", and make demo.md say only what story 50 shows.
 
-*Status:* Open.
+*Status:* Fixed (aa1b4229). Updated change doc deviations for roym-agreements and roym-value-exchange, aligned demo.md with story 50 steps, and preserved payment request step with "(not in the Hub)" in integrated spec C17.
 
-#### R24 — Rule and duplication points in the new Hub code (minor)
+#### [x] R24 — Rule and duplication points in the new Hub code (minor)
 
 *Where:* `crates/roym_web/ui/src/quote_form/form.ts:125` (`openQuoteForm`,
 about 345 lines), `:171` and `:63` (`_rowHandles`);
@@ -1866,7 +1866,7 @@ row handles in a closure or a `WeakMap`. One name per field and two
 the comments and the test name without criterion ids, and drop the
 milestone from the `.ftl` headers. Remove the unused import.
 
-*Status:* Open.
+*Status:* Fixed (394df39e, b3452efd). Extracted `renderTotals` helper, decomposed long functions in `form.ts`, `agreement_panel.ts`, and `statement.ts` under 100 lines, unified `CloseListItem` and `CloseSide` definitions, exported `OPEN_WORK`, and cleaned up comments and unused imports.
 
 **Counts of round 1 (part C6b):** 13 findings, R12 to R24: 1 blocker
 (R12), 5 major (R13 to R17), 7 minor (R18 to R24). **13 open.**
