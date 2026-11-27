@@ -1,10 +1,4 @@
-export type CloseSide =
-  | "give"
-  | "receive"
-  | "giver"
-  | "receiver"
-  | "quote-author"
-  | "counterparty";
+export type CloseSide = "giver" | "receiver";
 
 export interface CloseListCommitment {
   commitment_id: string;
@@ -39,9 +33,7 @@ export interface CloseListItem {
   commitment_id: string;
   checked: boolean;
   notStarted: boolean;
-  not_started: boolean;
   value: bigint;
-  declared_value_minor: bigint;
   commitment: CloseListCommitment;
 }
 
@@ -71,8 +63,7 @@ export function closeList(
         : "counterparty"
       : "quote-author");
 
-  const isGivingSide = side === "give" || side === "giver";
-  const isReceivingSide = side === "receive" || side === "receiver";
+  const isGivingSide = side === "giver";
 
   const progressMap = new Map<string, string>();
   if (view.commitments) {
@@ -87,10 +78,8 @@ export function closeList(
     // Check if commitment belongs to requested side
     if (isGivingSide) {
       if (comm.giver !== myRole) continue;
-    } else if (isReceivingSide) {
-      if (comm.giver === myRole) continue;
     } else {
-      if (comm.giver !== side) continue;
+      if (comm.giver === myRole) continue;
     }
 
     // Skip final commitments
@@ -107,9 +96,7 @@ export function closeList(
       commitment_id: comm.commitment_id,
       checked,
       notStarted,
-      not_started: notStarted,
       value,
-      declared_value_minor: value,
       commitment: comm,
     });
   }

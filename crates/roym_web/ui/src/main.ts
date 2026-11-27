@@ -13,6 +13,7 @@ import { renderGroups } from "./screens/groups";
 import { renderListings } from "./screens/listings";
 import { renderMemberships } from "./screens/memberships";
 import {
+  messageElement,
   openDeclineDialog,
   openQuoteForm,
   renderCardActions,
@@ -56,6 +57,7 @@ declare global {
       openQuoteForm: typeof openQuoteForm;
       openDeclineDialog: typeof openDeclineDialog;
       renderCardActions: typeof renderCardActions;
+      messageElement: typeof messageElement;
     };
     RoymDeals?: {
       renderAgreementPanel: typeof renderAgreementPanel;
@@ -75,6 +77,7 @@ window.RoymMessages = {
   openQuoteForm,
   openDeclineDialog,
   renderCardActions,
+  messageElement,
 };
 window.RoymDeals = {
   renderAgreementPanel,

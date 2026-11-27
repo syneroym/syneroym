@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it } from "vitest";
 
+import { OPEN_WORK } from "./messages";
 import { waitingRedraw } from "./thread_redraw";
 
-const OPEN = ".quote-form, .decline-dialog, .settle-dialog, .close-list";
+const OPEN = OPEN_WORK;
 
 function setUp() {
   const host = document.createElement("div");

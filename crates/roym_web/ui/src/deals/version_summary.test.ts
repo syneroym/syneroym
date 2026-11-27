@@ -67,12 +67,14 @@ describe("versionSummary", () => {
     expect(summary.mine.removed).toHaveLength(1);
     expect((summary.mine.removed[0].description as { text: string }).text).toBe("Piano tuning");
 
-    // Theirs (counterparty) - description changed so 1 removed, 1 added
+    // Theirs (counterparty) - money row matches by giver, kind and payee so it is changed
     expect(summary.theirs.totalBefore).toBe(1500n);
     expect(summary.theirs.totalAfter).toBe(2000n);
-    expect(summary.theirs.changed).toHaveLength(0);
-    expect(summary.theirs.removed).toHaveLength(1);
-    expect(summary.theirs.added).toHaveLength(1);
+    expect(summary.theirs.changed).toHaveLength(1);
+    expect(summary.theirs.changed[0].before.declared_value_minor).toBe(1500);
+    expect(summary.theirs.changed[0].after.declared_value_minor).toBe(2000);
+    expect(summary.theirs.removed).toHaveLength(0);
+    expect(summary.theirs.added).toHaveLength(0);
   });
 
   it("treats changed description as one removed and one added", () => {

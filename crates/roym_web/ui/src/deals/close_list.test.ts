@@ -30,7 +30,7 @@ describe("closeList", () => {
       ],
     };
 
-    const list = closeList(view, "give", now);
+    const list = closeList(view, "giver", now);
     expect(list).toHaveLength(2);
 
     expect(list[0].commitment_id).toBe("c1");
@@ -71,7 +71,7 @@ describe("closeList", () => {
       ],
     };
 
-    const list = closeList(view, "give", now);
+    const list = closeList(view, "giver", now);
     expect(list).toHaveLength(1);
     expect(list[0].commitment_id).toBe("c3");
     expect(list[0].checked).toBe(true);
@@ -96,7 +96,7 @@ describe("closeList", () => {
       },
     };
 
-    const list = closeList(view, "receive", now);
+    const list = closeList(view, "receiver", now);
     expect(list).toHaveLength(1);
     expect(list[0].commitment_id).toBe("c2");
   });

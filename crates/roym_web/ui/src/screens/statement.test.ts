@@ -49,18 +49,57 @@ describe("statement pure date helpers", () => {
     const fixedNow = new Date(2026, 4, 15, 12, 0, 0); // May 15, 2026
     const thisMonth = thisMonthRange(fixedNow);
     expect(thisMonth.fromStr).toBe("2026-05-01");
-    expect(thisMonth.toStr).toBe("2026-06-01");
+    expect(thisMonth.toStr).toBe("2026-05-31");
     expect(thisMonth.from_secs).toBeLessThan(thisMonth.to_secs);
 
     const lastMonth = lastMonthRange(fixedNow);
     expect(lastMonth.fromStr).toBe("2026-04-01");
-    expect(lastMonth.toStr).toBe("2026-05-01");
+    expect(lastMonth.toStr).toBe("2026-04-30");
     expect(lastMonth.from_secs).toBeLessThan(lastMonth.to_secs);
 
     const thisYear = thisYearRange(fixedNow);
     expect(thisYear.fromStr).toBe("2026-01-01");
-    expect(thisYear.toStr).toBe("2027-01-01");
+    expect(thisYear.toStr).toBe("2026-12-31");
     expect(thisYear.from_secs).toBeLessThan(thisYear.to_secs);
+  });
+
+  it("includes the entire 'To' day by adding 1 day to to_secs", async () => {
+    let capturedParams: { from_secs: number; to_secs: number } | null = null;
+    stubRpc({
+      "statement.export": (params: Record<string, unknown>) => {
+        capturedParams = params as { from_secs: number; to_secs: number };
+        return {
+          statement_version: 1,
+          owner_did: "did:key:alice",
+          from_secs: (params as { from_secs: number }).from_secs,
+          to_secs: (params as { to_secs: number }).to_secs,
+          generated_at_secs: 1000,
+          rows: [],
+          open_at_end: [],
+          totals: [],
+          eeps: { status: "not-available" },
+        };
+      },
+      "contacts.list": () => [],
+    });
+
+    const host = document.createElement("div");
+    await renderStatement(host);
+    const fromInput = host.querySelector<HTMLInputElement>(".statement-from-input")!;
+    const toInput = host.querySelector<HTMLInputElement>(".statement-to-input")!;
+
+    fromInput.value = "2026-11-01";
+    toInput.value = "2026-11-30";
+
+    host.querySelector<HTMLButtonElement>(".statement-show-button")!.click();
+    await vi.waitFor(() => {
+      expect(capturedParams).not.toBeNull();
+    });
+
+    // Nov 30 23:59:59 is inside [from_secs, to_secs) because to_secs is Dec 01 00:00:00
+    const nov30EndOfDay = Math.floor(new Date(2026, 10, 30, 23, 59, 59).getTime() / 1000);
+    expect(nov30EndOfDay).toBeLessThan(capturedParams!.to_secs);
+    expect(nov30EndOfDay).toBeGreaterThanOrEqual(capturedParams!.from_secs);
   });
 });
 
@@ -156,7 +195,6 @@ describe("statement screen", () => {
           description: { lang: "en", text: "Bag of wheat" },
           currency: "INR",
           declared_value_minor: 25000,
-          records: ["rec_2"],
         },
       ],
       totals: [

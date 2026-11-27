@@ -1,4 +1,5 @@
 import { t } from "../i18n/i18n";
+import { formatMinor } from "../money";
 
 export type Role = "quote-author" | "counterparty";
 
@@ -80,13 +81,22 @@ function computeSideChange(beforeList: Commitment[], afterList: Commitment[]): S
 
   for (const b of beforeList) {
     const bText = descriptionText(b);
+    const isMoneyB = b.resource_kind === "currency" || b.kind === "currency";
     let matchIdx = -1;
     for (let i = 0; i < afterList.length; i++) {
       if (matchedAfterIndices.has(i)) continue;
       const a = afterList[i];
-      if (a.giver === b.giver && a.resource_kind === b.resource_kind && descriptionText(a) === bText) {
-        matchIdx = i;
-        break;
+      const isMoneyA = a.resource_kind === "currency" || a.kind === "currency";
+      if (isMoneyA && isMoneyB) {
+        if (a.giver === b.giver && (a.payee ?? "") === (b.payee ?? "")) {
+          matchIdx = i;
+          break;
+        }
+      } else if (!isMoneyA && !isMoneyB) {
+        if (a.giver === b.giver && a.resource_kind === b.resource_kind && descriptionText(a) === bText) {
+          matchIdx = i;
+          break;
+        }
       }
     }
 
@@ -127,7 +137,7 @@ export function versionSummary(
   };
 }
 
-export function renderVersionSummary(summary: VersionSummary): HTMLElement {
+export function renderVersionSummary(summary: VersionSummary, currency = "INR"): HTMLElement {
   const container = document.createElement("div");
   container.className = "quote-changes-summary";
 
@@ -136,9 +146,23 @@ export function renderVersionSummary(summary: VersionSummary): HTMLElement {
   heading.textContent = t("deal-changes-heading");
   container.appendChild(heading);
 
-  const renderSide = (side: SideChange, sideClass: string) => {
+  const renderSide = (side: SideChange, isMine: boolean, sideClass: string) => {
     const sideDiv = document.createElement("div");
     sideDiv.className = `quote-changes-side ${sideClass}`;
+
+    const sideHeading = document.createElement("h5");
+    sideHeading.className = "quote-changes-side-heading";
+    const headingText = isMine
+      ? t("deal-changes-side-give", {
+          before: formatMinor(side.totalBefore, currency),
+          after: formatMinor(side.totalAfter, currency),
+        })
+      : t("deal-changes-side-receive", {
+          before: formatMinor(side.totalBefore, currency),
+          after: formatMinor(side.totalAfter, currency),
+        });
+    sideHeading.textContent = headingText;
+    sideDiv.appendChild(sideHeading);
 
     for (const c of side.added) {
       const p = document.createElement("p");
@@ -160,17 +184,27 @@ export function renderVersionSummary(summary: VersionSummary): HTMLElement {
       const p = document.createElement("p");
       p.className = "quote-change-item quote-change-changed";
       const desc = descriptionText(ch.after);
-      p.textContent = t("deal-changes-changed", { description: desc });
+      const valBefore = BigInt(ch.before.declared_value_minor ?? 0);
+      const valAfter = BigInt(ch.after.declared_value_minor ?? 0);
+      if (valBefore !== valAfter) {
+        p.textContent = t("deal-changes-changed-detail", {
+          description: desc,
+          before: formatMinor(valBefore, currency),
+          after: formatMinor(valAfter, currency),
+        });
+      } else {
+        p.textContent = t("deal-changes-changed", { description: desc });
+      }
       sideDiv.appendChild(p);
     }
 
-    if (sideDiv.children.length > 0) {
+    if (side.added.length > 0 || side.removed.length > 0 || side.changed.length > 0) {
       container.appendChild(sideDiv);
     }
   };
 
-  renderSide(summary.mine, "quote-changes-mine");
-  renderSide(summary.theirs, "quote-changes-theirs");
+  renderSide(summary.mine, true, "quote-changes-mine");
+  renderSide(summary.theirs, false, "quote-changes-theirs");
 
   return container;
 }

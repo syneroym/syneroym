@@ -145,6 +145,7 @@ describe("agreement panel", () => {
           commitment_id: "c1",
           state: "claimed",
           claimed: true,
+          halves: ["rec_half_author_giver"],
         },
         {
           commitment_id: "c2",
@@ -159,7 +160,7 @@ describe("agreement panel", () => {
     expect(c1Alice?.querySelector(".deal-claimed-giver")?.textContent).toBe("You said you delivered");
     expect(c1Alice?.querySelector(".deal-action-delivered-button")).toBeNull();
 
-    // Bob as receiver
+    // Bob as receiver (author's giver half in p.halves does not block receiver's 'Received' button)
     const elBob = renderAgreementPanelView(claimedView, "did:key:bob_counterparty", async () => {}, async () => {});
     const c1Bob = elBob.querySelector(".agreement-commitment-c1");
     expect(c1Bob?.querySelector(".deal-action-received-button")).not.toBeNull();
@@ -172,7 +173,7 @@ describe("agreement panel", () => {
         {
           commitment_id: "c1",
           state: "promised",
-          halves: ["rec_half_signed_by_bob"],
+          halves: [],
         },
         {
           commitment_id: "c2",
@@ -181,11 +182,13 @@ describe("agreement panel", () => {
       ],
     };
 
+    const ownHalves = new Map([["c1", "rec_half_counterparty_1"]]);
     const el = renderAgreementPanelView(
       waitingView,
       "did:key:bob_counterparty",
       async () => {},
       async () => {},
+      ownHalves,
     );
 
     const c1Row = el.querySelector(".agreement-commitment-c1");
@@ -195,7 +198,7 @@ describe("agreement panel", () => {
     expect(c1Row?.querySelector(".deal-action-received-button")).toBeNull();
   });
 
-  it("renders ended-unconfirmed with AG-8 two sentences", () => {
+  it("renders ended-unconfirmed with two sentences", () => {
     const unconfirmedView: AgreementView = {
       ...baseView,
       commitments: [

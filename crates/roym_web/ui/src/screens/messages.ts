@@ -35,7 +35,7 @@ import { renderAgreementPanel } from "../deals/agreement_panel";
 /// Things the person has started inside a thread. A redraw from the event
 /// feed waits until they are gone, so it never throws away typed text. An
 /// element inside the thread that holds the person's input belongs here.
-const OPEN_WORK = ".quote-form, .decline-dialog, .delete-dialog, .accept-mt-box, .settle-dialog, .close-list";
+export const OPEN_WORK = ".quote-form, .decline-dialog, .delete-dialog, .accept-mt-box, .settle-dialog, .close-list";
 
 interface ConversationRow {
   id: string;
@@ -610,14 +610,20 @@ export function messageElement(
               if (hist?.versions && hist.versions.length > 1) {
                 const first = hist.versions[0].terms;
                 const latest = hist.versions[hist.versions.length - 1].terms;
+                const curr = (quoteData as Record<string, unknown>)?.terms
+                  ? ((quoteData as Record<string, unknown>).terms as { currency?: string }).currency ?? "INR"
+                  : "INR";
                 const summary = versionSummary(first, latest, role);
-                const summaryEl = renderVersionSummary(summary);
+                const summaryEl = renderVersionSummary(summary, curr);
                 if (!wrap.querySelector(".quote-changes-summary")) {
                   wrap.insertBefore(summaryEl, cardEl);
                 }
               }
-            } catch {
-              // ignore
+            } catch (err) {
+              if (!wrap.querySelector(".quote-changes-error")) {
+                const errEl = text("p", t("quote-history-failed", { detail: errText(err) }), "quote-changes-error error-text");
+                wrap.insertBefore(errEl, cardEl);
+              }
             }
           })();
         }
@@ -823,7 +829,7 @@ export function renderCardActions(
     const notIssuedByMe = card.direction === "incoming" || (myDid && card.issuer !== myDid);
     if (notIssuedByMe) {
       const quoteBtn = text("button", t("quote-request-button"), "button quote-request-button") as HTMLButtonElement;
-      quoteBtn.onclick = () => openQuoteForm(wrap, card, convId, refresh);
+      quoteBtn.onclick = () => openQuoteForm(wrap, card, convId, refresh, undefined, myDid);
       wrap.appendChild(quoteBtn);
     }
   }
@@ -926,7 +932,7 @@ export function renderCardActions(
       actionsDiv.className = "quote-actions";
 
       const newVersionBtn = text("button", t("deal-send-new-version"), "button quote-new-version-button") as HTMLButtonElement;
-      newVersionBtn.onclick = () => openQuoteForm(wrap, card, convId, refresh);
+      newVersionBtn.onclick = () => openQuoteForm(wrap, card, convId, refresh, undefined, myDid);
 
       actionsDiv.appendChild(newVersionBtn);
       wrap.appendChild(actionsDiv);
