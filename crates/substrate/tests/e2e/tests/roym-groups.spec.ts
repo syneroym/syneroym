@@ -148,4 +148,35 @@ test.describe('Roym Hub: group chat', () => {
     await page.getByRole('button', { name: 'Groups', exact: true }).click();
     await expect(page.locator('.conversation-items')).toContainText('Street Garden');
   });
+
+  test('sending a poll with no other member says there is nobody to deliver to', async ({ page }) => {
+    await signIn(page);
+    await openGroups(page);
+
+    const groupItem = page.locator('.conversation-items .conversation-item', { hasText: 'Street Garden' }).first();
+    await groupItem.click();
+
+    const question = `Which day works for you? (${Date.now().toString(36)})`;
+    const options = ['Saturday', 'Sunday'];
+
+    const form = page.locator('.poll-composer-form');
+    const isVisible = await form.isVisible().catch(() => false);
+    if (!isVisible) {
+      await page.locator('.toggle-poll-button').click();
+      await expect(form).toBeVisible({ timeout: 15_000 });
+    }
+
+    await form.locator('.widget-poll-question-input').fill(question);
+    for (let i = 0; i < options.length; i++) {
+      await form.locator('.widget-poll-option-input').nth(i).fill(options[i]);
+    }
+
+    const sendBtn = form.locator('.widget-poll-send-btn');
+    await expect(sendBtn).toBeEnabled({ timeout: 15_000 });
+    await sendBtn.click();
+
+    const hint = form.locator('.widget-poll-composer-hint');
+    await expect(hint).toContainText('nowhere to deliver', { timeout: 15_000 });
+    await expect(form).toBeVisible();
+  });
 });

@@ -1150,7 +1150,7 @@ The manifest of Roym declares seven services: `web`, `profile`, `conversation`, 
 | `profile` | The person's own profile, contacts, block list, and reports. | none |
 | `conversation` | One-to-one messages and private groups. It uses the conversation interface of the substrate for encryption, the outbox and delivery. | `profile` |
 | `catalog` | The listing owner's listings. | `profile` |
-| `transaction` | Enquiries, quotes, agreements, progress, payments, and fulfilments. Agreement logic and settlement records are code inside this service. A quote that names a slot, and each reservation of a slot, goes through the reserve hooks of the extension that the commitment names. For the scheduling extension that is the `scheduling` service. | `conversation`, `scheduling` |
+| `transaction` | Enquiries, quotes, agreements, progress, payments, fulfilments, event log derivation and statement exports. Agreement logic, settlement records, saved deal terms, and closing routines are code inside this service. A quote that names a slot, and each reservation of a slot, goes through the reserve hooks of the extension that the commitment names. For the scheduling extension that is the `scheduling` service. | `conversation`, `scheduling` |
 | `scheduling` | The scheduling extension's service. It holds the availability slots and the seat reservations. A reservation is a unique insert on the resource owner's own node, and no row of a seat is ever deleted. An unconfirmed reservation lapses after 15 minutes, when another booking needs its seat. It holds a signed backup bundle of its own. | none |
 | `directory` | A SynOrg's member list, published listings, search index, and membership credentials. On every installation it also keeps that node's own list of directories and its search runs. | `catalog` |
 
@@ -1261,7 +1261,7 @@ Money moves outside Roym. Roym records what each side says and cannot confirm th
 The rules of the agreement:
 
 - **Against interest.** A statement that goes against the interest of the person who signs it moves the track to final (`acknowledged` or `fulfilled`) at once: the quote author's payment half, and the counterparty's fulfilment half. A statement in favor of the signer only makes the track `claimed`. A track that is final does not change again. A repeated statement changes nothing.
-- **Closed.** The agreement reaches `closed` once every commitment reaches a final state (`acknowledged`, `fulfilled`, `ended-unconfirmed`, `failed`, or `cancelled`).
+- **Closed.** The agreement reaches `closed` once every commitment reaches a final state (`acknowledged`, `fulfilled`, `ended-unconfirmed`, `failed`, or `cancelled`). `agreement.close` signs one settlement half per listed commitment.
 - **Track window.** Each track stays open for 30 days after the later of the commitment's schedule window and the agreement time. With no schedule window, it is 30 days after the agreement opens. After that, a track that is `promised`, `payment-requested`, or `claimed` becomes `ended-unconfirmed` (recording `claimed: true` if the giver claimed, `claimed: false` otherwise).
 - **Cancel.** Only the quote author can cancel, with `agreement.cancel` and a reason. It is possible only while all commitments are open (`promised` or `payment-requested`). A counterparty asks in the conversation. A cancel frees claimed seats and holds.
 
@@ -1323,6 +1323,7 @@ Notes on the flow:
 - **Notices.** Each node shows the card in the conversation. No push notification is sent.
 - **Payment.** The quote author may send a `payment-request`. The counterparty pays outside Roym. Either party then records a `payment-acknowledgement`. The Hub shows a notice that Roym does not see the money move.
 - **Fulfilment.** The commitment is complete when the claim and confirmation halves are both filed. The counterparty's confirmation closes the fulfilment commitment at once, even if the quote author has not claimed the work. It takes effect on the quote author's node when the card is filed there.
+- **Closing and Statements.** Either party can close open commitments with `agreement.close`. Final commitments derive entries in the local event log (`eventlog.list`), which powers exportable statements (`statement.export`).
 
 > **Envisioned.** Not built yet. A payment through an external gateway: a Stripe `PaymentIntent`, a client secret, a card confirmed with the Stripe SDK and a webhook that marks the booking as paid. Also a review that the counterparty submits after the booking. Roym has no gateway code and no review record. See [Payments](#payments) and [Flexible Payment Integration](#3-flexible-payment-integration).
 

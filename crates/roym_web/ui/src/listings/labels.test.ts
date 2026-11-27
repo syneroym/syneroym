@@ -27,7 +27,7 @@ describe("listing labels", () => {
   });
 
   it("shows a place from another node as it came, never as undefined", () => {
-    expect(serviceLocationCardLabel("at-giver")).toBe("At the quote author's place");
+    expect(serviceLocationCardLabel("at-giver")).toBe("At the offer author's place");
     expect(serviceLocationCardLabel("somewhere-else")).toBe("somewhere-else");
   });
 

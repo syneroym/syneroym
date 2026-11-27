@@ -13,6 +13,7 @@ import { renderGroups } from "./screens/groups";
 import { renderListings } from "./screens/listings";
 import { renderMemberships } from "./screens/memberships";
 import {
+  messageElement,
   openDeclineDialog,
   openQuoteForm,
   renderCardActions,
@@ -22,6 +23,7 @@ import { setTabOpener, type TabKey, type TabOpener, type TabStateMap } from "./n
 import { renderProfile } from "./screens/profile";
 import { renderSafety } from "./screens/safety";
 import { renderSetup } from "./screens/setup";
+import { renderStatement } from "./screens/statement";
 import { renderSynOrg } from "./screens/synorg";
 import { pendingEnrolment } from "./session/enrolment";
 import { startTranslation } from "./translation/translation";
@@ -36,6 +38,9 @@ import {
   whoami,
   type SessionKeyBundle,
 } from "./session/login";
+
+import { renderAgreementPanel, renderAgreementPanelView } from "./deals/agreement_panel";
+import { renderVersionSummary, versionSummary } from "./deals/version_summary";
 
 declare global {
   interface Window {
@@ -52,6 +57,14 @@ declare global {
       openQuoteForm: typeof openQuoteForm;
       openDeclineDialog: typeof openDeclineDialog;
       renderCardActions: typeof renderCardActions;
+      messageElement: typeof messageElement;
+    };
+    RoymDeals?: {
+      renderAgreementPanel: typeof renderAgreementPanel;
+      renderAgreementPanelView: typeof renderAgreementPanelView;
+      versionSummary: typeof versionSummary;
+      renderVersionSummary: typeof renderVersionSummary;
+      renderStatement: typeof renderStatement;
     };
   }
 }
@@ -64,6 +77,14 @@ window.RoymMessages = {
   openQuoteForm,
   openDeclineDialog,
   renderCardActions,
+  messageElement,
+};
+window.RoymDeals = {
+  renderAgreementPanel,
+  renderAgreementPanelView,
+  versionSummary,
+  renderVersionSummary,
+  renderStatement,
 };
 
 async function main() {
@@ -158,6 +179,7 @@ async function renderTabs(container: HTMLElement, did: string) {
     memberships: renderMemberships,
     synorg: renderSynOrg,
     safety: renderSafety,
+    statement: renderStatement,
     backup: renderBackup,
     components: (host) => renderHome(host, did),
   };
@@ -187,6 +209,7 @@ async function renderTabs(container: HTMLElement, did: string) {
     [t("tab-memberships"), "memberships"],
     [t("tab-synorg"), "synorg"],
     [t("tab-safety"), "safety"],
+    [t("tab-statement"), "statement"],
     [t("tab-backup"), "backup"],
     [t("tab-components"), "components"],
   ];

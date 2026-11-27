@@ -1,5 +1,6 @@
 {
   "imported": "boolean",
+  "log_entries_made": "number",
   "reservations_failed": [],
   "reservations_restored": "number"
 }

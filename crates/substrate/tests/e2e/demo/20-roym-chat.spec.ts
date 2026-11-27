@@ -1,8 +1,8 @@
 import { expect, test } from '@playwright/test';
 import { readDemoEnv } from '../demo-nodes';
 import {
-  addContact, loginWithDelegatedKey, openConversation, openMessages, saveProfile, sendMessage,
-  threadMessage,
+  addContact, loginWithDelegatedKey, openConversation, openMessages, pollCount, saveProfile, sendMessage,
+  sendPoll, threadMessage, votePoll,
 } from '../hub-helpers';
 import { DELIVERY_WAIT_MS, requireEnv, runScript, step, newSession } from './steps';
 
@@ -12,6 +12,8 @@ const SCRIPT = '20-roym-setup.sh';
 const RUN_TAG = Date.now().toString(36);
 const ALICE_TEXT = `Hello Bob, this is Alice (${RUN_TAG})`;
 const BOB_TEXT = `Hello Alice, this is Bob (${RUN_TAG})`;
+const POLL_QUESTION = `Which day works for you? (${RUN_TAG})`;
+const POLL_OPTIONS = ['Saturday', 'Sunday'];
 
 test.describe.configure({ mode: 'serial' });
 
@@ -71,6 +73,28 @@ test('Roym chat story: Alice and Bob talk, each on their own node', async ({ bro
       // Alice kept her conversation open. Bob's reply and the delivery state appear by themselves.
       await expect(threadMessage(page, BOB_TEXT)).toBeVisible({ timeout: DELIVERY_WAIT_MS });
       await expect(threadMessage(page, ALICE_TEXT).locator('.message-state')).toHaveText('delivered', {
+        timeout: DELIVERY_WAIT_MS,
+      });
+    });
+
+    await step(page, "Alice's screen: send Bob a poll", async () => {
+      await sendPoll(page, POLL_QUESTION, POLL_OPTIONS);
+      await expect(page.locator('.widget-card', { hasText: POLL_QUESTION })).toBeVisible({
+        timeout: DELIVERY_WAIT_MS,
+      });
+    });
+
+    await step(bobPage, "Bob's screen: vote for Sunday", async () => {
+      await bobPage.bringToFront();
+      await votePoll(bobPage, POLL_QUESTION, 'Sunday');
+      await expect(pollCount(bobPage, POLL_QUESTION, 'Sunday')).toHaveText('1 vote', {
+        timeout: DELIVERY_WAIT_MS,
+      });
+    });
+
+    await step(page, "Alice's screen: the poll shows Bob's vote", async () => {
+      await page.bringToFront();
+      await expect(pollCount(page, POLL_QUESTION, 'Sunday')).toHaveText('1 vote', {
         timeout: DELIVERY_WAIT_MS,
       });
     });

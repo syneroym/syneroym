@@ -107,6 +107,13 @@ describe("formatMinor", () => {
     expect(formatMinor(Number.MAX_SAFE_INTEGER, "INR")).toMatch(/\.91$/);
   });
 
+  it("formats bigint minor units with high precision", () => {
+    expect(formatMinor(10000000000000000n, "INR")).toBe("₹10,00,00,00,00,00,000.00");
+    expect(formatMinor(3550n, "USD")).toBe("$35.50");
+    expect(formatMinor(-3550n, "USD")).toBe("-$35.50");
+    expect(formatMinor(1200n, "JPY")).toBe("JP¥1,200");
+  });
+
   it("shows a malformed code from another node as amount and code", () => {
     expect(formatMinor(3550, "E1")).toBe("35.50 E1");
   });

@@ -19,6 +19,7 @@ pub mod directory;
 pub mod disclosure;
 pub mod dual_build;
 pub mod envelope;
+pub mod eventlog;
 pub mod extension;
 pub mod fulfilment;
 pub mod lang;
@@ -36,6 +37,7 @@ pub mod router;
 pub mod safety;
 pub mod services;
 pub mod signing;
+pub mod statement;
 pub mod step;
 pub mod taxonomy;
 #[cfg(any(test, feature = "test-host"))]

@@ -10,6 +10,7 @@ export default defineConfig({
     '**/roym-hub-remote.spec.ts',
     '**/roym-trust.spec.ts',
     '**/roym-groups.spec.ts',
+    '**/roym-deal.spec.ts',
   ],
   fullyParallel: false,
   forbidOnly: !!process.env.CI,

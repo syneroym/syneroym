@@ -31,8 +31,8 @@ use syneroym_roym_core::{
 use self::cards::{file_enquiry_card, file_quote_card};
 use super::{
     AGREEMENTS, AgreementRow, CARDS, CardRow, LEDGER, SYNC_STATE, SyncStateRow, decide,
-    disclosures, ensure_collections, get_row, hooks::ExtensionHooks, progress_ops, put_card,
-    put_row,
+    disclosures, ensure_collections, eventlog_ops, get_row, hooks::ExtensionHooks, progress_ops,
+    put_card, put_row,
 };
 
 #[derive(Debug, Deserialize)]
@@ -160,6 +160,7 @@ pub(crate) async fn sync_direct<H: AppHost>(
     let unsent_failures =
         confirm::confirm_own_reservations(host, &ExtensionHooks, conversation, &owner, now).await;
     let _ = progress_ops::tick_conversation_at(host, conversation, now).await;
+    let _ = eventlog_ops::derive_conversation(host, conversation, now).await;
 
     let more = stats.scanned == SYNC_WINDOW && new_last_seq > sync_state.last_seq;
 

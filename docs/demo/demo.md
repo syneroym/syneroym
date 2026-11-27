@@ -1251,8 +1251,11 @@ After that:
 1. In bob's Hub, open **Messages** again. **Expect:** the message is there. Reply to it.
 2. In alice's Hub, open **Messages** again. **Expect:** bob's reply is there, and
    alice's own message now shows "delivered".
+3. In alice's Hub, open the poll composer, fill in a question and two options, and send the poll.
+4. In bob's Hub, the poll card appears. Bob votes for an option.
+5. In alice's Hub, the poll card updates to show Bob's vote counted ("1 vote").
 
-**Say:** "Direct, signed messages. No central chat server."
+**Say:** "Direct, signed messages and interactive widgets. No central chat server."
 
 The script is `crates/substrate/tests/e2e/demo/20-roym-chat.spec.ts`. It is the
 reference for the clicks.
@@ -1297,30 +1300,35 @@ reads in Hindi, Bob writes in English, and they still agree on the same signed t
 The script is `crates/substrate/tests/e2e/demo/40-roym-languages.spec.ts`. It is the
 reference for the clicks.
 
-### R4 Enquiry → quote → agreement
+### R4 Offer → agree → settlement → statement
 
-Bob asks for work. Alice answers with a price. Bob accepts. Both hold a signed receipt.
+Alice finds Bob's listing and asks for lessons. Bob answers with an offer. Alice agrees. Both hold a signed agreement receipt. Both settle their commitments in the Hub, and Alice exports her statement.
 
-In the Hub **Messages** tab: bob sends an **enquiry** card; alice sends a **quote**
-card; bob presses **Accept**. Then show the receipt.
+Automated: `crates/substrate/tests/e2e/demo/50-roym-deal.spec.ts` (run with `mise run demo`). The three cases:
+1. Formation and decline: Alice asks for lessons, Bob makes an offer giving one lesson for ₹100, Alice agrees. Alice then asks for advanced lessons, Bob offers, and Alice declines with a note.
+2. Agree as listed: Bob publishes an instant offering with its own terms, Alice agrees as listed from the directory, and the agreement forms at once.
+3. Mixed exchange, settlements and statement: Bob offers a lesson (₹600) for a sack of wheat (₹400) plus ₹100, Alice sees the live totals and agrees, Alice confirms receipt of the lesson, Bob uses "I received everything" to close his receiver side, both see the agreement closed with all commitments settled, and Alice downloads her statement as CSV and JSON.
+
+In the Hub **Messages** tab: Alice sends an **enquiry** card; Bob sends an **offer**
+card; Alice presses **Agree**. Then show the receipt and agreement panel.
 
 CLI equivalent (from a person's terminal):
 
 ```bash
-# bob
-roymctl --dir "$S2_DIR" --as owner roym transaction enquiry \
-  --conversation <CONVERSATION-ID> --description "Mow the lawn" --lang en \
-  --gateway-url "http://127.0.0.1:$S2_GW" --host "$ROYM2_HOST"
 # alice
-roymctl --dir "$S1_DIR" --as owner roym transaction quote --enquiry <ENQUIRY-ID> \
-  --scope "Mow the lawn" --lang en --currency INR --amount 500 --payee <ALICE-DID> \
-  --timing "this week" --where "at your home" \
+roymctl --dir "$S1_DIR" --as owner roym transaction enquiry \
+  --conversation <CONVERSATION-ID> --description "Hindi lessons" --lang en \
   --gateway-url "http://127.0.0.1:$S1_GW" --host "$ROYM1_HOST"
 # bob
-roymctl --dir "$S2_DIR" --as owner roym transaction accept --quote <QUOTE-ID> \
+roymctl --dir "$S2_DIR" --as owner roym transaction quote --enquiry <ENQUIRY-ID> \
+  --scope "Hindi lessons" --lang en --currency INR --amount 100 --payee <BOB-DID> \
+  --timing "after-work" --where "at-giver" \
   --gateway-url "http://127.0.0.1:$S2_GW" --host "$ROYM2_HOST"
-roymctl --dir "$S2_DIR" --as owner roym transaction agreement get --agreement <AGREEMENT-ID> \
-  --gateway-url "http://127.0.0.1:$S2_GW" --host "$ROYM2_HOST"
+# alice
+roymctl --dir "$S1_DIR" --as owner roym transaction accept --quote <QUOTE-ID> \
+  --gateway-url "http://127.0.0.1:$S1_GW" --host "$ROYM1_HOST"
+roymctl --dir "$S1_DIR" --as owner roym transaction agreement get --agreement <AGREEMENT-ID> \
+  --gateway-url "http://127.0.0.1:$S1_GW" --host "$ROYM1_HOST"
 ```
 
 **Rehearse:** the ids (`<CONVERSATION-ID>`, `<ENQUIRY-ID>`, `<QUOTE-ID>`) come from the

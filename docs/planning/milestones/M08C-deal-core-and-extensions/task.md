@@ -192,6 +192,25 @@ No unexpected components, deal schemas, or external dependencies are linked. On 
 
 Stop-rule measurement for `widget.list`: 28 ms native / 54 ms WASM (< 200 ms limit), measured on 200 `widget_ids` in a chat with 1,000 messages (scenario 266). Command: `cargo nextest run -p syneroym-roym-web --test dual_build_parity scenario_266 --no-capture`.
 
+**C6a sizes** (release `wasm32-wasip2`, one `target/` folder, 2026-11-26; before: the C4a table's after column, after: the C6a code), in bytes:
+
+| Component | before | after | Change | Limit |
+| --- | --- | --- | --- | --- |
+| `transaction` | 2,714,637 | 2,877,309 | +162,672 (+5.99%) | +15% (407,195); owner approved limit Q9 |
+| `catalog` | 960,590 | 960,590 | 0 | +40 KB |
+| `conversation` | 984,691 | 985,469 | +778 | +40 KB |
+| `directory` | 1,504,433 | 1,504,433 | 0 | +40 KB |
+| `profile` | 772,748 | 772,748 | 0 | +40 KB |
+| `scheduling` | 715,723 | 715,723 | 0 | +40 KB |
+| `web` | 311,242 | 311,314 | +72 | +40 KB |
+
+Every component is within its limit. `transaction` grew with the event log derive step, event log query, statement export, agreement.close, saved deal terms (`deal_defaults`), and backup export/import handling. Under owner decision Q9, `transaction` is allowed up to +15% because the +40 KB limit cannot fit the event log type, statement type, and derive step.
+
+Stop-rule timing measurements:
+- `transaction.sync` over 50 agreements: 18 ms native / 20 ms WASM (< 200 ms limit).
+- `statement.export` over 1,000 agreements: 195 ms native / 297 ms WASM (< 2,000 ms limit).
+Measured via dual-build parity scenario 277 (`cargo nextest run -p syneroym-roym-web --test dual_build_parity scenario_277 --no-capture`).
+
 **Parity runs need a fresh WASM build.** The dual-build parity harness loads pre-built `wasm32-wasip2` components. Every slice that changes a `roym_*` crate runs `mise run build:roym` before it trusts a parity run.
 
 ## 2. Facts checked in the code for this plan
@@ -337,6 +356,7 @@ Change docs: roym-agreements, roym-value-exchange (VX-54), roym-extensions (EX-1
 - With C1 to C4, the card table has twelve types in the early design. As decided in C4a under Q2 (b), widgets and widget answers travel as ordinary chat messages of content types `application/vnd.roym.widget+json` and `application/vnd.roym.widget-answer+json`, not deal cards, so the card table remains at ten types: `enquiry`, `quote`, `agreement-receipt`, `agreement-progress`, `payment-request`, `payment-acknowledgement`, `fulfilment-receipt`, `deal-decline` (C1), `step` (C3a), and `commitment-failure` (C3b).
 - Criteria: EX-10, EX-11 (inline only), EX-12, EX-13; ML-26 (widget answer), ML-28 (widget labels).
 - Demo: extend story 20 with a poll in the chat (the plan confirms).
+- Result: C4a built in `feat/m08c-c4-widgets` (merged to `main` as `933fb399`); C4b built in `feat/m08c-c4b-widgets-hub` (PR #384: Hub poll card, generic card, poll composer, translation hook point, 18 Hindi messages, demo story 20).
 
 Change docs: roym-extensions, roym-multilingual (ML-26, ML-28).
 
@@ -356,6 +376,8 @@ The owner moved C5 out on 2026-11-15 (section 6, question 3). It was: an extensi
 - Hub words: "Offer" and "Agree" where it says "Quote" and "Accept" today. A quote card gets "Suggest changes", which starts a message in the conversation that names that quote version. The author answers with a new version, as today. New Hindi messages: the owner reviews them before the merge.
 - Criteria: AG-23 (Hub part), AG-27 to AG-30, AG-46 to AG-48, AG-52; VX-55, VX-56.
 - Demo: finishes story 50.
+- **C6a result ([PR #396](https://github.com/syneroym/syneroym/pull/396)):** the `event_log` collection, the derive step on sync, `eventlog.list` and `eventlog.rebuild`; `statement.export` with EEP section; `agreement.close`; saved deal terms (`deal.defaults-get`, `deal.defaults-set`); backup export/import schema version 9; two-node test `roym_statement_e2e`.
+- **C6b result ([PR #397](https://github.com/syneroym/syneroym/pull/397)):** the Hub quote builder for arbitrary mixed commitments, live totals and difference display, version comparison summary, counterparty suggest changes, agreement panel settlement dialogs and close list, statement screen with CSV/JSON exports, and Hindi vocabulary transition from quote/accept to offer/agree; demo story 50 finished. The owner reviewed the 65 new Hindi messages on 2026-11-27.
 
 Change docs: roym-agreements, roym-value-exchange (VX-2, VX-7, VX-45, VX-46).
 

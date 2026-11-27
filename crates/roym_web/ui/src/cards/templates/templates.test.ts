@@ -128,7 +128,7 @@ describe("Card templates", () => {
         schedule: { earliest_secs: 1700000000, latest_secs: 1700086400 },
       });
       expect(el.querySelector(".quote-payee")?.textContent).toBe(
-        "Payee, as agreed in this quote: A. Gardener",
+        "Payee, as agreed in this offer: A. Gardener",
       );
       expect(el.querySelector(".quote-dispute")?.textContent).toBe(
         "Dispute path: Write to the quote author",
@@ -152,7 +152,7 @@ describe("Card templates", () => {
         `Expires: ${formatDateTime(1700100000)} (expired)`,
       );
       expect(past.querySelector(".quote-expired-notice")?.textContent).toBe(
-        `This quote expired on ${formatDateTime(1700100000)}. Ask for a new one.`,
+        `This offer expired on ${formatDateTime(1700100000)}. Ask for a new one.`,
       );
     });
 

@@ -1,0 +1,36 @@
+{
+  "entries": [
+    {
+      "agreement": "string",
+      "commitment_id": "string",
+      "commitment_kind": "string",
+      "conversation": "string",
+      "counterparty_did": "string",
+      "currency": "string",
+      "declared_value_minor": "number",
+      "direction": "received",
+      "event": "commitment-settled",
+      "final_state": "string",
+      "id": "string",
+      "occurred_at_secs": "number",
+      "recorded_at_secs": "number",
+      "records": [
+        "string"
+      ],
+      "resource_kind": "currency"
+    },
+    {
+      "agreement": "string",
+      "conversation": "string",
+      "counterparty_did": "string",
+      "currency": "string",
+      "event": "agreement-formed",
+      "id": "string",
+      "occurred_at_secs": "number",
+      "recorded_at_secs": "number",
+      "records": [
+        "string"
+      ]
+    }
+  ]
+}

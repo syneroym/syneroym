@@ -45,6 +45,7 @@ impl AppDataLayer for TestHost {
         collection: String,
         id: String,
     ) -> Result<Option<RecordReadValue>, DataLayerError> {
+        self.reads.lock().unwrap().push((collection.clone(), id.clone()));
         self.check_read_fault(&collection, &id)?;
         let store = self.storage.lock().unwrap();
         if let Some(col) = store.get(&collection)
@@ -66,6 +67,10 @@ impl AppDataLayer for TestHost {
         collection: String,
         opts: QueryOptions,
     ) -> Result<QueryResult, DataLayerError> {
+        self.reads
+            .lock()
+            .unwrap()
+            .push((collection.clone(), opts.filter.clone().unwrap_or_default()));
         self.queries.lock().unwrap().push((collection.clone(), opts.clone()));
         if let Some(page) = self.query_pages.lock().unwrap().pop_front() {
             return Ok(page);
@@ -222,7 +227,7 @@ impl AppDataLayer for TestHost {
     }
 }
 
-fn matches_filter(payload: &[u8], filter: &serde_json::Value) -> bool {
+pub(crate) fn matches_filter(payload: &[u8], filter: &serde_json::Value) -> bool {
     let Ok(val) = serde_json::from_slice::<serde_json::Value>(payload) else {
         return false;
     };
@@ -238,9 +243,21 @@ fn matches_filter(payload: &[u8], filter: &serde_json::Value) -> bool {
                     return false;
                 }
             }
+            if let Some(gte_val) = exp_obj.get("$gte").and_then(|v| v.as_f64()) {
+                let actual_num = actual.and_then(|v| v.as_f64());
+                if actual_num.is_none_or(|n| n < gte_val) {
+                    return false;
+                }
+            }
             if let Some(lt_val) = exp_obj.get("$lt").and_then(|v| v.as_f64()) {
                 let actual_num = actual.and_then(|v| v.as_f64());
                 if actual_num.is_none_or(|n| n >= lt_val) {
+                    return false;
+                }
+            }
+            if let Some(lte_val) = exp_obj.get("$lte").and_then(|v| v.as_f64()) {
+                let actual_num = actual.and_then(|v| v.as_f64());
+                if actual_num.is_none_or(|n| n > lte_val) {
                     return false;
                 }
             }

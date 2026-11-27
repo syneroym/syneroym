@@ -1,6 +1,7 @@
+import { canRetry, messageStateWord } from "../chat/message_state";
 import { messageLang, messageText } from "../chat/message_text";
 import { errText, field, refiller, text } from "../dom";
-import { codeWord, currentLanguage, messageId, t } from "../i18n/i18n";
+import { currentLanguage, t } from "../i18n/i18n";
 import { languageList } from "../i18n/language_list";
 import { languageName, textLangSelect } from "../i18n/text_lang";
 import { onFeed } from "../events";
@@ -8,41 +9,33 @@ import { call, refusalCode, RpcError } from "../rpc";
 import { whoami } from "../session/login";
 import { renderCard } from "../cards/render";
 import { renderRefusedCard } from "../cards/refused";
-import { toMinorUnits, currencyMinorExponent } from "../money";
-import type { ServiceLocationKind } from "../listings/editor";
-import { serviceLocationEditorLabel } from "../listings/labels";
 import { type SearchMatch, searchHits } from "./message_search";
 import { waitingRedraw } from "./thread_redraw";
 import { categoryPicker } from "../taxonomy/category_picker";
-import { buildDealTerms } from "./quote_terms";
-import { attachSizeLine } from "./quote_size";
 import type { MessagesInitialState, RequestPreFill } from "../navigation";
+import { pollComposer } from "../widgets/composer";
+import { renderWidget } from "../widgets/render";
 import {
+  WIDGET_ANSWER_CONTENT_TYPE,
+  WIDGET_CONTENT_TYPE,
+  widgetPrompt,
+  type WidgetView,
+} from "../widgets/view";
+import {
+  cardAgreementId,
+  computeNewestAgreementCardMap,
   computeNewestQuoteMap,
   computeNewestRequestMap,
   isQuoteSuperseded,
   newestVersionMap,
 } from "./thread_enquiry";
+import { renderVersionSummary, versionSummary, type DealTerms, type Role } from "../deals/version_summary";
+import { renderAgreementPanel } from "../deals/agreement_panel";
 
 /// Things the person has started inside a thread. A redraw from the event
 /// feed waits until they are gone, so it never throws away typed text. An
 /// element inside the thread that holds the person's input belongs here.
-const OPEN_WORK = ".quote-form, .decline-dialog, .delete-dialog, .accept-mt-box";
-
-/// Message id for each message state, shown as a word. A `Map`, so a state
-/// from another node can never hit an inherited property.
-const STATE_LABELS = new Map<string, string>([
-  ["pending", messageId("messages-state-pending")],
-  ["deposited", messageId("messages-state-deposited")],
-  ["delivered", messageId("messages-state-delivered")],
-  ["failed", messageId("messages-state-failed")],
-]);
-
-/// The word for a message state; a state this table does not know is shown
-/// as it came, never inferred.
-export function messageStateWord(state: string): string {
-  return codeWord(STATE_LABELS, state);
-}
+export const OPEN_WORK = ".quote-form, .decline-dialog, .delete-dialog, .accept-mt-box, .settle-dialog, .close-list";
 
 interface ConversationRow {
   id: string;
@@ -93,6 +86,7 @@ export interface CardRow {
     terms?: {
       lang?: string;
       quote_expires_at_secs?: number;
+      [key: string]: unknown;
     };
     quote_expires_at_secs?: number;
     [key: string]: unknown;
@@ -357,8 +351,15 @@ async function renderThread(
   const langField = document.createElement("div");
   langField.className = "field";
   langField.append(text("span", t("messages-languages-label")), langList.root);
-  composeRow.append(composeInput, sendBtn, composeErr, langField);
-  pane.appendChild(composeRow);
+
+  const pollComp = pollComposer({
+    conversation: conv.id,
+    languages: () => langList.value(),
+    onSent: () => redraw.now(),
+  });
+
+  composeRow.append(composeInput, sendBtn, pollComp.button, composeErr, langField);
+  pane.append(composeRow, pollComp.form);
 
   const fillThread = async (into: DocumentFragment) => {
     const cardMap = new Map<string, CardRow>();
@@ -380,6 +381,7 @@ async function renderThread(
 
     const newestRequestMap = computeNewestRequestMap(allCards);
     const newestQuoteMap = computeNewestQuoteMap(allCards);
+    const newestAgreementCardMap = computeNewestAgreementCardMap(allCards);
 
     let messages: MessageRow[] = [];
     try {
@@ -392,12 +394,50 @@ async function renderThread(
       return;
     }
 
+    const widgetIds = messages
+      .filter((m) => m.content_type === WIDGET_CONTENT_TYPE && m.deleted_at_secs == null)
+      .map((m) => m.id);
+    const widgetMap = new Map<string, WidgetView>();
+    let widgetListError: string | null = null;
+    if (widgetIds.length > 0) {
+      try {
+        const res = await call<{ widgets: WidgetView[] }>("widget.list", {
+          conversation: conv.id,
+          widget_ids: widgetIds,
+        });
+        if (res?.widgets) {
+          for (const w of res.widgets) {
+            widgetMap.set(w.widget_id, w);
+          }
+        }
+      } catch (err) {
+        widgetListError = errText(err);
+      }
+    }
+
+    if (widgetListError) {
+      into.appendChild(text("p", widgetListError, "widget-list-error error-text"));
+    }
+
     for (const m of messages) {
       if (m.content_type === "application/vnd.roym.card+json" && cardMap.get(m.id)?.repeat) {
         continue;
       }
       into.appendChild(
-        messageElement(m, cardMap, allCards, newestRequestMap, newestQuoteMap, conv.id, myDid, redraw.now),
+        messageElement(
+          m,
+          cardMap,
+          allCards,
+          newestRequestMap,
+          newestQuoteMap,
+          conv.id,
+          myDid,
+          redraw.now,
+          widgetMap,
+          () => langList.value(),
+          (id) => messages.find((x) => x.id === id)?.restored === true,
+          newestAgreementCardMap,
+        ),
       );
     }
   };
@@ -502,11 +542,6 @@ export function stateHint(state: MessageState): string | null {
     : null;
 }
 
-/** Only a failed message of the user's own history can be sent again. */
-export function canRetry(m: { state: MessageState; deleted_at_secs?: number; restored?: boolean }): boolean {
-  return m.state === "failed" && m.deleted_at_secs == null && !m.restored;
-}
-
 export function refusalText(reason: string): string {
   if (reason === "rate-limited") {
     return t("messages-refused-rate-limited");
@@ -514,7 +549,47 @@ export function refusalText(reason: string): string {
   return t("messages-refused-other", { reason });
 }
 
-function messageElement(
+function attachQuoteHistorySummary(
+  wrap: HTMLElement,
+  cardEl: HTMLElement,
+  cardRow: CardRow,
+  quoteData: unknown,
+  newestQuoteMap?: Map<string, string>,
+) {
+  const quoteId = (cardRow.data as Record<string, unknown> | undefined)?.quote_id as string | undefined;
+  const isNewest = !newestQuoteMap || !quoteId || !cardRow.record_id || newestQuoteMap.get(quoteId) === cardRow.record_id;
+  if (cardRow.card_type === "quote" && isNewest && (cardRow.version_count ?? 1) > 1 && quoteId) {
+    const role = ((quoteData as Record<string, unknown>)?.role ?? "counterparty") as Role;
+    void (async () => {
+      try {
+        const hist = await call<{ versions: Array<{ record_id: string; terms: DealTerms }> }>(
+          "quote.history",
+          { quote_id: quoteId },
+        );
+        if (hist?.versions && hist.versions.length > 1) {
+          const first = hist.versions[0].terms;
+          const latest = hist.versions[hist.versions.length - 1].terms;
+          const curr = (quoteData as Record<string, unknown>)?.terms
+            ? ((quoteData as Record<string, unknown>).terms as { currency?: string }).currency ?? "INR"
+            : "INR";
+          const summary = versionSummary(first, latest, role);
+          const summaryEl = renderVersionSummary(summary, curr);
+          if (!wrap.querySelector(".quote-changes-summary")) {
+            wrap.insertBefore(summaryEl, cardEl);
+          }
+        }
+      } catch (err) {
+        if (!wrap.querySelector(".quote-changes-error")) {
+          const errEl = text("p", t("quote-history-failed", { detail: errText(err) }), "quote-changes-error error-text");
+          wrap.insertBefore(errEl, cardEl);
+        }
+      }
+    })();
+  }
+}
+
+function renderCardMessage(
+  wrap: HTMLElement,
   m: MessageRow,
   cardMap: Map<string, CardRow>,
   allCards: CardRow[],
@@ -523,49 +598,81 @@ function messageElement(
   convId: string,
   myDid: string,
   refresh: () => Promise<void>,
-): HTMLElement {
-  const wrap = document.createElement("div");
-  wrap.className = `message message-${m.direction}`;
-  wrap.dataset.state = m.state;
+  newestAgreementCardMap?: Map<string, string>,
+): void {
+  const cardRow = cardMap.get(m.id);
+  if (cardRow?.repeat) {
+    wrap.style.display = "none";
+    return;
+  }
+  if (!cardRow) {
+    wrap.appendChild(renderRefusedCard("card", 1, t("messages-unfiled-card")));
+    return;
+  }
+  if (cardRow.known && cardRow.verified) {
+    const quoteData =
+      cardRow.card_type === "quote"
+        ? {
+            ...(cardRow.data as Record<string, unknown> | undefined),
+            version_number: cardRow.version_count,
+            role: !myDid || cardRow.data?.counterparty_did === myDid ? "counterparty" : "quote-author",
+          }
+        : cardRow.data;
+    const cardEl = renderCard({
+      type: cardRow.card_type,
+      version: cardRow.version,
+      data: quoteData,
+      agreement_payee: cardRow.agreement_payee,
+      agreement_payment_methods: cardRow.agreement_payment_methods,
+    });
+    wrap.appendChild(cardEl);
+    attachQuoteHistorySummary(wrap, cardEl, cardRow, quoteData, newestQuoteMap);
+  } else if (cardRow.known && !cardRow.verified) {
+    wrap.appendChild(renderRefusedCard(cardRow.card_type, cardRow.version, cardRow.reason));
+  } else {
+    wrap.appendChild(renderCard({ type: cardRow.card_type, version: cardRow.version, data: {} }));
+  }
 
-  if (m.content_type === "application/vnd.roym.card+json") {
-    const cardRow = cardMap.get(m.id);
-    if (cardRow?.repeat) {
-      wrap.style.display = "none";
-      return wrap;
-    }
-    if (cardRow) {
-      if (cardRow.known && cardRow.verified) {
-        wrap.appendChild(
-          renderCard({
-            type: cardRow.card_type,
-            version: cardRow.version,
-            data: cardRow.data,
-            agreement_payee: cardRow.agreement_payee,
-            agreement_payment_methods: cardRow.agreement_payment_methods,
-          }),
-        );
-      } else if (cardRow.known && !cardRow.verified) {
-        wrap.appendChild(renderRefusedCard(cardRow.card_type, cardRow.version, cardRow.reason));
-      } else {
-        wrap.appendChild(renderCard({ type: cardRow.card_type, version: cardRow.version, data: {} }));
-      }
+  // Check if quote answers an earlier version of the request
+  if (isQuoteSuperseded(cardRow, allCards, newestRequestMap)) {
+    const supP = document.createElement("p");
+    supP.className = "quote-superseded-notice";
+    supP.textContent = t("quote-superseded-notice");
+    wrap.appendChild(supP);
+  }
 
-      // Check if quote answers an earlier version of the request
-      if (isQuoteSuperseded(cardRow, allCards, newestRequestMap)) {
-        const supP = document.createElement("p");
-        supP.className = "quote-superseded-notice";
-        supP.textContent = t("quote-superseded-notice");
-        wrap.appendChild(supP);
-      }
+  // Render contextual card action buttons
+  renderCardActions(wrap, cardRow, convId, myDid, refresh, newestQuoteMap);
 
-      // Render contextual card action buttons
-      renderCardActions(wrap, cardRow, convId, myDid, refresh, newestQuoteMap);
-    } else {
-      wrap.appendChild(renderRefusedCard("card", 1, t("messages-unfiled-card")));
-    }
-  } else if (m.deleted_at_secs != null) {
+  // Render agreement panel below newest card of agreement
+  const agrId = cardAgreementId(cardRow);
+  if (agrId && newestAgreementCardMap?.get(agrId) === m.id) {
+    wrap.appendChild(renderAgreementPanel(agrId, myDid, refresh));
+  }
+}
+
+function renderMessageBody(
+  wrap: HTMLElement,
+  m: MessageRow,
+  convId: string,
+  refresh: () => Promise<void>,
+  widgetMap?: Map<string, WidgetView>,
+  languages?: () => string[],
+  isRestored?: (messageId: string) => boolean,
+): void {
+  if (m.deleted_at_secs != null) {
     wrap.appendChild(text("span", t("messages-message-deleted"), "message-body deleted"));
+  } else if (m.content_type === WIDGET_CONTENT_TYPE) {
+    const view = widgetMap?.get(m.id);
+    if (view) {
+      wrap.appendChild(renderWidget(view, { conversation: convId, refresh, languages, isRestored }));
+    } else {
+      const promptText = widgetPrompt(m.body) ?? t("messages-no-body");
+      const nodes = messageText(promptText, m.languages ?? [], "span", {
+        translatable: m.direction === "incoming",
+      });
+      wrap.append(...nodes);
+    }
   } else if (m.body_encoding === "utf8") {
     const nodes = messageText(m.body ?? t("messages-no-body"), m.languages ?? [], "span", {
       translatable: m.direction === "incoming",
@@ -574,22 +681,9 @@ function messageElement(
   } else {
     wrap.appendChild(text("span", m.body ?? t("messages-no-body"), "message-body"));
   }
+}
 
-  // The state word is exactly what the API returned -- never inferred, and
-  // "delivered" is never shown until the service says so.
-  const stateSpan = text("span", messageStateWord(m.state), `message-state state-${m.state}`);
-  const hint = stateHint(m.state);
-  if (hint) {
-    stateSpan.title = hint;
-  }
-  wrap.appendChild(stateSpan);
-  if (m.refused) {
-    wrap.appendChild(text("span", refusalText(m.refused), "message-refused"));
-  }
-  if (m.state === "failed" && m.last_error) {
-    wrap.appendChild(text("span", m.last_error, "message-error"));
-  }
-
+function renderMessageActions(wrap: HTMLElement, m: MessageRow, refresh: () => Promise<void>): HTMLElement {
   const actions = document.createElement("div");
   actions.className = "message-actions";
 
@@ -615,7 +709,65 @@ function messageElement(
     actions.appendChild(deleteBtn);
   }
 
-  wrap.appendChild(actions);
+  return actions;
+}
+
+export function messageElement(
+  m: MessageRow,
+  cardMap: Map<string, CardRow>,
+  allCards: CardRow[],
+  newestRequestMap: Map<string, string>,
+  newestQuoteMap: Map<string, string>,
+  convId: string,
+  myDid: string,
+  refresh: () => Promise<void>,
+  widgetMap?: Map<string, WidgetView>,
+  languages?: () => string[],
+  isRestored?: (messageId: string) => boolean,
+  newestAgreementCardMap?: Map<string, string>,
+): HTMLElement {
+  const wrap = document.createElement("div");
+  wrap.className = `message message-${m.direction}`;
+  wrap.dataset.state = m.state;
+
+  if (m.content_type === WIDGET_ANSWER_CONTENT_TYPE) {
+    wrap.style.display = "none";
+    return wrap;
+  }
+
+  if (m.content_type === "application/vnd.roym.card+json") {
+    renderCardMessage(
+      wrap,
+      m,
+      cardMap,
+      allCards,
+      newestRequestMap,
+      newestQuoteMap,
+      convId,
+      myDid,
+      refresh,
+      newestAgreementCardMap,
+    );
+  } else {
+    renderMessageBody(wrap, m, convId, refresh, widgetMap, languages, isRestored);
+  }
+
+  // The state word is exactly what the API returned -- never inferred, and
+  // "delivered" is never shown until the service says so.
+  const stateSpan = text("span", messageStateWord(m.state), `message-state state-${m.state}`);
+  const hint = stateHint(m.state);
+  if (hint) {
+    stateSpan.title = hint;
+  }
+  wrap.appendChild(stateSpan);
+  if (m.refused) {
+    wrap.appendChild(text("span", refusalText(m.refused), "message-refused"));
+  }
+  if (m.state === "failed" && m.last_error) {
+    wrap.appendChild(text("span", m.last_error, "message-error"));
+  }
+
+  wrap.appendChild(renderMessageActions(wrap, m, refresh));
   return wrap;
 }
 
@@ -717,6 +869,138 @@ function asListedReasonText(reason: string, cap: number): string {
   }
 }
 
+function renderEnquiryActions(
+  wrap: HTMLElement,
+  card: CardRow,
+  convId: string,
+  myDid: string,
+  refresh: () => Promise<void>,
+) {
+  const notIssuedByMe = card.direction === "incoming" || (myDid && card.issuer !== myDid);
+  if (!notIssuedByMe) return;
+
+  const quoteBtn = text("button", t("quote-request-button"), "button quote-request-button") as HTMLButtonElement;
+  quoteBtn.onclick = () => openQuoteForm(wrap, card, convId, refresh, undefined, myDid);
+  wrap.appendChild(quoteBtn);
+
+  const data = card.data as Record<string, unknown> | undefined;
+  if (data?.as_listed) {
+    void agreeAsListedOffer(wrap, card, String(data.listing_id ?? ""), refresh);
+  }
+}
+
+function renderCounterpartyQuoteActions(wrap: HTMLElement, card: CardRow, refresh: () => Promise<void>) {
+  if (card.deal_state === "accepted") {
+    wrap.appendChild(text("p", t("messages-waiting-for-other-side"), "quote-waiting-notice"));
+    return;
+  }
+  const actionsDiv = document.createElement("div");
+  actionsDiv.className = "quote-actions";
+
+  const acceptBtn = text("button", t("messages-accept-button"), "button accept-quote-button") as HTMLButtonElement;
+  const acceptErr = text("p", "", "accept-quote-error");
+
+  const sendAccept = async () => {
+    acceptBtn.disabled = true;
+    acceptErr.textContent = "";
+    const viewed = shownVersion(wrap, card);
+    try {
+      await call("agreement.accept", {
+        quote_record_id: card.record_id,
+        ...(viewed.lang ? { viewed_lang: viewed.lang } : {}),
+        viewed_via_mt: viewed.viaMt,
+      });
+      await refresh();
+    } catch (err) {
+      acceptBtn.disabled = false;
+      const msg = err instanceof RpcError ? err.message : String(err);
+      if (msg.includes("quote-expired") || msg.includes("expired")) {
+        acceptErr.textContent = t("messages-quote-expired");
+      } else if (err instanceof RpcError && refusalCode(err) === "extension-unknown") {
+        acceptErr.textContent = t("messages-accept-extension-unknown");
+      } else {
+        acceptErr.textContent = t("messages-accept-failed", { detail: errText(err) });
+      }
+    }
+  };
+
+  acceptBtn.onclick = () => {
+    if (!shownVersion(wrap, card).viaMt) {
+      void sendAccept();
+      return;
+    }
+    if (actionsDiv.querySelector(".accept-mt-box")) return;
+    actionsDiv.appendChild(mtWarning(card, sendAccept));
+  };
+
+  const declineBtn = text("button", t("messages-decline-button"), "button decline-quote-button") as HTMLButtonElement;
+  declineBtn.onclick = () => openDeclineDialog(wrap, card, refresh);
+
+  const suggestBtn = text("button", t("deal-suggest-changes"), "button quote-suggest-changes-button") as HTMLButtonElement;
+  suggestBtn.onclick = () => {
+    const composeInput =
+      document.querySelector<HTMLInputElement>(".compose-input") ||
+      wrap.closest(".chat-pane")?.querySelector<HTMLInputElement>(".compose-input");
+    if (composeInput) {
+      const versionNumber = card.version_count ?? 1;
+      const prefix = t("deal-suggest-prefix", { n: String(versionNumber) });
+      composeInput.value = prefix.endsWith(" ") ? prefix : `${prefix} `;
+      composeInput.focus();
+      composeInput.scrollIntoView?.({ behavior: "smooth", block: "center" });
+    }
+  };
+
+  actionsDiv.append(acceptBtn, declineBtn, suggestBtn, acceptErr);
+  wrap.appendChild(actionsDiv);
+}
+
+function renderAuthorQuoteActions(
+  wrap: HTMLElement,
+  card: CardRow,
+  convId: string,
+  myDid: string,
+  refresh: () => Promise<void>,
+) {
+  const actionsDiv = document.createElement("div");
+  actionsDiv.className = "quote-actions";
+
+  const newVersionBtn = text("button", t("deal-send-new-version"), "button quote-new-version-button") as HTMLButtonElement;
+  newVersionBtn.onclick = () => openQuoteForm(wrap, card, convId, refresh, undefined, myDid);
+
+  actionsDiv.appendChild(newVersionBtn);
+  wrap.appendChild(actionsDiv);
+}
+
+function renderQuoteActions(
+  wrap: HTMLElement,
+  card: CardRow,
+  convId: string,
+  myDid: string,
+  refresh: () => Promise<void>,
+  newestQuoteMap?: Map<string, string>,
+) {
+  const forMe = !!myDid && card.data?.counterparty_did === myDid;
+  const isAuthor = !!myDid && (card.issuer === myDid || card.data?.quote_author_did === myDid);
+  const nowSecs = Math.floor(Date.now() / 1000);
+  const expSecs = card.data?.terms?.quote_expires_at_secs ?? card.data?.quote_expires_at_secs;
+  const isExpired = card.expired || (expSecs !== undefined && nowSecs > expSecs);
+  const isDeclined = card.declined === true;
+
+  const quoteId = (card.data as Record<string, unknown> | undefined)?.quote_id as string | undefined;
+  const isNewest = !newestQuoteMap || !quoteId || !card.record_id || newestQuoteMap.get(quoteId) === card.record_id;
+
+  const dState = card.deal_state;
+  const isEndedOrAgreed = dState
+    ? ["agreed", "declined", "expired", "not-formed", "closed", "cancelled"].includes(dState)
+    : isExpired || isDeclined;
+
+  if (forMe && isNewest && !isEndedOrAgreed) {
+    renderCounterpartyQuoteActions(wrap, card, refresh);
+  } else if (isAuthor && isNewest && !isEndedOrAgreed) {
+    renderAuthorQuoteActions(wrap, card, convId, myDid, refresh);
+  }
+}
+
 export function renderCardActions(
   wrap: HTMLElement,
   card: CardRow,
@@ -725,95 +1009,11 @@ export function renderCardActions(
   refresh: () => Promise<void>,
   newestQuoteMap?: Map<string, string>,
 ) {
-  // Quote this enquiry: on verified enquiry not issued by me
   if (card.card_type === "enquiry" && card.verified) {
-    const notIssuedByMe = card.direction === "incoming" || (myDid && card.issuer !== myDid);
-    if (notIssuedByMe) {
-      const quoteBtn = text("button", t("quote-request-button"), "button quote-request-button") as HTMLButtonElement;
-      quoteBtn.onclick = () => openQuoteForm(wrap, card, convId, refresh);
-      wrap.appendChild(quoteBtn);
-    }
+    renderEnquiryActions(wrap, card, convId, myDid, refresh);
   }
-
-  // Agree as listed: an enquiry with a consent, for one of this node's own
-  // offerings. The status call also tells the reason the driver is waiting.
-  if (card.card_type === "enquiry" && card.verified) {
-    const notIssuedByMe = card.direction === "incoming" || (myDid && card.issuer !== myDid);
-    const data = card.data as Record<string, unknown> | undefined;
-    if (notIssuedByMe && data?.as_listed) {
-      void agreeAsListedOffer(wrap, card, String(data.listing_id ?? ""), refresh);
-    }
-  }
-
-  // Accept / Decline: on verified quote for me, only on newest version of quote_id,
-  // not when deal is agreed, declined, expired, or not-formed
   if (card.card_type === "quote" && card.verified) {
-    const forMe = !!myDid && card.data?.counterparty_did === myDid;
-    const nowSecs = Math.floor(Date.now() / 1000);
-    const expSecs = card.data?.terms?.quote_expires_at_secs ?? card.data?.quote_expires_at_secs;
-    const isExpired = card.expired || (expSecs !== undefined && nowSecs > expSecs);
-    const isDeclined = card.declined === true;
-
-    const quoteId = (card.data as Record<string, unknown> | undefined)?.quote_id as string | undefined;
-    const isNewest = !newestQuoteMap || !quoteId || !card.record_id || newestQuoteMap.get(quoteId) === card.record_id;
-
-    const dState = card.deal_state;
-    const isEndedOrAgreed = dState
-      ? ["agreed", "declined", "expired", "not-formed", "closed", "cancelled"].includes(dState)
-      : isExpired || isDeclined;
-
-    if (forMe && isNewest && !isEndedOrAgreed) {
-      if (dState === "accepted") {
-        wrap.appendChild(text("p", t("messages-waiting-for-other-side"), "quote-waiting-notice"));
-        return;
-      }
-      const actionsDiv = document.createElement("div");
-      actionsDiv.className = "quote-actions";
-
-      const acceptBtn = text("button", t("messages-accept-button"), "button accept-quote-button") as HTMLButtonElement;
-      const acceptErr = text("p", "", "accept-quote-error");
-
-      const sendAccept = async () => {
-        acceptBtn.disabled = true;
-        acceptErr.textContent = "";
-        const viewed = shownVersion(wrap, card);
-        try {
-          await call("agreement.accept", {
-            quote_record_id: card.record_id,
-            ...(viewed.lang ? { viewed_lang: viewed.lang } : {}),
-            viewed_via_mt: viewed.viaMt,
-          });
-          await refresh();
-        } catch (err) {
-          acceptBtn.disabled = false;
-          const msg = err instanceof RpcError ? err.message : String(err);
-          if (msg.includes("quote-expired") || msg.includes("expired")) {
-            acceptErr.textContent = t("messages-quote-expired");
-          } else if (err instanceof RpcError && refusalCode(err) === "extension-unknown") {
-            acceptErr.textContent = t("messages-accept-extension-unknown");
-          } else {
-            acceptErr.textContent = t("messages-accept-failed", { detail: errText(err) });
-          }
-        }
-      };
-
-      // A machine translation is not what binds: say so, and ask again,
-      // before anything is signed.
-      acceptBtn.onclick = () => {
-        if (!shownVersion(wrap, card).viaMt) {
-          void sendAccept();
-          return;
-        }
-        if (actionsDiv.querySelector(".accept-mt-box")) return;
-        actionsDiv.appendChild(mtWarning(card, sendAccept));
-      };
-
-      const declineBtn = text("button", t("messages-decline-button"), "button decline-quote-button") as HTMLButtonElement;
-      declineBtn.onclick = () => openDeclineDialog(wrap, card, refresh);
-
-      actionsDiv.append(acceptBtn, declineBtn, acceptErr);
-      wrap.appendChild(actionsDiv);
-    }
+    renderQuoteActions(wrap, card, convId, myDid, refresh, newestQuoteMap);
   }
 }
 
@@ -855,282 +1055,21 @@ export function openDeclineDialog(anchor: HTMLElement, card: CardRow, refresh: (
   anchor.appendChild(dialog);
 }
 
-export function openQuoteForm(
-  anchor: HTMLElement,
-  reqCard: CardRow,
-  convId: string,
-  refresh: () => Promise<void>,
-) {
-  const existing = anchor.querySelector(".quote-form");
-  if (existing) {
-    existing.remove();
-    return;
-  }
+import {
+  formatQuoteError,
+  openQuoteForm,
+  type QuoteFormError,
+  type QuoteFormResult,
+  readQuoteForm,
+} from "../quote_form/form";
 
-  const form = document.createElement("div");
-  form.className = "quote-form";
-
-  const quoteLang = textLangSelect("quote-text-lang", currentLanguage());
-
-  const scopeInput = document.createElement("input");
-  scopeInput.placeholder = t("quote-scope-placeholder");
-  scopeInput.className = "quote-scope-input";
-
-  const giveInput = document.createElement("input");
-  giveInput.placeholder = t("quote-give-placeholder");
-  giveInput.setAttribute("aria-label", t("quote-give-label"));
-  giveInput.className = "quote-give-input";
-
-  const currencyInput = document.createElement("input");
-  currencyInput.placeholder = t("quote-currency-placeholder");
-  currencyInput.defaultValue = "EUR";
-  currencyInput.className = "quote-currency-input";
-
-  const amountInput = document.createElement("input");
-  amountInput.placeholder = t("quote-amount-placeholder");
-  amountInput.className = "quote-amount-input";
-
-  const taxInput = document.createElement("input");
-  taxInput.placeholder = t("quote-tax-placeholder");
-  taxInput.className = "quote-tax-input";
-
-  const feesInput = document.createElement("input");
-  feesInput.placeholder = t("quote-fees-placeholder");
-  feesInput.className = "quote-fees-input";
-
-  const payeeInput = document.createElement("input");
-  payeeInput.placeholder = t("quote-payee-placeholder");
-  payeeInput.className = "quote-payee-input";
-
-  const timingSelect = document.createElement("select");
-  timingSelect.className = "quote-timing-select";
-  const optAfter = document.createElement("option");
-  optAfter.value = "after-work";
-  optAfter.textContent = t("quote-timing-after");
-  const optBefore = document.createElement("option");
-  optBefore.value = "before-work";
-  optBefore.textContent = t("quote-timing-before");
-  timingSelect.append(optAfter, optBefore);
-
-  const whereSelect = document.createElement("select");
-  whereSelect.className = "quote-where-select";
-  const optReceiver = document.createElement("option");
-  optReceiver.value = "at-receiver";
-  optReceiver.textContent = serviceLocationEditorLabel("at-receiver");
-  const optGiver = document.createElement("option");
-  optGiver.value = "at-giver";
-  optGiver.textContent = serviceLocationEditorLabel("at-giver");
-  const optRem = document.createElement("option");
-  optRem.value = "remote";
-  optRem.textContent = serviceLocationEditorLabel("remote");
-  whereSelect.append(optReceiver, optGiver, optRem);
-
-  const addressWrap = document.createElement("div");
-  addressWrap.className = "quote-address-wrap";
-  const addressNotice = text("p", t("quote-address-disclosure-notice"), "address-disclosure-notice");
-  const addressInput = document.createElement("input");
-  addressInput.placeholder = t("quote-address-placeholder");
-  addressInput.className = "quote-address-input";
-  addressWrap.append(addressNotice, addressInput);
-
-  whereSelect.onchange = () => {
-    addressWrap.style.display = whereSelect.value === "at-receiver" ? "block" : "none";
-  };
-
-  const cancInput = document.createElement("input");
-  cancInput.placeholder = t("quote-cancellation-placeholder");
-  cancInput.defaultValue = t("quote-default-cancellation");
-  cancInput.className = "quote-canc-input";
-
-  const refInput = document.createElement("input");
-  refInput.placeholder = t("quote-refund-placeholder");
-  refInput.defaultValue = t("quote-default-refund");
-  refInput.className = "quote-ref-input";
-
-  const dispInput = document.createElement("input");
-  dispInput.placeholder = t("quote-dispute-placeholder");
-  dispInput.defaultValue = t("quote-default-dispute");
-  dispInput.className = "quote-disp-input";
-
-  const hoursInput = document.createElement("input");
-  hoursInput.placeholder = t("quote-hours-placeholder");
-  hoursInput.defaultValue = "24";
-  hoursInput.type = "number";
-  hoursInput.className = "quote-hours-input";
-
-  const submitBtn = text("button", t("quote-send-button"), "button submit-quote-button") as HTMLButtonElement;
-  const cancelBtn = text("button", t("common-cancel"), "button cancel-quote-button") as HTMLButtonElement;
-  const errP = text("p", "", "quote-form-error");
-
-  const detachSizeLine = attachSizeLine(form, () => {
-    const res = readQuoteForm(form);
-    return "terms" in res ? res.terms : undefined;
-  });
-
-  cancelBtn.onclick = () => {
-    detachSizeLine();
-    form.remove();
-  };
-
-  submitBtn.onclick = async () => {
-    errP.textContent = "";
-    const parsed = readQuoteForm(form);
-    if ("error" in parsed) {
-      errP.textContent = formatQuoteError(parsed.error);
-      return;
-    }
-    const terms = parsed.terms;
-
-    const hours = Number.parseInt(hoursInput.value || "24", 10);
-    const expires_in_secs = Math.max(300, hours * 3600);
-
-    submitBtn.disabled = true;
-    try {
-      await call("quote.set", {
-        enquiry_record_id: reqCard.record_id,
-        expires_in_secs,
-        terms,
-      });
-      detachSizeLine();
-      form.remove();
-      await refresh();
-    } catch (err) {
-      errP.textContent = t("quote-failed", { detail: errText(err) });
-      submitBtn.disabled = false;
-    }
-  };
-
-  form.append(
-    field(t("quote-text-language"), quoteLang),
-    scopeInput,
-    giveInput,
-    currencyInput,
-    amountInput,
-    taxInput,
-    feesInput,
-    payeeInput,
-    timingSelect,
-    whereSelect,
-    addressWrap,
-    cancInput,
-    refInput,
-    dispInput,
-    hoursInput,
-    submitBtn,
-    cancelBtn,
-    errP,
-  );
-  anchor.appendChild(form);
-}
-
-export type QuoteFormError =
-  | { key: string; args?: Record<string, string | number> }
-  | { raw: string };
-
-export type QuoteFormResult =
-  | { terms: Record<string, unknown> }
-  | { error: QuoteFormError };
-
-export function formatQuoteError(err: QuoteFormError): string {
-  if ("raw" in err) return err.raw;
-  switch (err.key) {
-    case "quote-scope-required":
-      return t("quote-scope-required");
-    case "quote-currency-required":
-      return t("quote-currency-required");
-    case "quote-currency-unknown":
-      return t("quote-currency-unknown", err.args);
-    case "quote-amount-required":
-      return t("quote-amount-required");
-    case "quote-payee-required":
-      return t("quote-payee-required");
-    default:
-      return err.key;
-  }
-}
-
-export function readQuoteForm(form: HTMLElement): QuoteFormResult {
-  const scopeInput = form.querySelector<HTMLInputElement>(".quote-scope-input");
-  const giveInput = form.querySelector<HTMLInputElement>(".quote-give-input");
-  const currencyInput = form.querySelector<HTMLInputElement>(".quote-currency-input");
-  const amountInput = form.querySelector<HTMLInputElement>(".quote-amount-input");
-  const taxInput = form.querySelector<HTMLInputElement>(".quote-tax-input");
-  const feesInput = form.querySelector<HTMLInputElement>(".quote-fees-input");
-  const payeeInput = form.querySelector<HTMLInputElement>(".quote-payee-input");
-  const timingSelect = form.querySelector<HTMLSelectElement>(".quote-timing-select");
-  const whereSelect = form.querySelector<HTMLSelectElement>(".quote-where-select");
-  const addressInput = form.querySelector<HTMLInputElement>(".quote-address-input");
-  const cancInput = form.querySelector<HTMLInputElement>(".quote-canc-input");
-  const refInput = form.querySelector<HTMLInputElement>(".quote-ref-input");
-  const dispInput = form.querySelector<HTMLInputElement>(".quote-disp-input");
-  const quoteLang = form.querySelector<HTMLSelectElement>(".quote-text-lang");
-
-  const scope = scopeInput?.value.trim() ?? "";
-  if (!scope) return { error: { key: messageId("quote-scope-required") } };
-
-  const currency = currencyInput?.value.trim().toUpperCase() ?? "";
-  if (!currency) return { error: { key: messageId("quote-currency-required") } };
-
-  const exp = currencyMinorExponent(currency);
-  if (exp === undefined) {
-    return { error: { key: messageId("quote-currency-unknown"), args: { currency } } };
-  }
-
-  let amountMinor: number | undefined;
-  try {
-    amountMinor = toMinorUnits(amountInput?.value ?? "", exp);
-  } catch (e) {
-    return { error: { raw: errText(e) } };
-  }
-  if (amountMinor === undefined) return { error: { key: messageId("quote-amount-required") } };
-
-  let taxMinor = 0;
-  if (taxInput?.value.trim()) {
-    try {
-      taxMinor = toMinorUnits(taxInput.value, exp) ?? 0;
-    } catch (e) {
-      return { error: { raw: errText(e) } };
-    }
-  }
-
-  let feesMinor = 0;
-  if (feesInput?.value.trim()) {
-    try {
-      feesMinor = toMinorUnits(feesInput.value, exp) ?? 0;
-    } catch (e) {
-      return { error: { raw: errText(e) } };
-    }
-  }
-
-  const payee = payeeInput?.value.trim() ?? "";
-  if (!payee) return { error: { key: messageId("quote-payee-required") } };
-
-  const where = (whereSelect?.value ?? "at-receiver") as ServiceLocationKind;
-  const address = where === "at-receiver" ? addressInput?.value.trim() : undefined;
-  const timing = (timingSelect?.value ?? "after-work") as "before-work" | "after-work";
-  const lang = quoteLang?.value ?? "en";
-
-  return {
-    terms: buildDealTerms(
-      {
-        give: giveInput?.value.trim() || undefined,
-        scope,
-        currency,
-        amountMinor,
-        taxMinor,
-        feesMinor,
-        payee,
-        timing,
-        where,
-        address,
-        cancellation: cancInput?.value.trim(),
-        refund: refInput?.value.trim(),
-        dispute: dispInput?.value.trim(),
-      },
-      lang,
-    ),
-  };
-}
+export {
+  formatQuoteError,
+  openQuoteForm,
+  type QuoteFormError,
+  type QuoteFormResult,
+  readQuoteForm,
+};
 
 function openDeleteDialog(anchor: HTMLElement, m: MessageRow, refresh: () => Promise<void>) {
   const existing = anchor.querySelector(".delete-dialog");

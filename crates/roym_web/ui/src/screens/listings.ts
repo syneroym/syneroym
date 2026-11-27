@@ -435,7 +435,7 @@ function buildEditor(onSaved: () => Promise<void>): { root: HTMLElement } {
 
   // --- payment ---
   const payment = block("payment", t("listing-block-payment"));
-  const payCurrency = input(t("listing-placeholder-currency"), "EUR");
+  const payCurrency = input(t("listing-placeholder-currency"), "INR");
   payCurrency.className = "payment-currency-input";
   const payModel = select(codeOptions(PRICING_MODEL_LABELS, ["per-hour", "fixed", "per-unit", "quote-only"]), "per-hour");
   payModel.className = "payment-model";

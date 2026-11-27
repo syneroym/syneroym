@@ -115,7 +115,7 @@ test('Roym step story: the giver marks work started and both Hubs show the card'
       const quote = threadMessage(bobPage, `Garden clearance ${runTag}`);
       await expect(quote).toBeVisible({ timeout: DELIVERY_WAIT_MS });
       await expect(quote.locator('.quote-details')).toContainText(process.env.DEMO_STEP_SLOT_ID!);
-      await quote.getByRole('button', { name: 'Accept' }).click();
+      await quote.locator('.accept-quote-button').click();
       await expect(bobPage.locator('.accept-mt-box')).toHaveCount(0);
       await expect(runReceiptCard(bobPage, runTag).first()).toBeVisible({ timeout: 15_000 });
     });

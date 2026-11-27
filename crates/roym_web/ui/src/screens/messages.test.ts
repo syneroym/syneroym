@@ -3,18 +3,18 @@ import HINDI from "../i18n/hi.ftl?raw";
 import { activate, activateWith, t } from "../i18n/i18n";
 import {
   type CardRow,
-  canRetry,
+  type MessageState,
   computeNewestQuoteMap,
   computeNewestRequestMap,
   isQuoteSuperseded,
-  messageStateWord,
-  openQuoteForm,
-  readQuoteForm,
+  messageElement,
   refusalText,
   renderCardActions,
   renderMessages,
   stateHint,
 } from "./messages.js";
+import { canRetry, messageStateWord } from "../chat/message_state";
+import { pollDefinition, type WidgetView } from "../widgets/view";
 import { stubRpc } from "../testing/stub-rpc";
 
 describe("newestRequestMap and quote superseded notice", () => {
@@ -249,79 +249,6 @@ describe("text that the person signs", () => {
         expect(bytes, `${language}/${id}`).toBeLessThanOrEqual(MAX_BYTES);
       }
     }
-  });
-
-  it("fills the quote terms in the language of the Hub", async () => {
-    await activateWith("hi", { hi: async () => HINDI });
-    const anchor = document.createElement("div");
-    const request = { record_id: "rec_req" } as CardRow;
-    openQuoteForm(anchor, request, "conv1", async () => {});
-    const value = (cls: string) => anchor.querySelector<HTMLInputElement>(cls)?.value;
-    expect(value(".quote-canc-input")).toBe(t("quote-default-cancellation"));
-    expect(value(".quote-ref-input")).toBe(t("quote-default-refund"));
-    expect(value(".quote-disp-input")).toBe(t("quote-default-dispute"));
-    expect(value(".quote-canc-input")).toMatch(/[ऀ-ॿ]/);
-  });
-
-  it("quote form sends lang from its control in terms, starting at UI language", async () => {
-    let sentTerms: Record<string, unknown> | undefined;
-    stubRpc({
-      "quote.set": (params) => {
-        sentTerms = (params as { terms: Record<string, unknown> }).terms;
-        return { quote_id: "q1", record_id: "rec_q1" };
-      },
-    });
-
-    const anchor = document.createElement("div");
-    const request = { record_id: "rec_req" } as CardRow;
-    openQuoteForm(anchor, request, "conv1", async () => {});
-
-    const langSel = anchor.querySelector<HTMLSelectElement>(".quote-text-lang")!;
-    expect(langSel).not.toBeNull();
-    expect(langSel.value).toBe("en");
-
-    // Change to hi
-    langSel.value = "hi";
-
-    anchor.querySelector<HTMLInputElement>(".quote-scope-input")!.value = "Scope of work";
-    anchor.querySelector<HTMLInputElement>(".quote-currency-input")!.value = "EUR";
-    anchor.querySelector<HTMLInputElement>(".quote-amount-input")!.value = "100";
-    anchor.querySelector<HTMLInputElement>(".quote-payee-input")!.value = "Alice";
-
-    const submitBtn = anchor.querySelector<HTMLButtonElement>(".submit-quote-button")!;
-    submitBtn.click();
-
-    await vi.waitFor(() => expect(sentTerms).toBeDefined());
-    expect((sentTerms!.scope as Record<string, unknown>).lang).toBe("hi");
-  });
-
-  it("readQuoteForm gives the terms submit sends", async () => {
-    let sentTerms: Record<string, unknown> | undefined;
-    stubRpc({
-      "quote.set": (params) => {
-        sentTerms = (params as { terms: Record<string, unknown> }).terms;
-        return { quote_id: "q1", record_id: "rec_q1" };
-      },
-    });
-
-    const anchor = document.createElement("div");
-    const request = { record_id: "rec_req" } as CardRow;
-    openQuoteForm(anchor, request, "conv1", async () => {});
-
-    const form = anchor.querySelector<HTMLElement>(".quote-form")!;
-    form.querySelector<HTMLInputElement>(".quote-scope-input")!.value = "Scope of work";
-    form.querySelector<HTMLInputElement>(".quote-currency-input")!.value = "EUR";
-    form.querySelector<HTMLInputElement>(".quote-amount-input")!.value = "100";
-    form.querySelector<HTMLInputElement>(".quote-payee-input")!.value = "Alice";
-
-    const parsed = readQuoteForm(form);
-    expect("terms" in parsed).toBe(true);
-
-    const submitBtn = form.querySelector<HTMLButtonElement>(".submit-quote-button")!;
-    submitBtn.click();
-
-    await vi.waitFor(() => expect(sentTerms).toBeDefined());
-    expect("terms" in parsed && parsed.terms).toEqual(sentTerms);
   });
 });
 
@@ -886,5 +813,334 @@ describe("request form category picker reset", () => {
     expect(listingInput.value).toBe("");
     expect(descInput.value).toBe("");
     expect(host.querySelectorAll(".request-cats-input .picker-chip")).toHaveLength(0);
+  });
+});
+
+describe("widget messages in messages thread", () => {
+  const baseMessage = (id: string, contentType: string, body?: string) => ({
+    id,
+    conversation: "conv-1",
+    author: "did:key:alice",
+    direction: "incoming" as "incoming" | "outgoing",
+    sender_timestamp_ms: 1000,
+    content_type: contentType,
+    body_encoding: "utf8" as const,
+    body: body ?? "",
+    languages: ["en"],
+    state: "delivered" as MessageState,
+    last_error: undefined as string | undefined,
+    restored: undefined as boolean | undefined,
+    stored_at_secs: 1,
+  });
+
+  it("a widget message draws the widget card", () => {
+    const msg = baseMessage("msg-w1", "application/vnd.roym.widget+json");
+    const widgetView: WidgetView = {
+      widget_id: "msg-w1",
+      author: "did:key:alice",
+      direction: "incoming",
+      sender_timestamp_ms: 1000,
+      definition: {
+        extension: { id: "poll", version: 1 },
+        type: "poll/single",
+        semantic: "poll",
+        prompt: "Where to eat?",
+        fields: [
+          {
+            name: "option",
+            type: "choice",
+            required: true,
+            choices: [
+              { code: "o1", text: "Pizza" },
+              { code: "o2", text: "Sushi" },
+            ],
+          },
+        ],
+      },
+      checked: true,
+      counts: [
+        { field: "option", choice: "o1", count: 2 },
+        { field: "option", choice: "o2", count: 1 },
+      ],
+      answers: [],
+      ignored_answers: 0,
+      state: "delivered",
+    };
+    const widgetMap = new Map<string, WidgetView>([["msg-w1", widgetView]]);
+
+    const el = messageElement(
+      msg,
+      new Map(),
+      [],
+      new Map(),
+      new Map(),
+      "conv-1",
+      "did:key:me",
+      async () => {},
+      widgetMap,
+    );
+
+    const card = el.querySelector(".widget-card");
+    expect(card).not.toBeNull();
+    expect(el.querySelector(".widget-card .message-body")?.textContent).toBe("Where to eat?");
+  });
+
+  it("an answer message draws nothing (display none)", () => {
+    const msg = baseMessage("msg-a1", "application/vnd.roym.widget-answer+json");
+    const el = messageElement(
+      msg,
+      new Map(),
+      [],
+      new Map(),
+      new Map(),
+      "conv-1",
+      "did:key:me",
+      async () => {},
+    );
+
+    expect(el.style.display).toBe("none");
+    expect(el.querySelector(".widget-card")).toBeNull();
+  });
+
+  it("a widget missing from the map keeps the widget prompt text", () => {
+    const msg = baseMessage("msg-w-missing", "application/vnd.roym.widget+json", JSON.stringify({
+      widget_version: 1,
+      widget: pollDefinition("Custom widget prompt", ["Option 1", "Option 2"]),
+    }));
+    const el = messageElement(
+      msg,
+      new Map(),
+      [],
+      new Map(),
+      new Map(),
+      "conv-1",
+      "did:key:me",
+      async () => {},
+      new Map(),
+    );
+
+    expect(el.querySelector(".widget-refused")).toBeNull();
+    expect(el.textContent).toContain("Custom widget prompt");
+  });
+
+  it("an own failed widget row has exactly one state word and one Retry button", () => {
+    const msg = baseMessage("msg-w-failed", "application/vnd.roym.widget+json", JSON.stringify({
+      widget_version: 1,
+      widget: pollDefinition("Question", ["A", "B"]),
+    }));
+    msg.direction = "outgoing";
+    msg.state = "failed";
+    msg.last_error = "send error";
+
+    const el = messageElement(
+      msg,
+      new Map(),
+      [],
+      new Map(),
+      new Map(),
+      "conv-1",
+      "did:key:me",
+      async () => {},
+      new Map(),
+    );
+
+    const stateWords = el.querySelectorAll(".message-state");
+    expect(stateWords).toHaveLength(1);
+    expect(stateWords[0].textContent).toBe("failed");
+
+    const retryBtns = el.querySelectorAll(".retry-message");
+    expect(retryBtns).toHaveLength(1);
+  });
+
+  it("a restored failed widget row has exactly one state word and zero Retry buttons", () => {
+    const msg = baseMessage("msg-w-restored", "application/vnd.roym.widget+json", JSON.stringify({
+      widget_version: 1,
+      widget: pollDefinition("Question", ["A", "B"]),
+    }));
+    msg.direction = "outgoing";
+    msg.state = "failed";
+    msg.restored = true;
+
+    const el = messageElement(
+      msg,
+      new Map(),
+      [],
+      new Map(),
+      new Map(),
+      "conv-1",
+      "did:key:me",
+      async () => {},
+      new Map(),
+    );
+
+    const stateWords = el.querySelectorAll(".message-state");
+    expect(stateWords).toHaveLength(1);
+
+    const retryBtns = el.querySelectorAll(".retry-message");
+    expect(retryBtns).toHaveLength(0);
+  });
+
+  it("a widget row has a delete button and retains message state", () => {
+    const msg = baseMessage("msg-w-del", "application/vnd.roym.widget+json");
+    const el = messageElement(
+      msg,
+      new Map(),
+      [],
+      new Map(),
+      new Map(),
+      "conv-1",
+      "did:key:me",
+      async () => {},
+      new Map(),
+    );
+    expect(el.querySelector(".delete-message")).not.toBeNull();
+    expect(el.querySelector(".message-state")).not.toBeNull();
+  });
+
+  it("fillThread calls widget.list only for non-deleted widgets and skips when no widgets exist", async () => {
+    const calls: { method: string; params: unknown }[] = [];
+    stubRpc({
+      "session.whoami": () => ({ did: "did:key:me" }),
+      "profile.get": () => ({ profile: null }),
+      "conversation.list": () => ({
+        conversations: [{ id: "conv-1", peer_address: "peer-1", message_count: 3 }],
+      }),
+      "transaction.sync": () => ({}),
+      "transaction.thread": () => ({ cards: [] }),
+      "conversation.history": () => ({
+        messages: [
+          {
+            id: "msg-live",
+            conversation: "conv-1",
+            author: "peer-1",
+            direction: "incoming",
+            sender_timestamp_ms: 1000,
+            content_type: "application/vnd.roym.widget+json",
+            body_encoding: "utf8",
+            body: '{"widget_version":1,"definition":{"prompt":"A live poll"}}',
+            state: "delivered",
+            deleted_at_secs: null,
+          },
+          {
+            id: "msg-deleted",
+            conversation: "conv-1",
+            author: "peer-1",
+            direction: "incoming",
+            sender_timestamp_ms: 1100,
+            content_type: "application/vnd.roym.widget+json",
+            body_encoding: "utf8",
+            body: "",
+            state: "delivered",
+            deleted_at_secs: 12345,
+          },
+          {
+            id: "msg-txt",
+            conversation: "conv-1",
+            author: "peer-1",
+            direction: "incoming",
+            sender_timestamp_ms: 1200,
+            content_type: "text/plain",
+            body_encoding: "utf8",
+            body: "hello",
+            state: "delivered",
+          },
+        ],
+      }),
+      "widget.list": (params) => {
+        calls.push({ method: "widget.list", params });
+        return { widgets: [], complete: true };
+      },
+    });
+
+    const host = document.createElement("div");
+    await renderMessages(host);
+
+    const widgetListCalls = calls.filter((c) => c.method === "widget.list");
+    expect(widgetListCalls).toHaveLength(1);
+    expect(widgetListCalls[0].params).toEqual({
+      conversation: "conv-1",
+      widget_ids: ["msg-live"],
+    });
+  });
+
+  it("fillThread makes no widget.list call when history has no widgets", async () => {
+    const calls: { method: string; params: unknown }[] = [];
+    stubRpc({
+      "session.whoami": () => ({ did: "did:key:me" }),
+      "profile.get": () => ({ profile: null }),
+      "conversation.list": () => ({
+        conversations: [{ id: "conv-1", peer_address: "peer-1", message_count: 1 }],
+      }),
+      "transaction.sync": () => ({}),
+      "transaction.thread": () => ({ cards: [] }),
+      "conversation.history": () => ({
+        messages: [
+          {
+            id: "msg-txt",
+            conversation: "conv-1",
+            author: "peer-1",
+            direction: "incoming",
+            sender_timestamp_ms: 1200,
+            content_type: "text/plain",
+            body_encoding: "utf8",
+            body: "hello",
+            state: "delivered",
+          },
+        ],
+      }),
+      "widget.list": (params) => {
+        calls.push({ method: "widget.list", params });
+        return { widgets: [], complete: true };
+      },
+    });
+
+    const host = document.createElement("div");
+    await renderMessages(host);
+
+    const widgetListCalls = calls.filter((c) => c.method === "widget.list");
+    expect(widgetListCalls).toHaveLength(0);
+  });
+
+  it("on widget.list error in fillThread, draws a thread-level error and keeps the widget's prompt", async () => {
+    stubRpc({
+      "session.whoami": () => ({ did: "did:key:me" }),
+      "profile.get": () => ({ profile: null }),
+      "conversation.list": () => ({
+        conversations: [{ id: "conv-1", peer_address: "peer-1", message_count: 1 }],
+      }),
+      "transaction.sync": () => ({}),
+      "transaction.thread": () => ({ cards: [] }),
+      "conversation.history": () => ({
+        messages: [
+          {
+            id: "msg-live",
+            conversation: "conv-1",
+            author: "peer-1",
+            direction: "incoming",
+            sender_timestamp_ms: 1000,
+            content_type: "application/vnd.roym.widget+json",
+            body_encoding: "utf8",
+            body: JSON.stringify({
+              widget_version: 1,
+              widget: pollDefinition("Prompt when list fails", ["Option 1", "Option 2"]),
+            }),
+            state: "delivered",
+          },
+        ],
+      }),
+      "widget.list": () => {
+        throw new Error("node restarting");
+      },
+    });
+
+    const host = document.createElement("div");
+    await renderMessages(host);
+
+    const threadErr = host.querySelector(".widget-list-error");
+    expect(threadErr).not.toBeNull();
+    expect(threadErr?.textContent).toContain("node restarting");
+
+    expect(host.querySelector(".widget-refused")).toBeNull();
+    expect(host.textContent).toContain("Prompt when list fails");
   });
 });

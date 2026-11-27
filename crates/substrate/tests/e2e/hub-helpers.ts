@@ -348,7 +348,7 @@ export async function sendQuote(
   await form.locator('.quote-currency-input').fill(quote.currency);
   await form.locator('.quote-amount-input').fill(quote.amount);
   await form.locator('.quote-payee-input').fill(quote.payee);
-  await form.locator('.quote-where-select').selectOption('at-giver');
+  await form.locator('.quote-where-select').first().selectOption('at-giver');
   await expect(form.locator('.quote-size-line')).toBeVisible();
   await expect(form.locator('.quote-size-line')).toContainText('of 96 KiB');
   await form.locator('.submit-quote-button').click();
@@ -418,3 +418,146 @@ export async function chooseHubLanguage(page: Page, tag: string) {
   await page.locator('.language-picker').selectOption(tag);
   await expect(page.locator('html')).toHaveAttribute('lang', tag, { timeout: 15_000 });
 }
+
+/** Send a single-choice poll into the active conversation via the poll composer. */
+export async function sendPoll(page: Page, question: string, options: string[]) {
+  const form = page.locator('.poll-composer-form');
+  const isVisible = await form.isVisible().catch(() => false);
+  if (!isVisible) {
+    await page.locator('.toggle-poll-button').click();
+    await expect(form).toBeVisible({ timeout: 15_000 });
+  }
+
+  await form.locator('.widget-poll-question-input').fill(question);
+
+  let currentCount = await form.locator('.widget-poll-option-input').count();
+  while (currentCount < options.length) {
+    await form.locator('.widget-poll-add-option').click();
+    currentCount = await form.locator('.widget-poll-option-input').count();
+  }
+
+  for (let i = 0; i < options.length; i++) {
+    await form.locator('.widget-poll-option-input').nth(i).fill(options[i]);
+  }
+
+  const sendBtn = form.locator('.widget-poll-send-btn');
+  await expect(sendBtn).toBeEnabled({ timeout: 15_000 });
+  await sendBtn.click();
+  await expect(form).toBeHidden({ timeout: 15_000 });
+}
+
+/** Vote for an option in a poll widget card. */
+export async function votePoll(page: Page, question: string, option: string) {
+  const card = page.locator('.widget-card').filter({ hasText: question });
+  await expect(card).toBeVisible({ timeout: 15_000 });
+  const optBtn = card.locator('.widget-poll-option-btn').filter({ hasText: option });
+  await optBtn.click();
+  await expect(card.locator('.widget-poll-your-choice')).toContainText(option, { timeout: 15_000 });
+}
+
+/** Return the Locator for an option's vote count in a poll widget card. */
+export function pollCount(page: Page, question: string, option: string): Locator {
+  const card = page.locator('.widget-card').filter({ hasText: question });
+  const optBtn = card.locator('.widget-poll-option-btn').filter({ hasText: option });
+  return optBtn.locator('.poll-option-count');
+}
+
+/**
+ * Add a commitment line to the open quote form. Clicks `.deal-add-line` and fills
+ * the newly added commitment row fields.
+ */
+export async function addCommitment(
+  page: Page,
+  commitment: {
+    giver?: 'me' | 'them';
+    kind?: 'service' | 'goods' | 'money';
+    description?: string;
+    value?: string;
+    location?: string;
+  },
+) {
+  const form = page.locator('.quote-form');
+  await form.locator('.deal-add-line').click();
+  const row = form.locator('.quote-commitment-row').last();
+  if (commitment.giver) {
+    await row
+      .locator('.quote-row-giver-select')
+      .selectOption(commitment.giver === 'me' ? 'quote-author' : 'counterparty');
+  }
+  if (commitment.kind) {
+    await row.locator('.quote-row-kind-select').selectOption(commitment.kind);
+  }
+  if (commitment.description) {
+    await row.locator('.quote-row-desc-input').fill(commitment.description);
+  }
+  if (commitment.value) {
+    await row.locator('.quote-row-value-input').fill(commitment.value);
+  }
+  if (commitment.location) {
+    await row.locator('.quote-where-select').selectOption(commitment.location);
+  }
+}
+
+/**
+ * Locates the agreement panel in the thread under the newest card of the agreement.
+ */
+export async function openAgreementPanel(page: Page, agreementIdOrTag?: string): Promise<Locator> {
+  let panel = page.locator('.agreement-panel');
+  if (agreementIdOrTag) {
+    const byClass = page.locator(`.agreement-panel-${agreementIdOrTag}`);
+    const byScope = page.locator(`.agreement-panel[data-scope*="${agreementIdOrTag}"]`);
+    const byText = page.locator('.agreement-panel', { hasText: agreementIdOrTag });
+    if ((await byClass.count()) > 0) {
+      panel = byClass;
+    } else if ((await byScope.count()) > 0) {
+      panel = byScope;
+    } else if ((await byText.count()) > 0) {
+      panel = byText;
+    } else {
+      const msgWithTag = threadMessage(page, agreementIdOrTag);
+      if ((await msgWithTag.count()) > 0 && (await msgWithTag.locator('.agreement-panel').count()) > 0) {
+        panel = msgWithTag.locator('.agreement-panel');
+      } else {
+        panel = page.locator('.agreement-panel');
+      }
+    }
+  }
+  await expect(panel.last().locator('.agreement-commitments-list')).toBeVisible({ timeout: 15_000 });
+  return panel.last();
+}
+
+/**
+ * Close all open commitments for one side via "I gave everything" or "I received everything".
+ */
+export async function closeEverything(scope: Page | Locator, asSide: 'giver' | 'receiver') {
+  const cls = asSide === 'receiver' ? '.deal-close-receive-button' : '.deal-close-give-button';
+  const btn = scope.locator(cls).last();
+  await btn.click();
+  const page = 'page' in scope ? scope.page() : scope;
+  const list = page.locator('.close-list').last();
+  await expect(list).toBeVisible({ timeout: 15_000 });
+  await list.locator('.deal-close-sign-button').click();
+  await expect(list).toHaveCount(0, { timeout: 15_000 });
+}
+
+/**
+ * Settle a commitment in the agreement panel: clicks `.deal-action-${action}-button`,
+ * fills the settlement note if provided, and confirms.
+ */
+export async function settle(
+  scope: Page | Locator,
+  action: 'delivered' | 'paid' | 'received',
+  note?: string,
+) {
+  const btn = scope.locator(`.deal-action-${action}-button`).last();
+  await btn.click();
+  const page = 'page' in scope ? scope.page() : scope;
+  const dialog = page.locator('.settle-dialog').last();
+  await expect(dialog).toBeVisible();
+  if (note) {
+    await dialog.locator('.settlement_note').fill(note);
+  }
+  await dialog.locator('.settle-confirm-button').click();
+  await expect(dialog).toHaveCount(0, { timeout: 15_000 });
+}
+

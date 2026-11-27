@@ -1,0 +1,57 @@
+{
+  "eeps": {
+    "status": "not-available"
+  },
+  "from_secs": "number",
+  "generated_at_secs": "number",
+  "open_at_end": [
+    {
+      "agreed_at_secs": "number",
+      "agreement": "string",
+      "commitment_id": "string",
+      "commitment_kind": "string",
+      "counterparty_did": "string",
+      "currency": "string",
+      "declared_value_minor": "number",
+      "description": {
+        "lang": "string",
+        "text": "string"
+      },
+      "direction": "given",
+      "records": [],
+      "resource_kind": "goods-or-service"
+    }
+  ],
+  "owner_did": "string",
+  "rows": [
+    {
+      "agreed_at_secs": "number",
+      "agreement": "string",
+      "commitment_id": "string",
+      "commitment_kind": "string",
+      "counterparty_did": "string",
+      "currency": "string",
+      "declared_value_minor": "number",
+      "description": {
+        "lang": "string",
+        "text": "string"
+      },
+      "direction": "received",
+      "records": [
+        "string"
+      ],
+      "resource_kind": "currency",
+      "settled_at_secs": "number"
+    }
+  ],
+  "statement_version": "number",
+  "to_secs": "number",
+  "totals": [
+    {
+      "currency": "string",
+      "direction": "received",
+      "resource_kind": "currency",
+      "sum_minor": "number"
+    }
+  ]
+}

@@ -1,8 +1,10 @@
 //! Transaction data backup: export and import.
 
 pub(crate) mod as_listed;
+pub(crate) mod defaults;
 pub(crate) mod disclosures;
 pub(crate) mod failure;
+pub(crate) mod header;
 pub(crate) mod reservations;
 pub(crate) mod sections;
 pub(crate) mod steps;
@@ -11,15 +13,16 @@ mod tests;
 
 use std::collections::{BTreeMap, HashMap};
 
+use header::validate_bundle_header;
 use serde::Serialize;
 use serde_json::{Value, json};
 use syneroym_app_host::AppHost;
 use syneroym_roym_core::{
     backup::{
         self, Bundle, ImportInput, SECTION_AGREEMENT_PROGRESS, SECTION_AGREEMENTS,
-        SECTION_AS_LISTED, SECTION_CARDS, SECTION_DISCLOSURES, SECTION_ENQUIRIES,
-        SECTION_ENQUIRY_HISTORY, SECTION_FULFILMENTS, SECTION_LEDGER, SECTION_PAYMENTS,
-        SECTION_QUOTE_HISTORY, SECTION_QUOTES, SECTION_STEPS,
+        SECTION_AS_LISTED, SECTION_CARDS, SECTION_DEAL_DEFAULTS, SECTION_DISCLOSURES,
+        SECTION_ENQUIRIES, SECTION_ENQUIRY_HISTORY, SECTION_FULFILMENTS, SECTION_LEDGER,
+        SECTION_PAYMENTS, SECTION_QUOTE_HISTORY, SECTION_QUOTES, SECTION_STEPS,
     },
     clock, commitment_failure,
     deal::DealTerms,
@@ -31,9 +34,10 @@ use syneroym_roym_core::{
 };
 
 use super::{
-    AGREEMENT_PROGRESS, AGREEMENTS, AS_LISTED, AgreementRow, CARDS, CardRow, DISCLOSURES,
-    ENQUIRIES, ENQUIRY_HISTORY, FULFILMENTS, LEDGER, PAYMENTS, QUOTE_HISTORY, QUOTES,
-    RecordPointerRow, SCHEMA_VERSION, STEPS, ensure_collections, get_bytes, put_bytes, put_row,
+    AGREEMENT_PROGRESS, AGREEMENTS, AS_LISTED, AgreementRow, CARDS, CardRow, DEAL_DEFAULTS,
+    DISCLOSURES, ENQUIRIES, ENQUIRY_HISTORY, FULFILMENTS, LEDGER, PAYMENTS, QUOTE_HISTORY, QUOTES,
+    RecordPointerRow, SCHEMA_VERSION, STEPS, ensure_collections, eventlog_ops, get_bytes,
+    put_bytes, put_row,
 };
 
 #[derive(Debug, Serialize)]
@@ -44,6 +48,7 @@ pub struct TransactionImportOutput {
     /// Reservations it could not take again. The scheduling bundle must be
     /// imported first, and this one again.
     pub reservations_failed: Vec<reservations::ReservationFailure>,
+    pub log_entries_made: u32,
 }
 
 /// Exports transaction data: requests, quotes, agreements, cards, and history.
@@ -70,6 +75,7 @@ pub(crate) async fn export<H: AppHost>(host: &H, _input: NoParams) -> Reply<Bund
             (SECTION_STEPS, STEPS),
             (SECTION_DISCLOSURES, DISCLOSURES),
             (SECTION_AS_LISTED, AS_LISTED),
+            (SECTION_DEAL_DEFAULTS, DEAL_DEFAULTS),
         ],
     )
     .await
@@ -114,6 +120,8 @@ pub(crate) async fn import<H: AppHost>(
     let quote_hist_rows = bundle.sections.get(SECTION_QUOTE_HISTORY).cloned().unwrap_or_default();
     let agr_rows = bundle.sections.get(SECTION_AGREEMENTS).cloned().unwrap_or_default();
     let card_rows = bundle.sections.get(SECTION_CARDS).cloned().unwrap_or_default();
+    let defaults_rows = bundle.sections.get(SECTION_DEAL_DEFAULTS).cloned().unwrap_or_default();
+    let validated_defaults = defaults::validate_defaults_section(&defaults_rows)?;
 
     let verified_requests = match verify_imported_enquiries(req_rows, &owner, now) {
         Ok(v) => v,
@@ -180,27 +188,16 @@ pub(crate) async fn import<H: AppHost>(
     )
     .await?;
 
+    defaults::write_defaults_section(host, validated_defaults.as_ref()).await?;
+
     let restored = reservations::reserve_again(host, &verified_agreements, &owner, now).await;
+    let log_entries_made = eventlog_ops::rebuild_at(host, now).await.map_or(0, |r| r.made);
     Ok(TransactionImportOutput {
         imported: true,
         reservations_restored: restored.restored,
         reservations_failed: restored.failed,
+        log_entries_made,
     })
-}
-
-fn validate_bundle_header(bundle: &Bundle, owner: &str, now: u64) -> Result<(), Response> {
-    if let Err(e) = backup::check_signed_bundle(bundle, owner, now) {
-        return Err(Response::invalid_params(e.to_string()));
-    }
-    for (name, declared) in &bundle.manifest.sections {
-        if declared.schema_version != SCHEMA_VERSION {
-            return Err(Response::invalid_params(format!(
-                "section '{name}' has schema version {}, this node requires {SCHEMA_VERSION}",
-                declared.schema_version
-            )));
-        }
-    }
-    Ok(())
 }
 
 async fn import_negotiation_sections<H: AppHost>(

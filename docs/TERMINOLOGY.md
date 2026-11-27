@@ -94,6 +94,10 @@ neighbourhood.
 | **Step record** | A signed record of one work step of an extension, for one commitment of a formed agreement. Its card type is `step`. The extension's manifest declares which step types exist and which party may record each. A step changes no deal state. | The agreement progress snapshot, which is derived state and is not a signed statement by either person. |
 | **Extension registry** | The fixed list of extension manifests that ship with a build. It is compiled into `roym_core`, and the Hub imports the same files. | The Community Registry and the App Registry. |
 | **Author translation** | An alternative translation signed by the author inside the record envelope (up to 4 translations per record). The original text always binds. | Machine translation (MT), which is unsigned software output. |
+| **Event log** | An append-only local log derived on each participant node recording lifecycle milestones of deals and commitments (`agreement-formed`, `commitment-settled`, `commitment-failed`, etc.). Derived purely from held signed records and progress snapshots; nothing on the deal path reads from it. | An accounting ledger or database audit table. |
+| **Statement** | An exportable financial summary of settled commitments over a date range (`statement.export`), grouping declared values into totals by currency, direction (given vs. received), and resource kind. | An invoice or payment receipt. |
+| **Saved deal terms** | Default deal terms configured by a participant on their node (`cancellation_terms`, `refund_terms`, `dispute_path`, `quote_valid_secs`) that pre-fill new quote terms. | An agreement template or contractual agreement. |
+| **Offer** | The user-facing word used in the Hub for a quote. While records, protocols, method names, and error codes retain "quote", user interfaces present it as an offer, and accepting it as agreeing. | A listing or enquiry. |
 
 ## Key phrasings
 

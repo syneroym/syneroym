@@ -19,9 +19,9 @@ use syneroym_roym_core::{
 };
 
 use crate::app::{
-    AgreementRef, HalfRecordedOutput, ListInput, agreement_ops, as_listed_ops, backup, decline_ops,
-    drive, enquiry_ops, fulfilment_ops, payment_ops, present_ops, progress_ops, quote_ops,
-    step_ops, sync, thread,
+    AgreementRef, HalfRecordedOutput, ListInput, agreement_ops, as_listed_ops, backup, close_ops,
+    decline_ops, defaults_ops, drive, enquiry_ops, eventlog_ops, fulfilment_ops, payment_ops,
+    present_ops, progress_ops, quote_ops, statement_ops, step_ops, sync, thread,
 };
 
 async fn ping<H: AppHost>(_host: &H, _: NoParams) -> Reply<PingOutput> {
@@ -37,6 +37,8 @@ syneroym_roym_core::service_methods! {
     "fulfilment.ping": ping [NoParams => PingOutput],
     "deal.ping": ping [NoParams => PingOutput],
     "step.ping": ping [NoParams => PingOutput],
+    "eventlog.ping": ping [NoParams => PingOutput],
+    "statement.ping": ping [NoParams => PingOutput],
 
     "enquiry.set": enquiry_ops::set [enquiry_ops::EnquirySetInput => enquiry_ops::EnquirySetOutput],
     "enquiry.get": enquiry_ops::get [enquiry_ops::EnquiryKeyInput => Option<enquiry_ops::EnquiryView>],
@@ -56,8 +58,11 @@ syneroym_roym_core::service_methods! {
     "deal.present": present_ops::present [present_ops::PresentInput => Presentation],
     "deal.verify-presentation": present_ops::verify_presentation [Presentation => PresentationView],
     "deal.as-listed-status": as_listed_ops::as_listed_status [as_listed_ops::AsListedStatusInput => as_listed_ops::AsListedStatusOutput],
+    "deal.defaults-get": defaults_ops::get [NoParams => Option<defaults_ops::DealDefaults>],
+    "deal.defaults-set": defaults_ops::set [defaults_ops::DealDefaults => defaults_ops::DealDefaults],
 
     "agreement.accept": agreement_ops::accept [agreement_ops::AgreementAcceptInput => agreement_ops::AgreementAcceptOutput],
+    "agreement.close": close_ops::close [close_ops::AgreementCloseInput => close_ops::AgreementCloseOutput],
     "agreement.get": agreement_ops::get [agreement_ops::QuoteRecordInput => Option<agreement_ops::AgreementView>],
     "agreement.list": agreement_ops::list [agreement_ops::AgreementListInput => agreement_ops::AgreementListOutput],
     "agreement.cancel": progress_ops::cancel [progress_ops::AgreementCancelInput => agreement_ops::AgreementView],
@@ -76,6 +81,11 @@ syneroym_roym_core::service_methods! {
     "step.add": step_ops::add [step_ops::StepAddInput => HalfRecordedOutput],
     "step.list": step_ops::list [step_ops::StepListInput => step_ops::StepListOutput],
     "step.verify": step_ops::verify [DisclosedVerifyInput => DisclosedVerdict<StepPayload>],
+
+    "eventlog.list": eventlog_ops::list [eventlog_ops::EventLogListInput => eventlog_ops::EventLogListOutput],
+    "eventlog.rebuild": eventlog_ops::rebuild [NoParams => eventlog_ops::EventLogRebuildOutput],
+
+    "statement.export": statement_ops::export [statement_ops::StatementExportInput => syneroym_roym_core::statement::Statement],
 
     "transaction.sync": sync::sync [sync::SyncInput => sync::SyncOutput],
     "transaction.drive": drive::drive [drive::DriveInput => drive::DriveOutput],

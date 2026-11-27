@@ -1,0 +1,15 @@
+{
+  "cancellation_terms": {
+    "lang": "string",
+    "text": "string"
+  },
+  "dispute_path": {
+    "lang": "string",
+    "text": "string"
+  },
+  "quote_valid_secs": "number",
+  "refund_terms": {
+    "lang": "string",
+    "text": "string"
+  }
+}

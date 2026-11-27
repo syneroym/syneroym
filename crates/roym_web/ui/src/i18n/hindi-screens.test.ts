@@ -17,6 +17,7 @@ import { type CardRow, openDeclineDialog, openQuoteForm, renderMessages } from "
 import { renderProfile } from "../screens/profile";
 import { renderSafety } from "../screens/safety";
 import { renderSetup } from "../screens/setup";
+import { renderStatement } from "../screens/statement";
 import { renderSynOrg } from "../screens/synorg";
 import { leftoverLatin } from "../testing/latin-words";
 import { messageText } from "../chat/message_text";
@@ -24,6 +25,8 @@ import { stubRpc } from "../testing/stub-rpc";
 import { fakeEngine, readerReads, unavailableEngine } from "../testing/translation";
 import { setTargetsForTest } from "../translation/translation";
 import { renderCardActions } from "../screens/messages";
+import { renderPoll } from "../widgets/poll";
+import type { WidgetView } from "../widgets/view";
 import { activate, t } from "./i18n";
 
 // Draws each screen in Hindi with a fake `/rpc` and fails when an English
@@ -179,12 +182,71 @@ describe("the small screens, in Hindi", () => {
     expect(english(host)).toEqual([]);
   });
 
-  it("draws the backup and set-up screens", async () => {
+  it("draws the backup, statement and set-up screens", async () => {
+    stubRpc({
+      "statement.export": () => ({
+        statement_version: 1,
+        owner_did: ME,
+        from_secs: NOW - 86400,
+        to_secs: NOW,
+        generated_at_secs: NOW,
+        rows: [
+          {
+            agreement: "Zq-agr",
+            commitment_id: "c1",
+            agreed_at_secs: NOW - 3600,
+            settled_at_secs: NOW,
+            direction: "given",
+            counterparty_did: PEER,
+            counterparty_name: "Zq-Bob",
+            resource_kind: "service",
+            commitment_kind: "fulfilment",
+            description: { lang: "hi", text: "Zq-Piano" },
+            currency: "INR",
+            declared_value_minor: 50000,
+            settlement_note: { lang: "hi", text: "Zq-Note" },
+            records: ["Zq-rec"],
+          },
+        ],
+        open_at_end: [
+          {
+            agreement: "Zq-agr2",
+            commitment_id: "c2",
+            agreed_at_secs: NOW - 7200,
+            direction: "received",
+            counterparty_did: PEER,
+            counterparty_name: "Zq-Bob",
+            resource_kind: "goods",
+            commitment_kind: "fulfilment",
+            description: { lang: "hi", text: "Zq-Wheat" },
+            currency: "INR",
+            declared_value_minor: 25000,
+            records: ["Zq-rec2"],
+          },
+        ],
+        totals: [
+          {
+            currency: "INR",
+            direction: "given",
+            resource_kind: "service",
+            sum_minor: 50000,
+          },
+        ],
+        eeps: { status: "not-available" },
+      }),
+      "contacts.list": () => [{ person_did: PEER, display_name: "Zq-Bob" }],
+    });
     const backup = document.createElement("div");
     await renderBackup(backup);
+    const statement = document.createElement("div");
+    await renderStatement(statement);
+    const showBtn = statement.querySelector<HTMLButtonElement>(".statement-show-button")!;
+    showBtn.click();
+    await settle();
     const setup = document.createElement("div");
     await renderSetup(setup, () => {}, ["Zq-service"]);
     expect(english(backup)).toEqual([]);
+    expect(english(statement)).toEqual([]);
     expect(english(setup)).toEqual([]);
   });
 
@@ -742,6 +804,59 @@ describe("translation, in Hindi", () => {
     );
     return wrap;
   }
+
+  it("draws a poll in Hindi", () => {
+    const view: WidgetView = {
+      widget_id: "m-poll-hi",
+      author: PEER,
+      direction: "incoming",
+      sender_timestamp_ms: NOW * 1000,
+      definition: {
+        extension: { id: "poll", version: 1 },
+        type: "poll/single",
+        semantic: "poll",
+        prompt: "Zq-question",
+        fields: [
+          {
+            name: "option",
+            type: "choice",
+            required: true,
+            choices: [
+              { code: "o1", text: "Zq-first" },
+              { code: "o2", text: "Zq-second" },
+            ],
+          },
+        ],
+      },
+      checked: true,
+      counts: [
+        { field: "option", choice: "o1", count: 2 },
+        { field: "option", choice: "o2", count: 1 },
+      ],
+      answers: [
+        {
+          message_id: "m-ans-1",
+          author: PEER,
+          direction: "incoming",
+          sender_timestamp_ms: NOW * 1000,
+          languages: ["en"],
+          data: { option: "o1" },
+          state: "delivered",
+        },
+      ],
+      ignored_answers: 0,
+      state: "delivered",
+    };
+
+    const host = renderPoll(view, { conversation: "c1" });
+    expect(english(host)).toEqual([]);
+  });
+
+  it("formats poll vote counts correctly in Hindi for 0, 1, and 2 votes", () => {
+    expect(t("widget-poll-count", { count: 0 })).toBe("0 वोट");
+    expect(t("widget-poll-count", { count: 1 })).toBe("1 वोट");
+    expect(t("widget-poll-count", { count: 2 })).toBe("2 वोट");
+  });
 
   it("draws the translate action, the machine note and the warning before acceptance", async () => {
     const wrap = await machineQuote();

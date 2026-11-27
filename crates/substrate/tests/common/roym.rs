@@ -674,6 +674,27 @@ impl RoymNode {
             node.teardown().await;
         }
     }
+
+    pub fn get_service_row(&self, service: &str, table: &str, id: &str) -> Option<Value> {
+        let did = self.dids.get(service)?;
+        let db_path = self.base_path.join("data/db/services").join(did).join("state.db");
+        if !db_path.exists() {
+            return None;
+        }
+        let substrate_path = self.base_path.join("data/db/substrate.db");
+        let ks = syneroym_data_keystore::KeyStore::new();
+        ks.inject_kek([0xcd; 32]).ok()?;
+        let sub_conn = rusqlite::Connection::open(&substrate_path).ok()?;
+        let dek = ks.load_dek(did, &sub_conn).ok()?;
+
+        let conn = rusqlite::Connection::open(&db_path).ok()?;
+        let pragma_val = format!("x'{}'", hex::encode(*dek));
+        conn.pragma_update(None, "key", &pragma_val).ok()?;
+
+        let query = format!("SELECT payload FROM \"{table}\" WHERE id = ?1");
+        let payload: String = conn.query_row(&query, [id], |row| row.get(0)).ok()?;
+        serde_json::from_str(&payload).ok()
+    }
 }
 
 pub fn history_messages(result: &Value) -> Vec<Value> {

@@ -26,6 +26,7 @@ import {
 } from "../../records/record_text";
 import { commitmentDetailsView } from "../details";
 import { renderLink } from "../link";
+import { dealTotals, renderDealTotalsBlock, type Commitment as TotalCommitment } from "../../deals/deal_totals";
 
 export interface QuoteTranslationData {
   lang: string;
@@ -95,6 +96,7 @@ export interface QuoteData {
   dispute_path?: string;
   quote_expires_at_secs?: number;
   expired?: boolean;
+  version_number?: number;
 }
 
 export function renderQuote(data?: QuoteData): HTMLElement {
@@ -104,6 +106,12 @@ export function renderQuote(data?: QuoteData): HTMLElement {
   const title = document.createElement("h3");
   title.textContent = t("quote-title");
   card.appendChild(title);
+
+  const versionNumber = data?.version_number ?? data?.sequence ?? 1;
+  const verP = document.createElement("p");
+  verP.className = "quote-version";
+  verP.textContent = t("deal-version", { n: String(versionNumber) });
+  card.appendChild(verP);
 
   const terms: AgreedTermsData = {
     ...data?.terms,
@@ -251,8 +259,13 @@ export function renderQuote(data?: QuoteData): HTMLElement {
       nodes.push(scopeP);
     }
 
-    // 2. Total
-    if (totalMinor !== undefined && terms.currency) {
+    // 2. Totals
+    if (terms.commitments && Array.isArray(terms.commitments) && terms.commitments.length > 0) {
+      const role = data?.role === "quote-author" ? "quote-author" : "counterparty";
+      const totals = dealTotals(terms.commitments as unknown as TotalCommitment[], role);
+      const curr = terms.currency ?? "INR";
+      nodes.push(renderDealTotalsBlock(totals, curr));
+    } else if (totalMinor !== undefined && terms.currency) {
       const totalP = document.createElement("p");
       totalP.className = "quote-total";
       totalP.textContent = t("terms-total", { amount: formatMinor(totalMinor, terms.currency) });
