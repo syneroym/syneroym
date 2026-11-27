@@ -6,8 +6,8 @@ planning conversation. This plan is meant to stand alone.*
 
 **Status: plan written, 2026-11-25, by Claude Opus 5.5. Plan reviewed,
 2026-11-27, on `main` at `89d1dd23`, by Claude Sonnet 5.5 (section
-"Review on main 89d1dd23" below). The owner has not answered section 2.1
-yet.**
+"Review on main 89d1dd23" below). The owner answered Q2 on 2026-11-27: two
+PRs, C7a and C7b. The other questions of section 2.1 are open.**
 
 ## Review on main 89d1dd23
 
@@ -61,7 +61,7 @@ merges answered it, and a new Q11 is added.
 | D12 | No revocation list is passed to the verifier, so every origin has `revocation_status` "unknown". A stolen conversation signing key signs valid origins as the person, with no end. This is the same as for every other Roym record. | Write it into the existing backlog rows. The Hub never says "verified" about the person, only "origin checked". | 8 |
 | D13 | The demo of Q7 (a) needs more than "Bob creates a group": Bob has Alice only as an incoming chat, and `group.add-member` needs a contact or an address. Alice's node must admit the group. No browser test in the repository forms a two-node group (`roym-groups.spec.ts` is one node). | New Q7 option (c): forward in the same chat. The three-node group case stays in the Rust e2e. | Q7; 7.6 |
 | D14 | A `signed` message is about 1.2 KB bigger. A sealed mailbox message holds a body of about 13 KiB (`card.rs:40`); a bigger one waits for the receiver to be online. So a `signed` text over about 11.5 KiB no longer reaches an offline peer. The host limit (`max_body_bytes`, 262,144 by default) is for the whole body, and the host refuses an oversize body with `-32004`. | Record it. Step 4 measures it. No new error code is needed. | 4 item 3; D-C7-5 |
-| D15 | C7a is too big for one PR. C3c, C4 and C6 each split node and Hub into two PRs, and the reviews were easier. C7a has five new Rust files, three methods, backup, three-node e2e, four Hub files, 22 Hindi keys, a changed first-send path in every Playwright spec, and the demo. | New Q2 (c): C7a node, C7b Hub and demo, C7c signed records. This plan now uses these names. | Q2; 6 |
+| D15 | C7a is big for one PR. C3c, C4 and C6 each split node and Hub into two PRs. C7a has five new Rust files, two methods, backup, a three-node e2e, four Hub files, 22 Hindi keys, a changed first-send path in every Playwright spec, and the demo. The reviewer proposed three PRs (node, Hub, records). **The owner answered Q2 (a) on 2026-11-27: two PRs.** The risk is review size, not safety. | Two PRs: C7a (text forward, node and Hub) and C7b (signed records). To keep C7a reviewable, push the node steps (0 to 4) as their own commits before the Hub work starts, and run the whole Playwright suite at the end. | Q2; 6 |
 | D16 | `conversation.forward` did not say what happens to the signing certificate of the forwarder: it needs none, and a forward never signs. This is right and is now stated. A forward needs a checked origin, so it works even if the forwarder has no certificate. | Stated in D-C7-7. | D-C7-7 |
 
 ### Sizes now (measured on `main` `89d1dd23`)
@@ -87,7 +87,7 @@ and uses its own numbers.
 ### Owner questions changed
 
 - **Q1 removed.** C4 is merged.
-- **Q2** gets a third option: three PRs (recommended).
+- **Q2** is answered by the owner (2026-11-27): (a), two PRs.
 - **Q4** has a new recommendation (host indexes the `text` field only).
 - **Q5** now names one settings method.
 - **Q6** keeps option (a). It now has a cost estimate (not a measurement) and a note that the Hub repeats the check.
@@ -113,36 +113,30 @@ one of them is in a C7 PR:
   and `demo/20-roym-chat.spec.ts`;
 - the parity scenario numbers (from 278) and the Hub case number (from 43).
 
-C7a, C7b and C7c run one after the other, as the C4a and C4b pair did.
-C8 (close-out) waits for all three. M08D and later slices, and the M08E
-obligations module, start after C7a merges or rebase on it, because
+C7a and C7b run one after the other. C8 (close-out) waits for both.
+M08D and later slices, and the M08E obligations module, start after C7a merges or rebase on it, because
 `roym_transaction/src/app.rs` and `roym_core/src/lib.rs` are shared. A
 Hub-only fix that touches none of the files above (as the Engage fix did)
 may run beside C7.
 
-**Size and PRs.** [task.md](task.md) sizes C7 as M. Checked against the
-code and the C3c, C4 and C6 pairs, it is three PRs (Q2 (c)). Each is one
-PR that passes `mise run verify`:
+**Size and PRs.** [task.md](task.md) sizes C7 as M. The owner chose two
+PRs (Q2 (a), 2026-11-27). Each is one PR that passes `mise run verify`:
 
-- **C7a — Node: forward mode, origin, forward (M).** The chat body, the
-  `message-origin` record, the check at read time, `conversation.send` with
-  a mode, `conversation.forward`, `conversation.settings`, backup, the
-  signing helper move, the host search rule (if Q4 (a)), and the tests
-  (unit, parity, three-node e2e) and measurements. No Hub change. Criteria
-  FW-1 to FW-6, FW-8, FW-9, FW-13 to FW-15 on the node side.
-- **C7b — Hub and demo (M).** The composer control, the first-message
-  question, the default on the Profile tab, the forward action and picker,
-  the display rules, the group notice, the Hindi messages, the Playwright
-  case and the story 20 step. Criteria FW-3 to FW-5, FW-10 to FW-13 as
-  the person sees them.
-- **C7c — Forward of signed records (S).** A `listing`, `profile` or
+- **C7a — Forward mode, origin and forward of a text message (M, big).**
+  The `forward_mode` in each message the Hub sends, the default-mode
+  setting, the `message-origin` record, the check at read time,
+  `conversation.forward`, and in the Hub the composer control, the
+  first-message question, the forward action, the display rules and the
+  group notice; the demo step. Criteria FW-1 to FW-6, FW-8 to FW-15. Inside
+  the PR, steps 0 to 4 are the node and steps 5 and 6 are the Hub (section
+  6.1). Push steps 0 to 4 as their own commits first, so that the
+  reviewer can start on the node while the Hub is built.
+- **C7b — Forward of signed records (S).** A `listing`, `profile` or
   `quote` travels as itself in a record-forward body. Criterion FW-7.
 
-If the owner picks Q2 (a) (two PRs), C7a and C7b below are one PR.
-
 Branch: `feat/m08a-c7-msg-forwarding` (this branch; it holds the plan
-commit; the owner chose the name). C7b and C7c get their own branches, cut
-from `main` after the earlier part merges.
+commit; the owner chose the name). C7b gets its own branch, cut from `main`
+after C7a merges. The two parts run one after the other.
 
 **Base.** Every file path and line number below was checked on `main` at
 `89d1dd23` (2026-11-27). Links are relative to this folder.
@@ -151,7 +145,7 @@ from `main` after the earlier part merges.
 
 - C0 (the ADR) is done: [ADR-0030](../../../decisions/0030-signed-message-origins.md),
   accepted 2026-11-16 ([status.md](status.md), row C0).
-- C2 is merged (C2a PR #370, C2b PR #371). C7c's forwarded quote needs it.
+- C2 is merged (C2a PR #370, C2b PR #371). C7b's forwarded quote needs it.
 - C4 is merged (C4a PR #383, C4b PR #384). C4 moved the body of
   `conversation.send` into `send_body` (`messages.rs:299`), reserved the
   two widget content types, added `widget.send`, `widget.answer` and
@@ -225,15 +219,12 @@ message, offers "Forward" only on checked `signed` messages, and shows
 "Forwarded. First written by … on …. Forwarded N times." A message sent
 without a mode (another client, `roymctl`, the client guide) is sent as
 `text/plain`, exactly as today, and counts as `not-forwardable` (ADR-0030,
-decision 3). C7c then lets a person forward an offering, a profile or a
-quote as the signed record itself. C7a is the node part, C7b is the Hub
-part, C7c the records part (see "Size and PRs").
+decision 3). C7b then lets a person forward an offering, a profile or a
+quote as the signed record itself.
 
 ## How this is shown to an end user
 
-C7a has nothing a person can see: it is the node part, used by the Hub in
-C7b and by any client through the raw methods. Developers see it work with
-the commands below. C7b finishes the visible story:
+C7a:
 
 - The first time a person sends a message, the Hub asks one question:
   "Can others forward your messages with your name?" It explains the two
@@ -257,7 +248,7 @@ the commands below. C7b finishes the visible story:
 - When the author reads a forward of their own message, it says "First
   written by you".
 
-C7c:
+C7b:
 
 - On a quote card, an offering in the directory, or a contact's profile,
   the person sees "Forward". The receiver sees the offering, profile or
@@ -273,7 +264,7 @@ How a developer can see it work:
   group with Carol. Carol's node reports a checked origin that names Alice,
   and `forward_count` 1. `conversation.forward` refuses a not-forwardable
   message.
-- `mise run demo` (C7b): story 20 shows Bob's forward on Alice's screen,
+- `mise run demo` (C7a): story 20 shows Bob's forward on Alice's screen,
   with the line "Forwarded. First written by you …" (Q7).
 
 ## 2. Points for the owner
@@ -287,20 +278,21 @@ Each question has options and a recommendation, marked **(recommended)**.
 It asked when the C7a code starts. C4 is merged, so the answer is "now"
 (section "Order now"). The other questions keep their numbers.
 
-#### Q2. How many PRs?
+#### Q2. How many PRs? (Answered: (a), 2026-11-27)
 
-- (a) Two: C7a (everything for a text message, node and Hub) and C7c
-  (FW-7, signed records). C7c shares no code with C7a except the
-  conversation picker of the forward button. It touches the quote check
-  (`roym_core::transaction`), the profile check (`roym_profile`) and the
-  directory screen, which C7a does not. This was the first plan.
+- (a) **Chosen by the owner.** Two: C7a (everything for a text message,
+  node and Hub) and C7b (FW-7, signed records). C7b shares no code with
+  C7a except the conversation picker of the forward button. It touches the
+  quote check (`roym_core::transaction`), the profile check
+  (`roym_profile`) and the directory screen, which C7a does not. The
+  reviewer judged the risk to be review size, not safety. The stop rules
+  (size, origin size, history time) all fire in the node steps 1 to 4, so
+  the owner is asked before any Hub work is done. Two habits keep it
+  safe: push the node steps as their own commits first, and run the whole
+  Playwright suite at the end.
 - (b) One PR, size L.
-- (c) **(recommended)** Three: C7a (node), C7b (Hub and demo), C7c (signed
-  records). C3c, C4 and C6 each shipped as a node PR and a Hub PR, and
-  both were reviewed in fewer rounds that way. The node part is complete
-  and tested without the Hub (parity, three-node test, measurements). The
-  Hub part then starts from a known node. Cost: one more PR and one more
-  rebase. The Hub steps (5 and 6) are already separate in section 6.
+- (c) Three: C7a (node), C7b (Hub and demo), C7c (signed records), as C3c,
+  C4 and C6 were split. The reviewer first recommended it. Not chosen.
 
 #### Q3. The chat body: which messages use it?
 
@@ -596,18 +588,18 @@ Its Deviations (from ADR-0030) win over its main text.
 | Criterion | Part | How | Main test |
 | --- | --- | --- | --- |
 | FW-1 | C7a | A mode in every message sent with a mode (the Hub always names one); an origin for `signed`; the payload as the Deviations say (no `author`, no `sent_at_secs`; `languages`) | `chat` unit tests; parity B, C |
-| FW-2 | C7a, C7b | `conversation.forward` checks mode and origin itself (C7a); the Hub hides the action (C7b) | parity G; `roym_forward_e2e` step 5; Hub unit test |
-| FW-3 | C7a, C7b | Check at read (C7a); Hub line with name and date (C7b) | `forward_view` unit tests; Hub unit test; story 20 |
-| FW-4 | C7a, C7b | Failed check: no author in the view (C7a); the forwarder's own words plus a note (C7b) | `chat` unit tests; Hub unit test |
-| FW-5 | C7a, C7b | The view carries `many_forwards` for a count of 5 or more (C7a); the Hub shows "Forwarded many times" (C7b) | `chat` unit test; Hub unit test |
+| FW-2 | C7a | `conversation.forward` checks mode and origin itself (node); the Hub hides the action | parity G; `roym_forward_e2e` step 5; Hub unit test |
+| FW-3 | C7a | Check at read (node); Hub line with name and date | `forward_view` unit tests; Hub unit test; story 20 |
+| FW-4 | C7a | Failed check: no author in the view (node); the forwarder's own words plus a note (Hub) | `chat` unit tests; Hub unit test |
+| FW-5 | C7a | The view carries `many_forwards` for a count of 5 or more (node); the Hub shows "Forwarded many times" | `chat` unit test; Hub unit test |
 | FW-6 | C7a | Any change of text, languages or content type breaks the hash | `chat` unit tests |
-| FW-7 | C7c | A record-forward body; `listing`, `profile`, `quote` only | C7c tests (section 6.3) |
+| FW-7 | C7b | A record-forward body; `listing`, `profile`, `quote` only | C7b tests (section 6.2) |
 | FW-8 | C7a | A blob-hash list in the hash input, always empty (Q8) | `chat` unit test; Deviation row |
 | FW-9 | C7a | Forward to a one-to-one chat or a group, one method | `roym_forward_e2e` steps 3, 4 |
-| FW-10 | C7b | First-message question; settings text | Hub unit test; Hub case; story 20 |
-| FW-11 | C7b | Group composer notice; no group rule | Hub unit test |
-| FW-12 | C7a, C7b | The default is stored and read (C7a); composer mode control, one change does not change the default (C7b) | parity A; Hub unit test |
-| FW-13 | C7a, C7b | A forged forward has no checked origin (C7a); no forward action and a reason (C7b) | `chat` unit tests; Hub unit test |
+| FW-10 | C7a | First-message question; settings text | Hub unit test; Hub case; story 20 |
+| FW-11 | C7a | Group composer notice; no group rule | Hub unit test |
+| FW-12 | C7a | The default is stored and read (node); composer mode control, one change does not change the default (Hub) | parity A; Hub unit test |
+| FW-13 | C7a | A forged forward has no checked origin (node); no forward action and a reason (Hub) | `chat` unit tests; Hub unit test |
 | FW-14 | C7a | The mode is in the body, under the sender's message signature | parity B (raw body holds the mode); D-C7-1 |
 | FW-15 | C7a | A forward copies the author's mode and origin; the forwarder's default is not read | parity F |
 
@@ -1260,11 +1252,14 @@ widget.
 
 ## 6. Step-by-step changes
 
-### 6.1 C7a — Node
+### 6.1 C7a — Forward of a text message
 
-Steps 0 to 4 and step 7 (node close-out). Each step builds, and its tests
-pass, before the next one starts. The steps keep their numbers when the
-owner picks Q2 (a) (steps 5 and 6 then join this PR).
+Steps 0 to 4 are the node. Steps 5 and 6 are the Hub and the demo. Step 7
+is the close-out. Each step builds, and its tests pass, before the next one
+starts. **Checkpoint:** after step 4, push the node commits and tell the
+reviewer. The Hub steps follow on the same branch. If a stop rule fires in
+steps 1 to 4 (size, origin size, history time), stop and ask the owner
+before step 5.
 
 #### Step 0 — Start from `main`
 
@@ -1345,19 +1340,6 @@ Tests: parity F to H.
 - It measures one `conversation.history` page of 200 `signed` messages on
   the WASM build (Q6 stop rule: 500 ms) and prints the number.
 
-#### Step 7a — Close-out of C7a
-
-Component sizes (section 7.7) into [task.md](task.md) section 1; the
-change doc's Deviations (section 9) for the node part; backlog (section 8);
-the living docs that the node part changes (section 9: developer guide,
-integrated spec "Records", terminology, requirements); the `status.md`
-row; `mise run verify` with no `--skip` (in a worktree: `cargo xtask
-verify` with `CARGO_TARGET_DIR`).
-
-### 6.2 C7b — Hub and demo
-
-Starts from `main` after C7a merges. Steps 5, 6 and 7b.
-
 #### Step 5 — Hub
 
 D-C7-10, with the Hub unit tests of section 7.5. Run
@@ -1386,15 +1368,17 @@ not only the new case.
 - `mise run demo`, then `mise run test:e2e`, with the output redirected
   (AGENTS.md, Context Budget).
 
-#### Step 7b — Close-out of C7b
+#### Step 7 — Sizes, docs and close-out of C7a
 
-The Hindi keys for the owner (section 7.8) in the `status.md` row; the
-change doc's `demo:` list; the Hub parts of the living docs; `mise run
-verify` with no `--skip`.
+Component sizes (section 7.7) into [task.md](task.md) section 1; the
+change doc's Deviations (section 9); backlog (section 8); living docs
+(section 9); the `status.md` row with the Hindi keys for the owner
+(section 7.8); the change doc's `demo:` list; `mise run verify` with no
+`--skip` (in a worktree: `cargo xtask verify` with `CARGO_TARGET_DIR`).
 
-### 6.3 C7c — Forward of signed records
+### 6.2 C7b — Forward of signed records
 
-An outline only. C7c checks these points in the code again after C7b
+An outline only. C7b checks these points in the code again after C7a
 merges, on its own branch, and adds a short section to this plan. Points to
 check first: (1) since C2, the hidden fields of a quote are digests, so
 confirm that `verify_quote` and `QuotePayload::validate` accept an envelope
@@ -1419,7 +1403,7 @@ added to the reserved closure in `send`.
   and `transaction::verify_quote` (`crates/roym_core/src/transaction.rs:458`)
   exist. The profile check lives in `roym_profile`
   (`process_profile_envelope`, `crates/roym_profile/src/app/contacts.rs:105`
-  to `:125`); C7c moves it into `roym_core` first.
+  to `:125`); C7b moves it into `roym_core` first.
 - Hub: "Forward" on a quote card (with the warning that it shows both
   parties), on a directory hit (the envelope from `runEnvelope`,
   `screens/directory.ts:454`) and on a contact's profile. The receiver's
@@ -1751,12 +1735,12 @@ there):
   characters of the DID; and that the delete dialog says forwards stay;
 - the tags for a message that cannot be forwarded (section 4, item 16);
 - the measured origin and body sizes (step 4);
-- the split into C7a, C7b and C7c (Q2), until C7c merges.
+- the split into C7a and C7b (Q2), until C7b merges.
 
-Also in the change doc: tick the lines of `## Tasks` that each PR finishes. `status: done`
+Also in the change doc: tick the C7a lines of `## Tasks`. `status: done`
 and `living-docs-touched` wait for C8 (task.md section 3, C8).
 
-Living docs (C7a for the node facts, C7b for what the person sees):
+Living docs (C7a):
 
 - `docs/roym-integrated-experience-spec.md`: "Messaging" (`:693`) — the
   chat body and the forward; "What is encrypted, and who can see what"
@@ -1778,13 +1762,14 @@ Living docs (C7a for the node facts, C7b for what the person sees):
 
 ## 10. Exit criteria
 
-C7a (node) is done when all of these hold:
+C7a is done when all of these hold:
 
 - [ ] Every C7a criterion in section 3 names a test that exists on the
       branch, and the test passes.
 - [ ] The `roym_core` `chat` unit tests, the whole parity binary (after
-      `mise run build:roym`) and `roym_forward_e2e` pass. With Q4 (a), the
-      host search tests pass too.
+      `mise run build:roym`), `roym_forward_e2e`, the Hub unit tests, the
+      new Hub case, the whole Playwright suite and story 20 pass. With Q4
+      (a), the host search tests pass too.
 - [ ] The origin of a short text message is under 2 KiB, measured and
       recorded, or the owner answered the stop.
 - [ ] A history page of 200 `signed` messages takes under 500 ms in the
@@ -1792,15 +1777,11 @@ C7a (node) is done when all of these hold:
 - [ ] Component sizes are in task.md section 1, each within its limit (for
       `conversation`, +15% of the "before" size, or the owner's answer to
       Q11).
-- [ ] Deviations, backlog rows, living docs and the `status.md` row are
-      done for the node part.
+- [ ] Deviations, backlog rows, living docs and the `status.md` row (with
+      the Hindi keys) are done.
 - [ ] `mise run verify` with no `--skip` passes.
 
-C7b (Hub and demo) is done when the Hub unit tests, the new Hub case, the
-whole Playwright suite and story 20 pass; the Hindi keys are in the
-`status.md` row; and `mise run verify` with no `--skip` passes.
-
-C7c is done when FW-7 has its tests, and its sizes, docs and verify pass.
+C7b is done when FW-7 has its tests, and its sizes, docs and verify pass.
 
 ## 11. What C7 does not do
 
