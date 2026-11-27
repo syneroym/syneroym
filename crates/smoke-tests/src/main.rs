@@ -29,6 +29,9 @@ use syneroym_rpc::JsonRpcRequest;
 use syneroym_sandbox_wasm::{AppSandboxEngine, WasmResourceQuota};
 use tokio::{io::AsyncWriteExt, sync::oneshot, time};
 
+// Keeps the macOS SystemConfiguration interface-name crash out of this binary.
+syneroym_core::install_macos_network_compat!();
+
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {

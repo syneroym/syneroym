@@ -13,6 +13,9 @@ use syneroym_core::config::{
 use syneroym_substrate::run;
 use tokio::runtime::Builder;
 
+// Keeps the macOS SystemConfiguration interface-name crash out of this binary.
+syneroym_core::install_macos_network_compat!();
+
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
 struct Cli {

@@ -8,6 +8,9 @@ use clap::Parser;
 use roymctl::{DEFAULT_API_URL, commands, commands::Commands};
 use rustls::crypto::ring;
 
+// Keeps the macOS SystemConfiguration interface-name crash out of this binary.
+syneroym_core::install_macos_network_compat!();
+
 #[derive(Parser)]
 #[command(name = "roymctl")]
 #[command(about = "Syneroym Control CLI (API Client)", long_about = None)]
