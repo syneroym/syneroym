@@ -26,8 +26,7 @@ import {
 } from "../../records/record_text";
 import { commitmentDetailsView } from "../details";
 import { renderLink } from "../link";
-import { dealTotals, type Commitment as TotalCommitment } from "../../deals/deal_totals";
-import { renderVersionSummary, type VersionSummary } from "../../deals/version_summary";
+import { dealTotals, renderDealTotalsBlock, type Commitment as TotalCommitment } from "../../deals/deal_totals";
 
 export interface QuoteTranslationData {
   lang: string;
@@ -98,16 +97,11 @@ export interface QuoteData {
   quote_expires_at_secs?: number;
   expired?: boolean;
   version_number?: number;
-  summary?: VersionSummary;
 }
 
 export function renderQuote(data?: QuoteData): HTMLElement {
   const card = document.createElement("div");
   card.className = "card card-quote";
-
-  if (data?.summary) {
-    card.appendChild(renderVersionSummary(data.summary));
-  }
 
   const title = document.createElement("h3");
   title.textContent = t("quote-title");
@@ -267,34 +261,10 @@ export function renderQuote(data?: QuoteData): HTMLElement {
 
     // 2. Totals
     if (terms.commitments && Array.isArray(terms.commitments) && terms.commitments.length > 0) {
-      const totalsBlock = document.createElement("div");
-      totalsBlock.className = "quote-totals-block";
       const role = data?.role === "quote-author" ? "quote-author" : "counterparty";
       const totals = dealTotals(terms.commitments as unknown as TotalCommitment[], role);
       const curr = terms.currency ?? "INR";
-
-      const giveP = document.createElement("p");
-      giveP.className = "quote-total-give";
-      giveP.textContent = t("deal-you-give", { amount: formatMinor(totals.give, curr) });
-
-      const receiveP = document.createElement("p");
-      receiveP.className = "quote-total-receive";
-      receiveP.textContent = t("deal-you-receive", { amount: formatMinor(totals.receive, curr) });
-
-      totalsBlock.append(giveP, receiveP);
-
-      if (totals.difference > 0n) {
-        const diffP = document.createElement("p");
-        diffP.className = "quote-total-diff";
-        diffP.textContent = t("deal-diff-you-receive-more", { amount: formatMinor(totals.difference, curr) });
-        totalsBlock.append(diffP);
-      } else if (totals.difference < 0n) {
-        const diffP = document.createElement("p");
-        diffP.className = "quote-total-diff";
-        diffP.textContent = t("deal-diff-you-give-more", { amount: formatMinor(-totals.difference, curr) });
-        totalsBlock.append(diffP);
-      }
-      nodes.push(totalsBlock);
+      nodes.push(renderDealTotalsBlock(totals, curr));
     } else if (totalMinor !== undefined && terms.currency) {
       const totalP = document.createElement("p");
       totalP.className = "quote-total";

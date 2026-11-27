@@ -1,7 +1,8 @@
 import type { ServiceLocationKind } from "../listings/editor";
 import { serviceLocationEditorLabel } from "../listings/labels";
 import { t } from "../i18n/i18n";
-import { currencyMinorExponent, toMinorUnits } from "../money";
+import { currencyMinorExponent, MoneyInputError, toMinorUnits } from "../money";
+import { parseDateInput, toDateInputValue } from "../screens/statement";
 import type { CommitmentRowFields } from "../screens/quote_terms";
 
 export interface RowHandles {
@@ -101,7 +102,6 @@ export function createCommitmentRow(
   const locationWrap = document.createElement("div");
   locationWrap.className = "quote-row-location-wrap";
   const whereSelect = document.createElement("select");
-  whereSelect.className = "quote-where-select";
   const optReceiver = document.createElement("option");
   optReceiver.value = "at-receiver";
   optReceiver.textContent = serviceLocationEditorLabel("at-receiver");
@@ -141,15 +141,19 @@ export function createCommitmentRow(
   whenLabel.textContent = t("deal-row-when");
   const fromInput = document.createElement("input");
   fromInput.className = "quote-row-from-input";
-  fromInput.type = "number";
+  fromInput.type = "date";
   fromInput.placeholder = t("deal-from-secs-placeholder");
   const toInput = document.createElement("input");
   toInput.className = "quote-row-to-input";
-  toInput.type = "number";
+  toInput.type = "date";
   toInput.placeholder = t("deal-to-secs-placeholder");
   if (initial.window) {
-    fromInput.value = String(initial.window.earliest_secs);
-    toInput.value = String(initial.window.latest_secs);
+    if (initial.window.earliest_secs) {
+      fromInput.value = toDateInputValue(new Date(initial.window.earliest_secs * 1000));
+    }
+    if (initial.window.latest_secs) {
+      toInput.value = toDateInputValue(new Date(initial.window.latest_secs * 1000));
+    }
   }
   fromInput.oninput = onChanged;
   toInput.oninput = onChanged;
@@ -172,7 +176,6 @@ export function createCommitmentRow(
   }
 
   const payeeInput = document.createElement("input");
-  payeeInput.className = "quote-payee-input";
   payeeInput.placeholder = t("quote-payee-placeholder");
   if (initial.payee) payeeInput.value = initial.payee;
   payeeInput.oninput = onChanged;
@@ -215,17 +218,21 @@ export function createCommitmentRow(
       locationWrap.style.display = "none";
       windowWrap.style.display = "none";
       moneyWrap.style.display = "block";
+      payeeInput.classList.add("quote-payee-input");
     } else {
       descInput.style.display = "block";
       valueHint.style.display = "block";
       updateValueHint();
       moneyWrap.style.display = "none";
+      payeeInput.classList.remove("quote-payee-input");
       windowWrap.style.display = "flex";
 
       if (kind === "service" && giver === "quote-author") {
         locationWrap.style.display = "block";
+        whereSelect.classList.add("quote-where-select");
       } else {
         locationWrap.style.display = "none";
+        whereSelect.classList.remove("quote-where-select");
       }
     }
   };
@@ -261,11 +268,16 @@ export function createCommitmentRow(
 
     const valStr = valueInput.value.trim();
     let declaredValueMinor = 0;
+    let error: string | undefined;
     if (valStr) {
       try {
         declaredValueMinor = toMinorUnits(valStr, exp) ?? 0;
-      } catch {
-        declaredValueMinor = Math.round(Number.parseFloat(valStr) * Math.pow(10, exp)) || 0;
+      } catch (e) {
+        if (e instanceof MoneyInputError) {
+          error = e.message;
+        } else {
+          error = String(e);
+        }
       }
     }
 
@@ -274,6 +286,7 @@ export function createCommitmentRow(
       kind,
       description: descInput.value.trim(),
       declaredValueMinor,
+      ...(error ? { error } : {}),
     };
 
     if (kind === "service" && giver === "quote-author") {
@@ -282,20 +295,48 @@ export function createCommitmentRow(
     }
 
     if (fromInput.value || toInput.value) {
-      const from = Number.parseInt(fromInput.value || "0", 10);
-      const to = Number.parseInt(toInput.value || "0", 10);
-      if (from > 0 || to > 0) {
-        res.window = { earliest_secs: from, latest_secs: to };
+      let fromSecs = 0;
+      let toSecs = 0;
+      if (fromInput.value) {
+        if (/^\d+$/.test(fromInput.value.trim())) {
+          fromSecs = Number.parseInt(fromInput.value.trim(), 10);
+        } else {
+          const d = parseDateInput(fromInput.value);
+          if (d) fromSecs = Math.floor(d.getTime() / 1000);
+        }
+      }
+      if (toInput.value) {
+        if (/^\d+$/.test(toInput.value.trim())) {
+          toSecs = Number.parseInt(toInput.value.trim(), 10);
+        } else {
+          const d = parseDateInput(toInput.value);
+          if (d) toSecs = Math.floor(d.getTime() / 1000);
+        }
+      }
+      if (fromSecs > 0 || toSecs > 0) {
+        res.window = { earliest_secs: fromSecs, latest_secs: toSecs };
       }
     }
 
     if (kind === "money") {
       res.payee = payeeInput.value.trim();
       if (taxInput.value.trim()) {
-        res.taxMinor = toMinorUnits(taxInput.value.trim(), exp) ?? 0;
+        try {
+          res.taxMinor = toMinorUnits(taxInput.value.trim(), exp) ?? 0;
+        } catch (e) {
+          if (!res.error && e instanceof MoneyInputError) {
+            res.error = e.message;
+          }
+        }
       }
       if (feesInput.value.trim()) {
-        res.feesMinor = toMinorUnits(feesInput.value.trim(), exp) ?? 0;
+        try {
+          res.feesMinor = toMinorUnits(feesInput.value.trim(), exp) ?? 0;
+        } catch (e) {
+          if (!res.error && e instanceof MoneyInputError) {
+            res.error = e.message;
+          }
+        }
       }
     }
 

@@ -78,8 +78,6 @@ export function minorToDecimal(minor: number | bigint, exp: number): `${number}`
 /// The exponent is the Rust-pinned one, so the digits never change with
 /// the browser's currency data. A code `Intl` rejects (one from another
 /// node) is shown as `<amount> <code>`.
-export function formatMinor(minor: number, currency: string): string;
-export function formatMinor(minor: bigint, currency: string): string;
 export function formatMinor(minor: number | bigint, currency: string): string {
   const code = currency.trim().toUpperCase();
   const exp = currencyMinorExponent(code) ?? 2;

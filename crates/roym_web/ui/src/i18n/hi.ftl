@@ -908,7 +908,7 @@ as-listed-sent-waiting = भेज दिया। मालिक के जव
 as-listed-send-failed = भेजा नहीं जा सका: { $detail }
 directory-agree-as-listed-button = सूची के अनुसार सहमति
 
-# --- deals and statement (M08C C6b) ---
+# --- deals and statement ---
 deal-you-give = आप देते हैं: { $amount }
 deal-you-receive = आप प्राप्त करते हैं: { $amount }
 deal-diff-you-give-more = आप प्राप्त करने से { $amount } अधिक देते हैं
@@ -925,14 +925,17 @@ deal-more-terms = अधिक शर्तें
 deal-save-defaults = मेरे डिफ़ॉल्ट के रूप में सहेजें
 deal-saved-defaults = सहेजा गया
 deal-row-value-hint = { $currency } में इसका क्या मूल्य है। केवल योग के लिए उपयोग किया जाता है।
-deal-from-secs-placeholder = से (सेकंड)
-deal-to-secs-placeholder = तक (सेकंड)
+deal-from-secs-placeholder = से
+deal-to-secs-placeholder = तक
 deal-error-value-required = प्रत्येक प्रतिबद्धता के लिए मूल्य आवश्यक है
 deal-version = संस्करण { $n }
 deal-changes-heading = संस्करण 1 के बाद से बदलाव
+deal-changes-side-give = आप देते हैं: { $before } → { $after }
+deal-changes-side-receive = वे देते हैं: { $before } → { $after }
 deal-changes-added = जोड़ा गया: { $description }
 deal-changes-removed = हटाया गया: { $description }
 deal-changes-changed = बदला गया: { $description }
+deal-changes-changed-detail = बदला गया: { $description } ({ $before } → { $after })
 deal-suggest-changes = बदलाव का सुझाव दें
 deal-suggest-prefix = प्रस्ताव संस्करण { $n } के बारे में:
 deal-send-new-version = नया संस्करण भेजें
@@ -950,7 +953,7 @@ deal-close-sign-button = हस्ताक्षर करें
 deal-unconfirmed-claimed = देने वाले का कहना है कि उसने सौंप दिया; प्राप्तकर्ता ने पुष्टि नहीं की।
 deal-unconfirmed-unrecorded = किसी ने कुछ भी दर्ज नहीं किया।
 
-# --- statement (M08C C6b) ---
+# --- statement ---
 statement-title = विवरण
 statement-period-this-month = इस महीने
 statement-period-last-month = पिछले महीने
@@ -973,4 +976,6 @@ statement-kind-goods-or-service = वस्तु या सेवा
 statement-eep-not-available = इस नोड पर उपलब्ध नहीं है
 statement-eep-unavailable = पढ़ा नहीं जा सका: { $reason }
 statement-eep-available = उपलब्ध
+quote-history-failed = पुराने संस्करण लोड नहीं किए जा सके: { $detail }
+agreement-load-failed = समझौता लोड करने में विफल: { $detail }
 

@@ -19,6 +19,7 @@ export interface CommitmentRowFields {
   feesMinor?: number;
   slotId?: string;
   listingId?: string;
+  error?: string;
 }
 
 export interface QuoteFormFields {

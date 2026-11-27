@@ -204,33 +204,6 @@ describe("quote totals block and version summary", () => {
     expect(removed?.textContent).toBe("Removed: Old item");
 
     const changed = el.querySelector(".quote-change-changed");
-    expect(changed?.textContent).toBe("Changed: Service fee");
-  });
-
-  it("renders summary when passed in QuoteData", () => {
-    const summary: VersionSummary = {
-      mine: {
-        added: [{ giver: "counterparty", description: "Extra hour" }],
-        removed: [],
-        changed: [],
-        totalBefore: 0n,
-        totalAfter: 500n,
-      },
-      theirs: {
-        added: [],
-        removed: [],
-        changed: [],
-        totalBefore: 0n,
-        totalAfter: 0n,
-      },
-    };
-
-    const el = renderQuote({
-      sequence: 2,
-      summary,
-    });
-
-    expect(el.querySelector(".quote-changes-summary")).not.toBeNull();
-    expect(el.querySelector(".quote-change-added")?.textContent).toBe("Added: Extra hour");
+    expect(changed?.textContent).toBe("Changed: Service fee (₹1.00 → ₹2.00)");
   });
 });

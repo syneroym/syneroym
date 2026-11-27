@@ -9,7 +9,7 @@ import { call } from "../rpc";
 import type { AsListedFields, Acceptance, PaymentTiming } from "./editor";
 
 /// Builds the section and a reader for its current values.
-export function asListedSection(): {
+export function asListedSection(isNew = true): {
   element: HTMLFieldSetElement;
   read: () => AsListedFields;
 } {
@@ -50,7 +50,7 @@ export function asListedSection(): {
   notLimited.box.className = "as-listed-not-limited";
   const instantCap = input(t("listing-instant-cap"), "20");
   instantCap.className = "as-listed-instant-cap";
-  const quoteValidHours = input(t("listing-quote-valid-hours"), "1");
+  const quoteValidHours = input(t("listing-quote-valid-hours"), "");
   quoteValidHours.className = "as-listed-quote-hours";
   const paymentTiming = select(
     [
@@ -68,31 +68,34 @@ export function asListedSection(): {
   const dispute = input(t("listing-deal-dispute"));
   dispute.className = "as-listed-dispute";
 
-  void call<{
-    cancellation_terms?: { text?: string } | string;
-    refund_terms?: { text?: string } | string;
-    dispute_path?: { text?: string } | string;
-    quote_valid_secs?: number;
-  } | null>("deal.defaults-get")
-    .then((defaults) => {
-      if (!defaults) return;
-      const getTxt = (v: unknown) => {
-        if (typeof v === "string") return v;
-        if (typeof v === "object" && v !== null && "text" in v) return String((v as { text?: unknown }).text ?? "");
-        return "";
-      };
-      const cTxt = getTxt(defaults.cancellation_terms);
-      if (cTxt && cancellation.value.trim() === "") cancellation.value = cTxt;
-      const rTxt = getTxt(defaults.refund_terms);
-      if (rTxt && refund.value.trim() === "") refund.value = rTxt;
-      const dTxt = getTxt(defaults.dispute_path);
-      if (dTxt && dispute.value.trim() === "") dispute.value = dTxt;
-      if (defaults.quote_valid_secs && (quoteValidHours.value.trim() === "" || quoteValidHours.value === "1")) {
-        const hours = Math.floor(defaults.quote_valid_secs / 3600);
-        if (hours > 0) quoteValidHours.value = String(hours);
-      }
-    })
-    .catch(() => {});
+  if (isNew) {
+    void call<{
+      cancellation_terms?: { text?: string } | string;
+      refund_terms?: { text?: string } | string;
+      dispute_path?: { text?: string } | string;
+      quote_valid_secs?: number;
+    } | null>("deal.defaults-get")
+      .then((defaults) => {
+        if (!defaults) return;
+        const getTxt = (v: unknown) => {
+          if (typeof v === "string") return v;
+          if (typeof v === "object" && v !== null && "text" in v) return String((v as { text?: unknown }).text ?? "");
+          return "";
+        };
+        const cTxt = getTxt(defaults.cancellation_terms);
+        if (cTxt && cancellation.value.trim() === "") cancellation.value = cTxt;
+        const rTxt = getTxt(defaults.refund_terms);
+        if (rTxt && refund.value.trim() === "") refund.value = rTxt;
+        const dTxt = getTxt(defaults.dispute_path);
+        if (dTxt && dispute.value.trim() === "") dispute.value = dTxt;
+        if (defaults.quote_valid_secs && quoteValidHours.value.trim() === "") {
+          const hours = Math.floor(defaults.quote_valid_secs / 3600);
+          const clamped = Math.max(1, Math.min(168, hours));
+          quoteValidHours.value = String(clamped);
+        }
+      })
+      .catch(() => {});
+  }
 
   element.append(
     title,
@@ -113,7 +116,7 @@ export function asListedSection(): {
       acceptance: acceptance.value as Acceptance,
       not_limited: notLimited.box.checked,
       instant_cap: instantCap.value,
-      quote_valid_hours: quoteValidHours.value,
+      quote_valid_hours: quoteValidHours.value.trim() || "1",
       payment_timing: paymentTiming.value as PaymentTiming,
       cancellation_terms: cancellation.value,
       refund_terms: refund.value,

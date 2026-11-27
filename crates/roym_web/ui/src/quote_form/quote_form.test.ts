@@ -193,4 +193,122 @@ describe("quote form", () => {
       expect(comms[1].after).toEqual([]);
     }
   });
+
+  it("submits new version with enquiry record id and quote_id when opened from quote card", async () => {
+    let capturedParams: Record<string, unknown> | null = null;
+    stubRpc({
+      "quote.set": (params) => {
+        capturedParams = params as Record<string, unknown>;
+        return { quote_id: "q_new", record_id: "rec_q_new" };
+      },
+    });
+
+    const anchor = document.createElement("div");
+    const quoteCard = {
+      card_type: "quote",
+      record_id: "rec_quote_old",
+      data: {
+        quote_id: "qid_123",
+        answers: {
+          kind: "enquiry",
+          record_id: "rec_original_enquiry",
+        },
+        counterparty_did: "did:key:alice",
+        terms: {
+          currency: "INR",
+          commitments: [
+            {
+              commitment_id: "c1",
+              giver: "quote-author",
+              kind: "service",
+              declared_value_minor: 50000,
+              description: { lang: "en", text: "Lesson" },
+            },
+            {
+              commitment_id: "c2",
+              giver: "counterparty",
+              kind: "currency",
+              declared_value_minor: 50000,
+              payee: "did:key:bob",
+            },
+          ],
+        },
+      },
+    };
+
+    openQuoteForm(anchor, quoteCard, "conv1", async () => {}, undefined, "did:key:bob");
+    const form = anchor.querySelector<HTMLElement>(".quote-form")!;
+    form.querySelector<HTMLInputElement>(".quote-scope-input")!.value = "Updated Lesson Scope";
+
+    form.querySelector<HTMLButtonElement>(".submit-quote-button")!.click();
+    await vi.waitFor(() => expect(capturedParams).not.toBeNull());
+
+    expect(capturedParams!.enquiry_record_id).toBe("rec_original_enquiry");
+    expect(capturedParams!.quote_id).toBe("qid_123");
+  });
+
+  it("populates from listing and defaults with payee defaulting to myDid", async () => {
+    stubRpc({
+      "listing.get": () => ({
+        listing: {
+          listing_id: "list_1",
+          price: { amount_minor: 75000, currency: "INR", payee: "did:key:bob_custom" },
+          deal: {
+            cancellation_terms: { lang: "en", text: "Listing cancellation" },
+            refund_terms: { lang: "en", text: "Listing refund" },
+            dispute_path: { lang: "en", text: "Listing dispute" },
+          },
+        },
+      }),
+      "listing.verify": () => ({ valid: true }),
+      "deal.defaults-get": () => ({
+        quote_valid_secs: 7200,
+      }),
+    });
+
+    const anchor = document.createElement("div");
+    const enquiryCard = {
+      card_type: "enquiry",
+      record_id: "rec_enq_1",
+      data: {
+        listing_id: "list_1",
+      },
+    };
+
+    openQuoteForm(anchor, enquiryCard, "conv1", async () => {}, undefined, "did:key:my_author_did");
+    const form = anchor.querySelector<HTMLElement>(".quote-form")!;
+
+    await vi.waitFor(() => {
+      const payeeInput = form.querySelector<HTMLInputElement>(".quote-payee-input");
+      expect(payeeInput?.value).toBe("did:key:bob_custom");
+    });
+
+    const cancInput = form.querySelector<HTMLInputElement>(".quote-canc-input");
+    expect(cancInput?.value).toBe("Listing cancellation");
+    const amountInput = form.querySelector<HTMLInputElement>(".quote-amount-input");
+    expect(amountInput?.value).toBe("750.00");
+  });
+
+  it("enforces value-required on non-money rows and handles invalid money inputs without silent rounding", () => {
+    const anchor = document.createElement("div");
+    openQuoteForm(anchor, { record_id: "rec_req" }, "conv1", async () => {});
+    const form = anchor.querySelector<HTMLElement>(".quote-form")!;
+    form.querySelector<HTMLInputElement>(".quote-scope-input")!.value = "Scope";
+
+    // Non-money row with empty value returns quote-value-required
+    const rowValueInput = form.querySelector<HTMLInputElement>(".quote-row-value-input")!;
+    rowValueInput.value = "";
+    rowValueInput.dispatchEvent(new Event("input"));
+
+    const parsedEmpty = readQuoteForm(form);
+    expect("error" in parsedEmpty && "key" in parsedEmpty.error && parsedEmpty.error.key).toBe("quote-value-required");
+
+    // Invalid money text 'abc' returns error from MoneyInput
+    const amountInput = form.querySelector<HTMLInputElement>(".quote-amount-input")!;
+    amountInput.value = "abc";
+    amountInput.dispatchEvent(new Event("input"));
+
+    const parsedAbc = readQuoteForm(form);
+    expect("error" in parsedAbc).toBe(true);
+  });
 });

@@ -21,7 +21,22 @@ export interface ListingLike {
     payee?: string;
     [key: string]: unknown;
   };
+  price?: {
+    currency?: string;
+    amount_minor?: number;
+    timing?: "before-work" | "after-work";
+    payee?: string;
+    [key: string]: unknown;
+  };
   deal_terms?: {
+    payment_timing?: "before-work" | "after-work";
+    cancellation_terms?: { text?: string } | string;
+    refund_terms?: { text?: string } | string;
+    dispute_path?: { text?: string } | string;
+    quote_valid_secs?: number;
+    [key: string]: unknown;
+  };
+  deal?: {
     payment_timing?: "before-work" | "after-work";
     cancellation_terms?: { text?: string } | string;
     refund_terms?: { text?: string } | string;
@@ -61,7 +76,7 @@ function textOf(val: unknown): string {
 }
 
 /**
- * Pure function implementing the fill order for the quote form (AG-48).
+ * Pure function implementing the fill order for the quote form.
  * 1. From listing
  * 2. Then from saved deal defaults
  * 3. Then from built-in text
@@ -72,12 +87,15 @@ export function fillQuoteForm(
   saved?: SavedDefaultsLike | null,
   builtIn?: BuiltInDefaultsLike | null,
 ): FormValues {
-  const currency = listing?.payment?.currency?.trim() || "INR";
-  const amountMinor = listing?.payment?.amount_minor;
+  const payment = listing?.payment || listing?.price;
+  const dealTerms = listing?.deal_terms || listing?.deal;
+
+  const currency = payment?.currency?.trim() || "INR";
+  const amountMinor = payment?.amount_minor;
 
   const timing =
-    listing?.deal_terms?.payment_timing ||
-    listing?.payment?.timing ||
+    dealTerms?.payment_timing ||
+    payment?.timing ||
     "after-work";
 
   const where: ServiceLocationKind =
@@ -85,27 +103,27 @@ export function fillQuoteForm(
   const address = listing?.location?.address?.trim() || "";
 
   const payee =
-    listing?.payment?.payee?.trim() ||
+    payment?.payee?.trim() ||
     builtIn?.authorDid?.trim() ||
     "";
 
   const cancellation =
-    textOf(listing?.deal_terms?.cancellation_terms) ||
+    textOf(dealTerms?.cancellation_terms) ||
     textOf(saved?.cancellation_terms) ||
     (builtIn?.cancellation?.trim() ?? "");
 
   const refund =
-    textOf(listing?.deal_terms?.refund_terms) ||
+    textOf(dealTerms?.refund_terms) ||
     textOf(saved?.refund_terms) ||
     (builtIn?.refund?.trim() ?? "");
 
   const dispute =
-    textOf(listing?.deal_terms?.dispute_path) ||
+    textOf(dealTerms?.dispute_path) ||
     textOf(saved?.dispute_path) ||
     (builtIn?.dispute?.trim() ?? "");
 
   const quoteValidSecs =
-    listing?.deal_terms?.quote_valid_secs ||
+    dealTerms?.quote_valid_secs ||
     saved?.quote_valid_secs ||
     86400;
 

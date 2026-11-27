@@ -935,7 +935,7 @@ as-listed-sent-waiting = Sent. Waiting for the owner's answer.
 as-listed-send-failed = Could not send: { $detail }
 directory-agree-as-listed-button = Agree as listed
 
-# --- deals and statement (M08C C6b) ---
+# --- deals and statement ---
 deal-you-give = You give: { $amount }
 deal-you-receive = You receive: { $amount }
 deal-diff-you-give-more = You give { $amount } more than you receive
@@ -952,14 +952,17 @@ deal-more-terms = More terms
 deal-save-defaults = Save as my defaults
 deal-saved-defaults = Saved
 deal-row-value-hint = What this is worth in { $currency }. Used only for the totals.
-deal-from-secs-placeholder = From (secs)
-deal-to-secs-placeholder = To (secs)
+deal-from-secs-placeholder = From
+deal-to-secs-placeholder = To
 deal-error-value-required = Value is required for each commitment
 deal-version = Version { $n }
 deal-changes-heading = Changes since version 1
+deal-changes-side-give = You give: { $before } → { $after }
+deal-changes-side-receive = They give: { $before } → { $after }
 deal-changes-added = Added: { $description }
 deal-changes-removed = Removed: { $description }
 deal-changes-changed = Changed: { $description }
+deal-changes-changed-detail = Changed: { $description } ({ $before } → { $after })
 deal-suggest-changes = Suggest changes
 deal-suggest-prefix = About offer version { $n }:
 deal-send-new-version = Send a new version
@@ -977,7 +980,7 @@ deal-close-sign-button = Sign
 deal-unconfirmed-claimed = The giver says it delivered; the receiver did not confirm.
 deal-unconfirmed-unrecorded = Nobody recorded anything.
 
-# --- statement (M08C C6b) ---
+# --- statement ---
 statement-title = Statement
 statement-period-this-month = This month
 statement-period-last-month = Last month
@@ -1000,4 +1003,6 @@ statement-kind-goods-or-service = Goods or service
 statement-eep-not-available = Not available on this node
 statement-eep-unavailable = Could not be read: { $reason }
 statement-eep-available = Available
+quote-history-failed = Could not load earlier versions: { $detail }
+agreement-load-failed = Failed to load agreement: { $detail }
 
