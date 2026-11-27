@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use syneroym_app_host::types::conversation::{DeliveryState, Message};
 
+use crate::chat::ForwardView;
+
 pub mod group;
 
 /// Reserved for the one message a person never reads. A client that does
@@ -160,7 +162,7 @@ pub struct MessageView {
     pub body: Option<String>,
     /// Set only for a chat body. For such a body, `body` is the inner text.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub forward: Option<crate::chat::ForwardView>,
+    pub forward: Option<ForwardView>,
 }
 
 impl From<&Message> for MessageView {

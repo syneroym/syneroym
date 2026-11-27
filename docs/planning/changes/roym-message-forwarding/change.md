@@ -1,5 +1,7 @@
 ---
 status: draft
+demo:
+  - crates/substrate/tests/e2e/demo/20-roym-chat.spec.ts
 living-docs-touched:
 ---
 # Roym message forwarding with a signed origin
@@ -181,11 +183,11 @@ India's IT (Intermediary Guidelines and Digital Media Ethics Code) Rules, 2021, 
 
 - [x] ADR: signed message origins and the sender's forward mode (option E), the default mode and deniability. [ADR-0030](../../../decisions/0030-signed-message-origins.md).
 - [ ] Write the slice plan (in M08C).
-- [ ] `forward_mode` field in the message body, the default-mode setting, and the composer control.
+- [x] `forward_mode` field in the message body, the default-mode setting, and the composer control.
 - [x] `message-origin` record type, signing at send for `signed` messages, verification at receive.
-- [ ] Forward method and Hub action, refusing `not-forwardable` messages. Display rules FW-3 to FW-5, FW-13.
+- [x] Forward method and Hub action, refusing `not-forwardable` messages. Display rules FW-3 to FW-5, FW-13.
 - [ ] Forward of signed records as themselves.
-- [ ] The group composer notice (FW-11). Settings and first-message text (FW-10). Update the integrated spec's privacy section at close-out.
+- [x] The group composer notice (FW-11). Settings and first-message text (FW-10). Update the integrated spec's privacy section at close-out.
 
 ## Deviations
 
@@ -205,7 +207,12 @@ From [ADR-0030](../../../decisions/0030-signed-message-origins.md) (2026-11-16).
 - **Export creates the settings collection first.** Without that call a fresh node's first export had no `settings` key at all, and the bundle shape then depended on whether the person had ever opened the setting. The section is now present and empty on a fresh node.
 - **The parity refusal for a group uses a restored group, not a removed one.** A group owner is always a member and `group.remove-member` refuses to remove the owner, so the parity harness cannot make its own node a removed non-owner. A restored group reaches the same group check before the signing call, so it proves the order the scenario is for. The three-node test keeps the group case.
 - **The 11 KiB measurement does not assert the mailbox limit.** It prints the body size and whether it is under `MAILBOX_CARD_BODY_BYTES`, as the plan asks; the test does not make an offline mailbox part of this slice.
+- **The first-message question reports whether it asked.** `askOnce` resolves to `null` when the question was already answered, so the composer keeps the mode the person chose for this message; when it asks, it resolves to the answer, which also becomes the default. The plan gave it a plain `ForwardMode` return, which cannot tell "already asked" from "answered not-forwardable".
+- **"Renew signing" opens the existing setup screen.** There is no route for it, so the button re-renders the screen the person is on after `screens/setup.ts` finishes. It never changes the mode on its own.
+- **The chat picker labels a chat by name, peer DID, or address.** A direct chat whose peer is not a contact has no name, so it shows the conversation address the person already uses elsewhere.
+- **The browser case checks the composer control and the Profile default, not the first-message question.** The Playwright Hub runs on one shared node, and other cases send on it before this one, so the question is already answered there. The question is covered by its Hub unit test (`chat/first_message.test.ts`) and by story 20 on fresh nodes, which answers it with "Signed" at Alice's first send.
 - **Measured sizes and read time.** On the three-node test: a short signed text ("Market opens at 9", one `en` tag) has an 848-byte origin and a 1,037-byte chat body; an 11 KiB signed text has a 12,278-byte body, under the 13,312-byte mailbox estimate; a `conversation.history` page of 200 signed messages took 100 ms and 164 ms on two runs on the WASM build. The owner's limits are 2 KiB for an origin and 500 ms for the page.
+
 
 
 ## Close-out

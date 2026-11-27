@@ -14,6 +14,7 @@ use syneroym_app_host::types::signing::RecordDraft;
 
 use crate::{
     backup::bytes_to_hex,
+    listing,
     record::{self, Envelope, VerifyOptions},
     verdict::RecordVerdict,
 };
@@ -251,7 +252,7 @@ pub fn verify_message_origin(envelope: &str, now_secs: u64) -> RecordVerdict<Mes
         verified: true,
         expired: false,
         reason: None,
-        revocation_status: Some(crate::listing::revocation_status_word(verified.revocation_status)),
+        revocation_status: Some(listing::revocation_status_word(verified.revocation_status)),
         record_id: Some(verified.record_id),
         issuer: Some(verified.issuer),
         signer_did: Some(verified.signer_did),

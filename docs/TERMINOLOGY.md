@@ -99,6 +99,17 @@ neighbourhood.
 | **Saved deal terms** | Default deal terms configured by a participant on their node (`cancellation_terms`, `refund_terms`, `dispute_path`, `quote_valid_secs`) that pre-fill new quote terms. | An agreement template or contractual agreement. |
 | **Offer** | The user-facing word used in the Hub for a quote. While records, protocols, method names, and error codes retain "quote", user interfaces present it as an offer, and accepting it as agreeing. | A listing or enquiry. |
 
+## Roym messaging terms
+
+| Term | Meaning |
+|---|---|
+| **Forward mode** | The sender's choice for one message: `signed` or `not-forwardable`. The default is a setting of the person, not of a conversation. |
+| **Chat body** | The JSON body of a message that names a forward mode, content type `application/vnd.roym.message+json`. It holds the text, the mode, and, for a signed message, its origin. |
+| **Origin** | The `message-origin` record of a `signed` message. It names the author's master DID, the send time and a hash of the text. Anyone can check it. |
+| **Checked origin** | An origin whose envelope verifies, that is signed as a person, and whose content hash matches the message. Only a checked origin lets a receiver name the author. |
+| **Forward** | A message that carries another author's checked text and origin. It is covered by the forwarder's own message signature, and signs nothing itself. |
+| **Forward count** | How many times the content was forwarded. Each forwarder adds one, except when a person forwards their own forward. It is a hint, not proof; the origin is the proof. |
+
 ## Key phrasings
 
 - **One-liner:** "A truly peer-to-peer foundation for group communication and
