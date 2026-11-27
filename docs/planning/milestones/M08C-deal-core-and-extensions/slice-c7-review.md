@@ -143,7 +143,7 @@ but git cannot show whether the stop was made.
 
 ### Counts
 
-Blocker 0, major 1, minor 9. **10 open.**
+Blocker 0, major 1, minor 9. **0 open.**
 
 ### R1 — The change doc's Deviations miss almost every item the plan lists (major)
 
@@ -176,7 +176,7 @@ count rule, and line 28 tells them the host was not touched.
 that the capability's interface does not change but its indexing rule gets
 one case. Remove the extra empty lines.
 
-*Status:* Open.
+*Status:* Fixed (f29cc186, 0c36eb66).
 
 ### R2 — The name of an unknown author starts with two "…" (minor)
 
@@ -195,7 +195,7 @@ unit test passes because it checks only `toContain`.
 translation can place it), and make the unit test compare the whole text
 of `.forward-author`.
 
-*Status:* Open.
+*Status:* Fixed (a09e4552). Proof: with the extra "…" put back, the exact-text test failed with "……3z6wm8w5e4ae (not in your contacts)".
 
 ### R3 — A contact with no display name is shown as "not in your contacts" (minor)
 
@@ -217,7 +217,7 @@ told a saved contact is a stranger.
 empty name, show the short DID without "(not in your contacts)". Add a
 unit test for it.
 
-*Status:* Open.
+*Status:* Fixed (a09e4552). Proof: with the old `if (known)` put back, the empty-name test failed with "(not in your contacts)".
 
 ### R4 — In a group, a new message closes an open forward picker (minor)
 
@@ -238,7 +238,7 @@ again. In an active group he may never finish.
 while `threadList` holds `.forward-picker`, as `messages.ts` does with
 `OPEN_WORK`. Add a Hub unit test that a feed event leaves an open picker.
 
-*Status:* Open.
+*Status:* Fixed (9dcbc663). Proof: with the feed reloading at once, the new test failed because the picker was gone.
 
 ### R5 — A group delete never shows the "signed origin stays" sentence (minor)
 
@@ -261,7 +261,7 @@ is gone. Every member still holds its origin and can forward it.
 show the `messages-delete-signed-note` text and ask to confirm. Or record
 the gap in the change doc's Deviations and a backlog row.
 
-*Status:* Open.
+*Status:* Fixed (9dcbc663). Proof: with a signed delete allowed at once, the new test found no signed note.
 
 ### R6 — The group composer now sends the text without trimming (minor)
 
@@ -279,7 +279,7 @@ same words typed twice give two different hashes.
 *Fix:* Pass the trimmed `body` into `send` (and use it again for "Send as
 not forwardable").
 
-*Status:* Open.
+*Status:* Fixed (9dcbc663, 77ed9e4f). Proof: with the untrimmed input sent, the new test failed with "  Market opens at 9".
 
 ### R7 — New code imports the chat functions directly (minor)
 
@@ -300,7 +300,7 @@ the shared pure check and not a local helper.
 *Fix:* Import `chat` and call `chat::content_hash`, `chat::check_origin`
 and so on. Keep the types in the `use` list.
 
-*Status:* Open.
+*Status:* Fixed (884bef7c).
 
 ### R8 — The developer guide's new example is not run by story 30 (minor)
 
@@ -319,7 +319,7 @@ send needs an enrolled certificate; if the story node has none, use
 `not-forwardable` for the send and show `conversation.settings` only, and
 say why in the guide.
 
-*Status:* Open.
+*Status:* Fixed (5d0d9c8a). The block is tagged `bash roym-client=forward`, uses `$CONV`, and story 30 runs it with `run_block forward`; `bash -n` on the script passes.
 
 ### R9 — The integrated spec says the origin is signed with the master DID (minor)
 
@@ -338,7 +338,7 @@ origins as the person. The backlog row says the opposite.
 *Fix:* Say "signed as the person: by the `conversation` service key, with
 the person's delegation certificate, so it names the person's master DID".
 
-*Status:* Open.
+*Status:* Fixed (f29cc186).
 
 ### R10 — Some tests prove less than they claim (minor)
 
@@ -368,7 +368,7 @@ plain message holding "signed"). (3) Add a parity case that stores a chat
 body with a broken origin through `wasm_conversation`/`native_conversation`
 and asserts `data.code` `origin-not-checked`. (4) Assert the reason text.
 
-*Status:* Open.
+*Status:* Fixed (67162b1c). Proofs: with the host text rule removed, scenario 283 failed on the `signed` query; with the content-hash check removed, scenario 287's broken-origin case returned a message id instead of `origin-not-checked`.
 
 ## Smaller points (no finding)
 
