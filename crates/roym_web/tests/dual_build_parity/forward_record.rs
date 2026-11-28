@@ -1,5 +1,5 @@
 use serde_json::{Value, json};
-use syneroym_roym_core::record_forward::RECORD_FORWARD_CONTENT_TYPE;
+use syneroym_roym_core::record_forward::{RECORD_FORWARD_CONTENT_TYPE, RecordForwardBody};
 
 use super::{deal_fixtures::peer_signed_quote, fixtures::*, helpers::*};
 
@@ -30,12 +30,12 @@ async fn history(h: &Harness, conv: &str) -> (Value, Value) {
     (w, n)
 }
 
-fn forward_body_for(view: &Value, envelope: &str) -> Value {
+fn forward_body_for(view: &Value, envelope: &str) -> RecordForwardBody {
     let rows = view["result"]["messages"].as_array().expect("history rows");
     for row in rows {
         let text = row["body"].as_str().unwrap_or_default();
-        let Ok(body) = serde_json::from_str::<Value>(text) else { continue };
-        if body["envelope"] == json!(envelope) {
+        let Ok(body) = RecordForwardBody::parse(text.as_bytes()) else { continue };
+        if body.envelope == envelope {
             return body;
         }
     }
@@ -78,8 +78,8 @@ async fn scenario_289_a_forwarded_record_travels_as_itself_parity() {
         let (hw, hn) = history(&h, &conv).await;
         assert_eq!(hw, hn, "{record_type} history");
         let body = forward_body_for(&hw, envelope);
-        assert_eq!(body["record_type"], json!(record_type));
-        assert_eq!(body["envelope"], json!(envelope));
+        assert_eq!(body.record_type, record_type);
+        assert_eq!(body.envelope, envelope);
     }
 
     // The receiver's own services check each record, and a quote with no

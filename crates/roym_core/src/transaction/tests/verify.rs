@@ -161,6 +161,51 @@ fn expired_quote_envelope_verifies_with_expired_flag() {
 }
 
 #[test]
+fn a_quote_with_no_disclosures_shows_only_its_visible_fields() {
+    let key = Identity::generate().unwrap();
+    let issuer = substrate::derive_did_key(&key.public_key());
+    let counterparty_key = Identity::generate().unwrap();
+    let counterparty_did = substrate::derive_did_key(&counterparty_key.public_key());
+
+    let quote = sample_quote(&issuer, &counterparty_did);
+    let quote_expiry = quote.terms.quote_expires_at_secs;
+    let env = sign_envelope(
+        &key,
+        RECORD_QUOTE,
+        QUOTE_VERSION,
+        &quote.quote_id,
+        serde_json::to_value(&quote).unwrap(),
+        Some(quote_expiry),
+        1000,
+    );
+
+    let verdict = verify_quote(&env, 1000);
+    assert!(verdict.verified, "{:?}", verdict.reason);
+    assert_eq!(verdict.issuer.as_deref(), Some(issuer.as_str()));
+    let payload = verdict.payload.expect("a verified quote has a payload");
+    assert_eq!(payload.quote_id, quote.quote_id);
+    assert_eq!(payload.counterparty_did, counterparty_did);
+    assert_eq!(payload.terms.currency, "EUR");
+    assert_eq!(payload.terms.quote_expires_at_secs, quote_expiry);
+    assert_eq!(payload.terms.sd.len(), 5);
+    assert_eq!(payload.terms.commitments[0].commitment_id, "c1");
+    assert_eq!(payload.terms.commitments[0].sd.len(), 10);
+
+    let visible = serde_json::to_value(&payload.terms).unwrap();
+    assert!(visible.get("listing_id").is_none());
+    assert!(visible.get("scope").is_none());
+    let commitment = &visible["commitments"][0];
+    assert!(commitment.get("commitment_id").is_some());
+    assert!(commitment.get("giver").is_some());
+    assert!(commitment.get("resource_kind").is_some());
+    assert!(commitment.get("kind").is_some());
+    assert!(commitment.get("description").is_none());
+    assert!(commitment.get("declared_value_minor").is_none());
+    assert!(!visible.to_string().contains("Install garden fence"));
+    assert!(!visible.to_string().contains("123 Flower St"));
+}
+
+#[test]
 fn verify_enquiry_happy_and_mismatch() {
     let key = Identity::generate().unwrap();
     let issuer = substrate::derive_did_key(&key.public_key());

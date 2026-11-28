@@ -7,6 +7,7 @@
 //! conversation service links no record payload code.
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::{card::MAX_CARD_BODY_BYTES, record};
 
@@ -89,9 +90,7 @@ impl RecordForwardBody {
             return Err(RecordForwardError::TooLarge);
         }
         if require_object
-            && serde_json::from_str::<serde_json::Value>(&self.envelope)
-                .map(|v| !v.is_object())
-                .unwrap_or(true)
+            && serde_json::from_str::<Value>(&self.envelope).map(|v| !v.is_object()).unwrap_or(true)
         {
             return Err(RecordForwardError::Malformed(
                 "the record envelope is not a JSON object".to_string(),

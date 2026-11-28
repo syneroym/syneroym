@@ -29,14 +29,9 @@ pub(crate) async fn forward_record<H: AppHost>(
     host: &H,
     input: ForwardRecordInput,
 ) -> Reply<SendOutput> {
-    let body = match RecordForwardBody::new(&input.record_type, &input.envelope) {
-        Ok(body) => body,
-        Err(e) => return Err(forward::refuse(code_for(&e), e.to_string())),
-    };
-    let bytes = match body.to_bytes() {
-        Ok(bytes) => bytes,
-        Err(e) => return Err(forward::refuse(code_for(&e), e.to_string())),
-    };
+    let body = RecordForwardBody::new(&input.record_type, &input.envelope)
+        .map_err(|e| forward::refuse(code_for(&e), e.to_string()))?;
+    let bytes = body.to_bytes().map_err(|e| forward::refuse(code_for(&e), e.to_string()))?;
     messages::send_body(
         host,
         input.conversation,
