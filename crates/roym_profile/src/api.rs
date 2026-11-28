@@ -4,19 +4,21 @@ use syneroym_app_host::AppHost;
 use syneroym_roym_core::{
     backup::{Bundle, ImportInput},
     method::{
-        MethodInfo, NoParams, PingOutput, Reply,
+        MethodInfo, NoParams, PingOutput, Reply, VerifyInput,
         profile::{
             AdmitFirstContactInput, AdmitFirstContactOutput, BlockCheckOutput, BlockTargetInput,
             ContactKeyInput, ContactRow, ContactsListInput, ProfileGetInput, ProfileRecord,
             ResolveAddressOutput,
         },
     },
+    person::ProfilePayload,
     safety::ContactLimits,
     services,
     signing::verbs::{
         InstallCertificateInput, InstallCertificateOutput, SigningStatusOutput,
         install_signing_certificate, signing_status,
     },
+    verdict::RecordVerdict,
 };
 
 use crate::app::{backup, contacts, moderation, profile_ops};
@@ -29,6 +31,7 @@ syneroym_roym_core::service_methods! {
     "profile.ping": ping [NoParams => PingOutput],
     "profile.policy": profile_ops::policy [NoParams => profile_ops::PolicyOutput],
     "profile.get": profile_ops::get [ProfileGetInput => Option<ProfileRecord>],
+    "profile.verify-envelope": profile_ops::verify_profile [VerifyInput => RecordVerdict<ProfilePayload>],
     "profile.set": profile_ops::set [profile_ops::ProfileSetInput => profile_ops::ProfileSetOutput],
     "profile.export": backup::export [NoParams => Bundle],
     "profile.import": backup::import [ImportInput => backup::ProfileImportOutput],
