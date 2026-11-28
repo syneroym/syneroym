@@ -24,13 +24,13 @@ async function openContactProfile(host: HTMLElement, personDid: string): Promise
       payload?: { display_name?: string; about?: string };
     }>("profile.verify-envelope", { envelope: record.envelope });
     if (!verdict?.verified) {
-      panel.appendChild(
-        text(
-          "p",
-          t("record-forward-not-checked", { reason: verdict?.reason ?? "" }),
-          "record-forward-not-checked",
-        ),
+      const note = text(
+        "p",
+        t("record-forward-not-checked"),
+        "record-forward-not-checked",
       );
+      if (verdict?.reason) note.title = verdict.reason;
+      panel.appendChild(note);
       return;
     }
     panel.appendChild(

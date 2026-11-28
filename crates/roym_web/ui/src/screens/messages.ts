@@ -335,6 +335,10 @@ async function renderThread(
   pane.replaceChildren();
   pane.appendChild(text("h3", conv.peer_person_did || conv.peer_address));
 
+  const recordForwardStatus = document.createElement("div");
+  recordForwardStatus.className = "record-forward-status-host";
+  pane.appendChild(recordForwardStatus);
+
   const messagesHost = document.createElement("div");
   messagesHost.className = "thread-messages";
   pane.appendChild(messagesHost);
@@ -503,6 +507,7 @@ async function renderThread(
           (id) => messages.find((x) => x.id === id)?.restored === true,
           newestAgreementCardMap,
           forwardContacts,
+          recordForwardStatus,
         ),
       );
     }
@@ -665,6 +670,7 @@ function renderCardMessage(
   myDid: string,
   refresh: () => Promise<void>,
   newestAgreementCardMap?: Map<string, string>,
+  recordForwardStatus?: HTMLElement,
 ): void {
   const cardRow = cardMap.get(m.id);
   if (cardRow?.repeat) {
@@ -700,6 +706,7 @@ function renderCardMessage(
           type: "quote",
           loadEnvelope: () => quoteEnvelope(recordId),
           onSent: refresh,
+          statusHost: recordForwardStatus,
         }),
       );
     }
@@ -802,6 +809,7 @@ export function messageElement(
   isRestored?: (messageId: string) => boolean,
   newestAgreementCardMap?: Map<string, string>,
   forwardContacts?: Map<string, string>,
+  recordForwardStatus?: HTMLElement,
 ): HTMLElement {
   const wrap = document.createElement("div");
   wrap.className = `message message-${m.direction}`;
@@ -824,6 +832,7 @@ export function messageElement(
       myDid,
       refresh,
       newestAgreementCardMap,
+      recordForwardStatus,
     );
   } else if (m.content_type === RECORD_FORWARD_CONTENT_TYPE) {
     const body = parseRecordForward(m.body);

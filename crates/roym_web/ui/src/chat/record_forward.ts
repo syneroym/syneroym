@@ -104,7 +104,30 @@ interface Commitment {
   commitment_id?: unknown;
   giver?: unknown;
   resource_kind?: unknown;
-  kind?: unknown;
+}
+
+function giverDid(giver: string, issuer: string, counterparty: string): string {
+  switch (giver) {
+    case "quote-author":
+      return issuer;
+    case "counterparty":
+      return counterparty;
+    default:
+      return giver;
+  }
+}
+
+function resourceKindText(kind: string): string {
+  switch (kind) {
+    case "service-in-slot":
+      return t("deal-kind-service");
+    case "goods-or-service":
+      return t("statement-kind-goods-or-service");
+    case "currency":
+      return t("deal-kind-money");
+    default:
+      return kind;
+  }
 }
 
 function renderQuote(box: HTMLElement, verdict: Verdict): void {
@@ -147,8 +170,8 @@ function renderQuote(box: HTMLElement, verdict: Verdict): void {
       const c = raw as Commitment;
       const line = t("record-forward-quote-commitment", {
         id: String(c.commitment_id ?? ""),
-        giver: String(c.giver ?? ""),
-        kind: `${String(c.resource_kind ?? "")} ${String(c.kind ?? "")}`.trim(),
+        giver: giverDid(String(c.giver ?? ""), issuer, counterparty),
+        kind: resourceKindText(String(c.resource_kind ?? "")),
       });
       box.appendChild(text("p", line, "record-forward-quote-commitment"));
     }
@@ -229,10 +252,14 @@ export async function openRecordForward(
   type: RecordForwardType,
   envelope: string,
   onSent?: () => void | Promise<void>,
+  statusHost?: HTMLElement,
 ): Promise<void> {
   host.querySelector(".record-forward-status")?.remove();
+  statusHost?.querySelector(".record-forward-status")?.remove();
+  host.querySelector(".record-forward-warning")?.remove();
+  host.querySelector(".forward-picker")?.remove();
   const status = text("p", "", "record-forward-status");
-  host.appendChild(status);
+  (statusHost ?? host).appendChild(status);
 
   let verdict: Verdict;
   try {
@@ -258,7 +285,13 @@ export async function openRecordForward(
       warning.remove();
       void pickAndForward(host, status, type, envelope, onSent);
     };
-    warning.appendChild(proceed);
+    const cancel = text(
+      "button",
+      t("common-cancel"),
+      "button record-forward-cancel",
+    ) as HTMLButtonElement;
+    cancel.onclick = () => warning.remove();
+    warning.append(proceed, cancel);
     host.appendChild(warning);
     return;
   }
@@ -269,6 +302,8 @@ export interface RecordForwardActionOptions {
   type: RecordForwardType;
   loadEnvelope: () => Promise<string | null>;
   onSent?: () => void | Promise<void>;
+  /** A place outside the redrawn row for the "Forwarded." confirmation. */
+  statusHost?: HTMLElement;
 }
 
 /** The "Forward" button for a quote card, a directory hit or a profile. */
@@ -288,7 +323,7 @@ export function recordForwardAction(options: RecordForwardActionOptions): HTMLEl
         box.appendChild(text("p", t("record-forward-no-envelope"), "record-forward-status"));
         return;
       }
-      await openRecordForward(box, options.type, envelope, options.onSent);
+      await openRecordForward(box, options.type, envelope, options.onSent, options.statusHost);
     } finally {
       button.disabled = false;
     }

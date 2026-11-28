@@ -25,8 +25,15 @@ function quoteVerdict() {
           {
             commitment_id: "c1",
             giver: "quote-author",
-            resource_kind: "currency",
+            resource_kind: "goods-or-service",
             kind: "fulfilment",
+            _sd: [],
+          },
+          {
+            commitment_id: "c2",
+            giver: "counterparty",
+            resource_kind: "currency",
+            kind: "currency",
             _sd: [],
           },
         ],
@@ -105,13 +112,70 @@ describe("the record-forward body", () => {
     expect(text).toContain("did:key:zCounterparty");
     expect(text).toContain("Currency: INR");
     expect(text).toContain("Expires:");
-    expect(box.querySelector(".record-forward-quote-commitment")?.textContent).toBe(
-      "Commitment c1: currency fulfilment from quote-author",
+    const commitments = box.querySelectorAll(".record-forward-quote-commitment");
+    expect(commitments[0].textContent).toBe(
+      "Commitment c1: Goods or service from did:key:zQuoteAuthor",
+    );
+    expect(commitments[1].textContent).toBe(
+      "Commitment c2: Money from did:key:zCounterparty",
     );
     expect(box.querySelector(".record-forward-quote-hidden")).not.toBeNull();
     expect(text).not.toContain("You give");
     expect(text).not.toContain("₹");
     expect(box.querySelector(".quote-total")).toBeNull();
+  });
+
+  it("draws a received listing from its verdict", async () => {
+    stubRpc((method) => {
+      if (method === "listing.verify") {
+        return {
+          result: {
+            verified: true,
+            payload: {
+              title: "Garden fence",
+              summary: "Repaired in a day",
+              categories: ["gardening", "repair"],
+              status: "open",
+            },
+          },
+        };
+      }
+      throw new Error(`unexpected ${method}`);
+    });
+    const box = recordForwardBlock({
+      record_forward_version: 1,
+      record_type: "listing",
+      envelope: ENVELOPE,
+    });
+    await vi.waitFor(() =>
+      expect(box.querySelector(".record-forward-title")?.textContent).toBe("Garden fence"),
+    );
+    expect(box.querySelector(".record-forward-summary")?.textContent).toBe("Repaired in a day");
+    expect(box.textContent).toContain("gardening, repair");
+    expect(box.querySelector(".record-forward-status-line")?.textContent).toBe("open");
+  });
+
+  it("draws a received profile from its verdict", async () => {
+    stubRpc((method) => {
+      if (method === "profile.verify-envelope") {
+        return {
+          result: {
+            verified: true,
+            payload: { display_name: "Alice", about: "Hindi tutor" },
+          },
+        };
+      }
+      throw new Error(`unexpected ${method}`);
+    });
+    const box = recordForwardBlock({
+      record_forward_version: 1,
+      record_type: "profile",
+      envelope: ENVELOPE,
+    });
+    await vi.waitFor(() =>
+      expect(box.querySelector(".record-forward-name")?.textContent).toBe("Alice"),
+    );
+    expect(box.querySelector(".record-forward-about")?.textContent).toBe("Hindi tutor");
   });
 
   it("draws no field when the record does not check, and keeps the reason", async () => {
@@ -186,6 +250,83 @@ describe("the record-forward action", () => {
     await vi.waitFor(() =>
       expect(host.querySelector(".record-forward-status")?.textContent).toBe("Forwarded."),
     );
+  });
+
+  it("cancels the quote warning, sends nothing, and shows one warning again", async () => {
+    const calls: Call[] = [];
+    stubRpc(
+      (method) => {
+        if (method === "quote.verify") return { result: quoteVerdict() };
+        if (method === "conversation.list") return { result: { conversations: [] } };
+        throw new Error(`unexpected ${method}`);
+      },
+      calls,
+    );
+
+    const host = document.createElement("div");
+    host.appendChild(
+      recordForwardAction({
+        type: "quote",
+        loadEnvelope: async () => ENVELOPE,
+      }),
+    );
+    const forward = host.querySelector<HTMLButtonElement>(".record-forward-button")!;
+    forward.click();
+    await vi.waitFor(() =>
+      expect(host.querySelector(".record-forward-warning")).not.toBeNull(),
+    );
+
+    host.querySelector<HTMLButtonElement>(".record-forward-cancel")!.click();
+    expect(host.querySelector(".record-forward-warning")).toBeNull();
+    expect(calls.some((c) => c.method === "conversation.forward-record")).toBe(false);
+
+    forward.click();
+    await vi.waitFor(() =>
+      expect(host.querySelector(".record-forward-warning")).not.toBeNull(),
+    );
+    forward.click();
+    await vi.waitFor(() =>
+      expect(host.querySelectorAll(".record-forward-warning")).toHaveLength(1),
+    );
+  });
+
+  it("keeps the confirmation outside a thread that redraws", async () => {
+    stubRpc((method) => {
+      if (method === "quote.verify") return { result: quoteVerdict() };
+      if (method === "conversation.list") {
+        return { result: { conversations: [{ id: "conv-1", peer_address: "peer" }] } };
+      }
+      if (method === "conversation.forward-record") return { result: { message_id: "m1" } };
+      throw new Error(`unexpected ${method}`);
+    });
+
+    const statusHost = document.createElement("div");
+    const host = document.createElement("div");
+    document.body.append(statusHost, host);
+    host.appendChild(
+      recordForwardAction({
+        type: "quote",
+        loadEnvelope: async () => ENVELOPE,
+        statusHost,
+      }),
+    );
+    host.querySelector<HTMLButtonElement>(".record-forward-button")!.click();
+    await vi.waitFor(() =>
+      expect(host.querySelector(".record-forward-warning")).not.toBeNull(),
+    );
+    host.querySelector<HTMLButtonElement>(".record-forward-continue")!.click();
+    await vi.waitFor(() =>
+      expect(host.querySelector(".forward-picker-row")).not.toBeNull(),
+    );
+    host.querySelector<HTMLButtonElement>(".forward-picker-row")!.click();
+    await vi.waitFor(() =>
+      expect(statusHost.querySelector(".record-forward-status")?.textContent).toBe("Forwarded."),
+    );
+
+    host.replaceChildren();
+    expect(statusHost.querySelector(".record-forward-status")?.textContent).toBe("Forwarded.");
+    host.remove();
+    statusHost.remove();
   });
 
   it("offers the picker at once for a listing", async () => {
