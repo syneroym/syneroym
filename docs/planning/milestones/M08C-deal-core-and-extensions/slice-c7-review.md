@@ -717,7 +717,7 @@ the node (`fetchAgreement` until the lesson commitment is acknowledged)
 before it reads the panel, as story 2 does. (4) Record the cause in
 status.md and get a green Playwright E2E job. Do not only re-run CI.
 
-*Status:* Open.
+*Status:* Fixed (b5d49246). Cause: the panel was read while Alice's receipt had not been applied on Bob's node. The failed run's snapshot shows `c1: Promised` with the `Fulfilment Receipt c1` card already present. A rerun of the same head passed (run 46109686982), and `--grep "Bob offers a lesson" --repeat-each 5` passed 5 of 5 locally. The story now polls Bob's node for Alice's settlement before his close and for all three settlements before the panel; with the first poll set to expect 2, it fails on the real count of 1.
 
 ### R14 — In a group, a forwarded record is drawn as raw JSON and never checked (major)
 
@@ -755,7 +755,7 @@ If groups are not meant to get record forwards in C7b, the other way is
 to leave group rows out of the picker for a record forward and record
 that in Deviations; then the docs above must say "a direct chat".
 
-*Status:* Open.
+*Status:* Fixed (094074cb). Proof: with the group case removed, the new test failed because `.record-forward-card` was null.
 
 ### R15 — The quote warning has no Cancel, and while it is open the thread stops redrawing (minor)
 
@@ -780,7 +780,7 @@ removes the warning. In `openRecordForward`, remove an existing
 Hub unit test: Cancel removes the warning and sends nothing, and a
 second tap shows one warning.
 
-*Status:* Open.
+*Status:* Fixed (3e004460). Proof: with the cancel handler emptied, the new test failed because the warning stayed.
 
 ### R16 — "Forwarded." on a quote card is erased at once by the redraw (minor)
 
@@ -808,7 +808,7 @@ does not remove it (for example a short notice outside `messagesHost`).
 Then make the story wait for the forwarded row on Bob's side only, or
 check the status before the redraw can run.
 
-*Status:* Open.
+*Status:* Fixed (3e004460). Proof: with the status appended to the redrawn row, the new test found no status in its outside host.
 
 ### R17 — A forwarded quote's commitment line shows wire words (minor)
 
@@ -833,7 +833,7 @@ words. Map `resource_kind` to the existing `statement-kind-*` messages (or
 new ones), and leave out `kind`, which says only how the commitment
 settles. Update the test and add the Hindi keys for the owner's review.
 
-*Status:* Open.
+*Status:* Fixed (3e004460). Proof: with the wire values put back, the test received "Commitment c1: goods-or-service from quote-author".
 
 ### R18 — Two change-doc lines are missing or stale (minor)
 
@@ -857,7 +857,7 @@ still to come.
 Rewrite the Q2 bullet: C7a (text) and C7b (signed records) were built in
 two PRs, #399 and #400.
 
-*Status:* Open.
+*Status:* Fixed (4bec2428).
 
 ### R19 — Some planned tests are missing, and case 44 says more than it shows (minor)
 
@@ -893,7 +893,7 @@ blocks and for `openContactProfile`. Rename case 44 to what it shows (a
 verified hit forwards as itself and its row draws the listing, not raw
 JSON), and fix the comment: the row is the sender's own copy.
 
-*Status:* Open.
+*Status:* Fixed (9ff5f554, 3e004460, b5d49246). The core test covers the visible fields and the absent `description` and `declared_value_minor`; the parity test reads the body through `parse`; the Hub tests cover the listing, profile and contact profile views; case 44 is renamed. Results: `roym_core` 610 passed, parity `forward_record` 4 passed, Hub files 50 passed.
 
 ### R20 — Small code points: an unused parser, two long match blocks, an inline path (minor)
 
@@ -920,4 +920,4 @@ parity test that reads the stored body. Write
 `let body = RecordForwardBody::new(..).map_err(|e| forward::refuse(code_for(&e), e.to_string()))?;`
 and the same for `to_bytes`. Import `serde_json::Value`.
 
-*Status:* Open.
+*Status:* Fixed (9ff5f554). `RecordForwardBody::parse` is called by the parity test, both refusal branches use `map_err` and `?`, and the envelope check imports `Value`.
