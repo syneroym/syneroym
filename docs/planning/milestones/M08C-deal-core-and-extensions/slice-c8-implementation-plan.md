@@ -6,10 +6,12 @@ conversation. This plan is meant to stand alone.*
 
 **Status: plan written, 2026-11-28, by Claude Opus 5.5, on
 `feat/m08c-c7b-record-forward` (that is `main` at `79344661` plus the
-C7b work of PR #400, which is not merged yet). Every fact about code and
-docs below was read on `main` at `79344661` (`git show origin/main:…`,
-`git grep … origin/main`), unless it says "C7b". Not reviewed yet. The
-owner has not answered the questions in section 2.1.**
+C7b work of PR #400). PR #400 merged on 2026-11-28 as squash commit
+`954af3fc`. Plan review round 1 is in
+[slice-c8-review.md](slice-c8-review.md). Every fact about code and docs
+below was read on `main` at `79344661` (`git show origin/main:…`,
+`git grep … origin/main`), unless it says "C7b". The owner has not
+answered the questions in section 2.1.**
 
 ## 0. Read first, and the rules
 
