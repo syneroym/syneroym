@@ -533,3 +533,56 @@ Extend the new picker test to the delete dialog.
 *Status:* Fixed (43c07ccc). Proof: with the open-work selector narrowed to
 `.forward-picker`, the delete-dialog test failed because the dialog was
 gone; with `activeGroupLater` redrawing at once, both picker tests failed.
+
+## Code review round 3 — Claude Opus 5.5, 2026-11-28
+
+This round checks the fixes of round 2 on branch
+`feat/m08a-c7-msg-forwarding` at `717fb65e`, main checkout (not a
+worktree), `git pull` up to date. The fix commits are `43c07ccc` (R11,
+R12), `c8f0076d` (R1) and `717fb65e` (review and status close-out)
+(`git log b87d560c..717fb65e`).
+
+**CI.** `gh pr checks 399` on `717fb65e` (runs 46047047292 and
+46047047237): **every job passed**: "Lints, licenses & checks",
+Playwright E2E, Test 1/6 to 6/6, CI Pipeline and the CLA check.
+Benchmarks and Code Coverage were skipped, as on every PR. So CI is now
+proof for the full suite, the Hub build, story 20 and story 30 (with the
+forward block of R8).
+
+**Tests I ran** (targeted only): `npx tsc --noEmit -p .` in
+`crates/roym_web/ui`: clean. `TZ=UTC npx vitest run
+src/screens/groups.test.ts`: 1 file, 29 passed (the review file says 29).
+
+### Round 2 items
+
+- **R1 — Fixed (c8f0076d), verified.** The count bullet now says 0, a
+  negative number and a fraction read as no count, and a larger number
+  reads as 1,000, as `read_count` does. The setting bullet names the
+  `conversation_settings` collection and `settings` as the bundle section.
+  The hash bullet now follows D-C7-2: the domain string, a length prefix
+  and the content type, a tag count and a length prefix per tag, a length
+  prefix and the body, a blob count and the raw 32-byte hashes.
+- **R11 — Fixed (43c07ccc), verified.** A `GroupCounters` type with
+  `body?: string` is used by `stubGroupNode` and by every test that builds
+  counters. `tsc` is clean locally, and the CI jobs that build the Hub
+  passed.
+- **R12 — Fixed (43c07ccc), verified.** One selector `GROUP_OPEN_WORK`
+  (`.forward-picker, .delete-dialog`) is used in `activeGroupLater`, in the
+  `MutationObserver` and in `reloadGroupList`. The feed `reload` path now
+  calls `activeGroupLater` too, and `activeGroupReload` is gone (no use is
+  left). Two new tests show that a `conversation.message` event leaves an
+  open delete dialog and that a `reload` event leaves an open picker, and
+  that the waiting reload runs once the dialog or picker closes.
+
+I found no new problem in the fix commits.
+
+**Note on the record.** The fix session changed the counts line of round 2
+from "3 open" to "0 open". A round's counts are the reviewer's record at
+that time, so they should stay as written, and the new state belongs in
+the item statuses and in the next round. I leave the line as it is now,
+because this round records the result.
+
+### Counts
+
+Round 3: blocker 0, major 0, minor 0. R1, R11 and R12 are verified fixed.
+**0 open.**
