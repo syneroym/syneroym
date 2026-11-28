@@ -113,6 +113,13 @@ export async function ensureOwnSynOrg(
   await page.getByRole('button', { name: hubMessage(lang, 'synorg-limit-save') }).click();
   await expect(page.locator('.limit-status')).toHaveText(hubMessage(lang, 'common-saved'), { timeout: 15_000 });
 
+  // The catalog's own save limiter is separate from the directory's
+  // publication limit. This suite shares one node and saves many listings
+  // across tests, so both limits must stay generous. The SynOrg screen
+  // edits only the directory limit.
+  const saved = await rpcCall(page, 'listing.set-limits', { window_secs: 86400, max_per_window: 1000 });
+  expect(saved.result?.max_per_window).toBe(1000);
+
   // A publish needs a credential: always ensure one is issued for the category.
   await issueOwnCredential(page, category);
 }
