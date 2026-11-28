@@ -1059,3 +1059,97 @@ it too. An event that no longer applies (a late half after the end) is
 still kept as evidence. Proof: with `apply_progress` ignoring its error
 again, the new test failed at `!first.filed`; after the fix the second
 filing moved c1 to Fulfilled. `roym_transaction` 286 passed.
+
+## Code review round 6 — Claude Opus 5.5, 2026-11-28
+
+This round checks the fixes of round 5 on branch
+`feat/m08c-c7b-record-forward` at `f3d26c4a`, main checkout (not a
+worktree), `git pull` up to date. The fix commits are `297fc087` (R21),
+`f8579f00` (the R21 test in its own file), `938bf69f` (the story comment)
+and `f3d26c4a` (review and status close-out) (`git log
+b2f972a5..f3d26c4a`).
+
+**CI.** `gh pr checks 400` on `f3d26c4a` (run 46135204615): "Lints,
+licenses & checks" and the CLA check passed; Test 1/6 to 6/6 and
+Playwright E2E were **still running** when this round was written. The
+owner said to go on as if CI passes, so this round does not prove the
+full suite. The next round must read `gh pr checks 400` again.
+
+**Tests I ran** (targeted only): `cargo nextest run -p
+syneroym-roym-transaction settle`: 14 passed, 272 skipped (286 in the
+crate, as the fix note says), the new
+`settle::retry::a_progress_failure_defers_the_receipt_and_the_next_filing_applies_it`
+included.
+
+### Round 5 items
+
+- **R13 — Fixed (b5d49246, note corrected), verified.** The R13 status
+  now says there was no CI rerun, and that the receipt had arrived on
+  Bob's node and its progress transition failed. status.md says the same.
+  The story comment (`50-roym-deal.spec.ts:400`) now says Bob's
+  `transaction.sync` applies the receipt.
+- **R21 — Fixed (297fc087, f8579f00), verified, with one gap (R22).** The
+  three paths that store a received half (payment request, payment
+  acknowledgement, fulfilment receipt) now call one `apply_progress`
+  after the half is stored and before the card is marked filed. An error
+  other than -32602 makes the card deferred, so `sync` holds its cursor
+  and runs the filing again. A second filing with the same record id now
+  runs the transition too, which was the missing part I named in round 5.
+  The new test fails the snapshot write once, sees the card deferred with
+  its half stored and the commitment still `Claimed`, then files again and
+  sees `Fulfilled`. The removed `RecordFulfilmentHalfArgs` and
+  `RecordPaymentRequestHalfArgs` fields are no longer needed. No reordered
+  check: verification, the half rules and the refusals run as before; the
+  payment acknowledgement now moves progress before its card row is
+  written, which is the order the deferral needs.
+
+**Note on the record.** The fix session rewrote my round 5 bullet for
+R13 (it removed two sentences and the *Fix:* text), not only its status.
+A round's text is the reviewer's record at that time, so it should stay
+as written, and the new state belongs in the status and in the next
+round. I leave it as it is now, because this round records the result.
+
+### Counts
+
+Round 6: blocker 0, major 0, minor 1 new (R22). R13 and R21 are verified
+fixed. **1 open** (R22).
+
+### R22 — A local progress failure can still end in a refused card or a lost event (minor)
+
+*Where:* `crates/roym_transaction/src/app/sync/settle_receipts.rs:50`,
+`:193`, `:361`, `:511`; `crates/roym_transaction/src/app/progress_ops.rs:161`
+at `f3d26c4a`.
+
+*Problem.* (1) `apply_progress` errors go to `defer_or_refuse`. That
+function defers only while `issued_at + MAX_DEFER_SECS > now` (7 days),
+and then **refuses** the card. A refusal says the other party's card is
+bad, but here the card verified; only this node failed to write its own
+progress (for example `"busy"`, or `progress::sign` failing on the quote
+author's node). (2) `apply_progress` treats every -32602 as "the event
+no longer applies". But `transition_at` also returns -32602 for any
+`roll_forward` error (`progress_ops.rs:161`), and `roll_forward` passes
+storage read errors up with `?`. So a failed read of the agreement's
+snapshots is ignored as before, and the event is lost, which is the case
+R21 was about. (3) The new test covers the fulfilment path only; the
+payment request and payment acknowledgement paths have no test of the
+deferral.
+
+*Failure case.* (1) Bob's node is offline for 8 days. When it comes back,
+the first sync of Alice's receipt (issued 8 days ago) meets a transient
+progress error, and the card is refused at once, with reason "progress:
+busy"; it is never filed again. The same happens if Bob's node cannot
+sign for more than 7 days. (2) A storage read error in `roll_forward`
+during filing: the card is filed, the commitment does not move, nothing
+retries.
+
+*Fix.* (1) For an `apply_progress` error, return a plain deferred result
+(`FileCardResult { deferred: true, .. }`) and never call `refuse_card`:
+the card is valid, and the next sync tries again. (2) In
+`transition_at`, map a `roll_forward` storage error to
+`Response::internal_error` and keep -32602 for the real "does not apply"
+cases (`no-progress-snapshot`, and the `TransitionError`s from
+`prepare_next_snapshot`). (3) Add the same one-shot `fail_write` test for
+a payment acknowledgement, and one for a filing more than 7 days after
+`issued_at`, which must stay deferred.
+
+*Status:* Open.
