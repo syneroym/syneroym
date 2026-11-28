@@ -586,3 +586,338 @@ because this round records the result.
 
 Round 3: blocker 0, major 0, minor 0. R1, R11 and R12 are verified fixed.
 **0 open.**
+
+## Code review round 4 — Claude Opus 5.5, 2026-11-28
+
+This is the first code review of **part C7b** (forward of signed records):
+plan section 6.2, steps 8 to 12, D-C7-14 and Q12 (a). PR #400 (draft),
+branch `feat/m08c-c7b-record-forward` at `2246e215`, main checkout (not a
+worktree), `git pull` up to date. The branch sits on `main` at
+`79344661` (C7a merged). Diff: `git diff origin/main...HEAD` (40 files).
+The code was written by Gemini 3.8 Flash (status.md). The prompt named the
+reviewer as Gemini 3.8 Flash; this round was done by Claude Opus 5.5, so
+that name is recorded here. Rounds 1 to 3 were C7a; their items (R1 to
+R12) were all verified fixed in round 3 on the merged PR #399, so no
+Fixed or Rejected item is left to check again. New findings start at R13.
+
+**CI.** `gh pr checks 400` on `2246e215` (run 46109675067): **Playwright
+E2E failed**, so "CI Pipeline" failed too. "Lints, licenses & checks" and
+Test 1/6 to 6/6 passed. The two earlier runs on this branch (on the plan
+commits `429357a2` and `f453f29b`) passed, but they held no code. So CI
+is proof for the Rust suite, the lints and the Hub build, and not for the
+browser suites. See R13.
+
+**Tests I ran** (targeted only): `TZ=UTC npx vitest run
+src/chat/record_forward.test.ts src/screens/contacts.test.ts`: 2 files,
+13 passed. I counted the new Rust tests: `record_forward/tests.rs` 9,
+`person.rs` `envelope` module 5, `indexable_text.rs` 5 (status.md says
+9 + 5 and 5). I did not build the roym WASM, so I did not run parity and
+did not measure the sizes again.
+
+### Checked and found correct
+
+- **The three checks of section 6.2.** (1) A quote with no disclosures:
+  `quote.verify` (`quote_ops.rs:601`) calls `verify_quote` and
+  `verify_disclosed` with an empty list, and scenario 289 shows it answers
+  `verified: true` with the 5 terms digests. (2) The size: status.md
+  records `conversation` +11,852 bytes (+1.12%), far under the 158,505-byte
+  limit, because no record check is linked into `conversation`. Not
+  measured again by me. (3) The reserved list: `send` now refuses
+  `RECORD_FORWARD_CONTENT_TYPE` (`messages.rs:291`), and scenario 291
+  proves it in both builds.
+- **The design of Q12 (a) / D-C7-14.** `conversation.forward-record`
+  (`forward_record.rs`) builds the body, refuses another type, an
+  envelope over `MAX_CARD_BODY_BYTES` and an envelope that is not a JSON
+  object, with `data.code`, and sends with `send_body` and `|_, _| None`.
+  It links no record payload code and signs nothing. The length check
+  runs before the envelope is parsed (`record_forward.rs:88` before
+  `:92`). The sender's Hub calls the owning service before it sends, and
+  a record that does not check is never offered (`openRecordForward`).
+- **The host index rule.** `indexable_text` returns `None` for the new
+  type before the `+json` rule (`message.rs:42`). The unit test and
+  scenario 292 prove that neither the record's words nor the body keys
+  are found.
+- **The profile check move.** `person::verify_profile_envelope` with
+  `Some(did)` keeps every check and every error text of the old
+  `process_profile_envelope` (verify with `expecting`, type and version,
+  subject, payload parse, `validate`), in the same order. With `None` it
+  requires `subject == issuer`. The five unit tests cover both forms and a
+  broken signature.
+- **Access.** Both new verbs sit behind `admit::require_internal`, the
+  first statement of each service's `invoke`, so neither is reachable off
+  the node. Scenario 73 now lists `conversation.forward-record`.
+  `method_contract` counts are 30 (conversation) and 25 (profile).
+- **The Hub draws a direct-chat row only from the verdict.** In
+  `messages.ts`, a record-forward row goes to `recordForwardBlock`, never
+  to `renderMessageBody`, so no raw JSON and no Translate action. Every
+  value is a text node. A refused verdict draws the heading and "could not
+  be checked" with the reason in the tooltip. The quote block has no
+  totals, no value, no description and no "You give".
+- **Numbers.** Parity scenarios 289 to 292 follow C7a's 288. Hub case 44
+  follows C7a's 43. status.md has a row C7b. The PR title ends in
+  "(M08C slice C7b)".
+- **Docs.** The developer guide documents the method, the body, the
+  refusal codes and the verify methods, and its new `forward-record`
+  block runs in story 30. TERMINOLOGY has "Record forward". Two backlog
+  rows (no re-forward of a received row, the minimal profile view) match
+  the code. The change doc's Deviations record Q12 (a), the index rule,
+  the body format and the profile subject rule.
+- **Rules.** No planning ids in code comments. No new dependency. New
+  files are small; no function near 100 lines; no long match arm.
+
+### Counts
+
+Round 4: blocker 0, major 2 (R13, R14), minor 6 (R15 to R20).
+**8 open.**
+
+### R13 — CI is red: story 50's third deal story fails, for the second time on this branch (major)
+
+*Where:* `crates/substrate/tests/e2e/demo/50-roym-deal.spec.ts:401` at
+`2246e215`; CI run 46109675067, job 140870183256.
+
+*Problem.* The step "Bob's screen: deal panel shows closed" waits 60 s for
+3 `.state-fulfilled, .state-acknowledged` items and sees 2 (122 polls at
+2). Alice's "received" settlement of the lesson never shows on Bob's
+panel; Bob's own two closes do. The other 10 demo tests passed, and the
+main suite passed (83). The implementer saw **the same failure locally**
+(status.md: "One earlier demo run timed out at 2 of 3 fulfilments in the
+third deal story; its rerun passed"). I scanned the Playwright job of the
+last 40 failed CI runs (back to 2026-11-08, every branch): this test
+(`50-roym-deal.spec.ts:293`) failed in none of them. So the failure is
+new with this branch. The status row's reason, "no C7b path touches
+settlement", is true for the node code I read, but it is not proof:
+
+- story 1 of the same file now forwards a quote from Alice to Bob, so the
+  Alice–Bob conversation that story 3 uses holds one more message, a
+  record-forward row;
+- every draw of that thread, on both Hubs, now calls `quote.verify` for
+  that row, and its result is added to the thread after the swap;
+- `transaction.sync` skips the new type (`sync.rs:264`), and
+  `forward_record` changes no delivery code, so I found no node path that
+  could hold Alice's settlement back.
+
+I could not find the cause by reading. The failure is not proven to be
+caused by the code, and it is not proven to be a known flake either.
+
+*Failure case.* Any CI run of this branch can go red at this step, so the
+PR cannot show a green suite, and a real bug in the Hub redraw or in the
+delivery of a settlement after a record forward would be hidden as
+"flaky".
+
+*Fix.* (1) Download the run's `e2e-server-logs` (82,738 bytes) and
+`playwright-report` (433,447 bytes) artifacts. In Bob's node log, find
+whether Bob's node received and filed Alice's `received` settlement. That
+splits the two cases: not received means delivery; received but not drawn
+means the Hub redraw. (2) Run story 50 several times locally on `main`
+and on the branch (`npm run test:demo -- demo/50-roym-deal.spec.ts
+--repeat-each 5` in `crates/substrate/tests/e2e`). If only the branch fails, remove the two new steps from story 1
+and run again, to see whether the forwarded row is the cause. (3) Fix the
+cause found, or, if it is a story timing problem, make story 3 wait on
+the node (`fetchAgreement` until the lesson commitment is acknowledged)
+before it reads the panel, as story 2 does. (4) Record the cause in
+status.md and get a green Playwright E2E job. Do not only re-run CI.
+
+*Status:* Open.
+
+### R14 — In a group, a forwarded record is drawn as raw JSON and never checked (major)
+
+*Where:* `crates/roym_web/ui/src/screens/groups.ts:168` at `2246e215`
+(no case for `RECORD_FORWARD_CONTENT_TYPE`);
+`crates/roym_web/ui/src/chat/forward_picker.ts:39` (the picker lists
+every chat, groups included).
+
+*Problem.* The plan says a record forward works in a group (section 6.2,
+check 3), and `forward_record` sends with `|_, _| None`, so the node
+accepts it. The picker offers group chats (`forward_picker.test.ts:24`
+has a group row). But `groups.ts` was not changed: its row code has cases
+for widgets and widget answers only, and a `utf8` body falls to
+`messageText(msg.body, …)`. So every member of the group sees the whole
+body as text: the envelope JSON with the listing title, the profile name,
+or the quote's parties and `_sd` digests. Nothing asks the owning service
+first. For an incoming row, `translatable: true` also offers Translate on
+that JSON. This breaks D-C7-14 ("draws only from that verdict"), and it
+makes three docs say more than the code does: the change doc's Q12 bullet
+("so nothing trusts the sender"), the integrated spec
+(`roym-integrated-experience-spec.md:763`, "draws the record only when
+that answer says it checks") and the requirements line.
+
+*Failure case.* Alice opens a quote card, taps Forward, Continue, and
+picks the group "Market". Every member of "Market" sees a long JSON
+string where a record should be. A member whose Hub has a changed
+envelope in front of it sees its words too, unchecked.
+
+*Fix.* In `groups.ts`, add a case before the `utf8` case:
+`msg.content_type === RECORD_FORWARD_CONTENT_TYPE` → `parseRecordForward`
+→ `recordForwardBlock(body)`, or the "could not be read" line, as
+`messages.ts:828` does. Add a Hub unit test in `groups.test.ts` that a
+record-forward row draws the block, no raw JSON and no Translate action.
+If groups are not meant to get record forwards in C7b, the other way is
+to leave group rows out of the picker for a record forward and record
+that in Deviations; then the docs above must say "a direct chat".
+
+*Status:* Open.
+
+### R15 — The quote warning has no Cancel, and while it is open the thread stops redrawing (minor)
+
+*Where:* `crates/roym_web/ui/src/chat/record_forward.ts:248` to `:263`;
+`crates/roym_web/ui/src/screens/messages.ts:61` at `2246e215`.
+
+*Problem.* The warning has one button, "Continue". There is no way to
+close it except to go on. `.record-forward-warning` is in `OPEN_WORK`, so
+while it is in the thread every `later` redraw waits: new messages and
+deal panel changes from the event feed are not drawn. Also, a second tap
+on Forward appends a second warning, because `openRecordForward` removes
+only the old status, not the old warning.
+
+*Failure case.* Bob taps Forward on a quote, reads the warning and
+decides not to forward. He cannot close it. Alice's next message and her
+settlement do not appear in this thread until Bob sends something or
+opens another screen.
+
+*Fix.* Add a "Cancel" button (`common-cancel`, as the picker uses) that
+removes the warning. In `openRecordForward`, remove an existing
+`.record-forward-warning` and `.forward-picker` in `host` first. Add a
+Hub unit test: Cancel removes the warning and sends nothing, and a
+second tap shows one warning.
+
+*Status:* Open.
+
+### R16 — "Forwarded." on a quote card is erased at once by the redraw (minor)
+
+*Where:* `crates/roym_web/ui/src/chat/record_forward.ts:220` to `:221`,
+`crates/roym_web/ui/src/screens/messages.ts:702`;
+`crates/substrate/tests/e2e/demo/50-roym-deal.spec.ts:116` at
+`2246e215`.
+
+*Problem.* `pickAndForward` writes "Forwarded." into the status line and
+then calls `onSent`, which is `redraw.now` for a quote card. That redraw
+replaces the whole thread, and the new quote card has no status line. So
+the person sees the confirmation only for the time the redraw takes. When
+the target is another chat, the thread does not change, so the person
+sees no result at all. Story 50 checks `.record-forward-status` for
+"Forwarded.", so that step passes only while the redraw is still running:
+it races the redraw.
+
+*Failure case.* With a fast node, the redraw ends before Playwright's
+next poll, the locator finds no status, and story 1 fails after 15 s. A
+person who forwards a quote to another chat cannot tell that it worked.
+
+*Fix.* Do not redraw the source thread after a record forward when the
+target is another conversation, or show the confirmation where a redraw
+does not remove it (for example a short notice outside `messagesHost`).
+Then make the story wait for the forwarded row on Bob's side only, or
+check the status before the redraw can run.
+
+*Status:* Open.
+
+### R17 — A forwarded quote's commitment line shows wire words (minor)
+
+*Where:* `crates/roym_web/ui/src/chat/record_forward.ts:148` to `:153`;
+`en.ftl` and `hi.ftl` `record-forward-quote-commitment` at `2246e215`.
+
+*Problem.* The line puts the raw wire values into the sentence:
+`giver` is `quote-author` or `counterparty`, and the kind is
+`resource_kind` plus `kind` (for example `goods-or-service fulfilment`).
+The unit test expects exactly "Commitment c1: currency fulfilment from
+quote-author". These are wire tokens, not words for a person, and the
+Hindi text puts the same English tokens in a Hindi sentence. "from
+quote-author" also does not say who that is, although the line above
+names both DIDs.
+
+*Failure case.* Bob reads "Commitment c1: goods-or-service fulfilment
+from quote-author". A Hindi reader gets the same English tokens.
+
+*Fix.* Map `giver` to the DID of that party (the `issuer` for
+`quote-author`, `counterparty_did` for `counterparty`), or to translated
+words. Map `resource_kind` to the existing `statement-kind-*` messages (or
+new ones), and leave out `kind`, which says only how the commitment
+settles. Update the test and add the Hindi keys for the owner's review.
+
+*Status:* Open.
+
+### R18 — Two change-doc lines are missing or stale (minor)
+
+*Where:* `docs/planning/changes/roym-message-forwarding/change.md:219`
+and the "Different from the plan" list at `2246e215`.
+
+*Problem.* (1) The plan says "A listing draws with the directory hit card
+(moved into a shared module)". The code draws a listing with its own small
+`renderListing` (title, summary, categories, status) in
+`record_forward.ts`, and the hit card was not moved. Deviations record
+the new quote block and the minimal profile view, but not this. (2) The
+Q2 bullet still says "This change doc covers C7a … C7b … follows in its
+own PR". Plan section 9 keeps that bullet "until C7b merges", and this is
+the C7b PR, so after the merge it is false.
+
+*Failure case.* A reader of the change doc expects the receiver to see
+the directory hit card for a forwarded listing, and reads that C7b is
+still to come.
+
+*Fix.* Add a "Different from the plan" bullet for the listing view.
+Rewrite the Q2 bullet: C7a (text) and C7b (signed records) were built in
+two PRs, #399 and #400.
+
+*Status:* Open.
+
+### R19 — Some planned tests are missing, and case 44 says more than it shows (minor)
+
+*Where:* `crates/roym_core/src/record_forward/tests.rs`,
+`crates/roym_web/ui/src/chat/record_forward.test.ts`,
+`crates/roym_web/ui/src/screens/contacts.test.ts`,
+`crates/substrate/tests/e2e/tests/roym-hub.spec.ts:1176` and `:1208` at
+`2246e215`.
+
+*Problem.* (1) The plan's `roym_core` test list has "a quote with no
+disclosures that passes `verify_quote` with the ADR's visible fields". No
+`roym_core` test does this. Scenario 289 checks only `verified` and the 5
+terms digests, not that the visible fields are there and the hidden ones
+are not. (2) No Hub unit test draws a received listing block or a
+received profile block (`renderListing`, `renderProfile`); only the quote
+block is drawn in a test. (3) The new contact profile view
+(`openContactProfile`) has no test: not the "no profile" case, not the
+refused case, not the Forward action. (4) Case 44's title says "the
+received record names no value", but a listing has no value to hide, and
+the case checks only that no raw JSON is drawn. Its comment says "The
+receiver of a forward is this same node here", but the row drawn is the
+sender's own outgoing copy; no receiver exists in the case.
+
+*Failure case.* A change that shows a hidden term of a forwarded quote,
+or breaks the listing, profile or contact profile view, keeps every test
+green.
+
+*Fix.* Add the `roym_core` test (a quote envelope with no disclosures:
+`verify_quote` verifies, and the payload has the currency, the expiry,
+the ids, the parties and each commitment's visible fields, and no
+description and no value). Add Hub tests for the listing and profile
+blocks and for `openContactProfile`. Rename case 44 to what it shows (a
+verified hit forwards as itself and its row draws the listing, not raw
+JSON), and fix the comment: the row is the sender's own copy.
+
+*Status:* Open.
+
+### R20 — Small code points: an unused parser, two long match blocks, an inline path (minor)
+
+*Where:* `crates/roym_core/src/record_forward.rs:58` and `:92`;
+`crates/roym_conversation/src/app/forward_record.rs:32` to `:39` at
+`2246e215`.
+
+*Problem.* (1) `RecordForwardBody::parse` has no caller outside its
+tests: the node never reads a received body, and the Hub parses it in
+TypeScript. Its doc says "Reads a body that another node wrote", which no
+code does. (2) `forward_record` has two `match` blocks with the same
+error arm; `map_err` and `?` say the same in two lines. (3)
+`serde_json::from_str::<serde_json::Value>` is an inline path with
+several `::`, which AGENTS.md's import rule asks to avoid (import
+`Value`).
+
+*Failure case.* None at run time. A reader looks for the caller of
+`parse` and finds none; the body rules are kept in two places (Rust and
+TypeScript) with nothing that keeps them the same.
+
+*Fix.* Either delete `parse` (and move its tests onto `new` and
+`to_bytes`), or use it where it means something, for example in the
+parity test that reads the stored body. Write
+`let body = RecordForwardBody::new(..).map_err(|e| forward::refuse(code_for(&e), e.to_string()))?;`
+and the same for `to_bytes`. Import `serde_json::Value`.
+
+*Status:* Open.
