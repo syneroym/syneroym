@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MEMBERSHIP_EVENT_CONTENT_TYPE } from "../groups/words";
+import { RECORD_FORWARD_CONTENT_TYPE } from "../chat/record_forward";
 import { _resetForTest, startFeed } from "../events";
 import { FakeFeedSource } from "../testing/fake-event-source";
 import { t } from "../i18n/i18n";
@@ -194,6 +195,47 @@ describe("Groups screen rendering", () => {
     const normalBodies = threadList.querySelectorAll(".message-body");
     expect(normalBodies.length).toBe(1);
     expect(normalBodies[0].textContent).toContain("BEGIN:VCARD");
+  });
+
+  it("draws a record-forward row from its verdict, not as raw JSON", async () => {
+    stubRpc({
+      "profile.verify-envelope": () => ({
+        verified: true,
+        payload: { display_name: "Alice", about: "Tutor" },
+      }),
+    });
+    const threadList = document.createElement("div");
+    renderThreadMessages(
+      threadList,
+      [
+        {
+          id: "rf-1",
+          conversation: "grp-1",
+          author: "did:key:zAlice",
+          direction: "incoming",
+          sender_timestamp_ms: 1000,
+          content_type: RECORD_FORWARD_CONTENT_TYPE,
+          body_encoding: "utf8",
+          body: JSON.stringify({
+            record_forward_version: 1,
+            record_type: "profile",
+            envelope: '{"record_type":"profile"}',
+          }),
+          state: "delivered",
+        },
+      ],
+      nameOf,
+      () => {},
+      () => {},
+    );
+
+    expect(threadList.querySelector(".record-forward-card")).not.toBeNull();
+    expect(threadList.textContent).not.toContain("record_forward_version");
+    expect(threadList.textContent).not.toContain('"envelope"');
+    expect(threadList.querySelector(".message-translate")).toBeNull();
+    await vi.waitFor(() =>
+      expect(threadList.querySelector(".record-forward-name")?.textContent).toBe("Alice"),
+    );
   });
 
   it("renders the log-in-again state when receiving an RpcError of type NotSignedIn", async () => {

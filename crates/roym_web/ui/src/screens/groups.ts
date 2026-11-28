@@ -15,6 +15,11 @@ import {
   plainTag,
   type ForwardView,
 } from "../chat/forward_view";
+import {
+  parseRecordForward,
+  RECORD_FORWARD_CONTENT_TYPE,
+  recordForwardBlock,
+} from "../chat/record_forward";
 import { errText, field, refiller, text } from "../dom";
 import { onFeed } from "../events";
 import { formatDateTime, formatTime } from "../i18n/format";
@@ -165,6 +170,13 @@ export function renderMessageRow(
       translatable: msg.direction === "incoming",
     });
     row.append(...nodes);
+  } else if (msg.content_type === RECORD_FORWARD_CONTENT_TYPE) {
+    const body = parseRecordForward(msg.body);
+    if (body) {
+      row.appendChild(recordForwardBlock(body));
+    } else {
+      row.appendChild(text("p", t("record-forward-unreadable"), "record-forward-unreadable"));
+    }
   } else if (msg.body_encoding === "utf8") {
     const nodes = messageText(msg.body ?? "", msg.languages ?? [], "div", {
       translatable: msg.direction === "incoming",
