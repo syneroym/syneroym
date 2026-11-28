@@ -11,7 +11,10 @@ planning conversation. This plan is meant to stand alone.*
 answered Q2 (two PRs, C7a and C7b) and Q4 (the host indexes the `text`
 field) on 2026-11-27. On the same day the owner accepted the
 recommendation of every other question (Q3, Q5, Q6, Q8 to Q11: (a); Q7:
-(c)). No question is open.**
+(c)). C7a is merged (PR #399, 2026-11-28). The C7b section 6.2 was written
+on 2026-11-28 on `main` at `79344661`: the three checks are answered, and
+its size measurement raises one open question, Q12 (where the record
+check runs).**
 
 ## Review on main 89d1dd23
 
@@ -102,12 +105,12 @@ and uses its own numbers.
 
 ### Order now (the rule that applies)
 
-C4, C6a and C6b are merged. The rule in task.md section 4, "C7 not beside
-C4", no longer blocks anything. No open or planned slice in M08C edits the
-same files. The only other open work is the docs worktrees of M08E
-(obligations), which change no code. So **C7a can start from `main` now.**
-While a C7 PR is open, no other change may edit these files, because every
-one of them is in a C7 PR:
+C4, C6a and C6b are merged, and so is C7a (PR #399, 2026-11-28). The rule
+in task.md section 4, "C7 not beside C4", no longer blocks anything. No open
+or planned slice in M08C edits the same files. The only other open work is
+the docs worktrees of M08E (obligations), which change no code. So **C7b
+can start from `main` now.** While a C7 PR is open, no other change may
+edit these files, because every one of them is in a C7 PR:
 
 - `crates/roym_conversation/src/api.rs` and `app/messages.rs`;
 - `crates/roym_core/src/lib.rs`, `record.rs`, `conversation.rs`,
@@ -118,9 +121,10 @@ one of them is in a C7 PR:
 - the host search rule (Q4 (a)): `crates/conversation/src/store/message.rs`,
   `store/backup.rs`, `store/text_index.rs`, `group.rs`, and
   `crates/wit_interfaces/wit/conversation/conversation.wit`;
-- the parity scenario numbers (from 278) and the Hub case number (from 43).
+- the parity scenario numbers: C7a used 278 to 288 and the Hub case 43;
+  C7b takes 289 and up and case 44.
 
-C7a and C7b run one after the other. C8 (close-out) waits for both.
+C7a is done; C7b runs next. C8 (close-out) waits for both.
 M08D and later slices, and the M08E obligations module, start after C7a merges or rebase on it, because
 `roym_transaction/src/app.rs` and `roym_core/src/lib.rs` are shared. A
 Hub-only fix that touches none of the files above (as the Engage fix did)
@@ -139,14 +143,18 @@ PRs (Q2 (a), 2026-11-27). Each is one PR that passes `mise run verify`:
   6.1). Push steps 0 to 4 as their own commits first, so that the
   reviewer can start on the node while the Hub is built.
 - **C7b — Forward of signed records (S).** A `listing`, `profile` or
-  `quote` travels as itself in a record-forward body. Criterion FW-7.
+  `quote` travels as itself in a record-forward body. Criterion FW-7. Its
+  section 6.2 was written on 2026-11-28 on `main` at `79344661`; it holds
+  the three checks and the size measurement, and Q12 is open.
 
-Branch: `feat/m08a-c7-msg-forwarding` (this branch; it holds the plan
-commit; the owner chose the name). C7b gets its own branch, cut from `main`
-after C7a merges. The two parts run one after the other.
+Branch: `feat/m08a-c7-msg-forwarding` held C7a and its plan commits
+(merged). C7b works on `feat/m08c-c7b-record-forward`, cut from `main`
+after C7a merged. The two parts run one after the other.
 
 **Base.** Every file path and line number below was checked on `main` at
-`89d1dd23` (2026-11-27). Links are relative to this folder.
+`89d1dd23` (2026-11-27). The C7b section (6.2) was checked again on `main`
+at `79344661` (2026-11-28), after C7a merged. Links are relative to this
+folder.
 
 **Dependencies.**
 
@@ -348,9 +356,9 @@ How a developer can see it work:
 
 ### 2.1 Questions
 
-All questions are answered. The option the owner chose is marked
-**Chosen by the owner.** The other options stay as the record of what was
-not chosen.
+Q1 to Q11 are answered. The option the owner chose is marked **Chosen by
+the owner.** The other options stay as the record of what was not chosen.
+Q12, added with the C7b section on 2026-11-28, needs the owner.
 
 #### Q1. (Removed)
 
@@ -562,6 +570,29 @@ measured), so the limit is likely to hold.
   still over, stop and ask the owner.
 - (b) Approve +22% now (a ceiling of 1,202,272 bytes). No early stop, but it
   invites more growth, and C4a took the same exception.
+
+#### Q12. Where does a forward of a signed record get checked? (Needs the owner)
+
+The C7b outline put the check in `conversation`, as a
+`MessageView.record_forward` field. Measured on `main` at `79344661`
+(section 6.2), the three checks add 229,778 bytes to `conversation`
+before the view, the method body or any Hub code. The Q11 rule gives
+`conversation` 158,505 bytes after C7a (15% of 1,056,675), so the outline
+is over that limit by about 71 KB.
+
+- (a) **Recommendation.** The check stays in the service that owns the
+  record, where it is today: `catalog.listing.verify`,
+  `transaction.quote.verify`, and a new `profile.verify-envelope`. The
+  Hub asks that service when it draws a forwarded record, and draws only
+  from the verdict. `conversation` stores and returns the body only. No
+  node-to-node wire change.
+- (b) Keep the check in `conversation` and accept a one-time exception,
+  as C4a did: about +22% over the C7a size (a ceiling of about 1.30 MB),
+  for this slice only.
+- (c) Drop the quote from C7b and forward only a listing and a profile.
+  The listing check alone is 118,318 bytes and the profile check 13,928,
+  so this may fit. FW-7 names all three, so the criterion would need a
+  change.
 
 ### 2.2 Points found while reading
 
@@ -1456,38 +1487,170 @@ change doc's Deviations (section 9); backlog (section 8); living docs
 
 ### 6.2 C7b — Forward of signed records
 
-An outline only. C7b checks these points in the code again after C7a
-merges, on its own branch, and adds a short section to this plan. Points to
-check first: (1) since C2, the hidden fields of a quote are digests, so
-confirm that `verify_quote` and `QuotePayload::validate` accept an envelope
-that is shown with no disclosures, and what the Hub's quote card draws for
-it (C6b changed the card); (2) the new method is a third dispatch arm in
-`conversation` (Q11): measure the size first; (3) the new content type is
-added to the reserved closure in `send`.
+*Checked on `main` at `79344661`, 2026-11-28, after C7a merged. No code
+is written. This section replaces the outline and holds the three checks.
+It has one stop: [Q12](#q12-where-does-a-forward-of-a-signed-record-get-checked-needs-the-owner)
+asks the owner where the check runs, because the outline breaks the Q11
+size rule.*
 
-- New content type `application/vnd.roym.record-forward+json`, body
+#### What the three checks found
+
+**1. A quote with no disclosures passes its check, and its visible fields
+are the ADR's list.** `verify_quote`
+(`crates/roym_core/src/transaction.rs:458`) checks the envelope, parses
+`QuotePayload`, and calls `validate()` (`:306`), which calls
+`SignedTerms::validate_visible` (`crates/roym_core/src/deal/sd.rs:241`).
+None of them reads a disclosure. `validate_visible` checks the commitment
+count, the currency, the two `_sd` lists (5 terms digests, 10 per
+commitment, all distinct) and the `after` graph. The fields that stay in
+the clear are `TERMS_SET.visible` and `COMMITMENT_SET.visible`
+(`crates/roym_core/src/disclosure.rs:59` to `:78`): the currency, the
+expiry, the ids, the two parties, and each commitment's id, giver,
+resource kind, kind, extension and `after` list. That is what ADR-0030,
+decision 10, says the receiver sees. `verify_quote` uses
+`allowing_expired`, so a lapsed quote still verifies with
+`expired: true`. `listing::verify_envelope`
+(`crates/roym_core/src/listing.rs:622`) does not allow an expired record.
+`ProfilePayload::validate` is in `roym_core`
+(`crates/roym_core/src/person.rs:63`), but the envelope and subject checks
+are in `roym_profile` (`crates/roym_profile/src/app/contacts.rs:105` to
+`:130`), so C7b moves them into `roym_core` first. A profile's `subject`
+is its owner's DID (`profile_ops.rs:170`), so the generic check is
+`subject == issuer`.
+
+**The Hub quote card does not draw that view.** After C6b, `renderQuote`
+(`crates/roym_web/ui/src/cards/templates/quote.ts:102`) draws a card from
+the plain view that `disclosures::plain_view` makes, not from the
+envelope. With zero disclosures it still draws a line for each commitment
+("You give Payment" for a currency commitment, `:217` to `:235`) and the
+totals block, where `dealTotals` sums absent values as 0 (`:263`). It
+also calls the reader "you" for the counterparty's commitments when
+`role` is absent (`:224`). A third party would see prices of zero and
+"You give". That contradicts ADR-0030, decision 10. So a forwarded quote
+gets its own visible-fields block, and `renderQuote` stays as it is.
+
+**2. The third dispatch arm is cheap, but the three record checks are
+not.** One `target/` folder, `cargo component build --release --target
+wasm32-wasip2 -p syneroym-roym-conversation`. The baseline is 1,056,700
+bytes (C7a's table says 1,056,675; a fresh build differs by 25 bytes).
+Each probe added one arm and was then reverted:
+
+| Probe (one arm added) | Size | Over baseline |
+| --- | --- | --- |
+| an arm that shares the existing `forward` future | 1,057,917 | +1,217 |
+| an arm with a new wrapper handler that calls `forward` | 1,057,830 | +1,130 |
+| an arm with `transaction::verify_quote` | 1,168,481 | +111,781 |
+| an arm with `listing::verify_envelope` | 1,175,018 | +118,318 |
+| an arm with the profile check and `ProfilePayload::validate` | 1,070,628 | +13,928 |
+| an arm with all three checks | 1,286,478 | **+229,778** |
+
+The arm is not the cost: the linker folds shared code. The cost is the
+payload code that `conversation` does not link today. A quote check and a
+listing check pull their payload, deal, extension and disclosure code in
+(~112 KB and ~118 KB), and they share only about 11 KB. The Q11 rule
+gives `conversation` 158,505 bytes after C7a (15% of 1,056,675, ceiling
+1,215,180). The outline's "check the envelope with the matching pure
+function" inside `conversation` is about 71 KB over that, before the
+view, the method body or any Hub code. C7b stops here for
+[Q12](#q12-where-does-a-forward-of-a-signed-record-get-checked-needs-the-owner).
+
+**3. The new content type is added to the reserved list.** `send`
+(`crates/roym_conversation/src/app/messages.rs:264`) refuses six content
+types in its closure at `:283` to `:300`: membership event, deletion
+request, group profile, widget, widget answer, the chat type, plus the
+card type in a group. The record-forward type goes into that list.
+`conversation.forward-record` passes the same closure as `forward`
+(`|_, _| None`), so a forward works in a group. `transaction.sync` files
+only the card type (`crates/roym_transaction/src/app/sync.rs:264`), so
+the new type is never filed as a deal, in a group or not.
+
+#### The design if the owner answers Q12 (a)
+
+The check stays in the service that owns the record, which is where it is
+today:
+
+- `catalog.listing.verify` exists
+  (`crates/roym_catalog/src/app/listing_ops.rs:608`);
+- `transaction.quote.verify` exists
+  (`crates/roym_transaction/src/app/quote_ops.rs:601`); with no
+  disclosures it returns the verdict and the visible terms;
+- `profile.verify-envelope` is new and reuses the check moved into
+  `roym_core`.
+
+`conversation` stores and returns the body only:
+
+- Content type `application/vnd.roym.record-forward+json`, body
   `{ "record_forward_version": 1, "record_type": "listing" | "profile" | "quote", "envelope": "<envelope JSON>" }`.
-  It ignores the forward mode and carries no origin (ADR-0030, decision 10).
-  Reserved in `conversation.send`. Allowed in groups: it is not the card
-  type, so `transaction` never files it (`sync.rs:264`).
-- New `conversation.forward-record` (`{ conversation, record_type, envelope }`):
-  checks the envelope with the matching pure function, refuses any other
-  record type, and sends. The envelope is at most 160 KiB (the card body
-  limit, `MAX_CARD_BODY_BYTES` in `crates/roym_core/src/card.rs`).
-- Read side: `MessageView.record_forward: Option<RecordForwardView>`, with
-  the verdict, and for a quote only the visible fields that ADR-0030,
-  decision 10, lists.
-- Checks: `listing::verify_envelope` (`crates/roym_core/src/listing.rs:622`)
-  and `transaction::verify_quote` (`crates/roym_core/src/transaction.rs:458`)
-  exist. The profile check lives in `roym_profile`
-  (`process_profile_envelope`, `crates/roym_profile/src/app/contacts.rs:105`
-  to `:125`); C7b moves it into `roym_core` first.
-- Hub: "Forward" on a quote card (with the warning that it shows both
-  parties), on a directory hit (the envelope from `runEnvelope`,
-  `screens/directory.ts:454`) and on a contact's profile. The receiver's
-  card is drawn by the existing templates.
-- Tests: `roym_core` unit tests for each type; parity; a two-node forward
-  of a quote that the receiver's `transaction.thread` does not list.
+  It ignores the forward mode and carries no origin (ADR-0030,
+  decision 10).
+- `conversation.forward-record` `{ conversation, record_type, envelope }`:
+  refuses another record type, checks the envelope against
+  `MAX_CARD_BODY_BYTES` (160 KiB,
+  `crates/roym_core/src/card.rs:75`) before it parses, refuses a body that
+  does not parse, and sends with `send_body`. It does not verify the
+  envelope and signs nothing.
+- `history` and `changes` return the body unchanged. The host does not
+  index it: `indexable_text`
+  (`crates/conversation/src/store/message.rs:36`) gets one case for the new
+  type and returns `None`. No reindex is needed, because no such body
+  exists on a node before C7b.
+- The Hub parses the body in a new `chat/record_forward.ts`, asks the
+  matching local service for the verdict, and draws only from it. It keeps
+  each verdict for the life of the screen, so a feed event does not verify
+  the same record again.
+- A listing draws with the directory hit card (moved into a shared
+  module), a profile with a new small profile card, and a quote with a new
+  visible-fields block: the ids, the two parties, the currency, the
+  expiry, and each commitment's visible fields. No totals, no
+  description, no value, no "you give". The picker warns before a quote
+  forward that it shows both parties of the deal.
+- No `MessageView.record_forward` field. The node keeps no verdict for
+  these messages; the owning service gives it at draw time, as it does
+  for a card today.
+
+#### Steps
+
+The numbering starts after C7a's step 7.
+
+- Step 8 — `roym_core`. Move the profile envelope and subject check out of
+  `roym_profile` into `person` (the storage stays in `roym_profile`). Add
+  the record-forward body type with its parse, its three record names and
+  its size rule. Unit tests.
+- Step 9 — `profile.verify-envelope` (local only) and its tests. `catalog`
+  and `transaction` keep their verify methods unchanged.
+- Step 10 — `conversation`. The new arm, `forward-record`, the reserved
+  type and the host index rule. Parity A to D below. **Measure
+  `conversation` again**; the limit is 158,505 bytes.
+- Step 11 — the Hub. `chat/record_forward.ts`, the three forward actions
+  (quote card, directory hit, contact profile), the contact profile view,
+  the quote warning, and the Hub unit tests.
+- Step 12 — Playwright case **44**, the demo step, the sizes, the change
+  doc, the living docs, the backlog and `mise run verify`.
+
+#### Tests
+
+- `roym_core` unit tests: the profile check after the move, the body parse
+  and its refusals, and a quote with no disclosures that passes
+  `verify_quote` with the ADR's visible fields.
+- Parity: the highest number used is 288 (C7a), so C7b takes **289** and
+  up. The new file is `dual_build_parity/forward_record.rs`.
+  - A. `forward-record` of a quote, a listing and a profile: the target
+    history row has the new content type and the same envelope, and the
+    raw body parses. The source conversation is not changed.
+  - B. `forward-record` refusals: another record type, an envelope over
+    160 KiB, and a body that is not JSON. The card type in a group keeps
+    its refusal (scenario 207).
+  - C. `send` with the new content type is refused as reserved.
+  - D. `search`: a record-forward body is not indexed.
+- Hub unit tests: the parse, the verify call for each record type, a
+  refused verdict that draws no record and names the reason, a quote block
+  with no value and no "you give", and the warning before a quote
+  forward.
+- Playwright case **44** in `tests/roym-hub.spec.ts`: forward a quote card
+  into the chat; the receiver sees the visible-fields block and no price.
+- Demo: extend story 50, which already has a quote between Alice and Bob,
+  with "Alice forwards the quote to the chat; Bob sees the two parties,
+  the expiry and no amounts".
 
 ## 7. Tests
 
@@ -1704,6 +1867,13 @@ limit each (`catalog` 960,590; `directory` 1,504,433; `profile` 772,748;
 `scheduling` 715,723; `web` 311,314). Over a limit: stop and tell the
 owner. Measure `conversation` at steps 2 and 3 as well as at the end.
 
+C7b measures the same way. Its "before" for `conversation` is the C7a
+result, 1,056,675 bytes, so the +15% limit is **158,505 bytes** (ceiling
+1,215,180; Q11 and Q12). `profile` gains one method and no record code, so
+its limit is +40 KB. `catalog` and `transaction` gain nothing. The size
+probe of section 6.2 shows that a record check inside `conversation`
+breaks this limit; step 10 measures again.
+
 ### 7.8 Hindi text
 
 Every new key goes into `en.ftl` and `hi.ftl`, and the `status.md` row
@@ -1861,7 +2031,8 @@ C7a is done when all of these hold:
       the Hindi keys) are done.
 - [ ] `mise run verify` with no `--skip` passes.
 
-C7b is done when FW-7 has its tests, and its sizes, docs and verify pass.
+C7b is done when FW-7 has its tests, the owner answered Q12, its sizes
+are in task.md section 1, and its docs and `mise run verify` pass.
 
 ## 11. What C7 does not do
 
