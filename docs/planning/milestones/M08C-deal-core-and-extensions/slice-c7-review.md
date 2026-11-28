@@ -1161,3 +1161,52 @@ the fulfilment path, the eight-day test failed at `!first.filed`; with
 the `roll_forward` reads mapped back to -32602, the read-failure test
 failed at `!first.filed`. The payment acknowledgement deferral test
 passes. `roym_transaction` 289 passed.
+
+## Code review round 7 — Claude Opus 5.5, 2026-11-28
+
+This round checks the fix of round 6 on branch
+`feat/m08c-c7b-record-forward` at `7f32ddf8`, main checkout (not a
+worktree), `git pull` up to date. The fix commits are `0c55444b` (R22)
+and `7f32ddf8` (review and status close-out) (`git log
+908d7f0d..7f32ddf8`).
+
+**CI.** `gh pr checks 400` on `7f32ddf8` (run 46136882070): the CLA check
+passed; "Lints, licenses & checks", Test 1/6 to 6/6 and Playwright E2E
+were **still running** when this round was written. The owner said to
+push as if CI passes, so this round does not prove the full suite. The
+run on `908d7f0d` (46136034395) was cancelled by the next push, so no
+full CI result exists yet for the R21 and R22 code. Before merge, read
+`gh pr checks 400` again.
+
+**Tests I ran** (targeted only): `cargo nextest run -p
+syneroym-roym-transaction`: 289 passed, 0 skipped (the fix note says
+289), the four `settle::retry` tests included.
+
+### Round 6 items
+
+- **R22 — Fixed (0c55444b), verified.** (1) The three filing paths now
+  return a plain `deferred()` result when `apply_progress` fails, never
+  `defer_or_refuse`, so a valid card is not refused because this node
+  failed; `defer_or_refuse` is still used only for the earlier "agreement
+  not complete on this node" case, as before. The new test files a
+  receipt eight days after `issued_at` with a failing snapshot write and
+  sees it deferred, not refused. (2) `roll_forward` now returns a
+  `Response`: a storage read error is `internal_error`, and
+  `no-progress-snapshot` stays `invalid_params`. It has one caller,
+  `transition_at`, which now passes the error up with `?`. The
+  `TransitionError`s from `prepare_next_snapshot` are still -32602. The
+  new read-failure test fails the read once, sees the card deferred, then
+  sees `Fulfilled` after the next filing. (3) A payment acknowledgement
+  test fails the write once, sees the card deferred and not refused, and
+  sees the commitment `Claimed` after the next filing (`progress_at`
+  lists the newest snapshot first, so `snapshots[0]` is the current
+  state). `finish_filed_card` now holds the card write shared by the
+  payment request and acknowledgement paths; the acknowledgement still
+  sets `row.repeat`, now after the progress step.
+
+I found no new problem in the fix commit.
+
+### Counts
+
+Round 7: blocker 0, major 0, minor 0. R22 is verified fixed.
+**0 open.**
