@@ -54,6 +54,38 @@ async fn apply_progress<H: AppHost>(
     }
 }
 
+/// A card that is valid but cannot be applied yet. It is never a refusal:
+/// the next sync tries it again.
+fn deferred() -> FileCardResult {
+    FileCardResult {
+        filed: false,
+        refused: false,
+        unknown: false,
+        countersigned: false,
+        deferred: true,
+    }
+}
+
+async fn finish_filed_card<H: AppHost>(
+    host: &H,
+    mut row: CardRow,
+    record_id: Option<String>,
+    plain_data: Value,
+) -> Result<FileCardResult, String> {
+    row.known = true;
+    row.verified = true;
+    row.record_id = record_id;
+    row.data = Some(plain_data);
+    put_card(host, &row).await?;
+    Ok(FileCardResult {
+        filed: true,
+        refused: false,
+        unknown: false,
+        countersigned: false,
+        deferred: false,
+    })
+}
+
 fn validate_payment_request_agr(
     agr: Option<AgreementRow>,
     p: &payment::PaymentRequestPayload,
@@ -180,7 +212,7 @@ pub(crate) async fn file_payment_request_card<H: AppHost>(
         record_payment_request_half(host, args).await?;
     }
 
-    if let Err(reason) = apply_progress(
+    if apply_progress(
         host,
         &p.agreement,
         AgreementEvent::PaymentRequest { commitment_id: p.commitment_id.clone() },
@@ -189,22 +221,12 @@ pub(crate) async fn file_payment_request_card<H: AppHost>(
         now,
     )
     .await
+    .is_err()
     {
-        return defer_or_refuse(host, row, envelope, now, &format!("progress: {reason}")).await;
+        return Ok(deferred());
     }
 
-    row.known = true;
-    row.verified = true;
-    row.record_id = Some(rec_id);
-    row.data = Some(plain_data);
-    put_card(host, &row).await?;
-    Ok(FileCardResult {
-        filed: true,
-        refused: false,
-        unknown: false,
-        countersigned: false,
-        deferred: false,
-    })
+    finish_filed_card(host, row, Some(rec_id), plain_data).await
 }
 
 struct RecordPaymentRequestHalfArgs<'a> {
@@ -256,24 +278,9 @@ fn decode_ack_payload<'a>(
     Ok((p, hidden))
 }
 
-async fn finish_ack_card_put<H: AppHost>(
-    host: &H,
-    mut row: CardRow,
-    record_id: Option<String>,
-    is_repeat: bool,
-    plain_data: Value,
-) -> Result<(), String> {
-    row.known = true;
-    row.verified = true;
-    row.repeat = is_repeat;
-    row.record_id = record_id;
-    row.data = Some(plain_data);
-    put_card(host, &row).await
-}
-
 pub(crate) async fn file_payment_ack_card<H: AppHost>(
     host: &H,
-    row: CardRow,
+    mut row: CardRow,
     envelope: &str,
     disclosures: &[String],
     conversation: &str,
@@ -344,7 +351,7 @@ pub(crate) async fn file_payment_ack_card<H: AppHost>(
     payments.updated_at_secs = now;
     put_row(host, PAYMENTS, &p_id, &payments).await?;
 
-    if let Err(reason) = apply_progress(
+    if apply_progress(
         host,
         &p.agreement,
         AgreementEvent::Half {
@@ -357,21 +364,15 @@ pub(crate) async fn file_payment_ack_card<H: AppHost>(
         now,
     )
     .await
+    .is_err()
     {
-        return defer_or_refuse(host, row, envelope, now, &format!("progress: {reason}")).await;
+        return Ok(deferred());
     }
 
+    row.repeat = is_repeat;
     let p_val = serde_json::to_value(p).unwrap_or(Value::Null);
     let plain_data = disclosures::plain_view(&p_val, disclosures);
-    finish_ack_card_put(host, row, v.record_id.clone(), is_repeat, plain_data).await?;
-
-    Ok(FileCardResult {
-        filed: true,
-        refused: false,
-        unknown: false,
-        countersigned: false,
-        deferred: false,
-    })
+    finish_filed_card(host, row, v.record_id.clone(), plain_data).await
 }
 
 fn validate_fulfilment_card_agr(
@@ -494,7 +495,7 @@ pub(crate) async fn file_fulfilment_card<H: AppHost>(
         record_fulfilment_half_card(host, args).await?;
     }
 
-    if let Err(reason) = apply_progress(
+    if apply_progress(
         host,
         &p.agreement,
         AgreementEvent::Half {
@@ -507,8 +508,9 @@ pub(crate) async fn file_fulfilment_card<H: AppHost>(
         now,
     )
     .await
+    .is_err()
     {
-        return defer_or_refuse(host, row, envelope, now, &format!("progress: {reason}")).await;
+        return Ok(deferred());
     }
 
     let p_val = serde_json::to_value(p).unwrap_or(Value::Null);

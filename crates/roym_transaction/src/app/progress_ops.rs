@@ -49,13 +49,18 @@ pub struct AgreementProgressSnapshotRow {
     pub message_id: Option<String>,
 }
 
-async fn roll_forward<H: AppHost>(host: &H, row: &mut AgreementRow) -> Result<SnapshotRow, String> {
+async fn roll_forward<H: AppHost>(
+    host: &H,
+    row: &mut AgreementRow,
+) -> Result<SnapshotRow, Response> {
     let mut cur_seq = row.seq.unwrap_or(1);
     let mut cur_snap: SnapshotRow =
-        match get_row(host, AGREEMENT_PROGRESS, &snapshot_id(&row.quote_record_id, cur_seq)).await?
+        match get_row(host, AGREEMENT_PROGRESS, &snapshot_id(&row.quote_record_id, cur_seq))
+            .await
+            .map_err(Response::internal_error)?
         {
             Some(s) => s,
-            None => return Err("no-progress-snapshot".to_string()),
+            None => return Err(Response::invalid_params("no-progress-snapshot")),
         };
 
     while let Some(next_snap) = get_row::<SnapshotRow, _>(
@@ -63,7 +68,8 @@ async fn roll_forward<H: AppHost>(host: &H, row: &mut AgreementRow) -> Result<Sn
         AGREEMENT_PROGRESS,
         &snapshot_id(&row.quote_record_id, cur_seq + 1),
     )
-    .await?
+    .await
+    .map_err(Response::internal_error)?
     {
         cur_seq += 1;
         cur_snap = next_snap;
@@ -156,10 +162,7 @@ pub(crate) async fn transition_at<H: AppHost>(
     };
 
     for _attempt in 0..3 {
-        let cur_snap_row = match roll_forward(host, &mut row).await {
-            Ok(sr) => sr,
-            Err(e) => return Err(Response::invalid_params(e)),
-        };
+        let cur_snap_row = roll_forward(host, &mut row).await?;
 
         let agreed_at = row.agreed_at_secs.unwrap_or(now);
         let next_snap =
