@@ -102,6 +102,38 @@ test('Roym deal story: Alice and Bob form an agreement and decline a quote with 
       await expect(runReceiptCard(bobPage, runTag).first()).toBeVisible({ timeout: DELIVERY_WAIT_MS });
     });
 
+    await step(page, "Alice's screen: the Hub warns that a forwarded quote shows both people of the deal", async () => {
+      await page.bringToFront();
+      const quote = threadMessage(page, quoteScope);
+      await quote.locator('.record-forward-button').click();
+      const warning = page.locator('.record-forward-warning');
+      await expect(warning).toBeVisible();
+      await expect(warning).toContainText('shows both people of the deal');
+      await warning.locator('.record-forward-continue').click();
+      const picker = page.locator('.forward-picker');
+      await expect(picker).toBeVisible();
+      await picker.locator('.forward-picker-row', { hasText: bob.did }).click();
+      await expect(page.locator('.record-forward-status')).toHaveText('Forwarded.', {
+        timeout: 15_000,
+      });
+    });
+
+    await step(bobPage, "Bob's screen: the forwarded quote names both people and hides the amounts", async () => {
+      await bobPage.bringToFront();
+      const record = bobPage
+        .locator('.thread-messages .record-forward-card.record-forward-quote')
+        .first();
+      await expect(record).toBeVisible({ timeout: DELIVERY_WAIT_MS });
+      await expect(record).toContainText('Forwarded quote');
+      await expect(record).toContainText(alice.did);
+      await expect(record).toContainText(bob.did);
+      await expect(record).toContainText('INR');
+      await expect(record.locator('.record-forward-quote-hidden')).toBeVisible();
+      const shown = await record.innerText();
+      expect(shown).not.toContain('₹');
+      expect(shown).not.toContain('One lesson, one hour');
+    });
+
     await step(page, "Both Hubs show the agreement with two promised commitments", async () => {
       const aliceConversation = await conversationWith(page, bob.addr);
       const bobConversation = await conversationWith(bobPage, alice.addr);

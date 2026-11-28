@@ -109,6 +109,7 @@ neighbourhood.
 | **Checked origin** | An origin whose envelope verifies, that is signed as a person, and whose content hash matches the message. Only a checked origin lets a receiver name the author. |
 | **Forward** | A message that carries another author's checked text and origin. It is covered by the forwarder's own message signature, and signs nothing itself. |
 | **Forward count** | How many times the content was forwarded. Each forwarder adds one, except when a person forwards their own forward. It is a hint, not proof; the origin is the proof. |
+| **Record forward** | A message that carries a signed Roym record (a `listing`, a `profile` or a `quote`) as itself, in content type `application/vnd.roym.record-forward+json`. The receiver checks it with the service that owns the record. It ignores the sender's forward mode and carries no `message-origin`. |
 
 ## Key phrasings
 

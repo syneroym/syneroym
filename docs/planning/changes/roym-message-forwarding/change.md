@@ -2,6 +2,7 @@
 status: draft
 demo:
   - crates/substrate/tests/e2e/demo/20-roym-chat.spec.ts
+  - crates/substrate/tests/e2e/demo/50-roym-deal.spec.ts
 living-docs-touched:
 ---
 # Roym message forwarding with a signed origin
@@ -186,7 +187,7 @@ India's IT (Intermediary Guidelines and Digital Media Ethics Code) Rules, 2021, 
 - [x] `forward_mode` field in the message body, the default-mode setting, and the composer control.
 - [x] `message-origin` record type, signing at send for `signed` messages, verification at receive.
 - [x] Forward method and Hub action, refusing `not-forwardable` messages. Display rules FW-3 to FW-5, FW-13.
-- [ ] Forward of signed records as themselves.
+- [x] Forward of signed records as themselves.
 - [x] The group composer notice (FW-11). Settings and first-message text (FW-10). Update the integrated spec's privacy section at close-out.
 
 ## Deviations
@@ -211,6 +212,10 @@ From [ADR-0030](../../../decisions/0030-signed-message-origins.md) (2026-11-16).
 - **The author's name and the delete note (Q9).** The Hub shows "you", the reader's contact name when it has one, the contact's short DID when the contact has no name, or the last 12 characters of an unknown DID with "not in your contacts". It never takes a name from the message. The delete dialog of a `signed` message says the origin and the forwards stay.
 - **Tags for a message that cannot be forwarded (section 4, item 16).** A `not-forwardable` body shows "Not forwardable", a plain message shows no origin, and a `signed` body whose origin fails shows "origin could not be checked".
 - **The measured origin and body sizes (step 4).** They are recorded under "Different from the plan": an 848-byte origin, a 1,037-byte body, and 100 and 164 ms for a 200-message history page.
+- **The record check for a forward runs in the owning service (Q12 (a)).** `conversation` does not check a record-forward envelope; doing all three checks there would add 229,778 bytes against its 158,505-byte limit. The client asks `catalog.listing.verify`, `transaction.quote.verify` or `profile.verify-envelope` when it draws the row and draws only from that verdict. The receiver's own node still checks the record, so nothing trusts the sender.
+- **A record-forward body is not indexed.** The host's `indexable_text` returns nothing for `application/vnd.roym.record-forward+json`, so `conversation.search` never matches an envelope or a record's own words. The Q4 bullet above covers chat bodies only.
+- **The record-forward body.** It holds `record_forward_version`, `record_type` (one of `listing`, `profile`, `quote`) and `envelope`. The envelope is at most `MAX_CARD_BODY_BYTES` (160 KiB), checked before it parses. Another type, a bigger envelope, a body that is not JSON, and an envelope that is not a JSON object are refused with a `data.code`.
+- **A forwarded profile is checked as its own subject.** `profile.verify-envelope` accepts a profile only when its `subject` equals its `issuer`. Adding a contact still requires the DID the person typed, as before.
 - **The split into C7a and C7b (Q2).** This change doc covers C7a, the text message. C7b, the forward of signed records, follows in its own PR.
 
 ### Different from the plan
@@ -225,6 +230,10 @@ From [ADR-0030](../../../decisions/0030-signed-message-origins.md) (2026-11-16).
 - **The chat picker labels a chat by name, peer DID, or address.** A direct chat whose peer is not a contact has no name, so it shows the conversation address the person already uses elsewhere.
 - **The browser case checks the composer control and the Profile default, not the first-message question.** The Playwright Hub runs on one shared node, and other cases send on it before this one, so the question is already answered there. The question is covered by its Hub unit test (`chat/first_message.test.ts`) and by story 20 on fresh nodes, which answers it with "Signed" at Alice's first send.
 - **Measured sizes and read time.** On the three-node test: a short signed text ("Market opens at 9", one `en` tag) has an 848-byte origin and a 1,037-byte chat body; an 11 KiB signed text has a 12,278-byte body, under the 13,312-byte mailbox estimate; a `conversation.history` page of 200 signed messages took 100 ms and 164 ms on two runs on the WASM build. The owner's limits are 2 KiB for an origin and 500 ms for the page.
+- **The single-node Playwright case forwards a listing, not a quote.** A quote needs a second party, and the main Hub suite runs on one node. Case 44 publishes a listing, finds it in the directory and forwards it into a chat; the row draws the listing and no raw JSON. The two-node demo forwards a quote (story 50), so the quote block and its warning are shown on a real second node.
+- **The forwarded quote block is new, not the C6b quote card.** That card draws a totals block and "You give" lines from a plain view; with no disclosures it would show zero prices. The Hub draws a forwarded quote from the verdict: both parties, the currency, the expiry, each commitment's id, giver, resource kind and kind, and a note that amounts and details are hidden. There is no totals line, no description and no value.
+- **A forwarded profile shows its name and about.** The Hub had no view for another person's profile. The new small view on the Contacts screen shows those two fields and the Forward action. Languages and translations are not shown (backlog).
+- **A received record-forward row does not offer Forward again.** The three source screens do. A person who receives a forwarded record can open its source screen only if they hold the record; re-forwarding the row itself is in the backlog.
 
 ## Close-out
 

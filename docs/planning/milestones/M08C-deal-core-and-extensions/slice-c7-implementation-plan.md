@@ -12,8 +12,9 @@ answered Q2 (two PRs, C7a and C7b) and Q4 (the host indexes the `text`
 field) on 2026-11-27. On the same day the owner accepted the
 recommendation of every other question (Q3, Q5, Q6, Q8 to Q11: (a); Q7:
 (c)). C7a is merged (PR #399, 2026-11-28). The C7b section 6.2 was written
-on 2026-11-28 on `main` at `79344661`: the three checks are answered, and
-so is Q12 (the record check stays in the owning service, answer (a)).**
+on 2026-11-28 on `main` at `79344661` and built on
+`feat/m08c-c7b-record-forward`: the three checks are answered, and so is
+Q12 (the record check stays in the owning service, answer (a)).**
 
 ## Review on main 89d1dd23
 
@@ -1501,9 +1502,10 @@ change doc's Deviations (section 9); backlog (section 8); living docs
 
 ### 6.2 C7b — Forward of signed records
 
-*Checked on `main` at `79344661`, 2026-11-28, after C7a merged. No code
-is written. This section replaces the outline and holds the three checks.
-It had one stop, [Q12](#q12-where-does-a-forward-of-a-signed-record-get-checked-answered-a-2026-11-28):
+*Checked on `main` at `79344661`, 2026-11-28, after C7a merged. Built on
+branch `feat/m08c-c7b-record-forward`. This section replaces the outline
+and holds the three checks. It had one stop,
+[Q12](#q12-where-does-a-forward-of-a-signed-record-get-checked-answered-a-2026-11-28):
 the outline breaks the Q11 size rule, and the owner answered (a) on
 2026-11-28 (the check stays in the owning service, D-C7-14).*
 
@@ -1610,9 +1612,9 @@ today:
   type and returns `None`. No reindex is needed, because no such body
   exists on a node before C7b.
 - The Hub parses the body in a new `chat/record_forward.ts`, asks the
-  matching local service for the verdict, and draws only from it. It keeps
-  each verdict for the life of the screen, so a feed event does not verify
-  the same record again.
+  matching local service for the verdict, and draws only from it. It asks
+  again at each draw, so a record that stops checking later is drawn as not
+  checked.
 - A listing draws with the directory hit card (moved into a shared
   module), a profile with a new small profile card, and a quote with a new
   visible-fields block: the ids, the two parties, the currency, the
@@ -1661,8 +1663,10 @@ The numbering starts after C7a's step 7.
   refused verdict that draws no record and names the reason, a quote block
   with no value and no "you give", and the warning before a quote
   forward.
-- Playwright case **44** in `tests/roym-hub.spec.ts`: forward a quote card
-  into the chat; the receiver sees the visible-fields block and no price.
+- Playwright case **44** in `tests/roym-hub.spec.ts`: a listing from the
+  directory hit is forwarded into a chat, and the row draws the record and
+  no raw JSON. The main suite runs on one node, and a quote needs a second
+  party, so the quote block is shown in the two-node demo instead.
 - Demo: extend story 50, which already has a quote between Alice and Bob,
   with "Alice forwards the quote to the chat; Bob sees the two parties,
   the expiry and no amounts".

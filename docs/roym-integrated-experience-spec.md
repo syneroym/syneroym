@@ -755,6 +755,18 @@ is shown as the sender's own words, with a note; its author is never named.
 Deleting a message removes the local copy and asks the other side to do the
 same. It cannot take back an origin or a copy that someone already forwarded.
 
+**Forwarding a signed record.** An offering, a profile or a quote can be
+forwarded as itself, in a message of its own content type. The record is never
+sent as a deal card, so the receiver's transaction service never files it as a
+deal. It keeps the signature of its author and checks as it does today: the
+client asks the service that owns the record (`listing.verify`,
+`profile.verify-envelope`, or `quote.verify`) and draws the record only when
+that answer says it checks. A forwarded quote carries no disclosures. The
+receiver sees both people of the deal, the currency, the expiry and each
+commitment's identity, but no scope, no description and no value; the Hub says
+so before the forward and on the record. A record forward ignores the sender's
+forward mode, because the record is already signed by its author.
+
 **Message deletion.** Deleting writes a durable deletion record (the row stays,
 its body is dropped) and removes the local copy. It does **not** revoke a key:
 in a group, every member already holds the epoch key and may already hold the
