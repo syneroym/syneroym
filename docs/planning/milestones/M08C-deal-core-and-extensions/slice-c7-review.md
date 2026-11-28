@@ -1152,4 +1152,12 @@ cases (`no-progress-snapshot`, and the `TransitionError`s from
 a payment acknowledgement, and one for a filing more than 7 days after
 `issued_at`, which must stay deferred.
 
-*Status:* Open.
+*Status:* Fixed (0c55444b). A progress failure now returns a plain
+deferred card, so it is never refused for a valid card, even after seven
+days. `roll_forward` maps a storage read error to
+`Response::internal_error` and keeps -32602 for `no-progress-snapshot`
+and the `TransitionError`s. Proofs: with `defer_or_refuse` put back for
+the fulfilment path, the eight-day test failed at `!first.filed`; with
+the `roll_forward` reads mapped back to -32602, the read-failure test
+failed at `!first.filed`. The payment acknowledgement deferral test
+passes. `roym_transaction` 289 passed.
