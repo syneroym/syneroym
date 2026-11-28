@@ -959,11 +959,12 @@ the roym WASM, so I did not run parity.
   Bob's node a received card is filed by `transaction.sync`, which runs
   on every `conversation.message` (the `wake` block in `roym.toml`) and
   on every thread draw (`messages.ts:423`). So the receipt was not still
-  travelling; it arrived and was not applied. The new story comment says
-  the same: "Wait until Bob's node holds it before his own close writes
-  the same progress row". The likely cause is R21. *Fix:* correct the
-  note here and in status.md: no CI rerun; the cause is R21 (or what R21's
-  test shows). *Status:* Open.
+  travelling; it arrived and was not applied. The likely cause was R21,
+  now fixed in 297fc087. The story comment now says that the node applies
+  the receipt, not that it is still travelling. *Status:* Fixed
+  (b5d49246; note corrected here and in status.md): the story fix is
+  verified, there was no CI rerun, and the receipt had arrived on Bob's
+  node; its progress transition failed.
 - **R14 — Fixed (094074cb), verified.** `renderMessageRow` in
   `groups.ts` has a case for `RECORD_FORWARD_CONTENT_TYPE` before the
   `utf8` case, the same as `messages.ts`. The new test checks that the
@@ -1051,4 +1052,10 @@ the commitment moves on. This does not have to be fixed in C7b, but it
 must not be left only in a story comment: fix it here or in its own PR,
 or add a row to `deferred-backlog.md` with this file and line.
 
-*Status:* Open.
+*Status:* Fixed (297fc087). The three half-writing paths now share
+`apply_progress`: a transient error defers the card, so the cursor holds
+and the next sync runs the transition again, and a repeated filing runs
+it too. An event that no longer applies (a late half after the end) is
+still kept as evidence. Proof: with `apply_progress` ignoring its error
+again, the new test failed at `!first.filed`; after the fix the second
+filing moved c1 to Fulfilled. `roym_transaction` 286 passed.
