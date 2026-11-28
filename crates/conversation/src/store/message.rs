@@ -3,7 +3,7 @@
 //! deliveries, updating delivery state, and paginating history. Does not
 //! touch `dag_entries` — group DAG persistence lives in `dag_store.rs`.
 
-use std::{io, str};
+use std::{borrow::Cow, io, str};
 
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, params, types::Type};
@@ -33,8 +33,24 @@ pub(crate) const M_MESSAGE_COLUMNS: &str =
      m.next_notify_at, m.report_refusal, m.refused, m.deleted_at, m.restored, m.visible_seq, \
      m.languages";
 
-pub(crate) fn is_searchable_content_type(ct: &str) -> bool {
-    ct.starts_with("text/") || ct == "application/json" || ct.ends_with("+json")
+pub(crate) fn indexable_text<'a>(ct: &str, body: &'a [u8]) -> Option<Cow<'a, str>> {
+    if !(ct.starts_with("text/") || ct == "application/json" || ct.ends_with("+json")) {
+        return None;
+    }
+    let text = str::from_utf8(body).ok()?;
+    if !ct.ends_with("+json") && ct != "application/json" {
+        return Some(Cow::Borrowed(text));
+    }
+    // A JSON body that carries a top-level string `text` is indexed by
+    // that string only. A chat body holds field names and a signed
+    // origin that a word search must not match.
+    let Ok(serde_json::Value::Object(obj)) = serde_json::from_str::<serde_json::Value>(text) else {
+        return Some(Cow::Borrowed(text));
+    };
+    match obj.get("text") {
+        Some(serde_json::Value::String(field)) => Some(Cow::Owned(field.clone())),
+        _ => Some(Cow::Borrowed(text)),
+    }
 }
 
 // Lock-poisoning from a panicking holder is a programming error; there is
@@ -130,11 +146,8 @@ impl ConversationStore {
                 ],
             )?;
             let rowid = tx.last_insert_rowid();
-            if !system
-                && is_searchable_content_type(content_type)
-                && let Ok(body_str) = str::from_utf8(body)
-            {
-                text_index::sync(tx, rowid, body_str)?;
+            if !system && let Some(text) = indexable_text(content_type, body) {
+                text_index::sync(tx, rowid, text.as_ref())?;
             }
 
             if !system {
@@ -184,10 +197,8 @@ impl ConversationStore {
             ],
         )?;
         let rowid = conn.last_insert_rowid();
-        if is_searchable_content_type(content_type)
-            && let Ok(body_str) = str::from_utf8(body)
-        {
-            text_index::sync(&conn, rowid, body_str)?;
+        if let Some(text) = indexable_text(content_type, body) {
+            text_index::sync(&conn, rowid, text.as_ref())?;
         }
         Self::touch_conversation(&conn, conversation_id, now_ms)?;
         Ok(())
@@ -323,10 +334,8 @@ impl ConversationStore {
                     params![now_ms, vseq as i64, message_id],
                 )?;
                 Self::touch_conversation(conn, &conv_id, now_ms)?;
-                if is_searchable_content_type(&ct)
-                    && let Ok(body_str) = str::from_utf8(&body)
-                {
-                    text_index::sync(conn, rowid, body_str)?;
+                if let Some(text) = indexable_text(&ct, &body) {
+                    text_index::sync(conn, rowid, text.as_ref())?;
                 }
                 Ok(true)
             }

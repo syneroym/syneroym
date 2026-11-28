@@ -198,11 +198,11 @@ async fn scenario_212_export_import_roundtrip_restored_only_parity() {
     let (exp_w, exp_n) = both_rpc(&h, "conversation.export", json!({})).await;
     assert_eq!(
         exp_w["result"]["manifest"]["sections"]["conversation_history"]["schema_version"],
-        4
+        5
     );
     assert_eq!(
         exp_n["result"]["manifest"]["sections"]["conversation_history"]["schema_version"],
-        4
+        5
     );
 
     let h2 = harness().await;

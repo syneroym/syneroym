@@ -10,14 +10,15 @@ use syneroym_roym_core::{
     backup::{self, Bundle, ImportInput},
     clock,
     envelope::Response,
-    method::{NoParams, Reply},
+    method::{NoParams, Reply, conversation::ForwardSettings},
     signing,
 };
 
-use super::{ADMISSIONS, SCHEMA_VERSION, ensure_admissions};
+use super::{ADMISSIONS, SCHEMA_VERSION, SETTINGS, ensure_admissions, ensure_settings, settings};
 
 pub const SECTION_HISTORY: &str = "conversation_history";
 pub const SECTION_ADMISSIONS: &str = "admissions";
+pub const SECTION_SETTINGS: &str = "settings";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ConversationImportCounts {
@@ -37,6 +38,9 @@ pub(crate) async fn export<H: AppHost>(host: &H, _: NoParams) -> Reply<Bundle> {
     };
     let now = clock::now_secs();
     if let Err(e) = ensure_admissions(host).await {
+        return Err(Response::internal_error(e));
+    }
+    if let Err(e) = ensure_settings(host).await {
         return Err(Response::internal_error(e));
     }
 
@@ -62,11 +66,15 @@ pub(crate) async fn export<H: AppHost>(host: &H, _: NoParams) -> Reply<Bundle> {
         }
     }
 
-    let mut sections =
-        match backup::collect_sections(host, &[(SECTION_ADMISSIONS, ADMISSIONS)]).await {
-            Ok(s) => s,
-            Err(e) => return Err(Response::internal_error(e)),
-        };
+    let mut sections = match backup::collect_sections(
+        host,
+        &[(SECTION_ADMISSIONS, ADMISSIONS), (SECTION_SETTINGS, SETTINGS)],
+    )
+    .await
+    {
+        Ok(s) => s,
+        Err(e) => return Err(Response::internal_error(e)),
+    };
     sections.insert(SECTION_HISTORY.to_string(), history_records);
 
     backup::export_signed_bundle(host, owner, SCHEMA_VERSION, sections, now).await
@@ -150,6 +158,9 @@ pub(crate) async fn import<H: AppHost>(
                     admission_count += 1;
                 }
             }
+            SECTION_SETTINGS => {
+                import_settings(host, records).await?;
+            }
             other => return Err(Response::invalid_params(format!("unknown section '{other}'"))),
         }
     }
@@ -157,4 +168,37 @@ pub(crate) async fn import<H: AppHost>(
     Ok(ConversationImportOutput {
         imported: ConversationImportCounts { messages: message_count, admissions: admission_count },
     })
+}
+
+/// Zero rows or the one `forward` row. A row of another id is refused, so a
+/// bundle cannot add a setting this build does not have.
+async fn import_settings<H: AppHost>(host: &H, records: &[Value]) -> Result<(), Response> {
+    ensure_settings(host).await.map_err(Response::internal_error)?;
+    for rec in records {
+        let id = match rec.get("id").and_then(Value::as_str) {
+            Some(i) => i,
+            None => return Err(Response::invalid_params("settings record missing id")),
+        };
+        if id != settings::FORWARD_ROW {
+            return Err(Response::invalid_params(format!(
+                "settings row '{id}' is not a setting this node has"
+            )));
+        }
+        let Some(payload) = rec.get("payload") else {
+            return Err(Response::invalid_params(format!("settings row '{id}' has no payload")));
+        };
+        let row: ForwardSettings = serde_json::from_value(payload.clone()).map_err(|e| {
+            Response::invalid_params(format!("settings row '{id}' does not parse: {e}"))
+        })?;
+        let bytes =
+            serde_json::to_vec(&row).map_err(|e| Response::internal_error(e.to_string()))?;
+        AppDataLayer::put(
+            host,
+            SETTINGS.to_string(),
+            RecordWriteValue { id: id.to_string(), payload: bytes },
+        )
+        .await
+        .map_err(|e| Response::internal_error(e.to_string()))?;
+    }
+    Ok(())
 }

@@ -420,12 +420,9 @@ impl ConversationService {
                 vseq as i64,
             ],
         )?;
-        if !is_system
-            && store::is_searchable_content_type(content_type)
-            && let Ok(body_str) = str::from_utf8(body)
-        {
+        if !is_system && let Some(text) = store::indexable_text(content_type, body) {
             let rowid = tx.last_insert_rowid();
-            text_index::sync(tx, rowid, body_str)?;
+            text_index::sync(tx, rowid, text.as_ref())?;
         }
 
         for m in members {

@@ -133,6 +133,9 @@ wait_for "$WORK/feed.txt" '"kind":"conversation.message"' "\"item\":\"$MESSAGE_I
   || fail "feed: no conversation.message event for $MESSAGE_ID"
 cat "$WORK/feed.txt"
 
+caption "Conversations: forward a signed message"
+run_block forward
+
 caption "Follow the event feed: catch up with the last cursor"
 CURSOR=$(sed -n 's/^id: //p' "$WORK/feed.txt" | head -1)
 [ -n "$CURSOR" ] || fail "catch-up: the ready frame has no id"

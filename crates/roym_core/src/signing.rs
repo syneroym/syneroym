@@ -8,6 +8,7 @@
 //! mints it and the call that uses it.
 
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use syneroym_app_host::{
     AppDataLayer, AppHost, AppSigning,
     types::{
@@ -19,6 +20,7 @@ pub use syneroym_signed_record::{DelegationCertificate, SCOPE_RECORD_SIGNING};
 
 use crate::{
     backup::{BUNDLE_MANIFEST_VERSION, Bundle},
+    envelope::Response,
     record,
 };
 
@@ -211,6 +213,42 @@ pub async fn person_principal<H: AppHost>(
     Ok((Principal::Delegated(stored.certificate), stored.master_did))
 }
 
+/// The signing refusals every signing verb shares, with the `data.code`
+/// each one carries, so a client can act on the state without parsing the
+/// message text.
+pub async fn resolve_principal_and_owner<H: AppHost>(
+    host: &H,
+    now: u64,
+) -> Result<(Principal, String), Response> {
+    let owner = match owner_did(host).await {
+        Ok(o) => o,
+        Err(CertificateError::NoOwner) => {
+            return Err(Response::invalid_params("this installation has no recorded owner")
+                .with_data(json!({"code": "signing-no-owner"})));
+        }
+        Err(e) => return Err(Response::internal_error(e.to_string())),
+    };
+    let (principal, _master) = match person_principal(host, now).await {
+        Ok(res) => res,
+        Err(CertificateError::NotEnrolled) => {
+            return Err(Response::invalid_params("signing-not-enrolled")
+                .with_data(json!({"code": "signing-not-enrolled"})));
+        }
+        Err(CertificateError::Expired(t)) => {
+            return Err(Response::invalid_params(format!("signing-certificate-expired at {t}"))
+                .with_data(json!({"code": "signing-certificate-expired"})));
+        }
+        Err(CertificateError::Stale { installed_for, current }) => {
+            return Err(Response::invalid_params(format!(
+                "signing-certificate-stale: {installed_for} vs {current}"
+            ))
+            .with_data(json!({"code": "signing-certificate-stale"})));
+        }
+        Err(e) => return Err(Response::internal_error(e.to_string())),
+    };
+    Ok((principal, owner))
+}
+
 /// Signs `bundle.manifest` as the person and stores the envelope in
 /// `bundle.manifest_signature`. Refuses with the same `CertificateError`
 /// words every signing verb uses when this service is not enrolled.
@@ -261,6 +299,75 @@ pub(crate) mod tests {
 
     use super::*;
     pub(crate) use crate::testing::TestHost;
+
+    #[tokio::test]
+    async fn resolve_principal_and_owner_refuses_each_certificate_state_with_its_code() {
+        let signing_did = "did:key:zServiceKey".to_string();
+        let owner = "did:key:zOwner".to_string();
+        let host = TestHost::default();
+        host.set_signing_id(SigningIdentity {
+            signing_did: signing_did.clone(),
+            pubkey_hex: "00".to_string(),
+            owner_did: Some(owner.clone()),
+        });
+
+        let code_of = |res: Result<(Principal, String), Response>| match res {
+            Ok(_) => "ok".to_string(),
+            Err(e) => e
+                .error
+                .and_then(|err| err.data)
+                .and_then(|d| d.get("code").and_then(|c| c.as_str()).map(str::to_string))
+                .unwrap_or_else(|| "no-code".to_string()),
+        };
+
+        // No certificate row: not enrolled.
+        assert_eq!(
+            code_of(resolve_principal_and_owner(&host, 1_000).await),
+            "signing-not-enrolled"
+        );
+
+        // Expired certificate.
+        host.set_storage_row(
+            CERTIFICATES,
+            CERTIFICATE_ID,
+            &StoredCertificate {
+                signing_did: signing_did.clone(),
+                master_did: owner.clone(),
+                issued_at_secs: 10,
+                expires_at_secs: 500,
+                certificate: "{}".to_string(),
+            },
+        );
+        assert_eq!(
+            code_of(resolve_principal_and_owner(&host, 1_000).await),
+            "signing-certificate-expired"
+        );
+
+        // Stale certificate: it certifies an older signing key.
+        host.set_storage_row(
+            CERTIFICATES,
+            CERTIFICATE_ID,
+            &StoredCertificate {
+                signing_did: "did:key:zOldServiceKey".to_string(),
+                master_did: owner.clone(),
+                issued_at_secs: 10,
+                expires_at_secs: 10_000,
+                certificate: "{}".to_string(),
+            },
+        );
+        assert_eq!(
+            code_of(resolve_principal_and_owner(&host, 1_000).await),
+            "signing-certificate-stale"
+        );
+
+        // No recorded owner.
+        host.set_signing_id(SigningIdentity {
+            signing_did,
+            pubkey_hex: "00".to_string(),
+            owner_did: None,
+        });
+        assert_eq!(code_of(resolve_principal_and_owner(&host, 1_000).await), "signing-no-owner");
+    }
 
     #[tokio::test]
     async fn test_certificate_status_and_install_flow() {

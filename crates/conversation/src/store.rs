@@ -33,7 +33,7 @@ mod message;
 pub(crate) use deposit::Park;
 #[cfg(test)]
 pub(crate) use message::UNDECIDED_PER_PASS;
-pub(crate) use message::is_searchable_content_type;
+pub(crate) use message::indexable_text;
 mod schema;
 mod scrub;
 mod search;

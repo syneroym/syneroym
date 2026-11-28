@@ -11,6 +11,7 @@ pub mod area;
 pub mod as_listed;
 pub mod backup;
 pub mod card;
+pub mod chat;
 pub mod clock;
 pub mod commitment_failure;
 pub mod conversation;

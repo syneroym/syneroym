@@ -49,7 +49,7 @@ export async function saveProfile(page: Page, displayName: string, conversationA
   await textInputs.nth(0).fill(displayName);
   await textInputs.nth(1).fill(conversationAddress);
   await page.locator('.profile-screen button[type="submit"]').click();
-  await expect(page.locator('.profile-screen p')).toContainText('Saved record rec_', { timeout: 15_000 });
+  await expect(page.locator('.profile-screen form p')).toContainText('Saved record rec_', { timeout: 15_000 });
 }
 
 /** Add a contact by person DID and conversation address. */
@@ -207,10 +207,60 @@ export async function openConversation(page: Page, conversationAddress: string, 
   await expect(page.locator('.open-error')).toHaveText('');
 }
 
+/** Answer the first-message question when it is shown. */
+async function answerFirstMessage(
+  page: Page,
+  mode: 'signed' | 'not-forwardable' | 'skip',
+  tag: string,
+) {
+  const dialog = page.locator('.forward-mode-dialog');
+  const input = page.locator('.compose-input');
+  // The question is loaded before the send, so either it appears or a node
+  // that already asked sends at once.
+  await expect
+    .poll(async () => (await dialog.isVisible()) || (await input.inputValue()) === '', {
+      timeout: 15_000,
+    })
+    .toBe(true);
+  if (!(await dialog.isVisible())) return;
+  const name =
+    mode === 'signed'
+      ? hubMessage(tag, 'forward-mode-signed')
+      : mode === 'not-forwardable'
+        ? hubMessage(tag, 'forward-mode-not-forwardable')
+        : hubMessage(tag, 'forward-first-skip');
+  await page.getByRole('button', { name, exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+}
+
+/** Answer the first-message question with this choice. It must be shown. */
+export async function chooseForwardMode(
+  page: Page,
+  mode: 'signed' | 'not-forwardable' | 'skip',
+  tag = 'en',
+) {
+  const dialog = page.locator('.forward-mode-dialog');
+  await expect(dialog).toBeVisible({ timeout: 15_000 });
+  const name =
+    mode === 'signed'
+      ? hubMessage(tag, 'forward-mode-signed')
+      : mode === 'not-forwardable'
+        ? hubMessage(tag, 'forward-mode-not-forwardable')
+        : hubMessage(tag, 'forward-first-skip');
+  await page.getByRole('button', { name, exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+}
+
 /** Send a message in the open thread. The box clears only when the send succeeds. */
-export async function sendMessage(page: Page, body: string, tag = 'en') {
+export async function sendMessage(
+  page: Page,
+  body: string,
+  tag = 'en',
+  firstMode: 'signed' | 'not-forwardable' | 'skip' = 'skip',
+) {
   await page.locator('.compose-input').fill(body);
   await page.getByRole('button', { name: hubMessage(tag, 'messages-send-button'), exact: true }).click();
+  await answerFirstMessage(page, firstMode, tag);
   await expect(page.locator('.compose-input')).toHaveValue('', { timeout: 15_000 });
 }
 

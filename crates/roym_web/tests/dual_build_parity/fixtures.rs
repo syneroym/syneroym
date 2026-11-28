@@ -132,7 +132,7 @@ pub(crate) fn expected_schema_version(service: &str) -> u32 {
     match service {
         "transaction" => 9,
         "directory" => 6,
-        "conversation" => 4,
+        "conversation" => 5,
         "catalog" => 5,
         "profile" => 2,
         _ => 1,

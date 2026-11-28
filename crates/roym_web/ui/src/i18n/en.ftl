@@ -1008,3 +1008,36 @@ statement-eep-available = Available
 quote-history-failed = Could not load earlier versions: { $detail }
 agreement-load-failed = Failed to load agreement: { $detail }
 
+
+# Message forwarding: the mode, the first-message question, the forward line.
+forward-mode-label = Forward mode
+forward-mode-signed = Signed
+forward-mode-not-forwardable = Not forwardable
+forward-mode-group-notice = Any member can show this message to anyone, with your name.
+forward-first-title = Can others forward your messages with your name?
+forward-first-signed-explain = Signed: each message carries a signed proof that you wrote it and when. Anyone can check it, and a forward shows your name.
+forward-first-not-forwardable-explain = Not forwardable: the message carries no proof, and the Hub gives no forward action for it.
+forward-first-to-whom-note = A signed message proves who wrote it and when. It does not say who it was sent to.
+forward-first-skip = Skip
+forward-settings-heading = Forwarding of my messages
+forward-settings-explain = Your default choice for each new message. You can change it for one message in the composer; the default stays.
+forward-settings-failed = Could not save the setting: { $detail }
+forward-button = Forward
+forward-picker-title = Forward to
+forward-picker-empty = There is no other chat to forward to.
+forward-picker-load-failed = Could not load your chats: { $detail }
+forward-refused = Could not forward: { $detail }
+forward-line = Forwarded. First written by { $author } on { $date }. Forwarded { $count } { $count ->
+        [one] time.
+       *[other] times.
+    }
+forward-line-many = Forwarded. First written by { $author } on { $date }. Forwarded many times.
+forward-author-you = you
+forward-not-in-contacts = …{ $short } (not in your contacts)
+forward-tag-not-forwardable = Not forwardable (the author chose this)
+forward-tag-no-origin = Cannot be forwarded (no signed origin)
+forward-origin-not-checked = origin could not be checked
+forward-signed-tag = Signed
+forward-send-not-forwardable = Send as not forwardable
+forward-renew-signing = Renew signing
+messages-delete-signed-note = The signed origin stays with everyone who has this message, and copies that others already forwarded stay too.

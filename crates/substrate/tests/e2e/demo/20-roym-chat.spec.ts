@@ -53,7 +53,7 @@ test('Roym chat story: Alice and Bob talk, each on their own node', async ({ bro
     await step(page, "Alice's screen: send Bob a message", async () => {
       await openMessages(page);
       await openConversation(page, bob.addr);
-      await sendMessage(page, ALICE_TEXT);
+      await sendMessage(page, ALICE_TEXT, 'en', 'signed');
       await expect(threadMessage(page, ALICE_TEXT).locator('.message-state')).toBeVisible();
     });
 
@@ -97,6 +97,28 @@ test('Roym chat story: Alice and Bob talk, each on their own node', async ({ bro
       await expect(pollCount(page, POLL_QUESTION, 'Sunday')).toHaveText('1 vote', {
         timeout: DELIVERY_WAIT_MS,
       });
+    });
+
+    await step(bobPage, "Bob's screen: he forwards Alice's message back to the chat", async () => {
+      await bobPage.bringToFront();
+      const row = threadMessage(bobPage, ALICE_TEXT);
+      await expect(row.locator('.forward-button')).toBeVisible({ timeout: DELIVERY_WAIT_MS });
+      await row.locator('.forward-button').click();
+      const picker = bobPage.locator('.forward-picker');
+      await expect(picker).toBeVisible();
+      await picker.locator('.forward-picker-row').first().click();
+      await expect(picker).toHaveCount(0);
+    });
+
+    await step(page, "Alice's screen: it shows \"Forwarded. First written by you on …\"", async () => {
+      await page.bringToFront();
+      const forwarded = page
+        .locator('.thread-messages .message', { hasText: ALICE_TEXT })
+        .filter({ has: page.locator('.forward-line') });
+      const line = forwarded.locator('.forward-line');
+      await expect(line).toBeVisible({ timeout: DELIVERY_WAIT_MS });
+      await expect(line).toContainText('Forwarded. First written by you');
+      await expect(line).toContainText('Forwarded 1 time.');
     });
   } finally {
     await bobSession.close();

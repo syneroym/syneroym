@@ -488,6 +488,7 @@ one.
 | `commitment-failure` | The giver of one commitment | This giver's node could not keep the reservation it took for one commitment (the only reason today is `reservation-lost`) | That the giver is at fault, or that the resource was given to anyone in particular |
 | `moderation-decision` | SynOrg | This group applied this rule to this member at this time | Global truth; another group is free to disagree |
 | `bundle-manifest` | The person | This person exported these sections with these content hashes | That the export is complete, or that any section's content is honest |
+| `message-origin` | The message author, as a person | The holder of this master DID wrote this text, with these language tags, at this time | That the author is a person the reader knows; that the message was sent to any one chat; or that a later copy was not changed. The reader's own contacts decide the name shown |
 
 **What "Signed by: Both" means** — recorded 2026-09-04 (M06C `D-06C-12`).
 Every envelope carries one issuer and one signature. A record signed by both
@@ -605,6 +606,15 @@ Three consequences to state plainly in the product:
    difference worth naming: the owner is also the key distributor. Membership
    changes are visible DAG events precisely so the owner cannot add a reader
    without the group seeing it. The group's UI should say who the owner is.
+4. **A `signed` message gives up deniability, on purpose.** Its origin is
+   signed as the author: by the `conversation` service key, with the person's
+   delegation certificate, so it names the person's master DID. It travels in
+   the body, so any member can show that record to anyone, even if their
+   client hides the forward action. The origin proves who wrote the text and
+   when. It does not prove who received it, and it does not cover a copy that
+   someone changed. A `not-forwardable` message carries no origin and keeps
+   today's deniability. The sender chooses per message; there is no group
+   rule.
 
 **Recovering from a compromise.** If a member's device is compromised, the owner
 rekeys and the attacker loses access from the next epoch. That recovery depends
@@ -721,6 +731,29 @@ Syneroym.
 - **Ephemeral signals:** typing indicators and read receipts use the
   `syneroym:messaging` publish/subscribe channel. They are best-effort and are
   never part of durable delivery.
+
+**Forwarding a message.** Every message the Hub sends carries a **forward mode**
+in its body: `signed` or `not-forwardable`. A `signed` message also carries a
+`message-origin` record, signed as the author: by the `conversation` service
+key, with the person's delegation certificate, so it names the person's master
+DID. It names the author, the send time and a hash of the text, not the text
+itself. Any node can check it without any key material. A `not-forwardable`
+message carries no origin. A message from another client with no mode is
+treated as `not-forwardable`.
+
+A person sets a default mode. The composer shows the mode in use and lets the
+person change it for one message; the default stays. In a group, a `signed`
+message is held by every member with its origin, so the composer says that any
+member can show it to anyone.
+
+A forward copies the checked text, its origin and its mode, and adds one to the
+forward count. The forwarder's own message signature covers the whole forward,
+so the receiver knows who passed it on. The forward itself signs nothing, so a
+person with no signing certificate can forward. A forward of a message the
+person wrote says "First written by you". A message whose origin does not check
+is shown as the sender's own words, with a note; its author is never named.
+Deleting a message removes the local copy and asks the other side to do the
+same. It cannot take back an origin or a copy that someone already forwarded.
 
 **Message deletion.** Deleting writes a durable deletion record (the row stays,
 its body is dropped) and removes the local copy. It does **not** revoke a key:

@@ -2,6 +2,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { activate } from "../i18n/i18n";
 import { stubRpc } from "../testing/stub-rpc";
 import { renderProfile } from "./profile";
+import { resetForwardSettingsCache } from "../chat/forward_mode";
+afterEach(() => {
+  resetForwardSettingsCache();
+});
 
 describe("profile screen", () => {
   afterEach(async () => {
@@ -203,5 +207,33 @@ describe("profile screen", () => {
 
     await vi.waitFor(() => expect(savedParams).toBeDefined());
     expect(savedParams!.languages).toEqual([]);
+  });
+});
+
+describe("the forwarding setting", () => {
+  it("shows the saved default and saves a change", async () => {
+    const saved: Array<Record<string, unknown>> = [];
+    let mode: "signed" | "not-forwardable" = "signed";
+    stubRpc({
+      "profile.get": () => ({ envelope: null }),
+      "conversation.settings": (params) => {
+        if (Object.keys(params as Record<string, unknown>).length > 0) {
+          saved.push(params);
+          mode = params["default_mode"] as typeof mode;
+        }
+        return { default_mode: mode, asked: true };
+      },
+    });
+
+    const host = document.createElement("div");
+    await renderProfile(host);
+    const select = host.querySelector<HTMLSelectElement>(".forward-settings-select")!;
+    expect(select.value).toBe("signed");
+
+    select.value = "not-forwardable";
+    select.dispatchEvent(new Event("change"));
+    await vi.waitFor(() =>
+      expect(saved).toEqual([{ default_mode: "not-forwardable" }]),
+    );
   });
 });

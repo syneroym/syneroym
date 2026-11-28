@@ -97,6 +97,48 @@ test.describe('Roym Hub', () => {
     expect(sessionBarText).toContain(whoamiDid);
   });
 
+  // The first-message question itself is covered by the Hub unit tests and
+  // by the chat story on fresh nodes. This case checks the control and the
+  // saved default on the shared node.
+  test('43. forward mode: the composer control and the Profile default', async ({ page }) => {
+    await page.goto(HUB_URL);
+    await page.waitForLoadState('networkidle');
+    await loginWithDelegatedKey(page);
+
+    const addr = `conv_c7a_${Date.now().toString(36)}`;
+
+    // Start from a known default.
+    await page.getByRole('button', { name: 'Profile', exact: true }).click();
+    const profileSelect = page.locator('.forward-settings-select');
+    await profileSelect.selectOption('not-forwardable');
+    await expect(profileSelect).toHaveValue('not-forwardable');
+
+    await openMessages(page);
+    await openConversation(page, addr);
+    const mode = page.locator('.forward-mode-select');
+    await expect(mode).toHaveValue('not-forwardable');
+
+    // A change for one message sends that mode and does not change the default.
+    await mode.selectOption('signed');
+    await sendMessage(page, 'one signed message');
+    await expect(mode).toHaveValue('not-forwardable');
+
+    await page.getByRole('button', { name: 'Profile', exact: true }).click();
+    await expect(profileSelect).toHaveValue('not-forwardable');
+    await profileSelect.selectOption('signed');
+    await expect(profileSelect).toHaveValue('signed');
+
+    // The composer starts at the new default.
+    await openMessages(page);
+    await openConversation(page, addr);
+    await expect(mode).toHaveValue('signed');
+
+    // Leave the node on the shipped default for the tests that follow.
+    await page.getByRole('button', { name: 'Profile', exact: true }).click();
+    await profileSelect.selectOption('not-forwardable');
+    await expect(profileSelect).toHaveValue('not-forwardable');
+  });
+
   test('2. session survives a reload; clearing browser state returns to login', async ({ page }) => {
     await page.goto(HUB_URL);
     await page.waitForLoadState('networkidle');
@@ -1257,10 +1299,15 @@ test.describe('Roym Hub', () => {
     await sendMessage(page, `please trim the ${word} hedge`);
 
     // Switch the thread away, so the click below has something to change.
+    // A feed redraw can overtake the click's own draw and leave the old
+    // thread in place; retrying the open is enough for this search case.
     const otherDid = 'did:key:z6MkhubE2ePeerAddressNeverAnswers0000000000040b';
-    await page.locator('.open-conversation input').fill(otherDid);
-    await page.getByRole('button', { name: 'Open conversation' }).click();
-    await expect(heading).toHaveText(otherDid, { timeout: 15_000 });
+    const openBtn = page.getByRole('button', { name: 'Open conversation' });
+    await expect(async () => {
+      await page.locator('.open-conversation input').fill(otherDid);
+      await openBtn.click();
+      await expect(heading).toHaveText(otherDid, { timeout: 5_000 });
+    }).toPass({ timeout: 30_000 });
 
     await page.locator('.message-search-input').fill(word);
     await page.getByRole('button', { name: 'Search', exact: true }).click();

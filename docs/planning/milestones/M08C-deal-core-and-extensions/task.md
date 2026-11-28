@@ -211,6 +211,25 @@ Stop-rule timing measurements:
 - `statement.export` over 1,000 agreements: 195 ms native / 297 ms WASM (< 2,000 ms limit).
 Measured via dual-build parity scenario 277 (`cargo nextest run -p syneroym-roym-web --test dual_build_parity scenario_277 --no-capture`).
 
+**C7a sizes** (release `wasm32-wasip2`, one `target/` folder, 2026-11-27; before: the C6a table's after column, after: the C7a code), in bytes:
+
+| Component | before | after | Change | Limit |
+| --- | --- | --- | --- | --- |
+| `conversation` | 985,469 | 1,056,675 | +71,206 (+7.22%) | +15% (147,820); Q11 (a) |
+| `transaction` | 2,870,685 | 2,883,845 | +13,160 (+0.46%) | +40 KB |
+| `catalog` | 960,590 | 960,566 | −24 | +40 KB |
+| `directory` | 1,504,433 | 1,504,289 | −144 | +40 KB |
+| `profile` | 772,748 | 772,686 | −62 | +40 KB |
+| `scheduling` | 715,723 | 715,739 | +16 | +40 KB |
+| `web` | 311,314 | 311,340 | +26 | +40 KB |
+
+Every component is within its limit. `conversation` grew with the chat body and origin check, `conversation.settings`, the read-side forward view and `conversation.forward`. `transaction` grew only by the moved signing helper.
+
+Stop-rule measurements (three-node test `cargo nextest run -p syneroym-substrate --test roym_forward_e2e --no-capture`):
+- the origin of a short signed text ("Market opens at 9", one `en` tag): 848 bytes (< 2 KiB limit); its chat body: 1,037 bytes.
+- an 11 KiB signed text: a 12,278-byte chat body, under the 13,312-byte mailbox estimate.
+- `conversation.history` of 200 signed messages, WASM build: 100 ms and 164 ms on two runs (< 500 ms limit).
+
 **Parity runs need a fresh WASM build.** The dual-build parity harness loads pre-built `wasm32-wasip2` components. Every slice that changes a `roym_*` crate runs `mise run build:roym` before it trusts a parity run.
 
 ## 2. Facts checked in the code for this plan
@@ -388,6 +407,7 @@ Change docs: roym-agreements, roym-value-exchange (VX-2, VX-7, VX-45, VX-46).
 - A forwarded quote travels as its signed envelope and carries no disclosures, so it shows only visible fields (agreements doc, open question 11). This part needs C2.
 - Criteria: FW-1 to FW-15.
 - Demo: extend story 20 with a forward ("Forwarded. First written by …").
+- **C7a result:** the chat body and `message-origin` record, checked at read; `conversation.settings`; `conversation.forward`; the host search indexes only a JSON body's top-level `text`; the Hub composer control, first-message question, Profile setting, forward action, display rules and group notice; the three-node test; and the forward step in story 20. C7b (forward of signed records, FW-7) follows on its own branch.
 
 Change docs: roym-message-forwarding.
 

@@ -746,6 +746,7 @@ fn get_message_marks_system_messages() {
 mod admission;
 mod backup_roundtrip;
 mod deposit;
+mod indexable_text;
 mod scrub;
 mod search_and_delete;
 mod search_keys;

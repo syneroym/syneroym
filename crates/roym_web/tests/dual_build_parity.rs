@@ -47,6 +47,8 @@ mod directory_find;
 mod disclosure;
 #[path = "dual_build_parity/events.rs"]
 mod events;
+#[path = "dual_build_parity/forward.rs"]
+mod forward;
 #[path = "dual_build_parity/fulfilment.rs"]
 mod fulfilment;
 #[path = "dual_build_parity/group.rs"]

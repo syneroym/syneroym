@@ -2576,6 +2576,24 @@ MESSAGE_ID=$(roym conversation.send "{\"conversation\":\"$CONV\",\"body\":\"Hell
 
 `conversation.open` returns `{conversation_id, peer_address}`. If you open the same address again, you get the same conversation. `conversation.send` takes an optional `languages` list (0 to 3 tags in canonical form, main language first) and returns `{message_id, state, sender_timestamp_ms}`. The `state` starts as `pending`. It becomes `deposited` when the message waits at the other node, and `delivered` when the other node has it. `failed` means it could not be sent. `conversation.send` refuses the two widget content types (`application/vnd.roym.widget+json` and `application/vnd.roym.widget-answer+json`) with "this content type is reserved". `conversation.delivery-status` with `{"message_id": "…"}` reads the state again.
 
+**Forward mode, origin and forward.** A send may name `"forward_mode": "signed"` or `"forward_mode": "not-forwardable"`. The message then gets the chat content type `application/vnd.roym.message+json`. A `signed` message also carries a `message-origin` record, signed with the sender's identity; the node needs an installed record-signing certificate for `conversation`, or it refuses with `-32602` and `data.code` `signing-not-enrolled`, `signing-certificate-expired`, `signing-certificate-stale` or `signing-no-owner`. A send with no `forward_mode` stays plain `text/plain`, exactly as before, and counts as not forwardable. With a mode, `content_type` must be absent or `text/plain`.
+
+```bash roym-client=forward
+SIGNED_ID=$(roym conversation.send "{\"conversation\":\"$CONV\",\"body\":\"Market opens at 9\",\"languages\":[\"en\"],\"forward_mode\":\"signed\"}" \
+  | jq -r .result.message_id)
+[ -n "$SIGNED_ID" ] && [ "$SIGNED_ID" != null ] || { echo "signed send failed" >&2; false; }
+roym conversation.settings '{}' | jq -e '.result.default_mode and (.result.asked | type == "boolean")' > /dev/null \
+  || { echo "settings failed" >&2; false; }
+roym conversation.forward "{\"message_id\":\"$SIGNED_ID\",\"conversation\":\"$CONV\"}" \
+  | jq -e '.result.message_id != null' > /dev/null || { echo "forward failed" >&2; false; }
+```
+
+`conversation.forward` copies a checked, signed message into the named conversation and adds one to the forward count. It refuses a missing, deleted, plain, widget or not-forwardable message, and a body whose origin does not check, with `data.code` `message-not-found`, `message-deleted`, `not-forwardable` or `origin-not-checked`. A forward signs nothing, so the forwarder needs no certificate.
+
+`conversation.settings` reads the person's default forward mode and whether the Hub asked the first-message question: `{"default_mode":"signed"|"not-forwardable","asked":bool}`. With no field it only reads. With `default_mode` or `asked: true` it merges and writes. `asked: false` is refused: the question is asked once. With no row, the answer is `{"default_mode":"not-forwardable","asked":false}`.
+
+In `conversation.history`, `conversation.changes` and `conversation.search`, a chat body's `body` is the inner text, and the row has a `forward` object: `mode`, `forwardable`, `origin` (`author_did`, `written_at_secs`, `record_id`, `is_you`) when checked, `origin_error` when not, `forward_count`, `many_forwards` and `forwarded`. The author's name is never taken from the message; a client shows a name only from its own contacts, and "you" when `is_you` is true.
+
 **Widgets.** Chat messages also support interactive widgets (content type `application/vnd.roym.widget+json`) and widget answers (`application/vnd.roym.widget-answer+json`) in 1:1 chats and groups:
 
 - `widget.send` takes `{conversation, widget, languages?}`. `widget` is a `WidgetDefinition` (`extension`, `type`, `semantic`, `prompt`, `fields`). The definition must be up to 8 KiB (`MAX_WIDGET_BODY_BYTES`). The type must be known to this node (`extension-unknown` if unknown), and its schema and field rules are verified. Returns `{message_id, state, sender_timestamp_ms}`.

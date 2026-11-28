@@ -9,6 +9,7 @@ use syneroym_app_host::{
     types::conversation::{ConversationError, ConversationKind, HistoryItem},
 };
 use syneroym_roym_core::{
+    chat::ROYM_MESSAGE_CONTENT_TYPE,
     conversation::{
         BodyEncoding, DELETION_REQUEST_CONTENT_TYPE, Direction, StoredState,
         group::{
@@ -30,7 +31,7 @@ use syneroym_roym_core::{
     widget::{WIDGET_ANSWER_CONTENT_TYPE, WIDGET_CONTENT_TYPE},
 };
 
-use super::{contacts_map, from_host, load_admission_info, set_admission_peer};
+use super::{chat_send, contacts_map, from_host, load_admission_info, set_admission_peer, view};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -265,7 +266,11 @@ pub(crate) async fn send<H: AppHost>(host: &H, input: SendInput) -> Reply<SendOu
         .map_err(|e| {
             ParamError { field: Some("languages".into()), message: e.to_string() }.into_response()
         })?;
-    let languages: Vec<String> = input.languages.into_iter().map(|t| t.to_string()).collect();
+    let languages: Vec<String> = input.languages.iter().map(|t| t.to_string()).collect();
+
+    if let Some(mode) = input.forward_mode {
+        return chat_send::send_with_mode(host, input, mode).await;
+    }
 
     let content_type = input.content_type.as_deref().unwrap_or("text/plain");
 
@@ -281,6 +286,7 @@ pub(crate) async fn send<H: AppHost>(host: &H, input: SendInput) -> Reply<SendOu
                 || ct == GROUP_PROFILE_CONTENT_TYPE
                 || ct == WIDGET_CONTENT_TYPE
                 || ct == WIDGET_ANSWER_CONTENT_TYPE
+                || ct == ROYM_MESSAGE_CONTENT_TYPE
                 || (is_group && ct == "application/vnd.roym.card+json")
             {
                 Some(if ct == "application/vnd.roym.card+json" {
@@ -307,7 +313,23 @@ pub(crate) async fn send_body<H: AppHost, F>(
 where
     F: FnOnce(bool, &str) -> Option<&'static str>,
 {
-    let is_group = match AppConversation::group_info(host, conversation.clone()).await {
+    check_target(host, &conversation, content_type, check_reserved).await?;
+    deliver(host, conversation, content_type, languages, body).await
+}
+
+/// The checks that must pass before a body is made: the group state and
+/// the reserved content types. A `signed` send signs only after this, so a
+/// send to a group the person left signs nothing.
+pub(crate) async fn check_target<H: AppHost, F>(
+    host: &H,
+    conversation: &str,
+    content_type: &str,
+    check_reserved: F,
+) -> Result<bool, Response>
+where
+    F: FnOnce(bool, &str) -> Option<&'static str>,
+{
+    let is_group = match AppConversation::group_info(host, conversation.to_string()).await {
         Ok(info) => {
             if info.restored {
                 return Err(Response::invalid_params(GROUP_RESTORED_NOTICE));
@@ -324,7 +346,16 @@ where
     if let Some(msg) = check_reserved(is_group, content_type) {
         return Err(Response::invalid_params(msg));
     }
+    Ok(is_group)
+}
 
+pub(crate) async fn deliver<H: AppHost>(
+    host: &H,
+    conversation: String,
+    content_type: &str,
+    languages: Vec<String>,
+    body: Vec<u8>,
+) -> Reply<SendOutput> {
     let message_id =
         AppConversation::send(host, conversation, content_type.to_string(), languages, body)
             .await
@@ -364,6 +395,7 @@ fn history_item_to_view(conversation: &str, item: HistoryItem) -> MessageView {
                 visible_seq: 0,
                 verified: true,
                 deleted_at_secs: None,
+                forward: None,
             }
         }
         HistoryItem::GroupName(ev) => {
@@ -387,6 +419,7 @@ fn history_item_to_view(conversation: &str, item: HistoryItem) -> MessageView {
                 visible_seq: 0,
                 verified: true,
                 deleted_at_secs: None,
+                forward: None,
             }
         }
     }
@@ -407,8 +440,9 @@ pub(crate) async fn history<H: AppHost>(host: &H, input: HistoryInput) -> Reply<
         .await
         .map_err(from_host)?;
 
-    let items: Vec<MessageView> =
+    let mut items: Vec<MessageView> =
         page.items.into_iter().map(|item| history_item_to_view(&conversation, item)).collect();
+    view::add_forward_views(host, &mut items).await;
 
     Ok(HistoryOutput {
         messages: items,
@@ -427,7 +461,8 @@ pub(crate) async fn changes<H: AppHost>(host: &H, input: ChangesInput) -> Reply<
         .await
         .map_err(from_host)?;
 
-    let msgs: Vec<MessageView> = page.messages.iter().map(MessageView::from).collect();
+    let mut msgs: Vec<MessageView> = page.messages.iter().map(MessageView::from).collect();
+    view::add_forward_views(host, &mut msgs).await;
     Ok(ChangesOutput {
         messages: msgs,
         last_seq: page.last_seq,
@@ -534,7 +569,7 @@ pub(crate) async fn search<H: AppHost>(host: &H, input: SearchInput) -> Reply<Se
     let msgs =
         AppConversation::search(host, query, input.conversation, limit).await.map_err(from_host)?;
 
-    let out: Vec<MessageView> = msgs
+    let mut out: Vec<MessageView> = msgs
         .into_iter()
         .filter(|m| !is_group_system_type(&m.content_type))
         .filter(|m| {
@@ -546,6 +581,7 @@ pub(crate) async fn search<H: AppHost>(host: &H, input: SearchInput) -> Reply<Se
         })
         .map(|m| MessageView::from(&m))
         .collect();
+    view::add_forward_views(host, &mut out).await;
     Ok(SearchOutput { matches: out })
 }
 

@@ -1,5 +1,7 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MEMBERSHIP_EVENT_CONTENT_TYPE } from "../groups/words";
+import { _resetForTest, startFeed } from "../events";
+import { FakeFeedSource } from "../testing/fake-event-source";
 import { t } from "../i18n/i18n";
 import { RpcError } from "../rpc";
 import {
@@ -12,9 +14,13 @@ import { pollDefinition, type WidgetView } from "../widgets/view";
 import { stubRpc } from "../testing/stub-rpc";
 import { readerReads } from "../testing/translation";
 import { setTargetsForTest } from "../translation/translation";
+import { resetForwardSettingsCache } from "../chat/forward_mode";
 
 afterEach(() => {
   vi.unstubAllGlobals();
+});
+afterEach(() => {
+  resetForwardSettingsCache();
 });
 
 describe("Groups screen rendering", () => {
@@ -357,7 +363,12 @@ describe("Groups screen rendering", () => {
   });
 
   it("group chat box language list sends languages, keeps rows after send, and allows move up and remove", async () => {
-    type SendParams = { conversation: string; body: string; languages?: string[] };
+    type SendParams = {
+      conversation: string;
+      body: string;
+      languages?: string[];
+      forward_mode?: string;
+    };
     let lastSendParams: SendParams | undefined;
     stubRpc({
       "conversation.list": () => ({
@@ -383,6 +394,7 @@ describe("Groups screen rendering", () => {
       }),
       "conversation.transcript-digest": () => ({ digest: "abcdef123456" }),
       "contacts.list": () => [],
+      "conversation.settings": () => ({ default_mode: "not-forwardable", asked: true }),
       "conversation.history": () => ({ messages: [] }),
       "conversation.send": (params) => {
         lastSendParams = params as SendParams;
@@ -408,6 +420,7 @@ describe("Groups screen rendering", () => {
 
     await vi.waitFor(() => expect(lastSendParams).toBeDefined());
     expect((lastSendParams as SendParams | undefined)?.languages).toEqual(["en"]);
+    expect((lastSendParams as SendParams | undefined)?.forward_mode).toBe("not-forwardable");
 
     // After send, list keeps its rows
     rows = host.querySelectorAll(".group-language-row");
@@ -991,5 +1004,220 @@ describe("widget messages in groups thread", () => {
 
     expect(host.querySelector(".widget-refused")).toBeNull();
     expect(host.textContent).toContain("Prompt on groups widget list failure");
+  });
+});
+
+describe("Groups screen feed and forward work", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.stubGlobal("EventSource", FakeFeedSource);
+    _resetForTest();
+  });
+
+  afterEach(() => {
+    document.body.replaceChildren();
+    vi.useRealTimers();
+  });
+
+  function signedRow(id: string): GroupMessageRow {
+    return {
+      id,
+      conversation: "grp-1",
+      author: "did:key:zAlice",
+      direction: "incoming",
+      sender_timestamp_ms: 1000,
+      content_type: "application/vnd.roym.message+json",
+      body_encoding: "utf8",
+      body: "Hello",
+      state: "delivered",
+      forward: {
+        mode: "signed",
+        forwardable: true,
+        origin: {
+          author_did: "did:key:zAlice",
+          written_at_secs: 1,
+          record_id: "rec-1",
+          is_you: false,
+        },
+        forward_count: 0,
+        many_forwards: false,
+        forwarded: false,
+      },
+    };
+  }
+
+  type GroupCounters = { history: number; deleted: number; body?: string };
+
+  function stubGroupNode(messages: GroupMessageRow[], counters: GroupCounters) {
+    stubRpc({
+      "conversation.list": () => ({
+        conversations: [
+          {
+            id: "grp-1",
+            kind: "group",
+            message_count: messages.length,
+            peer_address: "grp-1",
+            group: { name: "Team Group", admission: { state: "shown" } },
+          },
+        ],
+      }),
+      "group.info": () => ({
+        id: "grp-1",
+        conversation_id: "grp-1",
+        name: "Team Group",
+        owner_address: "did:key:zAlice",
+        is_owner: false,
+        is_member: true,
+        restored_only: false,
+        epoch: 1,
+        key_epoch: 1,
+        key_stored_at_ms: 0,
+        can_read_new_messages: true,
+        members: [{ address: "did:key:zAlice", is_owner: true }],
+      }),
+      "conversation.transcript-digest": () => ({ digest: "abcdef123456" }),
+      "contacts.list": () => [],
+      "conversation.settings": () => ({ default_mode: "not-forwardable", asked: true }),
+      "conversation.history": () => {
+        counters.history++;
+        return { messages };
+      },
+      "conversation.delete-message": () => {
+        counters.deleted++;
+        return {};
+      },
+      "conversation.send": (params) => {
+        counters.body = String(params.body);
+        return { message_id: "msg-sent" };
+      },
+    });
+  }
+
+  it("a feed event leaves an open forward picker", async () => {
+    const counters: GroupCounters = { history: 0, deleted: 0 };
+    stubGroupNode([signedRow("msg-1")], counters);
+    startFeed();
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    await renderGroups(host);
+
+    const forwardBtn = host.querySelector<HTMLButtonElement>(".forward-button")!;
+    forwardBtn.click();
+    await vi.advanceTimersByTimeAsync(0);
+    const picker = host.querySelector(".forward-picker");
+    expect(picker).not.toBeNull();
+    const historyCalls = counters.history;
+
+    FakeFeedSource.instance!.emit(
+      "change",
+      JSON.stringify({ kind: "conversation.message", subject: "grp-1", item: "msg-new" }),
+      "cursor-new",
+    );
+    await vi.advanceTimersByTimeAsync(150);
+
+    expect(host.querySelector(".forward-picker")).toBe(picker);
+    expect(counters.history).toBe(historyCalls);
+
+    host.querySelector<HTMLButtonElement>(".forward-picker-close")!.click();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(host.querySelector(".forward-picker")).toBeNull();
+    expect(counters.history).toBe(historyCalls + 1);
+  });
+
+  it("a signed group message asks before deleting and says the origin stays", async () => {
+    const counters: GroupCounters = { history: 0, deleted: 0 };
+    stubGroupNode([signedRow("msg-1")], counters);
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    await renderGroups(host);
+
+    host.querySelector<HTMLButtonElement>(".delete-button")!.click();
+    await vi.advanceTimersByTimeAsync(0);
+
+    const note = host.querySelector(".delete-signed-note");
+    expect(note?.textContent).toBe(t("messages-delete-signed-note"));
+    expect(counters.deleted).toBe(0);
+
+    host.querySelector<HTMLButtonElement>(".confirm-delete")!.click();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(counters.deleted).toBe(1);
+    expect(host.querySelector(".delete-dialog")).toBeNull();
+  });
+
+  it("a feed event leaves an open group delete dialog", async () => {
+    const counters: GroupCounters = { history: 0, deleted: 0 };
+    stubGroupNode([signedRow("msg-1")], counters);
+    startFeed();
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    await renderGroups(host);
+
+    host.querySelector<HTMLButtonElement>(".delete-button")!.click();
+    await vi.advanceTimersByTimeAsync(0);
+    const dialog = host.querySelector(".delete-dialog");
+    expect(dialog).not.toBeNull();
+    const historyCalls = counters.history;
+
+    FakeFeedSource.instance!.emit(
+      "change",
+      JSON.stringify({ kind: "conversation.message", subject: "grp-1", item: "msg-new" }),
+      "cursor-new",
+    );
+    await vi.advanceTimersByTimeAsync(150);
+
+    expect(host.querySelector(".delete-dialog")).toBe(dialog);
+    expect(counters.history).toBe(historyCalls);
+
+    host.querySelector<HTMLButtonElement>(".cancel-delete")!.click();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(host.querySelector(".delete-dialog")).toBeNull();
+    expect(counters.history).toBe(historyCalls + 1);
+  });
+
+  it("a feed reload leaves an open forward picker", async () => {
+    const counters: GroupCounters = { history: 0, deleted: 0 };
+    stubGroupNode([signedRow("msg-1")], counters);
+    startFeed();
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    await renderGroups(host);
+
+    host.querySelector<HTMLButtonElement>(".forward-button")!.click();
+    await vi.advanceTimersByTimeAsync(0);
+    const picker = host.querySelector(".forward-picker");
+    expect(picker).not.toBeNull();
+    const historyCalls = counters.history;
+
+    FakeFeedSource.instance!.emit("reload", "{}", "cursor-reload");
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(host.querySelector(".forward-picker")).toBe(picker);
+    expect(counters.history).toBe(historyCalls);
+
+    host.querySelector<HTMLButtonElement>(".forward-picker-close")!.click();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(host.querySelector(".forward-picker")).toBeNull();
+    expect(counters.history).toBe(historyCalls + 1);
+  });
+
+  it("sends the group text without the spaces around it", async () => {
+    const counters: GroupCounters = { history: 0, deleted: 0 };
+    stubGroupNode([], counters);
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    await renderGroups(host);
+
+    const composer = host.querySelector(".composer-box")!;
+    const input = composer.querySelector<HTMLInputElement>("input")!;
+    const send = composer.querySelector<HTMLButtonElement>("button")!;
+    input.value = "  Market opens at 9\n";
+    send.click();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(counters.body).toBe("Market opens at 9");
   });
 });

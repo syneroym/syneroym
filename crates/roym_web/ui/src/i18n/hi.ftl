@@ -981,3 +981,33 @@ statement-eep-available = उपलब्ध
 quote-history-failed = पुराने संस्करण लोड नहीं किए जा सके: { $detail }
 agreement-load-failed = समझौता लोड करने में विफल: { $detail }
 
+
+# message forwarding
+forward-mode-label = फ़ॉरवर्ड मोड
+forward-mode-signed = हस्ताक्षरित
+forward-mode-not-forwardable = फ़ॉरवर्ड नहीं कर सकते
+forward-mode-group-notice = कोई भी सदस्य यह संदेश किसी को भी दिखा सकता है, आपके नाम के साथ।
+forward-first-title = क्या दूसरे लोग आपके संदेश आपके नाम के साथ फ़ॉरवर्ड कर सकते हैं?
+forward-first-signed-explain = हस्ताक्षरित: हर संदेश में यह प्रमाण होता है कि यह आपने लिखा और कब लिखा। कोई भी इसे जाँच सकता है, और फ़ॉरवर्ड में आपका नाम दिखता है।
+forward-first-not-forwardable-explain = फ़ॉरवर्ड नहीं कर सकते: संदेश में कोई प्रमाण नहीं होता, और ऐप इसे फ़ॉरवर्ड करने का विकल्प नहीं देता।
+forward-first-to-whom-note = हस्ताक्षरित संदेश बताता है कि किसने और कब लिखा। यह नहीं बताता कि यह किसे भेजा गया था।
+forward-first-skip = छोड़ें
+forward-settings-heading = मेरे संदेशों को फ़ॉरवर्ड करना
+forward-settings-explain = हर नए संदेश के लिए आपका डिफ़ॉल्ट चुनाव। आप संदेश लिखते समय इसे एक संदेश के लिए बदल सकते हैं; डिफ़ॉल्ट वही रहता है।
+forward-settings-failed = सेटिंग सहेजी नहीं जा सकी: { $detail }
+forward-button = फ़ॉरवर्ड करें
+forward-picker-title = किसे फ़ॉरवर्ड करें
+forward-picker-empty = फ़ॉरवर्ड करने के लिए कोई दूसरी चैट नहीं है।
+forward-picker-load-failed = आपकी चैट लोड नहीं हो सकीं: { $detail }
+forward-refused = फ़ॉरवर्ड नहीं हो सका: { $detail }
+forward-line = फ़ॉरवर्ड किया गया। पहली बार { $author } ने { $date } को लिखा। { $count } बार फ़ॉरवर्ड किया गया।
+forward-line-many = फ़ॉरवर्ड किया गया। पहली बार { $author } ने { $date } को लिखा। कई बार फ़ॉरवर्ड किया गया।
+forward-author-you = आप
+forward-not-in-contacts = …{ $short } (आपके संपर्कों में नहीं)
+forward-tag-not-forwardable = फ़ॉरवर्ड नहीं कर सकते (लेखक ने यह चुना)
+forward-tag-no-origin = फ़ॉरवर्ड नहीं कर सकते (कोई हस्ताक्षरित मूल नहीं)
+forward-origin-not-checked = मूल की जाँच नहीं हो सकी
+forward-signed-tag = हस्ताक्षरित
+forward-send-not-forwardable = फ़ॉरवर्ड नहीं करने योग्य भेजें
+forward-renew-signing = हस्ताक्षरण नवीनीकृत करें
+messages-delete-signed-note = हस्ताक्षरित मूल इस संदेश वाले हर व्यक्ति के पास रहता है, और जो प्रतियाँ दूसरों ने पहले फ़ॉरवर्ड की हैं वे भी रहती हैं।

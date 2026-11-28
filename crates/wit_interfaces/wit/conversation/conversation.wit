@@ -276,7 +276,9 @@ interface conversation {
 
     /// Full-text search over message bodies across all conversations (or
     /// filtered to `conversation`). Non-accepted incoming messages are excluded.
-    /// Returns up to `limit` matching messages (capped at 500), newest first.
+    /// A JSON body whose top level is an object with a string field `text`
+    /// is searched by that field only. Returns up to `limit` matching messages
+    /// (capped at 500), newest first.
     search: func(query: string, conversation: option<conversation-id>, limit: u32)
         -> result<list<message>, conversation-error>;
 

@@ -191,6 +191,7 @@ fn check_roym_deps() -> Result<()> {
             "serde",
             "serde_json",
             "serde_path_to_error",
+            "sha2",
             "async-trait",
             "thiserror",
         ],
