@@ -20,7 +20,7 @@ use syneroym_roym_core::{
 
 use super::{from_host, messages};
 
-fn refuse(code: &str, message: impl Into<String>) -> Response {
+pub(super) fn refuse(code: &str, message: impl Into<String>) -> Response {
     Response::invalid_params(message).with_data(json!({ "code": code }))
 }
 

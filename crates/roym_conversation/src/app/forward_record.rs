@@ -5,10 +5,8 @@
 //! service that owns the type to check it before it draws it, so the check
 //! stays where it is today and this service links no record payload code.
 
-use serde_json::json;
 use syneroym_app_host::AppHost;
 use syneroym_roym_core::{
-    envelope::Response,
     method::{
         Reply,
         conversation::{ForwardRecordInput, SendOutput},
@@ -16,11 +14,7 @@ use syneroym_roym_core::{
     record_forward::{RECORD_FORWARD_CONTENT_TYPE, RecordForwardBody, RecordForwardError},
 };
 
-use super::messages;
-
-fn refuse(code: &str, message: impl Into<String>) -> Response {
-    Response::invalid_params(message).with_data(json!({ "code": code }))
-}
+use super::{forward, messages};
 
 fn code_for(error: &RecordForwardError) -> &'static str {
     match error {
@@ -37,11 +31,11 @@ pub(crate) async fn forward_record<H: AppHost>(
 ) -> Reply<SendOutput> {
     let body = match RecordForwardBody::new(&input.record_type, &input.envelope) {
         Ok(body) => body,
-        Err(e) => return Err(refuse(code_for(&e), e.to_string())),
+        Err(e) => return Err(forward::refuse(code_for(&e), e.to_string())),
     };
     let bytes = match body.to_bytes() {
         Ok(bytes) => bytes,
-        Err(e) => return Err(refuse(code_for(&e), e.to_string())),
+        Err(e) => return Err(forward::refuse(code_for(&e), e.to_string())),
     };
     messages::send_body(
         host,

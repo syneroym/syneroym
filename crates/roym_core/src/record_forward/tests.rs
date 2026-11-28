@@ -67,16 +67,12 @@ fn an_envelope_that_is_not_a_json_object_is_refused_on_the_send_path() {
 }
 
 #[test]
-fn a_body_that_is_not_json_is_malformed() {
-    let err = RecordForwardBody::parse(b"not json").unwrap_err();
-    assert!(matches!(err, RecordForwardError::Malformed(_)), "{err:?}");
-}
-
-#[test]
-fn a_body_missing_a_field_is_malformed() {
-    let bytes = json!({ "record_forward_version": 1, "record_type": "quote" }).to_string();
-    let err = RecordForwardBody::parse(bytes.as_bytes()).unwrap_err();
-    assert!(matches!(err, RecordForwardError::Malformed(_)), "{err:?}");
+fn a_body_that_does_not_parse_is_malformed() {
+    let missing = json!({ "record_forward_version": 1, "record_type": "quote" }).to_string();
+    for body in [b"not json".as_slice(), missing.as_bytes()] {
+        let err = RecordForwardBody::parse(body).unwrap_err();
+        assert!(matches!(err, RecordForwardError::Malformed(_)), "{err:?}");
+    }
 }
 
 #[test]
