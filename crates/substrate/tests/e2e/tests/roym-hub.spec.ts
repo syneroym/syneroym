@@ -1173,7 +1173,7 @@ test.describe('Roym Hub', () => {
     await expect(quoteCard.locator('.decline-quote-button')).toHaveCount(0);
   });
 
-  test('44. Directory and Messages: a verified hit forwards as itself, and the received record names no value', async ({ page }) => {
+  test('44. Directory and Messages: a verified hit forwards as itself and its row draws the listing, not raw JSON', async ({ page }) => {
     await page.goto(HUB_URL);
     await page.waitForLoadState('networkidle');
     await loginWithDelegatedKey(page);
@@ -1205,8 +1205,8 @@ test.describe('Roym Hub', () => {
       timeout: 15_000,
     });
 
-    // The receiver of a forward is this same node here, so its own service
-    // checks the record and the row draws the record, not raw JSON.
+    // The row drawn is this node's own outgoing copy. Its own service checks
+    // the listing it holds, so the row draws the record, not raw JSON.
     await page.getByRole('button', { name: 'Messages' }).click();
     await openConversation(page, peer);
     const record = page.locator('.thread-messages .record-forward-card.record-forward-listing').first();

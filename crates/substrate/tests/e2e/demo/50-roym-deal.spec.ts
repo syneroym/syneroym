@@ -391,8 +391,18 @@ test('Roym deal story: Bob offers a lesson for wheat and money, Alice agrees, bo
 
     await step(bobPage, "Bob's screen: receive everything and close the deal", async () => {
       await bobPage.bringToFront();
+      const bobConversation = await conversationWith(bobPage, alice.addr);
+      const settled = async () =>
+        (await fetchAgreement(bobPage, bobConversation, runTag))?.commitments.filter(
+          (c) => c.state !== 'promised',
+        ).length;
+
+      // Alice's receipt travels through the conversation. Wait until Bob's
+      // node holds it before his own close writes the same progress row.
+      await expect.poll(settled, { timeout: DELIVERY_WAIT_MS }).toBe(1);
       const panel = await openAgreementPanel(bobPage, runTag);
       await closeEverything(panel, 'receiver');
+      await expect.poll(settled, { timeout: DELIVERY_WAIT_MS }).toBe(3);
     });
 
     await step(bobPage, "Bob's screen: deal panel shows closed", async () => {
