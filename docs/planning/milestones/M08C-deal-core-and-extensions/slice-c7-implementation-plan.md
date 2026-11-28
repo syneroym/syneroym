@@ -2034,25 +2034,63 @@ Living docs (C7a):
 
 C7a is done when all of these hold:
 
-- [ ] Every C7a criterion in section 3 names a test that exists on the
-      branch, and the test passes.
-- [ ] The `roym_core` `chat` unit tests, the whole parity binary (after
+- [x] Every C7a criterion in section 3 names a test that exists on the
+      branch, and the test passes. The change doc's acceptance table now
+      names the test for each of FW-1 to FW-15. C7a's CI run on `717fb65e`
+      (runs 46047047292 and 46047047237) passed every job.
+- [x] The `roym_core` `chat` unit tests, the whole parity binary (after
       `mise run build:roym`), the host search tests, `roym_forward_e2e`,
       the Hub unit tests, the new Hub case, the whole Playwright suite and
-      story 20 pass.
-- [ ] The origin of a short text message is under 2 KiB, measured and
-      recorded, or the owner answered the stop.
-- [ ] A history page of 200 `signed` messages takes under 500 ms in the
+      story 20 pass. Evidence: `roym_core` chat 50 passed; parity
+      scenarios 278 to 288 passed; `roym_forward_e2e` passed; Hub Vitest
+      72 files, 774 passed; Playwright main 82, multihop 4 and demo 11
+      passed (status.md, C7a row).
+- [x] The origin of a short text message is under 2 KiB, measured and
+      recorded, or the owner answered the stop. Measured 848 bytes for
+      "Market opens at 9" with one `en` tag; the chat body is 1,037 bytes
+      (task.md section 1; change doc, "Different from the plan").
+- [x] A history page of 200 `signed` messages takes under 500 ms in the
       WASM build, or the owner answered the stop. The number is recorded.
-- [ ] Component sizes are in task.md section 1, each within its limit (for
-      `conversation`, +15% of the "before" size, Q11 (a)).
-- [ ] Deviations, backlog rows, living docs and the `status.md` row (with
-      the Hindi keys) are done.
-- [ ] `mise run verify` with no `--skip` passes.
+      Measured 100 ms and 164 ms on two runs (task.md section 1; change
+      doc, "Different from the plan").
+- [x] Component sizes are in task.md section 1, each within its limit (for
+      `conversation`, +15% of the "before" size, Q11 (a)). `conversation`
+      grew from 985,469 to 1,056,675 bytes (+71,206, +7.22%); every other
+      component stayed within +40 KB.
+- [x] Deviations, backlog rows, living docs and the `status.md` row (with
+      the Hindi keys) are done. The change doc's `## Deviations` holds the
+      Q2 to Q9 items; the backlog has the new rows; the integrated spec,
+      TERMINOLOGY, the developer guide, the requirements spec and the
+      traceability matrix describe the result; the C7a row lists the 29
+      Hindi keys.
+- [x] `mise run verify` with no `--skip` passes. C7a's proof is the full
+      green CI on `717fb65e`; the C7b close-out runs `mise run verify`
+      again on the merged head and records the result in status.md.
 
 C7b is done when FW-7 has its tests, the Q12 (a) design is built (the
 check in the owning service, D-C7-14), its sizes are in task.md
 section 1, and its docs and `mise run verify` pass.
+
+- [x] FW-7 has its tests: `crates/roym_core/src/record_forward/tests.rs`
+      (9), the profile envelope tests in `crates/roym_core/src/person.rs`
+      (5), `a_quote_with_no_disclosures_shows_only_its_visible_fields` in
+      `crates/roym_core/src/transaction/tests/verify.rs`, parity scenarios
+      289 to 292 in `crates/roym_web/tests/dual_build_parity/forward_record.rs`,
+      the Hub tests in `record_forward.test.ts` and `contacts.test.ts`,
+      Playwright case 44, and the story 50 demo step.
+- [x] The Q12 (a) design is built (D-C7-14): `conversation.forward-record`
+      stores and returns the body, `profile.verify-envelope` is new,
+      `catalog.listing.verify` and `transaction.quote.verify` stay where
+      they are, and the Hub draws only from the owning service's verdict.
+- [x] Its sizes are in task.md section 1: `conversation` 1,056,675 to
+      1,068,527 bytes (+11,852, +1.12%, limit 158,505) and `profile`
+      772,686 to 783,897 (+11,211, limit +40 KB); the other five within
+      +1,101 bytes.
+- [x] Its docs are done: the change doc records Q12 (a), the index rule,
+      the body format and the profile subject rule, and the living docs
+      describe the record forward.
+- [x] `mise run verify` passes on the close-out head; the result is in
+      status.md.
 
 ## 11. What C7 does not do
 

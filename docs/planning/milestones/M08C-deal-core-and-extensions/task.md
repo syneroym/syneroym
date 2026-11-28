@@ -428,7 +428,7 @@ Change docs: roym-agreements, roym-value-exchange (VX-2, VX-7, VX-45, VX-46).
 - A forwarded quote travels as its signed envelope and carries no disclosures, so it shows only visible fields (agreements doc, open question 11). This part needs C2.
 - Criteria: FW-1 to FW-15.
 - Demo: extend story 20 with a forward ("Forwarded. First written by …").
-- **C7a result:** the chat body and `message-origin` record, checked at read; `conversation.settings`; `conversation.forward`; the host search indexes only a JSON body's top-level `text`; the Hub composer control, first-message question, Profile setting, forward action, display rules and group notice; the three-node test; and the forward step in story 20. C7b (forward of signed records, FW-7) follows on its own branch.
+- **C7 result ([PR #399](https://github.com/syneroym/syneroym/pull/399), [PR #400](https://github.com/syneroym/syneroym/pull/400)):** C7a built the chat body and `message-origin` record, checked at read; `conversation.settings`; `conversation.forward`; the host search rule that indexes only a JSON body's top-level `text`; the Hub composer control, first-message question, Profile setting, forward action, display rules and group notice; the three-node test; and the forward step in story 20. C7b added the record-forward body and `conversation.forward-record`; `profile.verify-envelope`; the owning-service check at draw time (Q12 (a)); the Hub forward actions on a quote card, directory hit and contact profile, with the quote warning and the minimal profile view; Playwright case 44; and the quote forward in story 50. FW-7.
 
 Change docs: roym-message-forwarding.
 

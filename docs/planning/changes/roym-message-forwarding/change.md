@@ -1,9 +1,15 @@
 ---
-status: draft
+status: done
 demo:
   - crates/substrate/tests/e2e/demo/20-roym-chat.spec.ts
   - crates/substrate/tests/e2e/demo/50-roym-deal.spec.ts
 living-docs-touched:
+  - docs/roym-integrated-experience-spec.md
+  - docs/TERMINOLOGY.md
+  - docs/developer-guide.md
+  - docs/system-requirements-spec.md
+  - docs/system-architecture.md
+  - docs/planning/traceability-matrix.md
 ---
 # Roym message forwarding with a signed origin
 
@@ -57,21 +63,21 @@ Two facts from the code shape the design:
 
 | ID | Criterion | Test |
 | --- | --- | --- |
-| FW-1 | Every message a person sends through Roym has a forward mode, `signed` or `not-forwardable`. A `signed` message has an origin, signed with the person's identity: author master DID, send time, content type, language tag, and a hash of the content. A `not-forwardable` message has the mark and no origin. | |
-| FW-2 | The forward action sends the original content, its origin, and the forward count plus one. It refuses a message that has no origin or is marked `not-forwardable`, in the Hub and in the Roym method. | |
-| FW-3 | The receiver's node checks that the origin's signature verifies and that the content hash matches. The Hub then shows "Forwarded. First written by <name> on <date>. Forwarded N times." | |
-| FW-4 | If the check fails, the Hub shows the message as the forwarder's own message, with the note "origin could not be checked". It never shows an unverified author name. | |
-| FW-5 | A forward count of 5 or more shows as "Forwarded many times". | |
-| FW-6 | Editing the content before sending makes it a new message by the sender. The edited content cannot carry the old origin, because the hash no longer matches. | |
-| FW-7 | A forwarded offering, quote or profile card travels as the signed record itself and verifies as it does today. | |
-| FW-8 | Attachments are covered: the content hash includes the hash of each attached blob. | |
-| FW-9 | Forward works the same in a one-to-one chat and in a group, inside the same group. | |
-| FW-10 | Hub settings, and the first message a person sends, say plainly that a `signed` message can be forwarded with the author's name and checked by others, and that a `not-forwardable` message cannot. The first message asks the person to choose the default mode. | |
-| FW-11 | In a group, every member chooses the forward mode for each message they send, as in a one-to-one chat. The group owner cannot force or forbid a mode. The composer in a group says that a `signed` message can be shown by any member, to anyone, and forwarded with the author's name. | |
-| FW-12 | A person has a default forward mode in settings. The composer shows the mode that applies to the message and lets the sender change it for that one message. Changing one message does not change the default. | |
-| FW-13 | On a message marked `not-forwardable`, the Hub shows no forward action and says why. If a modified client forwards it anyway, the forward has no origin, and the receiver shows it as the forwarder's own message (as in FW-4). | |
-| FW-14 | The mode is part of the message body, so the sender's conversation entry signature covers it. A forwarder cannot change a `not-forwardable` message to `signed`, or the reverse, without the change being visible as a different message. | |
-| FW-15 | A forwarded message stays forwardable as its author allowed. The forwarder's own default mode does not apply to content the forwarder did not write. | |
+| FW-1 | Every message a person sends through Roym has a forward mode, `signed` or `not-forwardable`. A `signed` message has an origin, signed with the person's identity: author master DID, send time, content type, language tag, and a hash of the content. A `not-forwardable` message has the mark and no origin. | `crates/roym_core/src/chat/tests.rs` (`a_signed_origin_checks_and_names_the_master_did`, `the_content_hash_is_stable`); parity scenarios 279 and 280 in `crates/roym_web/tests/dual_build_parity/forward.rs` |
+| FW-2 | The forward action sends the original content, its origin, and the forward count plus one. It refuses a message that has no origin or is marked `not-forwardable`, in the Hub and in the Roym method. | Parity scenario 287 in `crates/roym_web/tests/dual_build_parity/forward.rs`; `crates/substrate/tests/roym_forward_e2e.rs`; `crates/roym_web/ui/src/chat/forward_view.test.ts` |
+| FW-3 | The receiver's node checks that the origin's signature verifies and that the content hash matches. The Hub then shows "Forwarded. First written by <name> on <date>. Forwarded N times." | `crates/roym_core/src/chat/tests.rs` (`a_forwarded_checked_message_is_marked_forwarded`); parity scenario 286; `crates/roym_web/ui/src/chat/forward_view.test.ts`; demo story `20-roym-chat.spec.ts` |
+| FW-4 | If the check fails, the Hub shows the message as the forwarder's own message, with the note "origin could not be checked". It never shows an unverified author name. | `crates/roym_core/src/chat/tests.rs` (`a_failed_origin_never_names_an_author`); `crates/roym_web/ui/src/chat/forward_view.test.ts` |
+| FW-5 | A forward count of 5 or more shows as "Forwarded many times". | `crates/roym_core/src/chat/tests.rs` (`many_forwards_starts_at_five`); `crates/roym_web/ui/src/chat/forward_view.test.ts` |
+| FW-6 | Editing the content before sending makes it a new message by the sender. The edited content cannot carry the old origin, because the hash no longer matches. | `crates/roym_core/src/chat/tests.rs` (the hash tests and `a_changed_text_with_the_old_origin_is_not_forwardable`) |
+| FW-7 | A forwarded offering, quote or profile card travels as the signed record itself and verifies as it does today. | `crates/roym_core/src/record_forward/tests.rs`; `crates/roym_core/src/transaction/tests/verify.rs` (`a_quote_with_no_disclosures_shows_only_its_visible_fields`); parity scenario 289 in `crates/roym_web/tests/dual_build_parity/forward_record.rs`; `crates/roym_web/ui/src/chat/record_forward.test.ts`; Playwright case 44; demo story `50-roym-deal.spec.ts` |
+| FW-8 | Attachments are covered: the content hash includes the hash of each attached blob. | `crates/roym_core/src/chat/tests.rs` (`the_hash_changes_with_the_blob_list`); met in the hash format only, as the "Attachments" Deviation says |
+| FW-9 | Forward works the same in a one-to-one chat and in a group, inside the same group. | Parity scenario 288 (same conversation); `crates/substrate/tests/roym_forward_e2e.rs` (the three-node group); `crates/roym_web/ui/src/chat/forward_picker.test.ts` (a group row) |
+| FW-10 | Hub settings, and the first message a person sends, say plainly that a `signed` message can be forwarded with the author's name and checked by others, and that a `not-forwardable` message cannot. The first message asks the person to choose the default mode. | `crates/roym_web/ui/src/chat/first_message.test.ts`, `crates/roym_web/ui/src/chat/forward_mode.test.ts`; demo story `20-roym-chat.spec.ts` |
+| FW-11 | In a group, every member chooses the forward mode for each message they send, as in a one-to-one chat. The group owner cannot force or forbid a mode. The composer in a group says that a `signed` message can be shown by any member, to anyone, and forwarded with the author's name. | `crates/roym_web/ui/src/chat/forward_mode.test.ts` (the group notice) |
+| FW-12 | A person has a default forward mode in settings. The composer shows the mode that applies to the message and lets the sender change it for that one message. Changing one message does not change the default. | Parity scenario 278; `crates/roym_web/ui/src/chat/forward_mode.test.ts` |
+| FW-13 | On a message marked `not-forwardable`, the Hub shows no forward action and says why. If a modified client forwards it anyway, the forward has no origin, and the receiver shows it as the forwarder's own message (as in FW-4). | `crates/roym_core/src/chat/tests.rs` (`a_changed_text_with_the_old_origin_is_not_forwardable`, `a_failed_origin_never_names_an_author`); `crates/roym_web/ui/src/chat/forward_view.test.ts` |
+| FW-14 | The mode is part of the message body, so the sender's conversation entry signature covers it. A forwarder cannot change a `not-forwardable` message to `signed`, or the reverse, without the change being visible as a different message. | Parity scenario 279 (the stored body holds `forward_mode`); `crates/roym_core/src/chat/tests.rs` (`a_chat_body_round_trips_through_bytes`) |
+| FW-15 | A forwarded message stays forwardable as its author allowed. The forwarder's own default mode does not apply to content the forwarder did not write. | Parity scenario 286 (the forwarder's default is `not-forwardable`); `crates/roym_core/src/chat/tests.rs` (`forwarding_your_own_forward_keeps_the_count`) |
 
 ## Design
 
@@ -183,7 +189,7 @@ India's IT (Intermediary Guidelines and Digital Media Ethics Code) Rules, 2021, 
 ## Tasks
 
 - [x] ADR: signed message origins and the sender's forward mode (option E), the default mode and deniability. [ADR-0030](../../../decisions/0030-signed-message-origins.md).
-- [ ] Write the slice plan (in M08C).
+- [x] Write the slice plan (in M08C).
 - [x] `forward_mode` field in the message body, the default-mode setting, and the composer control.
 - [x] `message-origin` record type, signing at send for `signed` messages, verification at receive.
 - [x] Forward method and Hub action, refusing `not-forwardable` messages. Display rules FW-3 to FW-5, FW-13.
