@@ -717,7 +717,7 @@ the node (`fetchAgreement` until the lesson commitment is acknowledged)
 before it reads the panel, as story 2 does. (4) Record the cause in
 status.md and get a green Playwright E2E job. Do not only re-run CI.
 
-*Status:* Fixed (b5d49246). Cause: the panel was read while Alice's receipt had not been applied on Bob's node. The failed run's snapshot shows `c1: Promised` with the `Fulfilment Receipt c1` card already present. A rerun of the same head passed (run 46109686982), and `--grep "Bob offers a lesson" --repeat-each 5` passed 5 of 5 locally. The story now polls Bob's node for Alice's settlement before his close and for all three settlements before the panel; with the first poll set to expect 2, it fails on the real count of 1.
+*Status:* Reopened in round 5 (the story fix is verified; the cause and one proof in this note are wrong, see round 5). Fix note: Fixed (b5d49246). Cause: the panel was read while Alice's receipt had not been applied on Bob's node. The failed run's snapshot shows `c1: Promised` with the `Fulfilment Receipt c1` card already present. A rerun of the same head passed (run 46109686982), and `--grep "Bob offers a lesson" --repeat-each 5` passed 5 of 5 locally. The story now polls Bob's node for Alice's settlement before his close and for all three settlements before the panel; with the first poll set to expect 2, it fails on the real count of 1.
 
 ### R14 — In a group, a forwarded record is drawn as raw JSON and never checked (major)
 
@@ -921,3 +921,134 @@ parity test that reads the stored body. Write
 and the same for `to_bytes`. Import `serde_json::Value`.
 
 *Status:* Fixed (9ff5f554). `RecordForwardBody::parse` is called by the parity test, both refusal branches use `map_err` and `?`, and the envelope check imports `Value`.
+
+## Code review round 5 — Claude Opus 5.5, 2026-11-28
+
+This round checks the fixes of round 4 on branch
+`feat/m08c-c7b-record-forward` at `dab61cdc`, main checkout (not a
+worktree), `git pull` up to date. The fix commits are `094074cb` (R14),
+`3e004460` (R15, R16, R17, part of R19), `9ff5f554` (R20, part of R19),
+`b5d49246` (R13, part of R19), `4bec2428` (R18) and `dab61cdc` (review
+and status close-out) (`git log e59f2b44..dab61cdc`).
+
+**CI.** `gh pr checks 400` on `dab61cdc` (run 46119115290): **every job
+passed**: "Lints, licenses & checks", Playwright E2E, Test 1/6 to 6/6,
+CI Pipeline and the CLA check. Benchmarks and Code Coverage were
+skipped, as on every PR. So CI is now proof for the full suite, the Hub
+build and story 50.
+
+**Tests I ran** (targeted only): `TZ=UTC npx vitest run
+src/chat/record_forward.test.ts src/screens/contacts.test.ts
+src/screens/groups.test.ts` in `crates/roym_web/ui`: 3 files, 50 passed
+(the fix note says 50). `npx tsc --noEmit -p .`: clean. I did not build
+the roym WASM, so I did not run parity.
+
+### Round 4 items
+
+- **R13 — Partly fixed (b5d49246); reopened for its note.** The story
+  fix is right and verified: story 3 now polls Bob's node
+  (`fetchAgreement`) until Alice's settlement is there before Bob's
+  close, and until all three are there before the panel is read. CI is
+  green. Two parts of the note are wrong. (1) "A rerun of the same head
+  passed (run 46109686982)": run 46109686982 is the "Enforce CLA
+  Checkbox" workflow, not CI. The failed CI run 46109675067 has one
+  attempt only, so there was no CI rerun of `2246e215`. (2) "The panel
+  was read while Alice's receipt had not been applied … still
+  travelling": the note's own proof says the receipt card was already on
+  Bob's node, and the lesson stayed `Promised` for the full 60 s. On
+  Bob's node a received card is filed by `transaction.sync`, which runs
+  on every `conversation.message` (the `wake` block in `roym.toml`) and
+  on every thread draw (`messages.ts:423`). So the receipt was not still
+  travelling; it arrived and was not applied. The new story comment says
+  the same: "Wait until Bob's node holds it before his own close writes
+  the same progress row". The likely cause is R21. *Fix:* correct the
+  note here and in status.md: no CI rerun; the cause is R21 (or what R21's
+  test shows). *Status:* Open.
+- **R14 — Fixed (094074cb), verified.** `renderMessageRow` in
+  `groups.ts` has a case for `RECORD_FORWARD_CONTENT_TYPE` before the
+  `utf8` case, the same as `messages.ts`. The new test checks that the
+  row draws `.record-forward-card`, shows no `record_forward_version` and
+  no `"envelope"`, offers no `.message-translate`, and draws the name
+  from the verdict.
+- **R15 — Fixed (3e004460), verified.** The warning has a Cancel button
+  (`common-cancel`). `openRecordForward` removes an old warning and an
+  old picker first. The new test cancels, checks that nothing is sent,
+  and checks that a second tap shows one warning.
+- **R16 — Fixed (3e004460), verified.** The quote card's status goes to a
+  `.record-forward-status-host` that `renderThread` puts in the pane
+  outside `thread-messages`, so the redraw does not remove it. The new
+  test redraws the row and still finds "Forwarded." in the outside host.
+  Story 50's locator is page-wide, so it still finds it.
+- **R17 — Fixed (3e004460), verified.** `giverDid` maps `quote-author` to
+  the issuer and `counterparty` to `counterparty_did`. `resourceKindText`
+  uses the existing `deal-kind-service`, `statement-kind-goods-or-service`
+  and `deal-kind-money` messages. `kind` is no longer shown. An unknown
+  value is still shown as it is, which is fine for a later kind.
+- **R18 — Fixed (4bec2428), verified.** The change doc has a "Different
+  from the plan" bullet for the listing view, the Q2 bullet names PRs
+  #399 and #400, and the quote bullet no longer lists `kind`.
+- **R19 — Fixed (9ff5f554, 3e004460, b5d49246), verified.**
+  `a_quote_with_no_disclosures_shows_only_its_visible_fields` checks the
+  verdict, the currency, the expiry, the 5 and 10 digests, the visible
+  commitment fields, and that `scope`, `listing_id`, `description` and
+  `declared_value_minor` are absent. The Hub has tests for the listing
+  and profile blocks and for the contact profile view. Case 44 has a true
+  title and comment.
+- **R20 — Fixed (9ff5f554), verified.** Both refusal branches use
+  `map_err` and `?`, `Value` is imported, and scenario 289 reads the
+  stored body through `RecordForwardBody::parse`.
+
+### Counts
+
+Round 5: blocker 0, major 1 new (R21), minor 0 new. R14 to R20 are
+verified fixed; R13 is reopened for its note. **2 open** (R13, R21).
+
+### R21 — A received receipt whose progress transition fails is never applied (major, older than this PR)
+
+*Where:* `crates/roym_transaction/src/app/sync/settle_receipts.rs:531`
+at `dab61cdc` (`record_fulfilment_half_card`), and the same pattern at
+`:202` (payment request half) and `:331` (payment acknowledgement half).
+The code came with C1b (#368); C7b did not change it.
+
+*Problem.* Only the quote author's node writes progress snapshots. When
+it files a received fulfilment receipt, it stores the card and the
+receipt half (`put_row(FULFILMENTS, …)`) and then calls
+`progress_ops::transition_at` with `let _ =`, so an error is dropped. The
+card is then marked filed, and `sync` moves its cursor past the message.
+`transition_at` can fail, for example with `"busy"` after three `create`
+conflicts on the next snapshot key, which happens when the owner's own
+`agreement.close` or a settle runs on the same agreement at the same moment.
+Nothing applies the stored half later: `tick_agreement_at` only sends a
+`Tick` event, and the next `sync` starts after the cursor. So the
+commitment stays `Promised` on that node, while the receipt card is
+shown.
+
+This matches the failed run of R13: Bob is the quote author, Alice's
+"received" card was on Bob's node, Bob's "I received everything" ran two
+transitions at about the same time, and the lesson stayed `Promised` for
+60 s. Why it showed up only on this branch is not proven; the extra
+calls of a thread draw may only have changed the timing. I did not prove
+the exact error with a test, so this finding is PLAUSIBLE, not
+CONFIRMED.
+
+*Failure case.* Alice confirms that she received the lesson. At the same
+moment Bob taps "I received everything". Bob's node files Alice's card,
+but its transition fails. Bob's deal panel never shows the lesson as
+received, and the agreement never closes on Bob's node, although both
+people did everything. The story now waits for the settlement before
+Bob's close, so the tests no longer show this.
+
+*Fix.* Do not drop the error. One way: when the transition fails, return
+`SyncOutcome::Deferred` for that card (the cursor is held, as for a card
+that names an agreement not yet complete), so the next sync files it
+again. Today a second filing with the same record id only sets
+`row.repeat` and skips the transition, so that path must then run the
+transition too. Another way: let `roll_forward` or the tick apply every
+stored half and acknowledgement that the newest snapshot does not have
+yet. Add a `roym_transaction` test: file a receipt while the progress
+`create` for the next sequence is taken, then sync again, and check that
+the commitment moves on. This does not have to be fixed in C7b, but it
+must not be left only in a story comment: fix it here or in its own PR,
+or add a row to `deferred-backlog.md` with this file and line.
+
+*Status:* Open.
