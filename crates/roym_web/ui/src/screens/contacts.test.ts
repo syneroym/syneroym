@@ -126,7 +126,9 @@ describe("renderContacts order", () => {
     const host = document.createElement("div");
     await renderContacts(host);
     const list = host.querySelector<HTMLElement>(".contacts-screen > div")!;
-    return Array.from(list.children).map((row) => row.textContent!.trim());
+    return Array.from(list.children).map((row) =>
+      (row.querySelector(".contact-name")?.textContent ?? row.textContent ?? "").trim(),
+    );
   }
 
   it("lists Latin names first in an English Hub", async () => {

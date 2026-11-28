@@ -15,6 +15,13 @@ import {
   plainTag,
   type ForwardView,
 } from "../chat/forward_view";
+import {
+  parseRecordForward,
+  quoteEnvelope,
+  recordForwardAction,
+  recordForwardBlock,
+  RECORD_FORWARD_CONTENT_TYPE,
+} from "../chat/record_forward";
 import { errText, field, refiller, text } from "../dom";
 import { currentLanguage, t } from "../i18n/i18n";
 import { languageList } from "../i18n/language_list";
@@ -51,7 +58,7 @@ import { renderAgreementPanel } from "../deals/agreement_panel";
 /// Things the person has started inside a thread. A redraw from the event
 /// feed waits until they are gone, so it never throws away typed text. An
 /// element inside the thread that holds the person's input belongs here.
-export const OPEN_WORK = ".quote-form, .decline-dialog, .delete-dialog, .accept-mt-box, .settle-dialog, .close-list, .forward-mode-dialog, .forward-picker";
+export const OPEN_WORK = ".quote-form, .decline-dialog, .delete-dialog, .accept-mt-box, .settle-dialog, .close-list, .forward-mode-dialog, .forward-picker, .record-forward-warning";
 
 interface ConversationRow {
   id: string;
@@ -686,6 +693,16 @@ function renderCardMessage(
     });
     wrap.appendChild(cardEl);
     attachQuoteHistorySummary(wrap, cardEl, cardRow, quoteData, newestQuoteMap);
+    if (cardRow.card_type === "quote" && cardRow.record_id) {
+      const recordId = cardRow.record_id;
+      wrap.appendChild(
+        recordForwardAction({
+          type: "quote",
+          loadEnvelope: () => quoteEnvelope(recordId),
+          onSent: refresh,
+        }),
+      );
+    }
   } else if (cardRow.known && !cardRow.verified) {
     wrap.appendChild(renderRefusedCard(cardRow.card_type, cardRow.version, cardRow.reason));
   } else {
@@ -808,6 +825,13 @@ export function messageElement(
       refresh,
       newestAgreementCardMap,
     );
+  } else if (m.content_type === RECORD_FORWARD_CONTENT_TYPE) {
+    const body = parseRecordForward(m.body);
+    if (body) {
+      wrap.appendChild(recordForwardBlock(body));
+    } else {
+      wrap.appendChild(text("p", t("record-forward-unreadable"), "record-forward-unreadable"));
+    }
   } else {
     renderMessageBody(wrap, m, convId, refresh, widgetMap, languages, isRestored);
   }

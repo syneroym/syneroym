@@ -16,6 +16,7 @@ import {
 import { formatAge } from "../i18n/format";
 import { langAttr, languageName } from "../i18n/text_lang";
 import { recordText, textFields, type TextVersion } from "../records/record_text";
+import { recordForwardAction } from "../chat/record_forward";
 import { call } from "../rpc";
 import { categoryPicker } from "../taxonomy/category_picker";
 import { categoryLabel } from "../taxonomy/taxonomy";
@@ -473,6 +474,12 @@ function renderHitCard(hit: MergedHit, runId: string): HTMLElement {
       }
     };
     card.append(engage, engageOut);
+    card.appendChild(
+      recordForwardAction({
+        type: "listing",
+        loadEnvelope: () => runEnvelope(runId, hit.record_id),
+      }),
+    );
     if (hit.can_agree_as_listed) {
       const agree = text("button", t("directory-agree-as-listed-button"), "button hit-agree-as-listed") as HTMLButtonElement;
       const tapHost = document.createElement("div");
