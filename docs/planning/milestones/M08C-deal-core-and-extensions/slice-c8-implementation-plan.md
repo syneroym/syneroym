@@ -8,10 +8,12 @@ conversation. This plan is meant to stand alone.*
 `feat/m08c-c7b-record-forward` (that is `main` at `79344661` plus the
 C7b work of PR #400). PR #400 merged on 2026-11-28 as squash commit
 `954af3fc`. Plan review round 1 is in
-[slice-c8-review.md](slice-c8-review.md). Every fact about code and docs
-below was read on `main` at `79344661` (`git show origin/main:…`,
-`git grep … origin/main`), unless it says "C7b". The owner has not
-answered the questions in section 2.1.**
+[slice-c8-review.md](slice-c8-review.md); its 13 findings are folded into
+this plan. Every fact about code and docs below was read on `main` at
+`79344661` (`git show origin/main:…`, `git grep … origin/main`), unless
+it says "C7b". Line numbers are for the C7b tree; step 0 rechecks each
+one. The owner answered every question in section 2.1 on 2026-11-28;
+each answer is recorded under its question.**
 
 ## 0. Read first, and the rules
 
@@ -40,7 +42,7 @@ answered the questions in section 2.1.**
 - The fifth doc that task.md's "Change docs" table names for M08C:
   [roym-multilingual](../../changes/roym-multilingual/change.md) (status
   `done`). The agreements doc's "Differences" table asks for one change
-  there (D-C8-6).
+  there (D-M08C8-6).
 - [prompt-templates.md](../../prompt-templates.md), "T8 — Close a
   milestone". C8 overlaps with it (Q1).
 - The review files of C1 to C7. What C8 must not repeat is in
@@ -108,10 +110,10 @@ its test, check the living docs and the backlog, and mark the milestone
 done in `M08-overview.md` and task.md. T8 is meant as a fresh audit by
 the tool that reviewed most slices, and it changes no code.
 
-- **(a) C8 does both. The C8 code review uses the T8 checklist. No
-  separate T8 session.** C8 marks M08C done in `M08-overview.md`, task.md
-  and `roadmap.md`, in the same PR. The code review of C8 is done by a
-  different tool, so it is the fresh audit.
+- **(a) C8 does both. The C8 code review uses the T8 checklist and says
+  so in the review file. No separate T8 session.** C8 marks M08C done in
+  `M08-overview.md`, task.md and `roadmap.md`, in the same PR. The code
+  review of C8 is done by a different tool, so it is the fresh audit.
 - (b) C8 does task.md section 3 only. A T8 session follows, after C8
   merges, and marks the milestone done.
 - (c) Skip C8 as a slice and run T8 alone. T8 changes no code, so the
@@ -122,16 +124,23 @@ of plans and reviews, and the second would find what the first already
 fixed. The cross-tool rule holds: C8's code reviewer is not its
 implementer.
 
+**Owner answer: (a), 2026-11-28. The C8 code review must use the T8
+checklist and name it in its review file.**
+
 #### Q2. What does C8 do where a row has no test for one of its parts?
 
-The check found gaps in 13 rows (section 3, rows marked **gap**). Each
+The check found gaps in 12 rows (section 3, rows marked **gap**; 11 AG
+rows and EX-4). Section 7.1 gives 13 new tests or test cases. Each
 missing test is small: one service test, one unit test, one Hub test,
 or one more step in an existing two-node test. None needs new product
 code, if the code does what the row says.
 
 - **(a) C8 adds the missing tests (section 7.1, T1 to T13).** If a new
-  test shows that the code does not do what the row says, C8 stops on
-  that row. It records the gap as a backlog row and asks the owner
+  test shows another documented refusal code, C8 asserts that code and
+  writes a Deviation (D-M08C8-10 for the known AG-35 case). C8 stops only
+  when the code does not refuse, or does something else. Then it keeps
+  the test with `#[ignore = "<the behaviour that is missing>"]` out of
+  the commit, records the gap as a backlog row, and asks the owner
   whether a fix slice is needed. C8 itself never changes product code.
 - (b) C8 adds no tests. Each gap becomes a Deviation in its change doc
   ("not tested") and a backlog row.
@@ -143,6 +152,8 @@ A row whose test checks only half of it would be a false claim in a
 `done` doc. The tests are cheap. One PR keeps the evidence and the
 claims together.
 
+**Owner answer: (a), 2026-11-28, with the widened stop rule above (P1).**
+
 #### Q3. Criterion text that a Deviation narrowed
 
 Some rows say more than was built, and a Deviation already says so. For
@@ -153,18 +164,20 @@ doc is "updated at close-out".
 
 - **(a) Keep the criterion text as written. In the Test column, after the
   named tests, add "Narrowed: see Deviations, \"<bullet title>\"."** Fix
-  only design sentences that state a false fact (D-C8-4).
+  only design sentences that state a false fact (D-M08C8-4).
 - (b) Rewrite each criterion's text to say what was built.
 
 **Recommendation: (a).** The criterion text is the record of what was
 asked. The Deviation is the record of what changed and why. Rewriting
 the criterion loses the first record and makes the Deviation look wrong.
 
+**Owner answer: (a), 2026-11-28.**
+
 #### Q4. The backlog row whose target is "M08C C3c2 follow-up"
 
 The row "The two-node as-listed test, parity 255, the native wiring test
 and the extra Playwright cases are not built"
-(`deferred-backlog.md:690`) has target "M08C C3c2 follow-up (step 8)".
+(`deferred-backlog.md:692`) has target "M08C C3c2 follow-up (step 8)".
 None of them was built. The owner approved this cut in C3c R22, with a
 pickup trigger.
 
@@ -176,12 +189,17 @@ pickup trigger.
 **Recommendation: (a).** T8 asks that a row aimed at the closing
 milestone moves to a named later milestone with a reason. M08D rewrites
 the same code, so a two-node test written then tests the final shape.
+M08D D3 moves the variant into `as_listed.variant` and
+`terms_from_listing`.
+
+**Owner answer: (a), 2026-11-28. Target M08D and keep the pickup
+trigger.**
 
 #### Q5. Hindi messages whose owner review is not recorded
 
 status.md records an owner review for C1a, C2a, C3b1, C3b2, C4b and C6b.
-For these rows it lists messages as "ready for owner review" or "Open",
-with no later note that the owner reviewed them:
+For other rows it lists messages as "ready for owner review" or "Open",
+with no later note that the owner reviewed them. This covers at least:
 
 - C1b: 7 keys (`decline-title`, `messages-decline-note-placeholder`,
   `messages-decline-note`, `quote-superseded`, `quote-expired`,
@@ -190,16 +208,26 @@ with no later note that the owner reviewed them:
   `ext-scheduling-slot-listing-id`, `ext-scheduling-slot-slot-id`,
   `ext-scheduling-step-started`, `messages-accept-extension-unknown`);
 - the Engage fix: `directory-engage-button`;
+- C3c1 and C3c2: their new keys. The C3c2 squash commit alone adds 53
+  keys (`as-listed-*`, `listing-acceptance-instant`,
+  `listing-instant-needs-signing`, and so on);
 - C7a: the `forward-*` keys of its row; C7b: the `record-forward-*` and
   `contact*` keys of its row.
 
-- **(a) C8 copies every such key, with its English and Hindi text from
-  `en.ftl` and `hi.ftl`, into one table in the C8 row's evidence. The
-  owner reviews them once, before C8 merges.**
+The list is built from the files, not from status.md: every key that is
+new or changed in `hi.ftl` since the first M08C commit. Keys that a
+status.md row says the owner reviewed are removed from the list.
+
+- **(a) C8 copies every key that is left, with its English and Hindi
+  text from `en.ftl` and `hi.ftl`, into one table in the C8 row's
+  evidence. The owner reviews them once, before C8 merges.**
 - (b) The owner says they are already reviewed; C8 records that.
 
 **Recommendation: (a),** unless (b) is true. A milestone should not close
 with user-visible text that nobody checked.
+
+**Owner answer: (a), 2026-11-28. The table is built from the files, and
+the C3c2 keys are in it (P2).**
 
 #### Q6. The agreements doc's `review.md`
 
@@ -216,6 +244,8 @@ working files and keep `change.md`. But four planning files link to it:
 cites (for example open question 14, P45), and the links show that the
 slice plans relied on it. Removing it saves nothing.
 
+**Owner answer: (a), 2026-11-28.**
+
 #### Q7. The branch name
 
 The prompt for this plan named `feat/m08e-c8-closeout`. The slice is in
@@ -225,6 +255,8 @@ M08C, and earlier branches are `feat/m08c-…`.
 - (b) `feat/m08e-c8-closeout`, as given.
 
 **Recommendation: (a).**
+
+**Owner answer: (a), 2026-11-28.**
 
 ### 2.2 Points found while reading
 
@@ -250,26 +282,25 @@ M08C, and earlier branches are `feat/m08c-…`.
    (`roym-extensions/change.md:149`). The C4 plan (`:398`) left this to
    C8. The integrated spec's card table is already right ("ten templates
    plus one fallback").
-4. **Five test names in the agreements doc do not exist** (C4 R2 was the
+4. **Test names in five agreements-doc rows do not exist** (C4 R2 was the
    same kind of finding). AG-44: `a_quote_matching_terms_from_listing_is_auto_accepted`
    (the real test is `a_quote_with_the_listed_terms_is_accepted_with_no_person`,
-   `as_listed_accept.rs:188`). AG-45: `cancel_of_unconfirmed_instant_agreements_frees_their_slots`
+   `as_listed_accept.rs`). AG-45: `cancel_of_unconfirmed_instant_agreements_frees_their_slots`
    (none) and `a_failing_certificate_on_transaction_answers_as_confirm_first`
    (real: `a_failing_certificate_makes_the_offering_wait`,
-   `as_listed_owner.rs:312`). AG-49: five names (real ones in section 3).
-   AG-50: `driver_e2e_advances_quotes_without_client_sync` (real:
-   `two_nodes_reach_agreement_through_driver_without_manual_sync`,
-   `roym_driver_e2e.rs:135`). AG-51: `formed_as_is_recorded_in_snapshot`
+   `as_listed_owner.rs`). AG-49: six of its seven names (real ones in
+   section 3). AG-50: `driver_e2e_advances_quotes_without_client_sync`
+   (real: `two_nodes_reach_agreement_through_driver_without_manual_sync`,
+   `roym_driver_e2e.rs`). AG-51: `formed_as_is_recorded_in_snapshot`
    and the file `tests/presentation.rs` (the file is `tests/present.rs`
    and has no `formed_as` test). `check-change-docs` does not check test
    names, so step 1 checks each with `git grep -n 'fn <name>'`.
 5. **AG-9 names the wrong refusal code.** A cancel by anyone but the
-   quote author is refused with `quote-author-only`
-   (`crates/roym_transaction/src/app/progress_ops.rs:238`). A cancel after
-   a commitment moved is refused with `commitment-moved` (`:92`). The row
-   says every other cancel gets `commitment-moved`. No test checks
-   `quote-author-only`. C8 adds the test (T3) and a Deviation bullet
-   (D-C8-5).
+   quote author is refused with `quote-author-only` in `progress_ops.rs`
+   (`cancel_at`). A cancel after a commitment moved is refused with
+   `commitment-moved` in the same file. The row says every other cancel
+   gets `commitment-moved`. No test checks `quote-author-only`. C8 adds
+   the test (T3) and a Deviation bullet (D-M08C8-5).
 6. **The two EX-18 test paths are both right.** The criterion row names
    `crates/roym_core/src/as_listed/tests.rs` (the `terms_from_listing`
    tests). The Deviation names `crates/roym_core/src/listing/as_listed/tests.rs`
@@ -316,11 +347,11 @@ test; C8 adds the test in section 7.1 (if Q2 (a)).
 | AG-6 | ok | `RC/deal/transition/tests.rs` `fulfilment_table_covers_every_state_and_event` (`:14`), `currency_table_covers_every_state_and_event` (`:97`), `progress_apply_closes_only_when_every_commitment_is_final` (`:310`) | — |
 | AG-7 | ok | `RT/tests/time.rs` `unsettled_commitment_ends_unconfirmed_after_its_track_end` (`:216`), `tick_before_the_end_changes_nothing` (`:307`) | — |
 | AG-8 | gap | `RC/deal/transition/tests.rs` `ended_unconfirmed_says_whether_the_giver_claimed` (`:224`); `UI/deals/agreement_panel.test.ts` "renders ended-unconfirmed with two sentences" (`:201`). The presentation test `presentation_without_disclosures_shows_kinds_and_outcomes` (`RC/presentation/tests.rs:520`) holds no `ended-unconfirmed`, `failed` or `cancelled` commitment | T2 |
-| AG-9 | gap | `RT/tests/cancel.rs` `cancel_is_refused_once_a_commitment_moved` (`:253`), `cancel_releases_writer_seat_holds` (`:290`); `RC/deal/transition/tests.rs` `cancel_needs_every_commitment_open` (`:428`). Nothing checks "only the quote author cancels" | T3; Deviation (D-C8-5) |
+| AG-9 | gap | `RT/tests/cancel.rs` `cancel_is_refused_once_a_commitment_moved` (`:253`), `cancel_releases_writer_seat_holds` (`:290`); `RC/deal/transition/tests.rs` `cancel_needs_every_commitment_open` (`:428`). Nothing checks "only the quote author cancels" | T3; Deviation (D-M08C8-5) |
 | AG-10 | ok | `ST/roym_deal_e2e.rs` `decline_reaches_the_other_node` (`:377`), `enquiry_decline_and_withdrawal_reach_the_other_node` (`:449`); `RT/tests/decline.rs` `counterparty_can_decline_quote_v2_after_v1_refused` (`:478`) | — |
 | AG-11 | ok | `RC/progress/tests.rs` `snapshot_from_another_signer_is_not_filed` (`:329`); `PAR/booking.rs` scenario 157 (`:561`, the lower `seq`) | — |
 | AG-12 | gap | `RT/tests/refuse/version.rs` `accepting_a_superseded_version_is_refused` (`:19`); `ST/roym_deal_e2e.rs` `refused_superseded_acceptance_shows_on_that_version` (`:517`) does not check that the deal is still `quoted`; `RT/tests/refuse/writer.rs` `two_syncs_send_one_refusal` (`:106`); `RT/sync/tests.rs` `test_progress_fork_detection` (`:12`) | T4 |
-| AG-35 | gap | `RT/tests/refuse/version.rs` `revision_after_an_end_is_refused` (`:184`: expired, declined), `revision_after_acceptance_is_refused` (`:86`). Not after `not-formed`, `cancelled`, `closed`; no test of two quote ids for one enquiry that both form | T5 |
+| AG-35 | gap | `RT/tests/refuse/version.rs` `revision_after_an_end_is_refused` (`:184`: expired, declined), `revision_after_acceptance_is_refused` (`:86`). Not after `not-formed`, `cancelled`, `closed`; no test of two quote ids for one enquiry that both form | T5; Deviation (D-M08C8-10) |
 | AG-43 | ok | `RT/tests/refuse/writer.rs` `two_syncs_send_one_refusal` (`:106`), `a_countersigned_half_before_expiry_still_forms_the_agreement` (`:201`); `RT/tests/accept.rs` `counterparty_files_author_countersigned_half_delivered_after_expiry` (`:602`) | — |
 | AG-41 | ok | `RT/tests/accept.rs` `authors_own_accept_is_refused` (`:242`); `RT/tests/decide.rs` `writer_countersigns_in_sync_and_sends_snapshot_one` (`:251`) | — |
 | AG-13 | ok | `RT/tests/accept.rs` `repeated_accept_returns_the_same_half` (`:273`); `RT/tests/settle.rs` `repeated_sign_and_ack_return_the_same_record` (`:492`); `RT/tests/decline.rs` `repeated_decline_returns_the_same_record` (`:177`) | — |
@@ -340,7 +371,7 @@ test; C8 adds the test in section 7.1 (if Q2 (a)).
 | AG-22 | ok | `RC/deal/tests.rs` `a_quote_with_and_without_money_validate_the_same_way` (`:353`); `ST/roym_deal_e2e.rs` `service_for_service_and_goods_deals_close` (`:247`) | — |
 | AG-23, AG-33, AG-27 to AG-30, AG-46, AG-47, AG-48, AG-52 | ok | Already named; every name checked on `main` | — |
 | AG-44 | names, gap | `RC/as_listed/tests.rs` `each_mapping_row_builds_its_field` (`:109`), `each_refusal_has_its_code` (`:223`); `RT/tests/as_listed_terms.rs` `a_changed_field_anywhere_in_the_terms_fails_the_check` (`:358`); `RT/tests/as_listed_accept.rs` `a_quote_with_the_listed_terms_is_accepted_with_no_person` (`:188`), `a_quote_that_differs_in_any_field_is_shown` (`:218`); `UI/screens/as_listed_tap.test.ts`; `PAR/as_listed.rs` scenarios 253, 254; story 50. No test of "a missing disclosure shows a normal quote" | T8 |
-| AG-45 | names, gap | `RC/listing/as_listed/tests.rs` `instant_needs_an_offering_open_to_anyone` (`:78`), `instant_needs_a_slot_offering_or_not_limited` (`:98`), `instant_is_allowed_on_a_slot_offering_that_is_not_limited` (`:111`); `RT/tests/as_listed_owner.rs` `the_cap_makes_an_instant_offering_wait` (`:246`), `a_failing_certificate_makes_the_offering_wait` (`:312`), `many_taps_before_any_acceptance_make_only_cap_quotes` (`:384`), `an_agreement_with_a_filed_half_no_longer_counts` (`:409`), `a_declined_instant_quote_frees_its_place` (`:479`), `one_counterparty_tapping_twice_gets_one_instant_quote` (`:501`). No test of: the cancel action, a full slot on the instant path, the Hub's `instant` gate on signing, the owner's reason line, the counterparty's waiting line | T9, T10 |
+| AG-45 | names, gap | `RC/listing/as_listed/tests.rs` `instant_needs_an_offering_open_to_anyone` (`:78`), `instant_needs_a_slot_offering_or_not_limited` (`:98`), `instant_is_allowed_on_a_slot_offering_that_is_not_limited` (`:111`); `RT/tests/as_listed_owner.rs` `the_cap_makes_an_instant_offering_wait` (`:246`), `a_failing_certificate_makes_the_offering_wait` (`:312`), `many_taps_before_any_acceptance_make_only_cap_quotes` (`:384`), `an_agreement_with_a_filed_half_no_longer_counts` (`:409`), `a_declined_instant_quote_frees_its_place` (`:479`), `one_counterparty_tapping_twice_gets_one_instant_quote` (`:501`); `UI/listings/as_listed_section.test.ts`, `UI/listings/editor.test.ts`. No test of: the cancel action, a full slot on the answer path, the Hub's `instant` gate on signing, the owner's reason line, the counterparty's waiting line | T9, T10 |
 | AG-49 | names, gap | `RT/tests/as_listed_owner.rs` `a_withdrawn_offering_is_declined_with_offering_withdrawn` (`:182`), `a_missing_offering_is_declined_with_offering_withdrawn` (`:207`), `an_expired_consent_is_declined_with_consent_expired` (`:222`), `a_resumed_answer_whose_consent_passed_ends_without_a_card` (`:563`); `RT/tests/as_listed_accept.rs` `a_quote_issued_after_the_consent_time_is_shown` (`:273`). No test of "answers from the current version", or of a held decline or withdrawal before signing | T11 |
 | AG-50 | names, gap | `ST/roym_driver_e2e.rs` `two_nodes_reach_agreement_through_driver_without_manual_sync` (`:135`), `stopped_quote_author_restarts_and_countersigns` (`:195`); `RT/tests/drive.rs` (15 tests, e.g. `drive_syncs_at_most_eight_conversations_and_keeps_the_rest`, `:110`); `crates/substrate/src/runtime/wake/tests.rs`. No test of "no call from `conversation` to `transaction`" | T12 |
 | AG-51 | names | `RC/progress/tests.rs` `formed_as_is_kept_by_every_apply` (`:359`); `RC/presentation/tests.rs` `a_presentation_with_only_the_latest_snapshot_shows_formed_as` (`:364`); `RT/tests/accept.rs` `a_snapshot_whose_formed_as_changed_is_refused` (`:672`); `RT/tests/as_listed_owner.rs` (`:124`, `:147`) | — |
@@ -376,7 +407,7 @@ FW-6 and FW-8 to FW-15 have their tests (`RC/chat/tests.rs`,
 (`RC/record_forward/tests.rs`, `PAR/forward_record.rs` scenarios 289 to
 292, `UI/chat/record_forward.test.ts`, Playwright case 44, story 50).
 C8 checks, after PR #400 merges, that every name in the FW table exists on
-`main`. C8 adds no `FW-*` text, except the FW-7 pointer of D-C8-4.
+`main`. C8 adds no `FW-*` text, except the FW-7 pointer of D-M08C8-4.
 
 ### 3.4 Overview (`VX-*`), owned by the overview
 
@@ -385,7 +416,7 @@ rows M08C builds (VX-1, VX-2, VX-5 to VX-12, VX-45, VX-46, VX-54 to
 VX-56), the Test column of seven is filled ("Through AG-n …"). The other
 eight are empty: VX-1, VX-5, VX-6, VX-8, VX-9, VX-10, VX-11, VX-12. C8
 writes "Through AG-n." in each, with the AG rows that cite it (section 5,
-D-C8-3). It does not copy test names into the overview: two copies would
+D-M08C8-3). It does not copy test names into the overview: two copies would
 go stale apart.
 
 ## 4. Behaviour-change audit
@@ -418,11 +449,11 @@ None.
 - Every component size: no product code changes, so task.md section 1
   gets no new size table.
 - No Hindi message is added or changed.
-- No demo story is added or changed (D-C8-8).
+- No demo story is added or changed (D-M08C8-8).
 
 ## 5. Decisions this plan makes
 
-### D-C8-1. The form of a Test column
+### D-M08C8-1. The form of a Test column
 
 Each built row's Test column lists named tests, grouped by kind, in this
 form: `Unit: <path> (<fn>, <fn>); Service: <path> (<fn>); Parity:
@@ -432,21 +463,21 @@ rows already do). No line numbers: they move. A row that a Deviation
 narrowed ends with "Narrowed: see Deviations, \"<bullet title>\"." (Q3
 (a)). A row built later says "Built in M08E." (or the milestone).
 
-### D-C8-2. Where each new fact goes
+### D-M08C8-2. Where each new fact goes
 
 Each criterion, decision and deviation goes to the change doc that owns
 it, and only there:
 
-- AG rows, the AG-9 code, the card count sentence (`:1026`) and the
-  Differences table: the agreements doc.
-- EX rows, the reserve design sentence (`:167`) and the card sentence
-  (`:149`): the extensions doc.
+- AG rows, the AG-9 and AG-35 codes, the card count sentence (`:1026`)
+  and the Differences table: the agreements doc.
+- EX rows, the reserve design sentence (`:167`), the card sentence
+  (`:149`) and the "barter" phrase (`:165`): the extensions doc.
 - FW-7 pointer: the forwarding doc.
 - VX pointers and the five overview rows of the Differences table: the
   overview.
-- `LocalText`: the multilingual doc (D-C8-6).
+- `LocalText`: the multilingual doc (D-M08C8-6).
 
-### D-C8-3. VX rows point at AG rows
+### D-M08C8-3. VX rows point at AG rows
 
 An empty VX Test column gets "Through AG-n, AG-m." with the AG rows whose
 text cites that VX (agreements doc, line 98: "Each row refines an overview
@@ -454,7 +485,7 @@ criterion"). VX-1 → AG-1. VX-5 → AG-52. VX-6 → AG-3. VX-8 → AG-6, AG-7.
 VX-9 → AG-11, AG-12. VX-10 → AG-14, AG-15. VX-11 → AG-17, AG-18, AG-34.
 VX-12 → AG-7, AG-8. The seven filled rows stay as they are.
 
-### D-C8-4. The Differences table, row by row
+### D-M08C8-4. The Differences table, row by row
 
 Each row is applied to its target. Then the row's last column gets
 "Done (C8)." only if the target now says the result. The rows:
@@ -465,17 +496,17 @@ Each row is applied to its target. Then the row's last column gets
 | Selective disclosure | Overview `:351`, `:360` | A fixed set of hidden fields per object; ids, parties, kinds and structure stay visible; the author cannot change the set. Name the type `AgreementReceiptPayload` with no line number (the table's `transaction.rs:234` is also stale: it is `:175` on `main`) |
 | Agreement life | Overview `:338` | `enquiry → quoted → accepted → agreed → closed`, with the ends `declined`, `expired`, `not-formed`, `cancelled`; every end ends the quote id |
 | Declared value | Overview Terms `:79` | The quote author writes every value, and the other party agrees by signing |
-| Barter | Overview Terms `:75` and every use of the word (`grep -n -i barter`: lines 51, 75, 104, 273, 275, 346, 615, 647, 703, 730) | Remove the term. Use "mixed exchange" where the text means a deal with no currency commitment. Open question `:703` is answered: say so, with a link to the agreements doc's open question 1 |
+| Barter | Overview Terms `:75` and every use of the word (`grep -n -i barter`: lines 51, 75, 104, 273, 275, 346, 615, 647, 703, 730); extensions `:165` | Remove the term. Use "mixed exchange" where the text means a deal with no currency commitment. Open question `:703` is answered: say so, with a link to the agreements doc's open question 1 |
 | EX-5 | Extensions design `:167` | "Each giver's `transaction` calls the `reserve` hook of its own extension service, on its own node, when it signs. The writer reserves inside its decision." The criterion row: Q3 (a) |
 | Card table | Extensions `:149`; agreements `:1026` and the row `:1072` itself | "These travel as one new card type, `step`. Widgets and widget answers are chat messages with their own content types. The card table grows from seven types to ten (with `deal-decline` and `commitment-failure`)." Fix the Differences row to say 10 |
 | EX-21 | Extensions EX-21 row | Q3 (a): the Deviation exists |
 | FW-7 | Forwarding FW-7 row | Q3 (a): the Deviation "Forwarded records (FW-7)" exists (C7b) |
-| `LocalText` | Multilingual doc | D-C8-6 |
+| `LocalText` | Multilingual doc | D-M08C8-6 |
 | M08C task.md | — | Already done (C6's title, no "barter"). Mark it done |
 | Line reference `transaction.rs:192` | Overview `:351` | See "Selective disclosure" above |
 | Integrated spec C12, C14 | — | Already done (`roym-integrated-experience-spec.md:395`, `:403`). Mark it done |
 
-### D-C8-5. The AG-9 Deviation
+### D-M08C8-5. The AG-9 Deviation
 
 One bullet in the agreements doc's Deviations: "**AG-9: a cancel by
 anyone but the quote author is refused with `quote-author-only`.** The
@@ -484,7 +515,7 @@ quote author's cancel after a commitment moved
 (`crates/roym_transaction/src/app/progress_ops.rs`). The test is
 `cancel_by_the_counterparty_is_refused` in `cancel.rs`."
 
-### D-C8-6. The multilingual doc
+### D-M08C8-6. The multilingual doc
 
 The multilingual doc is `done`. Its text says each record has one
 `translations` list (`roym-multilingual/change.md:248`) and names
@@ -502,13 +533,13 @@ profiles keep their `translations` list." Step 1 checks the last sentence
 in `RC/listing.rs` and `RC/person.rs` before it is written. It does not
 rewrite the old bullets: they were true when written.
 
-### D-C8-7. Living docs: fix what M08C made false, nothing more
+### D-M08C8-7. Living docs: fix what M08C made false, nothing more
 
 C8 changes the living-doc statements in section 9 and no others. It adds
 no new sections. The test for each edit: the statement is true on `main`
 after C7b, and it names no slice or change doc.
 
-### D-C8-8. No new demo story
+### D-M08C8-8. No new demo story
 
 C8 adds nothing a viewer can see. Its change docs' `demo:` lists already
 name stories 20, 50 and 60. C8 checks that each listed story shows its
@@ -517,14 +548,31 @@ change: story 50 (deal, statement, quote forward), story 60 (step), story
 `- none: close-out adds tests and docs only` in the status.md row; C8 has
 no change doc of its own.
 
-### D-C8-9. New tests reuse the existing test hosts
+### D-M08C8-9. New tests reuse the existing test hosts
 
 Every new service test uses the helpers of the file it joins (for
 example `setup_agreed_deal` in `RT/tests/settle.rs:217`, the refusal
 helpers in `RT/tests/refuse/helpers.rs`, the reserve-hook stub of
 `RT/tests/hooks.rs`). The two-node test extends `roym_deal_e2e.rs` and its
-`SubstrateTestContext` helpers. No new test host and no new harness.
-Test names say what is checked, with no planning ids.
+`SubstrateTestContext` helpers. No new test host. The one harness
+change is the small `refuse_confirm_number(n, code)` method that T6
+needs in `hooks_fake.rs`; the existing `refuse_confirms` refuses every
+confirm and cannot test "the first confirm succeeds". Test names say
+what is checked, with no planning ids.
+
+### D-M08C8-10. The AG-35 Deviation
+
+One bullet in the agreements doc's Deviations: "**AG-35: after an
+accepted deal ends, `quote.set` is refused with `quote-already-accepted`.**
+The row says `quote-ended`. The code checks a filed, unrefused
+counterparty half first (`decline_ops::has_unrefused_counterparty_half`,
+called from `quote_ops.rs`) and the end second (`app::is_deal_ended`). A deal that
+reached `cancelled` or `closed`, and a `not-formed` deal whose end has a
+deal-level reason (`slot-taken`, `quote-expired`, an extension reason),
+has such a half, so a new version is refused with `quote-already-accepted`.
+The new version is refused either way; the code names the stronger fact
+first. The test is `revision_after_a_deal_end_is_refused_with_its_real_code`
+in `refuse/version.rs`."
 
 ## 6. Step-by-step changes
 
@@ -545,9 +593,11 @@ Each step leaves the tree building and its tests passing.
 ### Step 1 — The criterion tables (docs only)
 
 1. Agreements doc: write the Test column of every row in section 3.1 in
-   the form of D-C8-1. Replace the wrong names of AG-44, AG-45, AG-49,
-   AG-50, AG-51. Leave the gap rows' new test names for step 2 to 7 (each
-   step writes its own).
+   the form of D-M08C8-1. Replace the wrong names of AG-44, AG-45, AG-49,
+   AG-50, AG-51. The AG-45 and AG-49 columns get the real names plus the
+   new names of T9 and T11; write the cancel test once, under the name T9
+   gives it. Leave the other gap rows' new test names for step 2 to 7
+   (each step writes its own).
 2. Check every name you wrote: for each `fn` name,
    `git grep -n 'fn <name>' -- crates` must print one line; for a parity
    scenario, `git grep -n 'scenario_<n>_' -- crates/roym_web/tests`; for a
@@ -557,10 +607,14 @@ Each step leaves the tree building and its tests passing.
    (the C3b exit criterion: no `availability`, `slot` or `seat` code in
    `crates/roym_catalog/src` and `crates/roym_transaction/src`) run again,
    with its result written in the EX-17 cell.
-4. Overview: the eight VX pointers (D-C8-3).
+4. Overview: the eight VX pointers (D-M08C8-3).
 5. Confirm the AG-39 claim: `quote.set` and the quote verifier call
    `DealTerms::validate`. If one does not, AG-39 becomes a gap: write a
    test in the file of that path, like T3.
+6. Confirm the AG-50 rule that T12 relies on: `HostState::resolve_target`
+   refuses an unbound `CallTarget::Dependency` in both builds. If it
+   does not, add a source check instead: no `transaction` call target in
+   the `conversation` crates (P8).
 
 ### Step 2 — Unit tests in `roym_core` (T2, T12)
 
@@ -579,45 +633,59 @@ services`.
 
 `cargo nextest run -p syneroym-roym-transaction as_listed`.
 
+T9's cancel test calls `agreement.cancel` once for each id in
+`deal.as-listed-status`'s `open_instant`, as the Hub loop does; there is
+no single "cancel all" method.
+
 ### Step 6 — Hub tests (T10)
 
-`cd crates/roym_web/ui && TZ=UTC npx vitest run src/screens/listings.test.ts`
-(then return the shell to the repo root).
+`cd crates/roym_web/ui && TZ=UTC npx vitest run
+src/listings/as_listed_section.test.ts src/screens/messages.test.ts
+src/screens/listings.test.ts src/listings/editor.test.ts` (then return
+the shell to the repo root). Run `messages.test.ts` only if the new case
+goes there; otherwise run its new sibling.
 
 ### Step 7 — Two-node tests (T1, T4)
 
 `cargo nextest run -p syneroym-substrate --test roym_deal_e2e`.
 
 After steps 2 to 7: each new test is named in its criterion row. If a
-test fails because the code does not do what the row says, stop on that
-row (Q2 (a)): keep the test with `#[ignore = "<the behaviour that is
-missing>"]` out of the commit, add a backlog row, and ask the owner.
+test shows another documented refusal code, assert that code and write a
+Deviation (D-M08C8-10 for AG-35). Stop only when the code does not
+refuse, or does something else (Q2 (a)): keep the test with `#[ignore =
+"<the behaviour that is missing>"]` out of the commit, add a backlog row,
+and ask the owner.
 
 ### Step 8 — Change docs: Deviations, Differences, Tasks, status
 
-1. Agreements doc: the AG-9 bullet (D-C8-5); the card count (`:1026`);
-   the Differences table (D-C8-4); the Tasks list ticks (section 2.2,
-   point 8: C1, C2, C3 and the owner review ticked; the C0 ADRs line says
-   "ADR-0030 written; the deal-grants ADR moved out with C5"); open
-   question 2 says "Decided by ADR-0030"; the stale "C7b follows" style
-   lines, if any, made past tense; `status: done`; `living-docs-touched`
-   complete (add every doc of section 9 not yet listed); `demo:` checked.
-2. Extensions doc: the design sentences of D-C8-4; the Tasks list: "Write
-   the M08C slice plans" ticked; "ADR: deal grants" and "Extension
-   services: event subscription, deal grants" marked "Moved out of M08C
-   (Deviations, EX-15 and EX-16)", not ticked; `status: done`;
-   `living-docs-touched` complete.
-3. Overview: D-C8-4 rows; Tasks: tick the M08C line and remove "Barter."
+1. Agreements doc: the AG-9 bullet (D-M08C8-5); the AG-35 bullet
+   (D-M08C8-10); the card count (`:1026`); the Differences table
+   (D-M08C8-4); the Tasks list ticks (section 2.2, point 8: C1, C2, C3
+   and the owner review ticked; the C0 ADRs line says "ADR-0030 written;
+   the deal-grants ADR moved out with C5"); open question 2 says "Decided
+   by ADR-0030"; the stale "C7b follows" style lines, if any, made past
+   tense; `status: done`; `living-docs-touched` complete (add every doc
+   of section 9 not yet listed); `demo:` checked.
+2. Extensions doc: the design sentences of D-M08C8-4; the "barter" phrase
+   at `:165` (D-M08C8-4); the Tasks list: "Write the M08C slice plans"
+   ticked; "ADR: deal grants" and "Extension services: event
+   subscription, deal grants" marked "Moved out of M08C (Deviations,
+   EX-15 and EX-16)", not ticked; `status: done`; `living-docs-touched`
+   complete.
+3. Overview: D-M08C8-4 rows; Tasks: tick the M08C line and remove "Barter."
    from it; a Deviation bullet for the VX-45 split; `status` stays
    `draft`.
-4. Multilingual doc: D-C8-6.
+4. Multilingual doc: D-M08C8-6.
 5. `cargo xtask check-change-docs`.
 
 ### Step 9 — Living docs
 
-Section 9. Then `grep -n -i -E 'barter|BookingMode|booking mode|request\.set|request\.\*'`
-over the seven living docs must find only text that is still true (for
-example "request" as a plain English word in a user story).
+Section 9, including the cancellation rule, the state diagram's
+`ended-unconfirmed` error, the `transaction` event log, and the
+`payment` rule. Then `grep -n -i -E
+'barter|BookingMode|booking mode|request\.set|request\.\*'` over the
+seven living docs must find only text that is still true (for example
+"request" as a plain English word in a user story).
 
 ### Step 10 — Backlog, task.md, status.md, overview, roadmap
 
@@ -626,8 +694,12 @@ example "request" as a plain English word in a user story).
    line in section 3; section 7's table gets a last column "Result" with
    each row's outcome (section 8 below); section 5 unchanged (it says what
    later milestones finish).
-3. status.md: the rows of section 2.2, point 2; the C8 row (with the Q5
-   Hindi table, if (a)).
+3. status.md: the rows of section 2.2, point 2; the C8 row. Build the Q5
+   Hindi table from the `hi.ftl` diff since the first M08C commit, not
+   from status.md; remove the keys that a status row says the owner
+   reviewed; put the rest in the C8 row with the English and Hindi text.
+   Add a plain sentence to the C3c2 row that its Hindi review was never
+   recorded, and name C3c1 and C3c2 in Q5's text.
 4. `M08-overview.md`: row 3 (`:29`) loses "barter" ("mixed exchanges");
    the "Progress" paragraph (`:37`) says M08C is done, with the date, and
    what moved to later milestones (task.md section 5). Q1 (a) only.
@@ -653,17 +725,17 @@ replaced by Deviation bullets and backlog rows.
 | Id | Row | File (lines on `main`) | Test name | What it does and checks |
 | --- | --- | --- | --- | --- |
 | T1 | AG-1 | `ST/roym_deal_e2e.rs` (605) | `each_party_quotes_the_other_and_both_deals_agree` | Alice quotes Bob and Bob quotes Alice, in one conversation, as in `each_party_quotes_the_other_at_once`. Bob accepts Alice's quote, Alice accepts Bob's. Each writer countersigns in `transaction.sync`. Both agreements reach `agreed` on both nodes. Alice is the writer of one and the counterparty of the other |
-| T2 | AG-8 | new `RC/presentation/tests/outcomes.rs` (the folder exists: `extension.rs`, `records.rs`, `settlement.rs`, `validation.rs`) | `outcomes_show_with_no_disclosures` | One presentation with the receipt halves and a snapshot only, no disclosures. Four commitments: `ended-unconfirmed` with `claimed: true`, with `claimed: false`, `failed` with a reason, `cancelled` with `other-commitment-failed`. The verified view shows each state, `claimed` and each reason code |
+| T2 | AG-8 | `RC/presentation/tests.rs` (657; add there unless it would pass 800) | `outcomes_show_with_no_disclosures` | One presentation with the receipt halves and a snapshot only, no disclosures. The existing `presentation_without_disclosures_shows_kinds_and_outcomes` already holds `ended-unconfirmed` with `claimed: true`. This case adds the three states it does not hold: `ended-unconfirmed` with `claimed: false`, `failed` with a reason, `cancelled` with `other-commitment-failed`. The verified view shows each state, `claimed: false` and each reason code. If the file would pass 800 lines, put it in a new `RC/presentation/tests/outcomes.rs` and add `mod outcomes;` to `presentation/tests.rs` |
 | T3 | AG-9 | `RT/tests/cancel.rs` (319) | `cancel_by_the_counterparty_is_refused` | On the counterparty's node, `agreement.cancel` of an open agreement answers `quote-author-only`. The agreement row does not change |
-| T4 | AG-12 | `ST/roym_deal_e2e.rs` | extend `refused_superseded_acceptance_shows_on_that_version` | After the refusal shows, assert the deal is still `quoted` on both nodes; then accept the latest version, and assert `agreed`. If the test already does the second part, add only the first assert |
-| T5 | AG-35 | `RT/tests/refuse/version.rs` (284) | `revision_after_not_formed_cancelled_or_closed_is_refused`; `two_quote_ids_for_one_enquiry_both_form` | First: for each end (`not-formed`, `cancelled`, `closed`), `quote.set` of a new version of that quote id answers `quote-ended`. Second: two quotes that answer one enquiry are both accepted and both reach `agreed` |
-| T6 | AG-14 | `RT/tests/recover.rs` (626) | `a_refused_second_confirm_releases_the_confirmed_first` | The writer gives two commitments with a reserve hook. The hook stub confirms the first and refuses the second. The deal ends `not-formed` with the extension's reason, and the stub saw a `release` for both, the confirmed one too |
-| T7 | AG-20 | new `RT/tests/refuse/terms.rs` (with the helpers of `refuse/helpers.rs`) | `a_half_whose_terms_differ_is_not_filed` | The counterparty's node files a countersigned half whose `terms` differ from the held quote by one field. `transaction.sync` does not file it, and the deal stays as it was |
+| T4 | AG-12 | `ST/roym_deal_e2e.rs` | extend `refused_superseded_acceptance_shows_on_that_version` | After the refusal shows, `transaction.thread` on X and on Y shows the version-2 quote card with `deal_state: "quoted"`, while the version-1 card shows the refusal. Do not add "then accept the latest version": the test already accepts version 2 and asserts `agreed` with `pair.state == complete` |
+| T5 | AG-35 | `RT/tests/refuse/version.rs` (284) | `revision_after_a_deal_end_is_refused_with_its_real_code`; `two_quote_ids_for_one_enquiry_both_form` | First: for each end, `quote.set` of a new version of that quote id is refused. Reach each end as the existing tests do: `expired` by the clock and `declined` by a decline row (both in `revision_after_an_end_is_refused`); `cancelled` with one `agreement.cancel`; `closed` with `setup_agreed_deal` and the close helper of `settle.rs`; `not-formed` with the `slot-taken` path of the `decide.rs` tests. Assert the real code: `quote-ended` after `expired` and `declined`; `quote-already-accepted` after `cancelled`, `closed`, and a `not-formed` deal with a deal-level reason (`slot-taken`, `quote-expired`, an extension reason), because it has a filed counterparty half. Second: two quotes that answer one enquiry are both accepted and both reach `agreed`. D-M08C8-10 records the code |
+| T6 | AG-14 | `RT/tests/recover.rs` (626) | `a_refused_second_confirm_releases_the_confirmed_first` | The writer gives two commitments with a reserve hook. Add one small method to `hooks_fake.rs`, for example `refuse_confirm_number(n, code)`, that refuses only the nth `confirm`. Do not use `refuse_confirms`, which refuses every confirm. The stub confirms the first and refuses the second. The deal ends `not-formed` with the extension's reason, and the stub saw a `release` for both, the confirmed one too (`is_released` for both) |
+| T7 | AG-20 | new `RT/tests/refuse/terms.rs`, with `mod terms;` in `refuse.rs` and the helpers of `refuse/helpers.rs` | `a_half_whose_terms_differ_is_not_filed` | The counterparty's node files a countersigned half whose `terms` differ from the held quote by one field. `transaction.sync` stores the card as filed but refused: the card row exists, `refused` is true, and `reason` is "terms differ from the quote". The agreement row and the progress snapshot do not change, and nothing is countersigned. Change one field so the other checks of `validate_receipt_against_quote` ("names the wrong parties", "accepted after the quote expired") are not what fails |
 | T8 | AG-44 | `RT/tests/as_listed_accept.rs` (454) | `a_quote_with_a_missing_disclosure_is_shown` | An as-listed quote whose card leaves out one disclosure is not accepted with no person; it shows as a normal quote |
-| T9 | AG-45 | `RT/tests/as_listed_owner.rs` (639); if it would pass 800 lines, a new sibling `as_listed_cancel.rs` | `cancel_of_unconfirmed_instant_agreements_frees_their_places`; `a_full_slot_on_the_instant_path_ends_not_formed_with_slot_taken` | First: the one-action cancel (the method `listings.ts:204` calls; step 5 finds its name in `deal.as-listed-status` or `agreement.cancel`) cancels each unconfirmed instant agreement, and `deal.as-listed-status` shows the places free. Second: an instant quote for a slot whose last seat is gone ends `not-formed`, `slot-taken`, with no confirm-first fallback |
-| T10 | AG-45 | `UI/screens/listings.test.ts` (211) | three cases | (1) The listing form offers `instant` only when `transaction.signing-status` says installed. (2) The owner's status line shows the reason from `deal.as-listed-status`. (3) The cancel action calls the node and redraws. The counterparty's waiting line: step 6 finds where the Hub draws it (search `messages-waiting-for-other-side`); if it has a test, name it; if not, add one case there |
-| T11 | AG-49 | `RT/tests/as_listed_owner.rs`; `RT/tests/as_listed_accept.rs` | `a_changed_offering_answers_from_the_current_version`; `a_declined_enquiry_is_never_accepted_with_no_person`; `a_withdrawn_enquiry_is_never_accepted_with_no_person` | First: the owner changes the listing after the tap; the quote is built from the current version, so the counterparty shows it as a normal quote. Second and third: the counterparty's node holds a decline (or its own withdrawal) of the enquiry; an as-listed quote then is not signed with no person |
-| T12 | AG-50 | `RC/services/tests.rs` (250) | `conversation_does_not_depend_on_transaction` | Reads `app/roym.toml` as the other tests there do. The `conversation` table's `depends_on` does not name `transaction`. A sibling call needs a declared dependency, so this is the proof that the driver adds no call from `conversation` to `transaction` |
+| T9 | AG-45 | `RT/tests/as_listed_owner.rs` (639); if it would pass 800 lines, a new sibling `as_listed_cancel.rs` with `mod as_listed_cancel;` in `app/tests.rs` | `cancel_of_unconfirmed_instant_agreements_frees_their_places`; `a_full_slot_still_gets_an_instant_quote` | First: there is no single "cancel all" method. The Hub loops over `deal.as-listed-status`'s `open_instant` and calls `agreement.cancel` once for each (`listings.ts:236-247`). The service test cancels each id through `agreement.cancel`, then `deal.as-listed-status` has an empty `open_instant` and the `cap-reached` line is gone. The Hub loop is T10 case (3). Second: the owner's node answers an instant quote although the slot is full (no `waiting` in `deal.as-listed-status`, no confirm-first fallback). The `not-formed, slot-taken` end is the writer's decision, already covered by `losing_the_last_seat_ends_not_formed`. Use the scheduling stub of `hooks_fake.rs` if the fixture needs it |
+| T10 | AG-45 | `UI/listings/as_listed_section.test.ts` (68); `UI/screens/messages.test.ts` (1201) or a new sibling; `UI/screens/listings.test.ts` (211) | three cases | (1) In `as_listed_section.test.ts`: `transaction.signing-status` is not installed; `instant` is disabled and `listing-instant-needs-signing` is shown. The existing cases all stub `installed`. (2) In `messages.test.ts` (check the 800-line rule; use a new sibling file if it would pass): one case per reason of `asListedReasonText` (`messages.ts:950-996`), or one table case over the six keys, and one case for the counterparty's waiting line (`messages-waiting-for-other-side`, `deal_state: accepted`). (3) In `screens/listings.test.ts`: the `cap-reached` line, and the cancel loop (one `agreement.cancel` per id of `open_instant`; a refused id is not counted). Keep the existing AG-45 Hub files `as_listed_section.test.ts` and `editor.test.ts` in the Test column |
+| T11 | AG-49 | `RT/tests/as_listed_owner.rs`; `RT/tests/as_listed_accept.rs` | `a_changed_offering_answers_from_the_current_version`; `a_declined_or_withdrawn_enquiry_is_never_accepted_with_no_person` | First: the owner changes the listing after the tap; the quote is built from the current version, so the counterparty shows it as a normal quote. Second: one test with two cases for the two storage forms of the same `declined()` function (`as_listed_ops/accept.rs:214`): the enquiry pointer's `declined_at_secs`, and a `DeclineRow` in the ledger. Each shows the quote as a normal quote with reason `withdrawn`; it is not signed with no person |
+| T12 | AG-50 | `RC/services/tests.rs` (250) | `conversation_declares_no_dependency_on_transaction` | Reads `app/roym.toml` as the other tests there do. The `conversation` table's `depends_on` does not name `transaction`. A sibling call (`call_sibling`) uses `CallTarget::Dependency`, and `HostState::resolve_target` (`crates/sandbox_wasm/src/host_capabilities/capabilities_proxy.rs`) refuses an unbound dependency in both builds (`DependencyNotBound`). So a call from `conversation` to `transaction` needs the declaration. Step 1 confirms this before the test is written |
 | T13 | EX-4 | `RT/tests/extension.rs` (300) | change `scheduling_and_one_shot_pass_the_same_states` | Record the `(CommitmentState, AgreementState)` pair after each step for each deal, and compare the two lists, not only the last pair. Rename only if the name no longer says what it checks |
 
 No new parity scenario: every gap is about one node or about two real
@@ -679,7 +751,11 @@ nodes. No new Playwright case.
 
 - `RT/tests/as_listed_owner.rs` is 639 lines; T9 and T11 add about 120.
   If the file would pass 800, put the new tests in a new sibling file in
-  the same `tests/` folder.
+  the same `tests/` folder, with its `mod` line in `app/tests.rs`.
+- `RC/presentation/tests.rs` is 657 lines; T2 adds about 70 and stays
+  under 800. If it would pass, use the sibling and its `mod` line.
+- `UI/screens/messages.test.ts` is 1201 lines, already over 800. Put the
+  T10 cases in a new sibling test file; do not grow it.
 - `RT/tests/accept.rs` (732) and `settle.rs` (739) get nothing.
 - `ST/roym_deal_e2e.rs` 605 + T1 and T4 (about 80) stays under 800.
 - The agreements doc is 1,541 lines; the file-length check covers source
@@ -709,7 +785,7 @@ nodes. No new Playwright case.
 - A test name in a doc that does not exist (C4 R2, C1 R5): step 1.2
   greps every name.
 - A Deviation in the wrong doc, or a summary in place of a deviation (C6
-  R3, R23; C3c R23): D-C8-2 names the owner of each fact.
+  R3, R23; C3c R23): D-M08C8-2 names the owner of each fact.
 - A living-doc statement still false after the slice (C2 R7, C3c R23, C7
   R9): section 9 lists each statement with its line, and step 9 greps.
 - status.md counts with no command, or over-claims (C3c R12, C6 R9, C4
@@ -728,30 +804,31 @@ nodes. No new Playwright case.
 ## 8. Deferred backlog
 
 Rows of [deferred-backlog.md](../../deferred-backlog.md) on `main`, by
-title. C7b may add rows; step 0 re-reads the file.
+title. C7b may add rows; step 0 re-reads the file. Line numbers are for
+the C7b tree; step 0 rechecks each one.
 
 **task.md section 7 (13 rows):** C8 records each result in task.md.
 
 | Row (title) | Line | State on `main` | C8 does |
 | --- | --- | --- | --- |
-| Payment and fulfilment records name the deal parties | resolved `:763` | Resolved (C1a) | Result "resolved" |
-| The receipt card does not show what each party read | resolved `:764` | Resolved (C1a) | Result "resolved" |
-| Widget labels and extension step names | resolved `:755` | Resolved (C4b); step names are derived (`developer-guide.md:1868`) | Result "resolved" |
-| Translation hook points for widget answers, … | `:586` | Open, widget answers removed, targets M08G and M08D | Result "narrowed as planned" |
-| Services can only pull events | `:555` | Open, target with the extension-services row | Result "moved, as planned" |
-| Extension services cannot receive events or take calls from a counterparty | `:556` | Open | Result "open, as planned" |
-| A widget definition larger than 8 KB is refused | `:557` | Open | Result "open, as planned" |
-| Hub transaction action panel … (cases 33-39) | `:670` | Open: booking steps and payment requests | Result "narrowed as planned" |
-| More demo stories | `:716` | Open; its text "Only two stories exist" is false: six exist (10, 20, 30, 40, 50, 60) | Rewrite the text to list what is still missing; result "updated" |
-| One Roym output carries another node's card data as an untyped `Value` | `:545` | Open, `PeerStep` gone | Result "updated as planned" |
-| `RECORD_TYPES` is not read by any verifier | `:672` | Open; the line range in it has moved | Drop the line numbers (name the file and the constant); result "open" |
-| A request made from a directory hit does not name the listing | resolved `:761` | Resolved (PR #373) | Result "resolved" |
-| Agree as listed refuses some offerings | `:584` | Open, target M08D or later | Result "open, as planned" |
+| Payment and fulfilment records name the deal parties | resolved `:765` | Resolved (C1a) | Result "resolved" |
+| The receipt card does not show what each party read | resolved `:766` | Resolved (C1a) | Result "resolved" |
+| Widget labels and extension step names | resolved `:757` | Resolved (C4b); step names are derived (`developer-guide.md:1868`) | Result "resolved" |
+| Translation hook points for widget answers, … | `:588` | Open, widget answers removed, targets M08G and M08D | Result "narrowed as planned" |
+| Services can only pull events | `:557` | Open, target with the extension-services row | Result "moved, as planned" |
+| Extension services cannot receive events or take calls from a counterparty | `:558` | Open | Result "open, as planned" |
+| A widget definition larger than 8 KB is refused | `:559` | Open | Result "open, as planned" |
+| Hub transaction action panel … (cases 33-39) | `:672` | Open: booking steps and payment requests | Result "narrowed as planned" |
+| More demo stories | `:718` | Open; its text "Only two stories exist" is false: six exist (10, 20, 30, 40, 50, 60) | Rewrite the text to list what is still missing; result "updated" |
+| One Roym output carries another node's card data as an untyped `Value` | `:547` | Open, `PeerStep` gone | Result "updated as planned" |
+| `RECORD_TYPES` is not read by any verifier | `:674` | Open; the line range in it has moved | Drop the line numbers (name the file and the constant); result "open" |
+| A request made from a directory hit does not name the listing | resolved `:763` | Resolved (PR #373) | Result "resolved" |
+| Agree as listed refuses some offerings | `:586` | Open, target M08D or later | Result "open, as planned" |
 
 **Rows M08C made false (fix in place):**
 
-- "The two-node as-listed test, parity 255, …" (`:690`): target per Q4.
-- "No signed rejection and no quote withdrawal" (`:666`): its premise
+- "The two-node as-listed test, parity 255, …" (`:692`): target per Q4.
+- "No signed rejection and no quote withdrawal" (`:668`): its premise
   ("the card set at seven types and `RECORD_TYPES` carries no rejection
   type") is false since `deal-decline` (C1b; the row "Decline of a
   deal is local and unsigned" is in "Recently resolved"). Step 10 checks
@@ -759,7 +836,7 @@ title. C7b may add rows; step 0 re-reads the file.
   quote author still cannot withdraw a sent quote (only decline an
   enquiry, AG-10). Rewrite the row to that one point, keep its pickup
   trigger, and drop `D-06C-3` from it.
-- "Two concurrent `request.set` / `quote.set` calls …" (`:663`): the
+- "Two concurrent `request.set` / `quote.set` calls …" (`:665`): the
   method is `enquiry.set` and the file `enquiry_ops.rs`. Rename only.
 
 **New rows:** one for each Q2 stop (a test that found the code does not
@@ -772,8 +849,8 @@ do what its row says), if any. None expected.
 ## 9. Living docs and the change docs at close-out
 
 The change docs first (step 8, section 5). Then these living-doc
-statements, each read on `main` at `79344661`. Step 0 re-reads them after
-C7b.
+statements, each read on `main` at `79344661`. Line numbers are for the
+C7b tree; step 0 rechecks each one.
 
 `docs/roym-integrated-experience-spec.md`:
 
@@ -791,7 +868,13 @@ C7b.
   above") → name the card types that are not in the records list, from
   the code.
 - State diagram (`:541` to `:546`): add `accepted` and `declined`, as
-  `deal_state` reports them (`developer-guide.md:2691`).
+  `deal_state` reports them (the `deal_state` sentence in the developer
+  guide). Remove `ended-unconfirmed` from the agreement's ends: it is a
+  commitment state. `AgreementState` has only `agreed`, `closed`,
+  `cancelled` and `not-formed`.
+- Cancellation rule (`:564` to `:566`): "only while all commitments
+  remain open (`promised`)" → "while every commitment is `promised` or
+  `payment-requested`" (`apply_cancel` in `progress.rs`; AG-9).
 - Slot rule (`:554` to `:557`): "the quote author's Transaction service
   decides … claiming the slot" → each giver's node reserves through its
   `scheduling` service; the writer confirms its own; a refused confirm
@@ -799,7 +882,7 @@ C7b.
 - The payment rule, from the agreements close-out list: add one sentence
   near the `payment-request` card row (`:789`): one payment request and
   one acknowledgement per `currency` commitment.
-- `:862` the record name `request` → `enquiry`.
+- `:874` the record name `request` → `enquiry`.
 - `formed_as`: one sentence where the as-listed path is described
   (`:395` to `:405`): the snapshot says how the agreement formed.
 
@@ -811,10 +894,11 @@ C7b.
   `deal_state`, and which are final.
 - `:1268` "One slot of the catalog … The quote author's node claims the
   seats" → slots are in `scheduling`; each giver's node reserves.
-- The `transaction` service's collections, from the agreements close-out
-  list: one sentence that names them (`event_log`, `event_log_state`,
-  `deal_defaults`, `ledger` and the others in `developer-guide.md:2737`).
-  Step 9 reads the full list from the code before writing.
+- The `transaction` service's collections and the event log, from the
+  agreements close-out list: one sentence that names the collections
+  (`event_log`, `event_log_state`, `deal_defaults`, `ledger` and the
+  others in the developer guide) and says that agreement events live in
+  the event log. Step 9 reads the full list from the code before writing.
 
 `docs/developer-guide.md`:
 
@@ -859,13 +943,15 @@ C8 is done when all of these hold:
 
 - [ ] PR #400 (C7b) is merged, and C8 starts from that `main`.
 - [ ] Every built `AG-*`, `EX-*` and `FW-*` row names its tests in the
-      form of D-C8-1; every name is found by `git grep` (step 1.2 output
+      form of D-M08C8-1; every name is found by `git grep` (step 1.2 output
       kept); every row built later names its milestone.
 - [ ] Every gap of section 3 has its test from section 7.1, and the test
       passes; or (Q2 stop) a backlog row and an owner answer.
+- [ ] The AG-9 and AG-35 Deviation bullets are written
+      (D-M08C8-5, D-M08C8-10).
 - [ ] No production file changed (section 4, the `git diff` check).
 - [ ] The eight empty VX rows point at their AG rows.
-- [ ] Every Differences-table row is applied and marked done (D-C8-4).
+- [ ] Every Differences-table row is applied and marked done (D-M08C8-4).
 - [ ] `roym-agreements` and `roym-extensions` are `status: done`, with
       `living-docs-touched` and `demo:` complete;
       `roym-message-forwarding` is `done` (C7b); the overview is `draft`
@@ -875,9 +961,11 @@ C8 is done when all of these hold:
 - [ ] The backlog rows of section 8 are updated; task.md section 7 has
       its Result column.
 - [ ] status.md: every M08C row is "Merged" with its PR (section 2.2,
-      point 2); the C8 row has the evidence; the Hindi table (Q5).
+      point 2); the C8 row has the evidence; the Hindi table is built
+      from the files (Q5) and the C3c2 row says its review was not
+      recorded.
 - [ ] task.md, `M08-overview.md` and `roadmap.md` mark M08C done (Q1
-      (a)).
+      (a)), and the C8 code review names the T8 checklist.
 - [ ] `cargo xtask check-change-docs` passes.
 - [ ] `mise run verify` with no `--skip` passes; the result is in the C8
       row.
