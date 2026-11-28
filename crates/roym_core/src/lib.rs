@@ -34,6 +34,7 @@ pub mod person;
 pub mod presentation;
 pub mod progress;
 pub mod record;
+pub mod record_forward;
 pub mod router;
 pub mod safety;
 pub mod services;
