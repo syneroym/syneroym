@@ -1,7 +1,54 @@
-import { errText, refiller } from "../dom";
+import { errText, refiller, text } from "../dom";
+import { recordForwardAction } from "../chat/record_forward";
 import { formatLocale, t } from "../i18n/i18n";
 import { sortByName } from "../names";
 import { call } from "../rpc";
+
+async function openContactProfile(host: HTMLElement, personDid: string): Promise<void> {
+  host.querySelector(".contacts-profile-panel")?.remove();
+  const panel = document.createElement("div");
+  panel.className = "contacts-profile-panel";
+  panel.appendChild(text("h4", t("contacts-profile-heading"), "contacts-profile-heading"));
+  host.appendChild(panel);
+  try {
+    const record = await call<{ envelope?: string } | null>("profile.get", {
+      person_did: personDid,
+    });
+    if (!record?.envelope) {
+      panel.appendChild(text("p", t("contacts-no-profile"), "contacts-no-profile"));
+      return;
+    }
+    const verdict = await call<{
+      verified?: boolean;
+      reason?: string;
+      payload?: { display_name?: string; about?: string };
+    }>("profile.verify-envelope", { envelope: record.envelope });
+    if (!verdict?.verified) {
+      const note = text(
+        "p",
+        t("record-forward-not-checked"),
+        "record-forward-not-checked",
+      );
+      if (verdict?.reason) note.title = verdict.reason;
+      panel.appendChild(note);
+      return;
+    }
+    panel.appendChild(
+      text("p", verdict.payload?.display_name || personDid, "contacts-profile-name"),
+    );
+    if (verdict.payload?.about) {
+      panel.appendChild(text("p", verdict.payload.about, "contacts-profile-about"));
+    }
+    panel.appendChild(
+      recordForwardAction({
+        type: "profile",
+        loadEnvelope: async () => record.envelope ?? null,
+      }),
+    );
+  } catch {
+    panel.appendChild(text("p", t("contacts-load-failed"), "contacts-load-failed"));
+  }
+}
 
 export function upsertParams(
   did: string,
@@ -64,7 +111,17 @@ export async function renderContacts(container: HTMLElement) {
       const sorted = sortByName(contacts, (c) => c.display_name ?? "", formatLocale());
       for (const c of sorted) {
         const item = document.createElement("div");
-        item.textContent = `${c.display_name || c.person_did} ${c.favourite ? "★" : ""}`;
+        item.className = "contact-item";
+        item.appendChild(
+          text("span", `${c.display_name || c.person_did} ${c.favourite ? "★" : ""}`, "contact-name"),
+        );
+        const profileButton = text(
+          "button",
+          t("contacts-show-profile"),
+          "button contacts-profile-button",
+        ) as HTMLButtonElement;
+        profileButton.onclick = () => void openContactProfile(item, c.person_did);
+        item.appendChild(profileButton);
         into.appendChild(item);
       }
     } catch {

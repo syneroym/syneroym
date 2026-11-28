@@ -114,6 +114,59 @@ describe("renderContacts search", () => {
   });
 });
 
+describe("contact profile view", () => {
+  const did = "did:key:zAlice";
+
+  async function openProfile(extra: Record<string, () => unknown>): Promise<HTMLElement> {
+    stubRpc({
+      "contacts.list": () => [{ person_did: did, display_name: "Alice" }],
+      ...extra,
+    });
+    const host = document.createElement("div");
+    await renderContacts(host);
+    host.querySelector<HTMLButtonElement>(".contacts-profile-button")!.click();
+    return host;
+  }
+
+  it("says when the node holds no profile for the contact", async () => {
+    const host = await openProfile({ "profile.get": () => null });
+    await vi.waitFor(() =>
+      expect(host.querySelector(".contacts-no-profile")).not.toBeNull(),
+    );
+    expect(host.querySelector(".contacts-profile-name")).toBeNull();
+  });
+
+  it("draws a refused profile with no fields and no Forward action", async () => {
+    const host = await openProfile({
+      "profile.get": () => ({ envelope: "{}" }),
+      "profile.verify-envelope": () => ({ verified: false, reason: "bad signature" }),
+    });
+    const note = await vi.waitFor(() => {
+      const el = host.querySelector<HTMLElement>(".record-forward-not-checked");
+      expect(el).not.toBeNull();
+      return el!;
+    });
+    expect(note.title).toBe("bad signature");
+    expect(host.querySelector(".contacts-profile-name")).toBeNull();
+    expect(host.querySelector(".record-forward-button")).toBeNull();
+  });
+
+  it("draws a verified profile and offers the Forward action", async () => {
+    const host = await openProfile({
+      "profile.get": () => ({ envelope: "{}" }),
+      "profile.verify-envelope": () => ({
+        verified: true,
+        payload: { display_name: "Alice", about: "Hindi tutor" },
+      }),
+    });
+    await vi.waitFor(() =>
+      expect(host.querySelector(".contacts-profile-name")?.textContent).toBe("Alice"),
+    );
+    expect(host.querySelector(".contacts-profile-about")?.textContent).toBe("Hindi tutor");
+    expect(host.querySelector(".record-forward-button")).not.toBeNull();
+  });
+});
+
 describe("renderContacts order", () => {
   async function drawnNames(): Promise<string[]> {
     stubRpc({
@@ -126,7 +179,9 @@ describe("renderContacts order", () => {
     const host = document.createElement("div");
     await renderContacts(host);
     const list = host.querySelector<HTMLElement>(".contacts-screen > div")!;
-    return Array.from(list.children).map((row) => row.textContent!.trim());
+    return Array.from(list.children).map((row) =>
+      (row.querySelector(".contact-name")?.textContent ?? row.textContent ?? "").trim(),
+    );
   }
 
   it("lists Latin names first in an English Hub", async () => {

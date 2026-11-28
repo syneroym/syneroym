@@ -33,7 +33,15 @@ pub(crate) const M_MESSAGE_COLUMNS: &str =
      m.next_notify_at, m.report_refusal, m.refused, m.deleted_at, m.restored, m.visible_seq, \
      m.languages";
 
+/// A Roym message that carries a signed record, not words a person wrote.
+/// Its words are found through the record's own services, and its envelope
+/// is not a message, so it is never indexed.
+const ROYM_RECORD_FORWARD_CONTENT_TYPE: &str = "application/vnd.roym.record-forward+json";
+
 pub(crate) fn indexable_text<'a>(ct: &str, body: &'a [u8]) -> Option<Cow<'a, str>> {
+    if ct == ROYM_RECORD_FORWARD_CONTENT_TYPE {
+        return None;
+    }
     if !(ct.starts_with("text/") || ct == "application/json" || ct.ends_with("+json")) {
         return None;
     }

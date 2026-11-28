@@ -27,6 +27,7 @@ use syneroym_roym_core::{
         },
         profile::{ContactKeyInput, ResolveAddressOutput},
     },
+    record_forward::RECORD_FORWARD_CONTENT_TYPE,
     services,
     widget::{WIDGET_ANSWER_CONTENT_TYPE, WIDGET_CONTENT_TYPE},
 };
@@ -287,6 +288,7 @@ pub(crate) async fn send<H: AppHost>(host: &H, input: SendInput) -> Reply<SendOu
                 || ct == WIDGET_CONTENT_TYPE
                 || ct == WIDGET_ANSWER_CONTENT_TYPE
                 || ct == ROYM_MESSAGE_CONTENT_TYPE
+                || ct == RECORD_FORWARD_CONTENT_TYPE
                 || (is_group && ct == "application/vnd.roym.card+json")
             {
                 Some(if ct == "application/vnd.roym.card+json" {

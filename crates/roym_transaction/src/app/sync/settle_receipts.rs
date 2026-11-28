@@ -8,6 +8,7 @@ use syneroym_roym_core::{
     disclosure::{FULFILMENT_SET, PAYMENT_ACK_SET, PAYMENT_REQUEST_SET, reveal_hidden_strict},
     fulfilment::{self, FulfilmentHidden},
     payment::{self, PaymentAckHidden, PaymentRequestHidden},
+    progress::AgreementEvent,
     record::{
         Envelope, RECORD_FULFILMENT_RECEIPT, RECORD_PAYMENT_ACKNOWLEDGEMENT, RECORD_PAYMENT_REQUEST,
     },
@@ -25,6 +26,65 @@ use super::{
     receipts::defer_or_refuse,
     refuse_card,
 };
+
+/// Moves the quote author's progress snapshot. A transient failure is
+/// returned so the caller can defer the card: the stored half stays, and the
+/// next sync runs this again instead of losing the event. An event that no
+/// longer applies is ignored, and its half stays as evidence.
+async fn apply_progress<H: AppHost>(
+    host: &H,
+    agreement: &str,
+    event: AgreementEvent,
+    owner: &str,
+    quote_author_did: &str,
+    now: u64,
+) -> Result<(), String> {
+    if owner != quote_author_did {
+        return Ok(());
+    }
+    match progress_ops::transition_at(host, agreement, event, now).await {
+        Ok(_) => Ok(()),
+        // The event no longer applies, for example a late half after the
+        // agreement ended. The half stays as evidence, as it did before.
+        Err(response) => match response.error {
+            Some(e) if e.code == -32602 => Ok(()),
+            Some(e) => Err(e.message),
+            None => Err("progress transition failed".to_string()),
+        },
+    }
+}
+
+/// A card that is valid but cannot be applied yet. It is never a refusal:
+/// the next sync tries it again.
+fn deferred() -> FileCardResult {
+    FileCardResult {
+        filed: false,
+        refused: false,
+        unknown: false,
+        countersigned: false,
+        deferred: true,
+    }
+}
+
+async fn finish_filed_card<H: AppHost>(
+    host: &H,
+    mut row: CardRow,
+    record_id: Option<String>,
+    plain_data: Value,
+) -> Result<FileCardResult, String> {
+    row.known = true;
+    row.verified = true;
+    row.record_id = record_id;
+    row.data = Some(plain_data);
+    put_card(host, &row).await?;
+    Ok(FileCardResult {
+        filed: true,
+        refused: false,
+        unknown: false,
+        countersigned: false,
+        deferred: false,
+    })
+}
 
 fn validate_payment_request_agr(
     agr: Option<AgreementRow>,
@@ -147,27 +207,26 @@ pub(crate) async fn file_payment_request_card<H: AppHost>(
             envelope,
             issuer: v.issuer.as_deref().unwrap_or_default(),
             issued_at: v.issued_at_secs.unwrap_or(now),
-            commitment_id: &p.commitment_id,
-            agreement: &p.agreement,
-            owner,
-            quote_author_did: &agr.quote_author_did,
             now,
         };
         record_payment_request_half(host, args).await?;
     }
 
-    row.known = true;
-    row.verified = true;
-    row.record_id = Some(rec_id);
-    row.data = Some(plain_data);
-    put_card(host, &row).await?;
-    Ok(FileCardResult {
-        filed: true,
-        refused: false,
-        unknown: false,
-        countersigned: false,
-        deferred: false,
-    })
+    if apply_progress(
+        host,
+        &p.agreement,
+        AgreementEvent::PaymentRequest { commitment_id: p.commitment_id.clone() },
+        owner,
+        &agr.quote_author_did,
+        now,
+    )
+    .await
+    .is_err()
+    {
+        return Ok(deferred());
+    }
+
+    finish_filed_card(host, row, Some(rec_id), plain_data).await
 }
 
 struct RecordPaymentRequestHalfArgs<'a> {
@@ -177,10 +236,6 @@ struct RecordPaymentRequestHalfArgs<'a> {
     envelope: &'a str,
     issuer: &'a str,
     issued_at: u64,
-    commitment_id: &'a str,
-    agreement: &'a str,
-    owner: &'a str,
-    quote_author_did: &'a str,
     now: u64,
 }
 
@@ -197,18 +252,6 @@ async fn record_payment_request_half<H: AppHost>(
     });
     payments.updated_at_secs = args.now;
     put_row(host, PAYMENTS, args.p_id, &payments).await?;
-
-    if args.owner == args.quote_author_did {
-        let _ = progress_ops::transition_at(
-            host,
-            args.agreement,
-            syneroym_roym_core::progress::AgreementEvent::PaymentRequest {
-                commitment_id: args.commitment_id.to_string(),
-            },
-            args.now,
-        )
-        .await;
-    }
     Ok(())
 }
 
@@ -235,24 +278,9 @@ fn decode_ack_payload<'a>(
     Ok((p, hidden))
 }
 
-async fn finish_ack_card_put<H: AppHost>(
-    host: &H,
-    mut row: CardRow,
-    record_id: Option<String>,
-    is_repeat: bool,
-    plain_data: Value,
-) -> Result<(), String> {
-    row.known = true;
-    row.verified = true;
-    row.repeat = is_repeat;
-    row.record_id = record_id;
-    row.data = Some(plain_data);
-    put_card(host, &row).await
-}
-
 pub(crate) async fn file_payment_ack_card<H: AppHost>(
     host: &H,
-    row: CardRow,
+    mut row: CardRow,
     envelope: &str,
     disclosures: &[String],
     conversation: &str,
@@ -323,31 +351,28 @@ pub(crate) async fn file_payment_ack_card<H: AppHost>(
     payments.updated_at_secs = now;
     put_row(host, PAYMENTS, &p_id, &payments).await?;
 
-    let p_val = serde_json::to_value(p).unwrap_or(Value::Null);
-    let plain_data = disclosures::plain_view(&p_val, disclosures);
-    finish_ack_card_put(host, row, v.record_id.clone(), is_repeat, plain_data).await?;
-
-    if owner == agr.quote_author_did {
-        let _ = progress_ops::transition_at(
-            host,
-            &p.agreement,
-            syneroym_roym_core::progress::AgreementEvent::Half {
-                commitment_id: p.commitment_id.clone(),
-                role: p.role,
-                record_id: v.record_id.clone().unwrap_or_default(),
-            },
-            now,
-        )
-        .await;
+    if apply_progress(
+        host,
+        &p.agreement,
+        AgreementEvent::Half {
+            commitment_id: p.commitment_id.clone(),
+            role: p.role,
+            record_id: v.record_id.clone().unwrap_or_default(),
+        },
+        owner,
+        &agr.quote_author_did,
+        now,
+    )
+    .await
+    .is_err()
+    {
+        return Ok(deferred());
     }
 
-    Ok(FileCardResult {
-        filed: true,
-        refused: false,
-        unknown: false,
-        countersigned: false,
-        deferred: false,
-    })
+    row.repeat = is_repeat;
+    let p_val = serde_json::to_value(p).unwrap_or(Value::Null);
+    let plain_data = disclosures::plain_view(&p_val, disclosures);
+    finish_filed_card(host, row, v.record_id.clone(), plain_data).await
 }
 
 fn validate_fulfilment_card_agr(
@@ -465,14 +490,27 @@ pub(crate) async fn file_fulfilment_card<H: AppHost>(
             envelope,
             issuer: v.issuer.as_deref().unwrap_or_default(),
             issued_at: v.issued_at_secs.unwrap_or(now),
-            commitment_id: &p.commitment_id,
-            agreement: &p.agreement,
-            role: p.role,
-            owner,
-            quote_author_did: &agr.quote_author_did,
             now,
         };
         record_fulfilment_half_card(host, args).await?;
+    }
+
+    if apply_progress(
+        host,
+        &p.agreement,
+        AgreementEvent::Half {
+            commitment_id: p.commitment_id.clone(),
+            role: p.role,
+            record_id: rec_id.clone(),
+        },
+        owner,
+        &agr.quote_author_did,
+        now,
+    )
+    .await
+    .is_err()
+    {
+        return Ok(deferred());
     }
 
     let p_val = serde_json::to_value(p).unwrap_or(Value::Null);
@@ -501,11 +539,6 @@ struct RecordFulfilmentHalfArgs<'a> {
     envelope: &'a str,
     issuer: &'a str,
     issued_at: u64,
-    commitment_id: &'a str,
-    agreement: &'a str,
-    role: SettlementRole,
-    owner: &'a str,
-    quote_author_did: &'a str,
     now: u64,
 }
 
@@ -527,21 +560,6 @@ async fn record_fulfilment_half_card<H: AppHost>(
     });
     fulfilments.updated_at_secs = args.now;
     put_row(host, FULFILMENTS, args.f_id, &fulfilments).await?;
-
-    if args.owner == args.quote_author_did {
-        let _ = progress_ops::transition_at(
-            host,
-            args.agreement,
-            syneroym_roym_core::progress::AgreementEvent::Half {
-                commitment_id: args.commitment_id.to_string(),
-                role: args.role,
-                record_id: args.rec_id.to_string(),
-            },
-            args.now,
-        )
-        .await;
-    }
-
     Ok(())
 }
 

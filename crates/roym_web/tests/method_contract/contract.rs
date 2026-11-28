@@ -25,7 +25,7 @@ use super::{
 #[test]
 fn every_profile_method_has_typed_input_and_output() {
     let table = profile_api::method_table();
-    assert_eq!(table.len(), 24);
+    assert_eq!(table.len(), 25);
     assert_service_table(
         services::PROFILE,
         &table,
@@ -37,7 +37,7 @@ fn every_profile_method_has_typed_input_and_output() {
 #[test]
 fn every_conversation_method_has_typed_input_and_output() {
     let table = conversation_api::method_table();
-    assert_eq!(table.len(), 29);
+    assert_eq!(table.len(), 30);
     assert_service_table(
         services::CONVERSATION,
         &table,

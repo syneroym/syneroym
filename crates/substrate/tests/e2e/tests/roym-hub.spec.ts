@@ -1173,6 +1173,50 @@ test.describe('Roym Hub', () => {
     await expect(quoteCard.locator('.decline-quote-button')).toHaveCount(0);
   });
 
+  test('44. Directory and Messages: a verified hit forwards as itself and its row draws the listing, not raw JSON', async ({ page }) => {
+    await page.goto(HUB_URL);
+    await page.waitForLoadState('networkidle');
+    await loginWithDelegatedKey(page);
+    await ensureSynOrgWithListing(page, 'Forwardable listing 44');
+
+    // A chat to forward into. Its peer never answers, which is fine: the
+    // forward is stored as an outgoing message on this node.
+    const peer = 'did:key:z6MkhubE2ePeerAddressNeverAnswers00000000000044';
+    await openMessages(page);
+    await openConversation(page, peer);
+
+    await page.getByRole('button', { name: 'Directory', exact: true }).click();
+    await expect(page.locator('.directory-sources h3')).toBeVisible({ timeout: 15_000 });
+    if ((await page.locator('.directory-source-row').count()) === 0) {
+      await page.locator('.add-source-did').fill(DIRECTORY_DID!);
+      await page.getByRole('button', { name: 'Add directory' }).click();
+      await expect(page.locator('.add-source-status')).toContainText('Added', { timeout: 15_000 });
+    }
+    await pickCategory(page.locator('.search-categories'), 'bicycle-repair');
+    await page.getByRole('button', { name: 'Search', exact: true }).click();
+
+    const hit = page.locator('.search-hit', { hasText: 'Forwardable listing 44' });
+    await expect(hit).toHaveCount(1, { timeout: 20_000 });
+    await hit.locator('.record-forward-button').click();
+    const picker = hit.locator('.forward-picker');
+    await expect(picker).toBeVisible({ timeout: 15_000 });
+    await picker.locator('.forward-picker-row', { hasText: peer }).click();
+    await expect(hit.locator('.record-forward-status')).toHaveText('Forwarded.', {
+      timeout: 15_000,
+    });
+
+    // The row drawn is this node's own outgoing copy. Its own service checks
+    // the listing it holds, so the row draws the record, not raw JSON.
+    await page.getByRole('button', { name: 'Messages' }).click();
+    await openConversation(page, peer);
+    const record = page.locator('.thread-messages .record-forward-card.record-forward-listing').first();
+    await expect(record).toBeVisible({ timeout: 15_000 });
+    await expect(record).toContainText('Forwarded offering');
+    await expect(record).toContainText('Forwardable listing 44');
+    expect(await record.innerText()).not.toContain('"envelope"');
+    expect(await record.innerText()).not.toContain('"record_type"');
+  });
+
   test('31. declining a quote shows the "They will see that you declined" sentence and hides accept', async ({ page }) => {
     await page.goto(HUB_URL);
     await page.waitForLoadState('networkidle');

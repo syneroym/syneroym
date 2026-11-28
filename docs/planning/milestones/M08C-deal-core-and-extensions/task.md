@@ -230,6 +230,27 @@ Stop-rule measurements (three-node test `cargo nextest run -p syneroym-substrate
 - an 11 KiB signed text: a 12,278-byte chat body, under the 13,312-byte mailbox estimate.
 - `conversation.history` of 200 signed messages, WASM build: 100 ms and 164 ms on two runs (< 500 ms limit).
 
+**C7b sizes** (release `wasm32-wasip2`, one `target/` folder, 2026-11-28; before: the C7a table's after column, after: the C7b code), in bytes:
+
+| Component | before | after | Change | Limit |
+| --- | --- | --- | --- | --- |
+| `conversation` | 1,056,675 | 1,068,527 | +11,852 (+1.12%) | +15% (158,505); Q11 and Q12 (a) |
+| `profile` | 772,686 | 783,897 | +11,211 (+1.45%) | +40 KB |
+| `transaction` | 2,883,845 | 2,884,213 | +368 | +40 KB |
+| `catalog` | 960,566 | 960,811 | +245 | +40 KB |
+| `directory` | 1,504,289 | 1,504,735 | +446 | +40 KB |
+| `scheduling` | 715,739 | 716,840 | +1,101 | +40 KB |
+| `web` | 311,340 | 311,299 | −41 | +40 KB |
+
+Every component is within its limit. `conversation` grew with the
+record-forward body, `conversation.forward-record` and the host index
+case. `profile` grew with `profile.verify-envelope`. The other components
+gained only a few hundred bytes from the shared `roym_core` change. The
+size probe of the C7 plan (section 6.2) showed that checking the three
+record types inside `conversation` would have added 229,778 bytes, over
+its limit; the owner answered Q12 (a), so the check stays in the owning
+service and the Hub asks it at draw time.
+
 **Parity runs need a fresh WASM build.** The dual-build parity harness loads pre-built `wasm32-wasip2` components. Every slice that changes a `roym_*` crate runs `mise run build:roym` before it trusts a parity run.
 
 ## 2. Facts checked in the code for this plan
@@ -407,7 +428,7 @@ Change docs: roym-agreements, roym-value-exchange (VX-2, VX-7, VX-45, VX-46).
 - A forwarded quote travels as its signed envelope and carries no disclosures, so it shows only visible fields (agreements doc, open question 11). This part needs C2.
 - Criteria: FW-1 to FW-15.
 - Demo: extend story 20 with a forward ("Forwarded. First written by …").
-- **C7a result:** the chat body and `message-origin` record, checked at read; `conversation.settings`; `conversation.forward`; the host search indexes only a JSON body's top-level `text`; the Hub composer control, first-message question, Profile setting, forward action, display rules and group notice; the three-node test; and the forward step in story 20. C7b (forward of signed records, FW-7) follows on its own branch.
+- **C7 result ([PR #399](https://github.com/syneroym/syneroym/pull/399), [PR #400](https://github.com/syneroym/syneroym/pull/400)):** C7a built the chat body and `message-origin` record, checked at read; `conversation.settings`; `conversation.forward`; the host search rule that indexes only a JSON body's top-level `text`; the Hub composer control, first-message question, Profile setting, forward action, display rules and group notice; the three-node test; and the forward step in story 20. C7b added the record-forward body and `conversation.forward-record`; `profile.verify-envelope`; the owning-service check at draw time (Q12 (a)); the Hub forward actions on a quote card, directory hit and contact profile, with the quote warning and the minimal profile view; Playwright case 44; and the quote forward in story 50. FW-7.
 
 Change docs: roym-message-forwarding.
 

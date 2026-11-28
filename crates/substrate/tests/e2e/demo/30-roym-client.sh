@@ -136,6 +136,9 @@ cat "$WORK/feed.txt"
 caption "Conversations: forward a signed message"
 run_block forward
 
+caption "Conversations: forward a signed record"
+run_block forward-record
+
 caption "Follow the event feed: catch up with the last cursor"
 CURSOR=$(sed -n 's/^id: //p' "$WORK/feed.txt" | head -1)
 [ -n "$CURSOR" ] || fail "catch-up: the ready frame has no id"

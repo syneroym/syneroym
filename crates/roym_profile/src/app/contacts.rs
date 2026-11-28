@@ -18,8 +18,7 @@ use syneroym_roym_core::{
         },
     },
     paging,
-    person::{ProfilePayload, is_did_key},
-    record::{RECORD_PROFILE, VerifyOptions, verify_json},
+    person::{self, is_did_key},
     safety::{self, Admission, ContactLimits},
 };
 
@@ -108,34 +107,23 @@ async fn process_profile_envelope<H: AppHost>(
     person_did: &str,
     now: u64,
 ) -> Result<(Option<String>, String, Option<String>), Response> {
-    let v = match verify_json(json_str, &VerifyOptions::new(now).expecting(person_did)) {
-        Ok(v) => v,
-        Err(e) => {
-            return Err(Response::invalid_params(format!("profile did not verify: {e}")));
-        }
+    let verdict = person::verify_profile_envelope(json_str, Some(person_did), now);
+    if !verdict.verified {
+        return Err(Response::invalid_params(
+            verdict.reason.unwrap_or_else(|| "profile did not verify".to_string()),
+        ));
+    }
+    let p = match verdict.payload {
+        Some(p) => p,
+        None => return Err(Response::internal_error("a verified profile carries no payload")),
     };
-    if v.record_type != RECORD_PROFILE || v.version != 1 {
-        return Err(Response::invalid_params("not a profile record this build understands"));
-    }
-    if v.subject != person_did {
-        return Err(Response::invalid_params(format!(
-            "profile subject '{}' does not match contact DID '{person_did}'",
-            v.subject
-        )));
-    }
-    let p: ProfilePayload = match serde_json::from_value(v.payload.clone()) {
-        Ok(p) => p,
-        Err(e) => return Err(Response::invalid_params(format!("profile payload: {e}"))),
-    };
-    if let Err(e) = p.validate() {
-        return Err(Response::invalid_params(e.to_string()));
-    }
+    let record_id = verdict.record_id.unwrap_or_default();
     if let Err(e) = ensure_coll(host, PROFILES, &[]).await {
         return Err(Response::internal_error(e));
     }
     let profile_row = json!({
         "envelope": json_str,
-        "record_id": v.record_id,
+        "record_id": record_id,
         "verified_at_secs": now,
     });
     let profile_payload = match serde_json::to_vec(&profile_row) {
@@ -151,7 +139,7 @@ async fn process_profile_envelope<H: AppHost>(
     {
         return Err(Response::internal_error(e.to_string()));
     }
-    Ok((Some(p.display_name), p.conversation_address, Some(v.record_id)))
+    Ok((Some(p.display_name), p.conversation_address, Some(record_id)))
 }
 
 pub(crate) async fn upsert<H: AppHost>(

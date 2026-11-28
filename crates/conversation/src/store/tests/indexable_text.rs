@@ -137,3 +137,33 @@ fn a_restored_chat_body_is_indexed_by_the_same_rule() {
     assert_eq!(fresh.search("Market", Some("conv:ix-4"), 10).unwrap().len(), 1);
     assert!(fresh.search("signed", Some("conv:ix-4"), 10).unwrap().is_empty());
 }
+
+#[test]
+fn a_forwarded_record_body_is_not_indexed() {
+    let s = store();
+    let conv = s.get_or_create_direct("did:key:zPeer", "conv:ix-5", 1_000).unwrap();
+    let body = serde_json::json!({
+        "record_forward_version": 1,
+        "record_type": "listing",
+        "envelope": "{\"payload\":{\"title\":\"Garden fence\"}}",
+    })
+    .to_string()
+    .into_bytes();
+    s.insert_outgoing_and_enqueue(
+        &conv,
+        "m:record-forward",
+        "did:key:zMe",
+        1_000,
+        "application/vnd.roym.record-forward+json",
+        &[],
+        &body,
+        &[0u8; 64],
+        "did:key:zPeer",
+        1_000,
+        false,
+    )
+    .unwrap();
+
+    assert!(s.search("Garden", Some(&conv), 10).unwrap().is_empty());
+    assert!(s.search("record_forward_version", Some(&conv), 10).unwrap().is_empty());
+}

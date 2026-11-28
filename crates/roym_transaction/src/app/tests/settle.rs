@@ -38,6 +38,8 @@ use crate::app::{
     sync::settle_receipts::file_fulfilment_card,
 };
 
+mod retry;
+
 pub(super) fn make_service_commitment(id: &str) -> Commitment {
     Commitment {
         commitment_id: id.to_string(),

@@ -2592,6 +2592,18 @@ roym conversation.forward "{\"message_id\":\"$SIGNED_ID\",\"conversation\":\"$CO
 
 `conversation.settings` reads the person's default forward mode and whether the Hub asked the first-message question: `{"default_mode":"signed"|"not-forwardable","asked":bool}`. With no field it only reads. With `default_mode` or `asked: true` it merges and writes. `asked: false` is refused: the question is asked once. With no row, the answer is `{"default_mode":"not-forwardable","asked":false}`.
 
+A signed Roym record can also be forwarded as itself. `conversation.forward-record` takes `{conversation, record_type, envelope}`, where `record_type` is `listing`, `profile` or `quote` and `envelope` is the signed record, at most 160 KiB. It stores a message of content type `application/vnd.roym.record-forward+json` whose body is `{"record_forward_version":1,"record_type":…,"envelope":…}`. The node does not check the record. A client asks the owning service first: `listing.verify`, `profile.verify-envelope`, or `quote.verify` with an empty disclosure list, and draws the record only when that answer says it checks. The method refuses another record type (`record-type-not-supported`), an envelope over the limit (`record-too-large`) and an envelope that is not a JSON object (`record-not-readable`) with `data.code`. The record is never a card, so the transaction service never files it as a deal, and a message search never indexes its body.
+
+```bash roym-client=forward-record
+ENVELOPE=$(roym profile.get '{}' | jq -r .result.envelope)
+[ -n "$ENVELOPE" ] && [ "$ENVELOPE" != null ] || { echo "no profile to forward" >&2; false; }
+roym profile.verify-envelope "$(jq -n --arg e "$ENVELOPE" '{envelope:$e}')" \
+  | jq -e '.result.verified == true' > /dev/null || { echo "profile did not check" >&2; false; }
+roym conversation.forward-record "$(jq -n --arg c "$CONV" --arg e "$ENVELOPE" \
+  '{conversation:$c, record_type:"profile", envelope:$e}')" \
+  | jq -e '.result.message_id != null' > /dev/null || { echo "record forward failed" >&2; false; }
+```
+
 In `conversation.history`, `conversation.changes` and `conversation.search`, a chat body's `body` is the inner text, and the row has a `forward` object: `mode`, `forwardable`, `origin` (`author_did`, `written_at_secs`, `record_id`, `is_you`) when checked, `origin_error` when not, `forward_count`, `many_forwards` and `forwarded`. The author's name is never taken from the message; a client shows a name only from its own contacts, and "you" when `is_you` is true.
 
 **Widgets.** Chat messages also support interactive widgets (content type `application/vnd.roym.widget+json`) and widget answers (`application/vnd.roym.widget-answer+json`) in 1:1 chats and groups:

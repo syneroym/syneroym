@@ -13,12 +13,13 @@ use syneroym_roym_core::{
     envelope::Response,
     lang::LangTag,
     method::{
-        NoParams, Reply,
+        NoParams, Reply, VerifyInput,
         profile::{ProfileGetInput, ProfileRecord},
     },
-    person::{ProfilePayload, ProfileTranslation},
+    person::{self, ProfilePayload, ProfileTranslation},
     record::{Envelope, RECORD_PROFILE},
     signing::{self, CertificateError},
+    verdict::RecordVerdict,
 };
 
 use super::{PROFILE_HISTORY, PROFILES, ensure_coll};
@@ -119,6 +120,16 @@ pub(crate) async fn get<H: AppHost>(
         Ok(None) => Ok(None),
         Err(e) => Err(Response::internal_error(e.to_string())),
     }
+}
+
+/// Checks a profile envelope from anyone, for a client that shows it. The
+/// record must be written by its own subject: a profile is a person's
+/// statement about themselves.
+pub(crate) async fn verify_profile<H: AppHost>(
+    _host: &H,
+    input: VerifyInput,
+) -> Reply<RecordVerdict<ProfilePayload>> {
+    Ok(person::verify_profile_envelope(&input.envelope, None, clock::now_secs()))
 }
 
 async fn parse_and_validate_payload<H: AppHost>(
