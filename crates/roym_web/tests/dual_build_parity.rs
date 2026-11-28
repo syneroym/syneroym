@@ -49,6 +49,8 @@ mod disclosure;
 mod events;
 #[path = "dual_build_parity/forward.rs"]
 mod forward;
+#[path = "dual_build_parity/forward_record.rs"]
+mod forward_record;
 #[path = "dual_build_parity/fulfilment.rs"]
 mod fulfilment;
 #[path = "dual_build_parity/group.rs"]

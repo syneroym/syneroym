@@ -51,6 +51,19 @@ pub struct ForwardInput {
     pub conversation: String,
 }
 
+/// A signed record sent as itself, with the type name that says how to
+/// check it.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ForwardRecordInput {
+    /// Where the record goes.
+    pub conversation: String,
+    /// `listing`, `profile` or `quote`.
+    pub record_type: String,
+    /// The signed record, exactly as its issuer signed it.
+    pub envelope: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SendOutput {
     pub message_id: String,

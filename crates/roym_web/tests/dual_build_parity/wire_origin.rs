@@ -117,6 +117,10 @@ async fn scenario_73_every_catalog_and_conversation_verb_is_wired_and_locally_ad
         ("conversation.delete-message", json!({ "message_id": message_id })),
         ("conversation.search", json!({ "query": "guard" })),
         ("conversation.forward", json!({ "message_id": message_id, "conversation": conv_id })),
+        (
+            "conversation.forward-record",
+            json!({ "conversation": conv_id, "record_type": "not-a-type", "envelope": "{}" }),
+        ),
         ("conversation.settings", json!({})),
         ("conversation.export", json!({})),
         ("conversation.signing-status", json!({})),
