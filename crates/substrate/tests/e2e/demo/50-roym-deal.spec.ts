@@ -397,8 +397,9 @@ test('Roym deal story: Bob offers a lesson for wheat and money, Alice agrees, bo
           (c) => c.state !== 'promised',
         ).length;
 
-      // Alice's receipt travels through the conversation. Wait until Bob's
-      // node holds it before his own close writes the same progress row.
+      // Alice's receipt is applied by Bob's transaction.sync. Wait until his
+      // node shows it before his own close writes the same progress row, so
+      // this step reads a state both sides have finished writing.
       await expect.poll(settled, { timeout: DELIVERY_WAIT_MS }).toBe(1);
       const panel = await openAgreementPanel(bobPage, runTag);
       await closeEverything(panel, 'receiver');
