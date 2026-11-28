@@ -153,7 +153,7 @@ and the close helper of `settle.rs`; `not-formed`: the `slot-taken` path of
 `quote-ended` for these ends and change the code order. That is a product
 change and C8 does not do it; it would be a backlog row.
 
-*Status:* Open
+*Status:* Fixed (62ad8bfa)
 
 ### P2 — The Hindi review table of Q5 leaves out the 46 keys of C3c2 and is built from text, not from the files (major)
 
@@ -184,7 +184,7 @@ the English and Hindi text, and add a plain sentence to C3c2's row that
 its review was never recorded. Add the C3c2 keys to Q5's text so the owner
 sees the true size of the question.
 
-*Status:* Open
+*Status:* Fixed (62ad8bfa)
 
 ### P3 — T9 and T10 point at the wrong places: the owner's reason line, the instant gate and the cancel action live elsewhere, and the AG-45 Hub tests are dropped (major)
 
@@ -252,7 +252,7 @@ of `hooks_fake.rs` if the fixture needs it. Keep the AG-45 Hub tests
 (`as_listed_section.test.ts`, `editor.test.ts`) in the Test column. Check
 `messages.test.ts` length before adding (the 800-line rule).
 
-*Status:* Open
+*Status:* Fixed (62ad8bfa)
 
 ### P4 — T6 needs a stub that can refuse only the second `confirm`; the plan says no harness change (minor)
 
@@ -275,7 +275,7 @@ example `refuse_confirm_number(n, code)`, and that the test asserts
 `is_released` for both commitments, the confirmed one too. Change D-C8-9 to
 "no new test host".
 
-*Status:* Open
+*Status:* Fixed (62ad8bfa)
 
 ### P5 — T7 says the half is "not filed", but the code files it as a refused card (minor)
 
@@ -297,7 +297,7 @@ not change; nothing is countersigned. Make the change by one field of
 `terms` (as the plan says) so the other checks of that function (`names the
 wrong parties`, `accepted after the quote expired`) are not what fails.
 
-*Status:* Open
+*Status:* Fixed (62ad8bfa)
 
 ### P6 — T4 does not say which card's `deal_state` is "still quoted", and half of T4 already exists (minor)
 
@@ -315,7 +315,7 @@ the version-2 quote card with `deal_state: "quoted"`, while the version-1
 card shows the refusal. Drop "then accept the latest version" from T4: it is
 already there.
 
-*Status:* Open
+*Status:* Fixed (62ad8bfa)
 
 ### P7 — New test files need a `mod` line, and T2 can go in the file that already holds its sibling test (minor)
 
@@ -337,7 +337,7 @@ file unless it would pass 800 lines. Also say in T2 that the new case adds
 only the three states the existing test does not hold
 (`ended-unconfirmed` with `claimed: false`, `failed`, `cancelled`).
 
-*Status:* Open
+*Status:* Fixed (62ad8bfa)
 
 ### P8 — T12 proves less than AG-50 says (minor)
 
@@ -358,7 +358,7 @@ native build, add a source check instead: no `transaction` call target in
 the `conversation` crates. Also name the test so it says what it checks
 ("a sibling call to `transaction` is not declared").
 
-*Status:* Open
+*Status:* Fixed (62ad8bfa)
 
 ### P9 — The living-doc list misses statements that M08C made false (minor)
 
@@ -388,7 +388,7 @@ the `conversation` crates. Also name the test so it says what it checks
 
 *Fix.* Add the four items to section 9 and step 8/9.
 
-*Status:* Open
+*Status:* Fixed (62ad8bfa)
 
 ### P10 — File and line references are already stale on this branch (minor)
 
@@ -407,7 +407,7 @@ heading. The plan also says "13 rows" have a gap (section 2.1 Q2): there are
 number where the doc will change, or add one line "line numbers are for the
 C7b tree; re-check each in step 0". Fix the count.
 
-*Status:* Open
+*Status:* Fixed (62ad8bfa)
 
 ### P11 — The plan's decision ids `D-C8-1` to `D-C8-9` collide with ids that already exist (minor)
 
@@ -422,7 +422,7 @@ spec"). The mailbox change doc also has `D-C8-1` to `D-C8-26`. A search for
 *Fix.* Use another prefix in this plan, for example `D-M08C8-1`. The plan
 references them only inside itself.
 
-*Status:* Open
+*Status:* Fixed (62ad8bfa)
 
 ### P12 — T11's second and third test are one code path (minor)
 
@@ -438,7 +438,7 @@ Two tests named "declined" and "withdrawn" suggest two paths.
 as two cases of one test, or write one test and say why. State the
 expected reason code in the test description.
 
-*Status:* Open
+*Status:* Fixed (62ad8bfa)
 
 ### P13 — Section 2.2 point 4 miscounts the wrong names of AG-49 (minor)
 
@@ -458,4 +458,4 @@ T11, which is right; the text should say six, not five.
 AG-45 Test columns get the real names plus the new names of T9 and T11 (so
 the cancel test is written once, under the name T9 gives it).
 
-*Status:* Open
+*Status:* Fixed (62ad8bfa)
