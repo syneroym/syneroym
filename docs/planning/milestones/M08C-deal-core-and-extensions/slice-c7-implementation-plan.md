@@ -13,8 +13,7 @@ field) on 2026-11-27. On the same day the owner accepted the
 recommendation of every other question (Q3, Q5, Q6, Q8 to Q11: (a); Q7:
 (c)). C7a is merged (PR #399, 2026-11-28). The C7b section 6.2 was written
 on 2026-11-28 on `main` at `79344661`: the three checks are answered, and
-its size measurement raises one open question, Q12 (where the record
-check runs).**
+so is Q12 (the record check stays in the owning service, answer (a)).**
 
 ## Review on main 89d1dd23
 
@@ -145,7 +144,7 @@ PRs (Q2 (a), 2026-11-27). Each is one PR that passes `mise run verify`:
 - **C7b — Forward of signed records (S).** A `listing`, `profile` or
   `quote` travels as itself in a record-forward body. Criterion FW-7. Its
   section 6.2 was written on 2026-11-28 on `main` at `79344661`; it holds
-  the three checks and the size measurement, and Q12 is open.
+  the three checks and the size measurement, and Q12 is answered (a).
 
 Branch: `feat/m08a-c7-msg-forwarding` held C7a and its plan commits
 (merged). C7b works on `feat/m08c-c7b-record-forward`, cut from `main`
@@ -358,7 +357,7 @@ How a developer can see it work:
 
 Q1 to Q11 are answered. The option the owner chose is marked **Chosen by
 the owner.** The other options stay as the record of what was not chosen.
-Q12, added with the C7b section on 2026-11-28, needs the owner.
+Q12, added with the C7b section, was answered (a) on 2026-11-28.
 
 #### Q1. (Removed)
 
@@ -571,7 +570,7 @@ measured), so the limit is likely to hold.
 - (b) Approve +22% now (a ceiling of 1,202,272 bytes). No early stop, but it
   invites more growth, and C4a took the same exception.
 
-#### Q12. Where does a forward of a signed record get checked? (Needs the owner)
+#### Q12. Where does a forward of a signed record get checked? (Answered: (a), 2026-11-28)
 
 The C7b outline put the check in `conversation`, as a
 `MessageView.record_forward` field. Measured on `main` at `79344661`
@@ -580,12 +579,12 @@ before the view, the method body or any Hub code. The Q11 rule gives
 `conversation` 158,505 bytes after C7a (15% of 1,056,675), so the outline
 is over that limit by about 71 KB.
 
-- (a) **Recommendation.** The check stays in the service that owns the
-  record, where it is today: `catalog.listing.verify`,
+- (a) **Chosen by the owner, 2026-11-28.** The check stays in the service
+  that owns the record, where it is today: `catalog.listing.verify`,
   `transaction.quote.verify`, and a new `profile.verify-envelope`. The
   Hub asks that service when it draws a forwarded record, and draws only
   from the verdict. `conversation` stores and returns the body only. No
-  node-to-node wire change.
+  node-to-node wire change. The design is [D-C7-14](#d-c7-14-a-record-forward-is-checked-by-the-owning-service-q12-a).
 - (b) Keep the check in `conversation` and accept a one-time exception,
   as C4a did: about +22% over the C7a size (a ceiling of about 1.30 MB),
   for this slice only.
@@ -1364,6 +1363,21 @@ no master-DID signature (backlog, "Recently resolved"). So a vote is not
 provable outside the chat. The Hub shows no forward action and no tag on a
 widget.
 
+### D-C7-14. A record forward is checked by the owning service (Q12 (a))
+
+`conversation` does not verify a record-forward envelope. When the Hub
+draws such a row, it asks the service that owns the record type:
+`catalog.listing.verify`, `transaction.quote.verify`, or the new
+`profile.verify-envelope`, and draws only from that verdict. Two reasons:
+the three checks would add 229,778 bytes to `conversation` against a
+158,505-byte limit (section 6.2), and the check stays in the service that
+owns the record, where it is today.
+
+The node stores and returns the body. The sender's Hub calls the same
+verify method on its own node before it sends. A changed client can send a
+broken envelope; the receiver's Hub shows "could not be checked" and
+draws no record, never a name or a value.
+
 ## 6. Step-by-step changes
 
 ### 6.1 C7a — Forward of a text message
@@ -1489,9 +1503,9 @@ change doc's Deviations (section 9); backlog (section 8); living docs
 
 *Checked on `main` at `79344661`, 2026-11-28, after C7a merged. No code
 is written. This section replaces the outline and holds the three checks.
-It has one stop: [Q12](#q12-where-does-a-forward-of-a-signed-record-get-checked-needs-the-owner)
-asks the owner where the check runs, because the outline breaks the Q11
-size rule.*
+It had one stop, [Q12](#q12-where-does-a-forward-of-a-signed-record-get-checked-answered-a-2026-11-28):
+the outline breaks the Q11 size rule, and the owner answered (a) on
+2026-11-28 (the check stays in the owning service, D-C7-14).*
 
 #### What the three checks found
 
@@ -1551,8 +1565,9 @@ listing check pull their payload, deal, extension and disclosure code in
 gives `conversation` 158,505 bytes after C7a (15% of 1,056,675, ceiling
 1,215,180). The outline's "check the envelope with the matching pure
 function" inside `conversation` is about 71 KB over that, before the
-view, the method body or any Hub code. C7b stops here for
-[Q12](#q12-where-does-a-forward-of-a-signed-record-get-checked-needs-the-owner).
+view, the method body or any Hub code. C7b stopped here for
+[Q12](#q12-where-does-a-forward-of-a-signed-record-get-checked-answered-a-2026-11-28);
+the owner answered (a) on 2026-11-28.
 
 **3. The new content type is added to the reserved list.** `send`
 (`crates/roym_conversation/src/app/messages.rs:264`) refuses six content
@@ -1564,7 +1579,7 @@ card type in a group. The record-forward type goes into that list.
 only the card type (`crates/roym_transaction/src/app/sync.rs:264`), so
 the new type is never filed as a deal, in a group or not.
 
-#### The design if the owner answers Q12 (a)
+#### The design (Q12 (a), D-C7-14)
 
 The check stays in the service that owns the record, which is where it is
 today:
@@ -2031,8 +2046,9 @@ C7a is done when all of these hold:
       the Hindi keys) are done.
 - [ ] `mise run verify` with no `--skip` passes.
 
-C7b is done when FW-7 has its tests, the owner answered Q12, its sizes
-are in task.md section 1, and its docs and `mise run verify` pass.
+C7b is done when FW-7 has its tests, the Q12 (a) design is built (the
+check in the owning service, D-C7-14), its sizes are in task.md
+section 1, and its docs and `mise run verify` pass.
 
 ## 11. What C7 does not do
 
