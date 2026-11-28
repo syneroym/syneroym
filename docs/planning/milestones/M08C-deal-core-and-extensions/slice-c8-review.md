@@ -459,3 +459,60 @@ AG-45 Test columns get the real names plus the new names of T9 and T11 (so
 the cancel test is written once, under the name T9 gives it).
 
 *Status:* Fixed (62ad8bfa)
+
+## Plan review round 2 — Claude Sonnet 5.5, 2026-11-28
+
+This round checks the 13 items marked Fixed in `62ad8bfa` against the plan
+at `f575db52` and the code on this branch (which now has `main` with C7b
+merged as `954af3fc`). I did not review the plan from the start again.
+The owner answers to Q1 to Q7 (all (a)) are recorded in the plan; I have
+no disagreement with them.
+
+### Round 1 items
+
+| Item | Result |
+| --- | --- |
+| P1 | Fixed. T5 now asserts the real code per end. D-M08C8-10 holds the AG-35 Deviation, and Q2 and step 7 carry the wider stop rule. The code path it names is the one I read (`quote_ops.rs`, `decline_ops.rs`, `app.rs`). |
+| P2 | Fixed. Q5 and step 10.3 build the table from the `hi.ftl` diff and name C3c1 and C3c2. The "53 keys" claim is right: the C3c2 squash commit `aa25961b` adds 53 lines in `hi.ftl`. |
+| P3 | Fixed. T9 is the `agreement.cancel` loop plus an answer-time full-slot case. T10 is split over `as_listed_section.test.ts`, `messages.test.ts` (or a sibling) and `listings.test.ts`. The AG-45 row keeps the two existing Hub files. |
+| P4 | Fixed. T6 and D-M08C8-9 name `refuse_confirm_number(n, code)` in `hooks_fake.rs`. |
+| P5 | Fixed. T7 asserts a stored, refused card with the reason. |
+| P6 | Fixed. T4 names the version-2 card and drops the existing accept step. |
+| P7 | Fixed. The `mod` lines are named (T2, T7, T9). |
+| P8 | Fixed. T12 and step 1.6 name `HostState::resolve_target`. I checked that the native build uses the same host (`app_host_native` has its own `DependencyNotBound` parity test in `call_all.rs`), so the claim is plausible; step 1.6 still confirms it before the test is written. |
+| P9 | Fixed. Section 9 and steps 8.2 and 9 now hold the cancellation rule (`apply_cancel` allows `promised` and `payment-requested`; I checked), the `ended-unconfirmed` diagram error, the event log, and the "barter" at `roym-extensions` `:165`. |
+| P10 | Fixed. The plan says its line numbers are for the C7b tree and step 0 rechecks them. I checked a sample on this branch: backlog `:668`, `:674`, `:692`, `:718`, spec `:874`, `progress_ops.rs:98` and `:241` all match. The gap count is now 12 rows and 13 tests. |
+| P11 | Fixed. The ids are `D-M08C8-n`; no `D-C8-` text is left in the plan. |
+| P12 | Fixed. T11 is one test with two storage forms of `declined()`. |
+| P13 | Fixed. The AG-49 count is "six of its seven names", and step 1.1 says how the AG-45 and AG-49 columns are written. |
+
+### Counts
+
+Round 2: blocker 0, major 0, minor 1 (P14). **1 open.**
+
+### P14 — T10 says "check the 800-line rule" for `messages.test.ts`, but the file already has 1,201 lines (minor)
+
+*Where:* plan section 7.1, T10, case (2) and step 6;
+`crates/roym_web/ui/src/screens/messages.test.ts`.
+
+*Problem.* T10 puts the reason-line cases in `messages.test.ts` "or a new
+sibling if it would pass 800 lines". The file is already 1,201 lines, so
+the condition is always true. The text suggests a choice that does not
+exist. Step 6 also tells the implementer to run `messages.test.ts`
+"only if the new case goes there".
+
+*Failure case.* Low. The implementer adds the cases to `messages.test.ts`
+and makes a long file longer, against the rule in AGENTS.md (new test
+code in a file over 800 lines).
+
+*Fix.* Say "a new sibling file, for example `messages_as_listed.test.ts`;
+`messages.test.ts` is already over 800 lines". Update step 6 to run the
+sibling.
+
+*Status:* Open
+
+### Smaller notes (no finding)
+
+- The status.md C8 row and plan sections 2.2 points 1 and 2 still say the
+  plan "starts only after PR #400 merges". It is merged now. This is only
+  old wording; step 0.1 handles it.
